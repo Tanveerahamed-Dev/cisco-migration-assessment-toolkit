@@ -173,3 +173,63 @@ def test_readme_documents_env_chain_and_redact_collection():
     readme = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
     for needle in ("CISCO_PASS", "password_env", "--redact-collection", "devices.example.json"):
         assert needle in readme, f"README must document {needle}"
+
+
+# ── byte fidelity: this rewrites the engineer's ONLY copy of the raw captures ───
+def test_scrub_preserves_every_byte_except_the_secret(tmp_path):
+    """The docstring promises "values only ... nothing is ever deleted". Two bugs broke that on
+    real captures: `errors="ignore"` DELETED bytes that are not valid UTF-8 (0x96 is the cp1252
+    en-dash, routine in banners and interface descriptions), and text-mode write rewrote every
+    LF to CRLF on Windows — so every line of every scrubbed capture changed."""
+    dev = tmp_path / "core1"
+    dev.mkdir()
+    original = (b"! site \x96 Paris DC\n"
+                b"snmp-server community s3cr3tvalue RO\n"
+                b"interface Gi1/0/1\n")
+    cap = dev / "show_run.txt"
+    cap.write_bytes(original)
+
+    scanned, changed = redact_collection_dir(str(tmp_path))
+    after = cap.read_bytes()
+
+    assert (scanned, changed) == (1, 1)
+    assert b"s3cr3tvalue" not in after and b"<redacted>" in after
+    # everything else is byte-identical: the non-UTF-8 byte and the LF endings both survive
+    assert after == original.replace(b"s3cr3tvalue", b"<redacted>")
+
+
+def test_scrub_is_atomic_and_leaves_no_partial(tmp_path, monkeypatch):
+    """A yank or a full disk mid-rewrite left a TRUNCATED capture indistinguishable from a
+    legitimate scrub — the run manifest is sealed a phase earlier, so nothing would catch it."""
+    dev = tmp_path / "core1"
+    dev.mkdir()
+    original = b"snmp-server community s3cr3tvalue RO\n"
+    cap = dev / "show_run.txt"
+    cap.write_bytes(original)
+
+    real_replace = os.replace
+
+    def boom(src, dst):
+        raise OSError("device or resource busy")
+
+    monkeypatch.setattr(os, "replace", boom)
+    redact_collection_dir(str(tmp_path))
+    monkeypatch.setattr(os, "replace", real_replace)
+
+    assert cap.read_bytes() == original, "the original capture must survive a failed rewrite"
+    assert not list(dev.glob("*.redacting")), "a partial file was left beside the real capture"
+
+
+def test_scrub_round_trips_arbitrary_binary_ish_content(tmp_path):
+    """Captures come off real gear; assume nothing about their encoding."""
+    dev = tmp_path / "core1"
+    dev.mkdir()
+    original = bytes(range(0x80, 0x100)) + b"\npassword 7 09604F0B\n" + bytes(range(0x80, 0xA0))
+    cap = dev / "show_run.txt"
+    cap.write_bytes(original)
+    redact_collection_dir(str(tmp_path))
+    after = cap.read_bytes()
+    assert b"09604F0B" not in after
+    # every high byte outside the scrubbed span is preserved exactly
+    assert after.startswith(bytes(range(0x80, 0x100)))
+    assert after.endswith(bytes(range(0x80, 0xA0)))
