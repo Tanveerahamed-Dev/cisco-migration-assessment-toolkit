@@ -754,14 +754,16 @@ def _attach_package_logging(fh, ch, level):
     ``lastResort`` firing.) ``propagate = False`` stops a later ``basicConfig()``, or a root handler
     that is not stderr, from duplicating or reformatting these records; note that attaching handlers
     here is what stops them being SWALLOWED, since that was only possible while ``lastResort`` was the
-    sole path. Because pytest's ``caplog`` captures at the ROOT logger, `tests/conftest.py` restores
-    propagation for the duration of each test rather than letting the suite depend on whether a given
-    pytest version force-attaches to non-propagating loggers (requirements-dev allows >=8,<10).
-    Scope is engine runs only — the webapp drives the engine as a SUBPROCESS
+    sole path. Because pytest's ``caplog`` captures at the ROOT logger, the repo-root ``conftest.py``
+    restores propagation for the duration of each test rather than letting the suite depend on whether
+    a given pytest version force-attaches to non-propagating loggers (requirements-dev allows
+    >=8,<10). Scope is engine runs only — the webapp drives the engine as a SUBPROCESS
     (``webapp/backend/ingest.py``), so AssessHub's own logging is unaffected.
 
-    NB: log text is still not the audit record. The auditable copy of a gate verdict is the sealed
-    manifest step — see ``build_run_manifest``.
+    NB: this log is half of the audit trail, not a lesser copy of it. The sealed manifest step (see
+    ``build_run_manifest``) is tamper-evident but is written only in the final stage; these lines are
+    plain text but are written at the INSTANT of the verdict, so they are what survives a crash
+    between the two. Neither alone suffices.
     """
     pkg = logging.getLogger("cisco_toolkit")
     pkg.setLevel(level)
@@ -3041,7 +3043,8 @@ def main():
 
 def _stage_finalize(ctx: "AnalysisContext") -> None:
     """Pipeline stage 5 (Plan-A #15 strangler): the leaf finalize phases -- run-manifest
-    chain-of-custody (39), opt-in raw-capture scrub (40), perf-timings sidecar (41). A true LEAF:
+    chain-of-custody (39), opt-in raw-capture scrub (40), perf-timings sidecar (41), closing gate
+    summary (42 -- LAST, so a withheld deliverable is the final thing the operator sees). A true LEAF:
     nothing downstream reads its outputs, which is why it is the safest first extraction. Reads the
     context's out_xlsx / snap_dict / root_dir / args / all_devices_meta / workers + the module-global
     _PHASE_TIMINGS. The body was byte-identical to the inline block it replaced until the gate-audit
@@ -3109,14 +3112,21 @@ def _stage_finalize(ctx: "AnalysisContext") -> None:
         from cisco_toolkit import gate_state as _gs
         _refused = [v for v in _gs.verdicts() if str(v.get("verdict", "")).startswith("refused")]
         if _refused:
+            # Don't claim the seal unconditionally: this runs AFTER the manifest write, whose failure
+            # arm above exists precisely for the case where nothing was sealed. Saying "sealed" there
+            # would make the operator's LAST line false about the very record it points them to.
+            _sealed = os.path.isfile(os.path.splitext(os.path.abspath(out_xlsx))[0]
+                                     + ".run_manifest.json")
             logger.error("[GATE] %d deliverable(s) WITHHELD by the PPDIOO document gates: %s -- "
                          "record the approval ('python -m cisco_toolkit.gate_state approve <gate>') "
-                         "or re-run with --override-gate \"<reason>\" (audited). Sealed in the run "
-                         "manifest's 'gate' step.",
+                         "or re-run with --override-gate \"<reason>\" (audited). %s",
                          len(_refused),
                          "; ".join(f"{v['generator']} (missing: "
                                    f"{', '.join(v.get('missing') or []) or 'not evaluated'})"
-                                   for v in _refused))
+                                   for v in _refused),
+                         "Sealed in the run manifest's 'gate' step."
+                         if _sealed else "NOT SEALED -- the run manifest was not written, so this "
+                                         "log line is the only record of the refusal.")
     except Exception as e:
         logger.warning(f"  gate summary failed (non-fatal): {e}")
 

@@ -4,6 +4,52 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-22] — Gate refusals were unauditable, and the log they belonged in had been truncating itself since PHASE 2.7
+
+- `cisco_toolkit.gate_state` logs `[GATE REFUSED]` on its own logger, but `setup_logging` configured
+  only `CiscoMigrationAutofillV3_14_6` and root has no handlers — so verdicts fell through to
+  `logging.lastResort` (WARNING+ to bare stderr, INFO discarded entirely) and grepping
+  `cisco_migration_autofill_*.log` after a refused run returned nothing. An OVERRIDE always persisted
+  (it appends an audit line to the store); a REFUSAL and the brownfield-ungated case left nothing at
+  all — for a control whose overrides DEC-003 says are reviewed weekly. Fixed both halves: the
+  `cisco_toolkit` tree now shares the engine's handlers (`propagate=False`), and every verdict is
+  recorded structurally and sealed into the run manifest's hash chain as a `{"stage":"gate"}` step,
+  where editing a refusal out breaks `chain_root`. Added a closing `[GATE] … WITHHELD` line because
+  every finalize phase signed off `[OK]` even when both gates refused. Commits 845f388 + c85ca3d.
+- `!lesson` **Judge measured output by EXPECTED MAGNITUDE, not presence.** My own end-to-end proof
+  printed `[OK] sheet lines -> 3 hit(s)` and I reported it as success; ~66 were emitted. The engine
+  re-imports itself by name for attestation, so under `python <script>.py` the module identity is
+  `__main__`, the module body RE-EXECUTES, and a second `FileHandler(mode="w")` truncated the log near
+  the end of every script-path run. A module-level "already configured" flag cannot fix that — the
+  re-executed copy gets fresh globals; the process-global logging registry is the only reliable
+  witness. The disproof was sitting in my own output: "N > 0" is not verification, ask "N of how
+  many?" bridge-candidate
+- `!lesson` **Moving code between modules silently moves it to a different logger tree.** The
+  per-sheet `[OK]` confirmations left the engine and arrived in `cisco_toolkit.excel` in the SAME
+  commit (8aa9a4e); `getLogger(__name__)` put them outside the configured tree and they vanished from
+  the log with no error, for a year, while ~49 later call sites were born mute. When a refactor
+  relocates logging code, check where its records now land — `git log -S` on a log string dates the
+  disappearance precisely. bridge-candidate
+- `!lesson` **Attaching any handler stops `lastResort` firing — so "file-only" silences your
+  warnings.** The tempting quiet-console option (attach the FileHandler, not the StreamHandler) would
+  have removed the WARNING/ERROR lines that currently DO reach stderr, producing a run that refused
+  both gated deliverables and ended in five consecutive `[OK]` lines: "not observed" rendering as
+  healthy, on the last thing the operator sees. Decide handler routing from the failure case, not the
+  happy path. bridge-candidate
+- `!lesson` **Refuters audit MY new diff, not only the pre-existing code — and they contradict each
+  other.** Round 2 found four defects in code I had just written (a re-entry guard that would reuse a
+  CLOSED handler and silently drop every later record; a `verdicts()` "deep copy" that shared nested
+  values; a conftest in `tests/` when `testpaths` also covers `webapp/tests`; a `basicConfig()` call
+  that no-ops when root already has a handler), plus two confidently-worded FALSE claims in my own
+  comments. Two refuters then disagreed on log volume; the source settled it (both per-device sites
+  are conditional). Adjudicate against the code — an accepted-but-wrong criticism is as bad as a
+  shipped defect. bridge-candidate
+- Repo-specific: the durable win is a STRUCTURAL guard that every `return` in `enforce()` is preceded
+  by a `_record(...)`, plus one deriving `VERDICTS` from the source. Enumerating today's outcomes
+  cannot catch tomorrow's; PR #439 adds two unrecorded refusal arms (mis-set `--gate-root`, ledger
+  ownership) and both tests are designed to fail when it rebases, putting the naming decision with
+  the author who knows the semantics. Merge this branch first, then #439.
+
 ## [2026-07-22] — Refuting my own merged code twice in one day (#429–#433): both times the verification, not the feature, was the defect
 
 - After P3 shipped, independent refuters were pointed at code I had written AND self-verified.
