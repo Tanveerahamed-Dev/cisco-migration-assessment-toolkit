@@ -26,6 +26,33 @@ when its upstream approval was missing. This module is the enforcement half of t
   * **Store present but unreadable** → REFUSE, even with an override (an unreadable ledger cannot
     take the audit line that makes an override legitimate; fix or remove the store).
 
+**Root resolution — the one way this module fails silently.** ``root`` defaults to ``"."``, so the
+store is found only if the *process's working directory* is the engagement. That is right for a
+human ``cisco-assess`` run (it inherits the operator's cwd) and wrong for any wrapper that re-homes
+the engine child to a scratch directory: an empty cwd has no store, ``enforce()`` takes the
+brownfield branch, and **every gate returns True** — enforcement disappears with no error, no
+warning that looks like a failure, and no visible difference in the output except two missing
+documents. Note the asymmetry that makes this dangerous: an unreadable store fails CLOSED (loudly),
+but an *unreachable* store fails OPEN (quietly). Any caller that sets ``cwd=`` on the engine child,
+or ``os.chdir()``s around an in-process ``main()``, must therefore declare a posture — pass
+``--gate-root``, or suppress the gated deliverables with ``--no-design --no-mop``, or disclose via
+``pending_approvals()``. Being safe "because cwd happens to be empty" is a coincidence of a call
+site, not a contract. Callers are inventoried in ``tests/test_gate_state.py``
+(``test_no_engine_caller_declares_a_gate_posture``). A mis-set ``root`` is treated as an error, not
+as an ungated engagement: ``enforce()`` REFUSES when ``root`` is not an existing directory, so one
+typo cannot silently ungate a run (an *omitted* root still means cwd, unchanged).
+
+**Enforcement is not always the right posture.** ``enforce()`` refuses per DELIVERABLE, which only
+withholds anything if the deliverable is the sole carrier of the content. It is not, for the
+design/MOP: ``COLLECT_PARSE_V3_23_0`` computes ``design_blueprint`` and writes the snapshot (:2817),
+the explorer (:2831) and the executive deck (:2853) — all carrying ``target_state``/``wave_plan`` —
+*before* the gates run (:2864/:2879). So on a path that emits the whole family, refusing the two
+DOCX removes two renderers while the unapproved design ships anyway, and tells the operator it was
+withheld. That is worse than not gating. Blocking is right where the operator is AT the engagement
+and can approve or override with an audit line (the ``cisco-assess`` CLI); elsewhere prefer
+``pending_approvals()`` and disclose — the same stamp-and-disclose call ``webapp/backend/gates.py``
+and ``webapp/backend/deliverables.py`` already made for this product.
+
 Gate requirements mirror the agent charters: design requires an APPROVED assessment
 (.claude/agents/design-author.md — "design follows an approved assessment"); the MOP requires an
 approved LLD + a captured current-state baseline (.claude/agents/mop-change-author.md — "Require an
@@ -157,6 +184,14 @@ def record_decision(gate: str, decision: str, root: str = ".",
         raise ValueError(f"unknown gate {gate!r} (expected one of {list(GATE_KEYS)})")
     if decision not in ("approved", "revoked"):
         raise ValueError(f"unknown decision {decision!r} (expected 'approved' or 'revoked')")
+    root = _normalize_root(root)
+    # The write side needs this MORE than the read side: save_store() calls os.makedirs, so a typo
+    # here does not fail — it CREATES a phantom ledger at the wrong path and returns a success
+    # receipt, while the real engagement stays unapproved. The root must already exist; only the
+    # docs/ directory inside it is created (recording the first approval is the opt-in moment).
+    bad_root = _require_root(root, f"recording {gate}")
+    if bad_root:
+        raise GateStateError(bad_root)
     store, path = load_store(root)
     if store is None:
         store = _new_store()
@@ -168,6 +203,30 @@ def record_decision(gate: str, decision: str, root: str = ".",
                                 "event": "approve" if decision == "approved" else "revoke",
                                 "gate": gate, "note": note})
     return store["gates"][gate]
+
+
+def _normalize_root(root: str) -> str:
+    """``""`` is the argv encoding of *omitted* — ``--gate-root "$ENG_ROOT"`` with the variable
+    unset, or ``cmd += ["--gate-root", cfg.get("gate_root", "")]``. It always behaved exactly like
+    ``"."`` because ``store_path`` joins relatively, so refusing it would be a pure regression:
+    an omitted root means the working directory, and that contract predates this module's
+    hardening."""
+    return root or "."
+
+
+def _require_root(root: str, what: str) -> Optional[str]:
+    """None if ``root`` is usable; otherwise the error text explaining why it is not.
+
+    A root that is not an existing directory is a MIS-SET root, never an ungated engagement.
+    Applied at EVERY entry point — enforcing, recording and showing — because a control hardened
+    on only one of them is defeated by the same typo it exists to catch: ``record_decision`` with a
+    bad root used to ``makedirs`` a phantom ledger and hand the lead a success receipt for an
+    approval that landed nowhere, while the real engagement stayed unapproved."""
+    if not os.path.isdir(root):
+        return (f"gate root {root} is not an existing directory -- refusing to treat a mis-set "
+                f"root as an ungated (brownfield) engagement while {what}. Fix the path, or omit "
+                f"it to use the working directory.")
+    return None
 
 
 def enforce(generator: str, override_reason: Optional[str] = None,
@@ -182,6 +241,15 @@ def enforce(generator: str, override_reason: Optional[str] = None,
     if generator not in GENERATOR_REQUIRES:
         raise ValueError(f"unknown gated generator {generator!r} "
                          f"(expected one of {sorted(GENERATOR_REQUIRES)})")
+    # Not overridable. NB the reason is NOT "the audit line has nowhere to land" (save_store would
+    # happily makedirs it — that is exactly the phantom-ledger bug _require_root closes): it is
+    # that an override is consent to bypass a SPECIFIC gate, and with a mis-set root no gate has
+    # been identified. You cannot consent to bypassing an approval you never located.
+    root = _normalize_root(root)
+    bad_root = _require_root(root, f"generating {generator}")
+    if bad_root:
+        logger.error("[GATE REFUSED] %s: %s", generator, bad_root)
+        return False
     try:
         store, path = load_store(root)
     except GateStateError as e:
@@ -249,6 +317,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     # show
+    bad_root = _require_root(_normalize_root(args.root), "showing the gate board")
+    if bad_root:
+        # The operator's one diagnostic tool must not answer a typo with "UNGATED (brownfield)" —
+        # that is the exact sentence this module exists to stop anything from saying wrongly.
+        print(f"REFUSING: {bad_root}")
+        return 1
     try:
         store, path = load_store(args.root)
     except GateStateError as e:
