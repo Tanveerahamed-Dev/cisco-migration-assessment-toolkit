@@ -14,8 +14,10 @@ keep the ``--override-gate`` flag.
 """
 import json
 import logging
+import os
 import re
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -227,20 +229,127 @@ def test_ownership_refusal_stays_unrecorded_and_says_so(tmp_path):
     assert v.proceed is False and v.status == "ownership_mismatch" and v.recorded is False
 
 
+def test_refusal_row_names_the_engagement_it_was_written_against(tmp_path):
+    """Ownership is verified only when the run DECLARES itself, so on the default path gates apply
+    by PROXIMITY — and a mis-rooted run now WRITES to the ledger it landed next to, where before it
+    only read. An un-attributable row in the wrong client's ledger is indistinguishable from a real
+    one during the DEC-003 weekly review, so the row records both sides."""
+    root = _approved_ledger(tmp_path, engagement="ACME-2026", gates=("lld_approved",))
+    gate_state.enforce("design", root=str(root))          # declares nothing -> proximity match
+    row = json.loads((root / "docs" / "engagement-state.json").read_text(encoding="utf-8"))["audit"][-1]
+    assert row["event"] == "refuse"
+    assert row["engagement"] == "ACME-2026", "the row does not say WHOSE ledger it landed in"
+    assert row["declared"] is None, "a proximity-matched row must be distinguishable from a verified one"
+
+
+def test_a_corrupt_audit_array_is_refused_not_silently_destroyed(tmp_path):
+    """A ledger whose `audit` is not a list still LOADS (load_store validates only the top level),
+    so it reaches the write path. Replacing it with a fresh list destroyed an audit trail and then
+    reported success — and `show`'s isinstance filter made it invisible before AND after. Same
+    posture as the unreadable branch: a corrupt ledger is EVIDENCE."""
+    gate_state.record_decision("lld_approved", "approved", root=str(tmp_path), by="qa")
+    ledger = tmp_path / "docs" / "engagement-state.json"
+    store = json.loads(ledger.read_text(encoding="utf-8"))
+    store["audit"] = {"2026-01-01": "override by lead, CAB waived"}     # a hand-edit / schema variant
+    ledger.write_text(json.dumps(store), encoding="utf-8")
+
+    v = gate_state.enforce("design", root=str(tmp_path))
+    assert v.proceed is False, "a bookkeeping problem changed the gate decision"
+    assert v.recorded is False, "it claimed a record while refusing to write"
+    after = json.loads(ledger.read_text(encoding="utf-8"))["audit"]
+    assert after == {"2026-01-01": "override by lead, CAB waived"}, \
+        "the pre-existing audit trail was overwritten"
+
+
+def test_a_second_writer_cannot_corrupt_the_ledger_via_a_shared_temp(tmp_path):
+    """The temp name must be UNIQUE. With a fixed `path + '.tmp'` two writers to one ledger share a
+    single scratch file, their bytes interleave, and one os.replace promotes the garbage to BE the
+    ledger — after which load_store raises forever and the engagement's approval history is gone
+    (this store has no backups). Recording refusals is what made concurrent writers realistic."""
+    gate_state.record_decision("lld_approved", "approved", root=str(tmp_path), by="qa")
+    ledger = tmp_path / "docs" / "engagement-state.json"
+    seen = []
+    real_replace = os.replace
+
+    def _spy(src, dst):
+        seen.append(str(src))
+        return real_replace(src, dst)
+
+    with mock.patch.object(os, "replace", _spy):
+        gate_state.enforce("design", root=str(tmp_path))
+        gate_state.enforce("mop", root=str(tmp_path))
+    assert len(seen) == 2 and seen[0] != seen[1], \
+        f"both writes shared one temp path — a concurrent writer would interleave into it: {seen}"
+    assert json.loads(ledger.read_text(encoding="utf-8"))["schema"] == 1, "ledger unreadable"
+
+
+def test_a_failed_write_leaves_no_orphan_copy_of_the_ledger(tmp_path):
+    """An orphaned `<ledger>.tmp` is a full COPY of an audit trail holding a row the real ledger does
+    not, sitting in the engagement's own docs/ folder, outliving any curation or redaction of the
+    real one. It must be cleaned up on the failure path, which is now a routine path."""
+    gate_state.record_decision("lld_approved", "approved", root=str(tmp_path), by="qa")
+    with mock.patch.object(os, "replace", side_effect=PermissionError(5, "Access is denied")):
+        v = gate_state.enforce("design", root=str(tmp_path))
+    assert v.recorded is False
+    strays = [p.name for p in (tmp_path / "docs").iterdir() if p.name != "engagement-state.json"]
+    assert strays == [], f"a failed ledger write left a copy of the audit trail behind: {strays}"
+
+
+def test_an_override_that_cannot_be_audited_fails_closed(tmp_path):
+    """The override deliberately does NOT get _record_refusal's tolerant handling: its audit line is
+    the ONLY thing making it legitimate to proceed past a missing approval, so an unwritable ledger
+    must stop the run rather than quietly generate the document. Asserted because the code says
+    'do not make this consistent later' — a stated guarantee with no test is not a guarantee."""
+    gate_state.record_decision("baseline_captured", "approved", root=str(tmp_path), by="qa")
+    with mock.patch.object(os, "replace", side_effect=PermissionError(5, "Access is denied")):
+        with pytest.raises(OSError):
+            gate_state.enforce("mop", override_reason="CAB waived", root=str(tmp_path))
+
+
 # -------------------------------------------------------------- the verdict object's own contracts
 
 def test_enforce_and_pending_approvals_share_one_status_vocabulary(tmp_path):
     """Law 1 applied to a taxonomy: the deciding path and the disclosing path report the SAME seven
     statuses, so they can never disagree about one ledger. A parallel enum for "the same situations,
-    as seen by the enforcer" is a copy that drifts — and inventing one was called out explicitly."""
-    gate_state.record_decision("lld_approved", "approved", root=str(tmp_path), by="qa")
-    seen = set()
-    for root, eng in ((str(tmp_path / "gone"), None), (str(tmp_path), None),
-                      (str(tmp_path), "ACME-2026")):
-        seen.add(gate_state.enforce("design", root=root, engagement=eng).status)
-        seen.add(gate_state.pending_approvals("design", root=root, engagement=eng)["status"])
-    assert seen <= set(gate_state.STATUSES), f"a status escaped the shared vocabulary: {seen}"
-    assert {"bad_root", "pending", "ownership_unbound"} <= seen, "the sweep stopped exercising them"
+    as seen by the enforcer" is a copy that drifts — and inventing one was called out explicitly.
+
+    Membership in STATUSES is necessary but nowhere near sufficient: the first version of this test
+    unioned both functions' outputs into one set and asserted only that the union was a subset. It
+    passed with pending_approvals stubbed to return "clear" for every input — a flat contradiction
+    of enforce on the SAME ledger — because it never compared the two per input. Compare per input.
+    """
+    # Each row: (root, engagement, the status BOTH functions must report) — one per reachable
+    # status, so a new branch added to one function and not the other cannot hide in an unswept case.
+    bound = _approved_ledger(tmp_path, engagement="ACME-2026")     # assessment_approved signed
+    unbound_pending = tmp_path / "unbound"
+    unbound_pending.mkdir()
+    gate_state.record_decision("lld_approved", "approved", root=str(unbound_pending), by="qa")
+    corrupt = tmp_path / "corrupt"
+    (corrupt / "docs").mkdir(parents=True)
+    (corrupt / "docs" / "engagement-state.json").write_text("{not json", encoding="utf-8")
+    brownfield = tmp_path / "brownfield"
+    brownfield.mkdir()
+
+    cases = [
+        (str(tmp_path / "gone"), None, "bad_root"),
+        (str(brownfield), None, "ungated"),
+        (str(corrupt), None, "unreadable"),
+        (str(bound), "GLOBEX-2026", "ownership_mismatch"),
+        (str(unbound_pending), "ACME-2026", "ownership_unbound"),
+        (str(bound), "ACME-2026", "clear"),
+        (str(unbound_pending), None, "pending"),
+    ]
+    for root, eng, expected in cases:
+        decided = gate_state.enforce("design", root=root, engagement=eng).status
+        disclosed = gate_state.pending_approvals("design", root=root, engagement=eng)["status"]
+        assert decided == disclosed == expected, (
+            f"root={root!r} engagement={eng!r}: enforce said {decided!r}, pending_approvals said "
+            f"{disclosed!r}, expected {expected!r} — deciding and disclosing disagree about one "
+            f"ledger")
+        assert expected in gate_state.STATUSES
+
+    assert {c[2] for c in cases} == set(gate_state.STATUSES), \
+        "STATUSES grew a value this test never exercises on either function"
 
 
 def test_verdict_is_truthy_exactly_when_it_proceeds(tmp_path):
