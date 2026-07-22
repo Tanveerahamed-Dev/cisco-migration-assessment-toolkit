@@ -36,6 +36,39 @@ def _reconcile_gate(snap: dict, kind: str) -> list:
                        kind, len(violations), violations[:3])
     return violations
 
+
+def gate_disclosure(kind: str, gate_root: str = ".") -> dict | None:
+    """The PPDIOO document-gate verdict for `kind`, as a DISCLOSURE — never a refusal.
+
+    None means "nothing to say": an ungated deliverable, an engagement that never opted in (no
+    store — gate_state's brownfield branch), or approvals all present. A dict means the ledger
+    says this document's upstream approvals are missing/revoked; see `generate` for why AssessHub
+    discloses where the CLI refuses.
+
+    Reads with `load_store`/`missing_approvals` rather than `enforce()` on purpose: `enforce` is
+    the BLOCKING api and its override arm APPENDS an audit line, which a read for a download
+    header must never do. Total/fail-open like `_reconcile_gate` — a gate ledger problem must
+    never be able to withhold a deliverable, which is the whole point of this mode."""
+    try:
+        from cisco_toolkit import gate_state
+        if kind not in gate_state.GENERATOR_REQUIRES:
+            return None
+        try:
+            store, path = gate_state.load_store(gate_root)
+        except gate_state.GateStateError as e:
+            # Unreadable ≠ absent. The CLI fails CLOSED here; we cannot, so we say so loudly —
+            # an operator who broke their ledger must not read silence as "gates are fine".
+            return {"status": "unreadable", "generator": kind, "detail": str(e)}
+        if store is None:
+            return None                       # never opted in — unchanged brownfield behaviour
+        missing = gate_state.missing_approvals(store, kind)
+        if not missing:
+            return None
+        return {"status": "ungated", "generator": kind, "missing": missing, "store": path}
+    except Exception:                         # noqa: BLE001 - a broken ledger never blocks a download
+        return None
+
+
 _DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 _PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
@@ -87,12 +120,54 @@ def catalogue() -> list:
             for s in SPECS.values()]
 
 
-def generate(kind: str, snap: dict, label: str, *, gates: dict | None = None) -> str:
+def generate(kind: str, snap: dict, label: str, *, gates: dict | None = None,
+             gate_root: str = ".") -> str:
     """Write the deliverable to a temp file; return its path. Caller streams it and deletes it.
     `gates` is the campaign's recorded gate sign-offs — consumed only by the engagement plan of
-    record (its §4.3 as-signed trail); every other writer is a pure snapshot read."""
+    record (its §4.3 as-signed trail); every other writer is a pure snapshot read.
+
+    **DECISION (2026-07-22): the PPDIOO document gates DISCLOSE here; they do not block.**
+
+    `design` and `mop` are gated deliverables (P0-3/DEC-003), and this path is not a re-render of
+    something already approved — it calls the same writers the CLI does, against a snapshot whose
+    engine version and detector set may have moved since anything was peer-reviewed. So the gates
+    are RELEVANT here; the earlier reading that this is a mere "additive-compatibility surface"
+    covered only half the truth. The valid half survives: `write_design_doc_docx` /
+    `write_mop_docx` themselves stay ungated (they are pure writers, and ~62 direct-call tests in
+    tests/test_design.py + tests/test_mop.py depend on that). Gating a CALLER — which is exactly
+    what the CLI's `gate_enforce` is — costs those tests nothing.
+
+    Why disclose rather than refuse, unlike the CLI and unlike `ingest.run_redaction_folder`:
+    `gate_state` resolves ONE `docs/engagement-state.json` from a directory root, but an AssessHub
+    campaign is a DB row with no filesystem home (`storage.py`: campaigns(id, name, description,
+    created_at)). A server-root ledger would therefore govern EVERY campaign — engagement A's
+    revoked LLD would withhold campaign B's MOP, a refusal that is simply wrong about B. There is
+    also no `--override-gate` on this surface, and Atlas makes AssessHub the one door in the
+    field, so a wrongly-refused engineer has no recourse at all. A control with a wrong-refusal
+    mode and no override gets routed around, which costs more enforcement than it buys. Disclosure
+    has no wrong-refusal mode, and it matches this subsystem's own doctrine: `gates.py`
+    (`annotate_out_of_order`) already DISCLOSES an out-of-order sign-off rather than blocking it,
+    and `_reconcile_gate` above is fail-soft for the same reason.
+
+    Not-silent is the part that changed. "The CLI is the enforcement point" was defensible when
+    the browser was a developer convenience; ADR-0004 made AssessHub the primary field interface,
+    where that reads as "the enforcement point is the door nobody uses" — an engineer refused at
+    the CLI can click Download and get a byte-identical file. That bypass is now visible in the
+    log and on the response (`X-Gate-Status`, set by the route) instead of being invisible.
+
+    KNOWN RESIDUAL — the disclosure does not travel inside the .docx, so a forwarded document
+    still looks approved. Closing that needs a per-campaign document-gate axis in the AssessHub
+    store (DOC_GATES keys per campaign_id, alongside the existing per-wave board), which is a
+    feature with a schema migration and a precedence rule against the filesystem ledger — not a
+    fix. Pinned by tests/test_gate_state.py::test_assesshub_deliverable_download_discloses_gates.
+    """
     spec = SPECS[kind]
     _reconcile_gate(snap, kind)   # W3-5: loudly flag a drifting snapshot before emit (fail-soft, never blocks)
+    disclosure = gate_disclosure(kind, gate_root)
+    if disclosure:
+        logger.warning("[GATE %s] %s generated from AssessHub with unsatisfied document gates: %s "
+                       "-- disclosed, not blocked (see deliverables.generate docstring)",
+                       disclosure["status"].upper(), kind, disclosure)
     if kind == "engagement":
         from cisco_toolkit.engagement import write_engagement_docx as write
     elif kind == "crd":
