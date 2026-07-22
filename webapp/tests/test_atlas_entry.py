@@ -402,5 +402,8 @@ def test_verify_only_flags_refuse_without_verify_manifest(capsys):
     # empty string is falsy: `if args.expect_root` would fall through here and START THE SERVER,
     # the engineer believing they had asked for a check
     assert serve.main(["--expect-root", ""]) == 2
-    # ...and the same for the verb itself: an empty path must report, not serve
-    assert serve.main(["--verify-manifest", ""]) == 4
+    # ...and the same for the verb itself. Exit 2 (bad argument), not 4 (integrity failure): the
+    # class guard in main() catches it before any file is opened, and "" is a malformed
+    # invocation, not a manifest that failed to verify. See test_atlas_redaction.py for the
+    # whole-class coverage.
+    assert serve.main(["--verify-manifest", ""]) == 2
