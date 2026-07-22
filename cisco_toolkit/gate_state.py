@@ -26,6 +26,14 @@ when its upstream approval was missing. This module is the enforcement half of t
   * **Store present but unreadable** → REFUSE, even with an override (an unreadable ledger cannot
     take the audit line that makes an override legitimate; fix or remove the store).
 
+**Every verdict is recorded structurally, not just logged** (``_VERDICTS`` / ``verdicts()``). An
+OVERRIDE has always left a durable trace — the audit line it appends to the store — but a REFUSAL and
+the brownfield ungated case left none: they only reached ``logging``, on a logger outside the engine's
+configured tree, so they never appeared in ``cisco_migration_autofill_*.log`` and survived only as
+transient stderr via ``logging.lastResort``. For a control whose overrides DEC-003 says are reviewed
+weekly, the refused half must be as auditable as the overridden half. The engine seals ``verdicts()``
+into the ``.run_manifest.json`` hash chain; see ``COLLECT_PARSE_V3_23_0.build_run_manifest``.
+
 Gate requirements mirror the agent charters: design requires an APPROVED assessment
 (.claude/agents/design-author.md — "design follows an approved assessment"); the MOP requires an
 approved LLD + a captured current-state baseline (.claude/agents/mop-change-author.md — "Require an
@@ -44,6 +52,57 @@ from typing import Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 STORE_RELPATH = os.path.join("docs", "engagement-state.json")
+
+#: In-process ledger of the gate verdicts reached during THIS run — the STRUCTURAL half of the audit
+#: trail. Log text is not an audit record: this module's verdicts go to ``logging``, and a refusal
+#: leaves NOTHING durable behind (unlike an override, which appends an audit line to the store itself
+#: — the asymmetry that made refusals invisible after the fact). So ``enforce()`` also appends one row
+#: per decision here, and the engine seals the ledger into ``.run_manifest.json``'s hash chain
+#: (``COLLECT_PARSE_V3_23_0.build_run_manifest``).
+#:
+#: Rows carry generator/verdict/missing/reason and NOT who/when. The reason is SSOT, not determinism:
+#: the store's audit line is the one owner of who/when for an override, and this ledger cites it
+#: rather than copying it (Law 1). Do not restate the omission as a determinism requirement — a run
+#: manifest's ``chain_root`` already varies between otherwise-identical runs, because the sealed
+#: ``deliver`` step carries artifact NAMES and the default output filename embeds a wall-clock stamp.
+#: The real contract ``manifest.py`` guarantees is narrower: ``hash_chain`` is a pure function of the
+#: steps list. Known limit of citing rather than copying: the store is not itself sealed, so deleting
+#: it leaves an "overridden" row whose who/when is unrecoverable.
+#:
+#: Appended from the main thread only (the engine gates deliverables sequentially, after collection).
+_VERDICTS: List[dict] = []
+
+#: Every value ``enforce()`` can record, so a reader can enumerate outcomes without grepping returns.
+#: "ungated"/"approved"/"overridden" proceed; the three "refused*" values skip the deliverable.
+VERDICTS = ("ungated", "approved", "overridden", "refused", "refused_no_reason", "refused_unreadable")
+
+
+def _record(generator: str, verdict: str, missing: Optional[List[str]] = None, **extra) -> dict:
+    """``missing=None`` means the approvals were NEVER EVALUATED (no store, or an unreadable one) —
+    deliberately distinct from ``[]``, which means "evaluated, nothing missing". Same distinction
+    ``ssot.abstention_reason`` makes for detectors: not-observed must never render as healthy."""
+    row = {"generator": generator, "verdict": verdict,
+           "missing": None if missing is None else list(missing)}
+    row.update(extra)
+    _VERDICTS.append(row)
+    return row
+
+
+def verdicts() -> List[dict]:
+    """A DEEP copy of this run's gate-verdict ledger, in decision order. Empty means NO gate decision
+    was made (e.g. ``--no-design --no-mop``) — coverage-honest: it must never be read as "gates
+    passed". The copy is deep because this is the only read path to the audit source: a caller that
+    sorted or normalised ``missing`` in place would otherwise rewrite the record about to be sealed."""
+    return [{**r, "missing": None if r.get("missing") is None else list(r["missing"])}
+            for r in _VERDICTS]
+
+
+def reset_verdicts() -> None:
+    """Clear the ledger, so one run's verdicts can never be sealed into the next run's manifest.
+    The hosts that actually run ``main()`` twice in one process are the in-process pipeline tests
+    (``tests/test_pipeline_inprocess.py``, ``tests/test_pipeline_failopen.py``); the webapp drives the
+    engine as a SUBPROCESS and ``serve.py``'s ``--run-engine`` sentinel dispatches exactly once."""
+    _VERDICTS.clear()
 
 # The PPDIOO document-gate chain — (key, label, arrow, criteria). APPEND-ONLY keys (storage schema,
 # same contract as engagement.GATE_SEQUENCE). Only the gates named in GENERATOR_REQUIRES are
@@ -187,16 +246,19 @@ def enforce(generator: str, override_reason: Optional[str] = None,
     except GateStateError as e:
         logger.error("[GATE REFUSED] %s: %s -- fix or remove the store; "
                      "--override-gate cannot bypass an unreadable ledger", generator, e)
+        _record(generator, "refused_unreadable")
         return False
     if store is None:
         logger.warning("[gate] no gate-state store at %s -- %s generation proceeds UNGATED "
                        "(brownfield). Activate PPDIOO gate enforcement with: "
                        "python -m cisco_toolkit.gate_state approve <gate>", path, generator)
+        _record(generator, "ungated")
         return True
     missing = missing_approvals(store, generator)
     if not missing:
         logger.info("[gate] %s: upstream approvals present (%s) -- proceeding",
                     generator, ", ".join(GENERATOR_REQUIRES[generator]))
+        _record(generator, "approved", [])       # [] = evaluated, nothing missing (never None here)
         return True
     if override_reason is not None and override_reason.strip():
         actor = who or _whoami()
@@ -206,10 +268,14 @@ def enforce(generator: str, override_reason: Optional[str] = None,
         logger.warning("[GATE OVERRIDDEN] %s generated despite missing approval(s) %s -- "
                        "who=%s reason=%r (audit line appended to %s)",
                        generator, ", ".join(missing), actor, override_reason.strip(), path)
+        # `who`/`at` are deliberately NOT sealed here — the store's audit line above owns them, and
+        # sealing a username/timestamp would make chain_root vary run-to-run for identical inputs.
+        _record(generator, "overridden", missing, reason=override_reason.strip())
         return True
     if override_reason is not None:
         logger.error("[GATE REFUSED] %s: --override-gate requires a non-empty reason "
                      "(the who/when/why audit line is the point of the override)", generator)
+        _record(generator, "refused_no_reason", missing)
         return False
     logger.error("[GATE REFUSED] %s: missing upstream approval(s): %s. Record the human gate with "
                  "'python -m cisco_toolkit.gate_state approve <gate> --by <name>', or override "
@@ -217,6 +283,7 @@ def enforce(generator: str, override_reason: Optional[str] = None,
                  generator,
                  ", ".join(f"{k} ({GATE_LABELS[k]})" for k in missing),
                  path)
+    _record(generator, "refused", missing)
     return False
 
 
