@@ -367,7 +367,8 @@ def main(argv=None) -> int:
     if args.selftest:
         return run_selftest(dist_dir=args.dist, db_path=args.db)
 
-    if args.verify_manifest:
+    if args.verify_manifest is not None:    # `is not None`: --verify-manifest "" must be REFUSED,
+        # not fall through and quietly start the server instead of running the check that was asked for
         return run_verify_manifest(args.verify_manifest, args.expect_root, args.verify_artifacts)
     if args.expect_root is not None or args.verify_artifacts:   # `is not None`: --expect-root ""
         print(f"{APP_TITLE}: --expect-root and --verify-artifacts only apply to --verify-manifest.",
