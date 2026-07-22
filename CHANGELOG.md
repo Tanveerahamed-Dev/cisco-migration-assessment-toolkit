@@ -6,6 +6,21 @@ per change, with verification evidence) lives in
 
 ## [Unreleased]
 
+### Fixed
+- **Atlas `--redact-folder` no longer reports a short deliverable set as success** (#438): every
+  engine deliverable writer is fail-soft (logs a warning, continues, exits 0 — deliberate, and
+  unchanged), so a run that rendered all but two documents printed the survivors as though they
+  were the whole family and the engineer could send a partial set. The command now diffs
+  produced-vs-expected — derived from `docmeta.CLI_ARTIFACT_SUFFIX`, reconciled against the engine
+  source so a new writer cannot slip past it — and reports each gap as `ABSENT`, `UNUSABLE`
+  (0-byte or truncated: existence is not delivery) or `STALE`, on the console and in an
+  `INCOMPLETE-SET.txt` note. New exit code **3** = produced but short; `0` keeps meaning complete
+  and verified, `1` stays redaction-failed.
+- **`--out` folders are one-job-per-folder** (#438): a destination already holding a deliverable
+  set is refused before the engine starts, because a failed writer would otherwise leave another
+  engagement's document under this run's filename — and redaction keeps hostnames by design.
+  `--reuse-out` is the explicit escape for re-running the same job.
+
 ## [v3.31.0] — 2026-07-18 — the hardening release (security audit + fail-soft totality + verified deliverable quality)
 
 109 merged PRs since v3.30.0, in five arcs: a full security audit of the untrusted-input surfaces, a
