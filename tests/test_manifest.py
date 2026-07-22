@@ -5,8 +5,13 @@ steps (collect/parse/detector/deliverable) where each row commits to the previou
 to an earlier row is detectable without a Git dependency. Pure stdlib hashlib; determinism is the point.
 """
 import json
+import os
+import sys
+from pathlib import Path
 
 from cisco_toolkit import manifest as m
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_hash_chain_is_deterministic_and_linked():
@@ -169,6 +174,28 @@ def test_artifact_check_catches_altered_and_missing_deliverables(tmp_path, capsy
     (tmp_path / "wb.xlsx").write_bytes(b"workbook-bytes-EDITED")
     assert m.main(["verify", path, "--artifacts"]) == 4
     assert "[MISMATCH] wb.xlsx" in capsys.readouterr().out
+
+
+def test_python_dash_m_entry_actually_runs(tmp_path):
+    """Every other test here calls main() in-process, so deleting the `if __name__ == "__main__"`
+    block would leave them ALL green while `python -m cisco_toolkit.manifest verify` silently did
+    nothing again — the exact defect this verb exists to fix. Pin the documented invocation, in a
+    real subprocess, including the exit code a caller scripts against."""
+    import subprocess
+    env = dict(os.environ, PYTHONPATH=str(ROOT), PYTHONIOENCODING="utf-8")
+    clean = _write(tmp_path, "clean.run_manifest.json", _man())
+    r = subprocess.run([sys.executable, "-m", "cisco_toolkit.manifest", "verify", clean],
+                       capture_output=True, text=True, encoding="utf-8", env=env, cwd=str(ROOT))
+    assert r.returncode == 0, f"stdout={r.stdout!r} stderr={r.stderr!r}"
+    assert r.stdout.startswith("OK: ")
+
+    man = _man()
+    man["chain"][0]["stage"] = "edited"
+    broken = _write(tmp_path, "broken.run_manifest.json", man)
+    r = subprocess.run([sys.executable, "-m", "cisco_toolkit.manifest", "verify", broken],
+                       capture_output=True, text=True, encoding="utf-8", env=env, cwd=str(ROOT))
+    assert r.returncode == 4, f"stdout={r.stdout!r} stderr={r.stderr!r}"
+    assert "INTEGRITY" in r.stdout
 
 
 def test_artifact_names_cannot_escape_the_folder(tmp_path, capsys):
