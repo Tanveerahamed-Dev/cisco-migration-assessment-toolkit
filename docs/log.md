@@ -4,6 +4,51 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-22] — Shipped the wrong answer to a doctrine question through green CI, then reverted it under refutation (#437 closed)
+
+- The question: should AssessHub's on-demand `deliverables.generate("design"|"mop")` consult the
+  PPDIOO gate ledger, and if so which — `gate_state`'s per-engagement `DOC_GATES` or the webapp's
+  per-campaign board? Answered "consult `gate_state`, but DISCLOSE rather than block", implemented
+  it (an `X-Gate-Status` header), tested it, rebased, opened #437, got 13/13 CI green. Then ran
+  three independent refuters, who dismantled it: **closed as REVERTED, unmerged.** The real answer
+  is *don't gate this surface at all*; #439 (`pending_approvals`, with `ownership_mismatch`) is the
+  right home, and the sibling `--gate-root` work landed independently as `099ac65`.
+- `!lesson` **Before marking ONE artifact, enumerate every exit its content has — by request, not
+  by reading.** I stamped the design/MOP DOCX. A refuter's harness showed the same
+  `design_blueprint` leaving *unmarked* through seven other doors, including two sibling
+  DOCX/PPTX off the very route I edited — 185 KB stamped while 460 KB of JSON and a 2.28 MB
+  explorer walked out clean. Reading the code never revealed this; one `curl` sweep did. Marking a
+  minority of the exits is theatre that reads as coverage. bridge-candidate
+- `!lesson` **A scope argument that disqualifies BLOCKING equally disqualifies ASSERTING.** I
+  rejected refusing-on-the-gate because a cwd-rooted ledger governs one engagement while campaigns
+  are DB rows, so it could wrongly refuse a different campaign — then disclosed off that same
+  ledger and wrote "disclosure has no wrong-refusal mode". True and irrelevant: it has a
+  wrong-*assertion* mode in both polarities, and the harness fired it (an unrelated campaign got a
+  governance verdict computed from a third party's ledger). If a record is too wrongly-scoped to
+  refuse on, it is too wrongly-scoped to make claims from. bridge-candidate
+- `!lesson` **Green tests proved nothing, in two ways a revert-proof cannot catch.** (a) My tests
+  `monkeypatch.chdir`'d into a synthetic engagement root so the ledger resolved — production never
+  chdirs and the Atlas stick wipes that folder every update, so the shipped feature returned `None`
+  always. *The suite manufactured the one precondition production never satisfies.* (b) I "pinned"
+  non-blocking with a 600-char source grep for `raise`; measured afterwards, the first `raise` sat
+  at offset **1602** — a total reversal to blocking passed every assertion. Run the feature once in
+  a production-shaped environment, and print the actual offset of whatever a windowed grep claims
+  to exclude. bridge-candidate
+- `!lesson` **Adjudicate refuters against the code — accepting a criticism that doesn't hold is
+  its own failure.** Refuters 2 and 3 contradicted each other, and I had already published #2's
+  version as a confirmed error of mine in the PR record; #3 was right. The distinction was scope:
+  my literal claim ("no `--override-gate` on this surface") was true, the stronger clause I built
+  on it ("no recourse at all") was false. Under adversarial pressure the pull is to over-confess.
+  Verify *which sentence* fails before conceding, and post a correction if you already did. Related
+  trap from the same session: I argued at length from a guard test I had already noted was not on
+  my base — grep returned exactly one hit, my own docstring. bridge-candidate
+- `!lesson` **Preserve another session's uncommitted work with `git stash create` + `update-ref`,
+  never by branching it.** The task cited a fix that existed only as unstaged edits in the shared
+  main checkout — one `git checkout --` from gone. `stash create` builds the commit object without
+  stashing (nothing for them to `pop`, no branch switch), and `update-ref refs/preserved/<slug>`
+  makes it GC-proof with their working tree untouched. Captures tracked files only — report the
+  untracked ones you did not capture. Don't PR their work as yours. bridge-candidate
+
 ## [2026-07-22] — Refuting my own merged code twice in one day (#429–#433): both times the verification, not the feature, was the defect
 
 - After P3 shipped, independent refuters were pointed at code I had written AND self-verified.
