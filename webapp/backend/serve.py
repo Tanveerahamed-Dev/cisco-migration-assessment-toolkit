@@ -364,6 +364,28 @@ def main(argv=None) -> int:
     parser.add_argument("--version", action="version", version=_version_line())
     args = parser.parse_args(argv)
 
+    # ── empty-string flag values ───────────────────────────────────────────────
+    # argparse accepts `--flag ""`, and every dispatch below is a truthiness test, so an empty
+    # value behaves EXACTLY as if the flag had never been passed. Measured, not theorised:
+    # `--redact-folder ""` fell through the redaction branch AND its own refusal and STARTED THE
+    # WEB SERVER (rc=0), so an engineer who asked for a share-safe deliverable set got a running
+    # cockpit and a success code; `--out ""` did the same; `--db ""` quietly opened a different
+    # store than the one they named. A field command that does something other than what was
+    # asked, while reporting success, is the exact failure this surface exists to prevent.
+    #
+    # Guarded as a CLASS in one place rather than as N truthiness checks each of which has to be
+    # remembered: the next path-valued flag someone adds is covered by construction. Empty is
+    # never a meaningful value for any of these - a real path, host or hash is always required.
+    for flag, value in (("--host", args.host), ("--db", args.db), ("--dist", args.dist),
+                        ("--redact-folder", args.redact_folder), ("--out", args.out),
+                        ("--verify-manifest", args.verify_manifest),
+                        ("--expect-root", args.expect_root)):
+        if value is not None and not str(value).strip():
+            print(f"{APP_TITLE}: {flag} was given an empty value. Omit the flag to take the "
+                  f"default, or pass a real one - Atlas will not guess which you meant.",
+                  file=sys.stderr)
+            return 2
+
     if args.selftest:
         return run_selftest(dist_dir=args.dist, db_path=args.db)
 
@@ -375,9 +397,13 @@ def main(argv=None) -> int:
               file=sys.stderr)                                  # must still be refused, not ignored
         return 2
 
-    if args.redact_folder:
+    # `is not None`, not truthiness: the class guard above already rejects "", but a dispatch site
+    # should not silently depend on a distant check to be correct. Same reason below and for
+    # --verify-manifest. (NB PR #438 rewrites these two lines to add --reuse-out; whichever lands
+    # second must keep `is not None` here, or `--out ""` starts serving again.)
+    if args.redact_folder is not None:
         return run_redaction(args.redact_folder, args.out, args.redact_collection)
-    if args.out or args.redact_collection:
+    if args.out is not None or args.redact_collection:
         print(f"{APP_TITLE}: --out and --redact-collection only apply to --redact-folder.",
               file=sys.stderr)
         return 2
