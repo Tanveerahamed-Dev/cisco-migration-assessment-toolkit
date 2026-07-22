@@ -331,3 +331,50 @@ def test_field_messages_are_ascii(monkeypatch, tmp_path):
             if s.startswith(("#", "*", '"""', "#:")):
                 continue
             assert "—" not in s, f"em-dash in a runtime message at ingest.py line ~{i}: {s[:80]}"
+
+
+# ── calibration: the checker must be neither blind nor hysterical ───────────────
+@pytest.mark.parametrize("fixture", ["tests/golden/snapshot.json",
+                                     "webapp/sample_data/sample_fleet.snapshot.json"])
+def test_checker_is_calibrated_against_real_redacted_snapshots(tmp_path, fixture):
+    """Both failure modes have already happened here, one after the other:
+
+    * too WIDE — scanning raw JSON flagged the design blueprint's own guidance
+      ("supernet, e.g. 10.0.0.0/16") and would have failed EVERY real run; a check that always
+      fires trains the engineer to ignore it.
+    * too NARROW — the fix over-corrected into exempting 28% of the snapshot, including real
+      evidence (punch-list titles, interface descriptions, per-device exposure labels).
+
+    So pin both edges on REALISTIC data run through the REAL redactor: no false positive, and
+    coverage stays high. A future exemption that quietly blinds the checker fails here."""
+    from cisco_toolkit.html import redact_snapshot
+
+    src = Path(__file__).resolve().parents[2] / fixture
+    if not src.is_file():
+        pytest.skip(f"{fixture} not present")
+    redacted = redact_snapshot(json.loads(src.read_text(encoding="utf-8")))
+    snap_path = tmp_path / "s.snapshot.json"
+    snap_path.write_text(json.dumps(redacted), encoding="utf-8")
+
+    ing._assert_scrubbed(snap_path)          # must NOT raise on properly-redacted evidence
+
+    inspected = sum(1 for _ in ing._iter_evidence_strings(redacted))
+    total = 0
+
+    def count(node):
+        nonlocal total
+        if isinstance(node, dict):
+            for v in node.values():
+                count(v)
+        elif isinstance(node, list):
+            for v in node:
+                count(v)
+        elif isinstance(node, str):
+            total += 1
+
+    count(redacted)
+    assert total > 100, "fixture too small to be a meaningful calibration"
+    coverage = inspected / total
+    assert coverage >= 0.90, (
+        f"the checker now inspects only {coverage:.0%} of {fixture} ({inspected}/{total}); an "
+        f"exemption has blinded it (this was 72% when real evidence was being skipped)")
