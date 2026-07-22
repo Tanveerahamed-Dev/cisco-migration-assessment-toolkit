@@ -42,6 +42,7 @@ network. CLI: ``python -m cisco_toolkit.gate_state show | approve <gate> | revok
 """
 from __future__ import annotations
 
+import copy
 import getpass
 import json
 import logging
@@ -79,8 +80,12 @@ VERDICTS = ("ungated", "approved", "overridden", "refused", "refused_no_reason",
 
 def _record(generator: str, verdict: str, missing: Optional[List[str]] = None, **extra) -> dict:
     """``missing=None`` means the approvals were NEVER EVALUATED (no store, or an unreadable one) —
-    deliberately distinct from ``[]``, which means "evaluated, nothing missing". Same distinction
-    ``ssot.abstention_reason`` makes for detectors: not-observed must never render as healthy."""
+    deliberately distinct from ``[]``, which means "evaluated, nothing missing", so that counting
+    missing approvals across rows cannot silently score a never-checked run as a clean zero.
+    ``verdict`` remains the authoritative discriminator; ``missing`` only qualifies it. (This is the
+    same *concern* ``ssot.abstention_reason`` addresses — not-observed must never render as healthy —
+    but NOT the same mechanism: that function returns an enumerated token, never a nullable. Here the
+    enumerated token is ``verdict`` itself, and ``missing`` is its optional detail.)"""
     row = {"generator": generator, "verdict": verdict,
            "missing": None if missing is None else list(missing)}
     row.update(extra)
@@ -91,10 +96,10 @@ def _record(generator: str, verdict: str, missing: Optional[List[str]] = None, *
 def verdicts() -> List[dict]:
     """A DEEP copy of this run's gate-verdict ledger, in decision order. Empty means NO gate decision
     was made (e.g. ``--no-design --no-mop``) — coverage-honest: it must never be read as "gates
-    passed". The copy is deep because this is the only read path to the audit source: a caller that
-    sorted or normalised ``missing`` in place would otherwise rewrite the record about to be sealed."""
-    return [{**r, "missing": None if r.get("missing") is None else list(r["missing"])}
-            for r in _VERDICTS]
+    passed". The copy is deep (not just the top level, and not just ``missing``) because this is the
+    only read path to the audit source: a caller that sorted or normalised any nested value in place
+    would otherwise rewrite the record about to be sealed."""
+    return copy.deepcopy(_VERDICTS)
 
 
 def reset_verdicts() -> None:
