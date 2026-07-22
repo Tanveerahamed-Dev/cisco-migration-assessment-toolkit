@@ -286,6 +286,31 @@ def run_redaction(src: str, out: str, redact_collection: bool = False) -> int:
     return 0
 
 
+# ── --verify-manifest: does a delivered manifest still match its own seal? ──────
+def run_verify_manifest(path: str, expect_root=None, artifacts: bool = False) -> int:
+    """Check a ``*.run_manifest.json`` from the stick. There is no Python on a field laptop, so
+    ``python -m cisco_toolkit.manifest verify`` — the repo-side command — is unreachable there;
+    this is the same check behind the one door, delegating to the same function so the two can
+    never drift apart."""
+    from cisco_toolkit import manifest as manifest_mod  # lazy: the engine-child path skips it
+
+    res = manifest_mod.verify_file(
+        path, expect_root=expect_root,
+        artifacts_dir=(os.path.dirname(os.path.abspath(path)) or ".") if artifacts else None)
+    if res["ok"]:
+        print(f"{APP_TITLE}: manifest OK - {res['reason']}")
+    else:
+        print(f"{APP_TITLE}: manifest INTEGRITY FAILURE - {res['reason']}", file=sys.stderr)
+    for a in res["artifacts"]:
+        if a["state"] != "ok":
+            print(f"    [{a['state']}] {a['name']}", file=sys.stderr)
+    if res["ok"] and not expect_root:
+        print("  The seal is unkeyed, so this proves the file was not carelessly edited - NOT that\n"
+              "  nobody re-sealed it. To pin it to the run, compare --expect-root against the\n"
+              "  chain_root recorded in the report.")
+    return 0 if res["ok"] else 4
+
+
 # ── entry point ─────────────────────────────────────────────────────────────────
 def main(argv=None) -> int:
     # Frozen multiprocessing children re-enter here; this MUST precede everything else.
@@ -326,11 +351,28 @@ def main(argv=None) -> int:
                         help="with --redact-folder: ALSO scrub cleartext secrets from the raw "
                              "captures IN PLACE (rewrites the source folder; still "
                              "--compare/--trend-able)")
+    parser.add_argument("--verify-manifest", default=None, metavar="FILE",
+                        help="check a delivered <name>.run_manifest.json against its own hash chain "
+                             "and exit (0 clean, 4 broken). Unkeyed: catches careless edits, not a "
+                             "forger who re-seals - add --expect-root to pin it to its run")
+    parser.add_argument("--expect-root", default=None, metavar="SHA256",
+                        help="with --verify-manifest: the chain_root recorded out of band (in the "
+                             "report) that this file must match")
+    parser.add_argument("--verify-artifacts", action="store_true",
+                        help="with --verify-manifest: ALSO re-hash every deliverable listed in the "
+                             "manifest, from the manifest's own folder (missing counts as a failure)")
     parser.add_argument("--version", action="version", version=_version_line())
     args = parser.parse_args(argv)
 
     if args.selftest:
         return run_selftest(dist_dir=args.dist, db_path=args.db)
+
+    if args.verify_manifest:
+        return run_verify_manifest(args.verify_manifest, args.expect_root, args.verify_artifacts)
+    if args.expect_root or args.verify_artifacts:
+        print(f"{APP_TITLE}: --expect-root and --verify-artifacts only apply to --verify-manifest.",
+              file=sys.stderr)
+        return 2
 
     if args.redact_folder:
         return run_redaction(args.redact_folder, args.out, args.redact_collection)
