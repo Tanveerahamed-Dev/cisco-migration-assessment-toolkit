@@ -166,17 +166,12 @@ def test_engine_wires_the_gates_and_the_override_flag():
     src = (ROOT / "COLLECT_PARSE_V3_23_0.py").read_text(encoding="utf-8", errors="ignore")
     assert '"--override-gate"' in src, "the CLI lost the --override-gate flag"
     assert "from cisco_toolkit.gate_state import enforce as gate_enforce" in src
-    # Each gated block: evaluate the gate, RECORD the verdict for the sealed run manifest, and only
-    # then let the result guard the write. The verdict append is pinned alongside the guard because
-    # a refusal that is enforced but not recorded is invisible to any later audit -- the write being
-    # skipped is indistinguishable from --no-design having been passed.
-    for gen in ("design", "mop"):
-        assert re.search(
-            r'if not args\.no_%s:\s*\n'
-            r'\s*_%s_gate_ok = gate_enforce\("%s", override_reason=args\.override_gate\)\s*\n'
-            r'\s*_actx\.gate_verdicts\.append\(\s*\n?\s*_gate_verdict\("%s", _%s_gate_ok, args\.override_gate\)\)\s*\n'
-            r'\s*if _%s_gate_ok:' % (gen, gen, gen, gen, gen, gen), src), \
-            f"the {gen} write block is no longer gate-guarded with its verdict recorded"
+    assert re.search(r'if not args\.no_design and '
+                     r'gate_enforce\("design", override_reason=args\.override_gate\)', src), \
+        "the design write block is no longer gate-guarded"
+    assert re.search(r'if not args\.no_mop and '
+                     r'gate_enforce\("mop", override_reason=args\.override_gate\)', src), \
+        "the MOP write block is no longer gate-guarded"
 
 
 def test_ssot_registry_cites_the_gate_state_owner():

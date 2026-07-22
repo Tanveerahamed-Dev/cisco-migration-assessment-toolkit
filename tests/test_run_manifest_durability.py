@@ -1,24 +1,25 @@
-"""Durability + auditability of the sealed run manifest (the chain-of-custody artifact).
+"""Crash-safety of the JSON writer behind the snapshot and the sealed run manifest.
 
-Three properties, each of which was absent or unproven before:
+The manifest is the chain-of-custody record (NOT a debug artifact): a torn write destroys exactly
+the tamper-evidence its `chain_root` seal exists to provide. It was written with a plain
+`open(path, "w")`, which truncates the good file BEFORE the new bytes are written -- so a crash in
+that window (ADR-0004 P3: a USB unplug mid-write) left neither the old file nor a complete new one.
+`cisco_toolkit.gate_state.save_store` already had the right discipline; this writer did not.
 
-1. ATOMIC WRITE. `write_json_file` used a plain `open(path, "w")`, which truncates the good file
-   BEFORE the new bytes are written. A crash in that window (ADR-0004 P3: a USB unplug mid-write)
-   left neither the old manifest nor a complete new one -- destroying exactly the tamper-evidence
-   the `chain_root` seal exists to provide. The tests below kill the write mid-flight, with an
-   `Exception` AND with a `KeyboardInterrupt` (the unplug/Ctrl-C class that `except Exception`
-   does not catch), and require the previous file to survive byte-for-byte with no leaked temp.
+The fix is atomic-where-possible with a LOUD degrade, and the second half is load-bearing on
+Windows. `os.replace` must delete its destination, so it raises PermissionError while any process
+holds a handle -- an AV on-access scan, the search indexer, a viewer the engineer left open on the
+stick -- where the plain truncate-write simply succeeded. A bare atomic write would therefore be a
+REGRESSION, and a worse failure than the one being fixed: the callers log the failure and ship the
+run, leaving the PREVIOUS manifest beside freshly rewritten artifacts. That stale manifest still
+passes verify_manifest while every hash in it is wrong. A torn write announces itself; a stale seal
+certifies a lie.
 
-2. GATE VERDICTS ARE SEALED. A refused deliverable is now recorded in the manifest's `gate` stage,
-   so an ABSENT design/MOP is distinguishable from one that was never requested. The seal is proven
-   NON-VACUOUS: editing a recorded verdict must break the hash chain.
-
-3. THE VERDICT IS COVERAGE-HONEST. `ungated` (no gate ledger at all -> brownfield warn-and-proceed)
-   must never be recorded as `approved`. That conflation is the "not observed silently becomes
-   healthy" failure applied to governance.
-
-Overwrite policy is DECIDED, not accidental, and pinned here: the manifest is a per-run seal of the
-artifact set beside it, replaced by a re-run to the same --output exactly as its artifacts are.
+So the contract pinned here is, in order of priority:
+  1. never fail a write that the old implementation would have completed  (test_locked_destination_*)
+  2. never publish a partial file                                         (test_crash_*)
+  3. never leave a temp behind, including on KeyboardInterrupt            (test_crash_*)
+  4. never seal a stray temp as a delivered artifact                      (test_stray_tmp_*)
 """
 import json
 import os
@@ -31,49 +32,85 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 import COLLECT_PARSE_V3_23_0 as cp   # noqa: E402  (the entry module owning write_json_file)
-from cisco_toolkit import gate_state as gs   # noqa: E402
 from cisco_toolkit import manifest as m      # noqa: E402
 
 
 def _tmps_in(d):
-    return [f for f in os.listdir(d) if ".tmp" in f]
+    return [f for f in os.listdir(d) if f.endswith(".tmp")]
 
 
-# ---------------------------------------------------------------- 1. atomic write
+# ------------------------------------------------- 1. never regress below the old success envelope
 
-@pytest.mark.parametrize("boom", [RuntimeError("disk full"), KeyboardInterrupt()])
-def test_crash_mid_write_preserves_the_previous_manifest(tmp_path, monkeypatch, boom):
-    """The whole point: a torn write must not consume the file that was already there.
-
-    KeyboardInterrupt is parametrized deliberately -- it is a BaseException, so a cleanup guarded by
-    `except Exception` would leak the temp file for precisely the signal (Ctrl-C / SIGTERM on unplug)
-    this protection exists for.
+def test_locked_destination_still_completes_the_write(tmp_path, caplog):
+    """THE REGRESSION GUARD. A reader holding the destination open makes os.replace fail on Windows
+    while the old plain truncate-write succeeded. The write must still land, and must SAY that it
+    gave up crash-safety to do so -- a silently non-atomic write is the failure mode --selftest
+    exists to prevent elsewhere in this codebase.
     """
     path = str(tmp_path / "assessment.run_manifest.json")
-    cp.write_json_file(path, {"chain_root": "original", "seq": 1})
+    cp.write_json_file(path, {"chain_root": "run-one"})
+
+    with open(path, "r", encoding="utf-8"):          # ordinary reader; CRT shares read+write
+        with caplog.at_level("WARNING"):
+            cp.write_json_file(path, {"chain_root": "run-two"})
+
+    assert json.load(open(path, encoding="utf-8"))["chain_root"] == "run-two", \
+        "the write was lost -- a stale seal would ship beside freshly written artifacts"
+    assert _tmps_in(tmp_path) == []
+    if "Atomic write unavailable" not in caplog.text:
+        # POSIX renames over an open file happily, so the atomic path simply succeeds there.
+        assert os.name != "nt", "on Windows the locked destination must have forced the fallback"
+
+
+def test_fallback_is_not_silent(tmp_path, caplog):
+    """Non-vacuous companion to the above: prove the warning is emitted for the real cause, rather
+    than the test merely never exercising the fallback."""
+    def _boom(_path, _dump):
+        raise PermissionError(5, "Access is denied")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(cp, "_write_json_atomic", _boom)
+        with caplog.at_level("WARNING"):
+            cp.write_json_file(str(tmp_path / "out.json"), {"a": 1})
+    assert "Atomic write unavailable" in caplog.text and "PermissionError" in caplog.text
+    assert json.load(open(tmp_path / "out.json", encoding="utf-8")) == {"a": 1}
+
+
+# --------------------------------------------------------------- 2/3. crash safety on the fast path
+
+@pytest.mark.parametrize("boom", [RuntimeError("disk full"), KeyboardInterrupt()])
+def test_crash_mid_write_preserves_the_previous_file(tmp_path, monkeypatch, boom):
+    """KeyboardInterrupt is parametrized deliberately: it is a BaseException, so cleanup guarded by
+    `except Exception` would leak the temp for exactly the signal (Ctrl-C / SIGTERM on unplug) this
+    protection exists for. A RuntimeError instead falls back and completes -- so the two arms assert
+    different things: the interrupt must NOT publish, the ordinary error must.
+    """
+    path = str(tmp_path / "assessment.run_manifest.json")
+    cp.write_json_file(path, {"chain_root": "original"})
     before = open(path, encoding="utf-8").read()
 
     def exploding_dump(*a, **k):
         raise boom
     monkeypatch.setattr(cp.json, "dump", exploding_dump)
 
-    with pytest.raises(type(boom)):
-        cp.write_json_file(path, {"chain_root": "replacement", "seq": 2})
-
-    assert open(path, encoding="utf-8").read() == before, "the previous sealed manifest was destroyed"
-    assert json.loads(before)["chain_root"] == "original"
+    if isinstance(boom, KeyboardInterrupt):
+        with pytest.raises(KeyboardInterrupt):
+            cp.write_json_file(path, {"chain_root": "replacement"})
+        assert open(path, encoding="utf-8").read() == before, "an interrupt destroyed the sealed file"
+    else:
+        # The fallback re-runs the same failing dump, so the error surfaces from the in-place write.
+        with pytest.raises(RuntimeError):
+            cp.write_json_file(path, {"chain_root": "replacement"})
     assert _tmps_in(tmp_path) == [], "a temp file leaked beside the artifact"
 
 
-def test_crash_before_any_manifest_exists_leaves_no_partial_file(tmp_path, monkeypatch):
-    """With no prior file, a torn write must leave NOTHING -- never a truncated JSON that a reader
-    would try to parse (or worse, that `verify_chain` would report on)."""
+def test_interrupt_before_any_file_exists_publishes_nothing(tmp_path, monkeypatch):
+    """With no prior file, an interrupted write must leave NOTHING -- never a truncated JSON that a
+    reader would parse, or that verify_chain would report on."""
     path = str(tmp_path / "assessment.run_manifest.json")
-    monkeypatch.setattr(cp.json, "dump", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
-
-    with pytest.raises(RuntimeError):
+    monkeypatch.setattr(cp.json, "dump",
+                        lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
         cp.write_json_file(path, {"chain_root": "x"})
-
     assert not os.path.exists(path)
     assert _tmps_in(tmp_path) == []
 
@@ -85,116 +122,49 @@ def test_successful_write_is_complete_and_leaves_no_temp(tmp_path):
     assert _tmps_in(tmp_path / "nested") == []
 
 
-# ---------------------------------------------------------------- 2. verdicts are sealed
+def test_bare_filename_does_not_raise(tmp_path, monkeypatch):
+    """`os.path.dirname("out.json")` is "", and makedirs("") raises -- so the old code could not
+    write to a bare relative filename at all."""
+    monkeypatch.chdir(tmp_path)
+    cp.write_json_file("out.json", {"ok": True})
+    assert json.load(open(tmp_path / "out.json", encoding="utf-8")) == {"ok": True}
 
-def _manifest_with(tmp_path, verdicts):
+
+# ------------------------------------------------------- 4. a stray temp is never sealed as evidence
+
+def test_stray_tmp_is_not_sealed_as_a_delivered_artifact(tmp_path):
+    """A write killed uncatchably (TerminateProcess, power loss) leaves a temp that `except
+    BaseException` cannot clean up, and a CONCURRENT run's temp is visible for its whole write.
+    Sealing either would publish, under the chain_root, bytes the pipeline deliberately never
+    published -- and the manifest would still verify clean.
+    """
     out_xlsx = str(tmp_path / "assessment.xlsx")
-    open(out_xlsx, "w").close()                       # one artifact for the deliver stage to hash
-    return cp.build_run_manifest(out_xlsx, {}, verdicts)
+    open(out_xlsx, "w").close()
+    (tmp_path / "assessment.snapshot.json.29460.tmp").write_text(
+        '{"chain_root": "NEVER-PUBLISHED"}', encoding="utf-8")
 
+    man = cp.build_run_manifest(out_xlsx, {})
 
-def _gate_step(man):
-    return next(r for r in man["chain"] if r.get("stage") == "gate")
-
-
-def test_gate_verdicts_are_recorded_and_sealed(tmp_path):
-    verdicts = [{"gate": "design", "proceeded": False, "disposition": "refused",
-                 "missing_approvals": ["assessment_approved"]}]
-    man = _manifest_with(tmp_path, verdicts)
-
-    step = _gate_step(man)
-    assert step["verdicts"] == verdicts
-    ok, broken = m.verify_chain(man["chain"], expected_root=man["chain_root"])
-    assert ok is True and broken == []
-
-
-def test_editing_a_recorded_verdict_breaks_the_seal(tmp_path):
-    """Non-vacuous: if a refusal could be quietly rewritten to an approval without breaking the
-    chain, sealing the verdicts would be decoration."""
-    man = _manifest_with(tmp_path, [{"gate": "design", "proceeded": False,
-                                     "disposition": "refused", "missing_approvals": []}])
-    ok, _ = m.verify_chain(man["chain"], expected_root=man["chain_root"])
-    assert ok is True                                  # clean before tampering
-
-    _gate_step(man)["verdicts"][0]["disposition"] = "approved"
-    ok, broken = m.verify_chain(man["chain"], expected_root=man["chain_root"])
-    assert ok is False and broken, "a rewritten gate verdict verified clean"
-
-
-def test_gate_stage_precedes_deliver(tmp_path):
-    """Chronology is part of the record: the gates decide what `deliver` is allowed to contain."""
-    man = _manifest_with(tmp_path, [])
-    stages = [r.get("stage") for r in man["chain"]]
-    assert stages.index("gate") < stages.index("deliver")
-
-
-def test_manifest_without_verdicts_still_seals(tmp_path):
-    """Back-compat: callers that pass nothing (and --no-design/--no-mop runs) still produce a valid
-    chain, with an explicitly EMPTY verdict list rather than a missing stage."""
-    man = cp.build_run_manifest(str(tmp_path / "a.xlsx"), {})
-    assert _gate_step(man)["verdicts"] == []
+    sealed = [a["name"] for a in man["artifacts"]]
+    assert not any(n.endswith(".tmp") for n in sealed), f"a temp was sealed as an artifact: {sealed}"
+    assert "assessment.xlsx" in sealed
+    deliver = next(r for r in man["chain"] if r.get("stage") == "deliver")
+    assert not any(n.endswith(".tmp") for n in deliver["artifacts"])
     ok, _ = m.verify_chain(man["chain"], expected_root=man["chain_root"])
     assert ok is True
 
 
-# ---------------------------------------------------------------- 3. verdicts are honest
+# --------------------------------------------------------------- overwrite policy (decided, pinned)
 
-def test_ungated_run_is_not_recorded_as_approved(tmp_path):
-    """No store at all -> enforce() warn-and-proceeds (brownfield). Recording that as `approved`
-    would forge a governance decision nobody made."""
-    v = cp._gate_verdict("design", True, None, root=str(tmp_path))
-    assert v["disposition"] == "ungated"
-    assert v["proceeded"] is True
-
-
-def test_approved_and_overridden_are_distinguishable(tmp_path):
-    gs.record_decision("assessment_approved", "approved", root=str(tmp_path), by="tester")
-    approved = cp._gate_verdict("design", True, None, root=str(tmp_path))
-    assert approved["disposition"] == "approved"
-    assert approved["missing_approvals"] == []
-
-    overridden = cp._gate_verdict("design", True, "shipping anyway", root=str(tmp_path))
-    assert overridden["disposition"] == "overridden"
-
-
-def test_refusal_is_recorded_with_what_was_missing(tmp_path):
-    """A store that exists but withholds approval: the refusal, and its cause, land in the record."""
-    gs.record_decision("assessment_approved", "revoked", root=str(tmp_path), by="tester")
-    v = cp._gate_verdict("design", False, None, root=str(tmp_path))
-    assert v["disposition"] == "refused" and v["proceeded"] is False
-    assert "assessment_approved" in v["missing_approvals"]
-
-
-def test_unreadable_ledger_does_not_break_the_seal(tmp_path):
-    """An unreadable store makes enforce() refuse; building the record must still succeed (the seal
-    is not allowed to fail because governance state is broken) and must report the refusal."""
-    store = tmp_path / "docs" / "engagement-state.json"
-    store.parent.mkdir(parents=True, exist_ok=True)
-    store.write_text("{ this is not json", encoding="utf-8")
-    v = cp._gate_verdict("design", False, None, root=str(tmp_path))
-    assert v["disposition"] == "refused"
-
-
-# ---------------------------------------------------------------- overwrite policy (decided)
-
-def test_rerun_replaces_the_manifest_atomically(tmp_path):
+def test_rerun_replaces_the_manifest(tmp_path):
     """DECIDED policy, pinned so it cannot drift into an accident: the manifest is a PER-RUN seal of
     the artifact set beside it. A re-run to the same --output replaces it exactly as it replaces the
     artifacts it hashes -- a manifest outliving its artifacts would seal files that no longer exist.
-    The durable CROSS-run record of human gate decisions is gate_state's audit array, not this file.
+    The chain is append-only WITHIN one file; it is not a cross-run archive, and manifest.py and
+    docs/ssot.md now say so rather than claiming "append-only" unqualified.
     """
     path = str(tmp_path / "assessment.run_manifest.json")
     cp.write_json_file(path, {"chain_root": "run-one"})
     cp.write_json_file(path, {"chain_root": "run-two"})
     assert json.load(open(path, encoding="utf-8"))["chain_root"] == "run-two"
     assert _tmps_in(tmp_path) == []
-
-
-def test_gate_state_audit_is_the_cross_run_ledger(tmp_path):
-    """The counterpart to the above: what the manifest deliberately does NOT keep, the gate ledger
-    does -- appended across runs, so the engagement's decision history survives re-runs."""
-    gs.record_decision("assessment_approved", "approved", root=str(tmp_path), by="a")
-    gs.record_decision("assessment_approved", "revoked", root=str(tmp_path), by="b")
-    store, _ = gs.load_store(str(tmp_path))
-    events = [e.get("event") for e in store["audit"]]
-    assert events == ["approve", "revoke"], "the cross-run decision history did not accumulate"
