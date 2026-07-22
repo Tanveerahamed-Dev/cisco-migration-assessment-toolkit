@@ -111,3 +111,41 @@ Two decisions recorded:
 - **Delta vs the §15 sketch**: there is no separate `cisco-assess.exe` on the stick — the
   `--run-engine` sentinel makes `Atlas.exe` itself the CLI door (P1 design, proven in the P2
   smoke and the field redaction commands in README-FIELD.txt).
+
+## P3 amendment (2026-07-22) — redaction is a first-class command; verification states its scope
+
+Two decisions taken while hardening P3, recorded here because the ADR owns them, not the code.
+
+### A · `--redact-folder` rather than shipping a template
+
+P3 shipped a field guide whose redaction command **could not run**: `--redact` goes through the
+engine, which hard-requires a `--template` workbook (`COLLECT_PARSE_V3_23_0.py:1719`) and a
+`--devices-file` (`:1100`), and the bundle carries neither. Three options were weighed:
+
+1. **ship a template in the bundle** — still leaves `devices.json` missing, and adds a binary
+   asset to the manifest for one command;
+2. **tell the engineer to bring both** (what the guide said as an interim) — honest, but makes the
+   share-safety control depend on preparation done before travelling;
+3. **synthesize both, as the ingest channel already does** — chosen.
+
+`Atlas.exe --redact-folder <collection> --out <dir>` reuses `webapp/backend/ingest.py`'s existing
+synthesis, so no new asset ships and the capability works with nothing extra on the stick. The
+consequence to keep in mind: this is now the *only* supported way to redact from the field, so its
+refusals (`--out` inside the bundle or containing the captures) are load-bearing, not cosmetic.
+
+### B · A safety claim must name its own scope
+
+The first version printed *"Every IP/MAC/serial is pseudonymized and this was verified"* while the
+check matched private IPv4 in **one artifact**. Independent review proved by fault injection that a
+redaction phase can fail silently — the engine's `_run_phase` logs and continues — so the workbook
+ships client data while the checked snapshot stays clean. Standing rule for this app:
+
+- verify the artifact that **can** fail, not the most convenient one, and check that the transform
+  **ran** (phase ledger + engine log), not only that its output looks clean;
+- a success message states what was checked, what was **not**, and what is kept **by design** —
+  hostnames and descriptions survive redaction deliberately, and a deliverable full of anonymous
+  boxes is unreadable, so the engineer must know the set still identifies the client.
+
+Both edges of the checker are pinned mechanically (`webapp/tests/test_atlas_redaction.py`): no
+false positive on real redacted fixtures, and a coverage floor — it has been wrong in *both*
+directions, and judgement alone did not hold.
