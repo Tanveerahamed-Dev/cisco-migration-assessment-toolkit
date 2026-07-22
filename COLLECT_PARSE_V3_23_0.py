@@ -1592,9 +1592,12 @@ def main():
                          "engine treat any non-zero as a hard failure (AssessHub's redaction path "
                          "tells the field engineer to treat everything already written as "
                          "UNREDACTED), so a refusal must not masquerade as one. Use this in CI or a "
-                         "pipeline that must STOP when governance withholds a document. The "
-                         "durable record of the refusal is written either way, to the gate ledger's "
-                         "audit array (python -m cisco_toolkit.gate_state show).")
+                         "pipeline that must STOP when governance withholds a document. NB it fires "
+                         "on ANY refusal, including a mis-set --gate-root or an unreadable ledger, "
+                         "not only on a missing approval. A refusal over a missing approval is "
+                         "additionally recorded in the gate ledger's audit array (python -m "
+                         "cisco_toolkit.gate_state show); the other refusal classes have no ledger "
+                         "to write to, and the run says which is which as it exits.")
     ap.add_argument("--no-crd",          action="store_true",
                     help="NEW-V3.23.156: skip the Customer Requirements Document (CRD, DOCX) — the "
                          "Plan-phase requirements-capture instrument primed with the assessment "
@@ -2982,9 +2985,21 @@ def main():
     # refusal code (holdout.py, scorecard.py); 1 stays "the run itself broke".
     refused = [v for v in gate_verdicts if v.refused]
     if refused and args.fail_on_gate_refusal:
-        logger.error("[GATE] exiting 2 (--fail-on-gate-refusal): withheld %s. The refusal(s) are "
-                     "recorded in the gate ledger -- python -m cisco_toolkit.gate_state show",
-                     ", ".join(v.generator for v in refused))
+        # Report what the ledger ACTUALLY holds, by reading each verdict's `recorded` flag rather
+        # than assuming the write happened. Five of the six refusal statuses record nothing (a
+        # mis-set --gate-root, an unreadable ledger, an ownership mismatch), and claiming otherwise
+        # would send the operator to `gate_state show` to look for rows that were never written --
+        # a false statement about an audit trail, emitted by the audit feature itself.
+        written = [v for v in refused if v.recorded]
+        unwritten = [v for v in refused if not v.recorded]
+        detail = f"recorded in the gate ledger: {', '.join(v.generator for v in written)}" \
+            if written else "nothing was recorded in a ledger"
+        if unwritten:
+            detail += ("; NOT recorded (%s) -- see the [GATE REFUSED] lines above, which are the "
+                       "only trace" % ", ".join(f"{v.generator}: {v.status}" for v in unwritten))
+        logger.error("[GATE] exiting 2 (--fail-on-gate-refusal): withheld %s. %s "
+                     "(python -m cisco_toolkit.gate_state show)",
+                     ", ".join(v.generator for v in refused), detail)
         return 2
     return 0
 
