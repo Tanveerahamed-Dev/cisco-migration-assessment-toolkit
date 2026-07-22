@@ -180,10 +180,20 @@ def verify_file(path: str, expect_root: Optional[str] = None,
     else:
         reason = f"chain BROKEN at row(s) {broken} of {n} — the sealed ledger was edited"
 
-    if expect_root and str(root) != str(expect_root):
-        ok = False
-        reason = (f"chain_root MISMATCH: file has {str(root)[:16]}…, expected {str(expect_root)[:16]}… "
-                  f"— this is not the manifest that run produced")
+    if expect_root is not None:          # not `if expect_root:` — an empty --expect-root must FAIL
+        want = str(expect_root).strip().lower()   # loudly, never quietly skip the check it asked for
+        if len(want) != 64 or any(c not in "0123456789abcdef" for c in want):
+            # The engine's own console line prints chain_root truncated to 12 chars, so a partial
+            # root is the likeliest thing an engineer copies. Reporting that as "not the manifest
+            # that run produced" would have them reject a GENUINE deliverable set at a client site.
+            ok = False
+            reason = (f"--expect-root is not a full chain_root ({len(want)} chars, need 64 hex). "
+                      f"The end-of-run console line shortens it — copy the whole value out of the "
+                      f"manifest's \"chain_root\" field. Not checked against the file.")
+        elif str(root).strip().lower() != want:
+            ok = False
+            reason = (f"chain_root MISMATCH: file has {str(root)[:16]}…, expected {want[:16]}… "
+                      f"— this is not the manifest that run produced")
 
     checked: List[Dict[str, str]] = []
     if artifacts_dir is not None:

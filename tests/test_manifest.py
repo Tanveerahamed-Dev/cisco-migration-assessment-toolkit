@@ -158,6 +158,23 @@ def test_expect_root_is_the_check_a_re_seal_cannot_pass(tmp_path, capsys):
     # and the genuine file passes against its own recorded root, with no unkeyed-seal caveat
     ok_path = _write(tmp_path, "real.run_manifest.json", real)
     assert m.main(["verify", ok_path, "--expect-root", real["chain_root"]]) == 0
+    # tolerant of how a human copies it: surrounding space, upper-case hex
+    capsys.readouterr()
+    assert m.main(["verify", ok_path, "--expect-root", "  " + real["chain_root"].upper() + " "]) == 0
+
+
+def test_a_truncated_expect_root_is_not_reported_as_a_mismatch(tmp_path, capsys):
+    """The engine's end-of-run console line prints chain_root cut to 12 chars, so a PARTIAL root is
+    the likeliest thing an engineer copies into the report. Calling that "not the manifest that run
+    produced" would have them reject a genuine deliverable set at a client site — the expensive
+    direction of a false positive. It must fail as a bad ARGUMENT, and say where to get the real one."""
+    man = _man()
+    path = _write(tmp_path, "r.run_manifest.json", man)
+    for partial in (man["chain_root"][:12], man["chain_root"][:16], "not-hex-at-all", ""):
+        assert m.main(["verify", path, "--expect-root", partial]) == 4
+        out = capsys.readouterr().out
+        assert "not a full chain_root" in out and "Not checked against the file" in out
+        assert "MISMATCH" not in out, f"a short root read as a forged file: {partial!r}"
 
 
 def test_artifact_check_catches_altered_and_missing_deliverables(tmp_path, capsys):

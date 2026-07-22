@@ -369,9 +369,9 @@ def main(argv=None) -> int:
 
     if args.verify_manifest:
         return run_verify_manifest(args.verify_manifest, args.expect_root, args.verify_artifacts)
-    if args.expect_root or args.verify_artifacts:
+    if args.expect_root is not None or args.verify_artifacts:   # `is not None`: --expect-root ""
         print(f"{APP_TITLE}: --expect-root and --verify-artifacts only apply to --verify-manifest.",
-              file=sys.stderr)
+              file=sys.stderr)                                  # must still be refused, not ignored
         return 2
 
     if args.redact_folder:
