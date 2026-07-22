@@ -237,7 +237,14 @@ def test_out_without_redact_folder_is_rejected(tmp_path, capsys):
 def _engine_with_failed_phase(record: dict, phase: str, via: str = "timings"):
     """The engine's _run_phase LOGS AND CONTINUES on any exception 'so the workbook still saves'.
     The snapshot is redacted by a DIRECT call and stays clean, so the workbook can ship real client
-    data while the verified file is spotless and the run exits 0."""
+    data while the verified file is spotless and the run exits 0.
+
+    The `timings` sidecar is written in the engine's REAL shape — a dict whose "phases" key holds
+    the rows (COLLECT_PARSE_V3_23_0._stage_finalize). It was faked here as a bare LIST, which is
+    what the parser happened to expect: the stub and the bug agreed with each other, the test
+    passed, and the sidecar arm was dead on every real run.
+    tests/test_phase_timings_contract.py now pins the shape against a sidecar the real engine
+    wrote, so a fabricated fixture can never certify the wrong format again."""
     def run(cmd, cwd=None, **kw):
         record["cmd"] = list(cmd)
         out = Path(cmd[cmd.index("--output") + 1])
@@ -246,7 +253,9 @@ def _engine_with_failed_phase(record: dict, phase: str, via: str = "timings"):
         out.write_bytes(b"xlsx with UNREDACTED cells")
         if via == "timings":
             Path(stem + ".phase_timings.json").write_text(
-                json.dumps([{"phase": phase, "seconds": 0.1, "ok": False}]), encoding="utf-8")
+                json.dumps({"n_devices": 1, "workers": 1, "total_seconds": 0.1,
+                            "phases": [{"phase": phase, "seconds": 0.1, "ok": False}]}),
+                encoding="utf-8")
             return types.SimpleNamespace(returncode=0, stdout="engine ok", stderr="")
         return types.SimpleNamespace(
             returncode=0, stderr=f"  [SKIP] Phase '{phase}' failed: RuntimeError(); "
