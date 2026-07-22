@@ -273,7 +273,16 @@ def run_redaction(src: str, out: str, redact_collection: bool = False) -> int:
           f"Wrote {len(report['files'])} file(s):")
     for name in report["files"]:
         print(f"    {name}")
-    print("  Every IP/MAC/serial is pseudonymized and this was verified before reporting success.")
+    # Say exactly what was checked. The engine pseudonymizes IPs, MACs and serials, but the
+    # verification here covers surviving PRIVATE IPv4 in the snapshot plus proof that the engine's
+    # redaction phases actually ran. Claiming more than that ("every IP/MAC/serial ... verified")
+    # certified roughly three times what the code inspects — and hostnames are kept BY DESIGN, so
+    # a "fully anonymous" mental model is exactly the wrong one to leave the engineer with.
+    print("  Checked: the engine's redaction phases ran, and no private (RFC 1918) address\n"
+          "  survives in the redacted snapshot.\n"
+          "  NOT checked: MACs, serials, public/IPv6 addresses, or the workbook's own cells.\n"
+          "  HOSTNAMES ARE KEPT BY DESIGN - device names and site codes still identify the\n"
+          "  client. Review before sending.")
     return 0
 
 

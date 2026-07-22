@@ -81,10 +81,10 @@ def _safe_extract(raw: bytes, dest: Path) -> int:
     if not infos:
         raise IngestError("The ZIP archive is empty.")
     if len(infos) > MAX_FILES:
-        raise IngestError(f"Archive has {len(infos)} files — more than the {MAX_FILES} limit.")
+        raise IngestError(f"Archive has {len(infos)} files - more than the {MAX_FILES} limit.")
     total = sum(i.file_size for i in infos)
     if total > MAX_UNCOMPRESSED_BYTES:
-        raise IngestError(f"Archive expands to {total // (1024 * 1024)} MB — over the "
+        raise IngestError(f"Archive expands to {total // (1024 * 1024)} MB - over the "
                           f"{MAX_UNCOMPRESSED_BYTES // (1024 * 1024)} MB limit.")
     dest_resolved = dest.resolve()
     for info in infos:
@@ -255,7 +255,7 @@ def _resolve_and_scan(path: Any) -> Tuple[Path, int]:
     if not n_files:
         raise IngestError("The folder is empty.")
     if total > MAX_UNCOMPRESSED_BYTES:
-        raise IngestError(f"Folder holds {total // (1024 * 1024)} MB — over the "
+        raise IngestError(f"Folder holds {total // (1024 * 1024)} MB - over the "
                           f"{MAX_UNCOMPRESSED_BYTES // (1024 * 1024)} MB limit.")
     return folder, n_files
 
@@ -283,12 +283,36 @@ def _refuse_unsafe_out_dir(out: Path, source: Path) -> None:
         bundle = Path(sys.executable).resolve().parent
         if out == bundle or bundle in out.parents:
             raise IngestError(
-                f"Refusing to write inside the Atlas folder ({bundle}) — an update replaces "
-                f"everything there except data\\, so the deliverables would be lost. Choose a "
-                f"folder outside it.")
+                f"Refusing to write inside the Atlas folder ({bundle}) - deliverables do not "
+                f"belong in the app folder, and an update replaces it. Choose a folder outside "
+                f"it (data\\ is not a valid destination either: it is the database store).")
     if out == source or source in out.parents:
         raise IngestError(f"Refusing to write inside the collection folder being redacted "
-                          f"({source}) — keep redacted output separate from the raw captures.")
+                          f"({source}) - keep redacted output separate from the raw captures.")
+    if out in source.parents:
+        # The reverse case, just as dangerous: the RAW captures would sit inside the folder the
+        # engineer is about to zip and send, and they are not listed among the produced files.
+        raise IngestError(f"Refusing to write to {out} because the collection folder ({source}) "
+                          f"is inside it - the raw captures would travel with the redacted set. "
+                          f"Choose a folder that does not contain the captures.")
+
+
+def _mark_output_unsafe(out: Path, why: str) -> None:
+    """Leave a loud on-disk marker when a run did NOT certify its output.
+
+    Nothing is deleted (destroying evidence is the worse failure), but the files are named
+    ``*_redacted*`` — they assert the exact property the run declined to certify, and stderr
+    scrolls away. The marker is what a hurried engineer sees in the folder."""
+    try:
+        (out / "DO-NOT-SEND-NOT-REDACTED.txt").write_text(
+            "This folder is NOT safe to share.\n\n"
+            f"Atlas refused to certify this run: {why}.\n"
+            "The files here are named *_redacted* but that property was NOT verified, and at\n"
+            "least part of the set may contain real client data.\n\n"
+            "Delete them or re-run the redaction, and do not send anything from this folder.\n",
+            encoding="ascii")
+    except OSError:
+        pass  # best-effort: never mask the real error with a marker-write failure
 
 
 #: Private IPv4 space. Redaction remaps every /24 into the IANA-reserved Class E block
@@ -303,11 +327,11 @@ _RFC1918_RE = re.compile(
 #: the raw JSON text flagged those and failed EVERY real run; a check that always fires is worse
 #: than none, because it teaches the engineer to ignore it. (Found by running the real engine —
 #: the stubbed unit tests could not have shown it.)
-_DOC_KEYS = frozenset({
-    "label", "note", "notes", "help", "hint", "placeholder", "description", "guidance",
-    "rationale", "recommendation", "recommendations", "summary", "title", "text", "question",
-    "why", "tradeoffs", "caveat", "caveats", "doctrine", "reason",
-})
+#: Deliberately SHORT. An earlier, wider list exempted 28% of the snapshot's strings — including
+#: real observed evidence (`punchlist[].title`, `decisions[].evidence.summary`,
+#: `interfaces.<host>.<port>.description`, per-device exposure labels). Those are exactly where a
+#: surviving address would matter, so only keys that are unambiguously AUTHORED UI copy stay here.
+_DOC_KEYS = frozenset({"help", "hint", "placeholder", "guidance", "doctrine", "tradeoffs"})
 _EXAMPLE_MARKERS = ("e.g.", "eg.", "such as", "for example", "example:")
 
 
@@ -325,6 +349,40 @@ def _iter_evidence_strings(node: Any, path: str = ""):
         yield path, node
 
 
+#: The engine's redaction phases. `_run_phase` (COLLECT_PARSE_V3_23_0.py:1383) LOGS AND CONTINUES
+#: on any exception "so the workbook still saves" — so a redaction failure leaves the workbook
+#: unredacted while `redact_snapshot` (a direct call) still succeeds and the snapshot stays clean.
+#: Proven by fault injection: real serials and 9 private addresses shipped in Assessment.xlsx while
+#: the verified snapshot was spotless and the run exited 0. Checking only the snapshot inspects the
+#: one artifact that CANNOT fail; these phases are where it actually breaks.
+_REDACTION_PHASES = ("redact collected dataclasses", "redact workbook cells")
+
+
+def _assert_redaction_phases_ran(out_xlsx: Path, engine_output: str) -> None:
+    """Refuse if a redaction phase was skipped or failed inside the engine.
+
+    Two independent signals, because either alone can go missing: the phase ledger sidecar
+    (``ok: false``) and the engine's own ``[SKIP] Phase …`` line on stderr."""
+    failed = []
+    timings = Path(str(out_xlsx)[: -len(".xlsx")] + ".phase_timings.json")
+    if timings.is_file():
+        try:
+            for row in json.loads(timings.read_text(encoding="utf-8", errors="replace")) or []:
+                if str(row.get("phase", "")).lower() in _REDACTION_PHASES and row.get("ok") is False:
+                    failed.append(row["phase"])
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass  # a missing/odd ledger must not mask the stderr signal below
+    low = (engine_output or "").lower()
+    for phase in _REDACTION_PHASES:
+        if f"[skip] phase '{phase}'" in low and phase not in failed:
+            failed.append(phase)
+    if failed:
+        raise EngineRunError(
+            f"REDACTION PHASE FAILED inside the engine ({', '.join(sorted(failed))}). The workbook "
+            f"is very likely UNREDACTED even though the snapshot looks clean - this is the silent "
+            f"failure the check exists for. Do NOT send anything from this run.")
+
+
 def _assert_scrubbed(snap_path: Path) -> int:
     """Fail LOUD if the 'redacted' snapshot still carries private addresses in EVIDENCE.
 
@@ -332,13 +390,23 @@ def _assert_scrubbed(snap_path: Path) -> int:
     and a flag that silently did nothing looks identical to success — so the result is verified
     rather than trusted. Config text is scanned too (``ip address 10.x`` inside a running-config
     line is a real leak); only authored copy and explicit examples are exempt."""
-    snap = json.loads(snap_path.read_text(encoding="utf-8", errors="replace"))
+    try:
+        snap = json.loads(snap_path.read_text(encoding="utf-8", errors="replace"))
+    except ValueError as e:
+        # A truncated snapshot (stick filled, yank mid-write) reached the console as a
+        # JSONDecodeError traceback. It also means the run is unverifiable — refuse.
+        raise EngineRunError(f"The snapshot could not be read back for verification ({e}). "
+                             f"Treat the output as UNREDACTED.")
     leaks: Dict[str, str] = {}
     for where, value in _iter_evidence_strings(snap):
-        low = value.lower()
-        if any(m in low for m in _EXAMPLE_MARKERS):
-            continue  # an illustrative range inside prose, not an observed address
-        for hit in _RFC1918_RE.findall(value):
+        # Exempt only the SENTENCE carrying the example, not the whole string: one "e.g." used to
+        # excuse an entire field, and real evidence summaries legitimately contain one.
+        # Split on REAL sentence boundaries only (period + space + capital). Splitting on any
+        # period severed "e.g." from the address it introduces, so the example itself lost its
+        # exemption and every advisory string was flagged.
+        segments = [s for s in re.split(r"(?<=[.;])\s+(?=[A-Z])", value)
+                    if not any(m in s.lower() for m in _EXAMPLE_MARKERS)]
+        for hit in _RFC1918_RE.findall(" ".join(segments)):
             leaks.setdefault(hit, where.lstrip("."))
     if leaks:
         shown = ", ".join(f"{ip} (at {loc})" for ip, loc in list(leaks.items())[:3])
@@ -379,7 +447,15 @@ def run_redaction_folder(path: Any, out_dir: Any,
         devices_file.write_text(json.dumps(devices), encoding="utf-8")
         template = workdir / "template.xlsx"
         _write_min_template(template)
-        out.mkdir(parents=True, exist_ok=True)
+        try:
+            out.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            # A mistyped drive letter, an existing FILE at that path, an illegal character or a
+            # write-locked target used to reach the field console as a pathlib traceback. --out is
+            # the one value the engineer invents on the spot, so it is the likeliest typo.
+            raise IngestError(f"Cannot create the output folder {out}: {e}. Check the drive "
+                              f"letter and that the path is writable and not an existing file.")
+        pre_existing = {p.name for p in out.iterdir() if p.is_file()}
         out_xlsx = out / "Assessment_redacted.xlsx"
 
         cmd = [
@@ -403,7 +479,7 @@ def run_redaction_folder(path: Any, out_dir: Any,
         except subprocess.TimeoutExpired as e:
             raise EngineRunError(
                 f"Redaction run timed out after {REDACT_TIMEOUT_S}s ({len(device_dirs)} devices). "
-                f"Partial output may exist in {out} — treat it as UNREDACTED.") from e
+                f"Partial output may exist in {out} - treat it as UNREDACTED.") from e
         duration = round(time.monotonic() - t0, 1)
         log_tail = "\n".join(((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
                              .splitlines()[-12:]).replace(str(workdir), "<workdir>")
@@ -413,8 +489,16 @@ def run_redaction_folder(path: Any, out_dir: Any,
         snap_path = Path(str(out_xlsx)[: -len(".xlsx")] + ".snapshot.json")
         if not snap_path.is_file():
             raise EngineRunError(f"Engine completed but wrote no snapshot. Log tail:\n{log_tail}")
-        _assert_scrubbed(snap_path)
-        written = sorted(p.name for p in out.iterdir() if p.is_file())
+        try:
+            _assert_redaction_phases_ran(out_xlsx, (proc.stdout or "") + (proc.stderr or ""))
+            _assert_scrubbed(snap_path)
+        except EngineRunError:
+            _mark_output_unsafe(out, "a redaction check FAILED")
+            raise
+        # Only what THIS run produced — enumerating the directory reported pre-existing files
+        # (an engineer's own notes, an earlier unredacted export) under the share-safe banner.
+        written = sorted(p.name for p in out.iterdir()
+                         if p.is_file() and p.name not in pre_existing)
         return {
             "out_dir": str(out),
             "files": written,
