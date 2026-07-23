@@ -49,7 +49,7 @@ def _endpoint_census(snap: dict):
     per_switch: Counter = Counter()
     total = 0
     for host, ports in _as_dict(snap.get("interfaces")).items():   # a truthy non-dict 'interfaces' (or per-host value) must not crash .items()/.values()
-        for d in _as_dict(ports).values():
+        for d in (v for v in _as_dict(ports).values() if isinstance(v, dict)):   # skip a truthy non-dict per-interface value
             if (d.get("switchport_mode") or "") != "Access":
                 continue
             _ehm = d.get("end_host_mac")            # tolerate a list-valued / non-string end_host_mac (L2)
@@ -154,7 +154,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
     # audit-5 totality: a hostile/malformed upload (the webapp deliverable route) can make a section a truthy
     # non-list / non-dict, or carry a non-dict ELEMENT -> degrade, never raise (like the mop/crd/ops siblings).
     def _R(x): return [r for r in _as_list(x) if isinstance(r, dict)]   # record list: coerce container + keep only dict rows
-    devices = _as_dict(snap_dict.get("devices"))
+    devices = {_h: _d for _h, _d in _as_dict(snap_dict.get("devices")).items() if isinstance(_d, dict)}   # drop a truthy non-dict per-device value
     hs = _R(snap_dict.get("health_scores"))
     bands = Counter(r.get("band", "") for r in hs)
     move_groups = _R(snap_dict.get("move_groups"))
@@ -391,7 +391,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
 
     doc.add_heading("6.2 Material cross-layer findings", level=2)
     for f in sorted(cross_layer, key=lambda f: _SEV_ORDER.get(f.get("severity"), 9))[:8]:
-        hosts = ", ".join(f.get("hosts") or []) or "—"
+        hosts = ", ".join(_as_list(f.get("hosts"))) or "—"
         finding_block(
             f.get("title", f.get("id", "Cross-layer finding")),
             severity=f.get("severity", "Medium"),
@@ -429,7 +429,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
 
         table(["Severity", "Finding", "Devices", "Why it matters / next step"],
               [[d.get("severity", ""), d.get("title", ""),
-                str(len(d.get("devices") or [])),
+                str(len(_as_list(d.get("devices")))),
                 _why_next(d)]
                for d in sorted(drift, key=lambda d: _SEV_ORDER.get(d.get("severity"), 9))],
               widths=[0.9, 2.8, 0.9, 4.0])
@@ -452,7 +452,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         doc.add_paragraph("L3 devices — subnets terminated vs reachable:")
         table(["Switch", "Dest subnets", "Reachable", "Sources", "Default next-hop"],
               [[r.get("host"), r.get("destination_count"), r.get("reachable_count"),
-                ", ".join(f"{k}:{v}" for k, v in (r.get("reachable_sources") or {}).items()),
+                ", ".join(f"{k}:{v}" for k, v in _as_dict(r.get("reachable_sources")).items()),
                 r.get("default_next_hop", "")] for r in top], widths=[3.0, 1.1, 1.1, 2.4, 1.4])
         mg = _R(si.get("move_groups"))
         if mg:
@@ -473,9 +473,9 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
             "Each path is a lower bound (scan-bound topology); the explorer walks any chosen pair, all OSI "
             "layers, with the backup path. See the workbook 'Flow Paths' sheet for the full hop list.")
         table(["Flow (VLAN → VLAN)", "Type", "Risk", "SPOFs on path"],
-              [[f.get("label", ""), (f.get("summary") or {}).get("flow_type", ""),
-                (f.get("summary") or {}).get("risk", ""),
-                "; ".join((f.get("summary") or {}).get("spofs") or []) or "none"]
+              [[f.get("label", ""), _as_dict(f.get("summary")).get("flow_type", ""),
+                _as_dict(f.get("summary")).get("risk", ""),
+                "; ".join(_as_list(_as_dict(f.get("summary")).get("spofs"))) or "none"]
                for f in fpaths], widths=[2.8, 1.4, 0.9, 2.4])
 
     pintel = _R(snap_dict.get("protocol_intelligence"))
@@ -548,7 +548,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
             doc.add_paragraph(
                 f"Multicast MAC-address aliasing ({_CONF_CONFIRMED}, RFC 4541): {len(aliases)} case(s) where "
                 "groups collapse to one L2 MAC (IPv4 multicast is 32:1 into Ethernet MACs) so a MAC-level switch "
-                "forwards them together — " + "; ".join(f"{a.get('mac')} ← {', '.join(a.get('groups') or [])}"
+                "forwards them together — " + "; ".join(f"{a.get('mac')} ← {', '.join(_as_list(a.get('groups')))}"
                                                         for a in aliases[:4])
                 + ". Re-address one of each overlapping pair (or use IGMPv3 SSM end-to-end) before the cutover.")
         gaps = _as_list(_as_dict(mi.get("querier")).get("gap_vlans"))
@@ -583,14 +583,14 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
               [[d.get("domain"), d.get("tier"), d.get("switch_count"), d.get("endpoint_count"),
                 ("boundary-clocked" if d.get("ptp_boundary_clocked")
                  else "present, NOT BC" if d.get("ptp_present") else "—"),
-                ((d.get("risks") or [{}])[0].get("title", "—") if d.get("risks") else "—")]
+                ((_as_list(d.get("risks")) or [{}])[0].get("title", "—") if d.get("risks") else "—")]
                for d in appd],
               widths=[2.2, 1.2, 0.8, 0.9, 1.1, 2.3])
         # the on-air-critical domain risks as evidence-disciplined findings (false-health doctrine)
         for d in appd:
             if d.get("tier") != "On-air critical":
                 continue
-            for r in (d.get("risks") or []):
+            for r in _as_list(d.get("risks")):
                 if r.get("severity") not in ("Critical", "High"):
                     continue
                 finding_block(
@@ -603,7 +603,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                     confidence=f"{_CONF_CONFIRMED} (switch state) / {_CONF_MED} (media dependency)",
                     unknowns="Whether this domain's live traffic actually traverses the flagged switches at "
                              "cutover time (no flow telemetry).",
-                    next_validation="; ".join(d.get("validation") or []),
+                    next_validation="; ".join(_as_list(d.get("validation"))),
                     remediation=r.get("remediation", ""))
         cross = _R(appi.get("cross_domain_risks"))
         if cross:
@@ -619,7 +619,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
             if keystones:
                 k = keystones[0]
                 kline = (f" The keystone domain is {k.get('domain')} (weighted coupling degree "
-                         f"{k.get('degree')}, {len(k.get('neighbors') or [])} neighbour domains) — the widest "
+                         f"{k.get('degree')}, {len(_as_list(k.get('neighbors')))} neighbour domains) — the widest "
                          "cross-domain blast radius; sequence it deliberately, not as an early pilot.")
             doc.add_paragraph(
                 f"The domains are coupled by {len(edges)} dependency edge(s): physical inter-switch links "
@@ -627,7 +627,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                 f"({_CONF_CONFIRMED}). A coupling means two domains cannot be cut over in isolation without "
                 f"coordination.{kline}")
             table(["Domain A", "Domain B", "Weight", "Coupling", "Migration note"],
-                  [[e.get("source"), e.get("target"), e.get("weight"), ", ".join(e.get("kinds") or []),
+                  [[e.get("source"), e.get("target"), e.get("weight"), ", ".join(_as_list(e.get("kinds"))),
                     e.get("migration_note") or ("media-adjacent" if e.get("media") else "")]
                    for e in edges[:15]],
                   widths=[1.9, 1.9, 0.7, 1.4, 2.6])
@@ -678,7 +678,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
             f"(avg compliance {gsum.get('avg_compliance_pct', 0)}%). Bring the drifting devices up to the "
             "standard before — or as part of — their cutover wave.")
         drows = [[d.get("host"), f"{d.get('compliance_pct', 0)}%", d.get("n_missing", 0),
-                  "; ".join((d.get("missing") or [])[:6])]
+                  "; ".join(_as_list(d.get("missing"))[:6])]
                  for d in _R(gd.get("per_device")) if d.get("n_missing")]
         if drows:
             table(["Device", "Compliance", "Missing", "Missing required directives"],
@@ -761,7 +761,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
             "Checker before drawing release-level conclusions.")
         rrows = []
         for f in _R(sr.get("findings"))[:15]:
-            adv = "; ".join(f"{a.get('cve')}" for a in (f.get("advisories") or [])) or "—"
+            adv = "; ".join(f"{a.get('cve')}" for a in _as_list(f.get("advisories"))) or "—"
             rrows.append([f.get("host"), f.get("surface"), f.get("severity"), adv,
                           f.get("recommendation")])
         if rrows:
@@ -899,7 +899,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
             doc.add_paragraph("Per-VLAN application tiers (dominant endpoint class in each VLAN):")
             table(["VLAN", "Dominant class", "Endpoints", "Class mix"],
                   [[a.get("vlan"), a.get("dominant"), a.get("total"),
-                    ", ".join(f"{k} ({v})" for k, v in (a.get("classes") or {}).items())]
+                    ", ".join(f"{k} ({v})" for k, v in _as_dict(a.get("classes")).items())]
                    for a in affinity[:12]], widths=[0.9, 2.0, 1.0, 3.5])
 
     # ===== 9. Migration Dependency & Move Groups =====
@@ -914,9 +914,9 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
     for r in mr:
         g = r.get("group", "")
         w = ws_by_group.get(g, {})
-        mg_rows.append([g, len(r.get("switches") or []), r.get("endpoints", 0),
-                        r.get("readiness", ""), len(w.get("make_before_break") or []),
-                        len(w.get("hard_cutover") or []), w.get("hard_cutover_endpoints", 0)])
+        mg_rows.append([g, len(_as_list(r.get("switches"))), r.get("endpoints", 0),
+                        r.get("readiness", ""), len(_as_list(w.get("make_before_break"))),
+                        len(_as_list(w.get("hard_cutover"))), w.get("hard_cutover_endpoints", 0)])
     if mg_rows:
         table(["Group", "Switches", "Endpoints", "Readiness", "Make-before-break",
                "Hard cutover", "At-risk endpoints"], mg_rows, widths=[1.4, 1.0, 1.0, 1.3, 1.4, 1.1, 1.2])
@@ -954,12 +954,12 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         table(["Asset", "Band", "Index", "Impact × exposure", "Compound", "Engineer's verdict"],
               [[d.get("host"), d.get("risk_band"), d.get("risk_index"),
                 f"{d.get('impact_score')} × {d.get('exposure_score')}",
-                ", ".join(c.get("code", "") for c in (d.get("compound") or [])) or "—",
+                ", ".join(c.get("code", "") for c in _as_list(d.get("compound"))) or "—",
                 (d.get("verdict") or "")[:220]]
                for d in dd_rows[:15]],
               widths=[1.5, 0.9, 0.7, 1.2, 1.1, 3.7])
         comp = [(d.get("host"), c) for d in dd_rows
-                for c in (d.get("compound") or []) if isinstance(c, dict)]
+                for c in _as_list(d.get("compound")) if isinstance(c, dict)]
         if comp:
             doc.add_paragraph("Compound patterns (why these assets outrank their single findings):")
             for host, c in comp[:10]:
@@ -982,7 +982,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
     # per-class service-validation derived from the endpoint classes actually present (NEW-V3.23.96).
     psv = _as_dict(_as_dict(snap_dict.get("endpoint_dependencies")).get("per_switch_validation"))
     if psv:
-        present = sorted({line for lines in psv.values() for line in lines})
+        present = sorted({line for lines in psv.values() for line in _as_list(lines)})
         doc.add_heading("11.1 Service validation by endpoint class (what to prove per switch)", level=2)
         doc.add_paragraph(
             f"The workbook / snapshot carry a per-switch checklist ({len(psv)} switches). The distinct "
@@ -1085,7 +1085,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                 hp = doc.add_paragraph()
                 hr = hp.add_run(f"[{it.get('severity')}] {it.get('category')} — {it.get('title')}"); hr.bold = True
                 cp = doc.add_paragraph(); cp.paragraph_format.left_indent = Inches(0.3)
-                cr = cp.add_run("\n".join(it.get("commands") or []))
+                cr = cp.add_run("\n".join(_as_list(it.get("commands"))))
                 cr.font.name = "Consolas"; cr.font.size = Pt(9)
                 _label_run(doc.add_paragraph(style="List Bullet 2"), "Verify:", it.get("verify", ""))
                 _label_run(doc.add_paragraph(style="List Bullet 2"), "Caution:", it.get("caution", ""))

@@ -383,3 +383,75 @@ def test_runbook_survives_truthy_scalar_flow_paths(tmp_path):
         out = str(tmp_path / f"rb_fp_{type(bad).__name__}.docx")
         write_runbook_docx(out, _snap(), "Unit Test Fleet", flow_paths=bad)   # must not raise
         assert "1. Assessment Header & Executive Summary" in _all_text(Document(out))
+
+
+# --- audit-5 totality, NESTED level -----------------------------------------------------------------
+# The section-scalar test above proves a truthy scalar *section* degrades. But a well-formed section
+# (a dict / list-of-dicts) whose INNER value is a truthy scalar still slipped the row-level
+# `.get(x) or []` / `or {}` guards (they catch only falsy) and crashed len() / .items() / iteration /
+# subscription — e.g. migration_readiness[0]["switches"] = 7 -> len(7). The top-level test cannot reach
+# these (a scalar section empties the row list first). Same reachable stored-DoS class, via
+# deliverables.generate("runbook", snap) on an attacker-uploaded --no-collect snapshot.
+def _rich_snap():
+    """_snap() + the row-bearing sections whose inner values are dereferenced, so a poisoned inner
+    value actually reaches the vulnerable read (application domains, software-risk per-device)."""
+    s = _snap()
+    s["application_intelligence"] = {
+        "summary": {"n_domains": 1, "n_on_air_critical": 1, "n_high_risk": 1},
+        "domains": [{"domain": "D1", "tier": "On-air critical", "switch_count": 1, "endpoint_count": 2,
+                     "ptp_present": True, "evidence": "e",
+                     "risks": [{"severity": "Critical", "title": "t", "detail": "d", "remediation": "r"}],
+                     "validation": ["ping"]}],
+        "cross_domain_risks": [{"title": "x"}],
+        "edges": [{"source": "D1", "target": "D2", "weight": 1, "kinds": ["link"], "media": True,
+                   "migration_note": "n"}],
+        "keystones": [{"domain": "D1", "degree": 2, "neighbors": ["D2", "D3"]}],
+        "cutover_order": [{"domain": "D1"}],
+    }
+    s["software_risk"] = {"summary": {"crit_0_2": 0, "err_3": 0},
+                          "per_device": [{"host": "sw1", "advisories": [{"cve": "CVE-1"}],
+                                          "compound": [{"code": "X"}], "missing": ["patch"]}]}
+    return s
+
+
+def _nested_container_paths(obj, path=(), depth=0):
+    """Every path (depth<=3) to a nested dict/list inside the snapshot, excluding the root."""
+    if path and isinstance(obj, (dict, list)):
+        yield path
+    if depth >= 3:
+        return
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            yield from _nested_container_paths(v, path + (k,), depth + 1)
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            if isinstance(v, (dict, list)):
+                yield from _nested_container_paths(v, path + (i,), depth + 1)
+
+
+def test_runbook_survives_truthy_scalar_nested_value(tmp_path):
+    """Replacing ANY nested container (a section's inner dict/list, depth<=3) with a truthy scalar must
+    degrade to empty, never raise — the runbook still renders end-to-end. Revert-proof by construction:
+    e.g. migration_readiness[0]["switches"]=7 -> len(7) crashes the pre-extension module."""
+    import copy
+    base = _rich_snap()
+    # `collection_completeness` and `executive_brief` are ALSO consumed by the shared
+    # docmeta.add_excellence_front -> ssot.reconcile layer; the nested-scalar hardening of those two
+    # lives in ssot.py (PR #452, verified: `cc = _as_dict(_dotted(snap,"collection_completeness.summary"))`),
+    # so this one-file runbook PR deliberately does not own them — skip that principled module boundary.
+    _SHARED_SSOT_SECTIONS = {"collection_completeness", "executive_brief"}
+    paths = [p for p in _nested_container_paths(base) if p[0] not in _SHARED_SSOT_SECTIONS]
+    assert len(paths) > 20, "sanity: the rich snapshot must expose many nested containers to poison"
+    crashes = []
+    for i, p in enumerate(paths):
+        snap = copy.deepcopy(base)
+        node = snap
+        for key in p[:-1]:
+            node = node[key]
+        node[p[-1]] = 7   # a truthy scalar where a nested dict/list is expected
+        out = str(tmp_path / f"rb_nested_{i}.docx")
+        try:
+            write_runbook_docx(out, snap, "Unit Test Fleet")
+        except Exception as e:   # noqa: BLE001 - the whole point is that NOTHING may raise
+            crashes.append((".".join(map(str, p)), type(e).__name__, str(e)[:60]))
+    assert not crashes, f"{len(crashes)} nested truthy-scalar case(s) still crash the runbook: {crashes[:10]}"
