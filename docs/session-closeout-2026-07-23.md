@@ -69,7 +69,10 @@ Recover any with: `git switch -c revive/<name> refs/preserved/<name>`
 | ssot-qatar-repoint / masterplan-hygiene-table / scorecard-record-msg-arm | Stale/superseded 07-06–07-08 tweaks. Preserved for reference; likely discard. |
 
 ## 4. Cleaned this session
-- **31 merged stale local branches** deleted (23 `claude/*` + 8 `worktree-agent-*` wrappers).
+- **All merged local branch mirrors pruned: 132 → 32 local branches** (the 31 no-upstream stale ones — 23
+  `claude/*` + 8 `worktree-agent-*` wrappers — plus the merged upstream-tracking mirrors; local-only, git
+  auto-protected unmerged + checked-out). The 32 remaining = the 11 open-PR branches + the swarm PRs + the 6
+  preserved orphans + a few unmerged-with-upstream branches (safe on origin).
 - **2 done worktrees** removed (`atlas-p1`, `atlas-p3`).
 - **Scorecard QA row** committed → #458; **main checkout is clean.**
 - 6 orphan branches preserved as `refs/preserved/*` before any deletion.
@@ -79,10 +82,9 @@ Recover any with: `git switch -c revive/<name> refs/preserved/<name>`
   — on merged branches (no unmerged work); git registrations were auto-pruned but a live process holds the
   files (Windows lock). Remove once that process exits: `rm -rf .claude/worktrees/<name>`.
 - **~6 more stale unregistered worktree dirs** (`agent-*`, `clever-*`, `unruffled-*`, `zealous-*`, `zen-*`) — same.
-- **~124 upstream-tracking local branches** mirroring `origin/claude/*` (mostly merged/closed PRs). Not touched
-  (beyond the approved no-upstream scope). Bulk-prune the merged ones locally when convenient:
-  `git branch --merged origin/main | grep claude/ | xargs -r git branch -D`. Stale **remote** branches on
-  `origin` from merged PRs are the real clutter — clean deliberately (shared-repo op), not covered here.
+- **Merged local branch mirrors: PRUNED** (132 → 32 local branches; see §4). What remains are only open-PR +
+  orphan + a few unmerged-with-upstream branches (the last are safe on `origin`). Stale **remote** branches on
+  `origin` from merged/closed PRs remain the real clutter — clean deliberately (shared-repo op), not here.
 - The `amazing-bardeen` worktree still carries the same stray scorecard row uncommitted (that session's copy;
   now redundant with #458) — not touched (not my worktree).
 
