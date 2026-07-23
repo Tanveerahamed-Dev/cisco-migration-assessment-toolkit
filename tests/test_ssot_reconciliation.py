@@ -161,6 +161,82 @@ def test_reconcile_and_summary_survive_a_malformed_summary_block(snap):
     assert isinstance(s["n_facts"], int) and s["n_facts"] >= 0   # coverage-honest: no fabricated fact
 
 
+# --------------------------------------------------------------------------------------------
+# The LIST-typed sibling of that class (this PR). The _as_dict fix above guarded the DICT bindings,
+# but reconcile's list bindings stayed a bare `... or []`: a TRUTHY non-list (int/str/dict/bool from a
+# poisoned or hand-edited --no-collect snapshot) survives `303 or [] == 303`, and the following
+# len()/iteration then raises the SAME crash (`TypeError: object of type 'int' has no len()` /
+# `'int' object is not iterable`) that propagates through docmeta.add_excellence_front -> ssot.summary
+# into EVERY docx generator. The four guarded sites now route through ssot._as_list: reconcile's
+# health_scores / endpoint_identity / lifecycle_risk.per_device, plus _device_not_collected's
+# collection_completeness.devices (reached via abstention_reason / the schema census). This sweep
+# locks the WHOLE class across every section reconcile / add_excellence_front read.
+# --------------------------------------------------------------------------------------------
+
+# Every top-level + lifecycle_risk.*/collection_completeness.* (and the sibling executive_brief.* /
+# application_intelligence.* / design_blueprint.*) sub-section reconcile / add_excellence_front read.
+_SWEEP_SECTIONS = [
+    "executive_brief", "collection_completeness", "lifecycle_risk",
+    "health_scores", "endpoint_identity", "application_intelligence", "design_blueprint",
+    "executive_brief.scale", "executive_brief.posture",
+    "lifecycle_risk.summary", "lifecycle_risk.per_device",
+    "collection_completeness.summary", "collection_completeness.devices",
+    "application_intelligence.domains",
+    "design_blueprint.summary", "design_blueprint.decisions",
+]
+# int / str / list / dict / bool -- the truthy non-list (and non-dict) values a corrupted or
+# hand-edited snapshot can carry. Every one survives a bare `... or []` / `... or {}`.
+_POISONS = [5, "x", [1, 2], {"k": 1}, True]
+
+
+def _poison_at(path, poison):
+    """A snapshot whose ONLY content is `poison` nested at the dotted `path`."""
+    node = poison
+    for key in reversed(path.split(".")):
+        node = {key: node}
+    return node
+
+
+@pytest.mark.parametrize("poison", _POISONS)
+@pytest.mark.parametrize("section", _SWEEP_SECTIONS)
+def test_reconcile_and_summary_survive_any_poisoned_section(section, poison):
+    """Totality: reconcile / summary must be total on ANY single section poisoned with a truthy
+    non-list/non-dict. Post-fix each malformed section reads as absent (coverage-honest skip) -- no
+    crash, and no fabricated violation invented from a minimal snapshot that publishes no companion basis."""
+    snap = _poison_at(section, poison)
+    viol = ssot.reconcile(snap)                        # must not raise
+    assert viol == [], (section, poison, viol)         # coverage-honest: malformed section skipped
+    s = ssot.summary(snap)                             # must not raise
+    assert set(s) == {"verified", "n_facts", "n_violations"}
+    assert s["n_violations"] == 0 and isinstance(s["n_facts"], int) and s["n_facts"] >= 0
+
+
+def test_list_guards_are_load_bearing(monkeypatch):
+    """NON-VACUITY for the four LIST sites. Revert ssot._as_list to the pre-fix `... or []` idiom (which
+    KEEPS a truthy non-list) and confirm each site crashes on an int poison that REACHES its
+    len()/iteration -- proving the guard is load-bearing everywhere, not decorative. With the real guard
+    the identical calls are clean. Each snapshot carries the companion published block (scale.n_devices /
+    lifecycle summary.n_devices / scale.n_endpoints) that drives execution INTO the len()/iterate -- a bare
+    ``{section: poison}`` short-circuits before it, so the activated form is what makes this non-vacuous."""
+    activated = {
+        "reconcile/health_scores":
+            lambda: ssot.reconcile({"executive_brief": {"scale": {"n_devices": 3}}, "health_scores": 5}),
+        "reconcile/lifecycle_risk.per_device":
+            lambda: ssot.reconcile({"lifecycle_risk": {"summary": {"n_devices": 3}, "per_device": 5}}),
+        "reconcile/endpoint_identity":
+            lambda: ssot.reconcile({"executive_brief": {"scale": {"n_endpoints": 3}}, "endpoint_identity": 5}),
+        "abstention/collection_completeness.devices":
+            lambda: ssot.abstention_reason({"collection_completeness": {"devices": 5}}, "foo", device="d1"),
+    }
+    for call in activated.values():
+        call()  # real _as_list guard in place -> no raise
+    # Revert the guard to the pre-fix `x or []` semantics at ALL FOUR sites at once, then confirm crashes:
+    monkeypatch.setattr(ssot, "_as_list", lambda v: v if v else [])
+    for name, call in activated.items():
+        with pytest.raises(TypeError):
+            call()
+
+
 def test_canonical_facts_reads_published_values():
     facts = ssot.canonical_facts(_consistent_snap())
     assert facts["n_devices"] == 6 and facts["n_collected"] == 5 and facts["n_endpoints"] == 40
@@ -416,4 +492,20 @@ def test_add_excellence_front_survives_a_malformed_summary_block():
     add_excellence_front(doc, {"collection_completeness": {"summary": "ALL COLLECTED"}})  # must not raise
     text = _all_text(doc)
     assert "At a Glance" in text                                  # the front matter rendered
+    assert "self-verified against the raw evidence" not in text   # coverage-honest: no fabricated badge
+
+
+@pytest.mark.parametrize("poison", _POISONS)
+@pytest.mark.parametrize("section", _SWEEP_SECTIONS)
+def test_add_excellence_front_survives_any_poisoned_section(section, poison):
+    """End-to-end companion to the reconcile/summary sweep: docmeta.add_excellence_front is the
+    At-a-Glance front matter EVERY docx generator renders, and it calls ssot.summary + ssot.canonical_facts.
+    So any single section poisoned with a truthy non-list/non-dict must render cleanly -- never crash the
+    design/mop/crd/engagement/archreview/ops/runbook writers. Coverage-honest: nothing reconciles, so the
+    self-verification badge stays absent, and the front matter still renders."""
+    from cisco_toolkit.docmeta import add_excellence_front
+    doc = Document()
+    add_excellence_front(doc, _poison_at(section, poison))        # must not raise
+    text = _all_text(doc)
+    assert "At a Glance" in text                                  # front matter rendered despite the poison
     assert "self-verified against the raw evidence" not in text   # coverage-honest: no fabricated badge

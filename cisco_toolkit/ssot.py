@@ -102,6 +102,20 @@ def _as_dict(value: Any) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _as_list(value: Any) -> List[Any]:
+    """Coerce a possibly-malformed snapshot block to a list; a truthy non-list degrades to ``[]``.
+
+    The list twin of :func:`_as_dict`. The ``... or []`` idiom guards ``None``/empty but NOT a
+    *truthy* non-list (an ``int``/``str``/``dict``/``bool`` from a poisoned or hand-edited
+    ``--no-collect`` snapshot): ``303 or [] == 303``, and the subsequent ``len(...)`` / iteration then
+    raises (``TypeError: object of type 'int' has no len()`` / ``'int' object is not iterable``) --
+    crashing :func:`reconcile` / :func:`summary` / :func:`abstention_reason` and, through
+    ``docmeta.add_excellence_front``, every deliverable generator. Coverage-honest: a malformed
+    list-typed block reads as 'absent' (its checks skip, no count is fabricated), never a crash.
+    """
+    return value if isinstance(value, list) else []
+
+
 def _dotted(snap: Dict[str, Any], path: str) -> Any:
     """Read a dotted snapshot path, returning None if any hop is missing/not a dict."""
     cur: Any = snap
@@ -148,7 +162,7 @@ def _device_not_collected(snap: Dict[str, Any], device: str) -> bool:
     """True iff `device` is in the collection blind-spot list with status 'not collected' (a fully un-collected
     device). A 'partial' device (some evidence collected) or a fully-collected one is NOT a blind spot."""
     want = (device or "").strip().lower()                # device names vary in case (devices.json vs show-text)
-    for d in (_dotted(snap, "collection_completeness.devices") or []):
+    for d in _as_list(_dotted(snap, "collection_completeness.devices")):   # _as_list, NOT `or []`: a truthy non-list would crash the `for`
         if isinstance(d, dict) and (d.get("host") or "").strip().lower() == want:
             return str(d.get("status", "")).strip().lower() == "not collected"
     return False
@@ -313,13 +327,16 @@ def reconcile(snap: Dict[str, Any]) -> List[str]:
     # TRUTHY non-dict (a str/list from a poisoned or hand-edited --no-collect snapshot), and the many
     # `.get` calls below would then raise AttributeError -- crashing this guard (and, via
     # docmeta.add_excellence_front -> ssot.summary, every deliverable generator). See _as_dict.
+    # The list-typed bindings below are the exact TWIN of that class and use _as_list for the SAME
+    # reason, NOT `... or []`: `or []` keeps a truthy non-list (an int/str/dict/bool), and the
+    # subsequent len()/iteration then raises (`len(303)` / `for d in 303`). See _as_list.
     scale = _as_dict(_dotted(snap, "executive_brief.scale"))
     posture = _as_dict(_dotted(snap, "executive_brief.posture"))
     cc = _as_dict(_dotted(snap, "collection_completeness.summary"))
     lc = _as_dict(_dotted(snap, "lifecycle_risk.summary"))
-    per_device = _dotted(snap, "lifecycle_risk.per_device") or []
-    health = snap.get("health_scores") or []
-    endpoints = snap.get("endpoint_identity") or []
+    per_device = _as_list(_dotted(snap, "lifecycle_risk.per_device"))
+    health = _as_list(snap.get("health_scores"))
+    endpoints = _as_list(snap.get("endpoint_identity"))
 
     def check(name: str, published: Any, derived: Any, basis: str) -> None:
         pi, di = _as_int(published), _as_int(derived)
