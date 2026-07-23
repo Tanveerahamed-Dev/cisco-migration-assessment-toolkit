@@ -37,7 +37,8 @@ def _is_l3(host: str, l3_forwarding, routing_neighbors) -> bool:
     evidence-based (a configured SVI / a routing neighbour is Confirmed), not a guess from hostname."""
     if any((r.get("switch") == host) for r in (l3_forwarding or []) if isinstance(r, dict)):
         return True
-    rn = (routing_neighbors or {}).get(host) or {}
+    rn = (routing_neighbors if isinstance(routing_neighbors, dict) else {}).get(host)
+    rn = rn if isinstance(rn, dict) else {}   # the per-host value can itself be a truthy non-dict (same class)
     return any(rn.get(p) for p in ("ospf", "eigrp", "bgp"))
 
 
@@ -55,8 +56,11 @@ def _segmentation_facts(snap: dict):
     vrfs: set = set()
     n_acl_svis = 0
     n_svis = 0
-    for host, ports in (snap.get("interfaces") or {}).items():
-        for p, d in (ports or {}).items():
+    _ifaces = snap.get("interfaces")
+    for host, ports in (_ifaces if isinstance(_ifaces, dict) else {}).items():
+        for p, d in (ports if isinstance(ports, dict) else {}).items():
+            if not isinstance(d, dict):
+                continue   # a truthy non-dict port-detail slips `or {}` and crashes d.get() (same class)
             vrf = str(d.get("vrf") or "").strip()   # str()-coerce a wrong-typed device leaf before .strip() (audit-6 #3 class)
             if vrf and vrf.lower() not in ("default", "global"):
                 vrfs.add(vrf)
@@ -133,10 +137,10 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     def _R(x): return [r for r in (x if isinstance(x, list) else []) if isinstance(r, dict)]
     devices = _D(snap.get("devices"))
     l3f = _R(snap.get("l3_forwarding"))
-    rn = snap.get("routing_neighbors") or {}
+    rn = _D(snap.get("routing_neighbors"))    # _D: a truthy non-dict -> {} (feeds _is_l3 AND the rn.items() render in §2.3)
     stp_roots = snap.get("stp_roots") or {}
     redist = snap.get("redistribution") or {}
-    fhrp = snap.get("fhrp") or []
+    fhrp = _R(snap.get("fhrp"))    # _R: a truthy non-list (malformed snapshot) -> [] instead of crashing `for g in fhrp`
     # FHRP candidate/configured counts come from the FULL gateway register (l3_forwarding), NOT snap['fhrp'] --
     # which is compute_fhrp_consistency()'s PROBLEMS-ONLY list (multi-gateway VLANs with an inconsistency).
     # Deriving the counts from it undercounts candidates and can NEVER credit a cleanly-redundant VLAN, so a
@@ -151,7 +155,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     n_fhrp_cfg = len({str(_r.get("vlan") or "") for _r in l3f
                       if str(_r.get("fhrp") or "").strip().lower() not in ("", "none", "-", "—")})
     capacity = _R(snap.get("capacity"))
-    lifecycle = snap.get("lifecycle_risk") or {}
+    lifecycle = _D(snap.get("lifecycle_risk"))    # _D: a truthy non-dict -> {} instead of crashing lifecycle.get('per_device')
     vpc = snap.get("vpc") or {}
     failure_impact = _R(snap.get("failure_impact"))
     punchlist = snap.get("punchlist") or []
@@ -300,7 +304,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     proto_use: Counter = Counter()
     for host, d in rn.items():
         for proto in ("ospf", "eigrp", "bgp"):
-            if (d or {}).get(proto):
+            if isinstance(d, dict) and d.get(proto):   # a truthy non-dict per-host value slips `or {}` (same class)
                 proto_use[proto.upper()] += 1
     doc.add_paragraph(
         "Routing protocols recovered from neighbour state: " + (
@@ -403,7 +407,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     doc.add_heading("3.1 Device inventory & roles", level=2)
     inv_rows = []
     for h in sorted(devices):
-        d = devices[h] or {}
+        d = _D(devices[h])    # _D: a truthy non-dict device value -> {} instead of crashing d.get(...)
         lc = lc_by_host.get(h, {})
         role = "Core/Dist (L3)" if h in l3_hosts else "Access (L2)"
         cap = cap_by_host.get(h, {})
@@ -443,9 +447,11 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         "port-channels it terminates — the build facts a re-implementation must reproduce.")
     shown = 0
     for h in sorted(l3_hosts) + sorted(l2_hosts):
-        ports = (snap.get("interfaces") or {}).get(h) or {}
+        ports = _D(snap.get("interfaces")).get(h) or {}
         svis, uplinks, pos = [], [], []
-        for p, d in ports.items():
+        for p, d in _D(ports).items():
+            if not isinstance(d, dict):
+                continue   # a truthy non-dict port-detail slips `or {}` and crashes d.get() (same class)
             if re.match(r"^Vlan\d+$", p, re.IGNORECASE) and (d.get("svi_ip") or ""):
                 svis.append(f"{p} {d.get('svi_ip')}" + (f" [{d.get('hsrp_behavior')}]"
                                                         if d.get("hsrp_behavior") else ""))
@@ -471,7 +477,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     doc.add_heading("3.4 Equipment list (Bill of Materials)", level=2)
     by_model = defaultdict(lambda: {"count": 0, "band": "Unknown"})
     for h, d in devices.items():
-        m = (d or {}).get("model") or "Unknown"
+        m = _D(d).get("model") or "Unknown"    # _D: a truthy non-dict device value -> {} (same class as devices[h])
         by_model[m]["count"] += 1
         b = lc_by_host.get(h, {}).get("band")
         if b and _LC_BAND_RANK.get(b, 9) < _LC_BAND_RANK.get(by_model[m]["band"], 9):
@@ -489,8 +495,8 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         "standardization candidate.")
     sw_by_model: dict = defaultdict(Counter)
     for h, d in devices.items():
-        m = (d or {}).get("model") or "Unknown"
-        sw_by_model[m][str((d or {}).get("sw_version") or "").strip() or "—"] += 1   # str(): a dict sw_version would be an unhashable key
+        m = _D(d).get("model") or "Unknown"    # _D: a truthy non-dict device value -> {} (same class as devices[h])
+        sw_by_model[m][str(_D(d).get("sw_version") or "").strip() or "—"] += 1   # str(): a dict sw_version would be an unhashable key
     sw_rows, mixed = [], []
     for m, cnt in sorted(sw_by_model.items(), key=lambda kv: (-sum(kv[1].values()), kv[0])):
         images = ", ".join(f"{v} ×{n}" for v, n in cnt.most_common())
@@ -720,9 +726,9 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     # observation, NOT a service-dependency / HA-cluster graph (that over-claim was dropped earlier).
     nos_mix = {}
     for dd in devices.values():
-        fam = str((dd or {}).get("platform") or "").strip().lower() or "unknown"
+        fam = str(_D(dd).get("platform") or "").strip().lower() or "unknown"    # _D: same devices-value class as §3.1/§3.4/§3.5
         nos_mix[fam] = nos_mix.get(fam, 0) + 1
-    ei = [e for e in (snap.get("endpoint_identity") or []) if isinstance(e, dict)]
+    ei = _R(snap.get("endpoint_identity"))    # _R: dict rows only, AND a truthy non-list -> [] (not iterated & crashed)
     if len(nos_mix) > 1 or ei:
         doc.add_heading("6. Interoperability & Platform Footprint", level=1)
         doc.add_paragraph(
