@@ -439,3 +439,83 @@ def test_deck_gating_slide_discloses_overflow(tmp_path):
     write_executive_deck_pptx(str(out2), _rich_snap(), "Test fleet")   # 3 gating items — no overflow
     _n2, txt2 = _deck(str(out2))
     assert "of 3 shown" not in txt2
+
+
+# --- crash-hardening: a TRUTHY non-dict/non-list section must degrade, never raise -----------------
+# Poison snapshots whose ONE bad section is a truthy scalar (5), a truthy non-list, or a truthy
+# non-dict. The `... or {}` / `or []` guards catch only FALSY values, so these slipped through and were
+# then `.get()`-ed / iterated / sliced / len()-ed -> uncaught AttributeError/TypeError that killed the
+# whole executive-deck deliverable. On the --no-collect path the snapshot JSON is attacker-controllable,
+# so this is a crash/DoS of the deck (same class as the audit-5 totality batch, whose hostile fixture
+# exercises the _R/_D top-level sections but NOT these nested `.get()` chains, sub-field lists, the
+# move_groups len(), the provenance str-slices, or a non-dict top-level snapshot). Each case crashes the
+# pre-fix writer; each must now emit a valid, openable deck. Names the section so a regression points at it.
+_DECK_POISON_SECTIONS = [
+    ("assessment_integrity", {"assessment_integrity": 5}),
+    ("executive_brief.axes", {"executive_brief": {"axes": 5}}),
+    ("executive_brief.top_gating", {"executive_brief": {"top_gating": 5}}),
+    ("punchlist[].devices", {"punchlist": [{"severity": "Critical", "title": "x", "devices": 5}]}),
+    ("device_dossiers", {"device_dossiers": 5}),
+    ("device_dossiers.per_device", {"device_dossiers": {"per_device": 5}}),
+    ("device_dossiers.summary",
+     {"device_dossiers": {"per_device": [{"risk_band": "Severe", "risk_index": 1}], "summary": 5}}),
+    ("device_dossiers.summary.bands",
+     {"device_dossiers": {"per_device": [{"risk_band": "Severe", "risk_index": 1}], "summary": {"bands": 5}}}),
+    ("device_dossiers[].compound",
+     {"device_dossiers": {"per_device": [{"risk_band": "Severe", "risk_index": 1, "compound": 5}],
+                          "summary": {"bands": {}}}}),
+    ("device_dossiers[].verdict",
+     {"device_dossiers": {"per_device": [{"risk_band": "Severe", "risk_index": 1, "verdict": 5}],
+                          "summary": {"bands": {}}}}),
+    ("lifecycle_risk", {"lifecycle_risk": 5}),
+    ("lifecycle_risk.summary", {"lifecycle_risk": {"summary": 5}}),
+    ("lifecycle_risk.summary.by_band", {"lifecycle_risk": {"summary": {"n_devices": 5, "by_band": 5}}}),
+    ("move_groups", {"move_groups": 5}),
+    ("design_blueprint", {"design_blueprint": 5}),
+    ("design_blueprint.target_state", {"design_blueprint": {"target_state": 5}}),
+    ("design_blueprint.target_state.wave_plan", {"design_blueprint": {"target_state": {"wave_plan": 5}}}),
+    ("design_blueprint.decisions", {"design_blueprint": {"decisions": 5}}),
+    ("design_blueprint.summary",
+     {"design_blueprint": {"summary": 5,
+                           "decisions": [{"status": "recommended", "priority": "Critical", "title": "x"}]}}),
+    ("design_blueprint.tradeoff_scorecard",
+     {"design_blueprint": {"decisions": [{"status": "recommended", "priority": "Critical", "title": "x"}],
+                           "tradeoff_scorecard": 5}}),
+    ("design_blueprint[].evidence",
+     {"design_blueprint": {"decisions": [{"status": "recommended", "priority": "Critical", "title": "x",
+                                          "evidence": 5}]}}),
+    ("script_version", {"script_version": 5}),
+    ("generated_at", {"generated_at": 5}),
+    ("top-level-not-a-dict", [1, 2, 3]),
+]
+
+
+@pytest.mark.parametrize("label,snap", _DECK_POISON_SECTIONS, ids=[c[0] for c in _DECK_POISON_SECTIONS])
+def test_deck_tolerates_truthy_nondict_sections(tmp_path, label, snap):
+    out = tmp_path / "poison.pptx"
+    write_executive_deck_pptx(str(out), snap, "AJ")               # must NOT raise
+    assert out.is_file(), f"no deck produced for poisoned {label}"
+    prs = Presentation(str(out))                                  # and must be a valid, openable pptx
+    assert len(prs.slides._sldIdLst) >= 6, f"deck degenerate for poisoned {label}"
+
+
+def test_deck_wellformed_unchanged_alongside_hardening(tmp_path):
+    """Non-vacuity guard for the crash-hardening: the _R/_D/_L coercion must be a no-op on well-formed
+    data. A rich snapshot must still render all 8 slides with its signature content intact."""
+    out = tmp_path / "rich.pptx"
+    snap = _rich_snap()
+    snap["device_dossiers"] = {
+        "per_device": [{"host": "core1", "risk_band": "Severe", "risk_index": 60,
+                        "compound": [{"code": "CR-01"}], "verdict": "Replace before migration."}],
+        "summary": {"bands": {"Severe": 1}}}
+    snap["design_blueprint"] = {
+        "summary": {"n_decisions": 2, "n_recommended": 1},
+        "tradeoff_scorecard": [{"axis": "availability", "score": 0}],
+        "decisions": [{"title": "Introduce FHRP", "priority": "Critical", "status": "recommended",
+                       "evidence": {"summary": "52 VLANs without FHRP"}}]}
+    write_executive_deck_pptx(str(out), snap, "Test fleet")
+    n, txt = _deck(str(out))
+    assert n == 9, f"rich snapshot must render 9 slides (register + design), got {n}"
+    assert "worry an engineer most" in txt and "CR-01" in txt   # dossiers slide, compound codes intact
+    assert "Introduce FHRP" in txt                              # design slide, decisions intact
+    assert "220" in txt and "Group 1" in txt                    # keystone + waves unchanged
