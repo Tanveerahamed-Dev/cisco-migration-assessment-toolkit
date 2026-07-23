@@ -63,7 +63,7 @@ Recover any with: `git switch -c revive/<name> refs/preserved/<name>`
 
 | ref | verdict |
 |-----|---------|
-| **kev-phase-b-upgrade-targets** | **Genuinely novel, NOT on main** (`kev.py` absent) — per-device security upgrade-targets (train-aware PSIRT join), 3 commits, 340-line test. **Recommend reviving** (07-07 → needs a rebase + re-verify; a product call, so flagged not auto-resurrected). |
+| **kev-phase-b-upgrade-targets** | **REVIVED → #460.** The tested comparator (`cisco_toolkit/upgrade_targets.py` + 57-test suite) is landed on a branch and green on current main (deps `intel_feed`/`research_lane` already merged). Still **unwired** — nothing calls `build_upgrade_targets`; surfacing it in the KEV MOP/NRFU (static docs) or the snapshot is the remaining follow-up (product call). Preserved ref kept until #460 merges. |
 | **deliverable-records-81bffa4** | Overlaps #438's landed deliverable-completeness work — **diff-review** to salvage anything novel before reviving. |
 | webapp-csrf-hardening | Superseded by the merged Sec-Fetch/Host guards (#382/#388). Discard unless a gap is found. |
 | ssot-qatar-repoint / masterplan-hygiene-table / scorecard-record-msg-arm | Stale/superseded 07-06–07-08 tweaks. Preserved for reference; likely discard. |
