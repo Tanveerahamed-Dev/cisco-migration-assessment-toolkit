@@ -341,3 +341,45 @@ def test_runbook_drift_table_keeps_disambiguation_and_remediation_on_long_detail
     text = _all_text(Document(out))
     assert "so the two figures can differ" in text                  # disambiguating tail survives
     assert "Fix: Set a dedicated, unused native VLAN" in text       # remediation survives
+
+
+# every top-level snapshot section the runbook writer dereferences (reads via `.get(...)` then
+# .items()/.get()/iterates/len()/slices). The webapp `--no-collect` path makes this JSON
+# attacker-controllable, so a TRUTHY non-dict/non-list section (a scalar, a string) must degrade
+# to empty, never raise — the same crash class fixed in parse/design_advisor/ssot/design.
+_RUNBOOK_SECTIONS = (
+    "devices", "interfaces", "health_scores", "move_groups", "migration_readiness",
+    "wave_sequencing", "cross_layer", "punchlist", "failure_impact", "link_centrality",
+    "l3_forwarding", "executive_brief", "collection_completeness", "service_map",
+    "migration_scenarios", "lifecycle_risk", "operational_drift", "subnet_intelligence",
+    "protocol_intelligence", "multicast_intelligence", "application_intelligence",
+    "segmentation", "golden_drift", "syslog_intelligence", "qos_audit", "software_risk",
+    "platform_health", "endpoint_identity", "capacity", "endpoint_dependencies",
+    "device_dossiers", "validation_plan", "remediation_plan",
+)
+
+
+@pytest.mark.parametrize("section", _RUNBOOK_SECTIONS)
+@pytest.mark.parametrize("poison", [5, "boom", True, 3.14])
+def test_runbook_survives_truthy_scalar_section(tmp_path, section, poison):
+    """Crash-hardening (audit-5 totality): setting ANY snapshot section to a truthy scalar used to slip
+    the `snap.get(x) or {}` / `or []` guards (which catch only falsy values) and then crash on
+    `.items()` / `.get()` / iteration / len() / slicing. Every section must now degrade to empty and
+    the runbook must still render end-to-end (§1 present), not raise."""
+    snap = _snap()
+    snap[section] = poison
+    out = str(tmp_path / f"rb_poison_{section}.docx")
+    write_runbook_docx(out, snap, "Unit Test Fleet")   # must not raise
+    import os
+    assert os.path.exists(out), f"runbook not written for poisoned {section!r}={poison!r}"
+    # the whole document still renders — the poisoned section degrades to empty, the rest is intact
+    assert "1. Assessment Header & Executive Summary" in _all_text(Document(out))
+
+
+def test_runbook_survives_truthy_scalar_flow_paths(tmp_path):
+    """The flow_paths argument is read `(flow_paths or {}).get(...)` the same way; a truthy non-dict
+    must degrade, not crash the §6.4.1 flow-path table."""
+    for bad in (5, "boom", [1, 2]):
+        out = str(tmp_path / f"rb_fp_{type(bad).__name__}.docx")
+        write_runbook_docx(out, _snap(), "Unit Test Fleet", flow_paths=bad)   # must not raise
+        assert "1. Assessment Header & Executive Summary" in _all_text(Document(out))
