@@ -210,7 +210,7 @@ def choose_target(current: Any, fixed: List[Any], *, platform_hint: Optional[str
         # Fixes exist but land on other trains (or none parsed) -> a migration / hand check, never a guess.
         why = ("no fix on the device's train -- the published fix is a different train (migration is a "
                "platform/design decision, not a mechanical upgrade)") if cross_train else \
-              ("no fixed release could be parsed" + (f" ({', '.join(unparsed)})" if unparsed else ""))
+              ("no fixed release could be parsed" + (f" ({', '.join(map(str, unparsed))})" if unparsed else ""))
         return _row(current, None, MANUAL_VERIFY, why, same_train=[], cross_train=cross_train)
 
     if len(same_by_norm) > 1:

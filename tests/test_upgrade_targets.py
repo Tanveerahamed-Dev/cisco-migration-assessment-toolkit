@@ -132,6 +132,21 @@ def test_no_fixed_intel_is_target_pending():
     assert d["needs_upgrade"] == TARGET_PENDING and d["target"] is None
 
 
+def test_choose_target_never_raises_on_nonstring_fix():
+    # Contract (module docstring): choose_target(fixed: List[Any]) never raises on bad input -> MANUAL-VERIFY,
+    # the safe direction. Regression (refuter R9): a non-string unparseable fix element used to crash the
+    # `', '.join(unparsed)` error-message build with TypeError instead of degrading. `fixed` is declared List[Any].
+    d = choose_target("17.9.1", [12345], platform_hint="ios-xe")
+    assert d["needs_upgrade"] == MANUAL_VERIFY and d["target"] is None
+
+
+def test_current_exactly_at_fix_is_not_an_upgrade():
+    # A device on the EXACT fixed release must not be told to upgrade to its own version (the `>=` boundary,
+    # previously unpinned — refuter R9 mutation M2).
+    d = choose_target("17.9.4a", ["17.9.4a"], platform_hint="ios-xe")
+    assert d["needs_upgrade"] is False and d["target"] == "17.9.4a"
+
+
 def test_single_same_train_fix_is_the_confident_target():
     d = choose_target("17.9.1", ["17.9.4a"], platform_hint="ios-xe")
     assert d["needs_upgrade"] is True and d["target"] == "17.9.4a"
