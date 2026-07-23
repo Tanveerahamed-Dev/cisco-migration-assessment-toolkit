@@ -203,7 +203,9 @@ def _wave_remediation(switches: Set[str], rem_by_device: Dict[str, Any]) -> List
     for dev, items in rem_by_device.items():
         if dev not in switches:
             continue
-        for it in (items or []):
+        # isinstance-guard, not `or []`: a per-device value that is a TRUTHY non-list (an int/str in a
+        # malformed upload) survives `or []` and 500s this iteration -> stored DoS on /cutover.
+        for it in summary._as_list(items):
             if isinstance(it, dict):
                 out.append({
                     "device": dev,
@@ -219,7 +221,9 @@ def _wave_remediation(switches: Set[str], rem_by_device: Dict[str, Any]) -> List
 def _wave_validation(group: str, val_by_wave: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Post-cutover validation checks for this wave (engine's validation_plan.by_wave)."""
     out = []
-    for it in (val_by_wave.get(group) or []):
+    # isinstance-guard, not `or []`: a per-wave value that is a TRUTHY non-list survives `or []` and 500s
+    # this iteration -> stored DoS on /cutover.
+    for it in summary._as_list(val_by_wave.get(group)):
         if isinstance(it, dict):
             out.append({
                 "category": it.get("category", ""),
