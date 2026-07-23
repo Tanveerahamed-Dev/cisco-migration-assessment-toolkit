@@ -71,7 +71,9 @@ _GATE_RANK = {GATE_GO: 0, GATE_COND: 1, GATE_NOGO: 2}
 
 
 def _rows(snap: Dict[str, Any], key: str) -> List[Dict[str, Any]]:
-    return [r for r in (snap.get(key) or []) if isinstance(r, dict)]
+    # isinstance-guard, not `or []`: a TRUTHY non-list section (an int in a malformed upload) survives `or []`
+    # and 500s the `for r in` iteration -> unhandled 500 on /cutover. Reuse summary._as_list (same discipline).
+    return [r for r in summary._as_list(snap.get(key)) if isinstance(r, dict)]
 
 
 def _by_group(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -302,8 +304,16 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
     move_groups = _rows(snap, "move_groups")
     failure_impact = _rows(snap, "failure_impact")
     cross_layer = _rows(snap, "cross_layer")
-    rem_by_device = (snap.get("remediation_plan") or {}).get("by_device") or {}
-    val_by_wave = (snap.get("validation_plan") or {}).get("by_wave") or {}
+    # isinstance-guard each `or {}` read: a TRUTHY non-dict remediation_plan/validation_plan (an int in a
+    # malformed upload) survives `or {}` and 500s the `.get(...)`; likewise a truthy non-dict INNER by_device/
+    # by_wave survives and 500s the later `.items()`/`.get()` in _wave_remediation/_wave_validation. Both the
+    # section and its inner map must degrade to {} -> a coherent (smaller) plan, never a 500 on /cutover.
+    _rem = snap.get("remediation_plan")
+    rem_by_device = (_rem if isinstance(_rem, dict) else {}).get("by_device")
+    rem_by_device = rem_by_device if isinstance(rem_by_device, dict) else {}
+    _val = snap.get("validation_plan")
+    val_by_wave = (_val if isinstance(_val, dict) else {}).get("by_wave")
+    val_by_wave = val_by_wave if isinstance(val_by_wave, dict) else {}
     keystones = _keystone_hosts(snap)
     blind_hosts = _blind_hosts(snap)
 

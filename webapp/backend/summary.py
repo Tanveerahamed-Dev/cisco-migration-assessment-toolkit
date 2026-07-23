@@ -93,8 +93,14 @@ def _keystones(snap: Dict[str, Any], top: int = 8) -> List[Dict[str, Any]]:
     (stranded endpoints, severity), which is always present."""
     eb = snap.get("executive_brief")
     eb = eb if isinstance(eb, dict) else {}      # a truthy non-dict section must not raise (malformed upload)
-    if isinstance(eb.get("keystones"), list) and eb["keystones"]:
-        return eb["keystones"][:top]
+    # Validate each ELEMENT is a dict, not just the container: a keystones list carrying a non-dict (a bare
+    # string/int in a malformed or hostile upload) is otherwise returned verbatim, and a read route then does
+    # k.get("host") on it -> AttributeError -> an unhandled HTTP 500 on /graph (app.py builds its keystone list
+    # from this projection). Filtering to dicts degrades gracefully; an all-garbage list falls through to
+    # failure_impact below, honouring summarize()'s `Every field degrades gracefully` contract.
+    ks = [k for k in eb["keystones"] if isinstance(k, dict)] if isinstance(eb.get("keystones"), list) else []
+    if ks:
+        return ks[:top]
     fi = [r for r in _as_list(snap.get("failure_impact")) if isinstance(r, dict)]
     # fail-soft: a malformed stranded (the JSON Infinity a raw int() would 500 on) degrades to 0 in the sort
     # key -- this runs on EVERY unauthenticated snapshot upload (POST /snapshots -> summarize).
