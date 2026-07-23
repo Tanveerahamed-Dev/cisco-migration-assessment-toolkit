@@ -52,8 +52,8 @@ Merge **in this order**, running `python -m pytest -q` on merged `main` after ea
    calls and #448's root guard inside its shapes.
 
 **The one thing that will bite if missed:** #439 embeds a **stale copy** of #448's `--gate-root` work
-(`COLLECT_PARSE_V3_23_0.py:1574` + the gate call sites), and #448's commit **6822442** *corrects false claims*
-in that same 099ac65-era text. **Treat 6822442 as authoritative** over #439's snapshot — otherwise the
+(`COLLECT_PARSE_V3_23_0.py:1574` + the gate call sites), and #448's commit **6822242** *corrects false claims*
+in that same 099ac65-era text. **Treat 6822242 as authoritative** over #439's snapshot — otherwise the
 correction (and a green-suite feature-killer fix) silently regresses. All five also edit `docs/ssot.md` — leave
 one reconciled row set.
 
