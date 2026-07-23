@@ -130,6 +130,37 @@ def test_reconcile_is_coverage_honest_on_unpublished_blocks():
     assert ssot.reconcile({"executive_brief": {"scale": {"n_devices": 10}}}) == []
 
 
+@pytest.mark.parametrize("snap", [
+    # collection_completeness.summary a TRUTHY non-dict -> crashed at `cc.get("inventory")` (unconditional)
+    {"collection_completeness": {"summary": "ALL DEVICES COLLECTED"}},
+    {"collection_completeness": {"summary": [1, 2, 3]}},
+    {"collection_completeness": {"summary": 5}},
+    # lifecycle_risk.summary a truthy non-dict WITH per_device present -> crashed at `lc.get("by_band")`
+    {"lifecycle_risk": {"summary": "12 past LDoS", "per_device": [{"band": "Active"}]}},
+    {"lifecycle_risk": {"summary": ["past"], "per_device": [{"band": "Active"}]}},
+    # the sibling executive_brief blocks share the identical `_dotted(...) or {}` idiom: a truthy
+    # non-dict whose text/members contain a checked key name reaches `.get` the same way.
+    {"executive_brief": {"scale": "n_devices=5"}, "health_scores": [{"band": "Good"}]},
+    {"executive_brief": {"scale": ["n_devices"]}, "health_scores": [{"band": "Good"}]},
+    {"executive_brief": {"posture": "n_critical is 0"}, "health_scores": [{"band": "Good"}]},
+    # design_blueprint.summary was already guarded; kept in the class so a refactor can't regress it.
+    {"design_blueprint": {"summary": "x", "decisions": [1, 2]}},
+])
+def test_reconcile_and_summary_survive_a_malformed_summary_block(snap):
+    """A poisoned --no-collect snapshot whose collection_completeness.summary / lifecycle_risk.summary
+    (or the sibling executive_brief.scale / .posture) is a TRUTHY non-dict (str / list / int) must NOT
+    crash. The `_dotted(...) or {}` idiom kept the bad value, and the next `.get` on it raised
+    AttributeError -- propagating through docmeta.add_excellence_front -> ssot.summary into EVERY docx
+    generator (design/mop/crd/engagement/archreview/ops/runbook). Coverage-honest: the malformed block
+    reads as absent (its checks skip, no fabricated number), yielding no invented violation, never a crash."""
+    viol = ssot.reconcile(snap)                     # must not raise
+    assert viol == [], viol                          # malformed block is skipped, never invented drift
+    s = ssot.summary(snap)                            # must not raise -- the exact add_excellence_front call site
+    assert set(s) == {"verified", "n_facts", "n_violations"}
+    assert s["n_violations"] == 0
+    assert isinstance(s["n_facts"], int) and s["n_facts"] >= 0   # coverage-honest: no fabricated fact
+
+
 def test_canonical_facts_reads_published_values():
     facts = ssot.canonical_facts(_consistent_snap())
     assert facts["n_devices"] == 6 and facts["n_collected"] == 5 and facts["n_endpoints"] == 40
@@ -372,3 +403,17 @@ def test_reconcile_catches_lifecycle_n_devices_drift():
     assert reconcile(snap) == []
     snap["lifecycle_risk"]["summary"]["n_devices"] = 42
     assert any("lifecycle_risk.summary.n_devices" in x for x in reconcile(snap))
+
+
+def test_add_excellence_front_survives_a_malformed_summary_block():
+    """End-to-end lock on the reaching path the audit named: docmeta.add_excellence_front calls
+    ssot.summary(snap), so a poisoned collection_completeness.summary (a truthy non-dict) crashed EVERY
+    docx generator that renders the At-a-Glance front matter (design/mop/crd/engagement/archreview/
+    ops/runbook). It must now render cleanly and coverage-honestly -- the self-verification badge is
+    ABSENT (nothing reconciled), never a fabricated number and never a crash."""
+    from cisco_toolkit.docmeta import add_excellence_front
+    doc = Document()
+    add_excellence_front(doc, {"collection_completeness": {"summary": "ALL COLLECTED"}})  # must not raise
+    text = _all_text(doc)
+    assert "At a Glance" in text                                  # the front matter rendered
+    assert "self-verified against the raw evidence" not in text   # coverage-honest: no fabricated badge

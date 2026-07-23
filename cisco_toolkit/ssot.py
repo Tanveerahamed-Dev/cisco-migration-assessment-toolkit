@@ -90,6 +90,18 @@ def _as_int(value: Any) -> Optional[int]:
     return None
 
 
+def _as_dict(value: Any) -> Dict[str, Any]:
+    """Coerce a possibly-malformed snapshot block to a dict; a truthy non-dict degrades to ``{}``.
+
+    The ``_dotted(...) or {}`` idiom guards ``None``/empty but NOT a *truthy* non-dict (a ``str`` or
+    ``list`` from a poisoned or hand-edited ``--no-collect`` snapshot): it keeps the bad value, and the
+    first ``.get`` on it then raises ``AttributeError`` -- crashing :func:`reconcile` / :func:`summary`
+    and, through ``docmeta.add_excellence_front``, every deliverable generator. Coverage-honest: a
+    malformed block reads as 'absent' (its checks skip, no number is fabricated), never a crash.
+    """
+    return value if isinstance(value, dict) else {}
+
+
 def _dotted(snap: Dict[str, Any], path: str) -> Any:
     """Read a dotted snapshot path, returning None if any hop is missing/not a dict."""
     cur: Any = snap
@@ -297,10 +309,14 @@ def reconcile(snap: Dict[str, Any]) -> List[str]:
     invents a violation from absent evidence.
     """
     violations: List[str] = []
-    scale = _dotted(snap, "executive_brief.scale") or {}
-    posture = _dotted(snap, "executive_brief.posture") or {}
-    cc = _dotted(snap, "collection_completeness.summary") or {}
-    lc = _dotted(snap, "lifecycle_risk.summary") or {}
+    # Every published summary block is coerced via _as_dict, NOT `_dotted(...) or {}`: `or {}` keeps a
+    # TRUTHY non-dict (a str/list from a poisoned or hand-edited --no-collect snapshot), and the many
+    # `.get` calls below would then raise AttributeError -- crashing this guard (and, via
+    # docmeta.add_excellence_front -> ssot.summary, every deliverable generator). See _as_dict.
+    scale = _as_dict(_dotted(snap, "executive_brief.scale"))
+    posture = _as_dict(_dotted(snap, "executive_brief.posture"))
+    cc = _as_dict(_dotted(snap, "collection_completeness.summary"))
+    lc = _as_dict(_dotted(snap, "lifecycle_risk.summary"))
     per_device = _dotted(snap, "lifecycle_risk.per_device") or []
     health = snap.get("health_scores") or []
     endpoints = snap.get("endpoint_identity") or []
@@ -401,10 +417,8 @@ def reconcile(snap: Dict[str, Any]) -> List[str]:
                       f"count(per_device.band=={band})")
 
     # --- design decisions --------------------------------------------------------------------
-    dbp = snap.get("design_blueprint")
-    dbp = dbp if isinstance(dbp, dict) else {}      # the `x or {}` idiom does NOT guard a TRUTHY non-dict
-    dsum = dbp.get("summary")                        # block (e.g. a str) -> it would crash the coverage guard
-    dsum = dsum if isinstance(dsum, dict) else {}
+    dbp = _as_dict(snap.get("design_blueprint"))    # _as_dict guards the same TRUTHY-non-dict crash class as the
+    dsum = _as_dict(dbp.get("summary"))             # summary blocks above (a str `summary` would crash the .get)
     decisions = dbp.get("decisions")
     if "n_decisions" in dsum and isinstance(decisions, list):
         check("design_blueprint.summary.n_decisions", dsum.get("n_decisions"), len(decisions),
