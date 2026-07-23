@@ -1495,6 +1495,51 @@ def test_d_sdwan_device_unreachable_fires_on_unreachable_only():
     assert da._d_sdwan_device_unreachable({}, da._signals({})) is None
 
 
+def test_d_sdwan_device_reachable_but_status_error_or_state_red_fires():
+    """FALSE-HEALTH regression (Cisco Catalyst SD-WAN / vManage): a device the controller itself marks
+    status=error or state=red is degraded even while reachability=reachable. parse_sdwan_devices surfaces
+    status/state precisely 'so a degraded fabric member is not read healthy', but the _signals devices loop
+    flagged ONLY reachability=unreachable -- so an error/red-but-reachable edge fired no signal and
+    compute_architecture_coverage reported the sdwan class 'clean' (a false-health read). It must instead
+    fire _d_sdwan_device_unreachable and flip the sdwan class to 'finding'. Non-cry-wolf: a healthy
+    (reachable / normal / green) edge and a yellow (warn, not broken) edge stay silent."""
+    import cisco_toolkit.design_advisor as da
+    for facet in ({"status": "error"}, {"state": "red"}):
+        fire = {"sdwan": {"mgr1": {"devices": [
+            {"system_ip": "10.0.0.9", "host_name": "BR9", "reachability": "reachable", **facet}]}}}
+        sig = da._signals(fire)
+        assert any("BR9" in x for x in sig.get("sdwan_unreachable", [])), facet
+        dec = da._d_sdwan_device_unreachable(fire, sig)
+        assert dec is not None and dec["priority"] == "High" and "mgr1" in dec["evidence"]["devices"], facet
+        cov = da.compute_architecture_coverage({**fire, "design_blueprint": {"decisions": [dec]}})
+        by = {c["key"]: c for c in cov["classes"]}
+        assert by["sdwan"]["status"] == "finding", facet
+        assert "sdwan-device-unreachable" in by["sdwan"]["findings"], facet
+    # non-cry-wolf: reachable + normal + green (healthy) and reachable + yellow (warn, not broken) stay silent
+    for quiet in ({"status": "normal", "state": "green"}, {"status": "normal", "state": "yellow"}):
+        clean = {"sdwan": {"mgr1": {"devices": [
+            {"system_ip": "x", "host_name": "DC1", "reachability": "reachable", **quiet}]}}}
+        assert da._d_sdwan_device_unreachable(clean, da._signals(clean)) is None, quiet
+
+
+def test_compute_design_blueprint_survives_scalar_failure_impact_and_link_centrality():
+    """CRASH-ON-MALFORMED regression: a snapshot whose failure_impact or link_centrality is a list of
+    SCALARS (not dicts) must NOT raise. _signals did x.get('severity') / x.get('is_bridge') on each element,
+    so an int element raised AttributeError -- surfacing as HTTP 500 on GET /design, /architecture_coverage,
+    /domain_packs, /design/nrfu and POST /design (via _fallback_blueprint). Coverage-honest: the malformed
+    section degrades to not-assessable (0 bridges / 0 nobackup), never a fabricated pass."""
+    import cisco_toolkit.design_advisor as da
+    for key in ("failure_impact", "link_centrality"):
+        snap = {"devices": {"sw1": {}}, key: [1, 2, "x", None]}
+        bp = da.compute_design_blueprint(snap)           # must not raise
+        assert isinstance(bp, dict) and isinstance(bp.get("decisions"), list), key
+    # both malformed at once, and the signal builder directly -> degrade to empty, never crash
+    snap = {"devices": {"sw1": {}}, "failure_impact": [1, 2], "link_centrality": [3, 4]}
+    sig = da._signals(snap)                              # must not raise
+    assert sig.get("bridges") == 0 and sig.get("nobackup_high") == 0
+    assert isinstance(da.compute_design_blueprint(snap).get("decisions"), list)
+
+
 def test_compute_architecture_coverage_observed_vs_not():
     """Architecture-coverage SSOT: an axis present + a fired detector -> 'finding'; present + no finding ->
     'clean'; absent -> 'not-observed' (coverage-honest -- NEVER 'healthy'). Channels are tallied (ssh vs json)."""

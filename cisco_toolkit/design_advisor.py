@@ -466,8 +466,23 @@ def _signals(snap):
                     _seen_short.add(_idk)
                     _sdwan_cc.append(f"{_sh} {_c.get('host_name') or _id} -> control connections {_act}/{_exp}")
         for _d in _as_list(_sf.get("devices")):
-            if str(_as_dict(_d).get("reachability", "")).lower() == "unreachable":
-                _sdwan_unreach.append(f"{_sh} {_as_dict(_d).get('host_name') or _as_dict(_d).get('system_ip', '?')}")
+            _dd = _as_dict(_d)
+            # The Manager's OWN verdict on each WAN edge has THREE facets, not one: reachability
+            # (reachable|unreachable), status (normal|error) and state (green|yellow|red). A REACHABLE edge can
+            # still be status=error / state=red -- present-but-broken -- so flag any of the three, not
+            # reachability alone (parse_sdwan_devices surfaces status/state precisely 'so a degraded fabric
+            # member is not read healthy'; reading reachability alone let an error/red-but-reachable edge read
+            # clean). Non-cry-wolf: state=yellow (a warning, not broken) and status=normal do NOT fire.
+            _why = []
+            if str(_dd.get("reachability", "")).lower() == "unreachable":
+                _why.append("unreachable")
+            if str(_dd.get("status", "")).lower() == "error":
+                _why.append("status=error")
+            if str(_dd.get("state", "")).lower() == "red":
+                _why.append("state=red")
+            if _why:
+                _sdwan_unreach.append(
+                    f"{_sh} {_dd.get('host_name') or _dd.get('system_ip', '?')} ({', '.join(_why)})")
         for _o in _as_list(_sf.get("omp_counters")):
             _o = _as_dict(_o)
             if isinstance(_o.get("omp_down"), int) and _o.get("omp_down") > 0:
@@ -939,7 +954,10 @@ def _signals(snap):
                 devs.append(h)
     sig["no_fhrp_devices"] = devs
 
-    links = _as_list(snap.get("link_centrality"))
+    # _dict_rows (not _as_list): an uploaded snapshot can carry a list of SCALAR elements here, and every
+    # downstream per-row .get() (is_bridge / a_host / pairs_cut) would AttributeError on an int -> a 500 on
+    # /design, /architecture_coverage. Coverage-honest: a malformed section degrades to 0 bridges, never a pass.
+    links = _dict_rows(snap.get("link_centrality"))
     bridges = [x for x in links if x.get("is_bridge")]
     sig["bridges"] = len(bridges)
     bh = []
@@ -955,7 +973,9 @@ def _signals(snap):
     sig["worst_pairs_cut"] = max(_pc) if _pc else 0
     sig["bridges_high_blast"] = sum(1 for v in _pc if v >= 20)
 
-    fi = _as_list(snap.get("failure_impact"))
+    # _dict_rows (not _as_list): guard the per-row .get() against a scalar element (same 500 class as
+    # link_centrality above) -- a malformed failure_impact degrades to 0 nobackup_high, never a fabricated pass.
+    fi = _dict_rows(snap.get("failure_impact"))
     sig["nobackup_high"] = sum(1 for x in fi if x.get("severity") == "High" and not _as_int(x.get("backup")))
 
     life = _as_list(_as_dict(snap.get("lifecycle_risk")).get("per_device"))
@@ -2012,27 +2032,33 @@ def _d_sdwan_control_connection_down(snap, sig):
 
 
 def _d_sdwan_device_unreachable(snap, sig):
-    """Cisco Catalyst SD-WAN: a device the vManage Manager reports as unreachable (parse_sdwan_devices ->
-    snap['sdwan'].devices, reachability=unreachable). Reachability is the controller's own verdict on each
-    WAN edge; unreachable means the Manager has lost management/control contact with the device -- it cannot
-    be monitored, templated or pushed policy, and is likely isolated from the overlay. Coverage-honest: fires
-    ONLY on an OBSERVED reachability=unreachable; a reachable device and a fleet with no SD-WAN export stay
-    silent."""
+    """Cisco Catalyst SD-WAN: a WAN edge the vManage Manager's OWN verdict marks broken -- reachability=
+    unreachable (the Manager has lost management/control contact), OR a REACHABLE edge whose status=error or
+    state=red (present-but-broken: the controller reports the member degraded even though it still answers)
+    (parse_sdwan_devices -> snap['sdwan'].devices .reachability / .status / .state). Any of the three means
+    the edge cannot be trusted in-service -- unmonitored and likely isolated (unreachable), or controller-
+    flagged unhealthy. Coverage-honest & non-cry-wolf: fires ONLY on an OBSERVED unreachable / status=error /
+    state=red; a healthy (reachable, normal, green) edge, a state=yellow warning, and a fleet with no SD-WAN
+    export stay silent."""
     u = sig.get("sdwan_unreachable") or []
     if not u:
         return None
     return _decision(
         "sdwan-device-unreachable",
-        f"{len(u)} SD-WAN device(s) are reported UNREACHABLE by the vManage Manager (e.g. {', '.join(u[:5])}). "
-        "Reachability is the controller's own verdict on each WAN edge; unreachable means the Manager has lost "
-        "management/control contact with the device -- it cannot be monitored, templated or pushed policy, and "
-        "is likely isolated from the overlay. Confirm the device is powered and on-net, its control "
-        "connections, and any out-of-band management path before the site is counted as in-service at cutover.",
+        f"{len(u)} SD-WAN device(s) are flagged by the vManage Manager's own verdict -- UNREACHABLE, or "
+        f"reachable but status=error / state=red (present-but-broken) (e.g. {', '.join(u[:5])}). The Manager's "
+        "reachability / status / state are its own health verdict on each WAN edge: unreachable means it has "
+        "lost management/control contact (the edge cannot be monitored, templated or pushed policy and is "
+        "likely isolated from the overlay); status=error / state=red means the edge answers but the controller "
+        "reports it degraded. Confirm the device is powered and on-net, its control connections and OMP "
+        "session, any out-of-band management path, and clear the controller-reported error before the site is "
+        "counted as in-service at cutover.",
         len(u), ["availability", "manageability"],
-        ["sdwan.devices[].reachability (parse_sdwan_devices / vManage /dataservice/device)"],
+        ["sdwan.devices[].reachability / .status / .state (parse_sdwan_devices / vManage /dataservice/device)"],
         priority="High",
-        driver="SD-WAN fabric reachability: a device the Manager reports unreachable has lost controller "
-               "contact -- unmonitored, unmanageable, and probably isolated from the overlay.",
+        driver="SD-WAN fabric health: a device the Manager reports unreachable (lost controller contact -- "
+               "unmonitored, isolated) OR reachable-but-status=error / state=red (present-but-broken) cannot be "
+               "trusted in-service; reading reachability alone let a degraded-but-reachable edge read healthy.",
         devices=sig.get("sdwan_devices") or [])
 
 
