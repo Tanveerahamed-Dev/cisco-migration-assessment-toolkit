@@ -148,7 +148,7 @@ def _vlan_count(snap):
 # ----------------------------------------------------------------------------- evidence signals
 def _no_fhrp_vlans(snap):
     out = []
-    for g in _as_list(snap.get("fhrp")):
+    for g in _dict_rows(snap.get("fhrp")):
         issues = [str(i).lower() for i in _as_list(g.get("issues"))]
         if any(("no fhrp" in i) or ("first-hop" in i) or ("first hop" in i) for i in issues):
             out.append(g)
@@ -164,7 +164,7 @@ def _broken_fhrp_vlans(snap):
     _broken = ("split-brain", "two active", "mixed fhrp", "different fhrp groups",
                "different virtual ip", "unprotected, independent gateway")
     out = []
-    for g in _as_list(snap.get("fhrp")):
+    for g in _dict_rows(snap.get("fhrp")):
         issues = [str(i).lower() for i in _as_list(g.get("issues"))]
         if any(any(tok in i for tok in _broken) for i in issues):
             out.append(g)
@@ -232,17 +232,17 @@ def _signals(snap):
     sig["nve_peers_down"] = []
     _ov = snap.get("overlay")
     for _h, _o in (_ov.items() if isinstance(_ov, dict) else []):
-        for _p in _dict_rows((_o or {}).get("nve_peers")):
+        for _p in _dict_rows(_as_dict(_o).get("nve_peers")):
             if str(_p.get("state", "")).lower() not in ("up", ""):
                 sig["nve_peers_down"].append(f"{_h} {_p.get('peer_ip', '?')}")
     sig["evpn_down"] = []
     for _h, _o in (_ov.items() if isinstance(_ov, dict) else []):
-        for _n in _dict_rows((_o or {}).get("evpn_neighbors")):
+        for _n in _dict_rows(_as_dict(_o).get("evpn_neighbors")):
             if str(_n.get("state", "")).lower() != "established":
                 sig["evpn_down"].append(f"{_h} {_n.get('neighbor', '?')}")
     sig["nve_vni_down"] = []
     for _h, _o in (_ov.items() if isinstance(_ov, dict) else []):
-        for _v in _dict_rows((_o or {}).get("nve_vni")):
+        for _v in _dict_rows(_as_dict(_o).get("nve_vni")):
             if str(_v.get("state", "")).lower() != "up":
                 sig["nve_vni_down"].append(f"{_h} VNI {_v.get('vni', '?')}")
     # Control-plane policing (CoPP): a class actively DROPPING punted control-plane traffic. A single CUMULATIVE
@@ -866,7 +866,7 @@ def _signals(snap):
     sig["storm_noaction"] = []
     _sc = _as_dict(snap.get("storm_control"))
     for _sch, _rows in _sc.items():
-        for _r in _as_list(_rows):
+        for _r in _dict_rows(_rows):
             if _r.get("configured") and str(_r.get("action", "")).strip().lower() == "none":
                 sig["storm_noaction"].append(f"{_sch} {_r.get('interface', '?')} {_r.get('traffic', 'storm')}")
     sig["storm_noaction_devices"] = sorted({x.split()[0] for x in sig["storm_noaction"]})[:12]
@@ -875,7 +875,7 @@ def _signals(snap):
     # Catalyst form that omits the Action column. Coverage-honest: only 'Blocking' fires; Forwarding/Link-Down/absent silent.
     sig["storm_blocking"] = []
     for _sch, _rows in _sc.items():
-        for _r in _as_list(_rows):
+        for _r in _dict_rows(_rows):
             if str(_r.get("filter_state", "")).strip().lower() == "blocking":
                 _scur = str(_r.get("current", "")).strip()
                 sig["storm_blocking"].append(f"{_sch} {_r.get('interface', '?')} {_r.get('traffic', 'storm')}"
@@ -889,7 +889,7 @@ def _signals(snap):
     sig["qos_drop_classes"] = []
     _qr = _as_dict(snap.get("qos_runtime"))
     for _qh, _qrows in _qr.items():
-        for _c in _as_list(_qrows):
+        for _c in _dict_rows(_qrows):
             _drop = _as_int(_c.get("drop_pkts")) + _as_int(_c.get("police_drop_pkts"))
             if _drop <= 0:
                 continue
@@ -928,7 +928,7 @@ def _signals(snap):
     _shadow: dict = {}
     _si = _as_dict(snap.get("shadow_infra"))
     for _sih, _recs in _si.items():
-        for _n in _as_list(_recs):
+        for _n in _dict_rows(_recs):
             _did = (_n.get("device_id") or "").strip()
             _cn = _ch(_did)
             if not _cn or _cn in _assessed:
@@ -948,7 +948,7 @@ def _signals(snap):
     sig["shadow_infra_devices"] = sorted({h for v in _shadow.values() for h in v["seen_from"]})[:12]
     devs = []
     for g in bad_fhrp:
-        for m in _as_list(g.get("members")):
+        for m in _dict_rows(g.get("members")):
             h = m.get("host")
             if h and h not in devs:
                 devs.append(h)
@@ -978,7 +978,7 @@ def _signals(snap):
     fi = _dict_rows(snap.get("failure_impact"))
     sig["nobackup_high"] = sum(1 for x in fi if x.get("severity") == "High" and not _as_int(x.get("backup")))
 
-    life = _as_list(_as_dict(snap.get("lifecycle_risk")).get("per_device"))
+    life = _dict_rows(_as_dict(snap.get("lifecycle_risk")).get("per_device"))
     # Past-LDoS = unsupported (no TAC / no fixes) -> "eol"/replace. Past-EoS (past end-of-SALE but STILL
     # supported until LDoS -- analyze emits both bands) is DISTINCT and refresh-class; matching the band
     # exactly (not startswith "past") keeps supported gear from being mislabelled unsupported/past-LDoS.
@@ -987,7 +987,7 @@ def _signals(snap):
     sig["eol_devices"] = [d.get("host") for d in life
                           if str(d.get("band", "")).strip().lower() == "past-ldos"][:12]
 
-    qos = _as_list(_as_dict(snap.get("qos_audit")).get("per_device"))
+    qos = _dict_rows(_as_dict(snap.get("qos_audit")).get("per_device"))
     sig["qos_assessable"] = sum(1 for d in qos if d.get("assessable"))
     sig["qos_none"] = sum(1 for d in qos if d.get("assessable") and d.get("mode") == "none")
     sig["qos_none_hosts"] = [d.get("host") for d in qos if d.get("assessable") and d.get("mode") == "none"]
@@ -998,7 +998,7 @@ def _signals(snap):
 
     fail_hosts = {}
     for host, v in _as_dict(snap.get("security")).items():
-        for f in _as_list(_as_dict(v).get("findings")):
+        for f in _dict_rows(_as_dict(v).get("findings")):
             if f.get("status") == "fail":
                 fail_hosts.setdefault(_hkey(f.get("id")), set()).add(host)
     sig["mgmt_hosts"] = sorted({h for fid in _MGMT_FAIL_IDS for h in fail_hosts.get(fid, set())})
@@ -1023,11 +1023,11 @@ def _signals(snap):
     sig["oncrit_exposed"] = _as_int(seg_sum.get("n_oncrit_exposed"))
     sig["gw_acl_cov"] = _as_float(seg_sum.get("gateway_acl_coverage"))   # fail-soft: a str/inf coverage -> 0.0, not a 500
     sig["n_gateways"] = _as_int(seg_sum.get("n_gateways"))
-    sig["oncrit_domains"] = [d.get("domain") for d in _as_list(seg.get("domains"))
+    sig["oncrit_domains"] = [d.get("domain") for d in _dict_rows(seg.get("domains"))
                              if d.get("tier") == "On-air critical" and not d.get("isolated")
                              and _as_int(d.get("gateways")) > 0][:6]
 
-    stp = [x for x in _as_list(snap.get("protocol_health")) if x.get("protocol") == "STP"]
+    stp = [x for x in _dict_rows(snap.get("protocol_health")) if x.get("protocol") == "STP"]
     sig["stp_blocked"] = sum(1 for x in stp if _stp_blocked(x))
     sig["stp_legacy"] = sum(1 for x in stp if _stp_legacy(x))
     # Rapid-PVST switches ONLY (mode 'rapid-pvst'): the per-VLAN-STP instance-scale population, scoped to
@@ -1036,7 +1036,7 @@ def _signals(snap):
     sig["stp_pvst_hosts"] = [x.get("switch") for x in stp
                              if "rapid-pvst" in str(x.get("summary", "")).lower()][:12]
     sig["vtp_server"] = any(x.get("protocol") == "VTP" and "server" in str(x.get("summary", "")).lower()
-                            for x in _as_list(snap.get("protocol_health")))
+                            for x in _dict_rows(snap.get("protocol_health")))
 
     igps = set()
     for _h, d in _as_dict(snap.get("routing_neighbors")).items():
@@ -1376,7 +1376,7 @@ def _signals(snap):
             if sw and _scalar(sw):
                 dhh.add(sw)
     sig["dual_homed_hosts"] = sorted(dhh)[:12]
-    sig["stp_blocked_hosts"] = [x.get("switch") for x in _as_list(snap.get("protocol_health"))
+    sig["stp_blocked_hosts"] = [x.get("switch") for x in _dict_rows(snap.get("protocol_health"))
                                 if x.get("protocol") == "STP" and _stp_blocked(x) and x.get("switch")][:12]
     wh = set()
     for g in _as_list(snap.get("move_groups")):
@@ -3759,7 +3759,7 @@ def _replacement_bom(snap):
     """Target procurement: assets at/near end-of-support that must be replaced/refreshed, grouped by their
     CURRENT model. Read straight from lifecycle_risk.per_device (band + model). A supported successor SKU
     is chosen at detailed design -- not invented here. Supportable assets carry forward."""
-    life = _as_list(_as_dict(snap.get("lifecycle_risk")).get("per_device"))
+    life = _dict_rows(_as_dict(snap.get("lifecycle_risk")).get("per_device"))
     replace, refresh = {}, {}
     for d in life:
         band = str(d.get("band", "")).strip().lower()
