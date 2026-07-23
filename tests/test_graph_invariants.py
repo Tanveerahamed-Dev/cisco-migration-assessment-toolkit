@@ -17,13 +17,12 @@ already worktree-aware (resolves the main checkout via ``git rev-parse --git-com
 """
 from __future__ import annotations
 
-import json
 import os
 import re
 
 import pytest
 
-from cisco_toolkit.d10_eval_set import find_graph_json
+from cisco_toolkit.d10_eval_set import find_graph_json, load_graph_settled
 
 # A real graph is ~7.5k nodes; the degenerate worktree partials observed were ~76-122. This floor
 # cleanly separates "the full owner-machine graph" (assert) from "a worktree stub" (skip) - it is a
@@ -53,8 +52,11 @@ def _load_graph():
     if not path:
         pytest.skip("graph.json not reachable (clean clone / CI) - the graph is gitignored and "
                     "owner-machine-only; invariants are checked where the graph lives")
-    with open(path, encoding="utf-8") as f:
-        graph = json.load(f)
+    graph, unsettled = load_graph_settled(path)
+    if unsettled:
+        # background git-hook rebuilds rewrite this file non-atomically under us; a torn read is a
+        # spurious ERROR, not an invariant violation
+        pytest.skip(f"graph.json could not be read as a settled whole: {unsettled}")
     n = len(graph.get("nodes", []))
     if n < _SUBSTANTIAL_FLOOR:
         pytest.skip(f"degenerate/partial graph ({n} nodes < {_SUBSTANTIAL_FLOOR}) - the worktree stub, "
