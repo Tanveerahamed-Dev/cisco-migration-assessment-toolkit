@@ -138,8 +138,8 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     devices = _D(snap.get("devices"))
     l3f = _R(snap.get("l3_forwarding"))
     rn = _D(snap.get("routing_neighbors"))    # _D: a truthy non-dict -> {} (feeds _is_l3 AND the rn.items() render in §2.3)
-    stp_roots = snap.get("stp_roots") or {}
-    redist = snap.get("redistribution") or {}
+    stp_roots = _D(snap.get("stp_roots"))    # _D: a truthy non-dict -> {} instead of crashing stp_roots.items() (§2.2)
+    redist = _D(snap.get("redistribution"))    # _D: a truthy non-dict -> {} instead of crashing redist.values() (§2.3)
     fhrp = _R(snap.get("fhrp"))    # _R: a truthy non-list (malformed snapshot) -> [] instead of crashing `for g in fhrp`
     # FHRP candidate/configured counts come from the FULL gateway register (l3_forwarding), NOT snap['fhrp'] --
     # which is compute_fhrp_consistency()'s PROBLEMS-ONLY list (multi-gateway VLANs with an inconsistency).
@@ -156,10 +156,10 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                       if str(_r.get("fhrp") or "").strip().lower() not in ("", "none", "-", "—")})
     capacity = _R(snap.get("capacity"))
     lifecycle = _D(snap.get("lifecycle_risk"))    # _D: a truthy non-dict -> {} instead of crashing lifecycle.get('per_device')
-    vpc = snap.get("vpc") or {}
+    vpc = _D(snap.get("vpc"))    # _D: a truthy non-dict -> {} instead of crashing vpc.items() (§1 scale table + §2.4)
     failure_impact = _R(snap.get("failure_impact"))
-    punchlist = snap.get("punchlist") or []
-    subnet_intel = snap.get("subnet_intelligence") or {}
+    punchlist = _R(snap.get("punchlist"))    # _R: dict rows only, AND a truthy non-list -> [] (sorted()/.get() in §4 fallback)
+    subnet_intel = _D(snap.get("subnet_intelligence"))    # _D: a truthy non-dict -> {} instead of crashing .get('per_device') (§3.2)
     svc = snap.get("service_map") or {}
     # isinstance-guard, not `or {}`: a TRUTHY non-dict (a string/list in a malformed or slimmed snapshot) slips
     # through `or {}` and then crashes .get('scale') -- the fail-soft siblings (engagement/ops) degrade via
@@ -284,7 +284,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     doc.add_heading("2.2 Layer-2 domain", level=2)
     root_count: Counter = Counter()
     for host, vmap in stp_roots.items():
-        for vid, info in (vmap or {}).items():
+        for vid, info in _D(vmap).items():   # _D: a truthy non-dict per-host value (stp_roots={host:5}) -> {} (same class)
             if isinstance(info, dict) and info.get("is_root"):
                 root_count[host] += 1
     doc.add_paragraph(
@@ -310,7 +310,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         "Routing protocols recovered from neighbour state: " + (
             ", ".join(f"{p} on {n} device(s)" for p, n in proto_use.most_common())
             if proto_use else "no dynamic-routing adjacencies were observed (static / connected only)") + ".")
-    n_redist = sum(len(v or []) for v in redist.values())
+    n_redist = sum(len(_R(v)) for v in redist.values())   # _R: a truthy non-list per-host value (redist={host:5}) -> [] not len(scalar)
     if n_redist:
         _label_run(doc.add_paragraph(), "Redistribution boundaries:",
                    f"{n_redist} route-redistribution edge(s) across the fleet — each is a protocol "
@@ -374,7 +374,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
 
     # NEW-V3.23.165: QoS is a named HLD design domain; render the audited CONFIGURED posture
     # when the snapshot carries the qos_audit axis (older snapshots simply skip the section).
-    qa = snap_dict.get("qos_audit") or {}
+    qa = _D(snap_dict.get("qos_audit"))    # _D: a truthy non-dict -> {} instead of crashing qa.get('summary') (§2.7)
     qsum = qa.get("summary") or {}
     if qsum.get("n_devices"):
         doc.add_heading("2.7 Quality of service (configured posture)", level=2)
@@ -422,8 +422,8 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     doc.add_heading("3.2 Addressing & VLAN plan", level=2)
     # vlan -> subnet from subnet_intelligence served_subnets; vlan -> gateway/fhrp from l3_forwarding
     subnet_by_vlan: dict = {}
-    for pd in (subnet_intel.get("per_device") or []):
-        for s in (pd.get("served_subnets") or []):
+    for pd in _R(subnet_intel.get("per_device")):    # _R: dict rows only, AND a truthy non-list -> [] (pd.get() below)
+        for s in _R(pd.get("served_subnets")):    # _R: same class one level down (s.get() below)
             v = str(s.get("vlan") or "")
             if v and s.get("subnet"):
                 subnet_by_vlan.setdefault(v, s.get("subnet"))
