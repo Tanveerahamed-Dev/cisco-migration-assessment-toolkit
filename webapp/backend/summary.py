@@ -138,6 +138,11 @@ def summarize(snap: Dict[str, Any]) -> Dict[str, Any]:
     hs = [r for r in _as_list(snap.get("health_scores")) if isinstance(r, dict)]
     pl = [r for r in _as_list(snap.get("punchlist")) if isinstance(r, dict)]
     mr = [r for r in _as_list(snap.get("migration_readiness")) if isinstance(r, dict)]
+    # isinstance-guard, not `or {}`: a TRUTHY non-dict 'devices' (an int in a malformed/hostile upload) survives
+    # `or {}` and 500s the eagerly-evaluated `len(...)` default below -- and summarize() runs on EVERY upload
+    # (POST /snapshots) and on the /snapshots/{id} read (freshen), so that TypeError escapes as an HTTP 500.
+    _dev = snap.get("devices")
+    n_devices = len(_dev) if isinstance(_dev, dict) else 0
 
     try:
         head = engine.trend_point(snap)  # re-use the engine's headline extractor
@@ -160,7 +165,7 @@ def summarize(snap: Dict[str, Any]) -> Dict[str, Any]:
         # running engine is recomputed on read so the headline cards never disagree with a live
         # section tab (app._summary_freshened).
         "engine_schema": engine.ENGINE_SCHEMA_VERSION,
-        "n_switches": head.get("n_switches", len(snap.get("devices") or {})),
+        "n_switches": head.get("n_switches", n_devices),
         "avg_health": head.get("avg_health", ""),
         "bands": _count_by(hs, "band", BANDS),
         # n_critical must reconcile with the bands chart (both from health_scores): trend_point can silently
