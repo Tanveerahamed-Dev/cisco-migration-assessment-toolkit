@@ -748,15 +748,12 @@ def test_crd_deliverable_route_survives_truthy_nondict_inner_value(hub_client, n
     assert r.status_code == 200, f"{name}: expected 200, got {r.status_code}: {r.text[:300]}"
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason="Residual, OUTSIDE this unit's file: cisco_toolkit/analyze.py:1632 (vlan_inventory) carries its "
-           "own `(... igmp_queriers ...) or []` and iterates it, so a truthy scalar there still 500s the CRD "
-           "route AFTER crd.py's own read at :69 is guarded — reachable only when executive_brief.scale."
-           "n_vlans is absent, which makes crd.py fall back to vlan_inventory(snap). Recorded rather than "
-           "hidden (coverage-honesty); flips to XPASS when analyze.py is guarded by its own unit.")
 def test_crd_route_survives_scalar_igmp_queriers(hub_client):
-    """The one poison whose end-to-end 500 this unit CANNOT close from crd.py alone."""
+    """Was xfail(strict=False) while the residue lived OUTSIDE this file, in
+    cisco_toolkit/analyze.py::vlan_inventory (`(... igmp_queriers ...) or []` then `for q in 5`), which
+    crd.py falls back to when executive_brief.scale.n_vlans is absent. analyze.py is guarded now, so the
+    marker is dropped and this asserts for real — a regression in EITHER module fails here instead of
+    being absorbed as an expected failure."""
     r = _store_and_render_crd(hub_client, _snap_mcast(igmp_queriers=5))
     assert r.status_code == 200, f"expected 200, got {r.status_code}: {r.text[:300]}"
 

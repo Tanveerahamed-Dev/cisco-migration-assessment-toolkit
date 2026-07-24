@@ -353,7 +353,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
             doc.add_paragraph(f"… and {len(l3f) - 40} more gateway(s); full register in the workbook.")
 
     doc.add_heading("2.4 Resilience & redundancy", level=2)
-    n_single_gw = sum(1 for r in l3f if "single-gateway" in (r.get("risk") or ""))
+    n_single_gw = sum(1 for r in l3f if "single-gateway" in str(r.get("risk") or ""))
     # 'lacking/inconsistent' is the only row sourced from snap['fhrp'] (the problems-only consistency list);
     # n_multi_gw (candidates) and n_fhrp_cfg (running FHRP) are derived from l3_forwarding above so a cleanly
     # FHRP-redundant fabric is credited instead of misrepresented as 0-candidate / 0-FHRP.

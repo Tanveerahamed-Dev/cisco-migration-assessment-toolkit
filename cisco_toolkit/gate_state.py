@@ -45,16 +45,22 @@ store is found only if the *process's working directory* is the engagement. That
 human ``cisco-assess`` run (it inherits the operator's cwd) and wrong for any wrapper that re-homes
 the engine child to a scratch directory: an empty cwd has no store, ``enforce()`` takes the
 brownfield branch, and **every gate returns True** — enforcement disappears with no error, no
-warning that looks like a failure, and no visible difference in the output except two missing
-documents. Note the asymmetry that makes this dangerous: an unreadable store fails CLOSED (loudly),
-but an *unreachable* store fails OPEN (quietly). Any caller that sets ``cwd=`` on the engine child,
-or ``os.chdir()``s around an in-process ``main()``, must therefore declare a posture — pass
-``--gate-root``, or suppress the gated deliverables with ``--no-design --no-mop``, or disclose via
-``pending_approvals()``. Being safe "because cwd happens to be empty" is a coincidence of a call
+warning that looks like a failure, and **no visible difference in the output at all**: both gated
+documents are produced exactly as if they had been approved. (Two MISSING documents is the
+signature of enforcement working, not of it failing — do not use absence as the tell.) Note the
+asymmetry that makes this dangerous: an unreadable store fails CLOSED (loudly), but an
+*unreachable* store fails OPEN (quietly). Any caller that sets ``cwd=`` on the engine child, or
+``os.chdir()``s around an in-process ``main()``, must therefore declare a posture — pass
+``--gate-root``, or suppress the gated deliverables with ``--no-design --no-mop``, or be listed in
+the guard's documented exemptions, or DISCLOSE the posture with
+``pending_approvals()`` (below) instead of withholding. Being safe "because cwd happens to be empty" is a coincidence of a call
 site, not a contract. Callers are inventoried in ``tests/test_gate_state.py``
 (``test_no_engine_caller_declares_a_gate_posture``). A mis-set ``root`` is treated as an error, not
-as an ungated engagement: ``enforce()`` REFUSES when ``root`` is not an existing directory, so one
-typo cannot silently ungate a run (an *omitted* root still means cwd, unchanged).
+as an ungated engagement: every entry point REFUSES when ``root`` is not an existing directory (an
+*omitted* root still means cwd, unchanged). Scope that honestly — it catches a path that does not
+exist, NOT a wrong-but-existing one: ``--gate-root D:/Engagements`` when the engagement is
+``D:/Engagements/ACME`` still reads as brownfield and ungates everything. Closing that needs the
+ledger to declare what it governs — which is exactly what the ownership model below adds.
 
 **Ownership — what a ledger governs, DECLARED rather than inferred (ADR-0006).** ``root`` says where
 a ledger is; it never said *whose* it is. A ledger may therefore carry an ``engagement`` identifier
@@ -100,11 +106,16 @@ withholds anything if the deliverable is the sole carrier of the content. It is 
 design/MOP: ``COLLECT_PARSE_V3_23_0`` computes ``design_blueprint`` and writes the snapshot (:2817),
 the explorer (:2831) and the executive deck (:2853) — all carrying ``target_state``/``wave_plan`` —
 *before* the gates run (:2864/:2879). So on a path that emits the whole family, refusing the two
-DOCX removes two renderers while the unapproved design ships anyway, and tells the operator it was
-withheld. That is worse than not gating. Blocking is right where the operator is AT the engagement
-and can approve or override with an audit line (the ``cisco-assess`` CLI); elsewhere prefer
-``pending_approvals()`` and disclose — the same stamp-and-disclose call ``webapp/backend/gates.py``
-and ``webapp/backend/deliverables.py`` already made for this product.
+DOCX removes two renderers while the unapproved design ships anyway. Blocking is right where the
+operator is AT the engagement and can approve or override with an audit line (the ``cisco-assess``
+CLI, which also PRINTS the refusal); it is weaker on a wrapper that emits the whole family and
+surfaces no gate output, where a refusal is a silent two-file omission. That is what
+``pending_approvals()`` is for — the DISCLOSING counterpart to ``enforce()``, for surfaces that
+should surface the posture rather than withhold a deliverable over it. Note what it is NOT built
+on: ``missing_approvals(store, generator)`` is a pure computation over an already-loaded store, not
+a reporting posture, and neither ``webapp/backend/gates.py`` nor ``webapp/backend/deliverables.py``
+is precedent for it (``deliverables.py``'s ``_reconcile_gate`` is an SSOT-drift warning, and
+``gates.py`` works the per-wave axis) — an earlier draft of this note cited both and was wrong.
 
 Gate requirements mirror the agent charters: design requires an APPROVED assessment
 (.claude/agents/design-author.md — "design follows an approved assessment"); the MOP requires an
@@ -485,6 +496,10 @@ def record_decision(gate: str, decision: str, root: str = ".",
     """Record a human gate disposition (approve/revoke). Creates the store on first use — that is
     the explicit opt-in moment that activates enforcement for the engagement in ``root``.
 
+    ``root`` must ALREADY EXIST; only the ``docs/`` directory inside it is created. Creating the
+    root too would mean a typo silently produces a phantom ledger plus a success receipt, so
+    ``mkdir`` the engagement first (raises ``GateStateError`` otherwise).
+
     ``engagement`` binds a NEW ledger to that engagement as it is created, and on an existing one is
     verified exactly as ``enforce`` verifies it. Signing is where a mis-attribution does the most
     damage — an approval landing in the wrong client's ledger both fails to gate the engagement the
@@ -558,7 +573,13 @@ def _normalize_root(root: str) -> str:
     unset, or ``cmd += ["--gate-root", cfg.get("gate_root", "")]``. It always behaved exactly like
     ``"."`` because ``store_path`` joins relatively, so refusing it would be a pure regression:
     an omitted root means the working directory, and that contract predates this module's
-    hardening."""
+    hardening.
+    Only the empty STRING gets that treatment. ``None``/``0``/``b""`` are not "omitted",
+    they are a caller bug: coercing them to cwd reaches the phantom-ledger outcome
+    ``_require_root`` exists to stop, by a bad TYPE instead of a bad path.
+    """
+    if root is None or not isinstance(root, (str, os.PathLike)):
+        raise TypeError(f"gate root must be a path string, got {type(root).__name__}: {root!r}")
     return root or "."
 
 
@@ -811,6 +832,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                                   root=args.root, by=args.by, note=args.note,
                                   engagement=args.engagement)
         except GateStateError as e:
+            # The WRITE side is the one that most needs a clean answer: a mis-set root here used to
+            # create a phantom ledger. It must not now answer with a raw traceback while `show`
+            # answers the same mistake with a sentence.
             print(f"REFUSING: {e}")
             return 1
         print(f"{args.gate}: {rec['decision']} by {rec['signed_by']} at {rec['decided_at']}"
