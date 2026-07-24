@@ -293,7 +293,10 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         if blind:
             table(["Status", "Device", "Data quality", "Missing essential commands"],
                   [[d.get("status", ""), d.get("host", ""), f"{d.get('data_quality', 0)}%",
-                    ", ".join(d.get("missing", []))] for d in blind[:40]],
+                    # `.get("missing", [])` defaulted only on ABSENT: a present null/scalar reached
+                    # join() (TypeError), and a list of non-str reached it too. Coerce container AND
+                    # elements — the §6.9 golden-drift twin below reads the same field the same way.
+                    ", ".join(str(x) for x in _as_list(d.get("missing")))] for d in blind[:40]],
                   widths=[1.3, 2.8, 1.0, 3.3])
             if len(blind) > 40:
                 doc.add_paragraph(f"…and {len(blind) - 40} more — see the 'Collection Completeness' sheet.")
@@ -391,7 +394,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
 
     doc.add_heading("6.2 Material cross-layer findings", level=2)
     for f in sorted(cross_layer, key=lambda f: _SEV_ORDER.get(f.get("severity"), 9))[:8]:
-        hosts = ", ".join(_as_list(f.get("hosts"))) or "—"
+        hosts = ", ".join(str(_h) for _h in _as_list(f.get("hosts"))) or "—"
         finding_block(
             f.get("title", f.get("id", "Cross-layer finding")),
             severity=f.get("severity", "Medium"),
@@ -475,7 +478,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         table(["Flow (VLAN → VLAN)", "Type", "Risk", "SPOFs on path"],
               [[f.get("label", ""), _as_dict(f.get("summary")).get("flow_type", ""),
                 _as_dict(f.get("summary")).get("risk", ""),
-                "; ".join(_as_list(_as_dict(f.get("summary")).get("spofs"))) or "none"]
+                "; ".join(str(_s) for _s in _as_list(_as_dict(f.get("summary")).get("spofs"))) or "none"]
                for f in fpaths], widths=[2.8, 1.4, 0.9, 2.4])
 
     pintel = _R(snap_dict.get("protocol_intelligence"))
@@ -548,7 +551,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
             doc.add_paragraph(
                 f"Multicast MAC-address aliasing ({_CONF_CONFIRMED}, RFC 4541): {len(aliases)} case(s) where "
                 "groups collapse to one L2 MAC (IPv4 multicast is 32:1 into Ethernet MACs) so a MAC-level switch "
-                "forwards them together — " + "; ".join(f"{a.get('mac')} ← {', '.join(_as_list(a.get('groups')))}"
+                "forwards them together — " + "; ".join(f"{a.get('mac')} ← {', '.join(str(_g) for _g in _as_list(a.get('groups')))}"
                                                         for a in aliases[:4])
                 + ". Re-address one of each overlapping pair (or use IGMPv3 SSM end-to-end) before the cutover.")
         gaps = _as_list(_as_dict(mi.get("querier")).get("gap_vlans"))
@@ -562,7 +565,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
             doc.add_paragraph(
                 f"PTP timing tree (ST 2059): {ptp_tree.get('n_operational', 0)} of {ptp_tree.get('n_clocks', 0)} "
                 f"clock(s) are active boundary clocks, {ptp_tree.get('n_dormant', 0)} dormant"
-                + (f"; grandmaster(s) {', '.join(_as_list(ptp_tree.get('grandmasters')))}."
+                + (f"; grandmaster(s) {', '.join(str(_m) for _m in _as_list(ptp_tree.get('grandmasters')))}."
                    if ptp_tree.get("grandmasters") else "; no grandmaster observed."))
 
     # ===== 6.7 Application domains (workload synthesis & migration playbook) — NEW-V3.23.112 =====
@@ -583,14 +586,16 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
               [[d.get("domain"), d.get("tier"), d.get("switch_count"), d.get("endpoint_count"),
                 ("boundary-clocked" if d.get("ptp_boundary_clocked")
                  else "present, NOT BC" if d.get("ptp_present") else "—"),
-                ((_as_list(d.get("risks")) or [{}])[0].get("title", "—") if d.get("risks") else "—")]
+                # _R (not _as_list): a truthy non-dict ROW inside a well-formed risks LIST survived the
+                # container coercion and crashed .get() — the list guard never looked at the elements.
+                ((_R(d.get("risks")) or [{}])[0].get("title", "—") if d.get("risks") else "—")]
                for d in appd],
               widths=[2.2, 1.2, 0.8, 0.9, 1.1, 2.3])
         # the on-air-critical domain risks as evidence-disciplined findings (false-health doctrine)
         for d in appd:
             if d.get("tier") != "On-air critical":
                 continue
-            for r in _as_list(d.get("risks")):
+            for r in _R(d.get("risks")):   # same row-level guard as the §6.7 table above
                 if r.get("severity") not in ("Critical", "High"):
                     continue
                 finding_block(
@@ -603,13 +608,13 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                     confidence=f"{_CONF_CONFIRMED} (switch state) / {_CONF_MED} (media dependency)",
                     unknowns="Whether this domain's live traffic actually traverses the flagged switches at "
                              "cutover time (no flow telemetry).",
-                    next_validation="; ".join(_as_list(d.get("validation"))),
+                    next_validation="; ".join(str(_v) for _v in _as_list(d.get("validation"))),
                     remediation=r.get("remediation", ""))
         cross = _R(appi.get("cross_domain_risks"))
         if cross:
             doc.add_paragraph(
                 f"Cross-domain risks (IGMP querier continuity / RFC 4541 + dependency coupling): "
-                f"{len(cross)} finding(s) — " + "; ".join(c.get("title", "") for c in cross[:6]) + ".")
+                f"{len(cross)} finding(s) — " + "; ".join(str(c.get("title", "")) for c in cross[:6]) + ".")
         # 6.7.1 inter-domain dependency graph (NEW-V3.23.113)
         edges = _R(appi.get("edges"))
         keystones = _R(appi.get("keystones"))
@@ -627,7 +632,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                 f"({_CONF_CONFIRMED}). A coupling means two domains cannot be cut over in isolation without "
                 f"coordination.{kline}")
             table(["Domain A", "Domain B", "Weight", "Coupling", "Migration note"],
-                  [[e.get("source"), e.get("target"), e.get("weight"), ", ".join(_as_list(e.get("kinds"))),
+                  [[e.get("source"), e.get("target"), e.get("weight"), ", ".join(str(_k) for _k in _as_list(e.get("kinds"))),
                     e.get("migration_note") or ("media-adjacent" if e.get("media") else "")]
                    for e in edges[:15]],
                   widths=[1.9, 1.9, 0.7, 1.4, 2.6])
@@ -678,7 +683,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
             f"(avg compliance {gsum.get('avg_compliance_pct', 0)}%). Bring the drifting devices up to the "
             "standard before — or as part of — their cutover wave.")
         drows = [[d.get("host"), f"{d.get('compliance_pct', 0)}%", d.get("n_missing", 0),
-                  "; ".join(_as_list(d.get("missing"))[:6])]
+                  "; ".join(str(x) for x in _as_list(d.get("missing"))[:6])]
                  for d in _R(gd.get("per_device")) if d.get("n_missing")]
         if drows:
             table(["Device", "Compliance", "Missing", "Missing required directives"],
@@ -997,8 +1002,9 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         seen_sc = {}
         for g in pg2:
             sc = g.get("recommended_scenario")
-            if sc and sc not in seen_sc and g.get("playbook"):
-                seen_sc[sc] = g["playbook"]
+            pb0 = _as_dict(g.get("playbook"))   # a truthy non-dict playbook must degrade, not crash pb.get() below
+            if sc and sc not in seen_sc and pb0:
+                seen_sc[sc] = pb0
         if seen_sc:
             doc.add_heading("11.2 Cutover playbook by scenario", level=2)
             table(["Scenario", "Pre-check", "Validate", "Rollback"],

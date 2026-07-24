@@ -24,11 +24,27 @@ from datetime import datetime
 
 from cisco_toolkit.analyze import vlan_inventory
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_inputs_required, add_table, add_toc
+# The family's shared falsy-guard coercers (archreview/deck import the same pair): `x or {}` / `x or []`
+# substitutes only for FALSY values, so a TRUTHY non-dict/non-list survives and crashes the next deref.
+from cisco_toolkit.docmeta import as_dict as _as_dict
+from cisco_toolkit.docmeta import as_list as _as_list
 from cisco_toolkit.textutils import _as_num, xml_safe, xml_safe_deep
 
 logger = logging.getLogger(__name__)
 
 _LC_BAND_RANK = {"Past-LDoS": 0, "Past-EoS": 1, "Near-LDoS": 2, "Active": 3, "Unknown": 4}
+
+
+def _bom_rows(disposition: str, seq) -> list:
+    """§5.1 replacement-BoM rows from a (model, qty) pair list. `bom.get(k, [])` substitutes only when
+    the key is ABSENT, so a null / scalar value -- or a row that is not a 2-element pair -- raised on the
+    `for m, q in ...` unpack and aborted the WHOLE design document. Coerce the container AND each row's
+    arity; a malformed row is dropped (degrade to empty) rather than crashing the deliverable."""
+    out = []
+    for item in _as_list(seq):
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            out.append((disposition, item[0], item[1]))
+    return out
 
 
 def _is_l3(host: str, l3_forwarding, routing_neighbors) -> bool:
@@ -80,7 +96,7 @@ def build_design_traceability(snap_dict: dict) -> list:
     bp = (snap_dict or {}).get("design_blueprint") if isinstance(snap_dict, dict) else None
     bp = bp if isinstance(bp, dict) else {}
     rows = []
-    for d in (bp.get("decisions") or []):
+    for d in _as_list(bp.get("decisions")):   # `or []` passes a TRUTHY non-list straight into `for d in ...`
         if not isinstance(d, dict) or d.get("status") != "recommended":
             continue
         pr = d.get("principle") if isinstance(d.get("principle"), dict) else {}
@@ -93,15 +109,27 @@ def build_design_traceability(snap_dict: dict) -> list:
             "principle": (f"{pid} — {ptitle}".strip(" —")) or "(no principle)",
             "citation": str(pr.get("citation") or "").strip() or "(uncited)",
             "evidence": str(ev.get("summary") or "").strip(),
-            "fields": ", ".join(f for f in (ev.get("fields") or []) if isinstance(f, str)),
-            "devices": ", ".join(str(x) for x in (ev.get("devices") or [])[:8]),
+            # _as_list: a truthy non-list 'fields' would be walked by `for f in ...`, and a truthy
+            # non-list 'devices' would crash the [:8] slice -- both survive `or []` (audit-7 class).
+            "fields": ", ".join(f for f in _as_list(ev.get("fields")) if isinstance(f, str)),
+            "devices": ", ".join(str(x) for x in _as_list(ev.get("devices"))[:8]),
         })
     return rows
 
 
 def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None:
-    """Emit the As-Built Network Design Document (HLD + LLD) to `output_path`. Fail-soft: a missing
-    python-docx is a warning + skip; any unexpected render error is logged, never raised."""
+    """Emit the As-Built Network Design Document (HLD + LLD) to `output_path`.
+
+    Fail-soft applies to the OPTIONAL DEPENDENCY only: a missing python-docx is a warning + skip. There
+    is deliberately NO blanket try/except around the render, so an unexpected error DOES propagate to the
+    caller (the CLI reports it; the webapp /deliverable/design route maps it to an HTTP 500). Swallowing
+    a render failure would ship a missing or truncated document while reporting success, which this
+    repo's coverage-honesty doctrine forbids. (An earlier revision of this docstring claimed the error
+    was "logged, never raised" -- it never was: the only `try` here is the import guard below.)
+
+    Robustness therefore comes from GUARDING EVERY SNAPSHOT READ instead: `x or {}` / `x or []` catches
+    only FALSY values, so every read is routed through _D/_R/_as_dict/_as_list and a malformed section
+    degrades to EMPTY rather than raising."""
     try:
         from docx import Document
         from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -168,7 +196,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     _bp = snap.get("design_blueprint"); bp = _bp if isinstance(_bp, dict) else {}   # canonical design blueprint
 
     lc_by_host = {}
-    for r in (lifecycle.get("per_device") or []):
+    for r in _R(lifecycle.get("per_device")):   # _R: a truthy non-list -> [] AND dict rows only (r.get below)
         h = r.get("host") or r.get("hostname")
         if h:
             lc_by_host[h] = r
@@ -237,7 +265,9 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     posture = eb.get("posture_statement") or (
         f"{n_dev} devices, {n_vlan} VLANs and {n_svis} gateway SVIs across the assessed fabric.")
     doc.add_paragraph(posture)
-    _sm = bp.get("summary") or {}      # `bp.get("summary", {})` only substitutes when ABSENT; a None value would raise
+    # _as_dict, not `or {}`: `bp.get("summary", {})` only substitutes when ABSENT (a None value would
+    # raise) and `or {}` still lets a TRUTHY non-dict through into _sm.get(...) -- the nested class.
+    _sm = _as_dict(bp.get("summary"))
     if _sm.get("headline"):
         _label_run(doc.add_paragraph(), "Design headline:", _sm["headline"])
         mp = doc.add_paragraph()
@@ -323,7 +353,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
             doc.add_paragraph(f"… and {len(l3f) - 40} more gateway(s); full register in the workbook.")
 
     doc.add_heading("2.4 Resilience & redundancy", level=2)
-    n_single_gw = sum(1 for r in l3f if "single-gateway" in (r.get("risk") or ""))
+    n_single_gw = sum(1 for r in l3f if "single-gateway" in str(r.get("risk") or ""))
     # 'lacking/inconsistent' is the only row sourced from snap['fhrp'] (the problems-only consistency list);
     # n_multi_gw (candidates) and n_fhrp_cfg (running FHRP) are derived from l3_forwarding above so a cleanly
     # FHRP-redundant fabric is credited instead of misrepresented as 0-candidate / 0-FHRP.
@@ -339,10 +369,12 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     ], widths=[4.6, 2.2])
 
     doc.add_heading("2.5 Multicast & timing design", level=2)
-    mc = (svc.get("multicast") or {}) if isinstance(svc, dict) else {}
-    groups = mc.get("classified_groups") or []
-    queriers = mc.get("igmp_queriers") or []
-    ptp = mc.get("ptp") or {}
+    # _as_dict/_as_list at EVERY level: a truthy non-dict service_map.multicast crashes mc.get(...), and a
+    # truthy non-list classified_groups/igmp_queriers or non-dict ptp crashes len()/ptp.values() below.
+    mc = _as_dict(svc.get("multicast")) if isinstance(svc, dict) else {}
+    groups = _as_list(mc.get("classified_groups"))
+    queriers = _as_list(mc.get("igmp_queriers"))
+    ptp = _as_dict(mc.get("ptp"))
     ptp_active = sum(1 for v in ptp.values() if isinstance(v, dict) and v.get("operational"))
     # Render the section only when there is actual activity to report; a multicast dict that exists
     # but carries all-zero counts (a non-media fabric, or commands not collected) gets the fallback
@@ -357,7 +389,8 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
             "the migration design must preserve querier coverage and the PTP clock hierarchy.")
         if groups:
             table(["Group", "Name", "Category"],
-                  [(g.get("group"), g.get("name") or "—", g.get("category") or "—") for g in groups[:15]],
+                  [(g.get("group"), g.get("name") or "—", g.get("category") or "—")
+                   for g in (_as_dict(x) for x in groups[:15])],   # per-element: a scalar row -> {} not g.get() crash
                   widths=[1.6, 2.2, 1.8])
     else:
         doc.add_paragraph("No multicast/PTP activity was classified in the collected output "
@@ -375,7 +408,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     # NEW-V3.23.165: QoS is a named HLD design domain; render the audited CONFIGURED posture
     # when the snapshot carries the qos_audit axis (older snapshots simply skip the section).
     qa = _D(snap_dict.get("qos_audit"))    # _D: a truthy non-dict -> {} instead of crashing qa.get('summary') (§2.7)
-    qsum = qa.get("summary") or {}
+    qsum = _as_dict(qa.get("summary"))    # _as_dict: a truthy non-dict summary slips `or {}` -> qsum.get() crash
     if qsum.get("n_devices"):
         doc.add_heading("2.7 Quality of service (configured posture)", level=2)
         if not qsum.get("n_assessable"):
@@ -384,7 +417,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                 "The target design must state the QoS intent (trust boundary, marking, queuing) "
                 "explicitly rather than inherit an unknown current state.")
         else:
-            qmodes = qsum.get("modes") or {}
+            qmodes = _as_dict(qsum.get("modes"))    # _as_dict: a truthy non-dict crashes qmodes.items()
             mtxt = ", ".join(f"{v} device(s) {k}" for k, v in qmodes.items())
             doc.add_paragraph(
                 f"Configured posture across the {qsum.get('n_assessable', 0)} assessable device(s): "
@@ -392,8 +425,10 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                 "leading practice is a trust boundary at the access edge (trust detected phones/APs, "
                 "mark at ingress) with consistent per-hop queuing fleet-wide; the table below lists "
                 "where the observed configuration departs from that intent.")
+            # _as_list: a truthy non-list 'findings' crashes the [:12] slice; _as_dict per element: a
+            # scalar finding row crashes f.get(...).
             qrows = [(f.get("host"), f.get("label"), f.get("severity"))
-                     for f in (qa.get("findings") or [])[:12]]
+                     for f in (_as_dict(x) for x in _as_list(qa.get("findings"))[:12])]
             if qrows:
                 table(["Device", "Departure from leading practice", "Severity"],
                       qrows, widths=[1.6, 4.0, 1.0])
@@ -534,7 +569,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     # isinstance-filter (like crd.py:355 / deck.py:376): a single non-dict element in a corrupt/hand-edited
     # design_blueprint.decisions otherwise raised AttributeError on d.get(...) and aborted the WHOLE As-Built
     # Design Document, despite the 'never raised' contract -- design.py was the asymmetric gap vs the deck/CRD.
-    decisions = [d for d in (bp.get("decisions") or []) if isinstance(d, dict)]
+    decisions = [d for d in _as_list(bp.get("decisions")) if isinstance(d, dict)]
     if decisions:
         doc.add_paragraph(
             "The senior-design view: each target-state decision below is gated on collected evidence and "
@@ -546,17 +581,21 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         doc.add_paragraph(
             "Where the current fabric stands on each axis a senior designer balances (0 = weak, 4 = strong). "
             "The target design raises the weak axes without overspending the others.")
-        sc = bp.get("tradeoff_scorecard") or []
+        sc = _as_list(bp.get("tradeoff_scorecard"))    # _as_list: a truthy non-list would be walked by `for s in sc`
         table(["Trade-off axis", "Score", "Posture", "Current-state evidence"],
               [(s.get("label", ""), f"{s.get('score')}/4", s.get("posture", ""), s.get("evidence", ""))
-               for s in sc], widths=[1.7, 0.7, 1.1, 3.3])
+               for s in (_as_dict(x) for x in sc)],    # per-element: a scalar axis row -> {} not s.get() crash
+              widths=[1.7, 0.7, 1.1, 3.3])
 
         rec = [d for d in decisions if d.get("status") == "recommended"]
         doc.add_heading("4.2 Recommended target-state design decisions", level=2)
         if rec:
+            # _as_dict on evidence/principle: a truthy non-dict per-decision value (a corrupt or
+            # hand-edited blueprint) slips `or {}` and crashes .get() -- here and in the detail loop below.
             table(["Priority", "Domain", "Design decision", "Why (driver)", "Evidence", "CCDE basis"],
                   [(d.get("priority"), d.get("domain"), d.get("title"), d.get("driver"),
-                    (d.get("evidence") or {}).get("summary", ""), (d.get("principle") or {}).get("citation", ""))
+                    _as_dict(d.get("evidence")).get("summary", ""),
+                    _as_dict(d.get("principle")).get("citation", ""))
                    for d in rec], widths=[0.75, 0.85, 1.55, 1.6, 1.7, 1.3])
             for d in rec[:10]:
                 _label_run(doc.add_paragraph(), f"{d.get('title')}",
@@ -564,9 +603,9 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                 _label_run(doc.add_paragraph(), "Recommended pattern:", d.get("recommended_action"))
                 _label_run(doc.add_paragraph(), "Alternatives weighed:", d.get("alternatives"))
                 _label_run(doc.add_paragraph(), "Trade-offs:", d.get("tradeoffs"))
-                _label_run(doc.add_paragraph(), "Evidence:", (d.get("evidence") or {}).get("summary"))
+                _label_run(doc.add_paragraph(), "Evidence:", _as_dict(d.get("evidence")).get("summary"))
                 _label_run(doc.add_paragraph(), "CCDE principle:",
-                           (d.get("principle") or {}).get("citation"), GREY)
+                           _as_dict(d.get("principle")).get("citation"), GREY)
         else:
             doc.add_paragraph("No evidence-grounded target-state changes — the as-built design carries no "
                               "flagged gaps to redesign.")
@@ -578,28 +617,36 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                 "Design top-down from the WHY: these decisions depend on requirements the assessment cannot "
                 "observe. Confirm them and the target design right-sizes accordingly — the engine never "
                 "assumes an answer.")
+            # _as_list + str(): a truthy non-list crashes ", ".join(), and a list carrying a non-str
+            # element crashes it too ("sequence item 0: expected str, int found"). str() is identity on
+            # every well-formed string, so the rendered text is unchanged.
             table(["Open design question", "Requirement needed", "Trade-off axes"],
-                  [(d.get("title"), ", ".join(d.get("requirements_needed") or []) or "—",
-                    ", ".join(d.get("axes") or []) or "—") for d in needs], widths=[3.0, 2.0, 1.8])
+                  [(d.get("title"),
+                    ", ".join(str(x) for x in _as_list(d.get("requirements_needed"))) or "—",
+                    ", ".join(str(x) for x in _as_list(d.get("axes"))) or "—")
+                   for d in needs], widths=[3.0, 2.0, 1.8])
 
-        cov = bp.get("coverage") or {}
+        cov = _as_dict(bp.get("coverage"))    # _as_dict: a truthy non-dict slips `or {}` -> cov.get() crash
         if cov.get("caveat"):
             _label_run(doc.add_paragraph(), "Coverage:", cov.get("caveat"), GREY)
 
-        doctrine = bp.get("doctrine") or {}
+        doctrine = _as_dict(bp.get("doctrine"))    # _as_dict: a truthy non-dict crashes doctrine.values()
         if doctrine:
             doc.add_heading("4.4 Design doctrine applied (CCDE-grounded reference)", level=2)
-            n_tot = sum(len(v) for v in doctrine.values())
-            n_act = sum(1 for v in doctrine.values() for it in v if it.get("engine_actionable"))
+            # Normalise ONCE at every level: a truthy non-list per-domain value crashed len(v)/`for it in v`,
+            # and a scalar principle element crashed it.get(...) -- the same class two levels down.
+            _doctrine = {dom: [_as_dict(it) for it in _as_list(v)] for dom, v in doctrine.items()}
+            n_tot = sum(len(v) for v in _doctrine.values())
+            n_act = sum(1 for v in _doctrine.values() for it in v if it.get("engine_actionable"))
             doc.add_paragraph(
                 f"The full body of design doctrine this engine reasons from — {n_tot} principles across "
-                f"{len(doctrine)} domains, each an original re-expression of leading-practice design with a "
+                f"{len(_doctrine)} domains, each an original re-expression of leading-practice design with a "
                 f"source citation. {n_act} are evidence-actionable (the engine auto-detects their trigger and, "
                 f"when the evidence is present, surfaces them as decisions in §4.2/4.3); the remainder are "
                 f"reference doctrine for design areas the L1–L4 assessment does not collect (firewall, BGP, "
                 f"MPLS-TE, IPv6, …) — they inform the design narrative and are never asserted from absent evidence.")
-            for dom in sorted(doctrine):
-                items = doctrine[dom]
+            for dom in sorted(_doctrine):
+                items = _doctrine[dom]
                 doc.add_heading(f"{dom} ({len(items)})", level=3)
                 table(["Design principle", "Recommended pattern", "Source"],
                       [(it.get("title"), it.get("recommended_action"), it.get("citation")) for it in items],
@@ -623,21 +670,29 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         sev_rank = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
         top = sorted(punchlist, key=lambda i: sev_rank.get(i.get("severity"), 5))[:12]
         if top:
+            pl_rows = []
+            for i in top:
+                # _as_list ONCE per row (mirrors deck.py): a truthy non-list 'devices' slips `or []` and
+                # then crashes the [:4] slice / len() -- and the old code re-read i['devices'] a third time.
+                _devs = _as_list(i.get("devices"))
+                pl_rows.append((i.get("severity"), i.get("category") or "—", i.get("title") or "—",
+                                ", ".join(str(x) for x in _devs[:4])
+                                + ("" if len(_devs) <= 4 else f" +{len(_devs) - 4}")))
             table(["Severity", "Category", "Design recommendation", "Devices"],
-                  [(i.get("severity"), i.get("category") or "—", i.get("title") or "—",
-                    ", ".join(str(x) for x in (i.get("devices") or [])[:4]) +
-                    ("" if len(i.get("devices") or []) <= 4 else f" +{len(i['devices']) - 4}"))
-                   for i in top], widths=[0.9, 1.3, 3.0, 1.6])
+                  pl_rows, widths=[0.9, 1.3, 3.0, 1.6])
         else:
             doc.add_paragraph("No punch-list items — the as-built design carries no flagged gaps to redesign.")
 
     # ---- §5: generated candidate target-state architecture (synthesised from evidence + requirements) ----
-    ts = bp.get("target_state") or {}
-    ts_dims = ts.get("dimensions") or []
+    # Every §5 read is coerced at its own level: `or {}` / `or []` guards only the ABSENT/None case, so a
+    # truthy non-dict target_state (or non-list dimensions) survived and crashed the next dereference.
+    ts = _as_dict(bp.get("target_state"))
+    ts_dims = _as_list(ts.get("dimensions"))
     if ts_dims:
         doc.add_heading("5. Proposed Target-State Architecture (candidate)", level=1)
-        if (ts.get("summary") or {}).get("headline"):
-            _label_run(doc.add_paragraph(), "Synthesis:", ts["summary"]["headline"])
+        _ts_sum = _as_dict(ts.get("summary"))    # local, so the bare ts["summary"]["headline"] subscript goes away
+        if _ts_sum.get("headline"):
+            _label_run(doc.add_paragraph(), "Synthesis:", _ts_sum["headline"])
         doc.add_paragraph(
             "A candidate target architecture synthesised from the collected evidence, the requirements "
             "register and the design doctrine — a proposal to validate, not a final design. Each dimension "
@@ -646,21 +701,22 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
             "explicit unknown.")
         table(["Design area", "Current (observed)", "Recommended target", "Rationale", "Confidence"],
               [(d.get("area"), d.get("current"), d.get("target"), d.get("rationale"), d.get("confidence"))
-               for d in ts_dims], widths=[1.2, 1.55, 1.95, 1.7, 0.9])
+               for d in (_as_dict(x) for x in ts_dims)],   # per-element: a scalar dimension -> {} not d.get() crash
+              widths=[1.2, 1.55, 1.95, 1.7, 0.9])
 
-        bom = ts.get("replacement_bom") or {}
+        bom = _as_dict(ts.get("replacement_bom"))
         if bom.get("n_replace") or bom.get("n_refresh"):
             doc.add_heading("5.1 Replacement Bill of Materials (target procurement)", level=2)
             doc.add_paragraph(
                 f"{bom.get('n_replace', 0)} asset(s) at end-of-support to replace and "
                 f"{bom.get('n_refresh', 0)} approaching it to refresh, grouped by current model — the "
                 "procurement the target build requires. " + (bom.get("note") or ""))
-            rows = ([("Replace (past-LDoS)", m, q) for m, q in bom.get("replace_now", [])]
-                    + [("Refresh (near-LDoS / past-EoS)", m, q) for m, q in bom.get("refresh_soon", [])])
+            rows = (_bom_rows("Replace (past-LDoS)", bom.get("replace_now"))
+                    + _bom_rows("Refresh (near-LDoS / past-EoS)", bom.get("refresh_soon")))
             if rows:
                 table(["Disposition", "Current model", "Qty"], rows, widths=[1.9, 3.0, 0.9])
 
-        segp = ts.get("segmentation_plan") or {}
+        segp = _as_dict(ts.get("segmentation_plan"))
         if segp.get("observed"):
             doc.add_heading("5.2 Target segmentation", level=2)
             _label_run(doc.add_paragraph(), "Observed:", segp.get("observed"))
@@ -668,7 +724,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
             if segp.get("requirement_needed"):
                 _label_run(doc.add_paragraph(), "Requirement needed:", segp.get("requirement_needed"), GREY)
 
-        ap = ts.get("addressing_plan") or {}
+        ap = _as_dict(ts.get("addressing_plan"))
         if ap.get("status") == "candidate" and ap.get("subnets"):
             doc.add_heading("5.3 Net-new IP addressing plan (candidate)", level=2)
             doc.add_paragraph(
@@ -677,14 +733,19 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
             if ap.get("mode") == "zone-aware" and ap.get("zones"):
                 _label_run(doc.add_paragraph(), "Per-zone summarization:",
                            "each zone is one contiguous prefix toward the core.")
+                # BARE SUBSCRIPT, not an `or []` guard: the `and ap.get("zones")` gate above only proves the
+                # value is TRUTHY -- `zones: 5` reached `for z in 5`. Same for subnets and its [:60] slice.
                 table(["Security zone", "Summary prefix", "VLANs"],
-                      [(z.get("zone"), z.get("summary"), z.get("n_vlans")) for z in ap["zones"]],
+                      [(z.get("zone"), z.get("summary"), z.get("n_vlans"))
+                       for z in (_as_dict(x) for x in _as_list(ap.get("zones")))],
                       widths=[2.2, 2.0, 0.9])
+            _subnets = _as_list(ap.get("subnets"))    # read ONCE: the slice and both len() reads share it
             table(["VLAN", "Hosts (obs.)", "Target subnet", "Note"],
-                  [(s.get("vlan"), s.get("hosts"), s.get("subnet"), s.get("note", "")) for s in ap["subnets"][:60]],
+                  [(s.get("vlan"), s.get("hosts"), s.get("subnet"), s.get("note", ""))
+                   for s in (_as_dict(x) for x in _subnets[:60])],
                   widths=[0.8, 1.3, 1.7, 2.7])
-            if len(ap["subnets"]) > 60:
-                doc.add_paragraph(f"… and {len(ap['subnets']) - 60} more; full plan in the workbook.")
+            if len(_subnets) > 60:
+                doc.add_paragraph(f"… and {len(_subnets) - 60} more; full plan in the workbook.")
         elif ap.get("status") == "candidate":
             # candidate plan that allocated NO subnets (supernet too small / fully overflowed) — render the
             # section + its note so the "enlarge the address_space" disclosure is never silently dropped.
@@ -704,21 +765,24 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                     + ". The full census is sized once an address_space is supplied.")
             doc.add_paragraph(ap.get("note") or "")
 
-        wp = ts.get("wave_plan") or {}
+        wp = _as_dict(ts.get("wave_plan"))
         if wp.get("waves"):
             doc.add_heading("5.4 Candidate migration wave plan", level=2)
             doc.add_paragraph(
                 f"{wp.get('n_move_groups')} L2-coupling move-group(s) (largest {wp.get('largest_group')} "
                 f"switches) → {wp.get('n_waves')} candidate wave(s) of ≤ {wp.get('wave_cap')}. "
                 + (wp.get("note") or ""))
+            # Another bare subscript behind a truthy-only gate: `waves: 5` reached wp["waves"][:40].
             table(["Wave", "Kind", "Switches"],
-                  [(w.get("wave"), w.get("kind"), w.get("n_switches")) for w in wp["waves"][:40]],
+                  [(w.get("wave"), w.get("kind"), w.get("n_switches"))
+                   for w in (_as_dict(x) for x in _as_list(wp.get("waves"))[:40])],
                   widths=[0.8, 2.4, 1.0])
 
         if ts.get("scope_note"):
             _label_run(doc.add_paragraph(), "Scope:", ts["scope_note"], GREY)
-        if (ts.get("coverage") or {}).get("caveat"):
-            _label_run(doc.add_paragraph(), "Coverage:", ts["coverage"]["caveat"], GREY)
+        _ts_cov = _as_dict(ts.get("coverage"))    # local, so the bare ts["coverage"]["caveat"] subscript goes away
+        if _ts_cov.get("caveat"):
+            _label_run(doc.add_paragraph(), "Coverage:", _ts_cov["caveat"], GREY)
 
     # ===== 6. Interoperability & platform footprint =====
     # What the target design must keep interoperating with — the observed NOS-family spread and the
