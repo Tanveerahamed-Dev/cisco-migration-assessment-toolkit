@@ -24,7 +24,10 @@ def build_graph(snap: Dict[str, Any], keystones: Optional[List[str]] = None) -> 
     devices = _devices if isinstance(_devices, dict) else {}
     # require a STRING 'switch' key: a row without one would inject a None node id and make sorted(node_ids)
     # raise TypeError (str vs None) -> an unhandled 500 on /graph (multi-domain audit #10).
-    health = {r.get("switch"): r for r in (snap.get("health_scores") or [])
+    # isinstance-guard over `or []` (as _ifaces/_devices above): a TRUTHY non-list health_scores (an int in a
+    # malformed upload) survives `or []` and 500s the `for r in` iteration -> unhandled 500 on /graph.
+    _health_scores = snap.get("health_scores")
+    health = {r.get("switch"): r for r in (_health_scores if isinstance(_health_scores, list) else [])
               if isinstance(r, dict) and isinstance(r.get("switch"), str)}
     node_ids = set(ifaces.keys()) | set(health.keys()) | set(devices.keys())
     ks = set(keystones or [])
@@ -52,7 +55,10 @@ def build_graph(snap: Dict[str, Any], keystones: Optional[List[str]] = None) -> 
 
     # Enrich edges with bridge / pairs-cut from link_centrality (matched undirected).
     lc: Dict[tuple, dict] = {}
-    for e in (snap.get("link_centrality") or []):
+    # isinstance-guard over `or []`: a TRUTHY non-list link_centrality (an int in a malformed upload) survives
+    # `or []` and 500s the `for e in` iteration -> unhandled 500 on /graph.
+    _link_centrality = snap.get("link_centrality")
+    for e in (_link_centrality if isinstance(_link_centrality, list) else []):
         if isinstance(e, dict) and e.get("a_host") and e.get("b_host"):
             lc[tuple(sorted((e["a_host"], e["b_host"])))] = e
 
