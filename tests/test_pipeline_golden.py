@@ -240,6 +240,53 @@ def test_run_manifest_emitted_and_sealed(tmp_path):
     assert "abstention_ledger" in man        # coverage-honest provenance is part of the seal
 
 
+def test_shipped_verify_verb_passes_the_real_pipeline_manifest(tmp_path, capsys):
+    """The CI check on the seal. The test above calls the library function; this runs the command an
+    AUDITOR actually has — `python -m cisco_toolkit.manifest verify` — against a manifest the real
+    pipeline produced, not a hand-built fixture. A verb that only ever sees synthetic manifests can
+    agree with a producer bug; this is the arm that would catch the engine emitting a chain the
+    shipped verifier rejects.
+
+    Also proves the artifact hashes reconcile against the deliverables ON DISK, which is the actual
+    chain-of-custody question ("is this the workbook that was sealed?") and which no test covered."""
+    from cisco_toolkit import manifest as M
+    _snap, xlsx = _run_pipeline(tmp_path)
+    man_path = os.path.splitext(xlsx)[0] + ".run_manifest.json"
+
+    assert M.main(["verify", man_path]) == 0, capsys.readouterr().out
+    assert capsys.readouterr().out.startswith("OK: ")
+    # --artifacts re-hashes every deliverable the engine listed, from the run's own output folder.
+    assert M.main(["verify", man_path, "--artifacts"]) == 0, capsys.readouterr().out
+    assert "hash to the seal" in capsys.readouterr().out
+
+
+def test_shipped_verify_verb_rejects_a_tampered_pipeline_manifest(tmp_path, capsys):
+    """Non-vacuity for the check above: prove the exit code moves. Two independent edits an auditor
+    must catch — a rewritten step, and a deliverable swapped after the run."""
+    from cisco_toolkit import manifest as M
+    _snap, xlsx = _run_pipeline(tmp_path)
+    man_path = os.path.splitext(xlsx)[0] + ".run_manifest.json"
+    with open(man_path, encoding="utf-8") as f:
+        man = json.load(f)
+
+    # (1) rewrite a sealed step — the "we collected everything" edit
+    tampered = os.path.join(str(tmp_path), "tampered.run_manifest.json")
+    edited = json.loads(json.dumps(man))
+    edited["chain"][0]["collected"] = 99999
+    with open(tampered, "w", encoding="utf-8") as f:
+        json.dump(edited, f)
+    assert M.main(["verify", tampered]) == 4
+    assert "INTEGRITY" in capsys.readouterr().out
+
+    # (2) leave the ledger alone, swap a delivered file — caught only by --artifacts
+    with open(xlsx, "ab") as f:
+        f.write(b"\n<appended after sealing>")
+    assert M.main(["verify", man_path]) == 0, "the ledger itself is untouched, so plain verify passes"
+    capsys.readouterr()
+    assert M.main(["verify", man_path, "--artifacts"]) == 4
+    assert "[MISMATCH]" in capsys.readouterr().out
+
+
 def test_import_inventory_reconcile(tmp_path):
     """roadmap B: --import-inventory ingests a declared inventory (CMDB/NetBox CSV) and reconciles it against
     the collected evidence -> snap['external_reconcile'] + a 'SoT Reconcile' workbook sheet (opt-in)."""
