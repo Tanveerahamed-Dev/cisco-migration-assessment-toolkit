@@ -94,7 +94,7 @@ def _join_group_records(gnames, wave_switches, readiness_by_group, seq_by_group,
     wsw = set(wave_switches or [])
     for g in gnames:
         rr = readiness_by_group.get(g) or {}
-        gsw = rr.get("switches") or []
+        gsw = _as_list(rr.get("switches"))
         members_all.update(gsw)
         share = (len(wsw & set(gsw)) / len(gsw)) if gsw else 1.0      # a sub-wave is a SLICE -> apportion its switch-share
         r["endpoints"] += round(_i(rr.get("endpoints")) * share)   # endpoints ARE divisible -> apportion by share
@@ -102,7 +102,7 @@ def _join_group_records(gnames, wave_switches, readiness_by_group, seq_by_group,
         # member switch, so the per-sub-wave counts SUM to the group SSOT. The old share-with-floor reprinted a
         # 'max(.,1)' on every slice, so an N-way split of a positive count summed toward N ([HISTORY-REDACTED] Group 1's true 3/4
         # rendered 7/7 across 7 sub-waves) -- a one-source-of-truth break vs migration_readiness (audit-2 #3).
-        checks = [c for c in (rr.get("checks") or [])
+        checks = [c for c in _as_list(rr.get("checks"))
                   if isinstance(c, dict) and str(c.get("status", "")).lower() in ("fail", "warn")]
         if checks:
             gsw_set = set(gsw)
@@ -124,15 +124,15 @@ def _join_group_records(gnames, wave_switches, readiness_by_group, seq_by_group,
         gseq = seq_by_group.get(g) or {}
         if not seq:
             seq = gseq
-        for _h in (gseq.get("make_before_break") or []):
+        for _h in _as_list(gseq.get("make_before_break")):
             if _h not in mbb_all:
                 mbb_all.append(_h)
-        for _h in (gseq.get("hard_cutover") or []):
+        for _h in _as_list(gseq.get("hard_cutover")):
             if _h not in hard_all:
                 hard_all.append(_h)
         if not scen:
             scen = scen_by_group.get(g) or {}
-        for v in (val_by_wave.get(g) or []):
+        for v in _as_list(val_by_wave.get(g)):
             key = (v.get("device"), v.get("command")) if isinstance(v, dict) else str(v)
             if key not in seen:
                 seen.add(key)
@@ -275,7 +275,11 @@ def _write_bluf(doc, waves, readiness_by_group, seq_by_group, scen_by_group, val
 
 def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
     """Emit the per-wave Method of Procedure (.docx) to `output_path`. Fail-soft: a missing python-docx
-    is a warning + skip; any unexpected render error is logged, never raised."""
+    is a warning + skip, and every snapshot read is defensive so malformed input degrades to placeholders.
+    A genuine render error still propagates to the caller — the CLI phase wrapper logs-and-continues,
+    AssessHub turns it into a clean 500 (docstring corrected: the old 'logged, never raised' claim was
+    false — the only `try` here is the optional-import guard — and the crash class it hid is now guarded
+    at the read sites; matches engagement.write_engagement_docx)."""
     try:
         from docx import Document
         from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -344,7 +348,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                and _SEV_RANK.get(it.get("severity"), 4) <= 1]
         # critical/high punch-list items that touch this wave's devices
         pl = [i for i in punchlist if _SEV_RANK.get(i.get("severity"), 4) <= 1
-              and (set(i.get("devices") or []) & sw)]
+              and (set(_as_list(i.get("devices"))) & sw)]
         return rem, pl
 
     # ---- title page ----
@@ -578,7 +582,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
     for wi, (name, switches, _kind, _gnames) in enumerate(waves, start=3):
         r, seq, scen, _val_items = _join_group_records(_gnames, switches, readiness_by_group, seq_by_group,
                                                        scen_by_group, val_by_wave)
-        playbook = scen.get("playbook") or {}
+        playbook = _as_dict(scen.get("playbook"))
         rem, pl = _blockers_for(switches)
         blast = max((_as_num(fi_by_host.get(s, {}).get("stranded")) for s in switches), default=0)
         verdict = r.get("readiness", "—")
@@ -681,14 +685,14 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
             if pl:
                 table(["Severity", "Category", "Item", "Devices"],
                       [(i.get("severity"), i.get("category") or "—", i.get("title") or "—",
-                        ", ".join(str(x) for x in (i.get("devices") or []) if x in set(switches)))
+                        ", ".join(str(x) for x in _as_list(i.get("devices")) if x in set(switches)))
                        for i in pl[:10]], widths=[0.9, 1.3, 3.0, 1.6])
             for it in rem[:8]:
                 p = doc.add_paragraph()
                 _label_run(p, f"{it.get('device')} — {it.get('title') or it.get('source') or 'fix'}"
                               f" ({it.get('severity', '—')}):",
                            it.get("why") or "review-only config change; see the Remediation Plan sheet.")
-                for c in (it.get("commands") or [])[:8]:
+                for c in _as_list(it.get("commands"))[:8]:
                     doc.add_paragraph(c, style="List Bullet")
 
         # 2.x.3 pre-cutover baseline capture
@@ -720,8 +724,8 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         map_rows = []
         ifaces_all = _as_dict(snap.get("interfaces"))
         for h in switches:
-            for pname, dd in sorted((ifaces_all.get(h) or {}).items()):
-                dd = dd or {}
+            for pname, dd in sorted(_as_dict(ifaces_all.get(h)).items()):
+                dd = _as_dict(dd)
                 mode = str(dd.get("switchport_mode") or "").lower()   # str()-coerce wrong-typed device leaves (audit-6 #3 class)
                 if mode == "access" and (str(dd.get("end_host_mac") or "").strip()
                                          or str(dd.get("end_host_ip") or "").strip()):
@@ -900,7 +904,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                "the trigger and time are recorded in the change log.")]
         if multi:
             for g, sc, _sq in wave_groups:
-                rbk = (sc.get("playbook") or {}).get("rollback")
+                rbk = _as_dict(sc.get("playbook")).get("rollback")
                 if rbk:
                     rb.append((f"{g}: " + rbk.rstrip(". ") + ".",
                                "this group's endpoints are back on their legacy path."))

@@ -2,7 +2,9 @@
 the module is skipped when it is absent (the generator fails soft the same way). These tests pin the
 one-section-per-wave structure, the change-overview reconciliation, the reuse of the existing validation
 plan as the post-cutover checks, the blocker surfacing, and the fail-soft path."""
+import json
 import os
+import sys
 
 import pytest
 
@@ -744,3 +746,134 @@ def test_mop_subwave_strategy_and_split_are_slice_scoped(tmp_path):
     assert "make-before-break the 2 dual-homed" in text
     assert "the 1 single-homed switch(es)" in text
     assert "the 4 dual-homed" not in text
+
+
+# ---- stored-DoS: INNER (row / per-element) poison, not just top-level sections ---------------------
+# test_mop_robust_to_malformed_uploaded_snapshot (above) poisons whole SECTIONS, which the module already
+# routes through _as_dict/_as_list at :329-338. It cannot reach the residue: a WELL-FORMED section whose
+# inner ROW field (G2) or per-element MAP value (G3) is a truthy scalar. `x.get("k") or []` catches only
+# FALSY values, so `5` survives and detonates on the next dereference (len()/iteration/slice/set()/.get()/
+# .items()). The webapp stores an uploaded snapshot before rendering it (its only validation is
+# `isinstance(snap, dict) and "devices" in snap`), so each of these is a STORED availability DoS: every
+# later GET /api/snapshots/{id}/deliverable/mop 500s. One value poisoned per case -- poisoning several at
+# once lets an upstream guard drop the row and makes the case vacuous.
+
+def _poison(path, value, base=None):
+    """_snap() (or `base`) with exactly ONE inner value replaced. `path` is a key/index chain."""
+    snap = base if base is not None else _snap()
+    node = snap
+    for key in path[:-1]:
+        node = node[key]
+    node[path[-1]] = value
+    return snap
+
+
+def _batch_wave_snap():
+    """_snap() + an independent-batch wave that bundles BOTH move-groups into one wave, so the per-group
+    rollback loop (which reads each sibling group's playbook) actually runs."""
+    snap = _snap()
+    snap["design_blueprint"] = {"target_state": {"wave_plan": {
+        "waves": [{"wave": 1, "kind": "independent-batch", "n_switches": 3,
+                   "switches": ["distA", "distB", "acc1"], "source_groups": [0, 1]}],
+        "n_waves": 1, "wave_cap": 40, "n_move_groups": 2, "largest_group": 2,
+        "n_subdivided_groups": 0, "note": "x"}}}
+    return snap
+
+
+# name -> snapshot. Each entry names the raw read it detonates on in cisco_toolkit/mop.py.
+INNER_POISON = {
+    # G2 -- a row of a well-formed list-of-dicts section
+    "readiness_switches_scalar":  _poison(["migration_readiness", 0, "switches"], 5),          # members_all.update(5)/len(5)
+    "readiness_checks_scalar":    _poison(["migration_readiness", 0, "checks"], 5),            # for c in 5
+    "seq_make_before_break_scalar": _poison(["wave_sequencing", 0, "make_before_break"], 5),   # for _h in 5
+    "seq_hard_cutover_scalar":    _poison(["wave_sequencing", 0, "hard_cutover"], 5),          # for _h in 5
+    "punchlist_devices_scalar":   _poison(["punchlist", 0, "devices"], 5),                     # set(5)
+    "remediation_commands_scalar": _poison(["remediation_plan", "items", 0, "commands"], 5),   # 5[:8]
+    "scenario_playbook_scalar":   _poison(["migration_scenarios", "per_group", 0, "playbook"], 5),  # 5.get("pre")
+    # G3 -- a per-element value of a well-formed core map
+    "val_by_wave_scalar":         _poison(["validation_plan", "by_wave", "Group 1"], 5),       # for v in 5
+    "interfaces_host_scalar":     _poison(["interfaces"], {"distA": 5}),                       # 5.items()
+    "interfaces_port_scalar":     _poison(["interfaces"], {"distA": {"Gi1/0/1": 5}}),          # 5.get("switchport_mode")
+    # the multi-group rollback loop: poison the SIBLING group's playbook so the representative one stays
+    # well-formed and the crash isolates to the per-group read, not the shared one.
+    "batch_sibling_playbook_scalar": _poison(["migration_scenarios", "per_group", 1, "playbook"], 5,
+                                             base=_batch_wave_snap()),                         # 5.get("rollback")
+}
+
+
+@pytest.mark.parametrize("name", list(INNER_POISON))
+def test_mop_robust_to_inner_scalar_poison(tmp_path, name):
+    """Every one of these raises against the pre-guard module (verified by importing
+    `git show origin/main:cisco_toolkit/mop.py`); with the docmeta coercers each must degrade and still
+    produce a document."""
+    out = str(tmp_path / f"mop_{name}.docx")
+    write_mop_docx(out, INNER_POISON[name], "Poisoned Fleet")   # must NOT raise
+    assert os.path.isfile(out) and os.path.getsize(out) > 0
+    # non-degenerate: the wave sections still render (the guard degrades the poisoned value, not the doc)
+    h1 = [p.text for p in Document(out).paragraphs if p.style.name == "Heading 1"]
+    assert any(t.startswith("3. MOP —") for t in h1), h1
+
+
+def test_mop_wellformed_render_unchanged_by_the_guards(tmp_path):
+    """Behaviour-preservation anchor: `as_list(x)` is identical to `(x or [])` for every list/None input,
+    so a well-formed snapshot must render EXACTLY as before. Pins the full text of both the default and
+    the wave_plan snapshots so a coercer that silently swallowed good data would fail here."""
+    for tag, snap in (("default", _snap()), ("waves", _snap_waves()), ("batch", _batch_wave_snap())):
+        out = str(tmp_path / f"m_{tag}.docx")
+        write_mop_docx(out, snap, "Unit Test Fleet")
+        text = _all_text(Document(out))
+        # every inner value the guards now route through a coercer still reaches the document
+        assert "distA" in text and "acc1" in text                       # readiness/sequencing switches
+        assert "stage target beside legacy" in text                     # playbook.pre
+        assert "cut one leg, prove forwarding" in text                  # playbook.validate
+        assert "fail back to the legacy leg" in text                    # playbook.rollback
+        assert "standby 20 ip 10.0.20.254" in text                      # remediation_plan.items[].commands
+        assert "VLAN 20 single gateway" in text                         # punchlist row matched via devices[]
+        assert "show banner login" in text                              # validation_plan.by_wave[]
+
+
+# ---- E2E through the real AssessHub route (the attacker's actual path) -----------------------------
+
+@pytest.fixture()
+def hub_client(tmp_path):
+    """AssessHub TestClient. base_url=localhost so the default Host passes the no-token DNS-rebinding
+    guard; raise_server_exceptions=False so a stored DoS surfaces as a 500 RESPONSE (what a real client
+    sees) instead of a raised exception."""
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if root not in sys.path:                      # webapp is a namespace package off the repo root
+        sys.path.insert(0, root)
+    from webapp.backend.app import create_app
+    with TestClient(create_app(db_path=str(tmp_path / "hub.db")), base_url="http://localhost",
+                    raise_server_exceptions=False) as c:
+        yield c
+
+
+def _upload_and_get_mop(client, snap):
+    """POST the snapshot (the webapp validates only `isinstance(snap, dict) and 'devices' in snap`, so
+    the poison is ACCEPTED and STORED), then GET the MOP deliverable rendered from it."""
+    cid = client.post("/api/campaigns", json={"name": "c"}).json()["id"]
+    r = client.post(f"/api/campaigns/{cid}/snapshots",
+                    files={"file": ("s.json", json.dumps(snap).encode(), "application/json")},
+                    data={"label": "s"})
+    assert r.status_code == 201, r.text            # stored first -> this is a STORED availability DoS
+    sid = r.json()["id"]
+    return client.get(f"/api/snapshots/{sid}/deliverable/mop")
+
+
+@pytest.mark.parametrize("name", list(INNER_POISON))
+def test_mop_deliverable_route_survives_inner_scalar_poison(hub_client, name):
+    """The route re-raises after unlinking its temp file, so a raise inside write_mop_docx is an HTTP
+    500 on EVERY later GET for that stored snapshot. Each case 500s against the pre-guard module."""
+    r = _upload_and_get_mop(hub_client, INNER_POISON[name])
+    assert r.status_code == 200, f"{name} -> {r.status_code}: {r.text[:300]}"
+    assert len(r.content) > 0
+
+
+def test_mop_deliverable_route_still_serves_a_wellformed_snapshot(hub_client):
+    """Non-vacuity anchor for the route itself: a good snapshot downloads a real .docx."""
+    r = _upload_and_get_mop(hub_client, _snap())
+    assert r.status_code == 200, r.text
+    assert r.content[:2] == b"PK" and len(r.content) > 10_000     # a populated OOXML package
