@@ -24,10 +24,24 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List
 
-from . import engine
+from . import engine, summary
 from .docx_style import GREY as _GREY
 from .docx_style import NAVY as _NAVY
 from .docx_style import add_table, ink, kv, new_document
+
+# List coercion is `summary._as_list` (the web layer's single copy, as `cutover.py` uses it); the dict
+# twin lives here for the same reason it lives in `cutover.py` -- see `cisco_toolkit.docmeta.as_dict`
+# for the engine-side equivalent the writer family shares.
+
+
+def _as_dict(v: Any) -> Dict[str, Any]:
+    """Coerce a snapshot section/sub-section to a dict. `... or {}` only guards FALSY values; a truthy
+    NON-dict (an int/str/list in a malformed or hostile upload) survives it and raises on the very next
+    `.get`. This writer is reached by a plain `GET /api/snapshots/{id}/deliverable/nrfu` over a snapshot
+    that the upload path stores verbatim, so that raise escapes as an HTTP 500 on every later read -- a
+    STORED denial of service. Returning {} degrades gracefully; for a well-formed value (dict or None)
+    the result is identical to the `or {}` it replaces."""
+    return v if isinstance(v, dict) else {}
 
 
 def write_nrfu_docx(output_path: str, snap_dict: Dict[str, Any], label: str) -> None:
@@ -40,24 +54,35 @@ def write_nrfu_docx(output_path: str, snap_dict: Dict[str, Any], label: str) -> 
     def table(headers: List[str], rows: List[List[Any]], widths: List[float] | None = None):
         return add_table(doc, headers, rows, widths)
 
-    devices = snap_dict.get("devices") or {}
-    per_device = [d for d in ((snap_dict.get("lifecycle_risk") or {}).get("per_device") or [])
+    # _as_dict / summary._as_list at EVERY level, never `... or {}` / `or []`: the snapshot is stored
+    # verbatim from an upload whose only validation is "is a dict and has 'devices'", so a truthy
+    # non-dict/non-list here is attacker-reachable and would 500 this read route for good (see _as_dict).
+    # Several of these do not detonate at the read but much later -- `devices` at the len(devices)
+    # fallback AND at the eagerly-evaluated `coll.get('inventory', len(devices))` default; `coll`,
+    # `scale` and `swrisk` at their .get()s in the document-control / scope-limit blocks below.
+    devices = _as_dict(snap_dict.get("devices"))
+    per_device = [d for d in summary._as_list(_as_dict(snap_dict.get("lifecycle_risk")).get("per_device"))
                   if isinstance(d, dict)]
-    coll = (snap_dict.get("collection_completeness") or {}).get("summary") or {}
+    coll = _as_dict(_as_dict(snap_dict.get("collection_completeness")).get("summary"))
     # SSOT: the fleet-scale header reads the canonical executive_brief.scale (the published single
     # source the explorer/deck/HLD read), with len(devices) only as a pre-brief fallback (C9 fix —
     # the web-layer NRFU writer was the last surface recomputing fleet scale from the raw array).
-    scale = (snap_dict.get("executive_brief") or {}).get("scale") or {}
-    val_items = [i for i in ((snap_dict.get("validation_plan") or {}).get("items") or []) if isinstance(i, dict)]
-    services = [s for s in ((snap_dict.get("service_map") or {}).get("services") or []) if isinstance(s, dict)]
-    domains = [d for d in ((snap_dict.get("application_intelligence") or {}).get("domains") or [])
+    scale = _as_dict(_as_dict(snap_dict.get("executive_brief")).get("scale"))
+    val_items = [i for i in summary._as_list(_as_dict(snap_dict.get("validation_plan")).get("items"))
+                 if isinstance(i, dict)]
+    services = [s for s in summary._as_list(_as_dict(snap_dict.get("service_map")).get("services"))
+                if isinstance(s, dict)]
+    domains = [d for d in summary._as_list(_as_dict(snap_dict.get("application_intelligence")).get("domains"))
                if isinstance(d, dict)]
+    # NOT coerced on purpose: `mcast` is never dereferenced, only truth-tested (§2 test count and the
+    # Phase III multicast row), so any value is safe and a guard here would be churn.
     mcast = (snap_dict.get("multicast_intelligence") or {})
     # design-decision coverage + scope limits (N29/N30): trace the ATP back to the target-state design
-    bp_decisions = [d for d in ((snap_dict.get("design_blueprint") or {}).get("decisions") or [])
+    bp_decisions = [d for d in summary._as_list(_as_dict(snap_dict.get("design_blueprint")).get("decisions"))
                     if isinstance(d, dict)]
-    nrfu_items = [i for i in ((snap_dict.get("design_nrfu") or {}).get("items") or []) if isinstance(i, dict)]
-    swrisk = (snap_dict.get("software_risk") or {}).get("summary") or {}
+    nrfu_items = [i for i in summary._as_list(_as_dict(snap_dict.get("design_nrfu")).get("items"))
+                  if isinstance(i, dict)]
+    swrisk = _as_dict(_as_dict(snap_dict.get("software_risk")).get("summary"))
 
     # ---- title page ----
     title = doc.add_paragraph()
@@ -125,7 +150,9 @@ def write_nrfu_docx(output_path: str, snap_dict: Dict[str, Any], label: str) -> 
         c = str(it.get("category", "") or "—")
         val_by_cat[c] = val_by_cat.get(c, 0) + 1
     n_p1, n_p2 = len(per_device), len(val_items)
-    n_p3 = len({(s.get("service"), s.get("category")) for s in services}) + len(domains) + (1 if mcast else 0)
+    # str(): an unhashable service/category (a list/dict in a malformed upload) would 500 the set build
+    n_p3 = (len({(str(s.get("service")), str(s.get("category"))) for s in services})
+            + len(domains) + (1 if mcast else 0))
     doc.add_heading("2. Test summary", level=1)
     table(["Phase", "Coverage", "Tests"], [
         ["Phase I — Device readiness", "Per-device inventory, software & lifecycle", n_p1],
@@ -159,9 +186,12 @@ def write_nrfu_docx(output_path: str, snap_dict: Dict[str, Any], label: str) -> 
             "covered by an acceptance test in the phase shown; a decision that still needs a requirement is "
             "not yet testable and is an explicit coverage boundary, not a silent gap.")
         if rec or needs:
-            phase_by = {i.get("decision_id"): i.get("phase", "") for i in nrfu_items}
+            # str() on BOTH the comprehension key and the lookup key: an unhashable decision_id / id
+            # (a list/dict in a malformed upload) would 500 the dict build and the .get() alike. Both
+            # sides must be stringified together or well-formed lookups would stop resolving.
+            phase_by = {str(i.get("decision_id")): i.get("phase", "") for i in nrfu_items}
             trace = [(d.get("title", d.get("id", "")), d.get("priority", ""),
-                      "Tested — " + (phase_by.get(d.get("id")) or "post-cutover-functional")) for d in rec]
+                      "Tested — " + (phase_by.get(str(d.get("id"))) or "post-cutover-functional")) for d in rec]
             trace += [(d.get("title", d.get("id", "")), d.get("priority", ""),
                        "Not testable until the requirement is supplied") for d in needs]
             table(["Target-state design decision", "Priority", "NRFU coverage"], trace[:40],
@@ -219,7 +249,8 @@ def write_nrfu_docx(output_path: str, snap_dict: Dict[str, Any], label: str) -> 
     seen: set = set()
     n3 = 0
     for s in services:
-        key = (s.get("service"), s.get("category"), s.get("port"))
+        # str(): an unhashable service/category/port would 500 both the `in seen` test and seen.add()
+        key = (str(s.get("service")), str(s.get("category")), str(s.get("port")))
         if key in seen:
             continue
         seen.add(key)
@@ -234,7 +265,9 @@ def write_nrfu_docx(output_path: str, snap_dict: Dict[str, Any], label: str) -> 
     for d in domains:
         n3 += 1
         dom = d.get("domain", "") or d.get("id", "")
-        sw = d.get("switches") or []
+        # _as_list, not `or []`: a well-formed domains list whose ROW carries a scalar `switches`
+        # (a truthy non-list) survives the row's isinstance(dict) filter and 500s the len() below.
+        sw = summary._as_list(d.get("switches"))
         rows3.append([f"NRFU-III-{n3:03d}", f"App domain: {dom}",
                       "Intra-domain reachability after cutover",
                       "ping / traceroute between two endpoints in the domain",
