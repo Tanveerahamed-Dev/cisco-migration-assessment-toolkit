@@ -248,6 +248,22 @@ def test_engagement_survives_malformed_snapshot(tmp_path):
     assert "s, h, o, w" not in text                         # never char-joined
 
 
+@pytest.mark.parametrize("poison", [5, "boom", True, 3.14])
+def test_engagement_survives_truthy_scalar_brief_scale(tmp_path, poison):
+    """The INNER executive_brief.scale was the residue of the truthy-non-dict class: `_as_dict()`
+    guarded only the OUTER section, so `(... .get("scale")) or {}` passed a truthy scalar straight
+    into `.get("n_devices")` -> AttributeError inside _workflow_facts, BEFORE any rendering. The
+    section-level test above cannot reach it (a scalar `executive_brief` is absorbed by _as_dict
+    and never yields a `scale`). Reachable as a stored DoS through the webapp's uploaded snapshot."""
+    snap = _snap()
+    snap.setdefault("executive_brief", {})["scale"] = poison   # truthy non-dict INNER block
+    out = str(tmp_path / "e.docx")
+    write_engagement_docx(out, snap, "Unit Test Fleet")        # must not raise
+    text = _all_text(Document(out))
+    # scale unreadable -> the counts degrade to the len(devices) fallback, they are not invented
+    assert "4 collected of 4 inventoried" in text
+
+
 def test_engagement_absent_completeness_is_unknown_not_complete(tmp_path):
     """V3.23.159: a snapshot with NO collection_completeness block must read UNKNOWN — absence of
     evidence is not evidence of completeness, and the verdict picks up a condition."""
