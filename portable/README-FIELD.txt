@@ -82,6 +82,15 @@ family, and checks the result before reporting success - if anything is
 still unredacted it FAILS and says so rather than handing you a file
 that looks safe. Expect several minutes for a large fleet.
 
+The seven Word documents each carry a Document Control table, just after
+the cover page, whose Status row marks them a generated draft that has
+not been reviewed. Take it literally: nothing here has been peer-reviewed
+or approved. The workbook, the explorer and the executive deck carry NO
+such marking, and the deck is the one most likely to be put in front of a
+client - so say it out loud rather than relying on the page. Approval is
+recorded per engagement by whoever runs the assessment, not on this
+stick, and Atlas has no way to know whether it happened.
+
 WHAT REDACTION DOES NOT REMOVE - read this before sending anything:
 HOSTNAMES AND DESCRIPTIONS ARE KEPT ON PURPOSE (a deliverable full of
 anonymous boxes is unreadable). Device names and interface descriptions

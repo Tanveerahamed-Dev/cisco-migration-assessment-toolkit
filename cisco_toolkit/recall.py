@@ -6,6 +6,12 @@ Fusion** (:func:`rrf_fuse`): given N ranked lists, an item's fused score is ``Σ
 it appears in — so an item ranked well by *several* signals beats one ranked well by only one, with no score
 normalization needed.
 
+An independent benchmark (arXiv `2601.07978` v4, Wolff & Bennati; re-verified 2026-07-23 against the primary
+source — the Cognee row appears only from v3, not the Jan-2026 v1/v2; see ``memory/cognee-evaluation-2026-07-19.md``)
+corroborates staying here rather than adopting an LLM-written ("cognify"-style) graph memory: on LoCoMo, that
+architecture family scored 55.27-56.03% — Cognee and Graphiti statistically tied (p=0.845) — well below the
+77-81% mem0/RAG/full-context cluster (p=0.002) this lexical+local-semantic hybrid sits architecturally closer to.
+
 The no-egress signals fused here are two **local** corpora: the **docs** (prose) and the **code** (the
 ``cisco_toolkit`` sources — a lexical proxy for the graphify structural signal). Both are offline. Two more
 stores plug into the same fusion when available: **graphify** (the AST graph, via :func:`graph_rank`, a

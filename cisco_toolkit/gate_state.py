@@ -26,6 +26,43 @@ when its upstream approval was missing. This module is the enforcement half of t
   * **Store present but unreadable** → REFUSE, even with an override (an unreadable ledger cannot
     take the audit line that makes an override legitimate; fix or remove the store).
 
+**Root resolution — the one way this module fails silently.** ``root`` defaults to ``"."``, so the
+store is found only if the *process's working directory* is the engagement. That is right for a
+human ``cisco-assess`` run (it inherits the operator's cwd) and wrong for any wrapper that re-homes
+the engine child to a scratch directory: an empty cwd has no store, ``enforce()`` takes the
+brownfield branch, and **every gate returns True** — enforcement disappears with no error, no
+warning that looks like a failure, and **no visible difference in the output at all**: both gated
+documents are produced exactly as if they had been approved. (Two MISSING documents is the
+signature of enforcement working, not of it failing — do not use absence as the tell.) Note the
+asymmetry that makes this dangerous: an unreadable store fails CLOSED (loudly), but an
+*unreachable* store fails OPEN (quietly). Any caller that sets ``cwd=`` on the engine child, or
+``os.chdir()``s around an in-process ``main()``, must therefore declare a posture — pass
+``--gate-root``, or suppress the gated deliverables with ``--no-design --no-mop``, or be listed in
+the guard's documented exemptions. Being safe "because cwd happens to be empty" is a coincidence of a call
+site, not a contract. Callers are inventoried in ``tests/test_gate_state.py``
+(``test_no_engine_caller_declares_a_gate_posture``). A mis-set ``root`` is treated as an error, not
+as an ungated engagement: every entry point REFUSES when ``root`` is not an existing directory (an
+*omitted* root still means cwd, unchanged). Scope that honestly — it catches a path that does not
+exist, NOT a wrong-but-existing one: ``--gate-root D:/Engagements`` when the engagement is
+``D:/Engagements/ACME`` still reads as brownfield and ungates everything. Closing that needs the
+ledger to declare what it governs, which nothing does today.
+
+**Enforcement is not always the right posture.** ``enforce()`` refuses per DELIVERABLE, which only
+withholds anything if the deliverable is the sole carrier of the content. It is not, for the
+design/MOP: ``COLLECT_PARSE_V3_23_0`` computes ``design_blueprint`` and writes the snapshot (:2817),
+the explorer (:2831) and the executive deck (:2853) — all carrying ``target_state``/``wave_plan`` —
+*before* the gates run (:2864/:2879). So on a path that emits the whole family, refusing the two
+DOCX removes two renderers while the unapproved design ships anyway. Blocking is right where the
+operator is AT the engagement and can approve or override with an audit line (the ``cisco-assess``
+CLI, which also PRINTS the refusal); it is weaker on a wrapper that emits the whole family and
+surfaces no gate output, where a refusal is a silent two-file omission. There is no third
+"disclose" API in this module — ``missing_approvals(store, generator)`` is a pure computation over
+an already-loaded store, not a reporting posture. An earlier draft of this note prescribed a
+``pending_approvals()`` helper and cited ``webapp/backend/gates.py`` / ``deliverables.py`` as
+precedent; the helper was removed and the precedent was wrong (``deliverables.py``'s
+``_reconcile_gate`` is an SSOT-drift warning, and ``gates.py`` works the per-wave axis), so both
+claims are struck rather than left pointing at nothing.
+
 Gate requirements mirror the agent charters: design requires an APPROVED assessment
 (.claude/agents/design-author.md — "design follows an approved assessment"); the MOP requires an
 approved LLD + a captured current-state baseline (.claude/agents/mop-change-author.md — "Require an
@@ -152,11 +189,23 @@ def _append_audit(path: str, store: dict, entry: dict) -> dict:
 def record_decision(gate: str, decision: str, root: str = ".",
                     by: Optional[str] = None, note: str = "") -> dict:
     """Record a human gate disposition (approve/revoke). Creates the store on first use — that is
-    the explicit opt-in moment that activates enforcement for the engagement in ``root``."""
+    the explicit opt-in moment that activates enforcement for the engagement in ``root``.
+
+    ``root`` must ALREADY EXIST; only the ``docs/`` directory inside it is created. Creating the
+    root too would mean a typo silently produces a phantom ledger plus a success receipt, so
+    ``mkdir`` the engagement first (raises ``GateStateError`` otherwise)."""
     if gate not in GATE_KEYS:
         raise ValueError(f"unknown gate {gate!r} (expected one of {list(GATE_KEYS)})")
     if decision not in ("approved", "revoked"):
         raise ValueError(f"unknown decision {decision!r} (expected 'approved' or 'revoked')")
+    root = _normalize_root(root)
+    # The write side needs this MORE than the read side: save_store() calls os.makedirs, so a typo
+    # here does not fail — it CREATES a phantom ledger at the wrong path and returns a success
+    # receipt, while the real engagement stays unapproved. The root must already exist; only the
+    # docs/ directory inside it is created (recording the first approval is the opt-in moment).
+    bad_root = _require_root(root, f"recording {gate}")
+    if bad_root:
+        raise GateStateError(bad_root)
     store, path = load_store(root)
     if store is None:
         store = _new_store()
@@ -168,6 +217,37 @@ def record_decision(gate: str, decision: str, root: str = ".",
                                 "event": "approve" if decision == "approved" else "revoke",
                                 "gate": gate, "note": note})
     return store["gates"][gate]
+
+
+def _normalize_root(root: str) -> str:
+    """``""`` is the argv encoding of *omitted* — ``--gate-root "$ENG_ROOT"`` with the variable
+    unset, or ``cmd += ["--gate-root", cfg.get("gate_root", "")]``. It always behaved exactly like
+    ``"."`` because ``store_path`` joins relatively, so refusing it would be a pure regression:
+    an omitted root means the working directory, and that contract predates this module's
+    hardening.
+
+    Only the empty STRING gets that treatment. ``None``/``0``/``b""`` are not "omitted", they are a
+    caller bug, and coercing them to cwd reached the phantom-ledger outcome ``_require_root`` exists
+    to stop by a bad TYPE instead of a bad path — ``record_decision(root=None)`` silently created a
+    ledger in the process's cwd and returned a success receipt."""
+    if root is None or not isinstance(root, (str, os.PathLike)):
+        raise TypeError(f"gate root must be a path string, got {type(root).__name__}: {root!r}")
+    return str(root) or "."
+
+
+def _require_root(root: str, what: str) -> Optional[str]:
+    """None if ``root`` is usable; otherwise the error text explaining why it is not.
+
+    A root that is not an existing directory is a MIS-SET root, never an ungated engagement.
+    Applied at EVERY entry point — enforcing, recording and showing — because a control hardened
+    on only one of them is defeated by the same typo it exists to catch: ``record_decision`` with a
+    bad root used to ``makedirs`` a phantom ledger and hand the lead a success receipt for an
+    approval that landed nowhere, while the real engagement stayed unapproved."""
+    if not os.path.isdir(root):
+        return (f"gate root {root} is not an existing directory -- refusing to treat a mis-set "
+                f"root as an ungated (brownfield) engagement while {what}. Fix the path, or omit "
+                f"it to use the working directory.")
+    return None
 
 
 def enforce(generator: str, override_reason: Optional[str] = None,
@@ -182,6 +262,15 @@ def enforce(generator: str, override_reason: Optional[str] = None,
     if generator not in GENERATOR_REQUIRES:
         raise ValueError(f"unknown gated generator {generator!r} "
                          f"(expected one of {sorted(GENERATOR_REQUIRES)})")
+    # Not overridable. NB the reason is NOT "the audit line has nowhere to land" (save_store would
+    # happily makedirs it — that is exactly the phantom-ledger bug _require_root closes): it is
+    # that an override is consent to bypass a SPECIFIC gate, and with a mis-set root no gate has
+    # been identified. You cannot consent to bypassing an approval you never located.
+    root = _normalize_root(root)
+    bad_root = _require_root(root, f"generating {generator}")
+    if bad_root:
+        logger.error("[GATE REFUSED] %s: %s", generator, bad_root)
+        return False
     try:
         store, path = load_store(root)
     except GateStateError as e:
@@ -242,13 +331,26 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = ap.parse_args(argv)
 
     if args.cmd in ("approve", "revoke"):
-        rec = record_decision(args.gate, "approved" if args.cmd == "approve" else "revoked",
-                              root=args.root, by=args.by, note=args.note)
+        try:
+            rec = record_decision(args.gate, "approved" if args.cmd == "approve" else "revoked",
+                                  root=args.root, by=args.by, note=args.note)
+        except GateStateError as e:
+            # The WRITE side is the one that most needs a clean answer: a mis-set root here used to
+            # create a phantom ledger. It must not now answer with a raw traceback while `show`
+            # answers the same mistake with a sentence.
+            print(f"REFUSING: {e}")
+            return 1
         print(f"{args.gate}: {rec['decision']} by {rec['signed_by']} at {rec['decided_at']}"
               f" -> {store_path(args.root)}")
         return 0
 
     # show
+    bad_root = _require_root(_normalize_root(args.root), "showing the gate board")
+    if bad_root:
+        # The operator's one diagnostic tool must not answer a typo with "UNGATED (brownfield)" —
+        # that is the exact sentence this module exists to stop anything from saying wrongly.
+        print(f"REFUSING: {bad_root}")
+        return 1
     try:
         store, path = load_store(args.root)
     except GateStateError as e:
