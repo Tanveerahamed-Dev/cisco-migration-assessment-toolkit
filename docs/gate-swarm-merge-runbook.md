@@ -24,6 +24,113 @@
 >
 > `BLOCKED` on each = the review gate only.
 
+## ⛔ CORRECTION 3 — **#445 and #439 cannot both merge.** Stop the wave after #444.
+
+Measured 24-Jul-2026 ~22:40 UTC, by replaying the wave into a detached worktree after #441 landed
+(`d04d64a`, 19:11:47Z) and running the checks this runbook prescribes. **§5's instruction for #439 is
+now known-harmful.** The blocker below is proven by counterexample, not predicted.
+
+### 1. The blocker — #445 and #439 are the same feature, built twice, incompatibly
+
+Both PRs exist to make gate verdicts durable. They disagree about where the record lives, and the
+disagreement is in the type system, not the prose:
+
+| | **#445** (merges first) | **#439** |
+|---|---|---|
+| `enforce()` returns | `bool` | `GateVerdict` dataclass |
+| vocabulary | `VERDICTS = (ungated, approved, overridden, refused, refused_no_reason, refused_unreadable)` | `STATUSES = (bad_root, ungated, unreadable, ownership_mismatch, ownership_unbound, clear, pending)` |
+| recorder | `_record()` → module-level `_VERDICTS` | `_record_refusal()` → the store's `audit` array |
+| durable home | the per-run `.run_manifest.json` seal | the gate-state ledger — #439 argues in its own docstring that the manifest is the **wrong** owner ("a refusal provokes a re-run, and a per-run seal is overwritten by exactly that") |
+| exports | `verdicts()`, `reset_verdicts()` | neither exists |
+
+#445 also lands three call sites in `COLLECT_PARSE_V3_23_0.py`. **They auto-merge with no conflict**,
+which is exactly why no metric on `gate_state.py` can see the damage:
+
+* `:482` — `from cisco_toolkit.gate_state import reset_verdicts as gate_reset_verdicts` ← *module-level*
+* `:1423` — `{"stage": "gate", "verdicts": _gate_state.verdicts()}`
+* `:1860` — `gate_reset_verdicts()`
+
+**Both mechanical resolutions were executed against the real tree. Both fail:**
+
+| resolution | every check this runbook prescribes | what actually happens |
+|---|---|---|
+| take #439's code on the code hunks — **what §5 instructs** | `pending_approvals=5` ✅ · `GateVerdict=17` ✅ · root guard ✅ · `ast.parse` ✅ | `ImportError: cannot import name 'reset_verdicts' from 'cisco_toolkit.gate_state'` — **the engine does not import at all** |
+| keep BOTH on the API hunk | compiles ✅ · imports ✅ · `GateVerdict=17` ✅ | `enforce()` returns a `GateVerdict`, but `_record()` is never called, so `verdicts()` returns `[]` forever → every run seals `{"stage": "gate", "verdicts": []}`: **the manifest silently reports that no gate decision was ever made** |
+
+The first is loud. The second is the dangerous one — and it is the same shape as the trap already
+documented in "Rejected approaches": *every number this runbook watches reads healthy while the
+feature is destroyed.* `pending_approvals` and `GateVerdict` cannot see it, because the destruction is
+in a different file that never conflicted.
+
+Note the status header above claims #439 is "verified by 123 passing tests". Those tests ran on
+#439's branch **without #445** — per-PR CI structurally cannot catch this class.
+
+**This is an author decision, not a merge resolution** — the same category as the `pending_approvals`
+question below. Someone has to pick one vocabulary and one durable home:
+
+* **Keep #445's design** → #439 drops `GateVerdict`/`STATUSES` and records through `_record()`,
+  keeping its genuinely separate feature (ledger↔engagement ownership binding, `ENGAGEMENT_KEY`,
+  ADR 0006), which nothing here conflicts with.
+* **Keep #439's design** → #445's `_VERDICTS`/`verdicts()`/`reset_verdicts()` **and** its three
+  `COLLECT_PARSE` call sites are rewritten onto `GateVerdict`, and `tests/test_gate_audit_trail.py`
+  (13 assertions against `verdicts()`) is rewritten with them.
+
+Either way it is real work by whoever owns the design. **Do not attempt it as a merge resolution.**
+
+### 2. Corrected conflict matrix — #445 is the hub
+
+Heads: `441=db9b8a8` `445=4331a24` `444=bd196dd` `439=9e8c0bc`. Every PR is clean against `main`;
+these are the collisions *with each other*. (#444's head moved during measurement — its author has
+since merged `main` in themselves at `bd196dd`, which is why it no longer collides with #441.)
+
+| | #441 | #445 | #444 | #439 |
+|---|---|---|---|---|
+| **#441** | — | `log.md`, `ssot.md` | clean | clean |
+| **#445** | | — | `log.md`, `ssot.md` | **`gate_state.py`**, `ssot.md` |
+| **#444** | | | — | clean |
+| **#439** | | | | — |
+
+Only #445 collides with anything. **#444 and #439 are clean against each other and against #441** —
+so the safe wave is `#445 → #444`, then **stop**.
+
+### 3. Two defects #445 carries into `docs/ssot.md` that CI cannot catch
+
+Found while resolving #445's `ssot.md` conflict; both survive a correct merge and neither is caught by
+`tests/test_ssot_registry.py` (it validates owners, symbols and cross-links — it has **no
+duplicate-row detection**).
+
+1. **Duplicate SSOT row.** #445's `ssot.md` diff is 3 lines, and one of them *adds a second*
+   `**Engagement gate state**` row rather than editing the existing one. `main` has 1, #445 has 2.
+   The added row carries **pre-#448 ownership text** — it says the store is "resolved under the
+   working directory", dropping #448's `--gate-root` correction. Two rows owning one fact-domain is a
+   Law-1 violation, and the stale one re-introduces the fail-open hazard #448 documented.
+   **Fix:** fold #445's new `**Scope:**` clause and its `test_gate_audit_trail.py` pin into main's
+   existing row; delete the duplicate.
+2. **A claim that #444 falsifies, in a row #444 never touches.** Both rows assert *"no shipped command
+   or CI job verifies a delivered manifest today"*. #444 ships exactly that command
+   (`manifest.py :: main()`, `add_parser("verify")`). #444's file list does **not** include
+   `docs/ssot.md`, so merging #444 leaves the SSOT asserting something false.
+   **Fix:** state the verification surface **once**, in the row that owns it (Run provenance), and have
+   the gate-state row cite it instead of restating it. Verified: `verify_manifest()` already exists
+   in-process on `main` (`manifest.py:82`); #444 adds the CLI; **no CI job references a manifest at
+   all**, so that half of the claim stays true.
+
+Also corrected while merging: the run-provenance row cites `write_json_file` as a `cisco_toolkit`
+symbol. It is not — it lives at `COLLECT_PARSE_V3_23_0.py:1300` (the entry module), as
+`tests/test_run_manifest_durability.py` itself notes.
+
+### 4. The two draft files this runbook tells you to paste from **do not exist**
+
+Phase 0 says to keep `ssot_row_draft.md` and `docstring_blends.md` to hand for Phases 2 and 3. Neither
+is in the repo, in git history, or in any session scratchpad — they were a prior session's scratch and
+are gone. The resolutions they held are reconstructed in §3 above and in §5 below; the runbook was not
+executable as written.
+
+The `docstring_blends.md` hazard is real and was reproduced: in `build_run_manifest`, HEAD's side ends
+with `"""` on its own line while #444's ends `...to this run."""`. Naive keep-both closes the
+docstring early and turns the remaining prose into code. Blend both bodies into **one** docstring
+closed **once**; `ast.parse` is what catches a bad blend.
+
 ## 🛑 CORRECTION 2 — "merge order no longer matters for conflicts" is FALSE (measured 24-Jul-2026)
 
 An earlier line here said *"Merge order no longer matters for conflicts; each is independently up to
@@ -240,6 +347,14 @@ Conflicts: `cisco_toolkit/gate_state.py`, `docs/log.md`, `docs/ssot.md`,
   documents the absence of the API, #439 is what builds it.)
 
 ### 5. PR #439 — `claude/amazing-bardeen-5c7e30`  ← the landmine, and the only genuinely manual step
+
+> ## ⛔ DO NOT EXECUTE THIS SECTION. See **CORRECTION 3** at the top.
+>
+> The rule below — *"Code hunks … keep #439's code"* — was executed against the real tree and produces
+> `ImportError: cannot import name 'reset_verdicts'`: **the engine stops importing entirely**, while
+> every metric this section tells you to watch (`pending_approvals=5`, `GateVerdict=17`) reads healthy.
+> #439 and #445 implement the same feature with incompatible vocabularies; choosing between them is an
+> author decision. Merge `#445 → #444` and stop.
 Conflicts: `cisco_toolkit/gate_state.py` (**12 hunks**), `COLLECT_PARSE_V3_23_0.py`, `docs/ssot.md`,
 `portable/README-FIELD.txt`, `tests/test_gate_state.py`, `webapp/backend/ingest.py`,
 `webapp/backend/serve.py`
