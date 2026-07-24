@@ -604,6 +604,15 @@ def _snap_bp(**over):
     return s
 
 
+def _snap_bp_field(key):
+    """_snap_with_register() with ONE requirements_model field's `key` replaced. crd.py builds
+    `{f.get("key"): f.get("value") ...}`, so an UNHASHABLE key raises while the dict is being built."""
+    s = _snap_with_register()
+    fields = s["design_blueprint"]["requirements_model"]["fields"]
+    fields[0] = {**fields[0], "key": key}
+    return s
+
+
 def _snap_bp_decision(status, **over):
     """_snap_with_register() with ONE field of the first REAL `status` decision poisoned. status/title
     stay intact so the row is still selected and rendered rather than filtered out upstream."""
@@ -646,6 +655,11 @@ _INNER_POISON = {
     # snapshot, not by reading the `or []` sites — a different mechanism, same stored-DoS class.
     "punch_severity_list": lambda: _snap_punch(["x"]),
     "punch_severity_dict": lambda: _snap_punch({"a": 1}),
+    # crd.py:123 — _requirements_overlay builds `{f.get("key"): ...}`; an UNHASHABLE field key raises
+    # while the comprehension builds the dict. Sits at snapshot depth 5, past the depth cap of the
+    # fuzz sweep — found by enumerating every HASHING site in the file instead.
+    "reqmodel_field_key_list": lambda: _snap_bp_field(["availability_tier"]),
+    "reqmodel_field_key_dict": lambda: _snap_bp_field({"a": 1}),
 }
 
 

@@ -120,7 +120,10 @@ def _requirements_overlay(bp: dict) -> dict:
     engagement constraints as OPEN QUESTIONS, never inventing them (coverage-honesty).
     """
     rm = _as_dict(bp.get("requirements_model"))
-    vals = {f.get("key"): f.get("value")
+    # str() the comprehension KEY: an unhashable `key` (fields=[{"key": ["a"]}] in an uploaded snapshot)
+    # makes building this dict raise TypeError: unhashable type -> the whole CRD aborts. Identical for a
+    # real register, whose keys are the string field names the three vals.get() lookups below use.
+    vals = {str(f.get("key")): f.get("value")
             for f in _as_list(rm.get("fields")) if isinstance(f, dict) and f.get("key")}
     return {
         "provided": bool(rm.get("provided")),
