@@ -983,3 +983,33 @@ def test_the_guard_does_not_refuse_real_values(monkeypatch, tmp_path):
     state = _no_serve(monkeypatch)
     rc = serve.main(["--db", str(tmp_path / "a.db"), "--port", "8123", "--no-browser"])
     assert rc == 0 and state["served"] is True, "the guard swallowed a valid invocation"
+
+
+def test_main_forwards_reuse_out_to_run_redaction(monkeypatch):
+    """Direct pin on the dispatch contract, after a merge silently broke it.
+
+    Two changes collided on these lines (#438's --reuse-out and the empty-value guard) and the
+    conflict was resolved by keeping BOTH blocks stacked. `if args.redact_folder is not None`
+    returns for every non-None value, so the second block was unreachable - and it was the only
+    one that forwarded reuse_out. The flag was accepted, silently dropped, and Atlas refused an
+    --out folder the engineer had explicitly authorised.
+
+    #438's own tests did catch it, but only through their console assertions, which read as a
+    message-wording problem. This asserts the argument itself reaches run_redaction, so the next
+    re-stack fails with the actual cause on the line."""
+    seen = {}
+    monkeypatch.setattr(serve, "run_redaction",
+                        lambda src, out, rc=False, ro=False: seen.update(
+                            src=src, out=out, redact_collection=rc, reuse_out=ro) or 0)
+    assert serve.main(["--redact-folder", "S", "--out", "O", "--reuse-out"]) == 0
+    assert seen["reuse_out"] is True, "--reuse-out did not reach run_redaction"
+    seen.clear()
+    assert serve.main(["--redact-folder", "S", "--out", "O"]) == 0
+    assert seen["reuse_out"] is False, "reuse_out must default off - it relaxes a safety refusal"
+
+
+def test_reuse_out_without_redact_folder_is_refused(capsys):
+    """The mirror: --reuse-out relaxes a safety refusal, so it must never be silently ignored
+    when the command it modifies was not given."""
+    assert serve.main(["--reuse-out"]) == 2
+    assert "only apply to --redact-folder" in capsys.readouterr().err
