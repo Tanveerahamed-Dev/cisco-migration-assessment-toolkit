@@ -923,3 +923,136 @@ def test_checker_is_calibrated_against_real_redacted_snapshots(tmp_path, fixture
         f"the checker now inspects only {coverage:.0%} of {fixture} ({inspected}/{total}); an "
         f"exemption has blinded it (this was 72% when real evidence was being skipped)")
 
+
+# --- empty-string flag values ---------------------------------------------------------------------
+# argparse accepts `--flag ""`, and main() dispatched on truthiness, so an empty value was
+# indistinguishable from "flag not passed". Measured before the fix: `--redact-folder ""` returned
+# 0 and STARTED THE WEB SERVER. The engineer asked for a share-safe deliverable set, got a running
+# cockpit and a success exit code, and nothing anywhere said the redaction had not happened.
+
+def _no_serve(monkeypatch):
+    """Stub the serve path so a regression is a FAILED ASSERT, not a test that binds a port and
+    hangs. `served` flipping to True is the actual defect being detected — asserting only on the
+    exit code would pass for a command that refused AND then somehow served."""
+    state = {"served": False}
+    monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace(
+        run=lambda app, **kw: state.update(served=True)))
+    monkeypatch.setattr(serve, "_schedule_browser_open", lambda url: None)
+    return state
+
+
+def test_empty_redact_folder_refuses_instead_of_serving(monkeypatch, tmp_path, capsys):
+    state = _no_serve(monkeypatch)
+    assert serve.main(["--redact-folder", ""]) == 2
+    assert state["served"] is False, "an empty --redact-folder started the server"
+    assert "empty value" in capsys.readouterr().err
+    # ...including when --out IS supplied, which previously produced the MISLEADING refusal
+    # "--out only applies to --redact-folder" while --redact-folder was in fact supplied.
+    assert serve.main(["--redact-folder", "", "--out", str(tmp_path / "o")]) == 2
+    assert state["served"] is False
+    assert "only apply" not in capsys.readouterr().err
+
+
+def test_empty_out_refuses_instead_of_serving(monkeypatch, tmp_path, capsys):
+    state = _no_serve(monkeypatch)
+    assert serve.main(["--redact-folder", str(tmp_path), "--out", ""]) == 2
+    assert state["served"] is False, "an empty --out started the server"
+    assert "empty value" in capsys.readouterr().err
+    # bare `--out ""` with no --redact-folder must still hit a refusal, not fall through to serving
+    assert serve.main(["--out", ""]) == 2
+    assert state["served"] is False
+
+
+def test_every_path_valued_flag_rejects_an_empty_value(monkeypatch, capsys):
+    """The whole class, not the three flags that happened to be reported. --db "" silently opened
+    a DIFFERENT store than the one named; --dist "" served a different frontend (and disagreed
+    with run_selftest, which already used `is not None` for it); --host "" binds every interface
+    rather than loopback. Whitespace counts as empty - a quoted trailing space is invisible."""
+    state = _no_serve(monkeypatch)
+    for flag in ("--host", "--db", "--dist", "--redact-folder", "--out", "--verify-manifest",
+                 "--expect-root"):
+        for value in ("", "   "):
+            assert serve.main([flag, value]) == 2, f"{flag} {value!r} was not refused"
+            assert state["served"] is False, f"{flag} {value!r} reached the serve path"
+            assert flag in capsys.readouterr().err
+
+
+def test_the_guard_does_not_refuse_real_values(monkeypatch, tmp_path):
+    """Non-vacuity: the guard must reject ONLY empty values. A blanket refusal would pass every
+    assertion above while breaking the normal command."""
+    state = _no_serve(monkeypatch)
+    rc = serve.main(["--db", str(tmp_path / "a.db"), "--port", "8123", "--no-browser"])
+    assert rc == 0 and state["served"] is True, "the guard swallowed a valid invocation"
+
+
+def test_main_forwards_reuse_out_to_run_redaction(monkeypatch):
+    """Direct pin on the dispatch contract, after a merge silently broke it.
+
+    Two changes collided on these lines (#438's --reuse-out and the empty-value guard) and the
+    conflict was resolved by keeping BOTH blocks stacked. `if args.redact_folder is not None`
+    returns for every non-None value, so the second block was unreachable - and it was the only
+    one that forwarded reuse_out. The flag was accepted, silently dropped, and Atlas refused an
+    --out folder the engineer had explicitly authorised.
+
+    #438's own tests did catch it, but only through their console assertions, which read as a
+    message-wording problem. This asserts the argument itself reaches run_redaction, so the next
+    re-stack fails with the actual cause on the line."""
+    seen = {}
+    monkeypatch.setattr(serve, "run_redaction",
+                        lambda src, out, rc=False, ro=False: seen.update(
+                            src=src, out=out, redact_collection=rc, reuse_out=ro) or 0)
+    assert serve.main(["--redact-folder", "S", "--out", "O", "--reuse-out"]) == 0
+    assert seen["reuse_out"] is True, "--reuse-out did not reach run_redaction"
+    seen.clear()
+    assert serve.main(["--redact-folder", "S", "--out", "O"]) == 0
+    assert seen["reuse_out"] is False, "reuse_out must default off - it relaxes a safety refusal"
+
+
+def test_reuse_out_without_redact_folder_is_refused(capsys):
+    """The mirror: --reuse-out relaxes a safety refusal, so it must never be silently ignored
+    when the command it modifies was not given."""
+    assert serve.main(["--reuse-out"]) == 2
+    assert "only apply to --redact-folder" in capsys.readouterr().err
+
+
+def test_two_jobs_in_one_invocation_are_refused_not_silently_dropped(monkeypatch, tmp_path, capsys):
+    """The three subcommands were dispatched by a fixed precedence with NO cross-check, so asking
+    for two performed the first and discarded the rest in silence. Measured before the fix:
+    `--verify-manifest X --redact-folder Y --out Z` printed "manifest OK" and returned 0 while the
+    redaction - the ten-minute job producing the deliverables actually wanted - never ran. Same
+    "asked for X, silently got Y, exit code says success" failure as the empty-value bug, reached
+    by a different route."""
+    state = _no_serve(monkeypatch)
+    monkeypatch.setattr(ing, "run_redaction_folder",
+                        lambda *a, **k: pytest.fail("redaction ran despite a competing job"))
+    src = str(_collection(tmp_path))
+    out = str(tmp_path / "o")
+    for argv in (["--verify-manifest", "m.json", "--redact-folder", src, "--out", out],
+                 ["--redact-folder", src, "--out", out, "--verify-manifest", "m.json"],
+                 ["--selftest", "--redact-folder", src, "--out", out],
+                 ["--selftest", "--verify-manifest", "m.json"]):
+        assert serve.main(argv) == 2, argv
+        assert state["served"] is False
+        err = capsys.readouterr().err
+        assert "one per run" in err, err
+
+
+def test_invisible_and_control_characters_are_not_usable_values(monkeypatch, tmp_path, capsys):
+    """`str.strip()` removes NBSP and the exotic spaces but NOT zero-width space or the BOM, so
+    `--db "\u200b"` passed the empty-value guard and CREATED A REAL STORE named with an invisible
+    character - exactly the "quietly opened a different store than the one you named" outcome that
+    guard exists to stop. An embedded NUL instead raised ValueError from inside pathlib/sqlite3,
+    escaping main() as a traceback after the job banner had printed."""
+    state = _no_serve(monkeypatch)
+    before = set(os.listdir(tmp_path))
+    for value in ("\u200b", "\ufeff", "\u200b\u200c ", "\x00", "a\x00b", "\t"):
+        for flag in ("--db", "--out", "--dist", "--host"):
+            assert serve.main([flag, value]) == 2, (flag, repr(value))
+            assert state["served"] is False, (flag, repr(value))
+            capsys.readouterr()
+    assert set(os.listdir(tmp_path)) == before, "a refused --db value still created a store"
+    # a NUL reaching the redaction path used to crash inside ingest, after the banner
+    src = str(_collection(tmp_path))
+    capsys.readouterr()
+    assert serve.main(["--redact-folder", src, "--out", "\x00"]) == 2
+    assert "Traceback" not in capsys.readouterr().err

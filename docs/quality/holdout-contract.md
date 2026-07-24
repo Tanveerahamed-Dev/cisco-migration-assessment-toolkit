@@ -58,7 +58,15 @@ only per §4, only for evaluation of an already-frozen change, never to fit one.
 ## 3. The seal — what the committed manifest freezes
 
 The seal is a **committed** `docs/quality/holdout_manifest.json` built on the
-`cisco_toolkit/manifest.py` hash chain (the run-ledger's tamper-evidence, reused):
+`cisco_toolkit/manifest.py` hash chain (the run-ledger's mechanism, reused).
+
+> **Which sense of "tamper-evident".** The chain is **unkeyed** and `manifest.build_manifest` is
+> public, so recomputing a clean `chain_root` over edited rows is trivial: on its own the chain
+> catches a *careless* edit, deletion or truncation — not a forger. What upgrades the claim here is
+> that this manifest is **committed**: a re-seal cannot be quiet, it has to land as a changed
+> tracked file in a reviewed diff, against a `chain_root` already in git history. The run manifest
+> (`<out>.run_manifest.json`) ships to a client with no such history, which is why its verify verb
+> offers `--expect-root` — an out-of-band root is that file's substitute for git.
 
 - **Step 0 seals the policy terms** — floor, split percentage, row counts — so the terms of the
   seal are themselves tamper-evident; steps 1..k each seal one holdout row's content digest.
