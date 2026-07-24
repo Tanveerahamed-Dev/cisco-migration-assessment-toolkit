@@ -502,3 +502,47 @@ def test_runbook_survives_non_string_elements_in_joined_lists(tmp_path):
         out = str(tmp_path / f"rb_join_{i}.docx")
         write_runbook_docx(out, snap, "Unit Test Fleet")   # must not raise
         assert "1. Assessment Header & Executive Summary" in _all_text(Document(out)), label
+
+
+# --- leaf-type class: a non-str ELEMENT inside a well-formed list -----------------------------------
+# DISTINCT from the truthy-non-container class above and NOT fixable by _as_list: `_as_list` guards the
+# container's TYPE and is structurally blind to what is inside it. `", ".join([5])` raises
+# `TypeError: sequence item 0: expected str instance, int found`. The snapshot is attacker-controllable
+# (upload -> deliverables.generate("runbook", snap) -> HTTP 500), so each is a stored DoS.
+_LEAF_JOIN_CASES = [
+    ("cross_layer[].hosts", {"cross_layer": [{"id": "C1", "severity": "Critical", "title": "t",
+                                              "detail": "d", "hosts": [5]}]}),
+    ("app_int.cross_domain_risks[].title",
+     {"application_intelligence": {"domains": [{"domain": "D1", "tier": "On-air critical"}],
+                                   "cross_domain_risks": [{"title": 5}]}}),
+    ("app_int.domains[].validation",
+     {"application_intelligence": {"domains": [{"domain": "D1", "tier": "On-air critical", "evidence": "e",
+                                                "risks": [{"severity": "Critical", "title": "t",
+                                                           "detail": "d", "remediation": "r"}],
+                                                "validation": [5]}]}}),
+    ("app_int.edges[].kinds",
+     {"application_intelligence": {"domains": [{"domain": "D1"}],
+                                   "edges": [{"source": "a", "target": "b", "weight": 1, "kinds": [5]}]}}),
+]
+
+
+@pytest.mark.parametrize("label,extra", _LEAF_JOIN_CASES, ids=[c[0] for c in _LEAF_JOIN_CASES])
+def test_runbook_survives_nonstr_list_element(tmp_path, label, extra):
+    """A non-str element of an otherwise well-formed list must degrade, never crash the join."""
+    snap = {"devices": {"sw1": {"hostname": "sw1"}}}
+    snap.update(extra)
+    out = tmp_path / "leaf.docx"
+    write_runbook_docx(str(out), snap, "Unit Test Fleet")   # must not raise
+    assert out.is_file(), f"no runbook for {label}"
+
+
+def test_runbook_nonstr_join_coercion_is_identity_on_strings(tmp_path):
+    """Non-vacuity companion: str()-per-element must be a NO-OP for well-formed string members --
+    every host must still appear verbatim in the rendered cross-layer finding."""
+    snap = {"devices": {"sw1": {"hostname": "sw1"}},
+            "cross_layer": [{"id": "C1", "severity": "Critical", "title": "t", "detail": "d",
+                             "hosts": ["alpha1", "bravo2"]}]}
+    out = str(tmp_path / "wf.docx")
+    write_runbook_docx(out, snap, "Unit Test Fleet")
+    txt = _all_text(Document(out))
+    assert "alpha1" in txt and "bravo2" in txt, "well-formed hosts must render verbatim"
