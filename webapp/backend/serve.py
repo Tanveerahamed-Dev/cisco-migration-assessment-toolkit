@@ -444,17 +444,19 @@ def main(argv=None) -> int:
         return 2
 
     # `is not None`, not truthiness: the class guard above already rejects "", but a dispatch site
-    # should not silently depend on a distant check to be correct. Same reason below and for
-    # --verify-manifest. (NB PR #438 rewrites these two lines to add --reuse-out; whichever lands
-    # second must keep `is not None` here, or `--out ""` starts serving again.)
+    # should not silently depend on a distant check to be correct.
+    #
+    # This block is the UNION of two changes that collided here (#438's --reuse-out and the
+    # empty-value guard). The merge resolved it by keeping BOTH blocks stacked, which is why the
+    # second pair below used to be dead: `if args.redact_folder is not None` returns for every
+    # non-None value, so `if args.redact_folder` after it could never run. The dead copy was the
+    # ONLY one that forwarded `reuse_out`, so `--reuse-out` was silently dropped and Atlas refused
+    # an --out folder the engineer had explicitly authorised (exit 1, caught by #438's own tests).
+    # Keep this as ONE pair: `is not None` from the guard, `reuse_out` + the 3-flag message
+    # from #438. Re-stacking them re-breaks whichever half is listed second.
     if args.redact_folder is not None:
-        return run_redaction(args.redact_folder, args.out, args.redact_collection)
-    if args.out is not None or args.redact_collection:
-        print(f"{APP_TITLE}: --out and --redact-collection only apply to --redact-folder.",
-              file=sys.stderr)
-    if args.redact_folder:
         return run_redaction(args.redact_folder, args.out, args.redact_collection, args.reuse_out)
-    if args.out or args.redact_collection or args.reuse_out:
+    if args.out is not None or args.redact_collection or args.reuse_out:
         print(f"{APP_TITLE}: --out, --redact-collection and --reuse-out only apply to "
               f"--redact-folder.", file=sys.stderr)
         return 2
