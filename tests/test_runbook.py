@@ -453,6 +453,16 @@ def test_runbook_survives_truthy_scalar_nested_value(tmp_path):
     _SHARED_SSOT_SECTIONS = {"executive_brief"}
     paths = [p for p in _nested_container_paths(base) if p[0] not in _SHARED_SSOT_SECTIONS]
     assert len(paths) > 20, "sanity: the rich snapshot must expose many nested containers to poison"
+    # REACH GUARD. The cap silently going stale is exactly how this sweep stayed green over four live
+    # crashes: at depth<=3 it never generated these paths, so "no crashes" meant "never looked". Pin
+    # the deepest sites explicitly — lowering _MAX_NEST_DEPTH, or a fixture that drops these keys,
+    # must fail loudly here rather than quietly shrink the sweep's reach.
+    for must_reach in (("collection_completeness", "devices", 0, "missing"),
+                       ("migration_scenarios", "per_group", 0, "playbook"),
+                       ("application_intelligence", "domains", 0, "risks", 0)):
+        assert must_reach in paths, (
+            f"sweep no longer reaches {'.'.join(map(str, must_reach))} — the poison set shrank "
+            f"(depth cap {_MAX_NEST_DEPTH}, {len(paths)} paths); it would go green without looking")
     crashes = []
     for i, p in enumerate(paths):
         snap = copy.deepcopy(base)
@@ -481,14 +491,14 @@ def test_runbook_survives_non_string_elements_in_joined_lists(tmp_path):
                     "mode": "majority"},
         "per_device": [{"host": "sw1", "compliance_pct": 66, "n_missing": 1, "missing": ["aaa new-model"]}],
     }
-    for label, mutate in (
+    for i, (label, mutate) in enumerate((
         ("collection_completeness.devices[0].missing",
          lambda s: s["collection_completeness"]["devices"][0].__setitem__("missing", [1, 2, None])),
         ("golden_drift.per_device[0].missing",
          lambda s: s["golden_drift"]["per_device"][0].__setitem__("missing", [7, {"a": 1}])),
-    ):
+    )):
         snap = copy.deepcopy(base)
         mutate(snap)
-        out = str(tmp_path / f"rb_join_{abs(hash(label))}.docx")
+        out = str(tmp_path / f"rb_join_{i}.docx")
         write_runbook_docx(out, snap, "Unit Test Fleet")   # must not raise
         assert "1. Assessment Header & Executive Summary" in _all_text(Document(out)), label
