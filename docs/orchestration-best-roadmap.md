@@ -114,7 +114,7 @@ file **and** fleet-majority consensus baseline, dossier axis + Excel sheet). Ite
 ---
 
 ## Top 5 to do first (best impact-per-effort)
-1. **D2 — sealed run-manifest chain-of-custody (M).** Upgrade dead code → tamper-evident provenance; cheapest high-trust win, and the offline/deterministic answer to NetClaw's GAIT.
+1. **D2 — sealed run-manifest chain-of-custody (M).** Upgrade dead code → hash-chained provenance (tamper-evident in the *careless-edit* sense — the chain is unkeyed, so a re-seal defeats it; see the D2/J4 row above); cheapest high-trust win, and the offline/deterministic answer to NetClaw's GAIT.
 2. **C1 — Pre-Change Validation Certificate (M).** Packages our marquee `fib` what-if as a named PPDIOO gate artifact — high client value, the engine already exists.
 3. **A1 — `assertions.py` checks-as-data engine (L).** The biggest new capability and the convergence point of all three teardowns; turns NRFU/pre-post from prose into committed, cited, abstaining data.
 4. **B1+B2 — external source-of-truth reconcile (M).** Closes a real, verified gap (`reconcile` is internal-only) with the coverage-honest `UNVERIFIABLE` 5th state; opt-in, doctrine-safe.
@@ -146,7 +146,7 @@ A second, larger wave (**61 agents**, 4.4 M tokens, ~102 min: 15 products × 2 p
 > | **A1+H1** | [`assertions.py`](../cisco_toolkit/assertions.py) | 11 | fhrp→fail, framework→not_observed on the 253-device snapshot |
 > | **K1** | [`capture_integrity.py`](../cisco_toolkit/capture_integrity.py) | 7 | synthetic (raw-capture data-gated, W3-3) |
 > | **I2 · WIRED** | [`feature_compliance.py`](../cisco_toolkit/feature_compliance.py) → workbook **'Feature Compliance'** sheet + `snap['feature_compliance']` | 4 | real golden-drift → 8 features × 712 drift rows (snmp 93, aaa 79) |
-> | **D2/J4 · WIRED** | [`manifest.py`](../cisco_toolkit/manifest.py) → pipeline emits `<out>.run_manifest.json` (Phase 39, upgraded the dead `build_run_manifest`) | 5 | deterministic hash-chain; tamper-detected; real pipeline emits + verifies the sealed manifest |
+> | **D2/J4 · WIRED** | [`manifest.py`](../cisco_toolkit/manifest.py) → pipeline emits `<out>.run_manifest.json` (Phase 39, upgraded the dead `build_run_manifest`) | 5 | deterministic hash-chain; the pipeline **emits** the seal — it does not verify it (nothing in a run re-checks its own manifest). Verification is a separate, deliberate act by the receiver: `python -m cisco_toolkit.manifest verify <path>` (or `Atlas.exe --verify-manifest` in the field), exit 4 on a broken chain, proven against the real pipeline's manifest by `tests/test_pipeline_golden.py`. **Scope:** the chain is UNKEYED and `build_manifest` is public, so it detects careless edits/truncation, **not** a forger who re-seals — only `--expect-root`, against a root recorded out of band, pins a file to its run |
 > | **B · WIRED** | [`external_import.py`](../cisco_toolkit/external_import.py) → opt-in `--import-inventory FILE` (CSV/XLSX) → **'SoT Reconcile'** sheet + `snap['external_reconcile']` | 6 | 304 declared vs 303 observed → **50 UNVERIFIABLE** (the real never-collected set); pipeline-proven (ghost→MISSING + observed→UNDOCUMENTED) |
 > | **G4** | [`whatif.py`](../cisco_toolkit/whatif.py) | 4 | 300 reached flows → **24 single-points-of-dependency**, 276 resilient |
 >
