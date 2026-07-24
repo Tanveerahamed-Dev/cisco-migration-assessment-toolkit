@@ -8,10 +8,18 @@ which is why it is the engine's seal and not NetClaw's non-deterministic agent t
 
 **Scope the seal honestly.** The chain is UNKEYED and :func:`build_manifest` is public, so anyone holding
 the file can re-seal an edited ledger into a clean ``chain_root``. What this detects is a CARELESS edit,
-a deletion or a truncation — not a determined forger. The one check a forger cannot pass is
-``verify --expect-root``: a ``chain_root`` carried OUT OF BAND (the report, the engagement email) pins
-the delivered file to the run that produced it. Say "detects careless edits" wherever this is described;
+a deletion or a truncation — not a determined forger. ``verify --expect-root`` raises that bar: a
+``chain_root`` carried OUT OF BAND (the report, the engagement email) pins the delivered file to the run
+that produced it, and a re-seal cannot match it. Say "detects careless edits" wherever this is described;
 "tamper-proof" would be a false claim, and an auditor acting on it is the harm.
+
+That bar is only as wide as what the chain actually covers. It originally covered the pipeline steps
+and the artifact NAMES but not the artifact DIGESTS, which sat outside ``chain_root`` entirely — so
+swapping a delivered workbook and rewriting its ``sha256`` in the top-level list passed ``--artifacts``
+AND ``--expect-root``, the two checks that exist to answer "is this the workbook that was sealed?".
+:func:`build_manifest` now seals the digests as a final :data:`SEAL_ARTIFACTS` chain row and
+:func:`verify_file` reconciles the two copies. A manifest produced before that change has no such row;
+verification says so explicitly rather than implying coverage it cannot check.
 
 Auditor surface: ``python -m cisco_toolkit.manifest verify <run_manifest.json>`` (exit 0 clean / 4
 broken), and on a Python-less stick the same check is ``Atlas.exe --verify-manifest <path>``.
@@ -25,6 +33,18 @@ from typing import Any, Dict, List, Optional, Tuple
 
 GENESIS = "0" * 64
 _RESERVED = ("seq", "prev_sha256", "sha256")
+
+#: Stage name of the synthesized final chain row that seals the per-artifact digests
+#: (see :func:`build_manifest`). Manifests produced before this existed have no such row —
+#: :func:`verify_file` says so rather than implying coverage it cannot check.
+SEAL_ARTIFACTS = "seal_artifacts"
+
+#: Windows reserved device names. ``open("NUL")`` succeeds on Windows and reads as an empty file,
+#: so an artifact named NUL whose sealed digest is the (publicly known) sha256 of b"" verified
+#: "ok" from an EMPTY folder. Names are matched on the stem, case-insensitively.
+_WIN_DEVICES = frozenset(
+    ["CON", "PRN", "AUX", "NUL"]
+    + [f"COM{i}" for i in range(1, 10)] + [f"LPT{i}" for i in range(1, 10)])
 
 
 def _canon(obj: Any) -> str:
@@ -101,14 +121,21 @@ def build_manifest(meta: Dict[str, Any], artifacts: Dict[str, str], steps: List[
     `artifacts` is {name: sha256}; `steps` is the ordered pipeline ledger. `chain_root` is the final hash,
     a single value that seals the entire run."""
     meta = meta or {}
-    chain = hash_chain(steps or [])
+    rows = [{"name": n, "sha256": s} for n, s in sorted((artifacts or {}).items())]
+    # Seal the per-artifact DIGESTS into the chain, not just alongside it. Before this, `artifacts`
+    # sat entirely outside `chain`/`chain_root` (the pipeline's own steps carry artifact NAMES only),
+    # so swapping a delivered workbook and updating its sha256 in this list left chain_root
+    # untouched — and BOTH `verify --artifacts` and `--expect-root` reported clean. A
+    # chain-of-custody seal whose whole purpose is "is this the workbook that was sealed?" cannot
+    # leave the answer unsealed. `verify_file` cross-checks the two copies (:func:`_sealed_artifacts`).
+    chain = hash_chain(list(steps or []) + [{"stage": SEAL_ARTIFACTS, "artifacts": rows}])
     return {
         "tool": meta.get("tool", "cisco-assess"),
         "schema_version": meta.get("schema_version"),
         "generated_at": meta.get("generated_at"),
         "collected_at": meta.get("collected_at"),
         "devices_file_sha256": meta.get("devices_file_sha256"),
-        "artifacts": [{"name": n, "sha256": s} for n, s in sorted((artifacts or {}).items())],
+        "artifacts": rows,
         "abstention_ledger": meta.get("abstention_ledger") or {},
         "chain": chain,
         "chain_root": chain[-1]["sha256"] if chain else GENESIS,
@@ -129,8 +156,63 @@ def _is_confined(name: str) -> bool:
         return False
     if ":" in name or name.startswith(("/", "\\", "~")):        # drive-qualified, absolute or UNC
         return False
+    if "\x00" in name:
+        # open() raises ValueError (NOT OSError) on an embedded NUL, which the caller's
+        # `except OSError` would not catch — a corrupted JSON string crashed the auditor's CLI.
+        return False
+    if name.split(".")[0].strip().upper() in _WIN_DEVICES:
+        # Not a path escape, but not a file either: on Windows these open successfully and read
+        # as empty, so a fabricated artifact named NUL carrying sha256(b"") verified "ok" out of
+        # an empty folder. Refused on every OS so a manifest verifies identically everywhere.
+        return False
     parts = name.replace("\\", "/").split("/")
     return len(parts) == 1 and parts[0] not in ("", ".", "..")
+
+
+def _sealed_artifacts(chain: List[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
+    """The artifact digests sealed INSIDE the chain, or ``None`` for a manifest sealed before
+    :data:`SEAL_ARTIFACTS` existed (absence is reported, never treated as agreement)."""
+    for row in reversed(chain):
+        if isinstance(row, dict) and row.get("stage") == SEAL_ARTIFACTS:
+            got = row.get("artifacts")
+            return got if isinstance(got, list) else []
+    return None
+
+
+def _structural_problem(man: Dict[str, Any]) -> Optional[str]:
+    """Why this object cannot be verified at all, or ``None`` if it is shaped like a manifest.
+
+    The manifest is UNTRUSTED input — it arrives from a share, a client, a partial write. A
+    wrong-typed ``chain`` (dict/str/int) or a non-dict row used to raise AttributeError/TypeError
+    straight out of the CLI: a traceback and exit 1, where the contract is a sentence and exit 4.
+    Same wrong-typed-value class the stored-DoS wave (#462-#475) fixed across the deliverables."""
+    chain = man.get("chain")
+    if chain is None:
+        return "carries no chain — there is nothing sealed here to verify"
+    if not isinstance(chain, list):
+        return f"'chain' is {type(chain).__name__}, not a list of steps — this is not a manifest"
+    if not chain:
+        return "carries no chain — there is nothing sealed here to verify"
+    bad = [i for i, row in enumerate(chain) if not isinstance(row, dict)]
+    if bad:
+        return (f"{len(bad)} chain row(s) are not objects (first at index {bad[0]}, "
+                f"{type(chain[bad[0]]).__name__}) — the ledger is malformed, not merely edited")
+    root = man.get("chain_root")
+    if not isinstance(root, str) or not root.strip():
+        # verify_chain skips its tail check when expected_root is None, so a manifest whose root
+        # was deleted or nulled had its truncation check silently switched OFF: drop rows, null
+        # the root, and a gutted ledger verified as clean as an intact one.
+        return ("has no sealed chain_root, so a dropped tail cannot be detected — an unsealed "
+                "ledger is not a weaker seal, it is no seal")
+    arts = man.get("artifacts")
+    if arts is not None and not isinstance(arts, list):
+        return f"'artifacts' is {type(arts).__name__}, not a list"
+    if isinstance(arts, list):
+        bad_a = [i for i, a in enumerate(arts) if not isinstance(a, dict)]
+        if bad_a:
+            return (f"{len(bad_a)} artifact entr(ies) are not objects (first at index {bad_a[0]}) "
+                    f"— the artifact list is malformed")
+    return None
 
 
 def verify_file(path: str, expect_root: Optional[str] = None,
@@ -149,7 +231,10 @@ def verify_file(path: str, expect_root: Optional[str] = None,
       and "not present" must never quietly read as "verified" (coverage honesty).
     """
     try:
-        with open(path, encoding="utf-8") as f:
+        # utf-8-SIG: strips a BOM if present and is identical to utf-8 when absent. The producer
+        # never writes one, but a manifest that merely passed through a Windows tool acquires one,
+        # and rejecting an untampered file as unreadable is a false alarm at a client site.
+        with open(path, encoding="utf-8-sig") as f:
             man = json.load(f)
     except (OSError, ValueError) as e:
         return {"ok": False, "reason": f"cannot read manifest {path}: {e}",
@@ -159,15 +244,14 @@ def verify_file(path: str, expect_root: Optional[str] = None,
                 "broken": [], "chain_root": None, "artifacts": []}
 
     root = man.get("chain_root")
-    chain = man.get("chain") or []
-    n = len(chain)
-    if not n:
-        # verify_manifest({}) is (True, []) — with no chain AND no root there is nothing to
-        # contradict, so the library reports clean. Passing that through would make the emptiest
-        # possible file the easiest to "verify": an auditor handed a gutted manifest would read OK.
-        # Absence is absence, never health.
+    # Absence is absence, never health: verify_manifest({}) is (True, []) because there is nothing
+    # to contradict, so the emptiest possible file would otherwise be the easiest to "verify".
+    problem = _structural_problem(man)
+    if problem:
         return {"ok": False, "chain_root": root, "broken": [], "artifacts": [],
-                "reason": f"{path} carries no chain — there is nothing sealed here to verify"}
+                "reason": f"{path} {problem}"}
+    chain = man["chain"]
+    n = len(chain)
 
     ok, broken = verify_manifest(man)
     if ok:
@@ -195,6 +279,20 @@ def verify_file(path: str, expect_root: Optional[str] = None,
             reason = (f"chain_root MISMATCH: file has {str(root)[:16]}…, expected {want[:16]}… "
                       f"— this is not the manifest that run produced")
 
+    # Does the delivered artifact list still match the copy sealed INSIDE the chain? Without this,
+    # editing a top-level artifact digest was invisible to BOTH the chain and --expect-root, so a
+    # swapped deliverable passed every check the tool offered.
+    sealed = _sealed_artifacts(chain)
+    listed = [{"name": str(a.get("name") or ""), "sha256": str(a.get("sha256") or "")}
+              for a in (man.get("artifacts") or [])]
+    if sealed is None:
+        reason += ("; NOTE this manifest predates artifact sealing, so its artifact digests are "
+                   "NOT covered by chain_root — re-hash the files and compare out of band")
+    elif sealed != listed:
+        ok = False
+        reason += ("; ARTIFACT LIST ALTERED — the delivered list no longer matches the copy sealed "
+                   "in the chain, so a deliverable was swapped or its digest rewritten")
+
     checked: List[Dict[str, str]] = []
     if artifacts_dir is not None:
         bad = 0
@@ -213,7 +311,7 @@ def verify_file(path: str, expect_root: Optional[str] = None,
                     with open(os.path.join(artifacts_dir, name), "rb") as fh:
                         got = artifact_sha256(fh.read())
                     state = "ok" if got == want_sha else "MISMATCH"
-                except OSError:
+                except (OSError, ValueError):   # ValueError: embedded NUL is not an OSError
                     state = "MISSING"
             if state != "ok":
                 bad += 1
