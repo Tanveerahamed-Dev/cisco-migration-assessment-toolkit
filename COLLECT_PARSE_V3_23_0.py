@@ -1663,6 +1663,13 @@ def main():
                          "overrides the refusal, recording WHO/WHEN/WHY as an audit line in the "
                          "gate-state store (reason must be non-empty). Without the store, generation "
                          "proceeds ungated (brownfield).")
+    ap.add_argument("--gate-root",       default=".", metavar="DIR",
+                    help="Engagement root holding docs/engagement-state.json for the PPDIOO "
+                         "document gates above (default: the working directory). Set this when the "
+                         "engine is launched with a SYNTHETIC cwd — a wrapper that re-homes the "
+                         "child to a scratch dir would otherwise resolve the store to nothing and "
+                         "silently downgrade every gate to brownfield warn-and-proceed. See "
+                         "cisco_toolkit/gate_state.py 'Root resolution'.")
     ap.add_argument("--no-crd",          action="store_true",
                     help="NEW-V3.23.156: skip the Customer Requirements Document (CRD, DOCX) — the "
                          "Plan-phase requirements-capture instrument primed with the assessment "
@@ -2958,7 +2965,8 @@ def main():
     # present (docs/engagement-state.json) and the marker unapproved, this REFUSES (skips the
     # write, loudly); --override-gate proceeds and appends a who/when/why audit line. No store at
     # all = warn-and-proceed (brownfield).
-    if not args.no_design and gate_enforce("design", override_reason=args.override_gate):
+    if not args.no_design and gate_enforce("design", override_reason=args.override_gate,
+                                           root=args.gate_root):
         design_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_design.docx"
         label = os.path.splitext(os.path.basename(out_xlsx))[0]
         try:
@@ -2972,7 +2980,8 @@ def main():
     # P0-3/DEC-003: the MOP follows an APPROVED LLD + a captured current-state baseline (PPDIOO
     # gate; mop-change-author charter). Same refusal/override/brownfield semantics as the design
     # gate above — the refusal skips ONLY this deliverable; the workbook/snapshot already saved.
-    if not args.no_mop and gate_enforce("mop", override_reason=args.override_gate):
+    if not args.no_mop and gate_enforce("mop", override_reason=args.override_gate,
+                                        root=args.gate_root):
         mop_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_mop.docx"
         label = os.path.splitext(os.path.basename(out_xlsx))[0]
         try:

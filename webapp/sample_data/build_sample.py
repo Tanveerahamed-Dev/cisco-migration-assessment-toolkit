@@ -391,6 +391,10 @@ def main() -> None:
         out_xlsx = os.path.join(work, "out.xlsx")
 
         cwd = os.getcwd()
+        # Synthetic cwd: the PPDIOO document gates resolve docs/engagement-state.json relative to
+        # it, so they would find nothing here and warn-and-proceed. Safe ONLY because --no-design
+        # --no-mop below means no gated deliverable is generated at all; if either is ever dropped,
+        # pass --gate-root <the real engagement root> too (cisco_toolkit/gate_state.py).
         os.chdir(work)
         argv = sys.argv[:]
         sys.argv = ["cisco-assess", "--no-collect", "--collection-dir", collection,
