@@ -56,7 +56,10 @@ def _evidence_facts(snap: dict) -> dict:
     # on one number instead of the CRD reporting a looser per-port dual_connection tally (A1 SSOT fix).
     dual = len(_as_list(_as_dict(snap.get("endpoint_dependencies")).get("dual_homed")))
     rn = _as_dict(snap.get("routing_neighbors"))
-    protos = sorted({p.upper() for host in rn for p, nbrs in _as_dict(rn.get(host)).items() if nbrs})
+    # str() the protocol KEY before .upper(): JSON object keys are always strings, so this is latent on
+    # the upload path, but the CLI hands write_crd_docx the IN-PROCESS snapshot dict (never round-tripped
+    # through JSON), where a non-str key would AttributeError. Identical output for every string key.
+    protos = sorted({str(p).upper() for host in rn for p, nbrs in _as_dict(rn.get(host)).items() if nbrs})
     l3f = _as_list(snap.get("l3_forwarding"))
     # Real FHRP only. The parser writes the literal string "none" when no HSRP/VRRP/GLBP is present,
     # and "none".strip() is truthy — so a bare truthiness test mislabels EVERY gateway VLAN as
@@ -77,8 +80,12 @@ def _evidence_facts(snap: dict) -> dict:
     ))
     lc = _as_dict(_as_dict(snap.get("lifecycle_risk")).get("summary"))
     coll = _as_dict(_as_dict(snap.get("collection_completeness")).get("summary"))
+    # str()-coerce the RANK LOOKUP KEY: an UNHASHABLE severity (punchlist=[{"severity": ["x"]}] in an
+    # uploaded snapshot) makes dict.get itself raise TypeError: unhashable type -> the whole CRD aborts.
+    # Behaviour-identical for real input: every _SEV_RANK key is a string, so str(x) hits the same entry
+    # for a string severity and misses (-> the 5 default) for everything else, exactly as before.
     punch = sorted([i for i in _as_list(snap.get("punchlist")) if isinstance(i, dict)],
-                   key=lambda i: _SEV_RANK.get(i.get("severity"), 5))
+                   key=lambda i: _SEV_RANK.get(str(i.get("severity")), 5))
     # isinstance-guard the canonical scale once: a TRUTHY non-dict executive_brief (malformed/slimmed snapshot)
     # slips through `or {}` and crashes .get('scale') -> the whole CRD silently aborts (audit L4).
     _eb = snap.get("executive_brief"); _eb_scale = _eb.get("scale") if isinstance(_eb, dict) else None

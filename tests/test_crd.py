@@ -588,6 +588,14 @@ def _snap_mcast_scaled(**over):
     return s
 
 
+def _snap_punch(severity):
+    """_snap() with ONE punchlist row's `severity` replaced. An UNHASHABLE value makes the sort key's
+    `_SEV_RANK.get(...)` raise TypeError before any coercion can help — dict.get hashes its argument."""
+    s = _snap()
+    s["punchlist"][0] = {**s["punchlist"][0], "severity": severity}
+    return s
+
+
 def _snap_bp(**over):
     """_snap_with_register() (a REAL compute_design_blueprint) with ONE blueprint CHILD replaced. The
     blueprint itself stays a dict, so the isinstance guard at crd.py:152 passes and the child is read."""
@@ -633,6 +641,11 @@ _INNER_POISON = {
     "bp_decision_reqneeded_int": lambda: _snap_bp_decision("needs-requirement", requirements_needed=5),
     "bp_decision_reqneeded_list_of_ints": lambda: _snap_bp_decision("needs-requirement",
                                                                     requirements_needed=[7]),
+    # crd.py:81 — the punchlist SORT KEY: `_SEV_RANK.get(i.get("severity"), 5)` on an UNHASHABLE
+    # severity raises TypeError inside dict.get itself. Found by recursive-poison fuzzing the whole
+    # snapshot, not by reading the `or []` sites — a different mechanism, same stored-DoS class.
+    "punch_severity_list": lambda: _snap_punch(["x"]),
+    "punch_severity_dict": lambda: _snap_punch({"a": 1}),
 }
 
 
@@ -644,6 +657,21 @@ def test_crd_survives_truthy_nondict_inner_value(tmp_path, name):
     write_crd_docx(out, _INNER_POISON[name](), "Poison Fleet")   # must not raise
     assert os.path.exists(out), f"{name}: no CRD written"
     Document(out)                                                # and it opens
+
+
+def test_crd_evidence_facts_tolerates_non_str_routing_protocol_key(tmp_path):
+    """crd.py:59 — `p.upper()` over routing_neighbors' PROTOCOL KEYS. Deliberately NOT in the route sweep
+    above: JSON object keys are always strings, so this is unreachable from an upload. It is reachable on
+    the CLI path, which hands write_crd_docx the IN-PROCESS snapshot dict (COLLECT_PARSE_V3_23_0:2886)
+    without a JSON round-trip. Pinned here honestly at the level it can actually occur, rather than
+    dressed up as a stored DoS it is not."""
+    from cisco_toolkit.crd import _evidence_facts
+    snap = _snap()
+    snap["routing_neighbors"] = {"core1": {5: [{"neighbor": "10.0.0.2"}], "ospf": [{"neighbor": "10.0.0.3"}]}}
+    ev = _evidence_facts(snap)                      # must not raise
+    assert "OSPF" in ev["protos"], ev["protos"]     # the real protocol still renders
+    assert "5" in ev["protos"], ev["protos"]        # and the odd key degrades to its string form
+    write_crd_docx(str(tmp_path / "c.docx"), snap, "L")
 
 
 def test_crd_wellformed_output_is_unchanged_by_the_inner_guards(tmp_path):
