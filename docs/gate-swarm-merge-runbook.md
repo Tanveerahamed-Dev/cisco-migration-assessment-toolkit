@@ -111,28 +111,33 @@ measured. Two plausible-sounding alternatives were tested and *refuted* — see 
 
 ## The two checks that matter (one alone will lie to you)
 
-`6822242` deleted references to a `pending_approvals()` API that does not exist. #439 still carries
-the pre-correction text. But #439 ALSO carries the real feature. You must watch both, because a
-resolution that scores perfectly on the first can have destroyed the second:
+#439 both **defines** `pending_approvals()` and describes it in prose, so a raw token count cannot
+tell "the feature plus its documentation" apart from "documentation of something deleted". Count
+the **definition**, and watch `GateVerdict` alongside it — a resolution that scores perfectly on
+one can have destroyed the other:
 
 ```bash
-grep -c 'pending_approvals' cisco_toolkit/gate_state.py   # prose correction
-grep -c 'GateVerdict'       cisco_toolkit/gate_state.py   # #439's feature
+grep -c '^def pending_approvals' cisco_toolkit/gate_state.py   # #439's disclosure API
+grep -c 'GateVerdict'            cisco_toolkit/gate_state.py   # #439's verdict feature
+grep -c 'must be a path string'  cisco_toolkit/gate_state.py   # #448's root guard
 ```
 
-| `pending_approvals` | Meaning |
+| `^def pending_approvals` | Meaning |
 |---|---|
-| **1** | correct — only #448's corrected reference |
-| **6** | the stale copy came back (naive keep-both) |
-| **0** | you dropped #448's fix entirely |
+| **1** after #439 | correct — the disclosure API is present |
+| **0** after #439 | **you deleted the API** and orphaned the 13 references in its own test file |
 
 | `GateVerdict` | Meaning |
 |---|---|
-| **>0** (13 in the replay) | #439's feature is present |
+| **>0** (17 measured at `9e8c0bc`) | #439's feature is present |
 | **0** after #439 | **you deleted the whole PR** — this is what a file-level `--ours/--theirs` does |
 
-Baseline: `main` today has `pending_approvals=0`, `GateVerdict=0`. #448 adds the single corrected
-mention (→1). #439 adds the feature (→13). **Before #439, `GateVerdict=0` is expected and fine.**
+Baseline: `main` today has `^def pending_approvals=0`, `GateVerdict=0`. #448 adds one corrected
+prose *mention* (raw count →1, still no definition). #439 adds the definition plus four prose refs
+(raw count →5, def →1) and the verdict feature (→17). **Before #439, `GateVerdict=0` is expected
+and fine**, and a raw `grep -c 'pending_approvals'` of **5** after #439 is CORRECT — not a stale
+copy. That raw count is the metric both corrections above retract; it is kept here only to be
+named and disowned.
 
 ---
 
@@ -176,7 +181,8 @@ git merge origin/main
 
 # 3. verify
 python -c "import ast,sys; [ast.parse(open(f,encoding='utf-8').read()) for f in sys.argv[1:]]; print('syntax OK')" $(git diff --name-only --diff-filter=U | grep '\.py$')
-grep -c 'pending_approvals' cisco_toolkit/gate_state.py     # expect 0 until #448, then 1
+grep -c 'pending_approvals'      cisco_toolkit/gate_state.py  # raw: 0 until #448, 1 after it, 5 after #439
+grep -c '^def pending_approvals' cisco_toolkit/gate_state.py  # def: 0 until #439, then MUST be 1
 
 # 4. commit + push (NO force needed — this is a merge)
 git add -A && git commit --no-edit
@@ -223,7 +229,9 @@ Conflicts: `cisco_toolkit/gate_state.py`, `docs/log.md`, `docs/ssot.md`,
   "every verdict is recorded structurally" paragraph, #448 contributes the "root resolution — the one
   way this module fails silently" paragraph; `ingest.py` likewise gains #448's "why the PPDIOO gates
   deliberately do NOT apply here"; the test file and argparse gain adjacent additions.
-* grep → **must now read 1**. If it reads 0 you discarded #448's contribution — redo this step.
+* raw `grep -c 'pending_approvals'` → **must now read 1**. If it reads 0 you discarded #448's
+  contribution — redo this step. (`^def pending_approvals` is still **0** here, correctly: #448
+  documents the absence of the API, #439 is what builds it.)
 
 ### 5. PR #439 — `claude/amazing-bardeen-5c7e30`  ← the landmine, and the only genuinely manual step
 Conflicts: `cisco_toolkit/gate_state.py` (**12 hunks**), `COLLECT_PARSE_V3_23_0.py`, `docs/ssot.md`,
@@ -234,14 +242,21 @@ Conflicts: `cisco_toolkit/gate_state.py` (**12 hunks**), `COLLECT_PARSE_V3_23_0.
 > takes the whole file. #439 rewrites that file by **+623/−31** — it adds the `GateVerdict`
 > dataclass, `STATUSES` / `UNEVALUATED` / `ENGAGEMENT_KEY`, and changes `enforce()` to return a
 > verdict object instead of a bare `bool`. Taking the file wholesale **silently deletes the entire
-> PR's feature** while still leaving `pending_approvals` reading a healthy `1`. Measured: file-level
-> `--ours` → `pending_approvals=1` (looks right) but `GateVerdict=0` (**feature gone**).
+> PR's feature** while still leaving the raw `pending_approvals` count reading a healthy `1`.
+> Measured: file-level `--ours` → raw `pending_approvals=1` (looks right) but `GateVerdict=0`
+> (**feature gone**). Note the corrected metric catches this on its own: `^def pending_approvals`
+> drops to `0` in the same resolution, which is exactly why it replaced the raw count.
 
 Resolve `cisco_toolkit/gate_state.py` **hunk by hunk, in an editor**. The 12 hunks are a mix:
 
-* **Prose/docstring hunks** — take the side that says *"be listed in the guard's documented
-  exemptions"* and drop the side that reintroduces the `pending_approvals()` list. That list is the
-  stale pre-`6822242` text; `6822242` deleted it because the API does not exist.
+* **Prose/docstring hunks** — keep the side that says *"be listed in the guard's documented
+  exemptions"* (that is #448's contribution) **and keep #439's `pending_approvals()` prose.**
+  ⚠ Earlier drafts told you to drop the `pending_approvals()` side as "stale pre-`6822242` text".
+  **Do not.** `6822242` removed that text because the API did not exist *on that branch*; #439 is
+  the branch that **creates** it, so on #439 the same prose is a live description of a live
+  function. Dropping it strands the definition four lines below with no documentation, and is one
+  editor slip away from dropping the definition too. The only prose to drop is a duplicate of a
+  paragraph you have already kept.
 * **Code hunks** (`GateVerdict`, `STATUSES`, the `enforce()` signature change, the new imports) —
   **keep #439's code**. That is the feature this PR exists to deliver, and it is what unblocks the
   open `deliverables.py` item.
@@ -251,8 +266,10 @@ Everything else in this PR — keep BOTH.
 **Verify with BOTH metrics — either alone is misleading:**
 
 ```bash
-grep -c 'pending_approvals' cisco_toolkit/gate_state.py   # want 1  (6 = stale copy returned)
-grep -c 'GateVerdict'       cisco_toolkit/gate_state.py   # want >0 (0 = you deleted the feature)
+grep -c '^def pending_approvals' cisco_toolkit/gate_state.py  # want 1  (0 = you deleted the API)
+grep -c 'GateVerdict'            cisco_toolkit/gate_state.py  # want >0 (0 = you deleted the feature)
+grep -c 'must be a path string'  cisco_toolkit/gate_state.py  # want >=1 (#448's root guard survived)
+grep -c '^def _normalize_root'   cisco_toolkit/gate_state.py  # want 1  (2 = duplicate-def trap)
 python -c "import ast; ast.parse(open('cisco_toolkit/gate_state.py',encoding='utf-8').read()); print('compiles')"
 ```
 
@@ -262,7 +279,12 @@ python -c "import ast; ast.parse(open('cisco_toolkit/gate_state.py',encoding='ut
 
 ```bash
 git checkout main && git pull
-grep -c 'pending_approvals' cisco_toolkit/gate_state.py            # 1
+# After ALL FOUR merges land, the raw count is 5, not 1 -- 1 was the pre-#439 value and expecting
+# it here would report a false failure at the last step of the wave (or invite someone to "fix" it
+# by deleting the API). Assert the definition, which is what the wave is actually delivering:
+grep -c '^def pending_approvals' cisco_toolkit/gate_state.py       # 1
+grep -c 'GateVerdict'            cisco_toolkit/gate_state.py       # >0  (17 at 9e8c0bc)
+grep -c 'must be a path string'  cisco_toolkit/gate_state.py       # >=1 (#448's root guard)
 # NB the old check here was  grep -c 'be listed in the guard'  # >=1  -- it is BROKEN and always
 # reads 0, so it would report a false failure at the last step of the wave. Two reasons, measured:
 # (1) that docstring is hard-wrapped, so the phrase straddles a newline ("...or be listed in\nthe
@@ -294,6 +316,15 @@ Note: judge pytest by its **exit code** — this suite prints no "N passed" summ
 watching can still be destroying something that number cannot see. Every automated resolution here
 was refuted by adding a metric, not by re-reading the diff.
 
+**And the lesson caught this document itself.** It was applied to `GateVerdict` and never to
+`pending_approvals`, the metric that started it: a raw token count cannot separate "the feature
+plus its documentation" from "documentation of a deleted feature", so the number kept reporting
+success in both directions. Worse, the retraction was published as a banner at the top while the
+body — the tables, the per-PR verify blocks, and the step-5 resolution instruction — went on
+prescribing the retracted number. **A correction that does not reach the line the operator
+actually executes has not been made.** Reconciled 24-Jul-2026; the raw count now appears only
+where it is explicitly disowned.
+
 ---
 
 ## If something goes wrong
@@ -316,3 +347,33 @@ The replay verified **conflict resolution, syntax, and the regression metric**. 
 full test suite on the integrated tree: this repo's editable install resolves to the main checkout, so
 `pytest` inside a scratch worktree can silently exercise the wrong code. Per-PR CI (Phase step 5) is
 the trustworthy signal, which is why each PR is pushed and checked before the next one starts.
+
+**Independent second pass (session `c0815bd5`, 24-Jul-2026 22:0x–22:2x).** A different session
+re-ran the merge sequence from scratch in its own detached worktree off `origin/main` @ `a98394f`
+and reached CORRECTION 2 independently: `#441` clean, then `#445` (`docs/log.md`, `docs/ssot.md`),
+`#444` (`COLLECT_PARSE_V3_23_0.py`, `cisco_toolkit/manifest.py`) and `#439`
+(`cisco_toolkit/gate_state.py`, `docs/ssot.md`) each conflict — 6 files, 3 of them `.py`. Two
+observations that pass step is the only place to record:
+
+* **`docs/ssot.md` conflicts twice** — at `#445` and again at `#439`. That is the Law-1 SSOT
+  registry, and per the swarm analysis the run-provenance row is 3-way in *facts* while git shows
+  it as 2-way. Resolve it in an editor against `docs/ssot.md`'s owner, never in the web UI.
+* **Naive union reproduces the authorial-conflict signature** on both `.py` conflicts —
+  `unterminated string literal` in `COLLECT_PARSE_V3_23_0.py`, `unexpected indent` in
+  `gate_state.py`. Both need prose blends; neither is keep-both.
+
+**#439's head `9e8c0bc` was measured directly and is internally sound** — this is the state the
+step-5 resolution must preserve, not re-derive:
+
+| probe | value |
+|---|---|
+| `grep -c '^def pending_approvals'` | **1** (the API is built here; 0 at the merge-base) |
+| `grep -c 'pending_approvals'` (raw) | **5** — expected, *not* a stale copy |
+| `grep -c 'GateVerdict'` | **17** |
+| `grep -c 'must be a path string'` | **1** (#448's `TypeError` root guard survived) |
+| `^def _normalize_root` / `_require_root` / `enforce` | **1 / 1 / 1** (no duplicate-def trap) |
+
+Still not run anywhere: the full suite on the **four-way integrated** tree. Per-PR CI tests each
+branch against `main` alone, so the combination remains unverified until the last merge lands —
+the failure mode this repo has already paid for once (#389). Run the full gate on `main` after the
+final merge, not only per PR.
