@@ -4,6 +4,45 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-22] — Hardening the run manifest: the task's premise was false, my "fix" was a regression, and the audit record I added sealed a lie
+
+- Task: make the sealed run manifest's write atomic, decide the overwrite policy, consider an exit
+  code for gate refusals — all premised on the manifest being "the durable record of PPDIOO gate
+  verdicts". It was not: `build_run_manifest` sealed only `collect`/`analyze`/`deliver`, and
+  `{"stage": "gate", ...}` existed in no branch, worktree, stash or open PR. Shipped (`b8d4ec3`) is
+  the durability half only — crash-safe write with a logged fallback, `.tmp` excluded from the
+  sealed artifact set, overwrite policy DECIDED as a per-run seal with `manifest.py` + `docs/ssot.md`
+  corrected (they claimed "append-only" unqualified), 9 tests, full suite green. The gate-verdict
+  record was reverted and re-scoped onto PR #439.
+- `!lesson` **`tmp + os.replace` is not a free upgrade over a truncate-write on Windows.**
+  `os.replace` must DELETE its destination, so it raises `PermissionError [WinError 5]` while ANY
+  process holds a handle — including an ordinary reader, because the CRT opens with
+  `FILE_SHARE_READ|FILE_SHARE_WRITE`. The plain `open(path,"w")` succeeds in exactly that case
+  (verified with a share-mode matrix; `FILE_SHARE_DELETE` does not save it). Real triggers: AV
+  on-access scan, search indexer, a viewer left open. Fix = retry briefly (~4x100ms absorbs
+  transient scanners), then fall back in-place and LOG it — never worse than before, atomic when
+  the FS allows, degradation never silent. bridge-candidate
+- `!lesson` **Check what the CALLER does with a write failure before "hardening" the write.** Both
+  call sites wrap the write in `except Exception: logger.warning(...)`, so the new failure mode was
+  swallowed: the run ships and the PREVIOUS manifest stays on disk beside freshly rewritten
+  artifacts — a stale seal that still passes `verify_manifest` while every hash in it is wrong (and
+  a fresh manifest can seal a stale snapshot as this run's evidence). A torn write announces
+  itself; a stale seal certifies a lie. Making a write "safer" in isolation made the system less
+  honest. bridge-candidate
+- `!lesson` **Agreement between reviewers is not evidence when they share a blind spot.** Three
+  independent refuters reviewed the change; two explicitly called the atomic-write half "sound".
+  Only the third — whose assigned lens was crash-safety specifically — reproduced the regression.
+  Assign at least one refuter a lens aimed squarely at the thing you are most confident about, and
+  do not treat 2-of-3 corroboration as confirmation. bridge-candidate
+- `!lesson` **Never re-derive a decision you can read off the decider — and distrust a test you
+  wrote for the code you wrote.** My gate record inferred `disposition="overridden"` from the
+  `--override-gate` flag, but `enforce()` returns True at its `if not missing` branch BEFORE the
+  override branch and appends no audit line — so an override flag on an already-approved ledger
+  sealed a governance breach that never happened, tamper-evidently, with no matching ledger line.
+  My own test asserted that lie as correct, while the repo already pinned the true invariant one
+  layer down (`test_approved_upstream_proceeds_and_override_is_inert`: "a redundant
+  `--override-gate` must NOT log a phantom override"). Grep for an existing invariant before
+  encoding a new one. bridge-candidate
 ## [2026-07-24] — Closed a 3-class stored-DoS series (16 PRs), then consolidated 141 branches to 32 — the cleanup found the bug the hardening missed
 
 - Closed the **truthy-non-container** falsy-guard class across every deliverable generator (#462-#471),

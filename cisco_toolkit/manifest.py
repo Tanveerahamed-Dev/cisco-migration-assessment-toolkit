@@ -6,6 +6,13 @@ step payload)`, so editing any earlier row breaks every hash after it — withou
 Pure stdlib `hashlib`; no LLM, no network; determinism is the whole point (same inputs -> same chain),
 which is why it is the engine's seal and not NetClaw's non-deterministic agent transcript.
 
+SCOPE OF "append-only" — the property holds WITHIN one sealed manifest: rows are only ever appended to a
+chain, and any edit to an earlier row invalidates every hash after it. It is NOT a claim that manifests
+accumulate across runs. `COLLECT_PARSE_V3_23_0.build_run_manifest` seals one run's artifact set, and a
+re-run to the same `--output` replaces that file along with the artifacts it hashes (a manifest outliving
+its artifacts would seal files that no longer exist). Read a manifest as "this artifact set, sealed", not
+as an engagement history; the append-across-runs ledger is `cisco_toolkit.gate_state`'s audit array.
+
 **Scope the seal honestly.** The chain is UNKEYED and :func:`build_manifest` is public, so anyone holding
 the file can re-seal an edited ledger into a clean ``chain_root``. What this detects is a CARELESS edit,
 a deletion or a truncation — not a determined forger. ``verify --expect-root`` raises that bar: a
