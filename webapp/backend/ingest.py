@@ -744,36 +744,36 @@ def run_redaction_folder(path: Any, out_dir: Any, redact_collection: bool = Fals
        snapshot (:2817), the explorer (:2831) and the executive deck (:2853) — all rendering
        ``design_blueprint``'s ``target_state``/``wave_plan`` — BEFORE the gates run (:2864/:2879).
        Refusing drops two renderers into the same folder as three ungated artifacts showing the
-       same unapproved design, while telling the engineer it was withheld. A false containment
-       claim is worse than an honest ungated one (Guardrail 3).
-    2. *The disclosure already exists, in a better place.* Every document carries
-       ``Status: DRAFT — generated; not yet reviewed`` in its Document Control table
-       (``cisco_toolkit/docmeta.py`` ``add_document_control``, used by all 8 DOCX writers). That
-       travels INSIDE the file that gets emailed; a sidecar note in the folder does not.
-    3. *This run cannot say which engagement it is.* Ownership is now verifiable rather than
-       inferred (ADR-0006: a ledger declares the ``engagement`` it governs and a run declares the
-       one it is for), but verification needs a DECLARATION, and the stick carries no engagement
-       identifier — no field UI collects one, and a redaction run is handed a folder of captures,
-       nothing more. Declaring nothing is therefore the correct posture here, not a gap: it is what
-       the ownership table calls the legacy row. What is now impossible is the failure this replaced
-       — inferring ownership from proximity, which mis-attributed across engagements in both
-       directions (cwd resolves to the folder every stick update wipes; walking up from the
-       collection adopts a shared parent's or the repo checkout's ledger, and printed engagement
-       ACME's approvals for a run of GLOBEX).
+       same unapproved design. And it would be a SILENT drop: ``run_redaction_folder`` captures the
+       child's output and ``serve.run_redaction`` prints only the file list, so a ``[GATE REFUSED]``
+       line never reaches the engineer here — unlike the ``cisco-assess`` CLI, which does surface
+       it. Two quietly-absent files, with the same design shipping beside them, is worse than an
+       honest ungated set (Guardrail 3).
+    2. *A disclosure already exists, in a better place — though it is a partial one.* The SEVEN
+       Word documents carry ``Status: DRAFT — generated; not yet reviewed`` in their Document
+       Control table (``cisco_toolkit/docmeta.py`` ``add_document_control``). That travels INSIDE
+       the file that gets emailed; a sidecar note in the folder does not. Two honest caveats: the
+       workbook, explorer and deck carry NO such marking — and those are exactly the three carriers
+       reason (1) leans on — and the row is a CONSTANT, so for a REVOKED approval it says "not yet
+       reviewed" when the review happened and rejected it. Treat this as mitigation, not as
+       equivalent to gate disclosure.
+    3. *Nothing here can identify the engagement's ledger.* Gate state is per-engagement but
+       nothing binds a ledger to an engagement — it is found by proximity, and proximity is not
+       ownership. Anchoring on cwd adopts the shell's directory (on the stick: the folder every
+       update wipes); anchoring on the collection adopts the nearest ``docs/engagement-state.json``
+       above it, which for the documented layouts is a *shared* parent or the repo checkout itself.
+       Both were tried and both mis-attribute across engagements — and a wrong "approvals present"
+       drawn from another client's ledger is far worse than saying nothing.
 
-    Note the asymmetry that makes (3) decisive even once an identifier exists: the gate a design
-    would fail on is ``assessment_approved``, and this path ships the assessment (workbook +
-    snapshot) regardless. Withholding the design while shipping the unapproved assessment it
-    derives from is backwards.
+    Note the asymmetry that makes (3) decisive: the gate a design would fail on is
+    ``assessment_approved``, and this path ships the assessment (workbook + snapshot) regardless.
+    Withholding the design while shipping the unapproved assessment it derives from is backwards.
 
     The MOP is the one genuinely different case — its cutover procedure, rollback triggers and
-    sign-off blocks exist in no other artifact, so refusing it WOULD contain something. ADR-0006
-    settles the posture it will take when this path can name its engagement: refuse the MOP on an
-    explicitly REVOKED ``lld_approved`` (``gate_state.revoked_requirements``) — a human's positive
-    withdrawal of approval, verified against a ledger proven to govern this engagement — and
-    disclose rather than withhold in every other state (``gate_state.pending_approvals``). It stays
-    unimplemented here only because the declaration it depends on does not exist yet; wiring it
-    needs an engagement identifier on the stick, which is a change to the field tool's inputs.
+    sign-off blocks exist in no other artifact, so refusing it WOULD contain something. That is
+    recorded as OPEN in ``docs/log.md`` (2026-07-22); it needs the ledger-ownership problem in (3)
+    solved first, and it is a change to what the field tool may withhold — not this function's
+    call to make.
     Two independent honesty properties, because a run can fail either way. The redaction checks
     REFUSE (``EngineRunError`` + a do-not-send marker) when what was written may not be safe. The
     completeness check WARNS — ``report["missing"]`` lists any family document the engine's
