@@ -52,6 +52,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # make `backend` i
 
 from backend.app import create_app  # noqa: E402
 
+# Gate the FILE on python-docx, once and visibly, rather than treating a per-request 503 as "docx is
+# missing": the deliverable route also 503s when it sheds load at the generation-concurrency ceiling,
+# so a per-test `if r.status_code == 503: skip` would silently swallow a real failure -- and if docx
+# were ever absent, EVERY case in this file would evaporate into skips with nothing red to notice.
+# With this, _renders can assert 200 strictly and any 503 is a genuine failure.
+pytest.importorskip("docx", reason="python-docx not installed on this runner")
+
 
 @pytest.fixture()
 def client(tmp_path):
@@ -80,10 +87,10 @@ def _get_nrfu(client, snap):
 
 
 def _renders(r, ctx=""):
-    """Assert the deliverable actually rendered. 503 = python-docx absent on this runner (not a DoS)."""
-    if r.status_code == 503:
-        pytest.skip("python-docx not installed on this runner")
+    """Assert the deliverable actually rendered. Strict: python-docx is guaranteed present by the
+    module-level importorskip, so a 500 (stored DoS) *or* a 503 (load-shed) is a real failure here."""
     assert r.status_code == 200, f"{ctx} -> {r.status_code}: {r.text[:300]}"
+    assert r.content[:2] == b"PK", f"{ctx} -> 200 but the body is not a .docx zip"
 
 
 def _base(**over):
@@ -168,6 +175,22 @@ def test_nrfu_multicast_intelligence_poison_was_already_safe(client, value):
     """`mcast` is never dereferenced (only truth-tested), so it needs NO coercion. Pinning that here so a
     later 'tidy-up' cannot quietly turn it into a dereference without a red test."""
     _renders(_get_nrfu(client, _base(multicast_intelligence=value)), f"mcast={value!r}")
+
+
+@pytest.mark.parametrize("value, was", [("xy", "2"), ([1, 2, 3], "3")], ids=["str", "list"])
+def test_nonmapping_devices_now_counts_as_zero_like_the_rest_of_the_webapp(client, value, was):
+    """The ONE place the guard changes a rendered value rather than only preventing a crash, pinned
+    deliberately so it is a documented decision and not a silent drift.
+
+    A non-mapping `devices` does not crash if `len()` happens to work on it, so pre-fix a string of 2
+    chars rendered "2" and a 3-element list rendered "3" as the fleet size. `_as_dict` makes both 0 --
+    which is what `summary.py` (`len(_dev) if isinstance(_dev, dict) else 0`) already reports for the
+    same snapshot on the cockpit. So this ALIGNS the NRFU with the rest of AssessHub; pre-fix the two
+    surfaces disagreed about the same malformed upload. A truthy non-mapping `devices` is not a valid
+    engine snapshot in any case, and 0 is the coverage-honest answer, not a fabricated count."""
+    _, cells = _nrfu_cells(client, _base(devices=value))
+    i = next(k for k, c in enumerate(cells) if "Devices in scope" in c)
+    assert cells[i + 1] == "0", f"was {was!r} pre-fix; expected the coverage-honest 0"
 
 
 @pytest.mark.parametrize("snap", [
