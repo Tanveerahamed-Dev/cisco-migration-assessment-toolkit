@@ -1187,16 +1187,93 @@ def load_devices(devices_file: str, allow_prompt: bool = True) -> List[dict]:
     return data
 
 
+# os.replace on Windows must DELETE the destination, so it fails while ANY process holds a handle
+# to it -- an on-access AV scan, the search indexer, a viewer the engineer left open on the stick.
+# A short retry absorbs the transient scanners without making the caller wait meaningfully.
+_ATOMIC_REPLACE_ATTEMPTS = 4
+_ATOMIC_REPLACE_BACKOFF_S = 0.1
+
+
+def _write_json_atomic(path: str, dump) -> None:
+    """Publish `path` atomically: same-directory tmp -> fsync -> os.replace. Raises on any failure,
+    and never leaves the temp file behind (including on KeyboardInterrupt/SIGTERM)."""
+    # Same directory keeps os.replace atomic (it is not, across filesystems); pid-stamped so two
+    # concurrent runs sharing an output dir cannot collide on the temp name.
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            dump(f)
+            f.flush()
+            os.fsync(f.fileno())          # bytes reach the medium BEFORE the rename publishes them
+        for attempt in range(_ATOMIC_REPLACE_ATTEMPTS):
+            try:
+                os.replace(tmp, path)
+                return
+            except OSError:
+                if attempt == _ATOMIC_REPLACE_ATTEMPTS - 1:
+                    raise
+                time.sleep(_ATOMIC_REPLACE_BACKOFF_S)
+    except BaseException:
+        # BaseException, not Exception: KeyboardInterrupt / SIGTERM is precisely the unplug-and-Ctrl-C
+        # case this exists for, and a leaked .tmp is itself a confusing audit artifact (it would
+        # otherwise be hashed into the next run's sealed artifact set).
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def write_json_file(path: str, data: dict, compact: bool = False) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    """Crash-safe JSON write: ATOMIC where the filesystem allows it, with a LOUD degrade where it
+    does not -- never a hard failure, because a plain truncate-write is what this used to do and it
+    succeeds in cases os.replace cannot.
+
+    Why atomic at all: the plain ``open(path, "w")`` this replaced truncates the good file BEFORE
+    writing the new bytes, so a crash in that window (ADR-0004 P3: a USB unplug mid-write) left
+    neither the old file nor a complete new one. That matters most for the two files here that are
+    EVIDENCE, not scratch: the snapshot, and the sealed run manifest whose whole purpose is
+    tamper-evidence -- a torn write destroys exactly the guarantee ``chain_root`` provides.
+
+    Why the fallback is NOT optional: on Windows ``os.replace`` must delete the destination, so it
+    raises PermissionError while any process holds a handle -- where the old truncate-write simply
+    succeeded (a reader opened via the CRT shares read+write). Failing there would be a REGRESSION,
+    and worse than the bug being fixed: the caller logs a warning and ships the run, leaving the
+    PREVIOUS manifest in place beside freshly rewritten artifacts -- a stale seal that still passes
+    verify_manifest while every hash in it is wrong. A torn write at least announces itself; a stale
+    one certifies a lie. So we retry briefly, then fall back to the in-place write and say so.
+
+    The fallback is deliberately noisy: silent degradation of a durability guarantee is the failure
+    mode --selftest exists to prevent elsewhere in this codebase.
+    """
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+
+    def _dump(fh):
         # NEW-Tier3#14: the SNAPSHOT is written compact (a pure size win — every consumer json.loads it
         # and compares PARSED objects, so byte formatting is invisible to the golden/--compare contract);
-        # debug artifacts (run_manifest / phase_timings) stay indented (human-readable) by default.
+        # the run manifest / phase timings stay indented (human-readable) by default.
         if compact:
-            json.dump(data, f, separators=(",", ":"), ensure_ascii=False)
+            json.dump(data, fh, separators=(",", ":"), ensure_ascii=False)
         else:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+            json.dump(data, fh, indent=2, ensure_ascii=False)
+
+    try:
+        _write_json_atomic(path, _dump)
+        return
+    except (KeyboardInterrupt, SystemExit):
+        # Nothing was published and the temp is gone, so the existing file is intact -- exactly the
+        # outcome this function exists to guarantee. Never downgrade an interrupt into a retry.
+        raise
+    except Exception as e:
+        logger.warning(
+            "  Atomic write unavailable for %s (%s: %s) -- falling back to an in-place write. "
+            "The file is NOT crash-safe for this write: a failure now can leave it truncated. "
+            "Usual cause on Windows is another process holding the file open (AV scan, indexer, an "
+            "open viewer); close it and re-run to restore the atomic path.",
+            os.path.basename(path), type(e).__name__, e)
+
+    with open(path, "w", encoding="utf-8") as f:
+        _dump(f)
 
 
 def file_sha256(path: str) -> str:
@@ -1218,7 +1295,15 @@ def build_run_manifest(out_xlsx: str, snap_dict: dict) -> dict:
     (``python -m cisco_toolkit.manifest verify`` / ``Atlas.exe --verify-manifest``). Scope the claim —
     the chain is unkeyed and ``manifest.build_manifest`` is public, so it detects a careless edit or a
     truncation, NOT a forger who re-seals; only a ``chain_root`` recorded out of band pins a delivered
-    file to this run."""
+    file to this run.
+
+    SCOPE — this is a PER-RUN seal, not a cross-run archive. It describes the artifact set currently
+    on disk beside ``out_xlsx``, and a re-run to the same ``--output`` replaces it exactly as it
+    replaces every sibling artifact it hashes; a manifest outliving the artifacts it seals would
+    describe files that no longer exist. The hash chain is append-only WITHIN one file. The durable
+    cross-run record of human gate decisions is the gate-state ledger
+    (``docs/engagement-state.json``), which is append-only ACROSS runs by design.
+    """
     import glob as _glob
     from cisco_toolkit import manifest as _manifest, ssot as _ssot
     try:
@@ -1230,7 +1315,11 @@ def build_run_manifest(out_xlsx: str, snap_dict: dict) -> dict:
     base_name = os.path.basename(base)
     artifacts = {}
     for path in sorted(_glob.glob(os.path.join(out_dir, base_name + "*"))):
-        if os.path.isfile(path) and not path.endswith(".run_manifest.json"):
+        # Skip .tmp: a write killed uncatchably (TerminateProcess / power loss) leaves the atomic
+        # writer's temp behind, and a CONCURRENT run's temp is visible for the duration of its write.
+        # Either would otherwise be sealed as a delivered artifact -- publishing, under the seal,
+        # bytes the pipeline deliberately never published.
+        if os.path.isfile(path) and not path.endswith((".run_manifest.json", ".tmp")):
             try:
                 with open(path, "rb") as _fh:
                     artifacts[os.path.basename(path)] = _manifest.artifact_sha256(_fh.read())
