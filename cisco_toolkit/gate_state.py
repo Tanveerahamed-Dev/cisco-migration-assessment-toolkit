@@ -26,6 +26,13 @@ when its upstream approval was missing. This module is the enforcement half of t
   * **Store present but unreadable** → REFUSE, even with an override (an unreadable ledger cannot
     take the audit line that makes an override legitimate; fix or remove the store).
 
+**Every verdict is recorded structurally, not just logged** (``_VERDICTS`` / ``verdicts()``). An
+OVERRIDE has always left a durable trace — the audit line it appends to the store — but a REFUSAL and
+the brownfield ungated case left none: they only reached ``logging``, on a logger outside the engine's
+configured tree, so they never appeared in ``cisco_migration_autofill_*.log`` and survived only as
+transient stderr via ``logging.lastResort``. For a control whose overrides DEC-003 says are reviewed
+weekly, the refused half must be as auditable as the overridden half. The engine seals ``verdicts()``
+into the ``.run_manifest.json`` hash chain; see ``COLLECT_PARSE_V3_23_0.build_run_manifest``.
 **Both dispositions are audited, not just the unsafe one.** ``enforce()`` returns a ``GateVerdict``
 rather than a bool, and a REFUSAL over MISSING APPROVALS -- the refusal this control exists to make,
 and the only one that means a located gate said no -- appends a durable ``refuse`` row to the same
@@ -126,6 +133,7 @@ bind <engagement>``.
 """
 from __future__ import annotations
 
+import copy
 import getpass
 import json
 import logging
@@ -139,6 +147,65 @@ logger = logging.getLogger(__name__)
 
 STORE_RELPATH = os.path.join("docs", "engagement-state.json")
 
+#: In-process ledger of the gate verdicts reached during THIS run — the STRUCTURAL half of the audit
+#: trail. Before this existed, a refusal left nothing durable at all: verdicts went only to
+#: ``logging``, on a logger the engine had not configured, while an OVERRIDE did persist (it appends
+#: an audit line to the store) — the asymmetry that made refusals invisible after the fact. Now
+#: ``enforce()`` appends one row per decision here, the engine seals the ledger into
+#: ``.run_manifest.json``'s hash chain (``COLLECT_PARSE_V3_23_0.build_run_manifest``), AND the log
+#: itself reaches that log file. Sealed row and log line are complementary — the row is
+#: tamper-evident but end-of-run, the line is editable but immediate.
+#:
+#: Rows carry generator/verdict/missing/reason and NOT who/when. The reason is SSOT, not determinism:
+#: the store's audit line is the one owner of who/when for an override, and this ledger cites it
+#: rather than copying it (Law 1). Do not restate the omission as a determinism requirement — a run
+#: manifest's ``chain_root`` already varies between otherwise-identical runs, because the sealed
+#: ``deliver`` step carries artifact NAMES and the default output filename embeds a wall-clock stamp.
+#: The real contract ``manifest.py`` guarantees is narrower: ``hash_chain`` is a pure function of the
+#: steps list. Known limit of citing rather than copying: the store is not itself sealed, so deleting
+#: it leaves an "overridden" row whose who/when is unrecoverable.
+#:
+#: Appended from the main thread only (the engine gates deliverables sequentially, after collection).
+_VERDICTS: List[dict] = []
+
+# NB: a separate flat ``VERDICTS`` enum used to live here ("approved"/"refused"/"refused_no_reason"
+# /"refused_unreadable"/"overridden"/"ungated"). It was RETIRED when #439 landed: ``STATUSES``
+# (defined below, beside ``UNEVALUATED``) is the ONE vocabulary shared by ``enforce``,
+# ``pending_approvals`` and the sealed ledger, and a second enum for the same situations is the
+# copy-that-drifts Law 1 exists to prevent. A sealed row reports the disposition as
+# ``verdict`` (a STATUS) plus an explicit ``proceed``; an override additionally carries ``reason``.
+
+
+def _record(generator: str, verdict: str, missing: Optional[List[str]] = None, **extra) -> dict:
+    """``missing=None`` means the approvals were NEVER EVALUATED (no store, or an unreadable one) —
+    deliberately distinct from ``[]``, which means "evaluated, nothing missing", so that counting
+    missing approvals across rows cannot silently score a never-checked run as a clean zero.
+    ``verdict`` remains the authoritative discriminator; ``missing`` only qualifies it. (This is the
+    same *concern* ``ssot.abstention_reason`` addresses — not-observed must never render as healthy —
+    but NOT the same mechanism: that function returns an enumerated token, never a nullable. Here the
+    enumerated token is ``verdict`` itself, and ``missing`` is its optional detail.)"""
+    row = {"generator": generator, "verdict": verdict,
+           "missing": None if missing is None else list(missing)}
+    row.update(extra)
+    _VERDICTS.append(row)
+    return row
+
+
+def verdicts() -> List[dict]:
+    """A DEEP copy of this run's gate-verdict ledger, in decision order. Empty means NO gate decision
+    was made (e.g. ``--no-design --no-mop``) — coverage-honest: it must never be read as "gates
+    passed". The copy is deep (not just the top level, and not just ``missing``) because this is the
+    only read path to the audit source: a caller that sorted or normalised any nested value in place
+    would otherwise rewrite the record about to be sealed."""
+    return copy.deepcopy(_VERDICTS)
+
+
+def reset_verdicts() -> None:
+    """Clear the ledger, so one run's verdicts can never be sealed into the next run's manifest.
+    The hosts that actually run ``main()`` twice in one process are the in-process pipeline tests
+    (``tests/test_pipeline_inprocess.py``, ``tests/test_pipeline_failopen.py``); the webapp drives the
+    engine as a SUBPROCESS and ``serve.py``'s ``--run-engine`` sentinel dispatches exactly once."""
+    _VERDICTS.clear()
 #: Every gate posture this module can report — the ONE vocabulary, shared verbatim by the deciding
 #: path (``enforce``) and the disclosing path (``pending_approvals``). Law 1 applied to a taxonomy:
 #: a second enum for "the same seven situations, as seen by the enforcer" is a copy that drifts, and
@@ -598,6 +665,31 @@ def _require_root(root: str, what: str) -> Optional[str]:
     return None
 
 
+def _emit(v: GateVerdict) -> GateVerdict:
+    """The ONE exit for :func:`enforce` — seal the disposition into the per-run ledger (so the
+    engine can chain it into ``.run_manifest.json``) and hand the caller the verdict. Producing
+    both from a single object is the point: a row and a return value built at separate sites can
+    disagree about the same decision, which is precisely the drift
+    ``test_enforce_and_pending_approvals_share_one_status_vocabulary`` exists to forbid.
+
+    ``missing`` is NULLABLE ON PURPOSE: ``None`` = the approvals were NEVER EVALUATED, ``[]`` =
+    evaluated and nothing was missing. Those must not collapse (``list(v.missing) or None`` would
+    report a clean evaluated run as never-checked), so the nullable is derived from ``UNEVALUATED``
+    — the status set that encodes the same distinction on the verdict side.
+
+    ``store`` and ``detail`` are deliberately NOT sealed: the store is an ABSOLUTE PATH and detail
+    can embed one, so sealing either makes ``chain_root`` vary run-to-run for identical inputs and
+    destroys the determinism the seal depends on (pinned by
+    ``test_sealed_gate_step_is_deterministic``). The same reasoning already kept ``who``/``at`` out.
+    The one human-supplied string that IS sealed is the override ``reason`` — it is the point of the
+    override audit line, and it is caller-provided rather than environment-derived."""
+    extra = {"reason": v.detail} if v.overridden else {}
+    _record(v.generator, v.status,
+            None if v.status in UNEVALUATED else list(v.missing),
+            proceed=v.proceed, **extra)
+    return v
+
+
 def enforce(generator: str, override_reason: Optional[str] = None,
             root: str = ".", who: Optional[str] = None,
             engagement: Optional[str] = None) -> GateVerdict:
@@ -632,19 +724,19 @@ def enforce(generator: str, override_reason: Optional[str] = None,
     bad_root = _require_root(root, f"generating {generator}")
     if bad_root:
         logger.error("[GATE REFUSED] %s: %s", generator, bad_root)
-        return GateVerdict(generator, "bad_root", False, store=store_path(root), detail=bad_root)
+        return _emit(GateVerdict(generator, "bad_root", False, store=store_path(root), detail=bad_root))
     try:
         store, path = load_store(root)
     except GateStateError as e:
         logger.error("[GATE REFUSED] %s: %s -- fix or remove the store; "
                      "--override-gate cannot bypass an unreadable ledger", generator, e)
-        return GateVerdict(generator, "unreadable", False, store=store_path(root), detail=str(e))
+        return _emit(GateVerdict(generator, "unreadable", False, store=store_path(root), detail=str(e)))
     if store is None:
         logger.warning("[gate] no gate-state store at %s -- %s generation proceeds UNGATED "
                        "(brownfield). Activate PPDIOO gate enforcement with: "
                        "python -m cisco_toolkit.gate_state approve <gate>", path, generator)
-        return GateVerdict(generator, "ungated", True, store=path,
-                           detail="no gate ledger -- brownfield, proceeding ungated")
+        return _emit(GateVerdict(generator, "ungated", True, store=path,
+                           detail="no gate ledger -- brownfield, proceeding ungated"))
     owner_err = ownership_error(store, engagement, f"generating {generator}")
     if owner_err:
         logger.error("[GATE REFUSED] %s: %s Store: %s", generator, owner_err, path)
@@ -656,7 +748,7 @@ def enforce(generator: str, override_reason: Optional[str] = None,
         # append-able by an unrelated run. The evidence lives in the refusing run's log and in the
         # returned verdict; the innocent engagement's audit trail stays clean.
         status = "ownership_unbound" if engagement_of(store) is None else "ownership_mismatch"
-        return GateVerdict(generator, status, False, store=path, detail=owner_err)
+        return _emit(GateVerdict(generator, status, False, store=path, detail=owner_err))
     bound = engagement_of(store)
     if bound and (engagement or "").strip():
         logger.info("[gate] %s: ledger ownership VERIFIED -- engagement %s", generator, bound)
@@ -673,8 +765,8 @@ def enforce(generator: str, override_reason: Optional[str] = None,
         # an approved ledger even when --override-gate was passed. A redundant override is inert
         # (test_approved_upstream_proceeds_and_override_is_inert), and a record that inferred
         # "overridden" from the flag here would assert a breach with no audit line behind it.
-        return GateVerdict(generator, "clear", True, store=path,
-                           detail="upstream approvals present")
+        return _emit(GateVerdict(generator, "clear", True, store=path,
+                           detail="upstream approvals present"))
     if override_reason is not None and override_reason.strip():
         actor = who or _whoami()
         # NOT wrapped in _record_refusal's tolerant OSError handling, and deliberately so: do not
@@ -691,16 +783,16 @@ def enforce(generator: str, override_reason: Optional[str] = None,
                        generator, ", ".join(missing), actor, override_reason.strip(), path)
         # overridden=True is set HERE, at the one site that appended the line, so the verdict and
         # the ledger can never disagree about whether an override happened.
-        return GateVerdict(generator, "pending", True, overridden=True, missing=tuple(missing),
-                           recorded=True, store=path, detail=override_reason.strip())
+        return _emit(GateVerdict(generator, "pending", True, overridden=True, missing=tuple(missing),
+                           recorded=True, store=path, detail=override_reason.strip()))
     if override_reason is not None:
         detail = ("--override-gate requires a non-empty reason "
                   "(the who/when/why audit line is the point of the override)")
         logger.error("[GATE REFUSED] %s: %s", generator, detail)
         ok = _record_refusal(path, store, generator, "pending", missing, detail, who,
                              declared=engagement)
-        return GateVerdict(generator, "pending", False, missing=tuple(missing),
-                           recorded=ok, store=path, detail=detail)
+        return _emit(GateVerdict(generator, "pending", False, missing=tuple(missing),
+                           recorded=ok, store=path, detail=detail))
     detail = ("missing upstream approval(s): "
               + ", ".join(f"{k} ({GATE_LABELS[k]})" for k in missing))
     logger.error("[GATE REFUSED] %s: %s. Record the human gate with "
@@ -709,8 +801,8 @@ def enforce(generator: str, override_reason: Optional[str] = None,
                  generator, detail, path)
     ok = _record_refusal(path, store, generator, "pending", missing, detail, who,
                              declared=engagement)
-    return GateVerdict(generator, "pending", False, missing=tuple(missing),
-                       recorded=ok, store=path, detail=detail)
+    return _emit(GateVerdict(generator, "pending", False, missing=tuple(missing),
+                       recorded=ok, store=path, detail=detail))
 
 
 def pending_approvals(generator: str, root: str = ".",
