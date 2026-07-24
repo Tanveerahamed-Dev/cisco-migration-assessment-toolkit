@@ -835,18 +835,12 @@ def test_design_tolerates_nested_truthy_non_container(tmp_path, path, poison):
     import os
     snap = _set_path(_rich_design_snap(), path, poison)
     out = str(tmp_path / "d.docx")
-    try:
-        write_design_doc_docx(out, snap, "Poison")      # must not raise
-    except TypeError as e:
-        # KNOWN + OUT OF UNIT, recorded rather than dropped from the sweep: the identical falsy-guard bug
-        # lives in cisco_toolkit/analyze.py::vlan_inventory ("(... or [])" then `for q in 5`), which
-        # design.py:_vlan_inventory delegates to as the ONE canonical VLAN derivation (crd.py shares it,
-        # so it is that module's fix to make, not this one's). Only this exact case is tolerated -- every
-        # other path/poison re-raises, so a design.py regression can never hide behind it, and the case
-        # simply starts PASSING (no strict-xfail to un-pin) once analyze.py is guarded.
-        if not (path == "service_map.multicast.igmp_queriers" and poison == 5):
-            raise
-        pytest.xfail(f"same class, different module — cisco_toolkit.analyze.vlan_inventory: {e}")
+    # This call used to be wrapped in a try/except that xfail-ed exactly one case
+    # (service_map.multicast.igmp_queriers = 5), because the identical falsy-guard bug lived OUT OF UNIT
+    # in cisco_toolkit/analyze.py::vlan_inventory -- the ONE canonical VLAN derivation that
+    # design.py:_vlan_inventory delegates to and crd.py shares. analyze.py is guarded now, so that
+    # except-branch is dead and the tolerance is removed: every path/poison is asserted directly.
+    write_design_doc_docx(out, snap, "Poison")          # must not raise
     assert os.path.exists(out)
     Document(out)                                        # ...and open as a valid document
 
