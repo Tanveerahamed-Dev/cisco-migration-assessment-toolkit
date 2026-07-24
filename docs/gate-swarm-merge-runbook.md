@@ -43,6 +43,12 @@ Three conflicting pairs (441–445, 441–444, 445–439). Each pair must be res
 the **second** of the pair merges — so ~11 hunks of resolution are unavoidable in any order. What
 order changes is *which* PR pays for the 7-hunk one.
 
+> **Confirmed in production, 24-Jul-2026 22:11.** #441 merged as `d04d64a`. Within minutes GitHub
+> recomputed the rest and **#445 and #444 both flipped `MERGEABLE` → `CONFLICTING/DIRTY`**, exactly
+> the two pairs the matrix predicts; #439 stayed `MERGEABLE` (it has no pair with #441). This is no
+> longer a prediction — treat "each PR is MERGEABLE right now" as a statement with a shelf life of
+> one merge.
+
 **Keep the documented order 441 → 445 → 444 → 439.** It is not arbitrary: it lands #439 **last**, so
 the 7-hunk `gate_state.py` resolution happens once, against a final `main`, in the PR whose own
 author knows which hunks carry `GateVerdict`. Merging #439 early instead forces that same 7-hunk
