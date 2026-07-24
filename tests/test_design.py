@@ -945,3 +945,33 @@ def test_design_deliverable_route_does_not_500_on_nested_poison(tmp_path):
         g = c.get(f"/api/snapshots/{sid}/deliverable/design")
     assert g.status_code == 200, f"stored DoS: {g.status_code} {g.text[:400]}"
     assert g.content[:2] == b"PK"                    # a real .docx (zip), not an error page
+
+
+# --- leaf-type class: a non-str leaf reaching a string operation ------------------------------------
+# DISTINCT from the truthy-non-container class: `l3_forwarding[]` is a well-formed list of well-formed
+# dicts and `risk` is PRESENT -- it is the LEAF type. `(x or "")` does NOT coerce a non-str, so
+# `"single-gateway" in 5` raises `TypeError: argument of type 'int' is not iterable`. The snapshot is
+# attacker-controllable (upload -> deliverables.generate("design", snap) -> HTTP 500).
+@pytest.mark.parametrize("bad", [5, 1.5, True, [1, 2], {"a": 1}],
+                         ids=["int", "float", "bool", "list", "dict"])
+def test_design_survives_nonstr_l3_risk_leaf(tmp_path, bad):
+    """A non-str `risk` leaf must degrade, not crash the single-gateway tally."""
+    snap = {"devices": {"sw1": {"hostname": "sw1"}},
+            "l3_forwarding": [{"switch": "sw1", "vlan": "10", "risk": bad}]}
+    out = tmp_path / "leafrisk.docx"
+    write_design_doc_docx(str(out), snap, "Poison")      # must not raise
+    assert out.is_file(), f"no design doc for risk={bad!r}"
+
+
+def test_design_nonstr_risk_coercion_keeps_single_gateway_tally(tmp_path):
+    """Non-vacuity companion: str() must be identity for well-formed risk strings -- a real
+    single-gateway exposure must still be counted, so an over-broad guard fails here."""
+    snap = {"devices": {"sw1": {"hostname": "sw1"}, "sw2": {"hostname": "sw2"}},
+            "l3_forwarding": [{"switch": "sw1", "vlan": "10", "risk": "single-gateway exposure"},
+                              {"switch": "sw2", "vlan": "20", "risk": "single-gateway exposure"}]}
+    out = tmp_path / "wfrisk.docx"
+    write_design_doc_docx(str(out), snap, "WF")
+    assert out.is_file()
+    txt = "\n".join(p.text for p in Document(str(out)).paragraphs)
+    txt += "\n".join(c.text for t in Document(str(out)).tables for r in t.rows for c in r.cells)
+    assert "2" in txt, "the single-gateway tally (2) must survive the str() coercion"
