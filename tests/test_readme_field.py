@@ -191,12 +191,18 @@ def test_the_guide_does_not_promise_the_whole_folder_is_safe():
     "safe to share" — and this file is the only documentation they have on site, so it is the last
     place that claim can go unqualified. Scope it to what the run wrote, and name the exception."""
     text = GUIDE.read_text(encoding="ascii")
-    assert "what is in the folder is redacted and safe" not in text.lower(), (
+    # Matched on WHITESPACE-NORMALISED text, never line by line. This guide is hard-wrapped at ~70
+    # columns, so any phrase long enough to be worth asserting will eventually straddle a newline —
+    # and for a NEGATIVE assertion that is the silent direction: the banned sentence comes back,
+    # wraps one word earlier, and the guard passes having checked nothing. (Verified: the phrase
+    # below sits on one line in the version this test was written against, and stops matching if
+    # that sentence re-wraps by a single word.)
+    flat = " ".join(text.split()).lower()
+    assert "what is in the folder is redacted and safe" not in flat, (
         "README-FIELD claims the whole --out folder is safe; scope it to what THIS RUN wrote "
         "(a document left by an earlier uncertified run can still be sitting in it)")
     assert "DO-NOT-SEND-NOT-REDACTED.txt" in text, (
         "the guide must name the marker it tells the engineer to look for")
-    low = text.lower()
-    assert "may be unredacted" in low or "unredacted" in low, (
+    assert "unredacted" in flat, (
         "the guide must say the STALE case can be UNREDACTED, not only that it may name "
         "another client")
