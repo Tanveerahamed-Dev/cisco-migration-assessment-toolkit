@@ -26,8 +26,8 @@
 
 ## ⛔ CORRECTION 3 — **#445 and #439 cannot both merge.** Stop the wave after #444.
 
-Measured 24-Jul-2026 ~22:40 UTC, by replaying the wave into a detached worktree after #441 landed
-(`d04d64a`, 19:11:47Z) and running the checks this runbook prescribes. **§5's instruction for #439 is
+Measured 24-Jul-2026 ~19:40 UTC (22:40 local, UTC+3), by replaying the wave into a detached worktree
+after #441 landed (`d04d64a`, 19:11:47Z) and running the checks this runbook prescribes. **§5's instruction for #439 is
 now known-harmful.** The blocker below is proven by counterexample, not predicted.
 
 ### 1. The blocker — #445 and #439 are the same feature, built twice, incompatibly
