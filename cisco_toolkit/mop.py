@@ -27,6 +27,25 @@ logger = logging.getLogger(__name__)
 _SEV_RANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
 
 
+def _as_strs(x) -> list:
+    """Coerce a snapshot list the document renders as TEXT into a list of strings.
+
+    `as_list` guards the CONTAINER's type but is structurally blind to what is inside it, so a
+    perfectly well-formed list holding one truthy scalar (`["distA", 5]`, the shape an attacker-supplied
+    snapshot can carry through the webapp's `isinstance(snap, dict) and "devices" in snap` upload check)
+    still detonates at the first `", ".join(...)` / `doc.add_paragraph(...)` / `"x" in <str>` of the
+    element. This is the ELEMENT-granular sibling of docmeta's as_dict/as_list, and it mirrors the
+    `str(dd.get(...) or "")` coercion already applied to wrong-typed device leaves below: identity on
+    every string element, so a well-formed snapshot renders byte-identically."""
+    return [str(v or "") for v in _as_list(x)]
+
+
+def _as_dicts(x) -> list:
+    """Coerce a snapshot list-of-records to the records only. Same element-granular blind spot as
+    `_as_strs`, for the lists whose elements are dereferenced with `.get(...)` rather than rendered."""
+    return [v for v in _as_list(x) if isinstance(v, dict)]
+
+
 def _waves(snap: dict):
     """Resolve the ordered list of migration waves as (name, switches[]) pairs. Prefer the
     migration_readiness verdict rows (they carry the group name + switch set the validation plan keys
@@ -34,9 +53,9 @@ def _waves(snap: dict):
     minimal snapshot."""
     mr = [_as_dict(r) for r in _as_list(snap.get("migration_readiness"))]
     if mr:
-        return [(r.get("group") or f"Group {i + 1}", list(_as_list(r.get("switches"))))
+        return [(r.get("group") or f"Group {i + 1}", _as_strs(r.get("switches")))
                 for i, r in enumerate(mr)]
-    return [(f"Group {i + 1}", list(_as_list(_as_dict(g).get("switches"))))
+    return [(f"Group {i + 1}", _as_strs(_as_dict(g).get("switches")))
             for i, g in enumerate(_as_list(snap.get("move_groups")))]
 
 
@@ -55,12 +74,12 @@ def _wave_sections(snap: dict):
     for r in _as_list(snap.get("migration_readiness")):
         r = _as_dict(r)
         g = r.get("group")
-        for s in _as_list(r.get("switches")):
+        for s in _as_strs(r.get("switches")):
             sw2grp.setdefault(s, g)
     out = []
     for w in waves:
         w = _as_dict(w)
-        switches = list(_as_list(w.get("switches")))
+        switches = _as_strs(w.get("switches"))
         kind = w.get("kind") or "wave"
         gnames = []
         for s in switches:
@@ -94,7 +113,10 @@ def _join_group_records(gnames, wave_switches, readiness_by_group, seq_by_group,
     wsw = set(wave_switches or [])
     for g in gnames:
         rr = readiness_by_group.get(g) or {}
-        gsw = _as_list(rr.get("switches"))
+        # element-coerced: a scalar member would otherwise break `s in note` (TypeError: 'in <string>'
+        # requires string) and `sorted(gsw)` (int vs str) in the check-attribution below, and every
+        # downstream render of `switches` (the §x.1 join, the port map, the OOB evidence lookup).
+        gsw = _as_strs(rr.get("switches"))
         members_all.update(gsw)
         share = (len(wsw & set(gsw)) / len(gsw)) if gsw else 1.0      # a sub-wave is a SLICE -> apportion its switch-share
         r["endpoints"] += round(_i(rr.get("endpoints")) * share)   # endpoints ARE divisible -> apportion by share
@@ -124,16 +146,20 @@ def _join_group_records(gnames, wave_switches, readiness_by_group, seq_by_group,
         gseq = seq_by_group.get(g) or {}
         if not seq:
             seq = gseq
-        for _h in _as_list(gseq.get("make_before_break")):
+        for _h in _as_strs(gseq.get("make_before_break")):
             if _h not in mbb_all:
                 mbb_all.append(_h)
-        for _h in _as_list(gseq.get("hard_cutover")):
+        for _h in _as_strs(gseq.get("hard_cutover")):
             if _h not in hard_all:
                 hard_all.append(_h)
         if not scen:
             scen = scen_by_group.get(g) or {}
-        for v in _as_list(val_by_wave.get(g)):
-            key = (v.get("device"), v.get("command")) if isinstance(v, dict) else str(v)
+        # keep only RECORDS: every consumer of val_items dereferences it (`it.get("device")` for the
+        # §x.3 capture table, `it.get("severity")` for the §x.6 go/no-go sort), so a scalar element --
+        # a truthy int OR a plain string, both of which the old `isinstance` branch let through into
+        # the list -- crashed the render two sections later.
+        for v in _as_dicts(val_by_wave.get(g)):
+            key = (v.get("device"), v.get("command"))
             if key not in seen:
                 seen.add(key)
                 val_items.append(v)
@@ -440,7 +466,9 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
     doc.add_paragraph(
         "Complete these once, before the first wave. They are the fleet-wide gating items the assessment "
         "flagged; cutting over before they are resolved or risk-accepted carries the documented risk.")
-    gating = _as_list(_as_dict(snap.get("executive_brief")).get("top_gating"))
+    # element-coerced: unlike a table cell (add_table str()s every value), add_paragraph() takes the raw
+    # element and char-iterates it -- a scalar gating item raised TypeError mid-document.
+    gating = _as_strs(_as_dict(snap.get("executive_brief")).get("top_gating"))
     if gating:
         for g in gating[:6]:
             doc.add_paragraph(g, style="List Bullet")
@@ -692,7 +720,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                 _label_run(p, f"{it.get('device')} — {it.get('title') or it.get('source') or 'fix'}"
                               f" ({it.get('severity', '—')}):",
                            it.get("why") or "review-only config change; see the Remediation Plan sheet.")
-                for c in _as_list(it.get("commands"))[:8]:
+                for c in _as_strs(it.get("commands"))[:8]:      # same add_paragraph() element class
                     doc.add_paragraph(c, style="List Bullet")
 
         # 2.x.3 pre-cutover baseline capture
@@ -775,8 +803,10 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         proc = [("[PRE] Open the change window and announce start in the war room; confirm rollback owner "
                  "is present.",
                  "roles confirmed; the rollback decision time in §" + f"{wi}.1 is agreed.")]
+        # str()-coerced: the bare truthiness gate admits ANY truthy value, and the next call is a STRING
+        # method -- a scalar leaf inside a well-formed playbook dict raised AttributeError here.
         if playbook.get("pre"):
-            proc.append(("[PRE] Preparation: " + playbook["pre"].rstrip(". ") + ".",
+            proc.append(("[PRE] Preparation: " + str(playbook["pre"]).rstrip(". ") + ".",
                          "staging complete with no production-facing change."))
         # classify off the engine's STRUCTURED dual-homed/single-homed split, NOT the free-text 'sequence'
         # (which for a mixed wave reads "...hard cutover (single-homed) + ...make-before-break (dual-homed)" —
@@ -818,7 +848,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                  "STP converged; trunk allowed-VLAN checks pass; no err-disabled ports."),
             ]
         if playbook.get("validate"):
-            proc.append(("[DURING] In-window validation: " + playbook["validate"].rstrip(". ") + ".",
+            proc.append(("[DURING] In-window validation: " + str(playbook["validate"]).rstrip(". ") + ".",
                          "in-window checks match the §" + f"{wi}.3 baseline."))
         proc.append(("[POST] Run §" + f"{wi}.6 post-cutover validation in full before declaring the wave "
                      "complete.",
@@ -905,11 +935,11 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         if multi:
             for g, sc, _sq in wave_groups:
                 rbk = _as_dict(sc.get("playbook")).get("rollback")
-                if rbk:
-                    rb.append((f"{g}: " + rbk.rstrip(". ") + ".",
+                if rbk:                                        # same truthy-scalar leaf class as §x.5
+                    rb.append((f"{g}: " + str(rbk).rstrip(". ") + ".",
                                "this group's endpoints are back on their legacy path."))
         elif playbook.get("rollback"):
-            rb.append("Strategy-specific: " + playbook["rollback"].rstrip(". ") + ".")
+            rb.append("Strategy-specific: " + str(playbook["rollback"]).rstrip(". ") + ".")
         if _kind == "coupled-subwave":
             rb.append(("Coupled sub-wave: rolling back this sub-wave must NOT strand a sibling sub-wave's "
                        "shared VLAN — keep the shared VLANs extended on the legacy path and coordinate with "
