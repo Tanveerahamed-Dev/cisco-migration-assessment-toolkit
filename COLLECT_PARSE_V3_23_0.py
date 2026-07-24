@@ -479,6 +479,7 @@ from cisco_toolkit.deck import write_executive_deck_pptx             # NEW-V3.23
 from cisco_toolkit.design import write_design_doc_docx               # NEW-V3.23.148 (As-Built HLD/LLD design document)
 from cisco_toolkit.mop import write_mop_docx                         # NEW-V3.23.149 (per-wave Method of Procedure)
 from cisco_toolkit.gate_state import enforce as gate_enforce         # P0-3/DEC-003 (PPDIOO document-gate refusal)
+from cisco_toolkit.gate_state import reset_verdicts as gate_reset_verdicts   # ...and its per-run verdict ledger
 from cisco_toolkit.crd import write_crd_docx                         # NEW-V3.23.156 (Plan-phase requirements capture)
 from cisco_toolkit.engagement import write_engagement_docx           # NEW-V3.23.157 (engagement workflow / plan of record)
 from cisco_toolkit.archreview import (compute_architecture_review,   # NEW-V3.23.160 (leading-practice design review)
@@ -722,19 +723,91 @@ COMMANDS_ALL = list(dict.fromkeys(COMMANDS_NXOS + COMMANDS_IOS))
 # =============================================================================
 # LOGGING
 # =============================================================================
+def _attach_package_logging(fh, ch, level):
+    """DELIBERATE (and the answer to "desirable or noisy?"): route the whole ``cisco_toolkit.*``
+    package tree into the ENGINE's handlers, so library log records reach the run's log file.
+
+    Before this, ``setup_logging`` configured ONLY the ``CiscoMigrationAutofillV3_14_6`` logger. Every
+    ``cisco_toolkit`` module uses ``logging.getLogger(__name__)``, which is a different tree, and the
+    root logger has no handlers — so package records fell through to ``logging.lastResort``: WARNING+
+    went to bare stderr with no timestamp/level, and INFO was DISCARDED ENTIRELY. Consequences:
+
+    1. Gate verdicts were unauditable. ``cisco_toolkit.gate_state`` logs ``[GATE REFUSED]`` /
+       ``[GATE OVERRIDDEN]``; grepping the run log for them after a refused run returned nothing,
+       for a control whose overrides DEC-003 says are reviewed weekly.
+    2. It was a silent REGRESSION, not a design. ``git log -S`` puts the per-sheet ``[OK] '<Sheet>'
+       sheet: N row(s)`` lines in this file, on this logger, from the initial commit until 8aa9a4e
+       ("PHASE 2.7 step 21") moved the sheet writers to ``cisco_toolkit.excel`` — the same commit
+       that removed them from the log. Attaching here RESTORES that output rather than inventing it.
+
+    Volume, MEASURED rather than assumed: 132 call sites (93 info / 22 warning / 12 error / 5 debug).
+    The floor is ~80 records a run and CONSTANT — mostly excel's one line per sheet written. Two sites
+    in ``cisco_toolkit.build`` are per-device but CONDITIONAL: build.py:993 fires only when the device
+    returned ARP entries (``if device_total > 0``) and build.py:1091 only when the config carries
+    ``spanning-tree portfast bpduguard default``. So on the synthetic fixtures neither fires and the
+    count is flat 81 at 3, 30 and 60 devices; on a real ARP-bearing fleet it grows ~1/device, i.e.
+    ~380 at the canonical 303. Either way this is a few hundred lines a run, none per-interface, and
+    it is dwarfed by the engine's OWN pre-existing per-device console output (~13 lines/device) — at
+    303 devices the package tree is ~2% of the console. That is the right granularity for a
+    chain-of-custody log, so both handlers are attached rather than the file alone.
+    (File-only would also have SILENCED today's stderr warnings: attaching any handler stops
+    ``lastResort`` firing.) ``propagate = False`` stops a later ``basicConfig()``, or a root handler
+    that is not stderr, from duplicating or reformatting these records; note that attaching handlers
+    here is what stops them being SWALLOWED, since that was only possible while ``lastResort`` was the
+    sole path. Because pytest's ``caplog`` captures at the ROOT logger, the repo-root ``conftest.py``
+    restores propagation for the duration of each test rather than letting the suite depend on whether
+    a given pytest version force-attaches to non-propagating loggers (requirements-dev allows
+    >=8,<10). Scope is engine runs only — the webapp drives the engine as a SUBPROCESS
+    (``webapp/backend/ingest.py``), so AssessHub's own logging is unaffected.
+
+    NB: this log is half of the audit trail, not a lesser copy of it. The sealed manifest step (see
+    ``build_run_manifest``) is tamper-evident but is written only in the final stage; these lines are
+    plain text but are written at the INSTANT of the verdict, so they are what survives a crash
+    between the two. Neither alone suffices.
+    """
+    pkg = logging.getLogger("cisco_toolkit")
+    pkg.setLevel(level)
+    if pkg.handlers:                       # idempotent: re-running setup_logging must not double-log
+        pkg.handlers.clear()
+    pkg.addHandler(fh)
+    pkg.addHandler(ch)
+    pkg.propagate = False
+    return pkg
+
+
 def setup_logging(level=logging.INFO):
     logger = logging.getLogger("CiscoMigrationAutofillV3_14_6")
     logger.setLevel(level)
+    # REUSE an already-open handler for this log file instead of opening a second mode="w" one.
+    # `cisco_toolkit/attestation.py:122` does importlib.import_module("COLLECT_PARSE_V3_23_0"); under
+    # `python COLLECT_PARSE_V3_23_0.py` this module's identity is __main__, so that import RE-EXECUTES
+    # the body -- including `logger = setup_logging()` at the bottom -- and a fresh mode="w" handler
+    # TRUNCATED the log near the end of every script-path run, discarding most of what it had already
+    # recorded. (A module-level "already configured" flag cannot fix this: the re-executed copy gets
+    # its own globals. The logging registry is process-global, so the open handler is the reliable
+    # witness.) Console-script runs (`cisco-assess`, Atlas's --run-engine) import by real name and were
+    # never affected -- which is why this cost the log file its tail without failing anything.
+    # `stream is not None` matters: FileHandler.close() sets stream=None/_closed=True, and a closed
+    # mode="w" handler REFUSES to reopen on emit -- reusing one would silently discard every
+    # subsequent record, the exact failure class this guard exists to prevent. Bound worth knowing:
+    # LOG_FILE is relative, so this matches per-CWD. Nothing in the engine chdirs, but a host that
+    # does gets a separate log per directory (and, on returning, a fresh mode="w" file).
+    fh = next((h for h in logger.handlers
+               if isinstance(h, logging.FileHandler)
+               and getattr(h, "stream", None) is not None
+               and os.path.abspath(getattr(h, "baseFilename", "")) == os.path.abspath(LOG_FILE)), None)
     if logger.handlers:
         logger.handlers.clear()
-    fh = logging.FileHandler(LOG_FILE, mode="w", encoding="utf-8")
+    if fh is None:
+        fh = logging.FileHandler(LOG_FILE, mode="w", encoding="utf-8")
+        fh.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
     fh.setLevel(level)
-    fh.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
     logger.addHandler(fh)
     ch = logging.StreamHandler()
     ch.setLevel(level)
     ch.setFormatter(logging.Formatter("%(levelname)s - %(message)s"))
     logger.addHandler(ch)
+    _attach_package_logging(fh, ch, level)   # the cisco_toolkit.* tree shares this run's handlers
     return logger
 
 logger = setup_logging()
@@ -1305,7 +1378,7 @@ def build_run_manifest(out_xlsx: str, snap_dict: dict) -> dict:
     (``docs/engagement-state.json``), which is append-only ACROSS runs by design.
     """
     import glob as _glob
-    from cisco_toolkit import manifest as _manifest, ssot as _ssot
+    from cisco_toolkit import gate_state as _gate_state, manifest as _manifest, ssot as _ssot
     try:
         from cisco_toolkit import __version__ as _schema_version
     except Exception:
@@ -1329,6 +1402,25 @@ def build_run_manifest(out_xlsx: str, snap_dict: dict) -> dict:
     steps = [
         {"stage": "collect", "inventory": cc.get("inventory"), "collected": cc.get("complete")},
         {"stage": "analyze", "punchlist_findings": len(snap_dict.get("punchlist") or [])},
+        # P0-3/DEC-003: the PPDIOO document-gate verdicts, as DATA. Deliberately a sealed step and not
+        # a loose top-level key: `build_manifest` hash-chains `steps` but silently DROPS any meta key
+        # outside its fixed allowlist, so a top-level key would be both unsealed and discarded. Sealed
+        # here, editing or deleting a refusal breaks `chain_root`. Scope that honestly: the chain is
+        # UNKEYED and `manifest.build_manifest` is public, so this detects careless edits, not a
+        # forger who re-seals -- and nothing in the product or CI verifies a delivered manifest today.
+        # Placed before "deliver" because a gate decides whether that step's artifact exists at all.
+        # Do NOT read the two steps as a cross-check: the artifact glob hashes whatever is on disk,
+        # so a stale *_design.docx from an earlier run to the same --output appears beside a "refused"
+        # verdict. An empty list means NO gate ran (e.g. --no-design --no-mop); coverage-honest, it is
+        # not "gates passed".
+        #
+        # Log and seal are COMPLEMENTARY, not ranked -- each covers the other's blind spot. The log
+        # line is written at the INSTANT of the verdict but is plain text anyone can edit; this row is
+        # tamper-evident but is only written here, in the last stage. Everything between the gates and
+        # this point (four DOCX renders, ~4s on a 3-device fixture) is a window where a crash, a
+        # SIGTERM or AssessHub's engine timeout loses the seal and leaves ONLY the log. That is why
+        # the change attaches the package logger as well as sealing the ledger; neither alone suffices.
+        {"stage": "gate", "verdicts": _gate_state.verdicts()},
         {"stage": "deliver", "artifacts": sorted(artifacts)},
     ]
     ledger = {subj: _ssot.abstention_reason(snap_dict, subj) for subj in
@@ -1760,9 +1852,21 @@ def main():
                          "archive hashes recorded at collection time (deliberate). Default off.")
     args = ap.parse_args()
 
+    # This run's gate ledger starts empty. Matters for hosts that call main() twice in one process --
+    # in-repo that is tests/test_pipeline_inprocess.py and tests/test_pipeline_failopen.py (the webapp
+    # uses a subprocess). Without it, run 2's manifest would seal run 1's verdicts: a false audit
+    # record, which is a worse failure than the missing one this change fixes. Placed before the
+    # --compare/--trend early returns so every path that can reach build_run_manifest starts clean.
+    gate_reset_verdicts()
+
     if args.debug_arp:
         logger.setLevel(logging.DEBUG)
         for h in logger.handlers: h.setLevel(logging.DEBUG)
+        # The per-device ARP debug lines this flag advertises moved to cisco_toolkit.build (dcf53a8,
+        # PHASE 2.7 step 27), so lowering only the engine logger left the flag a documented no-op --
+        # the package tree filters at ITS logger before the (shared, already-lowered) handlers see
+        # anything. Lower it too, or --debug-arp still cannot reach the lines it is named after.
+        logging.getLogger("cisco_toolkit").setLevel(logging.DEBUG)
 
     # NEW-V15: diff mode - compare two snapshots, no SSH/template needed.
     if args.compare:
@@ -3101,10 +3205,12 @@ def main():
 
 def _stage_finalize(ctx: "AnalysisContext") -> None:
     """Pipeline stage 5 (Plan-A #15 strangler): the leaf finalize phases -- run-manifest
-    chain-of-custody (39), opt-in raw-capture scrub (40), perf-timings sidecar (41). A true LEAF:
+    chain-of-custody (39), opt-in raw-capture scrub (40), perf-timings sidecar (41), closing gate
+    summary (42 -- LAST, so a withheld deliverable is the final thing the operator sees). A true LEAF:
     nothing downstream reads its outputs, which is why it is the safest first extraction. Reads the
     context's out_xlsx / snap_dict / root_dir / args / all_devices_meta / workers + the module-global
-    _PHASE_TIMINGS; the body below is byte-identical to the inline block it replaced."""
+    _PHASE_TIMINGS. The body was byte-identical to the inline block it replaced until the gate-audit
+    change, which reworked the manifest write's error arm and appended the closing gate summary."""
     out_xlsx, snap_dict, root_dir, args = ctx.out_xlsx, ctx.snap_dict, ctx.root_dir, ctx.args
     all_devices_meta, workers = ctx.all_devices_meta, ctx.workers
 
@@ -3119,7 +3225,16 @@ def _stage_finalize(ctx: "AnalysisContext") -> None:
                     f"(chain_root {str(_run_manifest.get('chain_root', ''))[:12]}…, "
                     f"{len(_run_manifest.get('artifacts') or [])} artifact(s))")
     except Exception as e:
-        logger.warning(f"  Run manifest write failed (non-fatal): {e}")
+        # A lost manifest is normally cosmetic, but when this run reached a gate verdict the manifest
+        # is the ONLY durable record of it (a refusal writes nothing to the store). Losing that must
+        # not be quieter than the refusal it was recording, so escalate rather than warn.
+        from cisco_toolkit import gate_state as _gs
+        if _gs.verdicts():
+            logger.error(f"  Run manifest write FAILED and this run has gate verdicts "
+                         f"{[v['verdict'] for v in _gs.verdicts()]} -- the only durable record of "
+                         f"them is now lost (non-fatal to the run): {e}")
+        else:
+            logger.warning(f"  Run manifest write failed (non-fatal): {e}")
 
     # Phase 40: opt-in raw-capture secret scrub (Plan A / Tier-1 #5). Deliberately the VERY
     # last step: every deliverable above was built from the ORIGINAL captures, and the sealed
@@ -3148,6 +3263,46 @@ def _stage_finalize(ctx: "AnalysisContext") -> None:
                     f"slowest: {_slowest['phase']} {_slowest['seconds']}s)")
     except Exception as e:
         logger.warning(f"  phase-timings write failed (non-fatal): {e}")
+
+    # Phase 42: closing gate summary. Every phase above ends in "[OK] ..." whether or not a gate
+    # refused, so a run that produced NEITHER the design nor the MOP still signed off with five
+    # consecutive [OK] lines -- "not observed" reading as healthy, on the last thing the operator
+    # sees. The per-verdict ERROR is emitted thousands of lines earlier (a 303-device run prints
+    # ~4,000). Restate the refusals LAST, at ERROR, naming the deliverables that were withheld.
+    # Silent when nothing was refused: a summary that always prints is one nobody reads.
+    try:
+        from cisco_toolkit import gate_state as _gs
+        _refused = [v for v in _gs.verdicts() if v.get("proceed") is False]
+        if _refused:
+            # Don't claim the seal unconditionally: this runs AFTER the manifest write, whose failure
+            # arm above exists precisely for the case where nothing was sealed. Saying "sealed" there
+            # would make the operator's LAST line false about the very record it points them to.
+            _sealed = os.path.isfile(os.path.splitext(os.path.abspath(out_xlsx))[0]
+                                     + ".run_manifest.json")
+            # Remediation is per-STATUS, not one-size-fits-all: `approve`/`--override-gate` only
+            # apply to a located ledger that said "pending". For bad_root there is no ledger to
+            # write to, and for ownership_* the ledger governs ANOTHER engagement -- both are
+            # documented non-overridable, so advising an override there is false guidance on the
+            # last line the operator reads.
+            _unfixable = sorted({str(v.get("verdict")) for v in _refused
+                                 if str(v.get("verdict")) != "pending"})
+            _how = ("record the approval ('python -m cisco_toolkit.gate_state approve <gate>') "
+                    "or re-run with --override-gate \"<reason>\" (audited)."
+                    if not _unfixable else
+                    "NOT overridable (%s): fix the gate root, or declare/bind the right engagement "
+                    "-- --override-gate is consent to skip a KNOWN gate and none was located."
+                    % ", ".join(_unfixable))
+            logger.error("[GATE] %d deliverable(s) WITHHELD by the PPDIOO document gates: %s -- %s %s",
+                         len(_refused),
+                         "; ".join(f"{v['generator']} (missing: "
+                                   f"{', '.join(v.get('missing') or []) or 'not evaluated'})"
+                                   for v in _refused),
+                         _how,
+                         "Sealed in the run manifest's 'gate' step."
+                         if _sealed else "NOT SEALED -- the run manifest was not written, so this "
+                                         "log line is the only record of the refusal.")
+    except Exception as e:
+        logger.warning(f"  gate summary failed (non-fatal): {e}")
 
 
 # =============================================================================
