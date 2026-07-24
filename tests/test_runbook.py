@@ -341,3 +341,164 @@ def test_runbook_drift_table_keeps_disambiguation_and_remediation_on_long_detail
     text = _all_text(Document(out))
     assert "so the two figures can differ" in text                  # disambiguating tail survives
     assert "Fix: Set a dedicated, unused native VLAN" in text       # remediation survives
+
+
+# every top-level snapshot section the runbook writer dereferences (reads via `.get(...)` then
+# .items()/.get()/iterates/len()/slices). The webapp `--no-collect` path makes this JSON
+# attacker-controllable, so a TRUTHY non-dict/non-list section (a scalar, a string) must degrade
+# to empty, never raise — the same crash class fixed in parse/design_advisor/ssot/design.
+_RUNBOOK_SECTIONS = (
+    "devices", "interfaces", "health_scores", "move_groups", "migration_readiness",
+    "wave_sequencing", "cross_layer", "punchlist", "failure_impact", "link_centrality",
+    "l3_forwarding", "executive_brief", "collection_completeness", "service_map",
+    "migration_scenarios", "lifecycle_risk", "operational_drift", "subnet_intelligence",
+    "protocol_intelligence", "multicast_intelligence", "application_intelligence",
+    "segmentation", "golden_drift", "syslog_intelligence", "qos_audit", "software_risk",
+    "platform_health", "endpoint_identity", "capacity", "endpoint_dependencies",
+    "device_dossiers", "validation_plan", "remediation_plan",
+)
+
+
+@pytest.mark.parametrize("section", _RUNBOOK_SECTIONS)
+@pytest.mark.parametrize("poison", [5, "boom", True, 3.14])
+def test_runbook_survives_truthy_scalar_section(tmp_path, section, poison):
+    """Crash-hardening (audit-5 totality): setting ANY snapshot section to a truthy scalar used to slip
+    the `snap.get(x) or {}` / `or []` guards (which catch only falsy values) and then crash on
+    `.items()` / `.get()` / iteration / len() / slicing. Every section must now degrade to empty and
+    the runbook must still render end-to-end (§1 present), not raise."""
+    snap = _snap()
+    snap[section] = poison
+    out = str(tmp_path / f"rb_poison_{section}.docx")
+    write_runbook_docx(out, snap, "Unit Test Fleet")   # must not raise
+    import os
+    assert os.path.exists(out), f"runbook not written for poisoned {section!r}={poison!r}"
+    # the whole document still renders — the poisoned section degrades to empty, the rest is intact
+    assert "1. Assessment Header & Executive Summary" in _all_text(Document(out))
+
+
+def test_runbook_survives_truthy_scalar_flow_paths(tmp_path):
+    """The flow_paths argument is read `(flow_paths or {}).get(...)` the same way; a truthy non-dict
+    must degrade, not crash the §6.4.1 flow-path table."""
+    for bad in (5, "boom", [1, 2]):
+        out = str(tmp_path / f"rb_fp_{type(bad).__name__}.docx")
+        write_runbook_docx(out, _snap(), "Unit Test Fleet", flow_paths=bad)   # must not raise
+        assert "1. Assessment Header & Executive Summary" in _all_text(Document(out))
+
+
+# --- audit-5 totality, NESTED level -----------------------------------------------------------------
+# The section-scalar test above proves a truthy scalar *section* degrades. But a well-formed section
+# (a dict / list-of-dicts) whose INNER value is a truthy scalar still slipped the row-level
+# `.get(x) or []` / `or {}` guards (they catch only falsy) and crashed len() / .items() / iteration /
+# subscription — e.g. migration_readiness[0]["switches"] = 7 -> len(7). The top-level test cannot reach
+# these (a scalar section empties the row list first). Same reachable stored-DoS class, via
+# deliverables.generate("runbook", snap) on an attacker-uploaded --no-collect snapshot.
+def _rich_snap():
+    """_snap() + the row-bearing sections whose inner values are dereferenced, so a poisoned inner
+    value actually reaches the vulnerable read (application domains, software-risk per-device)."""
+    s = _snap()
+    s["application_intelligence"] = {
+        "summary": {"n_domains": 1, "n_on_air_critical": 1, "n_high_risk": 1},
+        "domains": [{"domain": "D1", "tier": "On-air critical", "switch_count": 1, "endpoint_count": 2,
+                     "ptp_present": True, "evidence": "e",
+                     "risks": [{"severity": "Critical", "title": "t", "detail": "d", "remediation": "r"}],
+                     "validation": ["ping"]}],
+        "cross_domain_risks": [{"title": "x"}],
+        "edges": [{"source": "D1", "target": "D2", "weight": 1, "kinds": ["link"], "media": True,
+                   "migration_note": "n"}],
+        "keystones": [{"domain": "D1", "degree": 2, "neighbors": ["D2", "D3"]}],
+        "cutover_order": [{"domain": "D1"}],
+    }
+    s["software_risk"] = {"summary": {"crit_0_2": 0, "err_3": 0},
+                          "per_device": [{"host": "sw1", "advisories": [{"cve": "CVE-1"}],
+                                          "compound": [{"code": "X"}], "missing": ["patch"]}]}
+    return s
+
+
+# depth 5 is EXHAUSTIVE for _rich_snap() — it bottoms out there (a depth-6 sweep yields the identical
+# 129 paths). The old depth<=3 cap stopped ONE level short of `collection_completeness.devices[i].missing`
+# and TWO short of `application_intelligence.domains[i].risks[j]`, both of which were live crashes; the
+# cap, not the code, was what made the sweep green. Cost of going exhaustive: 99 -> 129 poison cases.
+_MAX_NEST_DEPTH = 5
+
+
+def _nested_container_paths(obj, path=(), depth=0):
+    """Every path (depth<=_MAX_NEST_DEPTH) to a nested dict/list inside the snapshot, excluding the root."""
+    if path and isinstance(obj, (dict, list)):
+        yield path
+    if depth >= _MAX_NEST_DEPTH:
+        return
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            yield from _nested_container_paths(v, path + (k,), depth + 1)
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            if isinstance(v, (dict, list)):
+                yield from _nested_container_paths(v, path + (i,), depth + 1)
+
+
+def test_runbook_survives_truthy_scalar_nested_value(tmp_path):
+    """Replacing ANY nested container (a section's inner dict/list, to the fixture's full depth) with a
+    truthy scalar must degrade to empty, never raise — the runbook still renders end-to-end.
+    Revert-proof by construction: e.g. migration_readiness[0]["switches"]=7 -> len(7) crashes the
+    pre-extension module."""
+    import copy
+    base = _rich_snap()
+    # `executive_brief` is ALSO consumed by the shared docmeta.add_excellence_front -> ssot.reconcile
+    # layer; the nested-scalar hardening of it lives in ssot.py (PR #452, verified:
+    # `cc = _as_dict(_dotted(snap,"collection_completeness.summary"))`), so this runbook sweep
+    # deliberately does not own it — a principled module boundary.
+    # `collection_completeness` was excluded on that same reasoning and it was WRONG: runbook.py has
+    # its OWN read of collection_completeness.devices[].missing (§2.1's blind-spot table), which the
+    # exclusion hid — a live `", ".join(d.get("missing", []))` crash. It is back in the sweep.
+    _SHARED_SSOT_SECTIONS = {"executive_brief"}
+    paths = [p for p in _nested_container_paths(base) if p[0] not in _SHARED_SSOT_SECTIONS]
+    assert len(paths) > 20, "sanity: the rich snapshot must expose many nested containers to poison"
+    # REACH GUARD. The cap silently going stale is exactly how this sweep stayed green over four live
+    # crashes: at depth<=3 it never generated these paths, so "no crashes" meant "never looked". Pin
+    # the deepest sites explicitly — lowering _MAX_NEST_DEPTH, or a fixture that drops these keys,
+    # must fail loudly here rather than quietly shrink the sweep's reach.
+    for must_reach in (("collection_completeness", "devices", 0, "missing"),
+                       ("migration_scenarios", "per_group", 0, "playbook"),
+                       ("application_intelligence", "domains", 0, "risks", 0)):
+        assert must_reach in paths, (
+            f"sweep no longer reaches {'.'.join(map(str, must_reach))} — the poison set shrank "
+            f"(depth cap {_MAX_NEST_DEPTH}, {len(paths)} paths); it would go green without looking")
+    crashes = []
+    for i, p in enumerate(paths):
+        snap = copy.deepcopy(base)
+        node = snap
+        for key in p[:-1]:
+            node = node[key]
+        node[p[-1]] = 7   # a truthy scalar where a nested dict/list is expected
+        out = str(tmp_path / f"rb_nested_{i}.docx")
+        try:
+            write_runbook_docx(out, snap, "Unit Test Fleet")
+        except Exception as e:   # noqa: BLE001 - the whole point is that NOTHING may raise
+            crashes.append((".".join(map(str, p)), type(e).__name__, str(e)[:60]))
+    assert not crashes, f"{len(crashes)} nested truthy-scalar case(s) still crash the runbook: {crashes[:10]}"
+
+
+def test_runbook_survives_non_string_elements_in_joined_lists(tmp_path):
+    """The container sweep above poisons CONTAINERS, so it structurally cannot reach this: a
+    well-formed LIST whose ELEMENTS are non-str still crashed `", ".join(...)` with
+    `TypeError: sequence item 0: expected str instance, int found`. Both `missing` renders (§2.1
+    collection blind spots, §6.9 golden-config drift) read an attacker-supplied list straight into
+    join(), so both must stringify their elements. Same uploaded-snapshot DoS route."""
+    import copy
+    base = _snap()
+    base["golden_drift"] = {
+        "summary": {"n_baseline": 3, "n_drifting": 1, "n_devices": 2, "avg_compliance_pct": 66,
+                    "mode": "majority"},
+        "per_device": [{"host": "sw1", "compliance_pct": 66, "n_missing": 1, "missing": ["aaa new-model"]}],
+    }
+    for i, (label, mutate) in enumerate((
+        ("collection_completeness.devices[0].missing",
+         lambda s: s["collection_completeness"]["devices"][0].__setitem__("missing", [1, 2, None])),
+        ("golden_drift.per_device[0].missing",
+         lambda s: s["golden_drift"]["per_device"][0].__setitem__("missing", [7, {"a": 1}])),
+    )):
+        snap = copy.deepcopy(base)
+        mutate(snap)
+        out = str(tmp_path / f"rb_join_{i}.docx")
+        write_runbook_docx(out, snap, "Unit Test Fleet")   # must not raise
+        assert "1. Assessment Header & Executive Summary" in _all_text(Document(out)), label

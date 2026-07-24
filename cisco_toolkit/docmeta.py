@@ -52,6 +52,42 @@ FAMILY = (
      "Stakeholder summary of posture, risk and the migration plan"),
 )
 
+# What a COMPLETE engine CLI run leaves on disk, keyed by FAMILY key: the filename suffix each
+# writer appends to the --output stem. FAMILY says what the set IS; this says what to look for.
+# It exists so a caller can diff PRODUCED-vs-EXPECTED instead of hardcoding a list that rots as
+# deliverables accrete (webapp.backend.ingest.run_redaction_folder -- every engine writer is
+# fail-soft, logging a warning and continuing, so a set missing two documents otherwise reports
+# success). `cutover` and `nrfu` are absent BY DESIGN: AssessHub's web layer renders those two
+# from a stored snapshot and the engine has no writer for them, so a CLI run is COMPLETE without
+# them. tests/test_docmeta_cli_artifacts.py ratchets both halves against the engine source, so a
+# renamed suffix or a newly added writer fails the suite instead of silently widening the blind
+# spot. (That filename is the map's own SSOT pointer — keep it correct if the test file moves.)
+CLI_ARTIFACT_SUFFIX = {
+    "workbook": ".xlsx",                    # the --output path itself; the engine always writes it
+    "explorer": "_explorer.html",
+    "runbook": "_runbook.docx",
+    "design": "_design.docx",
+    "mop": "_mop.docx",
+    "crd": "_crd.docx",
+    "engagement": "_engagement.docx",
+    "archreview": "_archreview.docx",
+    "opshandbook": "_ops_handbook.docx",
+    "deck": "_executive_deck.pptx",
+}
+
+#: Family kinds AssessHub renders in the web layer; no engine writer produces them.
+WEB_ONLY_KINDS = frozenset({"cutover", "nrfu"})
+
+
+def cli_artifacts(stem):
+    """``[(key, name, filename)]`` a complete engine CLI run writes for output stem ``stem``.
+
+    ``stem`` is the --output path without its extension (``.../Assessment_redacted``); the
+    filenames returned are basenames, in FAMILY reading order."""
+    base = str(stem).replace("\\", "/").rsplit("/", 1)[-1]
+    return [(key, name, base + CLI_ARTIFACT_SUFFIX[key])
+            for key, name, _role in FAMILY if key in CLI_ARTIFACT_SUFFIX]
+
 # Caveats every generated deliverable shares; writers append doc-specific ones via extra_assumptions.
 _ASSUMPTIONS = (
     "This document is generated from the offline assessment snapshot named on the cover; it reflects "

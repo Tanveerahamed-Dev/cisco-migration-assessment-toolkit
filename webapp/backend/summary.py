@@ -93,8 +93,14 @@ def _keystones(snap: Dict[str, Any], top: int = 8) -> List[Dict[str, Any]]:
     (stranded endpoints, severity), which is always present."""
     eb = snap.get("executive_brief")
     eb = eb if isinstance(eb, dict) else {}      # a truthy non-dict section must not raise (malformed upload)
-    if isinstance(eb.get("keystones"), list) and eb["keystones"]:
-        return eb["keystones"][:top]
+    # Validate each ELEMENT is a dict, not just the container: a keystones list carrying a non-dict (a bare
+    # string/int in a malformed or hostile upload) is otherwise returned verbatim, and a read route then does
+    # k.get("host") on it -> AttributeError -> an unhandled HTTP 500 on /graph (app.py builds its keystone list
+    # from this projection). Filtering to dicts degrades gracefully; an all-garbage list falls through to
+    # failure_impact below, honouring summarize()'s `Every field degrades gracefully` contract.
+    ks = [k for k in eb["keystones"] if isinstance(k, dict)] if isinstance(eb.get("keystones"), list) else []
+    if ks:
+        return ks[:top]
     fi = [r for r in _as_list(snap.get("failure_impact")) if isinstance(r, dict)]
     # fail-soft: a malformed stranded (the JSON Infinity a raw int() would 500 on) degrades to 0 in the sort
     # key -- this runs on EVERY unauthenticated snapshot upload (POST /snapshots -> summarize).
@@ -132,6 +138,11 @@ def summarize(snap: Dict[str, Any]) -> Dict[str, Any]:
     hs = [r for r in _as_list(snap.get("health_scores")) if isinstance(r, dict)]
     pl = [r for r in _as_list(snap.get("punchlist")) if isinstance(r, dict)]
     mr = [r for r in _as_list(snap.get("migration_readiness")) if isinstance(r, dict)]
+    # isinstance-guard, not `or {}`: a TRUTHY non-dict 'devices' (an int in a malformed/hostile upload) survives
+    # `or {}` and 500s the eagerly-evaluated `len(...)` default below -- and summarize() runs on EVERY upload
+    # (POST /snapshots) and on the /snapshots/{id} read (freshen), so that TypeError escapes as an HTTP 500.
+    _dev = snap.get("devices")
+    n_devices = len(_dev) if isinstance(_dev, dict) else 0
 
     try:
         head = engine.trend_point(snap)  # re-use the engine's headline extractor
@@ -154,7 +165,7 @@ def summarize(snap: Dict[str, Any]) -> Dict[str, Any]:
         # running engine is recomputed on read so the headline cards never disagree with a live
         # section tab (app._summary_freshened).
         "engine_schema": engine.ENGINE_SCHEMA_VERSION,
-        "n_switches": head.get("n_switches", len(snap.get("devices") or {})),
+        "n_switches": head.get("n_switches", n_devices),
         "avg_health": head.get("avg_health", ""),
         "bands": _count_by(hs, "band", BANDS),
         # n_critical must reconcile with the bands chart (both from health_scores): trend_point can silently
