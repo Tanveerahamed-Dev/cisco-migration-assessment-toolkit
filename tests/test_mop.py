@@ -798,6 +798,34 @@ INNER_POISON = {
     # well-formed and the crash isolates to the per-group read, not the shared one.
     "batch_sibling_playbook_scalar": _poison(["migration_scenarios", "per_group", 1, "playbook"], 5,
                                              base=_batch_wave_snap()),                         # 5.get("rollback")
+
+    # G4 -- a well-formed CONTAINER whose ELEMENT is a scalar. `as_list` guards the container's TYPE and
+    # is structurally blind to what is inside it, so these all survive the G2/G3 coercers above and
+    # detonate on the first join / add_paragraph / .get() of the element.
+    "gating_element_scalar":       _poison(["executive_brief", "top_gating", 0], 5),           # add_paragraph(5)
+    "readiness_switch_element_scalar": _poison(["migration_readiness", 0, "switches", 0], 5),  # ", ".join([5,...])
+    # the OTHER switch producer: _wave_sections() reads wave_plan.waves[].switches, _waves() reads
+    # migration_readiness[].switches -- one coerced producer would leave the other open.
+    "wave_plan_switch_element_scalar": _poison(
+        ["design_blueprint", "target_state", "wave_plan", "waves", 0, "switches", 0], 5,
+        base=_batch_wave_snap()),                                                              # ", ".join([5,...])
+    "remediation_command_element_scalar": _poison(
+        ["remediation_plan", "items", 0, "commands", 0], 5),                                   # add_paragraph(5)
+    "val_by_wave_element_scalar":  _poison(["validation_plan", "by_wave", "Group 1", 0], 5),   # 5.get("device")
+    # a STRING element is the nastier half of the same site: it is truthy AND joinable, so every
+    # coercion that only rescues numbers still leaves `"x".get("device")` raising.
+    "val_by_wave_element_string":  _poison(["validation_plan", "by_wave", "Group 1", 0], "x"),  # "x".get("device")
+
+    # G5 -- a string-expected LEAF holding a truthy scalar. The bare `if playbook.get(k):` truthiness gate
+    # admits it, then a string METHOD is called on it (`.rstrip(". ")`) -- as_dict guarded the playbook,
+    # not the leaf.
+    "playbook_pre_leaf_scalar":    _poison(["migration_scenarios", "per_group", 0, "playbook", "pre"], 5),
+    "playbook_validate_leaf_scalar": _poison(["migration_scenarios", "per_group", 0, "playbook", "validate"], 5),
+    "playbook_rollback_leaf_scalar": _poison(["migration_scenarios", "per_group", 0, "playbook", "rollback"], 5),
+    # the multi-group rollback loop reads each SIBLING group's playbook.rollback through a DIFFERENT
+    # expression than the single-group branch above -- poison the sibling so the representative stays good.
+    "batch_sibling_rollback_leaf_scalar": _poison(
+        ["migration_scenarios", "per_group", 1, "playbook", "rollback"], 5, base=_batch_wave_snap()),
 }
 
 
@@ -821,7 +849,14 @@ def test_mop_wellformed_render_unchanged_by_the_guards(tmp_path):
     for tag, snap in (("default", _snap()), ("waves", _snap_waves()), ("batch", _batch_wave_snap())):
         out = str(tmp_path / f"m_{tag}.docx")
         write_mop_docx(out, snap, "Unit Test Fleet")
-        text = _all_text(Document(out))
+        doc = Document(out)
+        text = _all_text(doc)
+        # the §x.1 "Devices in scope" join is the element-coerced site -- every wave's switch list must
+        # still reach it verbatim (a coercer that dropped or mangled an element would shrink this union)
+        scope = [r.cells[1].text for t in doc.tables for r in t.rows
+                 if r.cells[0].text == "Devices in scope"]
+        assert scope, f"{tag}: no 'Devices in scope' row"
+        assert {s for cell in scope for s in cell.split(", ")} == {"distA", "distB", "acc1"}, (tag, scope)
         # every inner value the guards now route through a coercer still reaches the document
         assert "distA" in text and "acc1" in text                       # readiness/sequencing switches
         assert "stage target beside legacy" in text                     # playbook.pre
@@ -830,6 +865,7 @@ def test_mop_wellformed_render_unchanged_by_the_guards(tmp_path):
         assert "standby 20 ip 10.0.20.254" in text                      # remediation_plan.items[].commands
         assert "VLAN 20 single gateway" in text                         # punchlist row matched via devices[]
         assert "show banner login" in text                              # validation_plan.by_wave[]
+        assert "Resolve the VLAN 20 single-gateway exposure" in text    # executive_brief.top_gating[]
 
 
 # ---- E2E through the real AssessHub route (the attacker's actual path) -----------------------------
