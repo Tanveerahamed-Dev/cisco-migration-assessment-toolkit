@@ -245,7 +245,8 @@ def run_selftest(dist_dir=None, db_path=None) -> int:
 
 
 # ── --redact-folder: the share-safe deliverable set, from the stick ─────────────
-def run_redaction(src: str, out: str, redact_collection: bool = False) -> int:
+def run_redaction(src: str, out: str, redact_collection: bool = False,
+                  reuse_out: bool = False) -> int:
     """Render a redacted deliverable set — the "before it leaves the site" step (ADR-0004 P3).
 
     Field-facing, so every failure is a plain sentence, never a traceback: this runs at a client
@@ -261,7 +262,8 @@ def run_redaction(src: str, out: str, redact_collection: bool = False) -> int:
     if redact_collection:
         print("  --redact-collection: the RAW captures will also be scrubbed IN PLACE.")
     try:
-        report = ingest_mod.run_redaction_folder(src, out, redact_collection=redact_collection)
+        report = ingest_mod.run_redaction_folder(src, out, redact_collection=redact_collection,
+                                                 reuse_out=reuse_out)
     except ingest_mod.IngestError as e:
         print(f"{APP_TITLE}: cannot redact that folder - {e}", file=sys.stderr)
         return 1
@@ -273,6 +275,10 @@ def run_redaction(src: str, out: str, redact_collection: bool = False) -> int:
           f"Wrote {len(report['files'])} file(s):")
     for name in report["files"]:
         print(f"    {name}")
+    if report.get("stale_unsafe_marker"):
+        print("\n  NOTE: this folder still holds DO-NOT-SEND-NOT-REDACTED.txt from an EARLIER\n"
+              "  run. It does not describe this run, which passed its redaction checks. Delete\n"
+              "  it once you are sure the older output it refers to is gone.")
     # Say exactly what was checked. The engine pseudonymizes IPs, MACs and serials, but the
     # verification here covers surviving PRIVATE IPv4 in the snapshot plus proof that the engine's
     # redaction phases actually ran. Claiming more than that ("every IP/MAC/serial ... verified")
@@ -283,7 +289,37 @@ def run_redaction(src: str, out: str, redact_collection: bool = False) -> int:
           "  NOT checked: MACs, serials, public/IPv6 addresses, or the workbook's own cells.\n"
           "  HOSTNAMES ARE KEPT BY DESIGN - device names and site codes still identify the\n"
           "  client. Review before sending.")
-    return 0
+    # An engine writer that fails is fail-soft by design (the workbook and snapshot still save),
+    # so a short set otherwise reaches the engineer as an unqualified success banner: two fewer
+    # files look exactly like a full family unless you know the set by heart. Not a refusal -
+    # what IS here is redacted and safe.
+    #
+    # Printed LAST, and on stdout. When the engineer redirects a 10-minute run to a log
+    # (`Atlas.exe ... > run.log 2>&1`, the natural thing to do), Python block-buffers stdout and
+    # line-buffers stderr: the warning got hoisted ABOVE the command banner, so it read as
+    # belonging to a previous command, and the log ENDED on the reassurance block. A `tail` showed
+    # a clean success. One stream, warning last, so the final word is the warning.
+    missing = report.get("missing") or []
+    if not missing:
+        return 0
+    print(f"\n  INCOMPLETE SET - {len(missing)} deliverable(s) were NOT produced:")
+    for m in missing:
+        print(f"    {m['state'].upper():9} {m['name']}  ({m['filename']})\n"
+              f"              {m['detail']}")
+    for line in report.get("engine_warnings") or []:
+        print(f"    engine: {line}")
+    # Only promise the note if it was really written - a read-only folder, or a file of that
+    # name Atlas did not author, means there is no note to go and read.
+    note = report.get("incomplete_note")
+    print(f"  The same list is saved as {note}." if note else
+          "  (Could not write the note into the output folder - this console is the record.)")
+    print("  What IS in the folder is redacted and safe to share. The SET is short: re-run into\n"
+          "  an empty folder, or tell the recipient which documents are not included.")
+    # Exit 3, not 0: this command exists to certify a deliverable set, so "0" must keep meaning
+    # "complete and verified". Nothing consumes the code today, which is exactly why adopting it
+    # now is free and adopting it later would be a breaking change. It is deliberately NOT 1 -
+    # that is the redaction-failure code, and this output is safe.
+    return 3
 
 
 # ── --verify-manifest: does a delivered manifest still match its own seal? ──────
@@ -361,6 +397,11 @@ def main(argv=None) -> int:
     parser.add_argument("--verify-artifacts", action="store_true",
                         help="with --verify-manifest: ALSO re-hash every deliverable listed in the "
                              "manifest, from the manifest's own folder (missing counts as a failure)")
+    parser.add_argument("--reuse-out", action="store_true",
+                        help="with --redact-folder: render into an --out folder that already "
+                             "holds a deliverable set. Refused by default: if that set is from "
+                             "another job, any document this run fails to write leaves that "
+                             "client's copy in this delivery under the right name")
     parser.add_argument("--version", action="version", version=_version_line())
     args = parser.parse_args(argv)
 
@@ -406,6 +447,11 @@ def main(argv=None) -> int:
     if args.out is not None or args.redact_collection:
         print(f"{APP_TITLE}: --out and --redact-collection only apply to --redact-folder.",
               file=sys.stderr)
+    if args.redact_folder:
+        return run_redaction(args.redact_folder, args.out, args.redact_collection, args.reuse_out)
+    if args.out or args.redact_collection or args.reuse_out:
+        print(f"{APP_TITLE}: --out, --redact-collection and --reuse-out only apply to "
+              f"--redact-folder.", file=sys.stderr)
         return 2
 
     # Field refusal #1 — write-locked stick / read-only folder: friendly line, not a traceback.
