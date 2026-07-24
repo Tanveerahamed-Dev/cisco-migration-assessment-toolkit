@@ -390,7 +390,7 @@ files, each headed by a `{"_meta": …}` line; loaders/validators in
 P2-2 pool judging appends to a *separate* pooled-qrels file; a post-hoc edit to these files is a
 protocol violation and the pins make it loud. Validate offline with
 `python -m cisco_toolkit.d10_eval_set --verify` (graph-dependent checks skip off the owner machine,
-saying so).
+and also when the live `graph.json` is caught mid-rewrite by a background rebuild — both say so).
 
 ## `retrieval_eval` — the Phase-2 falsification harness (P2-2) + `d10-pooled-qrels.jsonl`
 

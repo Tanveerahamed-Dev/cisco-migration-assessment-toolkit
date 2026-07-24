@@ -1613,10 +1613,13 @@ def vlan_inventory(snap: dict):
         for d in (ports if isinstance(ports, dict) else {}).values():            # block must not crash (audit-4 #10)
             if not isinstance(d, dict):
                 continue
-            v = (d.get("vlan") or "").strip()
+            # str(): a non-str vlan / vlan_name leaf (int, list, dict in a malformed upload) is truthy
+            # and survives `or ""`, then 500s .strip() -- the same coercion crd/design/mop/runbook apply
+            # to every device string-field before .strip()/.lower().
+            v = str(d.get("vlan") or "").strip()
             if v.isdigit():
                 vids.add(int(v))
-                nm = (d.get("vlan_name") or "").strip()
+                nm = str(d.get("vlan_name") or "").strip()
                 if nm and int(v) not in names:
                     names[int(v)] = nm
     _l3f = snap.get("l3_forwarding")
@@ -1629,7 +1632,10 @@ def vlan_inventory(snap: dict):
     # IGMP-querier-evidenced active VLANs (gateway may be on an uncollected device) -- see docstring.
     _svc = snap.get("service_map")
     _mc = _svc.get("multicast") if isinstance(_svc, dict) else None
-    for q in ((_mc.get("igmp_queriers") if isinstance(_mc, dict) else None) or []):
+    # isinstance, not `or []`: a TRUTHY non-list igmp_queriers (an int in a malformed upload) survives
+    # `or []` and 500s `for q in ...` -> a stored DoS on every route that recounts VLANs (design + crd).
+    _q = _mc.get("igmp_queriers") if isinstance(_mc, dict) else None
+    for q in (_q if isinstance(_q, list) else []):
         if not isinstance(q, dict):
             continue
         v = str(q.get("vlan") or "").strip()

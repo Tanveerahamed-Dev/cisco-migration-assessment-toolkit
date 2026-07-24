@@ -92,6 +92,37 @@ Atlas verifies that the redaction actually ran and that no private
 address survives in the snapshot; it does not certify every field of
 every file.
 
+IF THE SET IS SHORT, ATLAS SAYS SO. Each document is written
+independently and a failed one does not stop the run, so a set can come
+out complete-looking but missing a document or two. Atlas compares what
+landed against what this command should have produced and prints
+"INCOMPLETE SET", naming each document and why: ABSENT (never written),
+UNUSABLE (there but empty or truncated - a full disk does this), or
+STALE (left by an earlier run into the same folder, so it may belong to
+another job - only possible with --reuse-out, see below). The same list
+is written to INCOMPLETE-SET.txt in your --out folder. That is NOT a
+leak warning: what is in the folder is redacted and safe. It means the
+SET is short - re-run into an empty folder, or tell the recipient which
+documents are not included.
+
+ONE --out FOLDER PER JOB. Atlas REFUSES to render into a folder that
+already holds a deliverable set, and says so in seconds rather than
+after a ten-minute run: "already holds a redacted deliverable set".
+The reason is the STALE case above. If two jobs share a folder and one
+document fails to write, the OTHER job's copy is left sitting under
+exactly the right name - and redaction keeps hostnames and site codes,
+so it identifies that client inside this delivery. Use an empty folder
+and this cannot happen. To render into a folder anyway - re-running the
+SAME job after a short set is the normal reason - add:  --reuse-out
+
+Exit codes:  0 = complete and verified.  3 = produced, but the set is
+short (safe to share, just not all of it).  1 = failed; do not send.
+
+This command produces ten items: the workbook, the explorer, seven Word
+documents and the deck. The Cutover Plan and the NRFU / Acceptance Test
+Plan are NOT among them - those two are generated in AssessHub, not by
+this command, so a set with no warning is complete WITHOUT them.
+
 --out must be OUTSIDE the Atlas\ folder (an update replaces everything
 there except data\), and it will not write into the collection folder
 either. Atlas refuses both rather than lose your work.
