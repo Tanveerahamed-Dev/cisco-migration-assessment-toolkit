@@ -179,3 +179,24 @@ def test_the_draft_status_row_really_reaches_a_rendered_document(tmp_path):
     assert "DRAFT" in text and "not yet reviewed" in text, (
         f"the rendered document no longer says it is an unreviewed draft, which is what "
         f"README-FIELD tells the engineer to rely on. Table text:\n{text[:600]}")
+
+
+def test_the_guide_does_not_promise_the_whole_folder_is_safe():
+    """The short-set paragraph is where an UNCONDITIONAL safety promise does the most damage.
+
+    A run whose redaction check fails leaves DO-NOT-SEND-NOT-REDACTED.txt and its unredacted
+    documents in the folder (nothing is deleted, by design). Re-rendering into that folder with
+    --reuse-out and losing one writer leaves that earlier run's UNREDACTED file under the canonical
+    name, reported only as STALE. The guide used to tell the engineer, flatly, that a short set is
+    "safe to share" — and this file is the only documentation they have on site, so it is the last
+    place that claim can go unqualified. Scope it to what the run wrote, and name the exception."""
+    text = GUIDE.read_text(encoding="ascii")
+    assert "what is in the folder is redacted and safe" not in text.lower(), (
+        "README-FIELD claims the whole --out folder is safe; scope it to what THIS RUN wrote "
+        "(a document left by an earlier uncertified run can still be sitting in it)")
+    assert "DO-NOT-SEND-NOT-REDACTED.txt" in text, (
+        "the guide must name the marker it tells the engineer to look for")
+    low = text.lower()
+    assert "may be unredacted" in low or "unredacted" in low, (
+        "the guide must say the STALE case can be UNREDACTED, not only that it may name "
+        "another client")
