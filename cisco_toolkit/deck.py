@@ -219,7 +219,8 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     hs = _R(snap.get("health_scores"))
     band_counts = {}
     for r in hs:
-        band_counts[r.get("band", "")] = band_counts.get(r.get("band", ""), 0) + 1
+        _b = str(r.get("band", ""))   # str(): a list/dict band from a malformed upload is an unhashable key
+        band_counts[_b] = band_counts.get(_b, 0) + 1
     avg = posture.get("avg_health", "—")
     # stat callouts across the full width (generous gaps, no side-by-side columns to overlap)
     stat(s, 0.7, 1.95, f"{avg}", "avg health / 100", _NAVY, w=3.4)
