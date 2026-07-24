@@ -156,6 +156,30 @@ def _schedule_browser_open(url: str) -> None:
     t.start()
 
 
+#: Characters that make a value unusable as a path/host but survive `str.strip()`: the zero-width
+#: and BOM codepoints (str.strip removes NBSP and the exotic spaces, but NOT these), plus every C0
+#: control including NUL.
+_INVISIBLE = "​‌‍⁠﻿"
+
+
+def _unusable_value(value: str):
+    """Why this CLI value cannot be used, as a sentence fragment, or None if it is fine.
+
+    Two ways a value looked present and was not. A string of zero-width spaces passes
+    `str.strip()`, so `--db "\\u200b"` sailed through the empty-value guard and CREATED A REAL
+    SQLITE STORE named with an invisible character - the very "quietly opened a different store
+    than the one you named" outcome that guard exists to stop, reached with a value that is not
+    technically blank. And an embedded NUL raises ValueError deep inside pathlib/sqlite3
+    (`ingest.py` resolve, `sqlite3.connect`), escaping main() as a traceback after the job banner
+    had already printed - this file's contract is a plain sentence, never a traceback."""
+    if any(ch == "\x00" or ord(ch) < 32 for ch in value):
+        return "contains a control character, which is not a usable path or host."
+    if not value.strip().strip(_INVISIBLE).strip():
+        return ("was given an empty value (or one made only of invisible characters)."
+                if value.strip() else "was given an empty value.")
+    return None
+
+
 # ── shared write probe (selftest + pre-serve) ──────────────────────────────────
 def _writable_failure(dirpath: Path):
     """OSError text if `dirpath` cannot be created and written — the write-locked-stick /
@@ -426,11 +450,29 @@ def main(argv=None) -> int:
                         ("--redact-folder", args.redact_folder), ("--out", args.out),
                         ("--verify-manifest", args.verify_manifest),
                         ("--expect-root", args.expect_root)):
-        if value is not None and not str(value).strip():
-            print(f"{APP_TITLE}: {flag} was given an empty value. Omit the flag to take the "
-                  f"default, or pass a real one - Atlas will not guess which you meant.",
-                  file=sys.stderr)
+        if value is None:
+            continue
+        bad = _unusable_value(str(value))
+        if bad:
+            print(f"{APP_TITLE}: {flag} {bad} Omit the flag to take the default, or pass a real "
+                  f"one - Atlas will not guess which you meant.", file=sys.stderr)
             return 2
+
+    # ── one job per invocation ─────────────────────────────────────────────────
+    # The three subcommands below are dispatched by a fixed precedence with no cross-check, so
+    # asking for two silently performed the FIRST and discarded the rest: measured,
+    # `--verify-manifest X --redact-folder Y --out Z` printed "manifest OK" and returned 0 while
+    # the redaction - a ten-minute job producing the deliverables the operator actually wanted -
+    # never ran, with nothing on either stream saying so. Same "asked for X, silently got Y, exit
+    # code says success" failure as the empty-value bug above, reached by a different route.
+    jobs = [name for name, wanted in (("--selftest", args.selftest),
+                                      ("--verify-manifest", args.verify_manifest is not None),
+                                      ("--redact-folder", args.redact_folder is not None)) if wanted]
+    if len(jobs) > 1:
+        print(f"{APP_TITLE}: {' and '.join(jobs)} each ask Atlas to do a different job, and it "
+              f"does one per run. Re-run them one at a time, in the order you want them.",
+              file=sys.stderr)
+        return 2
 
     if args.selftest:
         return run_selftest(dist_dir=args.dist, db_path=args.db)
