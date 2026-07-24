@@ -121,6 +121,28 @@ def test_malformed_sections_degrade_not_crash(tmp_path):
     assert out.exists() and out.stat().st_size > 1000
 
 
+@pytest.mark.parametrize("poison", [5, "boom", True, 3.14])
+def test_ops_survives_truthy_scalar_platform_health_bands(tmp_path, poison):
+    """§3.2's `pb = ph_sum.get("bands") or {}` was the file's last truthy-non-dict residue: `or` only
+    catches FALSY, so a scalar `bands` reached `.items()` -> AttributeError. Its own twins already use
+    the coercer (qos_audit.summary.modes, software_risk.summary.train_bands render the identical
+    'Nx band' join). test_malformed_sections_degrade_not_crash cannot reach this line — it sets
+    `platform_health.summary = None`, which is FALSY, so the `if ph_sum.get("n_collected")` gate at
+    ops.py:390 short-circuits first; the summary here is deliberately TRUTHY and gate-passing."""
+    snap = {
+        "script_version": "V3.23.0", "devices": {"sw1": {}},
+        "platform_health": {"summary": {"n_collected": 3, "bands": poison},
+                            "per_device": [{"host": "sw1", "collected": True, "cpu_5min": 4,
+                                            "mem_free_pct": 60, "band": "Healthy"}]},
+    }
+    out = str(tmp_path / f"ops_bands_{type(poison).__name__}.docx")
+    write_ops_handbook_docx(out, snap, "Unit Test Fleet")     # must not raise
+    text = _all_text(Document(out))
+    # the section still renders from the readable evidence; the unreadable band mix degrades to empty
+    assert "3.2 Control-plane capacity baseline" in text
+    assert "single point in time" in text
+
+
 def test_missing_docx_is_warning_not_crash(monkeypatch, tmp_path):
     import builtins
     real_import = builtins.__import__
