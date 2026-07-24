@@ -1218,8 +1218,11 @@ def parse_ipv6_interface_addrs(output: str) -> list:
             cur["link_local_dup"] = _dad(mnl.group(2) or "") == "duplicate"
             in_global = nx_addr = False
             continue
-        # IOS: 'Global unicast address(es): 1:4::1, subnet is 1:4::/64 [DUPLICATE]'  (first addr inline)
-        mg = re.match(r"^Global unicast address\(es\):\s*(.+)$", s, re.IGNORECASE)
+        # IOS: 'Global unicast address(es): 1:4::1, subnet is 1:4::/64 [DUPLICATE]'  (first addr inline) OR the
+        # CANONICAL bare header 'Global unicast address(es):' with the address on the NEXT indented line. (.*)
+        # (not (.+)) so the BARE header still matches and opens the continuation context -- otherwise every
+        # address under a bare header is dropped and a [DUPLICATE] DAD fault reads 'clean' (false-health).
+        mg = re.match(r"^Global unicast address\(es\):\s*(.*)$", s, re.IGNORECASE)
         if mg:
             in_global = True
             nx_addr = False
