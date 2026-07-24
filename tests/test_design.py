@@ -576,3 +576,106 @@ def test_design_doc_survives_xml_illegal_chars(tmp_path):
     write_design_doc_docx(out, snap, "[HISTORY-REDACTED]" + bad)                          # must NOT raise
     assert os.path.exists(out)
     Document(out)                                                         # and be a valid, openable .docx
+
+
+# --- Truthy-non-dict section hardening (the `or {}` / `or []` falsy-guard class) ----------------------
+# A section whose value is a TRUTHY non-dict / non-list scalar (a corrupt or slimmed --no-collect
+# snapshot) slips the `or {}` / `or []` guards and is then .items()-ed / .get()-ed / iterated, aborting
+# the whole As-Built Design DOCX -> HTTP 500 on the webapp /design route + a CLI exception. Same class
+# already hardened in analyze.vlan_inventory, the executive_brief read, stp_roots and the decisions loop.
+# Each malformed section must degrade to EMPTY (coverage-honest), never crash.
+
+def _poison_base():
+    """Minimal snapshot that still drives every crash site under test: one device, so the §3.1 inventory,
+    §3.4 BoM, §3.5 software and §6 NOS-mix loops all run and every guarded site is actually reached."""
+    return {"devices": {"sw1": {"hostname": "sw1", "model": "C9300-48T", "platform": "ios",
+                                "sw_version": "17.9"}}}
+
+
+@pytest.mark.parametrize("section, value", [
+    ("routing_neighbors", 5),                    # _is_l3: (routing_neighbors or {}).get(host)
+    ("routing_neighbors", {"sw1": 5}),           # §2.3: rn.items() then (d or {}).get(proto) on a scalar per-host value
+    ("interfaces", 5),                           # _segmentation_facts + LLD §3.3: (interfaces or {}).items()/.get(h)
+    ("interfaces", {"sw1": 5}),                  # scalar ports row -> (ports or {}).items()
+    ("interfaces", {"sw1": {"Vlan10": 5}}),      # scalar port-detail -> d.get('vrf') / d.get('svi_ip')
+    ("fhrp", 5),                                 # §2.4 resilience: for g in fhrp: g.get('issues')
+    ("lifecycle_risk", 5),                       # lifecycle.get('per_device')
+    ("endpoint_identity", 5),                    # §6: [e for e in endpoint_identity ...] (scalar not iterable)
+])
+def test_design_tolerates_truthy_non_dict_section(tmp_path, section, value):
+    """A truthy non-dict/non-list section must degrade to empty, never abort the design DOCX."""
+    import os
+    snap = _poison_base()
+    snap[section] = value
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "Poison")          # must not raise
+    assert os.path.exists(out)
+
+
+def test_design_tolerates_scalar_device_value(tmp_path):
+    """The devices-value class: a device whose value is a truthy non-dict is dereferenced with .get() in
+    FOUR loops -- §3.1 inventory (devices[h]), §3.4 BoM + §3.5 software ((d or {}).get), and §6 NOS-mix
+    (devices.values()). Guarding only one of the four leaves the other three crashing."""
+    import os
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, {"devices": {"sw1": 5}}, "Poison")   # must not raise
+    assert os.path.exists(out)
+
+
+def test_design_tolerates_every_in_scope_section_non_dict_at_once(tmp_path):
+    """Kitchen-sink: every section in the hardened crash class a truthy scalar at once -- the builder must
+    still emit an openable .docx (l3_forwarding/capacity are already _R-guarded; the rest are fixed here)."""
+    import os
+    snap = {"devices": {"sw1": 5}, "interfaces": 5, "routing_neighbors": 5, "fhrp": 5,
+            "lifecycle_risk": 5, "endpoint_identity": 5, "l3_forwarding": 5, "capacity": 5}
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "Poison")          # must not raise
+    assert os.path.exists(out)
+    Document(out)                                        # ...and it opens as a valid document
+
+
+# --- Comprehensive crash-class sweep: EVERY top-level section x EVERY poison shape --------------------
+# The falsy-guard (`or {}` / `or []`) crash class is closed section-by-section only if EVERY section the
+# generator dereferences is proven against EVERY malformed shape a corrupt/slimmed snapshot can carry.
+# The four poison shapes are chosen to reach different guards: a scalar / a string (iterable! a bare
+# `for x in section` would walk its chars) / a list-of-scalars (slips a `_R`-less row loop) / a
+# dict-with-a-scalar-VALUE ({"k":1} -- survives the OUTER `_D` and reaches the INNER deref, e.g.
+# stp_roots->vmap.items(), redistribution->len(v); a top-level-only guard is NOT enough).
+
+_ALL_DESIGN_SECTIONS = [
+    "devices", "interfaces", "l3_forwarding", "routing_neighbors", "stp_roots", "redistribution",
+    "fhrp", "capacity", "lifecycle_risk", "vpc", "failure_impact", "punchlist", "subnet_intelligence",
+    "service_map", "executive_brief", "design_blueprint", "qos_audit", "endpoint_identity",
+]
+_DESIGN_POISONS = [5, "x", [1, 2], {"k": 1}]
+
+
+@pytest.mark.parametrize("poison", _DESIGN_POISONS)
+@pytest.mark.parametrize("section", _ALL_DESIGN_SECTIONS)
+def test_design_poison_sweep_every_section_x_every_poison(tmp_path, section, poison):
+    """Every section the As-Built Design DOCX reads, set to each malformed shape, must degrade to empty
+    and still emit an OPENABLE .docx -- never abort the whole deliverable (HTTP 500 on /design + a CLI
+    exception). 18 sections x 4 shapes = 72 cases. Non-vacuity was verified out-of-band by reverting the
+    guards: stp_roots/redistribution/vpc/punchlist/subnet_intelligence/qos_audit crash without them,
+    incl. redistribution+{"k":1} -> TypeError(len(scalar)) and stp_roots+{"k":1} -> vmap.items()."""
+    import os
+    snap = {"devices": {"sw1": {}}}
+    snap[section] = poison
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "l")   # must not raise
+    assert os.path.exists(out)
+    Document(out)                            # ...and open as a valid document
+
+
+def test_design_wellformed_still_renders_newly_guarded_sections(tmp_path):
+    """Golden-unchanged: routing the newly-hardened sections through _D/_R is IDENTITY on well-formed
+    input, so a well-formed snapshot must STILL render the STP root placement (stp_roots) and the
+    redistribution boundaries (redistribution) -- the two sections no prior test pinned. An over-broad
+    guard that emptied them would fail here rather than silently ship a blank section. (punchlist and
+    subnet_intelligence golden are already pinned by test_design_reconciles_to_snapshot.)"""
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, _snap(), "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "core1 roots 2 VLAN(s)" in text                                  # stp_roots -> §2.2 root placement
+    assert "Redistribution boundaries" in text and "route-redistribution edge" in text  # redistribution -> §2.3
+    assert "1 route-redistribution edge" in text                            # the one edge in _snap() is counted
