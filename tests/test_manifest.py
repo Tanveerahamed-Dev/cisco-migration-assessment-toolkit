@@ -258,3 +258,115 @@ def test_artifact_check_is_opt_in(tmp_path):
     reconcile', or every routine check would fail for a reason that is not tampering."""
     man = _man({"never-delivered.docx": "0" * 64})
     assert m.main(["verify", _write(tmp_path, "e.run_manifest.json", man)]) == 0
+
+
+# --- adversarial-refuter regressions ---------------------------------------------------------------
+# Every case below returned the WRONG answer before its fix. Found by independent refuters running
+# probes, not by reading the code: my own review of this same file missed all of them.
+
+def test_a_swapped_deliverable_cannot_pass_expect_root(tmp_path, capsys):
+    """The one that mattered. `artifacts` used to sit OUTSIDE the chain — the pipeline's steps seal
+    artifact NAMES, never their digests — so swapping a delivered workbook and rewriting its sha256
+    in the top-level list left chain_root untouched. Both --artifacts (it re-hashes to the rewritten
+    value) and --expect-root (the chain never changed) reported clean. For a tool whose entire
+    question is "is this the workbook that was sealed?", that was a false pass on the only case
+    anyone cares about."""
+    (tmp_path / "wb.xlsx").write_bytes(b"genuine workbook")
+    man = m.build_manifest({}, {"wb.xlsx": m.artifact_sha256(b"genuine workbook")},
+                           [{"stage": "collect"}, {"stage": "deliver"}])
+    real_root = man["chain_root"]
+
+    (tmp_path / "wb.xlsx").write_bytes(b"FORGED workbook")
+    forged = json.loads(json.dumps(man))
+    forged["artifacts"][0]["sha256"] = m.artifact_sha256(b"FORGED workbook")
+    assert forged["chain"] == man["chain"], "fixture invalid: the chain must be untouched"
+    path = _write(tmp_path, "forged.run_manifest.json", forged)
+
+    res = m.verify_file(path, expect_root=real_root, artifacts_dir=str(tmp_path))
+    assert res["ok"] is False, "a swapped deliverable passed every check the tool offers"
+    assert "ARTIFACT LIST ALTERED" in res["reason"]
+    assert m.main(["verify", path, "--expect-root", real_root, "--artifacts"]) == 4
+    capsys.readouterr()
+    # and the genuine pair still verifies — the guard must not reject honest manifests
+    (tmp_path / "wb.xlsx").write_bytes(b"genuine workbook")
+    ok_path = _write(tmp_path, "genuine.run_manifest.json", man)
+    assert m.verify_file(ok_path, expect_root=real_root, artifacts_dir=str(tmp_path))["ok"] is True
+
+
+def test_artifact_digests_are_inside_the_chain(tmp_path):
+    """The structural property behind the test above: changing an artifact's digest must change
+    chain_root. If this fails, the seal has silently stopped covering the deliverables again."""
+    a = m.build_manifest({}, {"wb.xlsx": "a" * 64}, [{"stage": "deliver"}])
+    b = m.build_manifest({}, {"wb.xlsx": "b" * 64}, [{"stage": "deliver"}])
+    assert a["chain_root"] != b["chain_root"], "artifact digests are not covered by chain_root"
+    assert m._sealed_artifacts(a["chain"]) == a["artifacts"]
+
+
+def test_a_manifest_predating_artifact_sealing_says_so(tmp_path, capsys):
+    """Coverage honesty: an older manifest has no sealed-artifacts row. It must not be reported as
+    though its digests were covered — absence of the check is stated, not assumed to be agreement."""
+    man = m.build_manifest({}, {"wb.xlsx": "a" * 64}, [{"stage": "deliver"}])
+    old = json.loads(json.dumps(man))
+    old["chain"] = [r for r in old["chain"] if r.get("stage") != m.SEAL_ARTIFACTS]
+    old["chain_root"] = old["chain"][-1]["sha256"]          # re-rooted, internally consistent
+    assert m.main(["verify", _write(tmp_path, "old.json", old)]) == 0
+    assert "predates artifact sealing" in capsys.readouterr().out
+
+
+def test_a_nulled_chain_root_does_not_disable_the_truncation_check(tmp_path, capsys):
+    """verify_chain skips its tail check when expected_root is None, so deleting or nulling
+    chain_root switched truncation detection OFF: drop rows, null the root, and a gutted ledger
+    verified as clean as an intact one. An unsealed ledger is not a weaker seal, it is no seal."""
+    man = m.build_manifest({}, {}, [{"s": i} for i in range(5)])
+    for label, mutate in (("null", lambda d: d.update(chain_root=None)),
+                          ("absent", lambda d: d.pop("chain_root")),
+                          ("empty", lambda d: d.update(chain_root="   "))):
+        t = json.loads(json.dumps(man))
+        t["chain"] = t["chain"][:3]
+        mutate(t)
+        assert m.main(["verify", _write(tmp_path, f"t_{label}.json", t)]) == 4, label
+        assert "no sealed chain_root" in capsys.readouterr().out
+
+
+def test_wrong_typed_structures_report_instead_of_crashing(tmp_path, capsys):
+    """The manifest is untrusted input. A wrong-typed `chain` or a non-dict row raised
+    AttributeError/TypeError straight out of the CLI — a traceback and exit 1, where the contract
+    is a sentence and exit 4. Same wrong-typed-value class as the stored-DoS wave (#462-#475)."""
+    man = m.build_manifest({}, {"a.txt": "0" * 64}, [{"s": "a"}, {"s": "b"}])
+    cases = {"chain_int": 5, "chain_str": "not-a-chain", "chain_bool": True,
+             "chain_dict": {"row0": {}}, "rows_str": ["a", "b"], "rows_null": [None, None],
+             "rows_int": [1, 2], "rows_list": [["a"]]}
+    for label, bad in cases.items():
+        d = json.loads(json.dumps(man)); d["chain"] = bad
+        assert m.main(["verify", _write(tmp_path, f"{label}.json", d)]) == 4, label
+        assert "INTEGRITY" in capsys.readouterr().out, label
+    for label, bad in (("arts_dict", {"a": 1}), ("arts_str_rows", ["a.txt"]), ("arts_int", 7)):
+        d = json.loads(json.dumps(man)); d["artifacts"] = bad
+        assert m.main(["verify", _write(tmp_path, f"{label}.json", d), "--artifacts"]) == 4, label
+        assert "INTEGRITY" in capsys.readouterr().out, label
+
+
+def test_windows_device_names_and_nul_bytes_are_refused(tmp_path):
+    """`open("NUL")` succeeds on Windows and reads as empty, so an artifact named NUL carrying the
+    (publicly known) sha256 of b"" verified "ok" out of an EMPTY folder — a file that was never
+    produced, certified as delivered. An embedded NUL byte instead raised ValueError, which the
+    `except OSError` did not catch, crashing the CLI."""
+    empty = tmp_path / "empty"; empty.mkdir()
+    devices = {n: m.artifact_sha256(b"") for n in ("NUL", "CON", "com1", "LPT1", "nul.txt")}
+    man = m.build_manifest({}, devices, [{"s": "a"}])
+    res = m.verify_file(_write(tmp_path, "dev.json", man), artifacts_dir=str(empty))
+    assert res["ok"] is False
+    assert {a["state"] for a in res["artifacts"]} == {"INVALID"}, res["artifacts"]
+
+    nb = m.build_manifest({}, {"evil\x00.txt": "0" * 64}, [{"s": "a"}])
+    res = m.verify_file(_write(tmp_path, "nb.json", nb), artifacts_dir=str(tmp_path))
+    assert res["ok"] is False and res["artifacts"][0]["state"] == "INVALID"
+
+
+def test_a_bom_prefixed_manifest_is_not_a_false_alarm(tmp_path):
+    """A manifest that merely passed through a Windows tool acquires a UTF-8 BOM. Rejecting that
+    untampered file as unreadable is a false alarm at a client site - the expensive direction."""
+    man = m.build_manifest({}, {}, [{"s": "a"}])
+    p = tmp_path / "bom.run_manifest.json"
+    p.write_bytes(b"\xef\xbb\xbf" + json.dumps(man).encode("utf-8"))
+    assert m.verify_file(str(p))["ok"] is True
