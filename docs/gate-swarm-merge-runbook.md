@@ -24,7 +24,7 @@
 >
 > `BLOCKED` on each = the review gate only.
 
-## ⛔ CORRECTION 3 — **#445 and #439 cannot both merge.** Stop the wave after #444.
+## ⛔ CORRECTION 3 — **#445 is RED, and #445/#439 cannot both merge.** Fix #445, then `#445 → #444`, stop.
 
 Measured 24-Jul-2026 ~19:40 UTC (22:40 local, UTC+3), by replaying the wave into a detached worktree
 after #441 landed (`d04d64a`, 19:11:47Z) and running the checks this runbook prescribes. **§5's instruction for #439 is
@@ -134,7 +134,39 @@ since merged `main` in themselves at `bd196dd`, which is why it no longer collid
 | **#439** | | | | — |
 
 Only #445 collides with anything. **#444 and #439 are clean against each other and against #441** —
-so the safe wave is `#445 → #444`, then **stop**.
+so the merge order is `#445 → #444`, then **stop**. But see §2b: #445 is not green yet.
+
+### 2b. #445 is RED on its own branch — fix before merging it
+
+The integrated suite (441+445+444, `sys.path` pinned to the worktree) exited **1**. The root cause is
+not the integration: checking out #445's head `4331a24` alone reproduces it. Its 13 checks were all
+still `pending`, so CI had not surfaced it.
+
+```
+tests/test_gate_audit_trail.py::test_every_return_path_in_enforce_records_a_verdict
+AssertionError: enforce() returns without recording a verdict at body line(s) [21]
+```
+
+Body line 21 is `if bad_root: return False` — **#448's `--gate-root` refusal arm, already on `main`**.
+It returns without `_record()`, so a mis-set `--gate-root` refuses the design/MOP deliverable and seals
+nothing: no verdict row, nothing in the hash chain. That is the exact asymmetry #445 exists to close,
+in an arm it did not know about — the guard written anticipating #439's new arms caught #448's instead.
+
+**The fix is three parts** (verified on #445's head; full suite exit 0; revert-proofed — dropping only
+the `_record()` line fails three tests):
+
+1. `_record(generator, "refused_bad_root")` in the `bad_root` arm;
+2. add `"refused_bad_root"` to `VERDICTS` — `test_VERDICTS_lists_every_value_record_can_emit`
+   source-greps what `_record()` emits and asserts the tuple matches;
+3. add a 7th scenario to `test_every_enforce_outcome_records_a_verdict`, which asserts
+   `set(seen) == set(VERDICTS)` exhaustively — 1+2 alone just move the failure there.
+
+Patch posted on #445. `missing` stays `None` (never evaluated), matching `refused_unreadable`.
+
+**A methodology note, because it nearly cost the finding:** `pytest -q -rs` prints **no `FAILED`
+lines** — `-rs` reports skips only. A `grep -c '^FAILED'` over that log reads **0** through a genuinely
+failing run. The only signals are the exit code and a single `F` among the progress dots. Judge by exit
+code; if you must grep, grep for `^=* FAILURES`.
 
 ### 3. Two defects #445 carries into `docs/ssot.md` that CI cannot catch
 
