@@ -499,6 +499,43 @@ def test_deck_tolerates_truthy_nondict_sections(tmp_path, label, snap):
     assert len(prs.slides._sldIdLst) >= 6, f"deck degenerate for poisoned {label}"
 
 
+# --- unhashable-key leaf class -------------------------------------------------------------------
+# DISTINCT from the truthy-non-dict falsy-guard class above, and NOT fixable by _D/_R/_L: the deck uses
+# a health_scores row's `band` value as a DICT KEY (`band_counts[r.get("band","")]`). `_R` already
+# filters the rows to dicts, so the row is fine — it is purely the LEAF type. An attacker-supplied
+# list/dict `band` is unhashable -> TypeError, and the snapshot is attacker-controllable via the
+# webapp upload -> deliverables.generate("deck", snap) -> HTTP 500 (a stored DoS).
+# The established guard for this shape in this repo is str() — see design.py's
+# `str(_D(d).get("sw_version") or "")  # a dict sw_version would be an unhashable key`.
+_DECK_UNHASHABLE_LEAVES = [
+    ("health_scores[].band=dict", {"health_scores": [{"switch": "sw1", "score": 10, "band": {"x": 1}}]}),
+    ("health_scores[].band=list", {"health_scores": [{"switch": "sw1", "score": 10, "band": [1, 2]}]}),
+]
+
+
+@pytest.mark.parametrize("label,snap", _DECK_UNHASHABLE_LEAVES,
+                         ids=[c[0] for c in _DECK_UNHASHABLE_LEAVES])
+def test_deck_tolerates_unhashable_band_leaf(tmp_path, label, snap):
+    """An unhashable `band` leaf must degrade to a stringified key, never crash the deck."""
+    out = tmp_path / "unhashable.pptx"
+    write_executive_deck_pptx(str(out), snap, "AJ")               # must NOT raise
+    assert out.is_file(), f"no deck produced for {label}"
+    prs = Presentation(str(out))                                  # and must be a valid, openable pptx
+    assert len(prs.slides._sldIdLst) >= 6, f"deck degenerate for {label}"
+
+
+def test_deck_wellformed_band_tally_unchanged(tmp_path):
+    """Non-vacuity companion: str()-keying must be a NO-OP on well-formed string bands — the Critical
+    tally still comes from health_scores (the false-health guard), not a literal 0."""
+    snap = {"health_scores": [{"switch": "sw1", "score": 5, "band": "Critical"},
+                              {"switch": "sw2", "score": 5, "band": "Critical"},
+                              {"switch": "sw3", "score": 90, "band": "Excellent"}]}
+    out = tmp_path / "bands.pptx"
+    write_executive_deck_pptx(str(out), snap, "AJ")
+    _n, txt = _deck(str(out))
+    assert "2" in txt, "the Critical-band tally (2) must survive the str() keying"
+
+
 def test_deck_wellformed_unchanged_alongside_hardening(tmp_path):
     """Non-vacuity guard for the crash-hardening: the _R/_D/_L coercion must be a no-op on well-formed
     data. A rich snapshot must still render all 8 slides with its signature content intact."""
