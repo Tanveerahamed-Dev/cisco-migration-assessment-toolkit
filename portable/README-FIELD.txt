@@ -142,6 +142,32 @@ comparisons), add:  --redact-collection
 Rule: raw captures and unredacted output never leave the site except on
 this (encrypted) stick.
 
+PROVING A DELIVERABLE SET IS THE ONE YOU PRODUCED
+-------------------------------------------------
+Every assessment run drops a  <name>.run_manifest.json  beside the
+workbook: a hash-chained ledger of the run plus a SHA-256 of each file it
+produced. To check a set that has been sitting on a share, or that came
+back to you from the client:
+  Atlas.exe --verify-manifest <path to run_manifest.json> --verify-artifacts
+
+"manifest OK" means the ledger still matches its own seal and every file
+listed hashes to what was sealed. It exits non-zero if not, and names the
+files: MISMATCH = changed since the run, MISSING = not in that folder,
+INVALID = the manifest pointed somewhere outside it and was not opened.
+
+WHAT THIS PROVES, AND WHAT IT DOES NOT: the seal is UNKEYED, and the code
+that writes it ships in this app. It catches a careless edit, a dropped
+file or a truncated ledger - it does NOT stop someone who re-seals the
+manifest after editing it, because they can recompute a clean seal. Do
+not present it to a client as proof nobody tampered with anything.
+The one check a re-seal cannot beat is comparing against a chain_root you
+recorded somewhere else at the time of the run:
+  Atlas.exe --verify-manifest <path to run_manifest.json> --expect-root <chain_root>
+So when you hand a set over, copy the chain_root into the report. Open the
+run_manifest.json in Notepad and take the full "chain_root" value - the
+console line at the end of a run shortens it, and a shortened one will not
+match.
+
 CREDENTIALS
 -----------
 Live collection prompts in the console - once per username, per-device

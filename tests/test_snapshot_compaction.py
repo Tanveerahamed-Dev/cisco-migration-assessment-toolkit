@@ -2,7 +2,10 @@
 
 Provably byte-neutral for the contract: the golden harness and every `--compare`/webapp consumer
 `json.load`s the snapshot and compares PARSED objects (tests/test_pipeline_golden.py:65,174), so the
-byte formatting is invisible to them. Debug artifacts (run_manifest / phase_timings) stay indented.
+byte formatting is invisible to them. The run manifest / phase timings stay indented (human-readable).
+
+NB the run manifest is NOT a debug artifact -- it is the sealed chain-of-custody record; its
+durability contract is pinned separately by tests/test_run_manifest_durability.py.
 """
 import json
 
