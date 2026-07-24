@@ -4,6 +4,44 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-22] — `--redact-folder` silently ungated the PPDIOO gates; four refuter rounds reversed my answer twice and then found my own tests couldn't fail
+
+- The bug: `run_redaction_folder` launches the engine with `cwd=mkdtemp()`, so `gate_state.enforce`
+  resolved `docs/engagement-state.json` to nothing, took its "no store → brownfield" branch and
+  returned True unconditionally. The As-Built Design and per-wave MOP rendered for ANY engagement,
+  including one with approvals REVOKED. P0-3/DEC-003 was inert on that path for its whole life.
+- Shipped (`fix/redaction-gate-posture`, 099ac65 + 6822242): that path stays UNGATED **by decision**,
+  documented in `run_redaction_folder` + `gate_state.py`; engine `--gate-root` added for the CLI
+  path where blocking is right; a mis-set root now REFUSES in enforce/record/show instead of reading
+  as brownfield (the write side used to `makedirs` a phantom ledger and return a success receipt);
+  and a caller inventory pins every synthetic-cwd engine launch to a declared posture.
+- **OPEN, and this is the durable record of it** — the ledger has no engagement identifier, so
+  ownership rests entirely on which root the caller passes. Until that is fixed: (a) the MOP cannot
+  be gated here even though it is the one deliverable where blocking WOULD contain something (its
+  cutover procedure, quantified rollback triggers, RACI and sign-off exist in no other artifact);
+  (b) `webapp/backend/deliverables.py::generate` still renders design/MOP with no gate check and no
+  redaction, served over HTTP — the larger hole; (c) `tests/test_d10_eval_set.py`'s edge test false-
+  reds during a background graphify rebuild.
+- `!lesson` **Blocking one renderer contains nothing if the content ships in another.** Refusing
+  design/MOP looked like enforcement, but the engine writes the snapshot (:2817), explorer (:2831)
+  and deck (:2853) — all carrying `design_blueprint.target_state`/`wave_plan` — BEFORE the gates run
+  (:2864/:2879), and the gate a design fails on is `assessment_approved`, which that path ships
+  regardless. Before gating a deliverable, ask which OTHER artifacts carry the same payload and
+  when they are written; a partial block that reports "withheld" is worse than an honest ungated
+  set. bridge-candidate
+- `!lesson` **A control test whose control expects the broken outcome cannot fail.** My e2e for
+  `--gate-root` had two arms — flag passed / flag omitted — but BOTH used an empty cwd, and the
+  omitted-flag arm expected ungated, which is exactly what a broken default produces. Mutating the
+  parser default (`"."` → `$HOME`) killed gating for every ordinary CLI run with the whole suite
+  green. Mutate the DEFAULT, not just the explicit value, and make sure one arm exercises the
+  ordinary un-flagged path. bridge-candidate
+- `!lesson` **Once the logic is right, the defects move into the prose about it.** Rounds 1–2
+  reversed the decision twice on evidence I hadn't looked for; rounds 3–4 found the logic sound and
+  my claims wrong — an inverted reason, a false universal surviving in the exact docstring a guard
+  pins as its justification, a prescribed `pending_approvals()` I had deleted, and a "measured, not
+  guessed" limits list that was half guessed. Confidence did not fall as errors moved from code to
+  comments. Audit your own assertions as a separate pass, and never predict what a refuter round
+  will find — I called one "largely moot" and it returned live HIGHs. bridge-candidate
 ## [2026-07-22] — `--redact-folder` now says when the set is SHORT (#438) — and a second refuter, aimed at the decision rather than the code, overturned my design
 
 - Closed the last silent-success hole in the redaction command: every engine deliverable writer is

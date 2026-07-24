@@ -736,6 +736,44 @@ def run_redaction_folder(path: Any, out_dir: Any, redact_collection: bool = Fals
     ``redact_collection`` is set, which rewrites the raw captures in place — hence a separate,
     explicit argument rather than a default.
 
+    **The PPDIOO document gates (P0-3/DEC-003) deliberately do NOT apply on this path.** Do not
+    "fix" that by passing ``--gate-root``; three separate reasons, each independently sufficient:
+
+    1. *Blocking would not contain anything.* ``enforce()`` refuses per DELIVERABLE, and the two
+       gated DOCX are not the sole carriers of what they show: ``COLLECT_PARSE_V3_23_0`` writes the
+       snapshot (:2817), the explorer (:2831) and the executive deck (:2853) — all rendering
+       ``design_blueprint``'s ``target_state``/``wave_plan`` — BEFORE the gates run (:2864/:2879).
+       Refusing drops two renderers into the same folder as three ungated artifacts showing the
+       same unapproved design. And it would be a SILENT drop: ``run_redaction_folder`` captures the
+       child's output and ``serve.run_redaction`` prints only the file list, so a ``[GATE REFUSED]``
+       line never reaches the engineer here — unlike the ``cisco-assess`` CLI, which does surface
+       it. Two quietly-absent files, with the same design shipping beside them, is worse than an
+       honest ungated set (Guardrail 3).
+    2. *A disclosure already exists, in a better place — though it is a partial one.* The SEVEN
+       Word documents carry ``Status: DRAFT — generated; not yet reviewed`` in their Document
+       Control table (``cisco_toolkit/docmeta.py`` ``add_document_control``). That travels INSIDE
+       the file that gets emailed; a sidecar note in the folder does not. Two honest caveats: the
+       workbook, explorer and deck carry NO such marking — and those are exactly the three carriers
+       reason (1) leans on — and the row is a CONSTANT, so for a REVOKED approval it says "not yet
+       reviewed" when the review happened and rejected it. Treat this as mitigation, not as
+       equivalent to gate disclosure.
+    3. *Nothing here can identify the engagement's ledger.* Gate state is per-engagement but
+       nothing binds a ledger to an engagement — it is found by proximity, and proximity is not
+       ownership. Anchoring on cwd adopts the shell's directory (on the stick: the folder every
+       update wipes); anchoring on the collection adopts the nearest ``docs/engagement-state.json``
+       above it, which for the documented layouts is a *shared* parent or the repo checkout itself.
+       Both were tried and both mis-attribute across engagements — and a wrong "approvals present"
+       drawn from another client's ledger is far worse than saying nothing.
+
+    Note the asymmetry that makes (3) decisive: the gate a design would fail on is
+    ``assessment_approved``, and this path ships the assessment (workbook + snapshot) regardless.
+    Withholding the design while shipping the unapproved assessment it derives from is backwards.
+
+    The MOP is the one genuinely different case — its cutover procedure, rollback triggers and
+    sign-off blocks exist in no other artifact, so refusing it WOULD contain something. That is
+    recorded as OPEN in ``docs/log.md`` (2026-07-22); it needs the ledger-ownership problem in (3)
+    solved first, and it is a change to what the field tool may withhold — not this function's
+    call to make.
     Two independent honesty properties, because a run can fail either way. The redaction checks
     REFUSE (``EngineRunError`` + a do-not-send marker) when what was written may not be safe. The
     completeness check WARNS — ``report["missing"]`` lists any family document the engine's
@@ -793,6 +831,8 @@ def run_redaction_folder(path: Any, out_dir: Any, redact_collection: bool = Fals
             "--output", str(out_xlsx),
             "--workers", "1",
             "--redact",                       # the whole point: every deliverable is pseudonymized
+            # NB deliberately NO --gate-root: the PPDIOO document gates do not apply on this path,
+            # and that is now a decision rather than the accident it used to be. See the docstring.
         ]
         if redact_collection:
             cmd.append("--redact-collection")  # rewrites the RAW captures in place — opt-in only
@@ -888,6 +928,12 @@ def _assess_tree(tree: Path, n_files: int, workdir: Path) -> Tuple[Dict[str, Any
         "--no-html", "--no-docx", "--no-pptx", "--no-design", "--no-mop",
         "--no-crd", "--no-engagement", "--no-archreview", "--no-opshandbook",  # V3.23.170 (stale-list fix)
     ]
+    # NB --no-design/--no-mop are load-bearing beyond speed: cwd below is a scratch workdir, so the
+    # engine's default gate root ('.') finds no docs/engagement-state.json and the PPDIOO gates
+    # would silently degrade to brownfield warn-and-proceed. Dropping either flag from this list
+    # therefore emits a gated deliverable UNGATED. Do NOT "fix" that by passing os.getcwd() as
+    # --gate-root: here that is the SERVER's directory, which is not any one engagement — see
+    # run_redaction_folder's docstring. Pinned by test_gate_state.py's caller inventory.
     t0 = time.monotonic()
     try:
         # stdin=DEVNULL: capture_output pipes only stdout/stderr — an inherited TTY stdin would
