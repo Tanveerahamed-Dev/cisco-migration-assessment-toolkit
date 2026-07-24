@@ -110,9 +110,15 @@ UNUSABLE (there but empty or truncated - a full disk does this), or
 STALE (left by an earlier run into the same folder, so it may belong to
 another job - only possible with --reuse-out, see below). The same list
 is written to INCOMPLETE-SET.txt in your --out folder. That is NOT a
-leak warning: what is in the folder is redacted and safe. It means the
-SET is short - re-run into an empty folder, or tell the recipient which
+leak warning: what THIS RUN wrote is redacted. It means the SET is
+short - re-run into an empty folder, or tell the recipient which
 documents are not included.
+
+One exception, and the note says so itself: if the folder ALSO holds
+DO-NOT-SEND-NOT-REDACTED.txt, a previous run into it could not be
+certified, and any document listed as STALE was written by THAT run -
+so it is not covered by this run's check and may be UNREDACTED. Read
+that file first and do not send the folder until you have dealt with it.
 
 ONE --out FOLDER PER JOB. Atlas REFUSES to render into a folder that
 already holds a deliverable set, and says so in seconds rather than
@@ -125,7 +131,9 @@ and this cannot happen. To render into a folder anyway - re-running the
 SAME job after a short set is the normal reason - add:  --reuse-out
 
 Exit codes:  0 = complete and verified.  3 = produced, but the set is
-short (safe to share, just not all of it).  1 = failed; do not send.
+short - what this run wrote is redacted, there is just less of it (read
+the note if DO-NOT-SEND-NOT-REDACTED.txt is also present).  1 = failed;
+do not send.
 
 This command produces ten items: the workbook, the explorer, seven Word
 documents and the deck. The Cutover Plan and the NRFU / Acceptance Test
