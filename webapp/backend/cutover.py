@@ -50,6 +50,13 @@ def _int(v: Any, default: int = 0) -> int:
         return default
 
 
+def _as_dict(v: Any) -> Dict[str, Any]:
+    """Coerce a snapshot section/sub-section to a dict. A truthy NON-dict (an int/str/list in a malformed or
+    hostile upload) would otherwise survive `... or {}` and 500 the very next `.get`/`.items()` -- a stored
+    DoS on /cutover, which reads these straight from the snapshot. Returning {} degrades gracefully."""
+    return v if isinstance(v, dict) else {}
+
+
 def _as_hosts(v: Any) -> Set[str]:
     """Coerce a snapshot 'hosts'/'switches' field to a set of host strings.
 
@@ -71,13 +78,15 @@ _GATE_RANK = {GATE_GO: 0, GATE_COND: 1, GATE_NOGO: 2}
 
 
 def _rows(snap: Dict[str, Any], key: str) -> List[Dict[str, Any]]:
-    # isinstance-guard, not `or []`: a TRUTHY non-list section (an int in a malformed upload) survives `or []`
-    # and 500s the `for r in` iteration -> unhandled 500 on /cutover. Reuse summary._as_list (same discipline).
+    # summary._as_list, not `or []`: a section that is a truthy non-list (an int in a malformed upload)
+    # survives `or []` and 500s `for r in ...` -> stored DoS on /cutover.
     return [r for r in summary._as_list(snap.get(key)) if isinstance(r, dict)]
 
 
 def _by_group(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    return {r["group"]: r for r in rows if r.get("group")}
+    # str(...) the group: an UNHASHABLE group value (a list/dict in a malformed upload) is truthy, so it
+    # passes the filter and then 500s as a dict key -> stored DoS. Coercing keeps well-formed keys identical.
+    return {str(r["group"]): r for r in rows if r.get("group")}
 
 
 def _wave_switches(seq: Dict[str, Any], readiness: Optional[Dict[str, Any]]) -> List[str]:
@@ -106,13 +115,15 @@ def _keystone_hosts(snap: Dict[str, Any], top: int = 8) -> Set[str]:
     for k in summary._keystones(snap, top):
         host = k.get("host") if isinstance(k, dict) else None
         if host:
-            out.add(host)
+            out.add(str(host))   # str(): an unhashable host (a list in a malformed upload) must not 500 set.add
     return out
 
 
 def _worst_blast_radius(switches: Set[str], failure_impact: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """The single worst failure-impact row among this wave's switches (severity, then stranded)."""
-    cands = [r for r in failure_impact if r.get("host") in switches]
+    # str(host): switches are stringified (via _as_hosts); an unhashable host (a list) would else 500 the
+    # `in`-a-set membership test -> stored DoS. Coercing keeps well-formed string hosts matching as before.
+    cands = [r for r in failure_impact if str(r.get("host")) in switches]
     if not cands:
         return None
     worst = min(cands, key=lambda r: (_SEV_RANK.get(r.get("severity", ""), 99), -_int(r.get("stranded"))))
@@ -180,7 +191,7 @@ def _blind_hosts(snap: Dict[str, Any]) -> set:
         if band.startswith("insufficient") or (isinstance(dq, (int, float)) and not isinstance(dq, bool) and dq <= 0):
             h = r.get("switch") or r.get("host")
             if h:
-                out.add(h)
+                out.add(str(h))   # str(): an unhashable host (a list in a malformed upload) must not 500 set.add
     return out
 
 
@@ -188,7 +199,8 @@ def _blockers(readiness: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """The readiness checks that are not passing — fails first, then warns — with their PPDIOO phase."""
     if not readiness:
         return []
-    checks = [c for c in (readiness.get("checks") or []) if isinstance(c, dict)]
+    # summary._as_list, not `or []`: a truthy non-list `checks` (an int in a malformed upload) 500s `for c in ...`.
+    checks = [c for c in summary._as_list(readiness.get("checks")) if isinstance(c, dict)]
     flagged = [c for c in checks if c.get("status") in ("fail", "warn")]
     flagged.sort(key=lambda c: 0 if c.get("status") == "fail" else 1)
     return [{
@@ -202,10 +214,16 @@ def _blockers(readiness: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def _wave_remediation(switches: Set[str], rem_by_device: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Pre-cutover fixes for this wave's devices, worst severity first."""
     out = []
+    # isinstance-dict guard: `rem_by_device` (remediation_plan.by_device) that is a truthy non-dict in a
+    # malformed upload would 500 `.items()` here -> stored DoS. build_plan already coerces, this is defence in depth.
+    if not isinstance(rem_by_device, dict):
+        return out
     for dev, items in rem_by_device.items():
         if dev not in switches:
             continue
-        for it in (items or []):
+        # isinstance-guard, not `or []`: a per-device value that is a TRUTHY non-list (an int/str in a
+        # malformed upload) survives `or []` and 500s this iteration -> stored DoS on /cutover.
+        for it in summary._as_list(items):
             if isinstance(it, dict):
                 out.append({
                     "device": dev,
@@ -221,7 +239,13 @@ def _wave_remediation(switches: Set[str], rem_by_device: Dict[str, Any]) -> List
 def _wave_validation(group: str, val_by_wave: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Post-cutover validation checks for this wave (engine's validation_plan.by_wave)."""
     out = []
-    for it in (val_by_wave.get(group) or []):
+    # isinstance-dict guard: `val_by_wave` (validation_plan.by_wave) that is a truthy non-dict in a malformed
+    # upload would 500 `.get()` here -> stored DoS. build_plan already coerces, this is defence in depth.
+    if not isinstance(val_by_wave, dict):
+        return out
+    # isinstance-guard, not `or []`: a per-wave value that is a TRUTHY non-list survives `or []` and 500s
+    # this iteration -> stored DoS on /cutover.
+    for it in summary._as_list(val_by_wave.get(group)):
         if isinstance(it, dict):
             out.append({
                 "category": it.get("category", ""),
@@ -304,25 +328,22 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
     move_groups = _rows(snap, "move_groups")
     failure_impact = _rows(snap, "failure_impact")
     cross_layer = _rows(snap, "cross_layer")
-    # isinstance-guard each `or {}` read: a TRUTHY non-dict remediation_plan/validation_plan (an int in a
-    # malformed upload) survives `or {}` and 500s the `.get(...)`; likewise a truthy non-dict INNER by_device/
-    # by_wave survives and 500s the later `.items()`/`.get()` in _wave_remediation/_wave_validation. Both the
-    # section and its inner map must degrade to {} -> a coherent (smaller) plan, never a 500 on /cutover.
-    _rem = snap.get("remediation_plan")
-    rem_by_device = (_rem if isinstance(_rem, dict) else {}).get("by_device")
-    rem_by_device = rem_by_device if isinstance(rem_by_device, dict) else {}
-    _val = snap.get("validation_plan")
-    val_by_wave = (_val if isinstance(_val, dict) else {}).get("by_wave")
-    val_by_wave = val_by_wave if isinstance(val_by_wave, dict) else {}
+    # _as_dict at every level, not `... or {}`: a truthy non-dict remediation_plan/validation_plan (or a
+    # non-dict by_device/by_wave) survives `or {}` and 500s the next `.get`/`.items()` -> stored DoS.
+    rem_by_device = _as_dict(_as_dict(snap.get("remediation_plan")).get("by_device"))
+    val_by_wave = _as_dict(_as_dict(snap.get("validation_plan")).get("by_wave"))
     keystones = _keystone_hosts(snap)
     blind_hosts = _blind_hosts(snap)
 
     waves: List[Dict[str, Any]] = []
     for seq in seq_rows:
-        group = seq.get("group", "")
+        # str(...) the group: an unhashable group (a list in a malformed upload) would 500 the readiness /
+        # validation dict lookups keyed on it. sorted(_as_hosts(...)) the buckets, not list(...): a
+        # non-iterable 500s list(), and a list of ints 500s the run-of-show ', '.join -- _as_hosts str-coerces.
+        group = str(seq.get("group") or "")
         readiness = readiness_by_group.get(group)
-        mbb = list(seq.get("make_before_break") or [])
-        hard = list(seq.get("hard_cutover") or [])
+        mbb = sorted(_as_hosts(seq.get("make_before_break")))
+        hard = sorted(_as_hosts(seq.get("hard_cutover")))
         switches = set(_wave_switches(seq, readiness))
         wblind = sorted(switches & blind_hosts)
         mg = _match_move_group(switches, move_groups)
@@ -355,8 +376,10 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
             "est_window_minutes": window,
             "est_window_label": _fmt_minutes(window),
             "sequence_note": seq.get("sequence", ""),
-            "gateways": list(mg.get("gateways") or []),
-            "spanning_vlans": list(mg.get("spanning_vlans") or []),
+            # summary._as_list, not list(...): a non-iterable gateways/spanning_vlans (an int in a malformed
+            # move_group) 500s list(). _as_list preserves ints (VLAN ids are ints), unlike _as_hosts.
+            "gateways": summary._as_list(mg.get("gateways")),
+            "spanning_vlans": summary._as_list(mg.get("spanning_vlans")),
             "blast_radius": _worst_blast_radius(switches, failure_impact),
             "keystones": sorted(switches & keystones),
             "n_fail": n_fail,
@@ -390,7 +413,10 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
     n_hard = sum(len(w["hard_cutover"]) for w in waves)
     n_not_assessed = sum(_int(w.get("n_blind")) for w in waves)
 
-    summary = {
+    # NB: named fleet_summary, not `summary` -- a local named `summary` would shadow the module-level
+    # `summary` import for the WHOLE function body, turning the `summary._as_list(...)` guards above into an
+    # UnboundLocalError. (The output KEY stays "summary"; only the local binding is renamed.)
+    fleet_summary = {
         "verdict": fleet_gate,
         "n_waves": len(waves),
         "n_devices": n_mbb + n_hard,
@@ -405,7 +431,7 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
         "statement": _fleet_statement(fleet_gate, waves, n_mbb, n_hard, total_window),
         "methodology": _METHODOLOGY,
     }
-    return {"summary": summary, "waves": waves}
+    return {"summary": fleet_summary, "waves": waves}
 
 
 # Grounded in standard network-migration / cutover practice (PPDIOO Implement + Operate). Surfaced in the
