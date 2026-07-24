@@ -414,11 +414,18 @@ def _rich_snap():
     return s
 
 
+# depth 5 is EXHAUSTIVE for _rich_snap() — it bottoms out there (a depth-6 sweep yields the identical
+# 129 paths). The old depth<=3 cap stopped ONE level short of `collection_completeness.devices[i].missing`
+# and TWO short of `application_intelligence.domains[i].risks[j]`, both of which were live crashes; the
+# cap, not the code, was what made the sweep green. Cost of going exhaustive: 99 -> 129 poison cases.
+_MAX_NEST_DEPTH = 5
+
+
 def _nested_container_paths(obj, path=(), depth=0):
-    """Every path (depth<=3) to a nested dict/list inside the snapshot, excluding the root."""
+    """Every path (depth<=_MAX_NEST_DEPTH) to a nested dict/list inside the snapshot, excluding the root."""
     if path and isinstance(obj, (dict, list)):
         yield path
-    if depth >= 3:
+    if depth >= _MAX_NEST_DEPTH:
         return
     if isinstance(obj, dict):
         for k, v in obj.items():
@@ -430,18 +437,32 @@ def _nested_container_paths(obj, path=(), depth=0):
 
 
 def test_runbook_survives_truthy_scalar_nested_value(tmp_path):
-    """Replacing ANY nested container (a section's inner dict/list, depth<=3) with a truthy scalar must
-    degrade to empty, never raise — the runbook still renders end-to-end. Revert-proof by construction:
-    e.g. migration_readiness[0]["switches"]=7 -> len(7) crashes the pre-extension module."""
+    """Replacing ANY nested container (a section's inner dict/list, to the fixture's full depth) with a
+    truthy scalar must degrade to empty, never raise — the runbook still renders end-to-end.
+    Revert-proof by construction: e.g. migration_readiness[0]["switches"]=7 -> len(7) crashes the
+    pre-extension module."""
     import copy
     base = _rich_snap()
-    # `collection_completeness` and `executive_brief` are ALSO consumed by the shared
-    # docmeta.add_excellence_front -> ssot.reconcile layer; the nested-scalar hardening of those two
-    # lives in ssot.py (PR #452, verified: `cc = _as_dict(_dotted(snap,"collection_completeness.summary"))`),
-    # so this one-file runbook PR deliberately does not own them — skip that principled module boundary.
-    _SHARED_SSOT_SECTIONS = {"collection_completeness", "executive_brief"}
+    # `executive_brief` is ALSO consumed by the shared docmeta.add_excellence_front -> ssot.reconcile
+    # layer; the nested-scalar hardening of it lives in ssot.py (PR #452, verified:
+    # `cc = _as_dict(_dotted(snap,"collection_completeness.summary"))`), so this runbook sweep
+    # deliberately does not own it — a principled module boundary.
+    # `collection_completeness` was excluded on that same reasoning and it was WRONG: runbook.py has
+    # its OWN read of collection_completeness.devices[].missing (§2.1's blind-spot table), which the
+    # exclusion hid — a live `", ".join(d.get("missing", []))` crash. It is back in the sweep.
+    _SHARED_SSOT_SECTIONS = {"executive_brief"}
     paths = [p for p in _nested_container_paths(base) if p[0] not in _SHARED_SSOT_SECTIONS]
     assert len(paths) > 20, "sanity: the rich snapshot must expose many nested containers to poison"
+    # REACH GUARD. The cap silently going stale is exactly how this sweep stayed green over four live
+    # crashes: at depth<=3 it never generated these paths, so "no crashes" meant "never looked". Pin
+    # the deepest sites explicitly — lowering _MAX_NEST_DEPTH, or a fixture that drops these keys,
+    # must fail loudly here rather than quietly shrink the sweep's reach.
+    for must_reach in (("collection_completeness", "devices", 0, "missing"),
+                       ("migration_scenarios", "per_group", 0, "playbook"),
+                       ("application_intelligence", "domains", 0, "risks", 0)):
+        assert must_reach in paths, (
+            f"sweep no longer reaches {'.'.join(map(str, must_reach))} — the poison set shrank "
+            f"(depth cap {_MAX_NEST_DEPTH}, {len(paths)} paths); it would go green without looking")
     crashes = []
     for i, p in enumerate(paths):
         snap = copy.deepcopy(base)
@@ -455,3 +476,29 @@ def test_runbook_survives_truthy_scalar_nested_value(tmp_path):
         except Exception as e:   # noqa: BLE001 - the whole point is that NOTHING may raise
             crashes.append((".".join(map(str, p)), type(e).__name__, str(e)[:60]))
     assert not crashes, f"{len(crashes)} nested truthy-scalar case(s) still crash the runbook: {crashes[:10]}"
+
+
+def test_runbook_survives_non_string_elements_in_joined_lists(tmp_path):
+    """The container sweep above poisons CONTAINERS, so it structurally cannot reach this: a
+    well-formed LIST whose ELEMENTS are non-str still crashed `", ".join(...)` with
+    `TypeError: sequence item 0: expected str instance, int found`. Both `missing` renders (§2.1
+    collection blind spots, §6.9 golden-config drift) read an attacker-supplied list straight into
+    join(), so both must stringify their elements. Same uploaded-snapshot DoS route."""
+    import copy
+    base = _snap()
+    base["golden_drift"] = {
+        "summary": {"n_baseline": 3, "n_drifting": 1, "n_devices": 2, "avg_compliance_pct": 66,
+                    "mode": "majority"},
+        "per_device": [{"host": "sw1", "compliance_pct": 66, "n_missing": 1, "missing": ["aaa new-model"]}],
+    }
+    for i, (label, mutate) in enumerate((
+        ("collection_completeness.devices[0].missing",
+         lambda s: s["collection_completeness"]["devices"][0].__setitem__("missing", [1, 2, None])),
+        ("golden_drift.per_device[0].missing",
+         lambda s: s["golden_drift"]["per_device"][0].__setitem__("missing", [7, {"a": 1}])),
+    )):
+        snap = copy.deepcopy(base)
+        mutate(snap)
+        out = str(tmp_path / f"rb_join_{i}.docx")
+        write_runbook_docx(out, snap, "Unit Test Fleet")   # must not raise
+        assert "1. Assessment Header & Executive Summary" in _all_text(Document(out)), label

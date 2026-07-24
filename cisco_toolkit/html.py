@@ -57,6 +57,26 @@ def _canon_title(title: str) -> str:
     return title
 
 
+def _as_dict(x):
+    """A snapshot section coerced to a dict. `... or {}` only guards FALSY values, so a truthy non-dict (a list/
+    scalar from a malformed --compare/--trend snapshot) flowed into .values()/set() and raised (audit-5 totality);
+    `.get(k, {})` likewise returns None for a present-but-null key."""
+    return x if isinstance(x, dict) else {}
+
+
+def _as_list(x):
+    """A snapshot section coerced to a list -- the list-shaped twin of _as_dict, same reasoning: `... or []`
+    only guards FALSY values, so a TRUTHY non-list (`health_scores: 5` in a hand-crafted upload) survived the
+    guard and raised on the next `for r in ...` / `list(...)`. On the webapp side that is a STORED availability
+    DoS: the upload is accepted (the only check is dict + a 'devices' key) and then 500s the unwrapped
+    /explorer, /api/compare and /trend routes on every later read.
+
+    Identical to `(x or [])` for every list/None input, so well-formed output is unchanged. A wrong-typed
+    DICT section also degrades identically: iterating a dict yielded str keys, which the element-level
+    `isinstance(r, dict)` filters already dropped."""
+    return x if isinstance(x, list) else []
+
+
 def _finding_key(f: dict) -> tuple:
     """Stable identity for a punch-list finding across two runs: (category, FULL title, device-set).
     The title is intentionally NOT digit-normalized: stripping digits collapsed DISTINCT per-identifier
@@ -68,15 +88,10 @@ def _finding_key(f: dict) -> tuple:
     _TITLE_RENAMES alias table above (pre-rename wording -> current wording), which is not a
     normalization: it never merges two distinct findings, it only keeps one finding's identity stable
     across an engine-version rename."""
-    devs = tuple(sorted(str(d) for d in (f.get("devices") or [])))
+    # _as_list (not `or []`): a ROW-INNER scalar -- a well-formed finding whose 'devices' is `5` -- survives
+    # `or []` and raises on `for d in 5`, so one poisoned punch-list row 500s /api/compare and /trend.
+    devs = tuple(sorted(str(d) for d in _as_list(f.get("devices"))))
     return (str(f.get("category", "")), _canon_title(str(f.get("title", ""))), devs)
-
-
-def _as_dict(x):
-    """A snapshot section coerced to a dict. `... or {}` only guards FALSY values, so a truthy non-dict (a list/
-    scalar from a malformed --compare/--trend snapshot) flowed into .values()/set() and raised (audit-5 totality);
-    `.get(k, {})` likewise returns None for a present-but-null key."""
-    return x if isinstance(x, dict) else {}
 
 
 def compute_snapshot_delta(old: dict, new: dict) -> dict:
@@ -90,9 +105,11 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
 
     # ---- health-band shifts (per switch present in BOTH runs) ----
     # isinstance guard: a null element in the list (hand-trimmed / older-schema snapshot fed to --compare/--trend)
-    # must degrade, not AttributeError on r.get (audit-4 #15).
-    oh = {r.get("switch"): r for r in (old.get("health_scores") or []) if isinstance(r, dict)}
-    nh = {r.get("switch"): r for r in (new.get("health_scores") or []) if isinstance(r, dict)}
+    # must degrade, not AttributeError on r.get (audit-4 #15). The ELEMENT filter was present but the SECTION
+    # was not coerced -- `health_scores: 5` survives `or []` and dies on `for r in 5` (_as_list, both operands:
+    # a guard on only `old` leaves the identical crash reachable through `new` on the same route).
+    oh = {r.get("switch"): r for r in _as_list(old.get("health_scores")) if isinstance(r, dict)}
+    nh = {r.get("switch"): r for r in _as_list(new.get("health_scores")) if isinstance(r, dict)}
     regressed: List[dict] = []
     improved: List[dict] = []
     coverage_shifts: List[dict] = []   # transitions in/out of 'Insufficient Data' (coverage events, not health)
@@ -122,8 +139,8 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
     newly_bad = [c for c in coverage_shifts if c["kind"] == "newly_assessed" and c["new_band"] in ("Critical", "Poor")]
 
     # ---- punch-list findings opened vs resolved ----
-    o_find = {_finding_key(f): f for f in (old.get("punchlist") or []) if isinstance(f, dict)}
-    n_find = {_finding_key(f): f for f in (new.get("punchlist") or []) if isinstance(f, dict)}
+    o_find = {_finding_key(f): f for f in _as_list(old.get("punchlist")) if isinstance(f, dict)}
+    n_find = {_finding_key(f): f for f in _as_list(new.get("punchlist")) if isinstance(f, dict)}
     # fully-deterministic order (set-difference iteration order is unstable): severity, then the
     # finding's stable identity, so two runs of the diff workbook are byte-reproducible.
     def _fsort(f: dict) -> tuple:
@@ -204,11 +221,17 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
         note = f"No health-band regressions, no new findings; {cable_phrase}; {reach_phrase}."
 
     def _scn(s):  # SSOT: canonical device count (one source); raw len() only as the pre-brief fallback
-        return ((s.get("executive_brief") or {}).get("scale") or {}).get("n_devices")
+        # _as_dict at BOTH levels (the same shape _trend_point's local _d() already guards): a truthy
+        # non-dict `executive_brief` -- or a well-formed brief whose inner `scale` is a scalar -- slips
+        # past `or {}` and AttributeErrors on the next .get().
+        return _as_dict(_as_dict(s.get("executive_brief")).get("scale")).get("n_devices")
     return {
         "switches": {"old": _scn(old) or len(od), "new": _scn(new) or len(nd),
                      "added": sorted(set(nd) - set(od)), "removed": removed_sw},
-        "interfaces": {"old": sum(len(v) for v in oi.values()), "new": sum(len(v) for v in ni.values())},
+        # oi/ni are already _as_dict-coerced above; this is the PER-ELEMENT gap -- `interfaces: {"sw1": 5}`
+        # reaches len(5). (A null per-host value crashed here too: len(None).)
+        "interfaces": {"old": sum(len(_as_dict(v)) for v in oi.values()),
+                       "new": sum(len(_as_dict(v)) for v in ni.values())},
         "health": {"regressed": regressed, "improved": improved,
                    "n_regressed": len(regressed), "n_improved": len(improved),
                    "coverage_shifts": coverage_shifts, "n_coverage_shifts": len(coverage_shifts)},
@@ -569,7 +592,10 @@ def _trend_point(snap: dict) -> dict:
     avg = _posture.get("avg_health")
     if avg is None and scores:
         avg = round(sum(scores) / len(scores), 1)
-    ts = snap.get("generated_at") or ""
+    # str() (not `or ""`): `generated_at` is a timestamp STRING by contract, but a truthy non-str survives
+    # `or ""` and the ts[:10] slice below then raises (`5[:10]` -> TypeError) -- or, for a list, silently
+    # returns a LIST into the timeline's 'date' column. The slicing variant of the same guard gap.
+    ts = str(snap.get("generated_at") or "")
     return {
         "date": ts[:10], "generated_at": ts, "version": snap.get("script_version", ""),
         # SSOT: prefer the engine's canonical scale / posture; the local len()/band-tally is a fallback only.
@@ -634,10 +660,13 @@ def compute_campaign_trend(snapshots: List[dict]) -> dict:
         gone: set = set()
 
         def _bands(s):
-            return {str(r.get("switch")): str(r.get("band", "")) for r in (s.get("health_scores") or [])
+            return {str(r.get("switch")): str(r.get("band", "")) for r in _as_list(s.get("health_scores"))
                     if isinstance(r, dict)}
         for i in range(len(snaps) - 1):
-            gone |= set(snaps[i].get("devices") or {}) - set(snaps[i + 1].get("devices") or {})
+            # _as_dict, not `or {}`: set(5) raises, and set("sw1") SUCCEEDS on a string -- yielding the
+            # CHARACTERS, so the went-dark scan would report three phantom devices gone and downgrade the
+            # verdict on evidence that does not exist. Both halves of the same guard gap.
+            gone |= set(_as_dict(snaps[i].get("devices"))) - set(_as_dict(snaps[i + 1].get("devices")))
             # the engine never DROPS an uncollected device -- it keeps it as an 'Insufficient Data' STUB in
             # `devices`, so the set-difference above misses a previously-collected switch that went dark; detect
             # the band transition real-band -> 'Insufficient Data' too, else a campaign that loses its worst
@@ -816,6 +845,24 @@ def sparsify_interfaces(snap: dict) -> dict:
 _EMBED_DROP_VALUES: tuple = ("", None, [], {}, "--")
 
 
+def _slim_ports(ports) -> dict:
+    """One host's {port: record} map with empty/placeholder field VALUES dropped.
+
+    isinstance-coerced at BOTH levels, exactly as sparsify_interfaces already does: `interfaces` itself is
+    isinstance-guarded by the caller, but the PER-ELEMENT layer was not -- a truthy non-dict per-host map
+    (`interfaces: {"sw1": 5}`) or port record (`{"Gi1/0/1": 5}`) survives `... or {}` and AttributeErrors on
+    .items(). On a stored AssessHub upload that is a permanent 500 for GET /api/snapshots/{id}/explorer,
+    which has no try wrapper.
+
+    Behaviour-preserving: a FALSY map/record still degrades to {} exactly as `(x or {})` did, and the port
+    ENTRY is still always kept, so the explorer's `Object.keys(ifaces[host])` is unchanged."""
+    if not isinstance(ports, dict):
+        return {}
+    return {port: ({k: v for k, v in rec.items() if v not in _EMBED_DROP_VALUES}
+                   if isinstance(rec, dict) else {})
+            for port, rec in ports.items()}
+
+
 def _slim_for_embed(snap_dict: dict) -> dict:
     """Return a display-neutral, size-reduced copy of the snapshot for embedding in the
     explorer HTML. Pure (input not mutated); see the block comment above for why each
@@ -823,10 +870,7 @@ def _slim_for_embed(snap_dict: dict) -> dict:
     out = dict(snap_dict)
     intf = snap_dict.get("interfaces")
     if isinstance(intf, dict):
-        out["interfaces"] = {
-            host: {port: {k: v for k, v in (rec or {}).items() if v not in _EMBED_DROP_VALUES}
-                   for port, rec in (ports or {}).items()}
-            for host, ports in intf.items()}
+        out["interfaces"] = {host: _slim_ports(ports) for host, ports in intf.items()}
     ph = snap_dict.get("physical_health")
     if isinstance(ph, list):
         out["physical_health"] = [
