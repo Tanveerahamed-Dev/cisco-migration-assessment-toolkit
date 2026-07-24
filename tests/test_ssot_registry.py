@@ -54,6 +54,9 @@ def test_registry_owner_files_all_exist():
         # the DEC-007 holdout policy owner + its mechanics module (P1-2, 2026-07-10)
         "docs/quality/holdout-contract.md",
         "cisco_toolkit/holdout.py",
+        # deliverable-set completeness: the row's enforcement IS this reconciler, so the row and
+        # the guard have to fall together or not at all (2026-07-22)
+        "tests/test_docmeta_cli_artifacts.py",
     ]
     cited_by_name = [p for p in must_exist if not p.endswith("__init__.py")]
     txt = _registry_text()
