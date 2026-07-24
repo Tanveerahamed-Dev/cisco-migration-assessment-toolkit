@@ -39,6 +39,40 @@ def test_vlan_inventory_survives_truthy_nondict_multicast(bad):
     vlan_inventory(snap)
 
 
+# --- the string-leaf axis: a non-str `vlan` / `vlan_name` survives `or ""` and 500s .strip() -------
+# A DIFFERENT mechanism from the container class above: the interface record IS a well-formed dict and
+# the field IS present -- it is the LEAF type. `as_dict`/`as_list` cannot fix it; the repo's discipline
+# is to str()-coerce every device string-field before .strip()/.lower().
+_STR_LEAF_POISONS = [5, 1.5, True, [5], [1, 2], {"a": 1}]
+
+
+@pytest.mark.parametrize("bad", _STR_LEAF_POISONS, ids=lambda v: type(v).__name__)
+def test_vlan_inventory_survives_nonstr_vlan_leaf(bad):
+    """`interfaces.<host>.<port>.vlan` as a non-str must degrade, not crash `.strip()`."""
+    snap = _base(interfaces={"acc1": {"Gi1/0/5": {"switchport_mode": "Access", "vlan": bad}}})
+    vlan_inventory(snap)
+
+
+@pytest.mark.parametrize("bad", _STR_LEAF_POISONS, ids=lambda v: type(v).__name__)
+def test_vlan_inventory_survives_nonstr_vlan_name_leaf(bad):
+    """The `vlan_name` twin of the read above -- reachable only once `vlan` itself parses as digits,
+    which is why a fuzz that stops at the first crash never reaches it."""
+    snap = _base(interfaces={"acc1": {"Gi1/0/5": {"switchport_mode": "Access",
+                                                  "vlan": "610", "vlan_name": bad}}})
+    vlan_inventory(snap)
+
+
+def test_vlan_inventory_wellformed_all_three_evidence_sources():
+    """Non-vacuity companion for the str() coercion: all THREE evidence sources still contribute and
+    the VLAN name still survives, so an over-broad guard that empties or blanks them fails here."""
+    snap = _base(
+        interfaces={"acc1": {"Gi1/0/5": {"switchport_mode": "Access", "vlan": "610",
+                                         "vlan_name": "MEDIA"}}},
+        l3_forwarding=[{"switch": "acc1", "vlan": "700"}],
+        service_map={"multicast": {"igmp_queriers": [{"vlan": "800"}]}})
+    assert vlan_inventory(snap) == [(610, "MEDIA"), (700, ""), (800, "")]
+
+
 def test_vlan_inventory_wellformed_queriers_still_counted():
     """Non-vacuity companion: the isinstance coercion must be a NO-OP on well-formed input -- a real
     querier VLAN must still be inventoried, so an over-broad guard that empties the list fails here."""

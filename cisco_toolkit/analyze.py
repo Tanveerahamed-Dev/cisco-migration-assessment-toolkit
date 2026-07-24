@@ -1613,10 +1613,13 @@ def vlan_inventory(snap: dict):
         for d in (ports if isinstance(ports, dict) else {}).values():            # block must not crash (audit-4 #10)
             if not isinstance(d, dict):
                 continue
-            v = (d.get("vlan") or "").strip()
+            # str(): a non-str vlan / vlan_name leaf (int, list, dict in a malformed upload) is truthy
+            # and survives `or ""`, then 500s .strip() -- the same coercion crd/design/mop/runbook apply
+            # to every device string-field before .strip()/.lower().
+            v = str(d.get("vlan") or "").strip()
             if v.isdigit():
                 vids.add(int(v))
-                nm = (d.get("vlan_name") or "").strip()
+                nm = str(d.get("vlan_name") or "").strip()
                 if nm and int(v) not in names:
                     names[int(v)] = nm
     _l3f = snap.get("l3_forwarding")
