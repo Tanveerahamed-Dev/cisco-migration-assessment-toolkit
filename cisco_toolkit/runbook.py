@@ -293,7 +293,10 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         if blind:
             table(["Status", "Device", "Data quality", "Missing essential commands"],
                   [[d.get("status", ""), d.get("host", ""), f"{d.get('data_quality', 0)}%",
-                    ", ".join(d.get("missing", []))] for d in blind[:40]],
+                    # `.get("missing", [])` defaulted only on ABSENT: a present null/scalar reached
+                    # join() (TypeError), and a list of non-str reached it too. Coerce container AND
+                    # elements — the §6.9 golden-drift twin below reads the same field the same way.
+                    ", ".join(str(x) for x in _as_list(d.get("missing")))] for d in blind[:40]],
                   widths=[1.3, 2.8, 1.0, 3.3])
             if len(blind) > 40:
                 doc.add_paragraph(f"…and {len(blind) - 40} more — see the 'Collection Completeness' sheet.")
@@ -583,14 +586,16 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
               [[d.get("domain"), d.get("tier"), d.get("switch_count"), d.get("endpoint_count"),
                 ("boundary-clocked" if d.get("ptp_boundary_clocked")
                  else "present, NOT BC" if d.get("ptp_present") else "—"),
-                ((_as_list(d.get("risks")) or [{}])[0].get("title", "—") if d.get("risks") else "—")]
+                # _R (not _as_list): a truthy non-dict ROW inside a well-formed risks LIST survived the
+                # container coercion and crashed .get() — the list guard never looked at the elements.
+                ((_R(d.get("risks")) or [{}])[0].get("title", "—") if d.get("risks") else "—")]
                for d in appd],
               widths=[2.2, 1.2, 0.8, 0.9, 1.1, 2.3])
         # the on-air-critical domain risks as evidence-disciplined findings (false-health doctrine)
         for d in appd:
             if d.get("tier") != "On-air critical":
                 continue
-            for r in _as_list(d.get("risks")):
+            for r in _R(d.get("risks")):   # same row-level guard as the §6.7 table above
                 if r.get("severity") not in ("Critical", "High"):
                     continue
                 finding_block(
@@ -678,7 +683,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
             f"(avg compliance {gsum.get('avg_compliance_pct', 0)}%). Bring the drifting devices up to the "
             "standard before — or as part of — their cutover wave.")
         drows = [[d.get("host"), f"{d.get('compliance_pct', 0)}%", d.get("n_missing", 0),
-                  "; ".join(_as_list(d.get("missing"))[:6])]
+                  "; ".join(str(x) for x in _as_list(d.get("missing"))[:6])]
                  for d in _R(gd.get("per_device")) if d.get("n_missing")]
         if drows:
             table(["Device", "Compliance", "Missing", "Missing required directives"],
@@ -997,8 +1002,9 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         seen_sc = {}
         for g in pg2:
             sc = g.get("recommended_scenario")
-            if sc and sc not in seen_sc and g.get("playbook"):
-                seen_sc[sc] = g["playbook"]
+            pb0 = _as_dict(g.get("playbook"))   # a truthy non-dict playbook must degrade, not crash pb.get() below
+            if sc and sc not in seen_sc and pb0:
+                seen_sc[sc] = pb0
         if seen_sc:
             doc.add_heading("11.2 Cutover playbook by scenario", level=2)
             table(["Scenario", "Pre-check", "Validate", "Rollback"],
