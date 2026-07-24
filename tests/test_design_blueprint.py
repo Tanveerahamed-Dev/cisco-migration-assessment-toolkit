@@ -1495,6 +1495,133 @@ def test_d_sdwan_device_unreachable_fires_on_unreachable_only():
     assert da._d_sdwan_device_unreachable({}, da._signals({})) is None
 
 
+def test_d_sdwan_device_reachable_but_status_error_or_state_red_fires():
+    """FALSE-HEALTH regression (Cisco Catalyst SD-WAN / vManage): a device the controller itself marks
+    status=error or state=red is degraded even while reachability=reachable. parse_sdwan_devices surfaces
+    status/state precisely 'so a degraded fabric member is not read healthy', but the _signals devices loop
+    flagged ONLY reachability=unreachable -- so an error/red-but-reachable edge fired no signal and
+    compute_architecture_coverage reported the sdwan class 'clean' (a false-health read). It must instead
+    fire _d_sdwan_device_unreachable and flip the sdwan class to 'finding'. Non-cry-wolf: a healthy
+    (reachable / normal / green) edge and a yellow (warn, not broken) edge stay silent."""
+    import cisco_toolkit.design_advisor as da
+    for facet in ({"status": "error"}, {"state": "red"}):
+        fire = {"sdwan": {"mgr1": {"devices": [
+            {"system_ip": "10.0.0.9", "host_name": "BR9", "reachability": "reachable", **facet}]}}}
+        sig = da._signals(fire)
+        assert any("BR9" in x for x in sig.get("sdwan_unreachable", [])), facet
+        dec = da._d_sdwan_device_unreachable(fire, sig)
+        assert dec is not None and dec["priority"] == "High" and "mgr1" in dec["evidence"]["devices"], facet
+        cov = da.compute_architecture_coverage({**fire, "design_blueprint": {"decisions": [dec]}})
+        by = {c["key"]: c for c in cov["classes"]}
+        assert by["sdwan"]["status"] == "finding", facet
+        assert "sdwan-device-unreachable" in by["sdwan"]["findings"], facet
+    # non-cry-wolf: reachable + normal + green (healthy) and reachable + yellow (warn, not broken) stay silent
+    for quiet in ({"status": "normal", "state": "green"}, {"status": "normal", "state": "yellow"}):
+        clean = {"sdwan": {"mgr1": {"devices": [
+            {"system_ip": "x", "host_name": "DC1", "reachability": "reachable", **quiet}]}}}
+        assert da._d_sdwan_device_unreachable(clean, da._signals(clean)) is None, quiet
+
+
+def test_compute_design_blueprint_survives_scalar_failure_impact_and_link_centrality():
+    """CRASH-ON-MALFORMED regression: a snapshot whose failure_impact or link_centrality is a list of
+    SCALARS (not dicts) must NOT raise. _signals did x.get('severity') / x.get('is_bridge') on each element,
+    so an int element raised AttributeError -- surfacing as HTTP 500 on GET /design, /architecture_coverage,
+    /domain_packs, /design/nrfu and POST /design (via _fallback_blueprint). Coverage-honest: the malformed
+    section degrades to not-assessable (0 bridges / 0 nobackup), never a fabricated pass."""
+    import cisco_toolkit.design_advisor as da
+    for key in ("failure_impact", "link_centrality"):
+        snap = {"devices": {"sw1": {}}, key: [1, 2, "x", None]}
+        bp = da.compute_design_blueprint(snap)           # must not raise
+        assert isinstance(bp, dict) and isinstance(bp.get("decisions"), list), key
+    # both malformed at once, and the signal builder directly -> degrade to empty, never crash
+    snap = {"devices": {"sw1": {}}, "failure_impact": [1, 2], "link_centrality": [3, 4]}
+    sig = da._signals(snap)                              # must not raise
+    assert sig.get("bridges") == 0 and sig.get("nobackup_high") == 0
+    assert isinstance(da.compute_design_blueprint(snap).get("decisions"), list)
+
+
+# Every top-level snapshot section any function reachable from compute_design_blueprint reads. An UPLOADED
+# snapshot is untrusted, so any of these can arrive as a scalar/list/dict of the WRONG shape; the whole
+# blueprint (decisions + target_state + coverage) must degrade coverage-honestly, never raise (a raise is an
+# HTTP 500 on the unwrapped GET /design, /architecture_coverage, POST /design). Keep in lockstep with the
+# `snap.get(...)` reads in design_advisor.py.
+_REACHABLE_SECTIONS = [
+    "aci", "addressing_conflicts", "arista", "bfd", "capacity", "cloud", "collection_completeness",
+    "config_hygiene", "copp", "crypto", "cts", "devices", "dmvpn", "endpoint_dependencies",
+    "endpoint_identity", "failure_impact", "fhrp", "fhrp_detail", "firewall", "fmc", "fortigate",
+    "health_scores", "interfaces", "ipv6_fhs", "ipv6_nd", "ipv6_routing", "ise", "juniper",
+    "l3_forwarding", "lifecycle_risk", "link_centrality", "lisp", "move_groups", "mpls", "mroute",
+    "multicast_intelligence", "ntp", "operational_drift", "overlay", "physical_health", "pim",
+    "port_security", "protocol_health", "protocol_intelligence", "qos_audit", "qos_runtime", "routes",
+    "routing_neighbors", "sdwan", "security", "segmentation", "shadow_infra", "storm_control",
+    "stp_roots", "subnet_intelligence", "syslog_intelligence", "vpc",
+]
+# {5, "x", [1,2], {"k":1}}: a bare scalar, a string, a LIST-OF-NON-DICTS (the row-level poison that a
+# container-only _as_list guard misses -- rows are then .get()'d), and a wrong-shape dict.
+_POISONS = [5, "x", [1, 2], {"k": 1}]
+
+
+def test_compute_design_blueprint_survives_top_level_scalar_poison_every_section():
+    """CRASH-ON-MALFORMED totality: for EVERY reachable snapshot section x EVERY poison shape, the full
+    blueprint must build without raising. Catches the container-guarded-but-row-unguarded class (`_as_list(...)`
+    then row.get()) at the sections read as a direct list of rows (fhrp, protocol_health, ...) and the
+    non-dict-value class (overlay). Coverage-honest: a malformed section degrades to empty, never a pass."""
+    import cisco_toolkit.design_advisor as da
+    failures = []
+    for sec in _REACHABLE_SECTIONS:
+        for p in _POISONS:
+            snap = {"devices": {"sw1": {}}, sec: p}
+            try:
+                bp = da.compute_design_blueprint(snap)
+                assert isinstance(bp, dict) and isinstance(bp.get("decisions"), list)
+                assert isinstance(bp.get("target_state"), dict)          # the whole assembly ran, not a stub
+            except Exception as e:                                       # noqa: BLE001 -- the sweep is the assertion
+                failures.append(f"{sec}={p!r}: {type(e).__name__}: {e}")
+    assert not failures, "compute_design_blueprint raised on malformed section(s):\n" + "\n".join(failures)
+
+
+def test_compute_design_blueprint_survives_nested_row_poison_including_target_state():
+    """CRASH-ON-MALFORMED, row level: a section whose INNER list carries non-dict rows (the shape a top-level
+    scalar poison cannot reach because an outer `_as_dict`/`.items()` guard absorbs it). This is the class that
+    extends BEYOND _signals into compute_target_state/_replacement_bom -- lifecycle_risk.per_device is read in
+    BOTH, so a fix to _signals alone leaves _replacement_bom crashing on the same input. Every per-row `.get()`
+    loop must iterate `_dict_rows(...)` (dict elements only), degrading a poisoned row away, never raising."""
+    import cisco_toolkit.design_advisor as da
+    nested = {
+        "lifecycle_risk": {"per_device": [1, 2, "x", None]},   # _signals:eol AND _replacement_bom (target_state)
+        "qos_audit": {"per_device": [1, 2]},
+        "security": {"h1": {"findings": [1, 2]}},
+        "segmentation": {"domains": [1, 2], "vrfs": [1], "summary": {}},
+        "storm_control": {"h1": [1, 2]},
+        "qos_runtime": {"h1": [1, 2]},
+        "shadow_infra": {"h1": [1, 2]},
+        "fhrp": [{"issues": ["no fhrp"], "members": [1, 2]}],
+        "overlay": {"h1": 5},                                  # non-dict per-host value (the `_o or {}` trap)
+    }
+    failures = []
+    for sec, val in nested.items():
+        try:
+            bp = da.compute_design_blueprint({"devices": {"sw1": {}}, sec: val})
+            assert isinstance(bp.get("decisions"), list)
+        except Exception as e:                                 # noqa: BLE001
+            failures.append(f"{sec}={val!r}: {type(e).__name__}: {e}")
+    assert not failures, "nested-row poison raised:\n" + "\n".join(failures)
+
+    # Target-state path specifically: the lifecycle poison must flow THROUGH _replacement_bom (the latent site
+    # a _signals-only fix misses) and produce a coverage-honest empty BoM, not a crash and not a fabricated one.
+    bp = da.compute_design_blueprint({"devices": {"sw1": {}},
+                                      "lifecycle_risk": {"per_device": [1, 2, "x", None]}})
+    bom = bp["target_state"]["replacement_bom"]
+    assert bom["n_replace"] == 0 and bom["n_refresh"] == 0 and bom["replace_now"] == []
+    # and _signals itself degrades the same section to zero past-LDoS (never a fabricated eol count)
+    sig = da._signals({"devices": {"sw1": {}}, "lifecycle_risk": {"per_device": [1, 2, "x", None]}})
+    assert sig.get("eol") == 0 and sig.get("eol_devices") == []
+    # a real dict row alongside the poison is still counted -- the guard drops only the non-dict elements
+    sig2 = da._signals({"lifecycle_risk": {"per_device": [
+        {"band": "past-ldos", "host": "old1", "model": "WS-C3560"}, 7, "junk"]}})
+    assert sig2.get("eol") == 1 and sig2.get("eol_devices") == ["old1"]
+
+
 def test_compute_architecture_coverage_observed_vs_not():
     """Architecture-coverage SSOT: an axis present + a fired detector -> 'finding'; present + no finding ->
     'clean'; absent -> 'not-observed' (coverage-honest -- NEVER 'healthy'). Channels are tallied (ssh vs json)."""

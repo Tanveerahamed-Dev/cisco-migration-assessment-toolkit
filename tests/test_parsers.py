@@ -1301,6 +1301,84 @@ def test_parse_ipv6_interface_addrs_nxos_dad(cp):
     assert by["Vlan20"]["link_local_dup"] is True
 
 
+def test_parse_ipv6_interface_addrs_multiline_global(cp):
+    """Real-format fidelity (coverage-honesty): the CANONICAL Cisco IOS / IOS-XE 'show ipv6 interface' layout
+    prints a BARE 'Global unicast address(es):' header with each address on the FOLLOWING indented line -- the
+    inline 'header: <addr>' form (which every prior fixture used) is the rare exception. The bare header must
+    open the in-global context so the continuation addresses are captured; otherwise a global address that DAD
+    marked [DUPLICATE] is silently DROPPED and the ipv6_nd class reads 'clean' over a hard L3 fault. Regression
+    for the Global-header regex requiring content after the colon ((.+) instead of (.*))."""
+    out = (
+        "GigabitEthernet0/1 is up, line protocol is up\n"
+        "  IPv6 is enabled, link-local address is FE80::C801:10FF:FE60:8\n"
+        "  No Virtual link-local address(es):\n"
+        "  Global unicast address(es):\n"
+        "    2001:DB8:1:1::1, subnet is 2001:DB8:1:1::/64 [DUPLICATE]\n"
+        "    2001:DB8:1:1::2, subnet is 2001:DB8:1:1::/64\n"
+        "  Joined group address(es):\n"
+        "    FF02::1\n"
+        "    FF02::2\n"
+        "  MTU is 1500 bytes\n"
+    )
+    r = parse.parse_ipv6_interface_addrs(out)
+    assert len(r) == 1
+    rec = r[0]
+    assert rec["interface"] == "Gi0/1"
+    assert rec["ipv6_enabled"] is True and rec["link_local_dup"] is False
+    # BOTH addresses under the bare header are captured; the first is the settled DUPLICATE fault, the
+    # second is clean. Before the fix `global` was [] (the header never opened the continuation context).
+    states = {g["addr"]: g["dad_state"] for g in rec["global"]}
+    assert states == {"2001:DB8:1:1::1": "duplicate", "2001:DB8:1:1::2": "ok"}
+    subnets = {g["addr"]: g["subnet"] for g in rec["global"]}
+    assert subnets["2001:DB8:1:1::1"] == "2001:DB8:1:1::/64"
+    # the 'Joined group address(es):' bare header + its FF02:: multicast lines must NOT become phantom
+    # global unicast addresses (context resets when the non-address header line is seen)
+    assert "FF02::1" not in states and "FF02::2" not in states
+
+
+def test_parse_ipv6_interface_addrs_multiline_inline_coexist(cp):
+    """The bare-header fix must not regress the INLINE form: a single interface may print one address ON the
+    'Global unicast address(es): <addr>' header line AND additional addresses on following indented lines --
+    all must be captured with their correct DAD state (Cisco IOS emits both shapes interchangeably)."""
+    out = (
+        "Vlan50 is up, line protocol is up\n"
+        "  IPv6 is enabled, link-local address is FE80::50\n"
+        "  Global unicast address(es): 2001:DB8:50::1, subnet is 2001:DB8:50::/64\n"
+        "    2001:DB8:50::2, subnet is 2001:DB8:50::/64 [DUPLICATE]\n"
+        "  MTU is 1500 bytes\n"
+    )
+    r = parse.parse_ipv6_interface_addrs(out)
+    assert len(r) == 1
+    states = {g["addr"]: g["dad_state"] for g in r[0]["global"]}
+    assert states == {"2001:DB8:50::1": "ok", "2001:DB8:50::2": "duplicate"}
+
+
+def test_ipv6_dad_multiline_flips_coverage_finding(cp):
+    """Coverage-honesty E2E: a [DUPLICATE] global address in the CANONICAL multi-line 'show ipv6 interface'
+    format must flip the ipv6_nd architecture class from 'clean' (assessed, nothing wrong == FALSE-HEALTH) to
+    'finding'. Drives the REAL chain parse_ipv6_interface_addrs -> _signals -> _d_ipv6_dad_duplicate ->
+    compute_design_blueprint -> compute_architecture_coverage. Before the bare-header fix the address was
+    dropped, the DAD detector never fired, yet the axis was still 'observed' -> the class silently read
+    'clean' over a hard L3 fault (a dual-stack interface dark for IPv6 while its IPv4 keeps forwarding)."""
+    from cisco_toolkit import design_advisor
+    out = (
+        "GigabitEthernet0/1 is up, line protocol is up\n"
+        "  IPv6 is enabled, link-local address is FE80::C801:10FF:FE60:8\n"
+        "  Global unicast address(es):\n"
+        "    2001:DB8:1:1::1, subnet is 2001:DB8:1:1::/64 [DUPLICATE]\n"
+        "  MTU is 1500 bytes\n"
+    )
+    ifaces = parse.parse_ipv6_interface_addrs(out)
+    # mirror build_ipv6_nd's assembly exactly: snap['ipv6_nd'] = {host: {'interfaces': [...]}}
+    snap = {"ipv6_nd": {"dist-sw1": {"interfaces": ifaces}}}
+    snap["design_blueprint"] = design_advisor.compute_design_blueprint(snap)
+    cov = design_advisor.compute_architecture_coverage(snap)
+    cls = {c["key"]: c for c in cov["classes"]}["ipv6_nd"]
+    assert cls["observed"] is True   # the axis IS present -- so 'clean' here would be false-health
+    assert cls["status"] == "finding"
+    assert "ipv6-duplicate-address-dad-failure" in cls["findings"]
+
+
 def test_parse_ipv6_routing_plane(cp):
     """Universality (IPv6 routing plane / dual-stack reachability): the three IPv6 control-plane parsers.
     parse_ospfv3_neighbors splits the State/role column on '/' so FULL/2WAY (healthy resting states) are

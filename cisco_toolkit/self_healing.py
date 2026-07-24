@@ -160,6 +160,23 @@ def propose_remediation(old_snap: Any, new_snap: Any, *, baseline_id: str = "bas
                          "-> NRFU-confirm; proposer != verifier; never a device write (D5)")}
 
 
+def advisory_remediation(old_snap: Any, new_snap: Any, intel_dir: str) -> Dict[str, Any]:
+    """Opt-in PSIRT lane: load a provenance-verified intel feed from ``intel_dir``, match its advisories to the
+    CURRENT fleet's platforms, and fold each matched advisory into the propose-only remediation plan as a
+    ``kind='advisory'`` item (routed to config-security-auditor, with rollback + NRFU) — exactly like a snapshot
+    regression. Returns ``{result, loaded, hits}`` so a caller can surface the plan AND the feed summary
+    (including any REFUSED feeds). Coverage-honest: no feed / no fleet platforms / no match -> no advisory items
+    (absence is absence, not "no advisories"); a feed that fails provenance is refused and surfaced, never
+    silently dropped. Read-only; proposes nothing to any device."""
+    from cisco_toolkit import intel_feed
+    loaded = intel_feed.load_feeds(intel_dir)
+    platforms = intel_feed.fleet_platforms(new_snap)
+    hits = intel_feed.match_fleet(loaded["advisories"], platforms)
+    items = intel_feed.advisory_drift_items(hits)
+    res = propose_remediation(old_snap, new_snap, extra_items=items)
+    return {"result": res, "loaded": loaded, "hits": hits}
+
+
 def render(res: Dict[str, Any]) -> str:
     L = [f"Remediation triage — {res['note']}", f"  doctrine: {res['doctrine']}"]
     for i, p in enumerate(res["plan"], 1):
@@ -171,8 +188,9 @@ def render(res: Dict[str, Any]) -> str:
 
 
 def main(argv: List[str] = None) -> int:
-    """CLI: ``python -m cisco_toolkit.self_healing <baseline.snapshot.json> <current.snapshot.json>`` ->
-    print the propose-only remediation plan. Read-only; proposes nothing to any device."""
+    """CLI: ``python -m cisco_toolkit.self_healing [--intel <dir>] <baseline.snapshot.json> <current.snapshot.json>``
+    -> print the propose-only remediation plan. With ``--intel <dir>`` a provenance-verified PSIRT feed is
+    matched to the fleet and its advisories fold into the plan. Read-only; proposes nothing to any device."""
     import json
     import sys
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -180,9 +198,22 @@ def main(argv: List[str] = None) -> int:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
-    paths = [a for a in argv if not a.startswith("-")]
+    # --intel <dir> is an OPT-IN PSIRT lane; consume it (and its value) so it is not read as a snapshot path.
+    intel_dir: Optional[str] = None
+    paths: List[str] = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--intel" and i + 1 < len(argv):
+            intel_dir = argv[i + 1]; i += 2; continue
+        if a.startswith("--intel="):
+            intel_dir = a.split("=", 1)[1]
+        elif not a.startswith("-"):
+            paths.append(a)
+        i += 1
     if len(paths) < 2:
-        print("usage: python -m cisco_toolkit.self_healing <baseline.snapshot.json> <current.snapshot.json>")
+        print("usage: python -m cisco_toolkit.self_healing [--intel <dir>] "
+              "<baseline.snapshot.json> <current.snapshot.json>")
         return 2
     try:
         old = json.load(open(paths[0], encoding="utf-8"))
@@ -190,8 +221,14 @@ def main(argv: List[str] = None) -> int:
     except Exception as e:
         print(f"could not read snapshots: {e!r}")
         return 2
-    res = propose_remediation(old, new, baseline_id=paths[0])
-    print(render(res))
+    if intel_dir:
+        from cisco_toolkit import intel_feed
+        bundle = advisory_remediation(old, new, intel_dir)
+        print(render(bundle["result"]))
+        print(intel_feed.render(bundle["loaded"], bundle["hits"]))
+    else:
+        res = propose_remediation(old, new, baseline_id=paths[0])
+        print(render(res))
     return 0
 
 
