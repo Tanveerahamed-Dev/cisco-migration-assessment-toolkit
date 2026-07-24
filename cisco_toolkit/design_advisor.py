@@ -929,7 +929,7 @@ def _signals(snap):
     _si = _as_dict(snap.get("shadow_infra"))
     for _sih, _recs in _si.items():
         for _n in _dict_rows(_recs):
-            _did = (_n.get("device_id") or "").strip()
+            _did = str(_n.get("device_id") or "").strip()
             _cn = _ch(_did)
             if not _cn or _cn in _assessed:
                 continue
@@ -1412,7 +1412,7 @@ def _signals(snap):
         for _r in _as_list(_rows):
             if not isinstance(_r, dict) or not str(_r.get("prefix") or "").startswith("0.0.0.0"):
                 continue
-            if str(_r.get("source") or "").strip().lower().startswith("s") and (_r.get("next_hop") or "").strip():
+            if str(_r.get("source") or "").strip().lower().startswith("s") and str(_r.get("next_hop") or "").strip():
                 _static_def.append(_h)
             break          # only the default-route row matters per host
     _static_def = sorted(set(_static_def))
