@@ -74,7 +74,7 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
                        "(pip install python-pptx, or pass --no-pptx).")
         return
 
-    snap = snap_dict or {}
+    snap = snap_dict if isinstance(snap_dict, dict) else {}   # a truthy non-dict top-level snapshot -> {}
 
     def C(rgb):
         return RGBColor(*rgb)
@@ -167,6 +167,7 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     # ---------------------------------------------------------------- 1. Title (dark)
     def _D(x): return x if isinstance(x, dict) else {}    # audit-5 totality: a truthy non-dict section -> {}
     def _R(x): return [r for r in (x if isinstance(x, list) else []) if isinstance(r, dict)]
+    def _L(x): return x if isinstance(x, list) else []    # list of anything (ids/strings) -> [] when not a list
     s = slide(dark=True)
     rect(s, 0, 0, W, 7.5, _NAVY)
     eb = _D(snap.get("executive_brief"))
@@ -180,7 +181,7 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     sub = eb.get("posture_statement") or ""
     # honesty (wave R2-4-02): when the cross-axis synthesis FAILED (sentinel / assessment_integrity flag),
     # say so on the title slide rather than rendering an em-dash "— devices · — endpoints" as if it were scale.
-    if eb.get("_unavailable") or (snap.get("assessment_integrity") or {}).get("executive_brief") == "compute_failed":
+    if eb.get("_unavailable") or _D(snap.get("assessment_integrity")).get("executive_brief") == "compute_failed":
         _scale_line = "⚠ Cross-axis synthesis unavailable — see the workbook Executive Brief"
     else:
         # coerce PER VALUE: dict.get(default) only substitutes when the KEY is absent, so a present-but-null
@@ -203,8 +204,8 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
             _stem = _stem[: -len(_suf)]
             break
     _prov = " · ".join(p for p in (
-        snap.get("script_version") or "",
-        (snap.get("generated_at") or "")[:19].replace("T", " "),
+        str(snap.get("script_version") or ""),
+        str(snap.get("generated_at") or "")[:19].replace("T", " "),
         f"snapshot {_stem}" if _stem else "",
     ) if p)
     text(s, 0.9, 6.55, W - 1.8, 0.6,
@@ -236,7 +237,7 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
         text(s, 0.7, 4.25, 12.0, 0.4,
              [[(f"{b}: {band_counts.get(b, 0)}     ", 11, _BAND_COLOR.get(b, _MUTED), True) for b in legend]])
     # full-width per-axis headlines below
-    axes = eb.get("axes") or []
+    axes = _R(eb.get("axes"))   # each row is .get()-ed -> list-of-dicts, tolerant of a truthy non-list
     text(s, 0.7, 4.95, 12.0, 0.35, [("HEADLINE BY AXIS", 12, _HIGH, True)])
     y = 5.35
     for a in axes[:4]:
@@ -269,8 +270,9 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     for it in pl[:5]:
         sev = it.get("severity", "Info")
         chip(s, 0.7, y, sev, _SEV_COLOR.get(sev, _MUTED), w=1.0, h=0.34, size=10)
-        devs = ", ".join(str(d) for d in (it.get("devices") or [])[:4])
-        more = "" if len(it.get("devices") or []) <= 4 else f" +{len(it['devices']) - 4}"
+        _devs = _L(it.get("devices"))   # a truthy non-list 'devices' would crash the [:4] slice / len()
+        devs = ", ".join(str(d) for d in _devs[:4])
+        more = "" if len(_devs) <= 4 else f" +{len(_devs) - 4}"
         text(s, 1.85, y - 0.04, W - 2.6, 0.7,
              [[(_clean(it.get("title", "")), 14, _INK, True)],
               [(f"{it.get('category', '')}  ·  {devs}{more}", 11, _MUTED, False)]], space=1)
@@ -282,13 +284,14 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     # ------------------------------------------------------- 3b. Riskiest assets (NEW-V3.23.174)
     # The Device Risk Register's worst boxes: per-asset stacked risk (impact x exposure), the
     # compound patterns, and the engineer's verdict. Skipped when the snapshot has no register.
-    dd = (snap.get("device_dossiers") or {}).get("per_device") or []
+    _dossiers = _D(snap.get("device_dossiers"))   # a truthy non-dict section would crash the .get() chain
+    dd = _R(_dossiers.get("per_device"))
     dd_top = [d for d in dd if d.get("risk_band") in ("Severe", "Elevated", "Guarded")][:5]
     if dd_top:
         s = slide()
         header(s, "Stacked risk per asset", "The assets that worry an engineer most")
-        dsum = (snap.get("device_dossiers") or {}).get("summary") or {}
-        dbands = dsum.get("bands") or {}
+        dsum = _D(_dossiers.get("summary"))
+        dbands = _D(dsum.get("bands"))
         text(s, 0.7, 1.95, W - 1.4, 0.4,
              [[(f"{dbands.get('Severe', 0)} Severe · {dbands.get('Elevated', 0)} Elevated  ", 14, _NAVY, True),
                ("— risk index = topology impact × stacked exposure; compound patterns (CR-xx) mark "
@@ -299,11 +302,11 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
             band = d.get("risk_band", "Low")
             chip(s, 0.7, y, _clean(f"{band} {d.get('risk_index', 0)}"),
                  _SEV_COLOR.get(_BAND_SEV.get(band, "Low"), _MUTED), w=1.45, h=0.34, size=10)
-            crs = " · ".join(c.get("code", "") for c in (d.get("compound") or [])) or ""
+            crs = " · ".join(c.get("code", "") for c in _R(d.get("compound"))) or ""
             text(s, 2.35, y - 0.04, W - 3.1, 0.7,
                  [[(_clean(str(d.get("host", ""))), 14, _INK, True),
                    (f"   {crs}", 11, _MUTED, False)],
-                  [(_clean((d.get("verdict") or "")[:160]), 11, _MUTED, False)]], space=1)
+                  [(_clean(str(d.get("verdict") or "")[:160]), 11, _MUTED, False)]], space=1)
             y += 0.78
         if len(dd) > len(dd_top):
             text(s, 2.35, y, W - 3.1, 0.3,
@@ -347,8 +350,8 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
              [("No switch strands collateral endpoints on removal — dependency is well distributed.", 14, _OK, True)])
 
     # ---------------------------------------------------------------- 5. Hardware lifecycle (light)
-    lr = snap.get("lifecycle_risk") or {}
-    lsum = lr.get("summary") or {}
+    lr = _D(snap.get("lifecycle_risk"))
+    lsum = _D(lr.get("summary"))
     if lsum.get("n_devices"):
         s = slide()
         header(s, "A primary migration driver", "Hardware end-of-support exposure")
@@ -370,7 +373,7 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
         stat(s, 3.6, 2.1, past, "past end-of-support", _CRIT)
         stat(s, 6.2, 2.1, near, "within 1 year", _MED)
         lc_order = ["Past-LDoS", "Past-EoS", "Near-LDoS", "Active", "Unknown"]
-        byb = lsum.get("by_band") or {}
+        byb = _D(lsum.get("by_band"))
         segs = [(byb.get(b, 0), _LC_BAND_COLOR.get(b, _MUTED)) for b in lc_order]
         if any(c for c, _ in segs):
             text(s, 0.7, 3.6, W - 1.4, 0.3, [("Lifecycle band distribution", 12, _MUTED, True)])
@@ -386,11 +389,11 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     s = slide()
     header(s, "How it sequences", "Migration waves & readiness")
     mr = _R(snap.get("migration_readiness"))
-    mg = snap.get("move_groups") or []
+    mg = _L(snap.get("move_groups"))   # only len()-ed below; a truthy non-list would crash len(mg)
     # SSOT: the honest, actionable headline is the SEQUENCED wave count from the design blueprint's
     # wave_plan -- the raw move-group count is the L2 blast-radius partition (one big coupled domain +
     # singletons), which read as a wave count overstates parallelism (the audit's coverage-honesty fix).
-    wp = (((snap.get("design_blueprint") or {}).get("target_state") or {}).get("wave_plan")) or {}
+    wp = _D(_D(_D(snap.get("design_blueprint")).get("target_state")).get("wave_plan"))
     tally = {"READY": 0, "CAUTION": 0, "NOT READY": 0}
     for r in mr:
         v = r.get("readiness")
@@ -453,22 +456,22 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     # The CCDE-grounded design blueprint: the recommended target-state decisions + the weakest trade-off
     # axes. Data-gated — skipped when the snapshot carries no design_blueprint (the SAME object the HLD/LLD
     # and the dashboards read; one source of truth).
-    bp = snap.get("design_blueprint") or {}
-    bp_rec = [d for d in (bp.get("decisions") or []) if isinstance(d, dict) and d.get("status") == "recommended"]
+    bp = _D(snap.get("design_blueprint"))
+    bp_rec = [d for d in _L(bp.get("decisions")) if isinstance(d, dict) and d.get("status") == "recommended"]
     if bp_rec:
         s = slide()
         header(s, "CCDE-grounded target state", "The design the migration should adopt")
-        bsum = bp.get("summary") or {}
+        bsum = _D(bp.get("summary"))
         # Lead with the TOTAL recorded decisions, then qualify the subsets — the old tile headlined the
         # RECOMMENDED count as "design decision(s)", so "34 · 9 need a requirement" read as 9-of-34 when
         # the register holds 43 = 34 recommended + 9 needs-requirement (QA row-13 vs design.docx's "43").
         text(s, 0.7, 1.9, W - 1.4, 0.4,
-             [[(f"{bsum.get('n_decisions', len(bp.get('decisions') or []))} design decision(s)  ",
+             [[(f"{bsum.get('n_decisions', len(_L(bp.get('decisions'))))} design decision(s)  ",
                 14, _NAVY, True),
                (f"· {bsum.get('n_recommended', len(bp_rec))} recommended · {bsum.get('n_critical', 0)} "
                 f"critical · {bsum.get('n_needs_requirement', 0)} need a requirement — each traced to a "
                 "design principle and the trade-off axes it serves.", 13, _MUTED, False)]])
-        sc = [a for a in (bp.get("tradeoff_scorecard") or []) if isinstance(a, dict)]
+        sc = [a for a in _L(bp.get("tradeoff_scorecard")) if isinstance(a, dict)]
         weak = [a for a in sc if isinstance(a.get("score"), int) and a.get("score") <= 1][:5]
         if weak:
             text(s, 0.7, 2.5, W - 1.4, 0.3, [("WEAKEST TRADE-OFF AXES (0–1 / 4)", 12, _HIGH, True)])
@@ -482,13 +485,13 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
             chip(s, 0.7, y, sev, _SEV_COLOR.get(sev, _MUTED), w=1.0, h=0.34, size=10)
             text(s, 1.85, y - 0.04, W - 2.6, 0.7,
                  [[(_clean(d.get("title", "")), 14, _INK, True)],
-                  [(_clean(_ellip((d.get("evidence") or {}).get("summary") or "", 120)), 11, _MUTED, False)]], space=1)
+                  [(_clean(_ellip(_D(d.get("evidence")).get("summary") or "", 120)), 11, _MUTED, False)]], space=1)
             y += 0.78
 
     # ---------------------------------------------------------------- 7. Where to start (dark)
     s = slide(dark=True)
     header(s, "Recommendation", "Where to start", dark=True)
-    gating = eb.get("top_gating") or []
+    gating = _L(eb.get("top_gating"))   # rendered as strings via _clean(g); tolerate a truthy non-list
     # Truncation disclosure (QA row-13): every other capped list on the deck says "+N more"; a bare
     # 5-item list here read as the WHOLE gating set when the brief carried 9. The rows below end at
     # y=6.6 where the closing line sits, so the cue lives in the intro line, not a footnote.
