@@ -4,6 +4,35 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-23] — "best decision" on a finished branch: mapped a 5-session gate swarm, landed an orphaned ADR, added no sixth change
+
+- The `fix/redaction-gate-posture` branch's code was done and its three recorded OPEN items were all already
+  covered by parallel work: (a) the ledger-identifier fix is #439's ADR-0006; (b) the webapp design/MOP HTTP
+  hole had its disclosure fix refuted and closed as #437, and is blocked on #439's per-campaign ledger; (c) the
+  `test_d10_eval_set` concurrent-rebuild false-red was fixed by merged #446 (`load_graph_settled`). So the best
+  decision was explicitly NOT to write more gate code into a swarm of five sessions (#439/#441/#444/#445 + this).
+- Delivered the cross-session integration map the orchestrator alone can see: all four open gate/manifest PRs
+  are CONFLICTING vs main; merge-tree-safe order #441→#445→#444→#448(this)→#439, and opened this branch as #448
+  carrying that note. The rebase of #448 is human-owned: its conflict is inside `run_redaction_folder`, the exact
+  function the merged #438/#440 also reshaped, so a mechanical rebase risks re-introducing the silent ungating —
+  that resolution is the slot-4 merge, not a pre-tidy.
+- Landed a genuinely orphaned artifact: the Cognee evaluation (ADR-0005 + utilization plan + two docstring
+  citations) had sat uncommitted on NO git ref for four days. Committed as #447 off main in an isolated worktree,
+  after web-re-verifying every external citation against primary sources (2601.07978 v4 numbers exact — pinned
+  because v1/v2 lack the Cognee row; Cognee v1.0's remember/recall/forget/improve verbs confirmed literal).
+- `!lesson` **A "best decision" probe on a branch whose work is done is usually an integration/hygiene call, not
+  a new feature.** The reflex is to find code to write; when the territory is already claimed by parallel sessions
+  the right move is to map the swarm, sequence the merges, and land the one orphaned clean thing. Adding a sixth
+  change to contested code is how #437 got refuted. bridge-candidate
+- `!lesson` **"Formalized as ADR-000X" in memory did not mean committed.** My own memory said the Cognee eval was
+  "formalized as ADR-0005"; git showed the files existed on no ref — working-tree-only for four days. A future
+  session would have assumed it was on main. Verify a "recorded/formalized" claim actually reached a commit
+  before relying on it. bridge-candidate
+- `!lesson` **Don't rebase a safety-critical branch to tidy a PR when the conflict is in the safety logic.**
+  #448's conflict is in `run_redaction_folder`; resolving it mechanically could re-introduce the silent-ungating
+  the branch exists to fix, which renders identically in output. Measure where a conflict lands before deciding a
+  rebase is cheap. bridge-candidate
+
 ## [2026-07-22] — `--redact-folder` silently ungated the PPDIOO gates; four refuter rounds reversed my answer twice and then found my own tests couldn't fail
 
 - The bug: `run_redaction_folder` launches the engine with `cwd=mkdtemp()`, so `gate_state.enforce`
