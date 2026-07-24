@@ -1013,3 +1013,46 @@ def test_reuse_out_without_redact_folder_is_refused(capsys):
     when the command it modifies was not given."""
     assert serve.main(["--reuse-out"]) == 2
     assert "only apply to --redact-folder" in capsys.readouterr().err
+
+
+def test_two_jobs_in_one_invocation_are_refused_not_silently_dropped(monkeypatch, tmp_path, capsys):
+    """The three subcommands were dispatched by a fixed precedence with NO cross-check, so asking
+    for two performed the first and discarded the rest in silence. Measured before the fix:
+    `--verify-manifest X --redact-folder Y --out Z` printed "manifest OK" and returned 0 while the
+    redaction - the ten-minute job producing the deliverables actually wanted - never ran. Same
+    "asked for X, silently got Y, exit code says success" failure as the empty-value bug, reached
+    by a different route."""
+    state = _no_serve(monkeypatch)
+    monkeypatch.setattr(ing, "run_redaction_folder",
+                        lambda *a, **k: pytest.fail("redaction ran despite a competing job"))
+    src = str(_collection(tmp_path))
+    out = str(tmp_path / "o")
+    for argv in (["--verify-manifest", "m.json", "--redact-folder", src, "--out", out],
+                 ["--redact-folder", src, "--out", out, "--verify-manifest", "m.json"],
+                 ["--selftest", "--redact-folder", src, "--out", out],
+                 ["--selftest", "--verify-manifest", "m.json"]):
+        assert serve.main(argv) == 2, argv
+        assert state["served"] is False
+        err = capsys.readouterr().err
+        assert "one per run" in err, err
+
+
+def test_invisible_and_control_characters_are_not_usable_values(monkeypatch, tmp_path, capsys):
+    """`str.strip()` removes NBSP and the exotic spaces but NOT zero-width space or the BOM, so
+    `--db "\u200b"` passed the empty-value guard and CREATED A REAL STORE named with an invisible
+    character - exactly the "quietly opened a different store than the one you named" outcome that
+    guard exists to stop. An embedded NUL instead raised ValueError from inside pathlib/sqlite3,
+    escaping main() as a traceback after the job banner had printed."""
+    state = _no_serve(monkeypatch)
+    before = set(os.listdir(tmp_path))
+    for value in ("\u200b", "\ufeff", "\u200b\u200c ", "\x00", "a\x00b", "\t"):
+        for flag in ("--db", "--out", "--dist", "--host"):
+            assert serve.main([flag, value]) == 2, (flag, repr(value))
+            assert state["served"] is False, (flag, repr(value))
+            capsys.readouterr()
+    assert set(os.listdir(tmp_path)) == before, "a refused --db value still created a store"
+    # a NUL reaching the redaction path used to crash inside ingest, after the banner
+    src = str(_collection(tmp_path))
+    capsys.readouterr()
+    assert serve.main(["--redact-folder", src, "--out", "\x00"]) == 2
+    assert "Traceback" not in capsys.readouterr().err
