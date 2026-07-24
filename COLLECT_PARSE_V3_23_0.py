@@ -3272,20 +3272,32 @@ def _stage_finalize(ctx: "AnalysisContext") -> None:
     # Silent when nothing was refused: a summary that always prints is one nobody reads.
     try:
         from cisco_toolkit import gate_state as _gs
-        _refused = [v for v in _gs.verdicts() if str(v.get("verdict", "")).startswith("refused")]
+        _refused = [v for v in _gs.verdicts() if v.get("proceed") is False]
         if _refused:
             # Don't claim the seal unconditionally: this runs AFTER the manifest write, whose failure
             # arm above exists precisely for the case where nothing was sealed. Saying "sealed" there
             # would make the operator's LAST line false about the very record it points them to.
             _sealed = os.path.isfile(os.path.splitext(os.path.abspath(out_xlsx))[0]
                                      + ".run_manifest.json")
-            logger.error("[GATE] %d deliverable(s) WITHHELD by the PPDIOO document gates: %s -- "
-                         "record the approval ('python -m cisco_toolkit.gate_state approve <gate>') "
-                         "or re-run with --override-gate \"<reason>\" (audited). %s",
+            # Remediation is per-STATUS, not one-size-fits-all: `approve`/`--override-gate` only
+            # apply to a located ledger that said "pending". For bad_root there is no ledger to
+            # write to, and for ownership_* the ledger governs ANOTHER engagement -- both are
+            # documented non-overridable, so advising an override there is false guidance on the
+            # last line the operator reads.
+            _unfixable = sorted({str(v.get("verdict")) for v in _refused
+                                 if str(v.get("verdict")) != "pending"})
+            _how = ("record the approval ('python -m cisco_toolkit.gate_state approve <gate>') "
+                    "or re-run with --override-gate \"<reason>\" (audited)."
+                    if not _unfixable else
+                    "NOT overridable (%s): fix the gate root, or declare/bind the right engagement "
+                    "-- --override-gate is consent to skip a KNOWN gate and none was located."
+                    % ", ".join(_unfixable))
+            logger.error("[GATE] %d deliverable(s) WITHHELD by the PPDIOO document gates: %s -- %s %s",
                          len(_refused),
                          "; ".join(f"{v['generator']} (missing: "
                                    f"{', '.join(v.get('missing') or []) or 'not evaluated'})"
                                    for v in _refused),
+                         _how,
                          "Sealed in the run manifest's 'gate' step."
                          if _sealed else "NOT SEALED -- the run manifest was not written, so this "
                                          "log line is the only record of the refusal.")

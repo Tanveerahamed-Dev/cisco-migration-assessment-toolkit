@@ -103,7 +103,7 @@ def _gate_step(man):
 def test_gate_refusal_reaches_the_engine_log_file(engine_log, tmp_path):
     """THE regression: a refused run must be greppable in the log an engineer actually consults."""
     _write_store(tmp_path)                                   # store exists, nothing approved
-    assert gate_state.enforce("design", root=str(tmp_path)) is False
+    assert gate_state.enforce("design", root=str(tmp_path)).proceed is False
     text = engine_log.read_text(encoding="utf-8")
     assert "[GATE REFUSED]" in text, "a gate refusal still does not reach the engine log"
     assert "assessment_approved" in text, "the log names the verdict but not the missing approval"
@@ -112,7 +112,7 @@ def test_gate_refusal_reaches_the_engine_log_file(engine_log, tmp_path):
 def test_brownfield_ungated_warning_reaches_the_engine_log_file(engine_log, tmp_path):
     """The other half of the reported gap: 'no gate-state store at ...' was equally invisible.
     Proceeding UNGATED is a disclosure, and a disclosure nobody can find later is not one."""
-    assert gate_state.enforce("design", root=str(tmp_path)) is True
+    assert gate_state.enforce("design", root=str(tmp_path)).proceed is True
     assert "UNGATED" in engine_log.read_text(encoding="utf-8")
 
 
@@ -170,7 +170,7 @@ def test_root_handlers_cannot_swallow_or_duplicate_gate_records(engine_log, tmp_
 def test_every_enforce_outcome_records_a_verdict(tmp_path):
     """Coverage-honest: each of the six documented outcomes must leave a row. A path that returns
     without recording is one whose verdict silently vanishes from the manifest."""
-    seen, rows_by_verdict = {}, {}
+    seen, rows_by_scenario = {}, {}
 
     def _run(name, setup, **kw):
         root = tmp_path / name
@@ -180,8 +180,8 @@ def test_every_enforce_outcome_records_a_verdict(tmp_path):
         proceeded = gate_state.enforce("design", root=str(root), **kw)
         rows = gate_state.verdicts()
         assert len(rows) == 1, f"{name}: expected exactly one verdict row, got {rows}"
-        seen[rows[0]["verdict"]] = proceeded
-        rows_by_verdict[rows[0]["verdict"]] = rows[0]
+        seen[name] = bool(proceeded)
+        rows_by_scenario[name] = rows[0]
 
     def _unreadable(root):
         os.makedirs(root / "docs")
@@ -194,17 +194,70 @@ def test_every_enforce_outcome_records_a_verdict(tmp_path):
     _run("overridden", _write_store, override_reason="CAB waiver 42")
     _run("refused_unreadable", _unreadable)
 
-    assert set(seen) == set(gate_state.VERDICTS), \
-        f"VERDICTS and the recorded outcomes disagree: {set(gate_state.VERDICTS) ^ set(seen)}"
+    # Since #439 the vocabulary is STATUSES, and it is NOT 1:1 with the old flat verdict names:
+    # a refusal, a rejected empty-reason override and an accepted override are all `pending`,
+    # separated by `proceed` and by the presence of the sealed `reason`. Assert the mapping per
+    # SCENARIO rather than as a set, so a collision can never silently satisfy the check.
+    assert {k: (r["verdict"], r["proceed"], "reason" in r) for k, r in rows_by_scenario.items()} == {
+        "ungated":            ("ungated",    True,  False),
+        "approved":           ("clear",      True,  False),
+        "refused":            ("pending",    False, False),
+        "refused_no_reason":  ("pending",    False, False),
+        "overridden":         ("pending",    True,  True),
+        "refused_unreadable": ("unreadable", False, False),
+    }
+    # every status emitted must live in the ONE published vocabulary
+    assert {r["verdict"] for r in rows_by_scenario.values()} <= set(gate_state.STATUSES)
     # and the ledger must agree with the return value it was recorded beside
-    assert [v for v, proceeded in seen.items() if proceeded] == ["ungated", "approved", "overridden"]
+    assert [k for k, proceeded in seen.items() if proceeded] == ["ungated", "approved", "overridden"]
     assert all(not proceeded for v, proceeded in seen.items() if v.startswith("refused"))
 
     # "never evaluated" must not render as "evaluated, nothing missing" -- the not-observed-is-not-
     # healthy rule. No store and an unreadable store never got to compare anything: those are None.
-    assert rows_by_verdict["ungated"]["missing"] is None
-    assert rows_by_verdict["refused_unreadable"]["missing"] is None
-    assert rows_by_verdict["approved"]["missing"] == []
+    assert rows_by_scenario["ungated"]["missing"] is None
+    assert rows_by_scenario["refused_unreadable"]["missing"] is None
+    assert rows_by_scenario["approved"]["missing"] == []
+
+
+def test_ownership_refusals_seal_missing_as_never_evaluated(tmp_path):
+    """REGRESSION PIN (independent-refuter finding, 25-Jul-2026). `missing` is nullable on purpose:
+    None = the approvals were NEVER EVALUATED, [] = evaluated and nothing was missing. #439 added
+    `ownership_mismatch` and `ownership_unbound`, and NOTHING pinned them to the None side -- with
+    them dropped from `UNEVALUATED` the entire gate suite still passed while a run refused because
+    the ledger belongs to ANOTHER CLIENT sealed as evaluated-with-nothing-missing. That is the exact
+    "never-checked run scores as a clean zero" harm the nullable exists to prevent.
+
+    `bad_root` is pinned in tests/test_gate_state.py; `ungated`/`unreadable` in
+    test_every_enforce_outcome_records_a_verdict. These two were the gap."""
+    root = tmp_path / "eng"
+    root.mkdir()
+    _write_store(root)
+    gate_state.bind_engagement("ACME-2026", root=str(root))
+
+    for engagement, expected in (("GLOBEX-2026", "ownership_mismatch"),):
+        gate_state.reset_verdicts()
+        v = gate_state.enforce("design", root=str(root), engagement=engagement)
+        row, = gate_state.verdicts()
+        assert row["verdict"] == expected, row
+        assert v.proceed is False and row["proceed"] is False, row
+        assert row["missing"] is None, (
+            f"{expected} sealed missing={row['missing']!r} -- it must be null (NEVER EVALUATED), "
+            f"never [] (evaluated, nothing missing): no approval was ever checked")
+
+    # and the unbound case: a run that declares an engagement against a ledger that names none
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    _write_store(plain)
+    gate_state.reset_verdicts()
+    v = gate_state.enforce("design", root=str(plain), engagement="ACME-2026")
+    row, = gate_state.verdicts()
+    assert row["verdict"] == "ownership_unbound", row
+    assert row["missing"] is None, row
+    assert v.proceed is False
+
+    # the property this all rests on: every UNEVALUATED status seals null
+    assert set(gate_state.UNEVALUATED) >= {"ownership_mismatch", "ownership_unbound"}, \
+        "UNEVALUATED lost an ownership status -- see this test's docstring"
 
 
 def test_verdicts_returns_a_deep_copy(tmp_path):
@@ -216,7 +269,8 @@ def test_verdicts_returns_a_deep_copy(tmp_path):
     handed_out[0]["missing"].append("INJECTED")
     handed_out[0]["verdict"] = "approved"
     assert gate_state.verdicts() == [
-        {"generator": "design", "verdict": "refused", "missing": ["assessment_approved"]}]
+        {"generator": "design", "verdict": "pending", "missing": ["assessment_approved"],
+         "proceed": False}]
 
 
 def test_refusal_reason_is_recorded_not_just_logged(tmp_path):
@@ -225,7 +279,8 @@ def test_refusal_reason_is_recorded_not_just_logged(tmp_path):
     _write_store(tmp_path, lld_approved="approved")          # baseline_captured still missing
     gate_state.enforce("mop", root=str(tmp_path))
     row, = gate_state.verdicts()
-    assert row == {"generator": "mop", "verdict": "refused", "missing": ["baseline_captured"]}
+    assert row == {"generator": "mop", "verdict": "pending",
+                   "missing": ["baseline_captured"], "proceed": False}
 
 
 # ------------------------------------------------------------- the seal: the auditable record
@@ -238,7 +293,8 @@ def test_refusal_is_sealed_into_the_run_manifest(tmp_path, monkeypatch):
     gate_state.enforce("design", root=str(tmp_path))
     man = _manifest_for(tmp_path)
     assert _gate_step(man)["verdicts"] == [
-        {"generator": "design", "verdict": "refused", "missing": ["assessment_approved"]}]
+        {"generator": "design", "verdict": "pending", "missing": ["assessment_approved"],
+         "proceed": False}]
     ok, broken = M.verify_manifest(man)
     assert ok, f"manifest chain broken at rows {broken}"
 
@@ -279,7 +335,7 @@ def test_sealed_gate_step_is_deterministic(tmp_path, monkeypatch):
     second = _manifest_for(tmp_path)
     assert first["chain_root"] == second["chain_root"]
     row, = _gate_step(first)["verdicts"]
-    assert set(row) == {"generator", "verdict", "missing", "reason"}, \
+    assert set(row) == {"generator", "verdict", "missing", "proceed", "reason"}, \
         "unexpected key in a SEALED verdict row -- who/when belong to the store's audit line"
 
 
@@ -318,6 +374,11 @@ def test_every_return_path_in_enforce_records_a_verdict():
             if (isinstance(st, ast.Expr) and isinstance(st.value, ast.Call)
                     and getattr(st.value.func, "id", "") == "_record"):
                 seen = True
+            # since #439 every exit is `return _emit(GateVerdict(...))`, and _emit is the single
+            # site that calls _record -- a return THROUGH it is recorded by construction
+            if (isinstance(st, ast.Return) and isinstance(st.value, ast.Call)
+                    and getattr(st.value.func, "id", "") == "_emit"):
+                seen = True
             for block in ("body", "orelse", "finalbody"):
                 if isinstance(getattr(st, block, None), list):
                     _walk(getattr(st, block), seen)
@@ -332,21 +393,34 @@ def test_every_return_path_in_enforce_records_a_verdict():
         f"outcome would be refused/allowed with no durable trace. Add a _record(...) call.")
 
 
-def test_VERDICTS_lists_every_value_record_can_emit():
-    """`VERDICTS` is the published enumeration of gate outcomes, and it is documentation that can
-    silently go stale: the structural guard above forces a NEW return path to call `_record`, but
-    nothing forces the new verdict string to be added here. PR #439's two new refusal arms are exactly
-    that case. Derive the truth from the source instead of trusting the tuple."""
+def test_STATUSES_covers_every_verdict_enforce_can_seal(tmp_path):
+    """`STATUSES` is the ONE published vocabulary (Law 1) — #445's separate flat `VERDICTS` tuple was
+    retired when #439 landed, because a second enum for the same situations is a copy that drifts.
+
+    The old guard scanned the source for `_record(g, "<literal>")` calls. That cannot work now: every
+    verdict is sealed at ONE chokepoint (`_emit`) which passes `v.status`, a VARIABLE. The guarantee
+    did not disappear, it moved — and this is the stronger form, because it drives the real code
+    instead of pattern-matching it: whatever `enforce` actually emits must be a published status."""
     emitted = set()
-    for node in ast.walk(ast.parse(inspect.getsource(gate_state))):
-        if (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "_record"
-                and len(node.args) >= 2 and isinstance(node.args[1], ast.Constant)
-                and isinstance(node.args[1].value, str)):
-            emitted.add(node.args[1].value)
-    assert emitted == set(gate_state.VERDICTS), (
-        f"VERDICTS is out of sync with what _record() actually emits: "
-        f"only-in-code={sorted(emitted - set(gate_state.VERDICTS))}, "
-        f"only-in-VERDICTS={sorted(set(gate_state.VERDICTS) - emitted)}")
+    for name, setup, kw in (
+            ("ungated",    lambda r: None,                                          {}),
+            ("approved",   lambda r: _write_store(r, assessment_approved="approved"), {}),
+            ("refused",    _write_store,                                             {}),
+            ("overridden", _write_store,           {"override_reason": "CAB waiver 42"}),
+    ):
+        root = tmp_path / name
+        root.mkdir()
+        setup(root)
+        gate_state.reset_verdicts()
+        gate_state.enforce("design", root=str(root), **kw)
+        emitted |= {r["verdict"] for r in gate_state.verdicts()}
+
+    assert emitted, "no verdict was sealed at all -- the chokepoint is not recording"
+    assert emitted <= set(gate_state.STATUSES), (
+        f"enforce() sealed a verdict outside the published vocabulary: "
+        f"{sorted(emitted - set(gate_state.STATUSES))}")
+    assert not hasattr(gate_state, "VERDICTS"), (
+        "VERDICTS is back: a second enum beside STATUSES is the copy-that-drifts this retired")
 
 
 def test_withheld_deliverables_are_restated_at_the_end_of_the_run(engine_log, tmp_path,

@@ -168,9 +168,12 @@ STORE_RELPATH = os.path.join("docs", "engagement-state.json")
 #: Appended from the main thread only (the engine gates deliverables sequentially, after collection).
 _VERDICTS: List[dict] = []
 
-#: Every value ``enforce()`` can record, so a reader can enumerate outcomes without grepping returns.
-#: "ungated"/"approved"/"overridden" proceed; the three "refused*" values skip the deliverable.
-VERDICTS = ("ungated", "approved", "overridden", "refused", "refused_no_reason", "refused_unreadable")
+# NB: a separate flat ``VERDICTS`` enum used to live here ("approved"/"refused"/"refused_no_reason"
+# /"refused_unreadable"/"overridden"/"ungated"). It was RETIRED when #439 landed: ``STATUSES``
+# (defined below, beside ``UNEVALUATED``) is the ONE vocabulary shared by ``enforce``,
+# ``pending_approvals`` and the sealed ledger, and a second enum for the same situations is the
+# copy-that-drifts Law 1 exists to prevent. A sealed row reports the disposition as
+# ``verdict`` (a STATUS) plus an explicit ``proceed``; an override additionally carries ``reason``.
 
 
 def _record(generator: str, verdict: str, missing: Optional[List[str]] = None, **extra) -> dict:
@@ -672,10 +675,18 @@ def _emit(v: GateVerdict) -> GateVerdict:
     ``missing`` is NULLABLE ON PURPOSE: ``None`` = the approvals were NEVER EVALUATED, ``[]`` =
     evaluated and nothing was missing. Those must not collapse (``list(v.missing) or None`` would
     report a clean evaluated run as never-checked), so the nullable is derived from ``UNEVALUATED``
-    — the status set that encodes the same distinction on the verdict side."""
+    — the status set that encodes the same distinction on the verdict side.
+
+    ``store`` and ``detail`` are deliberately NOT sealed: the store is an ABSOLUTE PATH and detail
+    can embed one, so sealing either makes ``chain_root`` vary run-to-run for identical inputs and
+    destroys the determinism the seal depends on (pinned by
+    ``test_sealed_gate_step_is_deterministic``). The same reasoning already kept ``who``/``at`` out.
+    The one human-supplied string that IS sealed is the override ``reason`` — it is the point of the
+    override audit line, and it is caller-provided rather than environment-derived."""
+    extra = {"reason": v.detail} if v.overridden else {}
     _record(v.generator, v.status,
             None if v.status in UNEVALUATED else list(v.missing),
-            overridden=v.overridden, store=v.store, detail=v.detail)
+            proceed=v.proceed, **extra)
     return v
 
 
