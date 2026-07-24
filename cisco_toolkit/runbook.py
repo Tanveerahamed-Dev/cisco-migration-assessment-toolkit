@@ -394,7 +394,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
 
     doc.add_heading("6.2 Material cross-layer findings", level=2)
     for f in sorted(cross_layer, key=lambda f: _SEV_ORDER.get(f.get("severity"), 9))[:8]:
-        hosts = ", ".join(_as_list(f.get("hosts"))) or "—"
+        hosts = ", ".join(str(_h) for _h in _as_list(f.get("hosts"))) or "—"
         finding_block(
             f.get("title", f.get("id", "Cross-layer finding")),
             severity=f.get("severity", "Medium"),
@@ -478,7 +478,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         table(["Flow (VLAN → VLAN)", "Type", "Risk", "SPOFs on path"],
               [[f.get("label", ""), _as_dict(f.get("summary")).get("flow_type", ""),
                 _as_dict(f.get("summary")).get("risk", ""),
-                "; ".join(_as_list(_as_dict(f.get("summary")).get("spofs"))) or "none"]
+                "; ".join(str(_s) for _s in _as_list(_as_dict(f.get("summary")).get("spofs"))) or "none"]
                for f in fpaths], widths=[2.8, 1.4, 0.9, 2.4])
 
     pintel = _R(snap_dict.get("protocol_intelligence"))
@@ -551,7 +551,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
             doc.add_paragraph(
                 f"Multicast MAC-address aliasing ({_CONF_CONFIRMED}, RFC 4541): {len(aliases)} case(s) where "
                 "groups collapse to one L2 MAC (IPv4 multicast is 32:1 into Ethernet MACs) so a MAC-level switch "
-                "forwards them together — " + "; ".join(f"{a.get('mac')} ← {', '.join(_as_list(a.get('groups')))}"
+                "forwards them together — " + "; ".join(f"{a.get('mac')} ← {', '.join(str(_g) for _g in _as_list(a.get('groups')))}"
                                                         for a in aliases[:4])
                 + ". Re-address one of each overlapping pair (or use IGMPv3 SSM end-to-end) before the cutover.")
         gaps = _as_list(_as_dict(mi.get("querier")).get("gap_vlans"))
@@ -565,7 +565,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
             doc.add_paragraph(
                 f"PTP timing tree (ST 2059): {ptp_tree.get('n_operational', 0)} of {ptp_tree.get('n_clocks', 0)} "
                 f"clock(s) are active boundary clocks, {ptp_tree.get('n_dormant', 0)} dormant"
-                + (f"; grandmaster(s) {', '.join(_as_list(ptp_tree.get('grandmasters')))}."
+                + (f"; grandmaster(s) {', '.join(str(_m) for _m in _as_list(ptp_tree.get('grandmasters')))}."
                    if ptp_tree.get("grandmasters") else "; no grandmaster observed."))
 
     # ===== 6.7 Application domains (workload synthesis & migration playbook) — NEW-V3.23.112 =====
@@ -608,13 +608,13 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                     confidence=f"{_CONF_CONFIRMED} (switch state) / {_CONF_MED} (media dependency)",
                     unknowns="Whether this domain's live traffic actually traverses the flagged switches at "
                              "cutover time (no flow telemetry).",
-                    next_validation="; ".join(_as_list(d.get("validation"))),
+                    next_validation="; ".join(str(_v) for _v in _as_list(d.get("validation"))),
                     remediation=r.get("remediation", ""))
         cross = _R(appi.get("cross_domain_risks"))
         if cross:
             doc.add_paragraph(
                 f"Cross-domain risks (IGMP querier continuity / RFC 4541 + dependency coupling): "
-                f"{len(cross)} finding(s) — " + "; ".join(c.get("title", "") for c in cross[:6]) + ".")
+                f"{len(cross)} finding(s) — " + "; ".join(str(c.get("title", "")) for c in cross[:6]) + ".")
         # 6.7.1 inter-domain dependency graph (NEW-V3.23.113)
         edges = _R(appi.get("edges"))
         keystones = _R(appi.get("keystones"))
@@ -632,7 +632,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                 f"({_CONF_CONFIRMED}). A coupling means two domains cannot be cut over in isolation without "
                 f"coordination.{kline}")
             table(["Domain A", "Domain B", "Weight", "Coupling", "Migration note"],
-                  [[e.get("source"), e.get("target"), e.get("weight"), ", ".join(_as_list(e.get("kinds"))),
+                  [[e.get("source"), e.get("target"), e.get("weight"), ", ".join(str(_k) for _k in _as_list(e.get("kinds"))),
                     e.get("migration_note") or ("media-adjacent" if e.get("media") else "")]
                    for e in edges[:15]],
                   widths=[1.9, 1.9, 0.7, 1.4, 2.6])
