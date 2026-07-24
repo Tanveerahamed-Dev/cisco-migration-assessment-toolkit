@@ -4,6 +4,50 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-24] — Closed a 3-class stored-DoS series (16 PRs), then consolidated 141 branches to 32 — the cleanup found the bug the hardening missed
+
+- Closed the **truthy-non-container** falsy-guard class across every deliverable generator (#462-#471),
+  then its two siblings: the **unhashable-key** class (#464/#466) and the **non-str leaf** class (#473).
+  ~110 attacker-reachable sites, each proven by executed repro (500 -> 200 through the real route),
+  non-vacuous against the pre-fix module, and behaviour-preserving on well-formed input. A 6-unit
+  parallel batch did the bulk; every unit got an audited site list AND an explicit leave-alone list.
+- `!lesson` **Fix at the PRODUCER, not the expression the fuzz names.** Proven by string-patching the
+  pre-fix module: guarding `mop.py:707` alone made `:837` fire; guarding `:609` alone made `:111` fire
+  (and `:111` needed a fixture shape the headline snapshot lacked, so it was invisible twice over). The
+  fix that actually closed the class was at three producers (`_waves`, `_wave_sections`,
+  `_join_group_records`). **After guarding a site, re-run the fuzz — a newly-revealed site means you
+  patched a symptom.** Also: one fixture cannot enumerate a class (`:909`/`:912` are mutually exclusive
+  branches of the same `if multi:`; the union across bases was 8 sites, not the 7 any single run showed).
+  bridge-candidate
+- `!lesson` **A recursive sweep can be green because of its CAP, not the code.** My own #457 sweep capped
+  at `depth<=3` — exactly one level short of `collection_completeness.devices[i].missing`. After the
+  section was un-excluded the sweep still passed while the bug was live. Raise the cap until the path set
+  stops growing, then pin the deepest paths as asserted members so a future cap shrink fails loudly.
+  bridge-candidate
+- `!lesson` **A "provably safe / leave alone" verdict must come from an executed repro, never reasoning.**
+  I wrote off `runbook.py:586` in the plan as "a deliberate fallback on an already-coerced list" — correct
+  about the CONTAINER, blind to the ELEMENTS: `"risks": [5]` is a well-formed list with a scalar row and
+  still crashes. A worker overrode me with a repro and was right. Across the batch my plan was wrong five
+  times, each corrected by evidence, never by argument. bridge-candidate
+- `!lesson` **Measurement instruments lie, and a green number is the dangerous kind.** Three times in one
+  session: `pytest -rs` reports skips but NOT XPASS (a stale non-strict xfail was silently absorbing a
+  regression on main until `-rX` exposed it); a `grep -ci xpass` matched my own shell echo line; a
+  `wc -l` of `git status` sampled a parallel session's mid-merge tree and read 57 instead of 1. Re-measure
+  before believing, especially when the number is good. bridge-candidate
+- Consolidation: **141 -> 32 remote branches.** Delete-safe criterion was `merge-base --is-ancestor
+  <branch> main` MINUS open-PR heads MINUS other sessions' `claude/*` MINUS the current branch.
+- `!lesson` **Never delete a branch that heads an OPEN PR — it closes the PR.** My first "verified-safe"
+  list (built from merge/absorption analysis) contained 4 open-PR heads and would have silently closed
+  #442/#447/#449/#458. One of them, ADR-0005 + the Cognee utilization plan (149 lines), existed on NO
+  other ref. The cleanup ALSO surfaced a live bug the whole hardening series missed: an orphaned branch
+  from 07-14 held two unguarded `.strip()` leaves (`design_advisor.py` `device_id`/`next_hop`) that 500
+  four untrusted GET routes — revived as #474 after its own test failed on main. **Orphan branches are
+  where the bugs your current sweep cannot see are hiding.** bridge-candidate
+- `!lesson` **"It merged" and "it is correct" are different claims.** #442's `docs/log.md` conflict would
+  have merged cleanly with a naive marker-drop and passed every test, while silently placing a 07-22
+  entry above a 07-23 one and corrupting the log's reverse-chronological order. Read the surrounding
+  structure, not just the hunk. bridge-candidate
+
 ## [2026-07-23] — "best decision" on a finished branch: mapped a 5-session gate swarm, landed an orphaned ADR, added no sixth change
 
 - The `fix/redaction-gate-posture` branch's code was done and its three recorded OPEN items were all already
