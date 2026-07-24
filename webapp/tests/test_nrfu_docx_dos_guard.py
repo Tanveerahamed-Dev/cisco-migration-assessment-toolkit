@@ -292,3 +292,77 @@ def test_guarded_read_matches_or_form_on_every_wellformed_value():
         assert _as_dict(bad) == {}
     for bad in [5, "x", {"a": 1}, 3.5, True]:
         assert summary._as_list(bad) == []
+
+
+# ---- UNHASHABLE-KEY class: a list/dict LEAF used as a set member or a dict key --------------------
+# DISTINCT from the falsy-guard class above and NOT fixable by _as_dict/_as_list: by the time these run,
+# `services` / `nrfu_items` / `bp_decisions` are already well-formed lists of well-formed dicts -- it is
+# the LEAF that is unhashable. The established fix in this repo is str() on each key component; see
+# webapp/backend/cutover.py (`out.add(str(host))  # str(): an unhashable host ... must not 500 set.add`,
+# and `{str(r["group"]): r for r in rows ...}`).
+#
+# Each case isolates ONE site, so a partial fix cannot make the whole block pass:
+#   service     -> the §2 test-summary set   {(service, category)}
+#   port        -> ONLY the Phase III dedupe key (service, category, port)   [port is not in the §2 set]
+#   decision_id -> the §2.1 `phase_by` dict-comprehension KEY
+#   id          -> the §2.1 `phase_by.get(d.get("id"))` LOOKUP key (dict.get(unhashable) raises too)
+_UNHASHABLE = [{"x": 1}, [1, 2]]
+
+# a `recommended` decision is required for the §2.1 block to be reached at all (`if rec or needs:`)
+_REC = {"id": "d1", "status": "recommended", "title": "t", "priority": "P1"}
+
+
+@pytest.mark.parametrize("bad", _UNHASHABLE, ids=["dict", "list"])
+def test_nrfu_unhashable_service_leaf(client, bad):
+    """§2 test summary: `len({(service, category) for s in services})` must degrade, not 500."""
+    snap = _base(service_map={"services": [{"service": bad, "category": "c", "port": 80}]})
+    _renders(_get_nrfu(client, snap), f"service={bad!r}")
+
+
+@pytest.mark.parametrize("bad", _UNHASHABLE, ids=["dict", "list"])
+def test_nrfu_unhashable_port_leaf(client, bad):
+    """Phase III dedupe: `port` is in the dedupe key but NOT the §2 set, isolating that site."""
+    snap = _base(service_map={"services": [{"service": "s", "category": "c", "port": bad}]})
+    _renders(_get_nrfu(client, snap), f"port={bad!r}")
+
+
+@pytest.mark.parametrize("bad", _UNHASHABLE, ids=["dict", "list"])
+def test_nrfu_unhashable_decision_id_leaf(client, bad):
+    """§2.1 traceability: an unhashable `decision_id` is used as a dict-comprehension KEY."""
+    snap = _base(design_nrfu={"items": [{"decision_id": bad, "phase": "pre-cutover"}]},
+                 design_blueprint={"decisions": [_REC]})
+    _renders(_get_nrfu(client, snap), f"decision_id={bad!r}")
+
+
+@pytest.mark.parametrize("bad", _UNHASHABLE, ids=["dict", "list"])
+def test_nrfu_unhashable_decision_lookup_id(client, bad):
+    """§2.1 traceability: the LOOKUP key must be hashable too -- dict.get(unhashable) raises."""
+    snap = _base(design_blueprint={"decisions": [dict(_REC, id=bad)]})
+    _renders(_get_nrfu(client, snap), f"decision id={bad!r}")
+
+
+def test_nrfu_unhashable_fix_preserves_wellformed_counts(client):
+    """Non-vacuity companion: str()-keying must be a NO-OP for hashable leaves. Two services that
+    differ only by `port` must still dedupe as TWO distinct Phase III rows, not collapse to one."""
+    snap = _base(service_map={"services": [{"service": "ssh", "category": "mgmt", "port": 22},
+                                           {"service": "ssh", "category": "mgmt", "port": 2222},
+                                           {"service": "ssh", "category": "mgmt", "port": 22}]})
+    _renders(_get_nrfu(client, snap), "well-formed services")
+
+
+def test_nrfu_traceability_lookup_still_resolves(client):
+    """PINS the risky half of this fix. `phase_by` is built with str() keys AND read with a str() key;
+    if only ONE side were stringified the lookup would silently miss and every decision would render the
+    generic 'post-cutover-functional' fallback instead of its real phase. A 200-only assertion cannot
+    see that, so assert the RENDERED phase."""
+    # A NON-STRING but perfectly hashable id (an int) is the only shape that can detect a one-sided
+    # fix: with a string id, str("d1") == "d1", both sides agree, and the bug is invisible. With 7,
+    # str()-ing only the comprehension makes the keys "7" while the lookup still passes 7 -> miss.
+    snap = _base(design_blueprint={"decisions": [dict(_REC, id=7)]},
+                 design_nrfu={"items": [{"decision_id": 7, "phase": "pre-cutover-baseline"}]})
+    _paras, cells = _nrfu_cells(client, snap)
+    joined = "\n".join(cells)
+    assert "pre-cutover-baseline" in joined, (
+        "the §2.1 traceability lookup stopped resolving -- phase_by keys and the lookup key must be "
+        f"stringified together. cells={cells[:40]}")
+    assert "Tested — pre-cutover-baseline" in joined

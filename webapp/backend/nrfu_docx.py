@@ -150,7 +150,9 @@ def write_nrfu_docx(output_path: str, snap_dict: Dict[str, Any], label: str) -> 
         c = str(it.get("category", "") or "—")
         val_by_cat[c] = val_by_cat.get(c, 0) + 1
     n_p1, n_p2 = len(per_device), len(val_items)
-    n_p3 = len({(s.get("service"), s.get("category")) for s in services}) + len(domains) + (1 if mcast else 0)
+    # str(): an unhashable service/category (a list/dict in a malformed upload) would 500 the set build
+    n_p3 = (len({(str(s.get("service")), str(s.get("category"))) for s in services})
+            + len(domains) + (1 if mcast else 0))
     doc.add_heading("2. Test summary", level=1)
     table(["Phase", "Coverage", "Tests"], [
         ["Phase I — Device readiness", "Per-device inventory, software & lifecycle", n_p1],
@@ -184,9 +186,12 @@ def write_nrfu_docx(output_path: str, snap_dict: Dict[str, Any], label: str) -> 
             "covered by an acceptance test in the phase shown; a decision that still needs a requirement is "
             "not yet testable and is an explicit coverage boundary, not a silent gap.")
         if rec or needs:
-            phase_by = {i.get("decision_id"): i.get("phase", "") for i in nrfu_items}
+            # str() on BOTH the comprehension key and the lookup key: an unhashable decision_id / id
+            # (a list/dict in a malformed upload) would 500 the dict build and the .get() alike. Both
+            # sides must be stringified together or well-formed lookups would stop resolving.
+            phase_by = {str(i.get("decision_id")): i.get("phase", "") for i in nrfu_items}
             trace = [(d.get("title", d.get("id", "")), d.get("priority", ""),
-                      "Tested — " + (phase_by.get(d.get("id")) or "post-cutover-functional")) for d in rec]
+                      "Tested — " + (phase_by.get(str(d.get("id"))) or "post-cutover-functional")) for d in rec]
             trace += [(d.get("title", d.get("id", "")), d.get("priority", ""),
                        "Not testable until the requirement is supplied") for d in needs]
             table(["Target-state design decision", "Priority", "NRFU coverage"], trace[:40],
@@ -244,7 +249,8 @@ def write_nrfu_docx(output_path: str, snap_dict: Dict[str, Any], label: str) -> 
     seen: set = set()
     n3 = 0
     for s in services:
-        key = (s.get("service"), s.get("category"), s.get("port"))
+        # str(): an unhashable service/category/port would 500 both the `in seen` test and seen.add()
+        key = (str(s.get("service")), str(s.get("category")), str(s.get("port")))
         if key in seen:
             continue
         seen.add(key)
