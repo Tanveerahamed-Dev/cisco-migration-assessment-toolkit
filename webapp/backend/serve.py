@@ -304,10 +304,17 @@ def run_redaction(src: str, out: str, redact_collection: bool = False,
     # "DRAFT - generated; not yet reviewed" status. A gate verdict inferred from whichever ledger
     # happened to sit nearby would be worse than silence: it could report another client's
     # approvals as this engagement's.
+    # The leftover marker is reported, but NOT as "safe to delete". This run passing its checks
+    # says nothing about the files the earlier FAILED run left here — and those files can still be
+    # in the folder under the canonical names (reported below as STALE). Telling the engineer to
+    # delete the one warning that covers them, next to a line claiming the folder is safe, is how
+    # unredacted client data gets sent.
     if report.get("stale_unsafe_marker"):
-        print("\n  NOTE: this folder still holds DO-NOT-SEND-NOT-REDACTED.txt from an EARLIER\n"
-              "  run. It does not describe this run, which passed its redaction checks. Delete\n"
-              "  it once you are sure the older output it refers to is gone.")
+        print(f"\n  WARNING: this folder still holds {ingest_mod.UNSAFE_MARKER} from an EARLIER\n"
+              f"  run whose redaction could NOT be certified. This run passed its own checks, but\n"
+              f"  that says nothing about files the earlier run left here - any document listed as\n"
+              f"  STALE below was written by THAT run, not this one. Read that file, and do not\n"
+              f"  delete it until the output it refers to is gone.")
     # Say exactly what was checked. The engine pseudonymizes IPs, MACs and serials, but the
     # verification here covers surviving PRIVATE IPv4 in the snapshot plus proof that the engine's
     # redaction phases actually ran. Claiming more than that ("every IP/MAC/serial ... verified")
@@ -342,8 +349,16 @@ def run_redaction(src: str, out: str, redact_collection: bool = False,
     note = report.get("incomplete_note")
     print(f"  The same list is saved as {note}." if note else
           "  (Could not write the note into the output folder - this console is the record.)")
-    print("  What IS in the folder is redacted and safe to share. The SET is short: re-run into\n"
-          "  an empty folder, or tell the recipient which documents are not included.")
+    # Scoped to what THIS run wrote. The unqualified version ("What IS in the folder is redacted
+    # and safe to share") was false whenever a STALE document from an earlier, uncertified run sat
+    # in the folder — see ingest._mark_output_incomplete for the full reachable path.
+    if report.get("stale_unsafe_marker"):
+        print(f"  DO NOT SEND THIS FOLDER until you have read {ingest_mod.UNSAFE_MARKER} above -\n"
+              f"  files from the earlier uncertified run may contain REAL client data.")
+    else:
+        print("  What THIS RUN wrote is redacted. Anything listed as STALE above was not written\n"
+              "  by this run and is not covered by its redaction check. The SET is short: re-run\n"
+              "  into an empty folder, or tell the recipient which documents are not included.")
     # Exit 3, not 0: this command exists to certify a deliverable set, so "0" must keep meaning
     # "complete and verified". Nothing consumes the code today, which is exactly why adopting it
     # now is free and adopting it later would be a breaking change. It is deliberately NOT 1 -
