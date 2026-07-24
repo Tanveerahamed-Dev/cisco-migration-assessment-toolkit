@@ -1288,14 +1288,20 @@ def file_sha256(path: str) -> str:
 def build_run_manifest(out_xlsx: str, snap_dict: dict) -> dict:
     """roadmap D2 + J4: a sealed, deterministic chain-of-custody manifest for one assessment run — a
     hash-chained ledger of the pipeline stages PLUS a per-artifact sha256 of every produced deliverable
-    PLUS the coverage-honest abstention ledger, sealed by ``chain_root`` (tamper-evident without any Git
-    dependency). Pure stdlib via cisco_toolkit.manifest; the GAIT-style audit trail, offline.
+    PLUS the coverage-honest abstention ledger, sealed by ``chain_root`` (no Git dependency). Pure
+    stdlib via cisco_toolkit.manifest; the GAIT-style audit trail, offline.
+
+    The pipeline EMITS this seal and never re-checks it: verification is the receiver's deliberate act
+    (``python -m cisco_toolkit.manifest verify`` / ``Atlas.exe --verify-manifest``). Scope the claim —
+    the chain is unkeyed and ``manifest.build_manifest`` is public, so it detects a careless edit or a
+    truncation, NOT a forger who re-seals; only a ``chain_root`` recorded out of band pins a delivered
+    file to this run.
 
     SCOPE — this is a PER-RUN seal, not a cross-run archive. It describes the artifact set currently
     on disk beside ``out_xlsx``, and a re-run to the same ``--output`` replaces it exactly as it
     replaces every sibling artifact it hashes; a manifest outliving the artifacts it seals would
-    describe files that no longer exist. The hash chain is append-only and tamper-evident WITHIN one
-    file. The durable cross-run record of human gate decisions is the gate-state ledger
+    describe files that no longer exist. The hash chain is append-only WITHIN one file. The durable
+    cross-run record of human gate decisions is the gate-state ledger
     (``docs/engagement-state.json``), which is append-only ACROSS runs by design.
     """
     import glob as _glob

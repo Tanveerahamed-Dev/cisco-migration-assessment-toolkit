@@ -156,6 +156,30 @@ def _schedule_browser_open(url: str) -> None:
     t.start()
 
 
+#: Characters that make a value unusable as a path/host but survive `str.strip()`: the zero-width
+#: and BOM codepoints (str.strip removes NBSP and the exotic spaces, but NOT these), plus every C0
+#: control including NUL.
+_INVISIBLE = "​‌‍⁠﻿"
+
+
+def _unusable_value(value: str):
+    """Why this CLI value cannot be used, as a sentence fragment, or None if it is fine.
+
+    Two ways a value looked present and was not. A string of zero-width spaces passes
+    `str.strip()`, so `--db "\\u200b"` sailed through the empty-value guard and CREATED A REAL
+    SQLITE STORE named with an invisible character - the very "quietly opened a different store
+    than the one you named" outcome that guard exists to stop, reached with a value that is not
+    technically blank. And an embedded NUL raises ValueError deep inside pathlib/sqlite3
+    (`ingest.py` resolve, `sqlite3.connect`), escaping main() as a traceback after the job banner
+    had already printed - this file's contract is a plain sentence, never a traceback."""
+    if any(ch == "\x00" or ord(ch) < 32 for ch in value):
+        return "contains a control character, which is not a usable path or host."
+    if not value.strip().strip(_INVISIBLE).strip():
+        return ("was given an empty value (or one made only of invisible characters)."
+                if value.strip() else "was given an empty value.")
+    return None
+
+
 # ── shared write probe (selftest + pre-serve) ──────────────────────────────────
 def _writable_failure(dirpath: Path):
     """OSError text if `dirpath` cannot be created and written — the write-locked-stick /
@@ -327,6 +351,31 @@ def run_redaction(src: str, out: str, redact_collection: bool = False,
     return 3
 
 
+# ── --verify-manifest: does a delivered manifest still match its own seal? ──────
+def run_verify_manifest(path: str, expect_root=None, artifacts: bool = False) -> int:
+    """Check a ``*.run_manifest.json`` from the stick. There is no Python on a field laptop, so
+    ``python -m cisco_toolkit.manifest verify`` — the repo-side command — is unreachable there;
+    this is the same check behind the one door, delegating to the same function so the two can
+    never drift apart."""
+    from cisco_toolkit import manifest as manifest_mod  # lazy: the engine-child path skips it
+
+    res = manifest_mod.verify_file(
+        path, expect_root=expect_root,
+        artifacts_dir=(os.path.dirname(os.path.abspath(path)) or ".") if artifacts else None)
+    if res["ok"]:
+        print(f"{APP_TITLE}: manifest OK - {res['reason']}")
+    else:
+        print(f"{APP_TITLE}: manifest INTEGRITY FAILURE - {res['reason']}", file=sys.stderr)
+    for a in res["artifacts"]:
+        if a["state"] != "ok":
+            print(f"    [{a['state']}] {a['name']}", file=sys.stderr)
+    if res["ok"] and not expect_root:
+        print("  The seal is unkeyed, so this proves the file was not carelessly edited - NOT that\n"
+              "  nobody re-sealed it. To pin it to the run, compare --expect-root against the\n"
+              "  chain_root recorded in the report.")
+    return 0 if res["ok"] else 4
+
+
 # ── entry point ─────────────────────────────────────────────────────────────────
 def main(argv=None) -> int:
     # Frozen multiprocessing children re-enter here; this MUST precede everything else.
@@ -367,6 +416,16 @@ def main(argv=None) -> int:
                         help="with --redact-folder: ALSO scrub cleartext secrets from the raw "
                              "captures IN PLACE (rewrites the source folder; still "
                              "--compare/--trend-able)")
+    parser.add_argument("--verify-manifest", default=None, metavar="FILE",
+                        help="check a delivered <name>.run_manifest.json against its own hash chain "
+                             "and exit (0 clean, 4 broken). Unkeyed: catches careless edits, not a "
+                             "forger who re-seals - add --expect-root to pin it to its run")
+    parser.add_argument("--expect-root", default=None, metavar="SHA256",
+                        help="with --verify-manifest: the chain_root recorded out of band (in the "
+                             "report) that this file must match")
+    parser.add_argument("--verify-artifacts", action="store_true",
+                        help="with --verify-manifest: ALSO re-hash every deliverable listed in the "
+                             "manifest, from the manifest's own folder (missing counts as a failure)")
     parser.add_argument("--reuse-out", action="store_true",
                         help="with --redact-folder: render into an --out folder that already "
                              "holds a deliverable set. Refused by default: if that set is from "
@@ -375,12 +434,71 @@ def main(argv=None) -> int:
     parser.add_argument("--version", action="version", version=_version_line())
     args = parser.parse_args(argv)
 
+    # ── empty-string flag values ───────────────────────────────────────────────
+    # argparse accepts `--flag ""`, and every dispatch below is a truthiness test, so an empty
+    # value behaves EXACTLY as if the flag had never been passed. Measured, not theorised:
+    # `--redact-folder ""` fell through the redaction branch AND its own refusal and STARTED THE
+    # WEB SERVER (rc=0), so an engineer who asked for a share-safe deliverable set got a running
+    # cockpit and a success code; `--out ""` did the same; `--db ""` quietly opened a different
+    # store than the one they named. A field command that does something other than what was
+    # asked, while reporting success, is the exact failure this surface exists to prevent.
+    #
+    # Guarded as a CLASS in one place rather than as N truthiness checks each of which has to be
+    # remembered: the next path-valued flag someone adds is covered by construction. Empty is
+    # never a meaningful value for any of these - a real path, host or hash is always required.
+    for flag, value in (("--host", args.host), ("--db", args.db), ("--dist", args.dist),
+                        ("--redact-folder", args.redact_folder), ("--out", args.out),
+                        ("--verify-manifest", args.verify_manifest),
+                        ("--expect-root", args.expect_root)):
+        if value is None:
+            continue
+        bad = _unusable_value(str(value))
+        if bad:
+            print(f"{APP_TITLE}: {flag} {bad} Omit the flag to take the default, or pass a real "
+                  f"one - Atlas will not guess which you meant.", file=sys.stderr)
+            return 2
+
+    # ── one job per invocation ─────────────────────────────────────────────────
+    # The three subcommands below are dispatched by a fixed precedence with no cross-check, so
+    # asking for two silently performed the FIRST and discarded the rest: measured,
+    # `--verify-manifest X --redact-folder Y --out Z` printed "manifest OK" and returned 0 while
+    # the redaction - a ten-minute job producing the deliverables the operator actually wanted -
+    # never ran, with nothing on either stream saying so. Same "asked for X, silently got Y, exit
+    # code says success" failure as the empty-value bug above, reached by a different route.
+    jobs = [name for name, wanted in (("--selftest", args.selftest),
+                                      ("--verify-manifest", args.verify_manifest is not None),
+                                      ("--redact-folder", args.redact_folder is not None)) if wanted]
+    if len(jobs) > 1:
+        print(f"{APP_TITLE}: {' and '.join(jobs)} each ask Atlas to do a different job, and it "
+              f"does one per run. Re-run them one at a time, in the order you want them.",
+              file=sys.stderr)
+        return 2
+
     if args.selftest:
         return run_selftest(dist_dir=args.dist, db_path=args.db)
 
-    if args.redact_folder:
+    if args.verify_manifest is not None:    # `is not None`: --verify-manifest "" must be REFUSED,
+        # not fall through and quietly start the server instead of running the check that was asked for
+        return run_verify_manifest(args.verify_manifest, args.expect_root, args.verify_artifacts)
+    if args.expect_root is not None or args.verify_artifacts:   # `is not None`: --expect-root ""
+        print(f"{APP_TITLE}: --expect-root and --verify-artifacts only apply to --verify-manifest.",
+              file=sys.stderr)                                  # must still be refused, not ignored
+        return 2
+
+    # `is not None`, not truthiness: the class guard above already rejects "", but a dispatch site
+    # should not silently depend on a distant check to be correct.
+    #
+    # This block is the UNION of two changes that collided here (#438's --reuse-out and the
+    # empty-value guard). The merge resolved it by keeping BOTH blocks stacked, which is why the
+    # second pair below used to be dead: `if args.redact_folder is not None` returns for every
+    # non-None value, so `if args.redact_folder` after it could never run. The dead copy was the
+    # ONLY one that forwarded `reuse_out`, so `--reuse-out` was silently dropped and Atlas refused
+    # an --out folder the engineer had explicitly authorised (exit 1, caught by #438's own tests).
+    # Keep this as ONE pair: `is not None` from the guard, `reuse_out` + the 3-flag message
+    # from #438. Re-stacking them re-breaks whichever half is listed second.
+    if args.redact_folder is not None:
         return run_redaction(args.redact_folder, args.out, args.redact_collection, args.reuse_out)
-    if args.out or args.redact_collection or args.reuse_out:
+    if args.out is not None or args.redact_collection or args.reuse_out:
         print(f"{APP_TITLE}: --out, --redact-collection and --reuse-out only apply to "
               f"--redact-folder.", file=sys.stderr)
         return 2
