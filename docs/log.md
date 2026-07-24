@@ -43,6 +43,51 @@ Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembe
   layer down (`test_approved_upstream_proceeds_and_override_is_inert`: "a redundant
   `--override-gate` must NOT log a phantom override"). Grep for an existing invariant before
   encoding a new one. bridge-candidate
+## [2026-07-22] — `--redact-folder` now says when the set is SHORT (#438) — and a second refuter, aimed at the decision rather than the code, overturned my design
+
+- Closed the last silent-success hole in the redaction command: every engine deliverable writer is
+  fail-soft (logs a warning, continues, exits 0 — deliberate, and left unchanged), so a run that
+  rendered all but two documents reported the survivors as the whole family. Detection is a
+  produced-vs-expected filename DIFF derived from `docmeta.FAMILY` (new `CLI_ARTIFACT_SUFFIX`,
+  reconciled against the engine source by a ratchet test), not a log scan — chosen on evidence:
+  the real engine with `--no-docx --no-pptx` drops two documents and logs NOTHING about either.
+  Incomplete WARNS (exit 3), because a missing document is not a leak and the existing hard-fail
+  path would print "treat this as UNREDACTED" over correctly-redacted files. Refuted twice before
+  merge: 14 defects from a code-aimed pass, a design reversal from a judgement-aimed one.
+- `!lesson` **Existence is not delivery.** Writers truncate their target and THEN write, so a full
+  disk leaves a 0-byte `.docx`/`.html` carrying a brand-new timestamp; a name-and-mtime check
+  certified it as delivered — the very bug the check existed to close, re-armed behind a "you have
+  all of them" banner. Worse on a re-run, where the truncate destroys the good previous copy.
+  Validate BYTES: size, plus the zip central directory, which sits at the END of a docx/pptx/xlsx
+  and is precisely what an interrupted write loses. bridge-candidate
+- `!lesson` **A comparison DIRECTION is an assumption — state it or lose to it.** `mtime > previous`
+  silently assumes the clock only moves forward. On an air-gapped field laptop (manual time
+  correction) or a FAT32 stick crossing a DST/timezone boundary, previously-written files read back
+  as NEWER, and every document of a flawless run reported missing — the alarm-fatigue failure this
+  repo has already paid for once. Inequality, not ordering; compare size alongside mtime so a
+  rewrite inside one coarse timestamp tick is still seen. bridge-candidate
+- `!lesson` **Prevention at second zero beats repair after the work — and count how often each
+  fires.** A leftover deliverable from an earlier job sat under the canonical name of a document
+  this run failed to write (and redaction keeps hostnames, so it identifies another client). I
+  chose to MOVE it aside. Wrong: the engine seals a hash manifest over the folder BEFORE the move,
+  so moving broke the audit trail it ships; the next successful run deleted the note and left the
+  foreign file with zero disclosure; and it fired on the SAME-job re-run too, ripping a good
+  document out of a complete set. The hazard needed three preconditions, the mitigation fired on a
+  one-precondition case — the signature of the wrong altitude. Replaced with a pre-flight REFUSAL
+  (output folder already holds a set) plus an explicit `--reuse-out` escape: milliseconds instead
+  of ten minutes, and the precondition is removed rather than the symptom. bridge-candidate
+- `!lesson` **Put field warnings on ONE stream, LAST.** Redirecting a long run to a log
+  (`app.exe … > run.log 2>&1`) is the natural thing to do. Python block-buffers stdout and
+  line-buffers stderr, so a warning on stderr was hoisted ABOVE the command banner — reading as if
+  it belonged to a previous command — and the log ENDED on the reassurance block, so `tail` showed
+  a clean success. Single stream, warning after the thing it qualifies. bridge-candidate
+- `!lesson` **Reviewing the JUDGEMENT is a different activity from reviewing the CODE.** One
+  refuter aimed at the implementation found 14 real defects and left the design intact; a second,
+  aimed only at the decision, reversed it. Two habits came out of it: rank every rejected
+  alternative with an argued verdict instead of dismissing it in passing (the option I had waved
+  off as friction was the right one), and watch for "X is bad because it prints message Y" — I
+  rejected a non-zero exit code on the strength of a message I could simply have changed.
+  bridge-candidate
 
 ## [2026-07-22] — Refuting my own merged code twice in one day (#429–#433): both times the verification, not the feature, was the defect
 

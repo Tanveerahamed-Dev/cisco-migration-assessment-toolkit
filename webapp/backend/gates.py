@@ -26,7 +26,11 @@ def cadence() -> List[Dict[str, str]]:
 
 def waves_from_snapshot(snap: dict | None) -> List[str]:
     """The wave labels a gate board offers — the snapshot's migration-readiness groups, in order."""
-    rows = (snap or {}).get("migration_readiness") or []
+    # isinstance-guard, not `or []`: a TRUTHY non-list migration_readiness (an int in a malformed/hostile
+    # upload) survives `or []` and 500s the `for r in rows` iteration -> unhandled 500 on GET /gates.
+    rows = (snap or {}).get("migration_readiness")
+    if not isinstance(rows, list):
+        rows = []
     return [str(r.get("group")) for r in rows if isinstance(r, dict) and r.get("group")]
 
 
