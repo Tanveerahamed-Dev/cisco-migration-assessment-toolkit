@@ -122,9 +122,11 @@ def _workflow_facts(snap: dict) -> dict:
             # SSOT: read the canonical inventory count first (the same source n_collected reads), with
             # the local len(devices) only as a pre-brief fallback — else "N collected of M inventoried"
             # mixes a canonical n_collected with a recount and can render "253 collected of 3 inventoried".
-            "n_devices": (((_as_dict(snap.get("executive_brief")).get("scale")) or {}).get("n_devices")
+            # `or {}` caught only a FALSY scale — a truthy non-dict one (a scalar in an uploaded
+            # snapshot) reached .get() and crashed. _as_dict on BOTH levels, as mop.py:360 does.
+            "n_devices": (_as_dict(_as_dict(snap.get("executive_brief")).get("scale")).get("n_devices")
                           or len(_as_dict(snap.get("devices")))),
-            "n_collected": ((_as_dict(snap.get("executive_brief")).get("scale")) or {}).get("n_collected")}
+            "n_collected": _as_dict(_as_dict(snap.get("executive_brief")).get("scale")).get("n_collected")}
 
 
 def _verdict(f: dict) -> tuple:

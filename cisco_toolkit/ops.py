@@ -235,8 +235,14 @@ def _known_issues(ev: dict) -> tuple:
 
 
 def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> None:
-    """Emit the Operations Handbook (.docx) to `output_path`. Fail-soft: a missing
-    python-docx is a warning + skip; any unexpected render error is logged, never raised."""
+    """Emit the Operations Handbook (.docx) to `output_path`. Fail-soft: a missing python-docx is a
+    warning + skip, and every snapshot read is defensive so malformed input degrades to an honest
+    absence declaration. A genuine render error still propagates to the caller — the CLI phase
+    wrapper logs-and-continues, AssessHub turns it into a clean 500. (Docstring corrected: the old
+    'any unexpected render error is logged, never raised' claim was false — the only `try` here is
+    the optional-import guard below — and it hid a crash class now guarded at the read sites. The
+    fix is the guards, NOT a broad `except`: swallowing a render error would ship a silently short
+    document, which the coverage-honesty doctrine forbids.)"""
     try:
         from docx import Document
         from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -388,7 +394,7 @@ def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> No
     doc.add_heading("3.2 Control-plane capacity baseline", level=2)
     ph_sum = _as_dict(ev["ph"].get("summary"))
     if ph_sum.get("n_collected"):
-        pb = ph_sum.get("bands") or {}
+        pb = _as_dict(ph_sum.get("bands"))   # `or {}` caught only a FALSY bands; a truthy scalar crashed .items()
         btxt = ", ".join(f"{v}× {k}" for k, v in pb.items())
         doc.add_paragraph(
             f"Capacity sample at collection time ({btxt}). These figures are the NORMAL for this "

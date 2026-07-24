@@ -315,6 +315,259 @@ def _mark_output_unsafe(out: Path, why: str) -> None:
         pass  # best-effort: never mask the real error with a marker-write failure
 
 
+#: Lines in the engine's own output that explain why a deliverable is absent: a writer that raised
+#: (``… write failed: …``), an optional library that is not installed (``… skipped: python-docx …``),
+#: a phase that was skipped, a PPDIOO document gate that refused. Matched GENERICALLY rather than
+#: per-writer: the produced-vs-expected diff below is the authoritative signal, so these lines only
+#: have to EXPLAIN a gap, never to detect one — which keeps the check immune to message drift.
+_ENGINE_GAP_RE = re.compile(r"write failed|skipped:|\[SKIP\] Phase|\[GATE REFUSED\]", re.I)
+
+#: First and last lines of the note `_mark_output_incomplete` writes. Together they are the
+#: proof-of-authorship for `_clear_stale_incomplete_marker`: a note the engineer appended to no
+#: longer ends with the trailer, so annotating it makes it un-deletable rather than deleting the
+#: annotation. The note itself invites exactly that ("Delete this file once you have done so").
+_INCOMPLETE_MARKER = "INCOMPLETE-SET.txt"
+_INCOMPLETE_FALLBACK = "INCOMPLETE-SET-ATLAS.txt"
+_INCOMPLETE_HEADER = "This deliverable set is INCOMPLETE."
+_INCOMPLETE_TRAILER = "-- written by Atlas; delete once you have acted on it --"
+
+#: Containers whose bytes can be validated cheaply: a .docx/.pptx/.xlsx IS a zip, and its central
+#: directory sits at the END of the file, so a truncated one fails to open. That is the exact
+#: shape of the failure this matters for (see `_unusable`).
+_ZIP_DOC_SUFFIXES = (".docx", ".pptx", ".xlsx")
+
+
+def _engine_filenames(stem: str) -> frozenset:
+    """Exactly the names an engine run writes for ``stem``: the family, plus its own sidecars."""
+    from cisco_toolkit.docmeta import cli_artifacts
+
+    return frozenset([f for _k, _n, f in cli_artifacts(stem)] +
+                     [stem + s for s in (".snapshot.json", ".run_manifest.json",
+                                         ".phase_timings.json")])
+
+
+def _written_by_this_run(p: Path, engine_names: frozenset,
+                         pre_existing: Dict[str, Tuple[float, int]]) -> bool:
+    """Did the run that just finished write ``p``?
+
+    New name = yes. Otherwise the file must be one the engine actually writes AND differ from what
+    stood there before. The membership test is against that CLOSED set of names, not a
+    stem-prefix: prefixing re-admitted anything the engineer happened to keep alongside the set,
+    and a name like ``Assessment_redacted_IP_CROSSWALK.xlsx`` — a pseudonym-to-real-IP crosswalk,
+    the one file that must never travel — would have been listed under the share-safe banner if it
+    were saved while the (multi-minute) run was in flight. The original rule excluded every
+    pre-existing name unconditionally; this preserves that for everything except the names the
+    engine demonstrably owns.
+
+    "Differ" is deliberately INEQUALITY, not a later timestamp. A strictly-greater test assumes
+    the clock only moves forward, and this app runs on air-gapped field laptops and FAT32 sticks,
+    where it does not: a manual clock correction, a DST change or carrying the stick across a
+    timezone can make previously-written files read back as NEWER, at which point every document
+    of a perfect run reports as missing. A false alarm on a good run is the failure this codebase
+    has already paid for once (see the _DOC_KEYS note below), so the test must not depend on the
+    direction the clock moved. Size is compared alongside mtime so a rewrite inside one coarse
+    timestamp tick is still seen."""
+    prev = pre_existing.get(p.name)
+    if prev is None:
+        return True
+    if p.name not in engine_names:
+        return False
+    try:
+        st = p.stat()
+    except OSError:
+        return False
+    return (st.st_mtime, st.st_size) != prev
+
+
+def _prior_set_in(out: Path, stem: str) -> List[str]:
+    """Canonical deliverable filenames already sitting in ``out`` before this run starts."""
+    from cisco_toolkit.docmeta import cli_artifacts
+
+    return [f for _k, _n, f in cli_artifacts(stem) if (out / f).is_file()]
+
+
+def _refuse_reused_out_dir(out: Path, stem: str) -> None:
+    """Refuse, BEFORE any work, to render into a folder that already holds a deliverable set.
+
+    This is the whole answer to cross-job contamination, and it is a refusal rather than a repair
+    because of where the hazard actually comes from. If two engagements share an output folder and
+    one writer fails on the second run, the first job's document is left sitting under the exact
+    name the second job's document should have had — and redaction KEEPS hostnames and site codes,
+    so that file identifies another client inside this delivery. Every after-the-fact treatment
+    was worse: leaving it warns about a file the engineer can plainly see and therefore disbelieves;
+    moving it aside mutates the folder, contradicts the run manifest the engine has already sealed
+    over the pre-move contents, and strips a GOOD same-job document out of an otherwise complete
+    set. Refusing costs milliseconds instead of ten minutes, removes the hazard's precondition
+    instead of mitigating its consequence, and enforces the habit README-FIELD.txt already
+    prescribes. ``--reuse-out`` is the deliberate escape, and it is deliberately a decision the
+    engineer has to make with the folder's contents named in front of them."""
+    prior = _prior_set_in(out, stem)
+    if not prior:
+        return
+    raise IngestError(
+        f"{out} already holds a redacted deliverable set ({len(prior)} file(s), e.g. "
+        f"{', '.join(prior[:3])}). If it is from ANOTHER job, its documents still carry that "
+        f"client's hostnames and site codes, and any document this run fails to write would "
+        f"leave that client's copy sitting in this delivery under the right name. Use an EMPTY "
+        f"folder for each job. To render into this one anyway (for example re-running the same "
+        f"job after a short set), add --reuse-out.")
+
+
+def _unusable(p: Path) -> str:
+    """Why ``p`` cannot be sent, or "" if it looks like a real document.
+
+    Existence is NOT delivery. Every engine writer truncates its target and then writes, so a
+    stick that fills up mid-render leaves a 0-byte ``_explorer.html`` (or a half-written .docx)
+    carrying a brand-new timestamp — and the engine, being fail-soft, logs a warning and exits 0.
+    Checking only for the filename would certify that folder as complete: the ORIGINAL bug with a
+    fresh coat of paint. Worse on a re-run, where the truncate destroys the good copy from the
+    previous run. Cheap by construction — a size call, plus a central-directory read for the zip
+    formats; nothing here parses a document."""
+    try:
+        if p.stat().st_size == 0:
+            return "0 bytes - the write was cut short (a full disk does this)"
+    except OSError as e:
+        # strerror only: the full OSError repr carries the absolute path, and this string is
+        # copied into a note that sits in the folder the engineer zips and sends.
+        return f"cannot be read back ({e.__class__.__name__}: {e.strerror or 'unreadable'})"
+    if p.suffix.lower() in _ZIP_DOC_SUFFIXES:
+        try:
+            with zipfile.ZipFile(p) as zf:
+                if not zf.namelist():
+                    return "empty document container"
+        except (zipfile.BadZipFile, OSError, ValueError):
+            return "truncated or corrupt - it will not open"
+    return ""
+
+
+def _family_state(stem: str, out: Path, produced: set) -> List[Dict[str, str]]:
+    """Every family document this run did NOT deliver, in reading order, each with WHY.
+
+    Every deliverable writer in the engine is fail-soft — wrapped in ``try/except`` that only
+    ``logger.warning``s and continues, so the workbook and snapshot still save when an optional
+    library is missing (a deliberate design, and out of scope to change). The cost is that a run
+    which rendered all but two of its documents exits 0 and reports them as the whole family.
+    ``docmeta`` owns what the family IS, so the expected set is DERIVED from it rather than
+    restated here — a new writer cannot leave this check behind. (No count is restated anywhere
+    in this module: ``docmeta.CLI_ARTIFACT_SUFFIX`` is the owner, per SSOT Law 1.)
+
+    Three outcomes, because they call for different actions and lumping them together produced a
+    report that read as wrong: ``absent`` (nothing there), ``unusable`` (a file exists but is
+    empty or will not open), and ``stale`` — present and openable but left by an EARLIER run.
+    Stale is only reachable under ``reuse_out``; without it, a folder already holding a
+    deliverable set is refused before the engine starts."""
+    from cisco_toolkit.docmeta import cli_artifacts
+
+    gaps = []
+    for key, name, filename in cli_artifacts(stem):
+        p = out / filename
+        if not p.is_file():
+            state, detail = "absent", "not written"
+        elif filename not in produced:
+            state, detail = "stale", ("left by an EARLIER run into this folder - this run did not "
+                                      "rewrite it, so check which job it belongs to")
+        else:
+            why = _unusable(p)
+            if not why:
+                continue
+            state, detail = "unusable", why
+        gaps.append({"key": key, "name": name, "filename": filename,
+                     "state": state, "detail": detail})
+    return gaps
+
+
+def _engine_gap_lines(engine_output: str, scrub: Tuple[Path, ...], limit: int = 8) -> List[str]:
+    """The engine's own explanation for a gap: its warning/refusal lines, de-duplicated and
+    capped. Advisory context for the diff above — never the detector.
+
+    Paths are stripped first. These lines are copied into a note that TRAVELS: the folder is
+    zipped and sent to the client, so an engine breadcrumb like
+    ``[Errno 28] ... 'D:\\Acme-Bank-Merger\\share\\...'`` would carry the engagement name (and the
+    server's layout, the WEBAP-01 concern) into the share-safe set."""
+    lines: List[str] = []
+    for raw in (engine_output or "").splitlines():
+        line = raw.strip()
+        for path in scrub:
+            line = line.replace(str(path), "<path>")
+        if line and _ENGINE_GAP_RE.search(line) and line not in lines:
+            lines.append(line)
+        if len(lines) >= limit:
+            break
+    return lines
+
+
+def _mark_output_incomplete(out: Path, gaps: List[Dict[str, str]],
+                            reasons: List[str]) -> Optional[Path]:
+    """Leave an on-disk note when the set is share-safe but SHORT of the full family. Returns the
+    path actually written, or None — the caller must not promise a file that is not there.
+
+    Deliberately NOT the ``DO-NOT-SEND`` marker: nothing here is unredacted, and crying leak over
+    a missing document is the false alarm that teaches an engineer to ignore both markers. The
+    file exists for the same reason its sibling does — stderr scrolls away, and the folder is
+    what a hurried engineer actually looks at before zipping it.
+
+    An existing file of that name that Atlas did NOT write is never clobbered (it could be the
+    engineer's own record of what they sent); the note goes to a fallback name instead."""
+    body = [_INCOMPLETE_HEADER, "",
+            "Everything in this folder IS redacted and safe to share - but the engine did not",
+            "produce the whole document family, and a partial set can read as the full one.",
+            "", "Not delivered by this run:"]
+    body += [f"  - {g['name']}  ({g['filename']})\n      {g['state'].upper()}: {g['detail']}"
+             for g in gaps]
+    if any(g["state"] == "stale" for g in gaps):
+        body += ["", "STALE means a file from an EARLIER run into this folder is sitting under the",
+                 "name this run's document should have had. If that run was for a DIFFERENT job it",
+                 "identifies another client - redaction keeps hostnames and site codes. Check which",
+                 "job it came from, or delete it and re-run into an EMPTY folder."]
+    if reasons:
+        body += ["", "The engine reported:"] + [f"  {r}" for r in reasons]
+    body += ["", "Either re-run the redaction, or tell the recipient which documents are not",
+             "included.", "", _INCOMPLETE_TRAILER, ""]
+    target = out / _INCOMPLETE_MARKER
+    if _foreign(target):
+        target = out / _INCOMPLETE_FALLBACK
+        if _foreign(target):
+            return None            # both taken by files that are not ours; overwrite neither
+    try:
+        target.write_text("\n".join(body), encoding="ascii", errors="replace")
+        return target
+    except OSError:
+        return None  # best-effort: a marker-write failure must never mask the report itself
+
+
+def _ours(p: Path) -> bool:
+    """Is ``p`` an Atlas incompleteness note, still exactly as Atlas left it?"""
+    try:
+        text = p.read_text(encoding="ascii", errors="replace")
+    except OSError:
+        return False
+    return text.startswith(_INCOMPLETE_HEADER) and text.rstrip().endswith(_INCOMPLETE_TRAILER)
+
+
+def _foreign(p: Path) -> bool:
+    """Does something stand at ``p`` that Atlas must not overwrite? A directory counts (and is why
+    the write is attempted rather than assumed: the OSError path used to leave stderr promising a
+    note that was never created)."""
+    return p.exists() and not (p.is_file() and _ours(p))
+
+
+def _clear_stale_incomplete_marker(out: Path) -> None:
+    """Drop a previous run's incompleteness note once a run HAS produced the full family —
+    a marker that outlives its cause is the same lie in the other direction.
+
+    Only a note that is byte-for-byte still Atlas's own is removed. If the engineer annotated it
+    (the note invites them to), it no longer ends with the trailer and is left alone: the standing
+    lesson here is that a cleanup routine destroying the record it was meant to manage is the
+    expensive failure, so the guard errs towards keeping the file."""
+    for name in (_INCOMPLETE_MARKER, _INCOMPLETE_FALLBACK):
+        marker = out / name
+        try:
+            if marker.is_file() and _ours(marker):
+                marker.unlink()
+        except OSError:
+            pass
+
+
 #: Private IPv4 space. Redaction remaps every /24 into the IANA-reserved Class E block
 #: (``cisco_toolkit.html.redact_snapshot``), so a surviving RFC 1918 address proves the scrub did
 #: not happen — the one failure that must never be silent.
@@ -358,20 +611,65 @@ def _iter_evidence_strings(node: Any, path: str = ""):
 _REDACTION_PHASES = ("redact collected dataclasses", "redact workbook cells")
 
 
-def _assert_redaction_phases_ran(out_xlsx: Path, engine_output: str) -> None:
-    """Refuse if a redaction phase was skipped or failed inside the engine.
+def _phase_rows(data: Any) -> List[dict]:
+    """The timed-phase rows out of a ``.phase_timings.json`` sidecar.
 
-    Two independent signals, because either alone can go missing: the phase ledger sidecar
-    (``ok: false``) and the engine's own ``[SKIP] Phase …`` line on stderr."""
-    failed = []
+    The engine writes a DICT — ``{"n_devices": …, "workers": …, "total_seconds": …,
+    "phases": [{phase, seconds, ok}]}`` (``COLLECT_PARSE_V3_23_0._stage_finalize``). This was read as
+    if the file were the bare LIST of rows, so iterating it yielded the dict's KEYS, ``str.get``
+    raised ``AttributeError``, and the defensive ``except`` below swallowed it — the sidecar arm
+    never fired on a real run, leaving the stderr scrape as the only live signal for a failed
+    redaction phase. A bare list is still accepted so the parser is not the fragile half again."""
+    if isinstance(data, dict):
+        data = data.get("phases")
+    return [row for row in (data or []) if isinstance(row, dict)]
+
+
+def _phase_ok(value: Any) -> bool:
+    """True only when the ledger POSITIVELY records success.
+
+    Not `value is not False`: the ledger is JSON written by another program, and `0`, `"false"`,
+    `null` and a missing key all have to read as "not a success". Anything this function cannot
+    positively confirm is treated as unverified by the caller and refuses — the whole point of the
+    rewrite below is that silence must never mean "fine"."""
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "ok")
+    return value is not None and bool(value)
+
+
+def _assert_redaction_phases_ran(out_xlsx: Path, engine_output: str) -> None:
+    """Refuse unless BOTH redaction phases are positively confirmed to have run and succeeded.
+
+    Two independent signals, because either alone can go missing: the phase-ledger sidecar and the
+    engine's own ``[SKIP] Phase …`` line on stderr.
+
+    **This fails CLOSED, and that is the point.** It previously refused only on an explicit
+    ``ok is False`` and let every other reading through, so a ledger that could not be understood —
+    a renamed ``phases`` key, rows keyed by name, a truncated file, a phase that never ran at all —
+    was indistinguishable from a clean run. That is the same silent-degrade the dict/list parse bug
+    produced, one level up: the guard stops firing and nothing says so. Both phases are
+    unconditional under ``--redact`` (``COLLECT_PARSE_V3_23_0.py:2008`` and ``:2575``) and this
+    caller always passes ``--redact``, so a missing row is genuinely anomalous, never routine.
+
+    The sidecar being ABSENT is the one tolerated case: its write is fail-soft in the engine, so
+    absence proves nothing either way and the stderr arm carries the run alone."""
+    failed, unverified = [], []
     timings = Path(str(out_xlsx)[: -len(".xlsx")] + ".phase_timings.json")
     if timings.is_file():
+        rows: Optional[List[dict]] = None
         try:
-            for row in json.loads(timings.read_text(encoding="utf-8", errors="replace")) or []:
-                if str(row.get("phase", "")).lower() in _REDACTION_PHASES and row.get("ok") is False:
-                    failed.append(row["phase"])
-        except (OSError, ValueError, TypeError, AttributeError):
-            pass  # a missing/odd ledger must not mask the stderr signal below
+            rows = _phase_rows(json.loads(timings.read_text(encoding="utf-8", errors="replace")))
+        except (OSError, ValueError, TypeError, AttributeError) as e:
+            unverified.append(f"the phase ledger could not be read ({type(e).__name__})")
+        if rows is not None:
+            seen = {str(r.get("phase", "")).lower(): r for r in rows
+                    if str(r.get("phase", "")).lower() in _REDACTION_PHASES}
+            for phase in _REDACTION_PHASES:
+                if phase not in seen:
+                    unverified.append(f"the phase ledger has no '{phase}' row, so there is no "
+                                      f"evidence that phase ran")
+                elif not _phase_ok(seen[phase].get("ok")):
+                    failed.append(phase)
     low = (engine_output or "").lower()
     for phase in _REDACTION_PHASES:
         if f"[skip] phase '{phase}'" in low and phase not in failed:
@@ -381,6 +679,11 @@ def _assert_redaction_phases_ran(out_xlsx: Path, engine_output: str) -> None:
             f"REDACTION PHASE FAILED inside the engine ({', '.join(sorted(failed))}). The workbook "
             f"is very likely UNREDACTED even though the snapshot looks clean - this is the silent "
             f"failure the check exists for. Do NOT send anything from this run.")
+    if unverified:
+        raise EngineRunError(
+            f"REDACTION COULD NOT BE VERIFIED - {'; '.join(unverified)}. The scrub may well have "
+            f"run, but this check cannot confirm it, and an unverifiable redaction is treated as a "
+            f"failed one. Do NOT send anything from this run until it is re-run or checked by hand.")
 
 
 def _assert_scrubbed(snap_path: Path) -> int:
@@ -417,8 +720,8 @@ def _assert_scrubbed(snap_path: Path) -> int:
     return len(leaks)
 
 
-def run_redaction_folder(path: Any, out_dir: Any,
-                         redact_collection: bool = False) -> Dict[str, Any]:
+def run_redaction_folder(path: Any, out_dir: Any, redact_collection: bool = False,
+                         reuse_out: bool = False) -> Dict[str, Any]:
     """Produce a **redacted, share-safe deliverable set** from a local collection folder.
 
     The field problem this closes (ADR-0004 P3): ``--redact`` is the control that makes client data
@@ -432,6 +735,54 @@ def run_redaction_folder(path: Any, out_dir: Any,
     live in the private workdir. The engine reads ``--collection-dir`` read-only unless
     ``redact_collection`` is set, which rewrites the raw captures in place — hence a separate,
     explicit argument rather than a default.
+
+    **The PPDIOO document gates (P0-3/DEC-003) deliberately do NOT apply on this path.** Do not
+    "fix" that by passing ``--gate-root``; three separate reasons, each independently sufficient:
+
+    1. *Blocking would not contain anything.* ``enforce()`` refuses per DELIVERABLE, and the two
+       gated DOCX are not the sole carriers of what they show: ``COLLECT_PARSE_V3_23_0`` writes the
+       snapshot (:2817), the explorer (:2831) and the executive deck (:2853) — all rendering
+       ``design_blueprint``'s ``target_state``/``wave_plan`` — BEFORE the gates run (:2864/:2879).
+       Refusing drops two renderers into the same folder as three ungated artifacts showing the
+       same unapproved design. And it would be a SILENT drop: ``run_redaction_folder`` captures the
+       child's output and ``serve.run_redaction`` prints only the file list, so a ``[GATE REFUSED]``
+       line never reaches the engineer here — unlike the ``cisco-assess`` CLI, which does surface
+       it. Two quietly-absent files, with the same design shipping beside them, is worse than an
+       honest ungated set (Guardrail 3).
+    2. *A disclosure already exists, in a better place — though it is a partial one.* The SEVEN
+       Word documents carry ``Status: DRAFT — generated; not yet reviewed`` in their Document
+       Control table (``cisco_toolkit/docmeta.py`` ``add_document_control``). That travels INSIDE
+       the file that gets emailed; a sidecar note in the folder does not. Two honest caveats: the
+       workbook, explorer and deck carry NO such marking — and those are exactly the three carriers
+       reason (1) leans on — and the row is a CONSTANT, so for a REVOKED approval it says "not yet
+       reviewed" when the review happened and rejected it. Treat this as mitigation, not as
+       equivalent to gate disclosure.
+    3. *Nothing here can identify the engagement's ledger.* Gate state is per-engagement but
+       nothing binds a ledger to an engagement — it is found by proximity, and proximity is not
+       ownership. Anchoring on cwd adopts the shell's directory (on the stick: the folder every
+       update wipes); anchoring on the collection adopts the nearest ``docs/engagement-state.json``
+       above it, which for the documented layouts is a *shared* parent or the repo checkout itself.
+       Both were tried and both mis-attribute across engagements — and a wrong "approvals present"
+       drawn from another client's ledger is far worse than saying nothing.
+
+    Note the asymmetry that makes (3) decisive: the gate a design would fail on is
+    ``assessment_approved``, and this path ships the assessment (workbook + snapshot) regardless.
+    Withholding the design while shipping the unapproved assessment it derives from is backwards.
+
+    The MOP is the one genuinely different case — its cutover procedure, rollback triggers and
+    sign-off blocks exist in no other artifact, so refusing it WOULD contain something. That is
+    recorded as OPEN in ``docs/log.md`` (2026-07-22); it needs the ledger-ownership problem in (3)
+    solved first, and it is a change to what the field tool may withhold — not this function's
+    call to make.
+    Two independent honesty properties, because a run can fail either way. The redaction checks
+    REFUSE (``EngineRunError`` + a do-not-send marker) when what was written may not be safe. The
+    completeness check WARNS — ``report["missing"]`` lists any family document the engine's
+    fail-soft writers did not produce, so a short set can never be reported as the whole family.
+    A missing document is not a leak, so it does not raise; see ``_family_state``.
+
+    ``reuse_out`` waives the refusal to render into a folder that already holds a deliverable set
+    (``_refuse_reused_out_dir``) — the one path by which another engagement's documents can end up
+    inside this delivery.
     """
     source, n_files = _resolve_and_scan(path)
     out = Path(str(out_dir)).expanduser().resolve()
@@ -455,8 +806,22 @@ def run_redaction_folder(path: Any, out_dir: Any,
             # the one value the engineer invents on the spot, so it is the likeliest typo.
             raise IngestError(f"Cannot create the output folder {out}: {e}. Check the drive "
                               f"letter and that the path is writable and not an existing file.")
-        pre_existing = {p.name for p in out.iterdir() if p.is_file()}
         out_xlsx = out / "Assessment_redacted.xlsx"
+        if not reuse_out:
+            _refuse_reused_out_dir(out, out_xlsx.stem)
+        engine_names = _engine_filenames(out_xlsx.stem)
+        # Name -> (mtime, size), so "did THIS run write it" survives a re-run into the same
+        # folder. Membership alone (the original test) reported every re-rendered document as
+        # pre-existing: a second run into the same --out printed "Wrote 0 file(s)" and would now
+        # read as a set missing all 10 deliverables.
+        pre_existing: Dict[str, Tuple[float, int]] = {}
+        for p in out.iterdir():
+            try:
+                if p.is_file():
+                    st = p.stat()
+                    pre_existing[p.name] = (st.st_mtime, st.st_size)
+            except OSError:
+                continue
 
         cmd = [
             *_engine_argv(),
@@ -466,6 +831,8 @@ def run_redaction_folder(path: Any, out_dir: Any,
             "--output", str(out_xlsx),
             "--workers", "1",
             "--redact",                       # the whole point: every deliverable is pseudonymized
+            # NB deliberately NO --gate-root: the PPDIOO document gates do not apply on this path,
+            # and that is now a decision rather than the accident it used to be. See the docstring.
         ]
         if redact_collection:
             cmd.append("--redact-collection")  # rewrites the RAW captures in place — opt-in only
@@ -498,10 +865,32 @@ def run_redaction_folder(path: Any, out_dir: Any,
         # Only what THIS run produced — enumerating the directory reported pre-existing files
         # (an engineer's own notes, an earlier unredacted export) under the share-safe banner.
         written = sorted(p.name for p in out.iterdir()
-                         if p.is_file() and p.name not in pre_existing)
+                         if p.is_file() and _written_by_this_run(p, engine_names, pre_existing))
+        # Coverage honesty for the document family itself: the redaction checks above certify
+        # that what IS here is safe, and say nothing about what is ABSENT. Every engine writer
+        # fails soft, so an incomplete family is the one failure mode that still exits 0 and
+        # prints a success banner. WARN rather than raise — a missing document is not a leak,
+        # and routing it through EngineRunError would tell the engineer their correctly-redacted
+        # files are UNREDACTED, which is both false and the fastest way to make the real alarm
+        # unbelievable. The set stays usable; the gap is disclosed here, on the console and on disk.
+        missing = _family_state(out_xlsx.stem, out, set(written))
+        gap_lines = _engine_gap_lines((proc.stdout or "") + "\n" + (proc.stderr or ""),
+                                      (workdir, out, source))
+        marker = None
+        if missing:
+            marker = _mark_output_incomplete(out, missing, gap_lines)
+        else:
+            _clear_stale_incomplete_marker(out)
         return {
             "out_dir": str(out),
             "files": written,
+            "missing": missing,
+            "incomplete_note": str(marker) if marker else None,
+            # A DO-NOT-SEND marker from an EARLIER failed run into this folder does not apply to
+            # this one, and nothing removes it (deleting a safety warning is the wrong direction
+            # to err). Surfacing it keeps the folder from saying "unsafe" and "complete" at once.
+            "stale_unsafe_marker": (out / "DO-NOT-SEND-NOT-REDACTED.txt").is_file(),
+            "engine_warnings": gap_lines if missing else [],
             "n_device_dirs": len(device_dirs) - len(skipped),
             "devices": device_dirs,
             "skipped_dirs": skipped,
@@ -539,6 +928,12 @@ def _assess_tree(tree: Path, n_files: int, workdir: Path) -> Tuple[Dict[str, Any
         "--no-html", "--no-docx", "--no-pptx", "--no-design", "--no-mop",
         "--no-crd", "--no-engagement", "--no-archreview", "--no-opshandbook",  # V3.23.170 (stale-list fix)
     ]
+    # NB --no-design/--no-mop are load-bearing beyond speed: cwd below is a scratch workdir, so the
+    # engine's default gate root ('.') finds no docs/engagement-state.json and the PPDIOO gates
+    # would silently degrade to brownfield warn-and-proceed. Dropping either flag from this list
+    # therefore emits a gated deliverable UNGATED. Do NOT "fix" that by passing os.getcwd() as
+    # --gate-root: here that is the SERVER's directory, which is not any one engagement — see
+    # run_redaction_folder's docstring. Pinned by test_gate_state.py's caller inventory.
     t0 = time.monotonic()
     try:
         # stdin=DEVNULL: capture_output pipes only stdout/stderr — an inherited TTY stdin would

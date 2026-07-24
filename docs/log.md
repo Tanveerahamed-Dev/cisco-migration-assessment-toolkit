@@ -4,6 +4,119 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-23] — "best decision" on a finished branch: mapped a 5-session gate swarm, landed an orphaned ADR, added no sixth change
+
+- The `fix/redaction-gate-posture` branch's code was done and its three recorded OPEN items were all already
+  covered by parallel work: (a) the ledger-identifier fix is #439's ADR-0006; (b) the webapp design/MOP HTTP
+  hole had its disclosure fix refuted and closed as #437, and is blocked on #439's per-campaign ledger; (c) the
+  `test_d10_eval_set` concurrent-rebuild false-red was fixed by merged #446 (`load_graph_settled`). So the best
+  decision was explicitly NOT to write more gate code into a swarm of five sessions (#439/#441/#444/#445 + this).
+- Delivered the cross-session integration map the orchestrator alone can see: all four open gate/manifest PRs
+  are CONFLICTING vs main; merge-tree-safe order #441→#445→#444→#448(this)→#439, and opened this branch as #448
+  carrying that note. The rebase of #448 is human-owned: its conflict is inside `run_redaction_folder`, the exact
+  function the merged #438/#440 also reshaped, so a mechanical rebase risks re-introducing the silent ungating —
+  that resolution is the slot-4 merge, not a pre-tidy.
+- Landed a genuinely orphaned artifact: the Cognee evaluation (ADR-0005 + utilization plan + two docstring
+  citations) had sat uncommitted on NO git ref for four days. Committed as #447 off main in an isolated worktree,
+  after web-re-verifying every external citation against primary sources (2601.07978 v4 numbers exact — pinned
+  because v1/v2 lack the Cognee row; Cognee v1.0's remember/recall/forget/improve verbs confirmed literal).
+- `!lesson` **A "best decision" probe on a branch whose work is done is usually an integration/hygiene call, not
+  a new feature.** The reflex is to find code to write; when the territory is already claimed by parallel sessions
+  the right move is to map the swarm, sequence the merges, and land the one orphaned clean thing. Adding a sixth
+  change to contested code is how #437 got refuted. bridge-candidate
+- `!lesson` **"Formalized as ADR-000X" in memory did not mean committed.** My own memory said the Cognee eval was
+  "formalized as ADR-0005"; git showed the files existed on no ref — working-tree-only for four days. A future
+  session would have assumed it was on main. Verify a "recorded/formalized" claim actually reached a commit
+  before relying on it. bridge-candidate
+- `!lesson` **Don't rebase a safety-critical branch to tidy a PR when the conflict is in the safety logic.**
+  #448's conflict is in `run_redaction_folder`; resolving it mechanically could re-introduce the silent-ungating
+  the branch exists to fix, which renders identically in output. Measure where a conflict lands before deciding a
+  rebase is cheap. bridge-candidate
+
+## [2026-07-22] — `--redact-folder` silently ungated the PPDIOO gates; four refuter rounds reversed my answer twice and then found my own tests couldn't fail
+
+- The bug: `run_redaction_folder` launches the engine with `cwd=mkdtemp()`, so `gate_state.enforce`
+  resolved `docs/engagement-state.json` to nothing, took its "no store → brownfield" branch and
+  returned True unconditionally. The As-Built Design and per-wave MOP rendered for ANY engagement,
+  including one with approvals REVOKED. P0-3/DEC-003 was inert on that path for its whole life.
+- Shipped (`fix/redaction-gate-posture`, 099ac65 + 6822242): that path stays UNGATED **by decision**,
+  documented in `run_redaction_folder` + `gate_state.py`; engine `--gate-root` added for the CLI
+  path where blocking is right; a mis-set root now REFUSES in enforce/record/show instead of reading
+  as brownfield (the write side used to `makedirs` a phantom ledger and return a success receipt);
+  and a caller inventory pins every synthetic-cwd engine launch to a declared posture.
+- **OPEN, and this is the durable record of it** — the ledger has no engagement identifier, so
+  ownership rests entirely on which root the caller passes. Until that is fixed: (a) the MOP cannot
+  be gated here even though it is the one deliverable where blocking WOULD contain something (its
+  cutover procedure, quantified rollback triggers, RACI and sign-off exist in no other artifact);
+  (b) `webapp/backend/deliverables.py::generate` still renders design/MOP with no gate check and no
+  redaction, served over HTTP — the larger hole; (c) `tests/test_d10_eval_set.py`'s edge test false-
+  reds during a background graphify rebuild.
+- `!lesson` **Blocking one renderer contains nothing if the content ships in another.** Refusing
+  design/MOP looked like enforcement, but the engine writes the snapshot (:2817), explorer (:2831)
+  and deck (:2853) — all carrying `design_blueprint.target_state`/`wave_plan` — BEFORE the gates run
+  (:2864/:2879), and the gate a design fails on is `assessment_approved`, which that path ships
+  regardless. Before gating a deliverable, ask which OTHER artifacts carry the same payload and
+  when they are written; a partial block that reports "withheld" is worse than an honest ungated
+  set. bridge-candidate
+- `!lesson` **A control test whose control expects the broken outcome cannot fail.** My e2e for
+  `--gate-root` had two arms — flag passed / flag omitted — but BOTH used an empty cwd, and the
+  omitted-flag arm expected ungated, which is exactly what a broken default produces. Mutating the
+  parser default (`"."` → `$HOME`) killed gating for every ordinary CLI run with the whole suite
+  green. Mutate the DEFAULT, not just the explicit value, and make sure one arm exercises the
+  ordinary un-flagged path. bridge-candidate
+- `!lesson` **Once the logic is right, the defects move into the prose about it.** Rounds 1–2
+  reversed the decision twice on evidence I hadn't looked for; rounds 3–4 found the logic sound and
+  my claims wrong — an inverted reason, a false universal surviving in the exact docstring a guard
+  pins as its justification, a prescribed `pending_approvals()` I had deleted, and a "measured, not
+  guessed" limits list that was half guessed. Confidence did not fall as errors moved from code to
+  comments. Audit your own assertions as a separate pass, and never predict what a refuter round
+  will find — I called one "largely moot" and it returned live HIGHs. bridge-candidate
+## [2026-07-22] — `--redact-folder` now says when the set is SHORT (#438) — and a second refuter, aimed at the decision rather than the code, overturned my design
+
+- Closed the last silent-success hole in the redaction command: every engine deliverable writer is
+  fail-soft (logs a warning, continues, exits 0 — deliberate, and left unchanged), so a run that
+  rendered all but two documents reported the survivors as the whole family. Detection is a
+  produced-vs-expected filename DIFF derived from `docmeta.FAMILY` (new `CLI_ARTIFACT_SUFFIX`,
+  reconciled against the engine source by a ratchet test), not a log scan — chosen on evidence:
+  the real engine with `--no-docx --no-pptx` drops two documents and logs NOTHING about either.
+  Incomplete WARNS (exit 3), because a missing document is not a leak and the existing hard-fail
+  path would print "treat this as UNREDACTED" over correctly-redacted files. Refuted twice before
+  merge: 14 defects from a code-aimed pass, a design reversal from a judgement-aimed one.
+- `!lesson` **Existence is not delivery.** Writers truncate their target and THEN write, so a full
+  disk leaves a 0-byte `.docx`/`.html` carrying a brand-new timestamp; a name-and-mtime check
+  certified it as delivered — the very bug the check existed to close, re-armed behind a "you have
+  all of them" banner. Worse on a re-run, where the truncate destroys the good previous copy.
+  Validate BYTES: size, plus the zip central directory, which sits at the END of a docx/pptx/xlsx
+  and is precisely what an interrupted write loses. bridge-candidate
+- `!lesson` **A comparison DIRECTION is an assumption — state it or lose to it.** `mtime > previous`
+  silently assumes the clock only moves forward. On an air-gapped field laptop (manual time
+  correction) or a FAT32 stick crossing a DST/timezone boundary, previously-written files read back
+  as NEWER, and every document of a flawless run reported missing — the alarm-fatigue failure this
+  repo has already paid for once. Inequality, not ordering; compare size alongside mtime so a
+  rewrite inside one coarse timestamp tick is still seen. bridge-candidate
+- `!lesson` **Prevention at second zero beats repair after the work — and count how often each
+  fires.** A leftover deliverable from an earlier job sat under the canonical name of a document
+  this run failed to write (and redaction keeps hostnames, so it identifies another client). I
+  chose to MOVE it aside. Wrong: the engine seals a hash manifest over the folder BEFORE the move,
+  so moving broke the audit trail it ships; the next successful run deleted the note and left the
+  foreign file with zero disclosure; and it fired on the SAME-job re-run too, ripping a good
+  document out of a complete set. The hazard needed three preconditions, the mitigation fired on a
+  one-precondition case — the signature of the wrong altitude. Replaced with a pre-flight REFUSAL
+  (output folder already holds a set) plus an explicit `--reuse-out` escape: milliseconds instead
+  of ten minutes, and the precondition is removed rather than the symptom. bridge-candidate
+- `!lesson` **Put field warnings on ONE stream, LAST.** Redirecting a long run to a log
+  (`app.exe … > run.log 2>&1`) is the natural thing to do. Python block-buffers stdout and
+  line-buffers stderr, so a warning on stderr was hoisted ABOVE the command banner — reading as if
+  it belonged to a previous command — and the log ENDED on the reassurance block, so `tail` showed
+  a clean success. Single stream, warning after the thing it qualifies. bridge-candidate
+- `!lesson` **Reviewing the JUDGEMENT is a different activity from reviewing the CODE.** One
+  refuter aimed at the implementation found 14 real defects and left the design intact; a second,
+  aimed only at the decision, reversed it. Two habits came out of it: rank every rejected
+  alternative with an argued verdict instead of dismissing it in passing (the option I had waved
+  off as friction was the right one), and watch for "X is bad because it prints message Y" — I
+  rejected a non-zero exit code on the strength of a message I could simply have changed.
+  bridge-candidate
+
 ## [2026-07-22] — Shipped the wrong answer to a doctrine question through green CI, then reverted it under refutation (#437 closed)
 
 - The question: should AssessHub's on-demand `deliverables.generate("design"|"mop")` consult the
