@@ -77,6 +77,49 @@ question below. Someone has to pick one vocabulary and one durable home:
 
 Either way it is real work by whoever owns the design. **Do not attempt it as a merge resolution.**
 
+### 1b. The reconciliation — #439's own docstrings very nearly decide it
+
+The choice is not a coin-flip. Two constraints, both written by #439 itself, bound the answer:
+
+1. **#439 permits the cache** (`cisco_toolkit/gate_state.py:36–37`):
+   > "The manifest may cache a copy, but must cite this array as its owner (Law 1)."
+
+   So `verdicts()`, `reset_verdicts()` and the manifest's `{"stage": "gate"}` step **may survive** — as
+   a per-run cache that names the audit array as owner. #445's three `COLLECT_PARSE` call sites do
+   **not** have to be deleted, which removes the `ImportError` failure mode entirely.
+
+2. **#439 forbids a second vocabulary** (its `STATUSES` docstring):
+   > "a second enum for 'the same seven situations, as seen by the enforcer' is a copy that drifts, and
+   > the two surfaces would then disagree about the same ledger."
+
+   So mapping `STATUSES` back onto #445's `VERDICTS` strings (`clear`→`approved`,
+   `unreadable`→`refused_unreadable`, …) is *exactly* the forbidden copy. A translation layer is not
+   an option.
+
+Together those force the shape:
+
+* **Keep** #439's `GateVerdict` + `STATUSES` as the one vocabulary, and the store's `audit` array as
+  the durable owner.
+* **Keep** #445's `_VERDICTS` / `verdicts()` / `reset_verdicts()` as the **per-run cache**, populated
+  from the `GateVerdict` that `enforce()` already returns.
+* `docs/ssot.md` then names the audit array as owner and the manifest row as a cache that cites it —
+  which is what Law 1 asks for anyway.
+* **Cost — measured, and larger than it first looks.** #445's `VERDICTS` tuple is deleted, and
+  `tests/test_gate_audit_trail.py` needs real surgery, not a rename:
+  * `:190–195` drive six runs keyed on literal strings (`ungated`, `approved`, `refused`,
+    `refused_no_reason`, `overridden`, `refused_unreadable`);
+  * `:197` asserts `set(seen) == set(gate_state.VERDICTS)` — an exhaustiveness check bound to the tuple;
+  * `:201` asserts `all(not proceeded for v … if v.startswith("refused"))`. **#439's vocabulary has no
+    such prefix** — `pending`, `unreadable`, `ownership_mismatch` all refuse without starting with
+    `refused`. This assertion cannot be re-expressed by renaming; it has to become a lookup, which
+    `GateVerdict.proceed` makes trivial but which is still an edit;
+  * `:335` `test_VERDICTS_lists_every_value_record_can_emit` exists *solely* to pin the tuple against
+    what `_record()` emits — it dies with the tuple and needs a `STATUSES` equivalent.
+
+That is bounded, but it is authoring, not merge resolution: it deletes a public tuple from #445 and
+rewrites a test file #439 does not own. It should be done by whoever owns the design, on a branch, with
+both PRs' suites run together — which is the one thing per-PR CI never does.
+
 ### 2. Corrected conflict matrix — #445 is the hub
 
 Heads: `441=db9b8a8` `445=4331a24` `444=bd196dd` `439=9e8c0bc`. Every PR is clean against `main`;
