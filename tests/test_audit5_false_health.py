@@ -97,6 +97,114 @@ def test_trunk_native_sheet_no_mismatch_discloses_coverage():
     assert banner.strip() != "clean no native-vlan mismatches on inter-switch trunks"
 
 
+def _trunk_native_banner(all_interfaces):
+    """Render the sheet and return its no-mismatch banner cell."""
+    import pytest
+    openpyxl = pytest.importorskip("openpyxl")
+    from cisco_toolkit import excel
+    wb = openpyxl.Workbook()
+    excel.write_trunk_native_sheet(wb, all_interfaces)
+    return str(wb[excel.TRUNK_NATIVE_SHEET_NAME].cell(2, 2).value or "")
+
+
+def _if(port, **kw):
+    from cisco_toolkit.model import InterfaceData
+    return InterfaceData(port=port, **kw)
+
+
+def test_trunk_native_no_mismatch_states_compared_links_not_a_device_count():
+    """QA row 15 + its refutation. The banner rendered len(all_interfaces) labelled "collected device(s)" --
+    on M0 "across the 303 collected device(s)" when 253 were collected. NO device count derived from that map
+    is honest: it holds an entry per in-scope device only on --no-collect (a LIVE run DROPS an unreachable
+    device), and even a correct collected count credits devices that sat on no compared link (M0: 253 with
+    ports, 149 on a both-ends-collected link). The banner must state what the check actually COMPARED -- links
+    with both ends collected -- and disclose the uncompared remainder.
+
+    Fixture is deliberately ASYMMETRIC (compared=1, gap=3, observed=4, devices=2): every number differs, so an
+    implementation that swaps them, or reverts to any device count, cannot render this string."""
+    banner = _trunk_native_banner({
+        "sw1": {"Gi0/1": _if("Gi0/1", cdp_neighbor="sw2", neighbor_port="Gi0/1", endpoint_type="Switch"),
+                # three links to switches that were NEVER collected -> far end unresolvable, NOT comparable
+                "Gi0/2": _if("Gi0/2", cdp_neighbor="ghostA", neighbor_port="Gi0/9", endpoint_type="Switch"),
+                "Gi0/3": _if("Gi0/3", cdp_neighbor="ghostB", neighbor_port="Gi0/9", endpoint_type="Switch"),
+                "Gi0/4": _if("Gi0/4", cdp_neighbor="ghostC", neighbor_port="Gi0/9", endpoint_type="Switch")},
+        "sw2": {"Gi0/1": _if("Gi0/1", cdp_neighbor="sw1", neighbor_port="Gi0/1", endpoint_type="Switch")},
+    })
+    # EXACT equality, not substring: an unanchored "3 of 4" check is satisfied by "-3 of 4" (a sign-flipped
+    # gap) and by "13 of 4" (a prefixed figure) -- a refuter proved a sign-flip mutant shipping a NEGATIVE
+    # link count survived the substring form. Equality pins every digit, both figures, and the wording.
+    assert banner == (
+        "No native-VLAN mismatch found. 1 inter-switch link(s) with both ends collected were compared; "
+        "3 of 4 observed link(s) had an uncollected far end and were NOT compared. Uncollected devices, "
+        "and any trunk whose far end was not collected, are NOT assessed -- this is not a fleet-wide "
+        "guarantee."), banner
+    # and no device-count framing may return in ANY form (the defect and its first, also-wrong fix)
+    for forbidden in ("device(s) with collected interface data", "collected device(s)", "in-scope device(s)"):
+        assert forbidden not in banner, f"device-count framing returned: {banner}"
+
+
+def test_trunk_native_no_mismatch_omits_gap_clause_when_everything_compared():
+    """The other branch of the conditional (gap == 0) -- unpinned branches are how a mutant survives. With
+    every link's far end collected there is no uncompared remainder to disclose, so the parenthetical must be
+    ABSENT (not rendered as a vacuous '0 of N'), while the coverage-honest tail still stands."""
+    banner = _trunk_native_banner({
+        "sw1": {"Gi0/1": _if("Gi0/1", cdp_neighbor="sw2", neighbor_port="Gi0/1", endpoint_type="Switch")},
+        "sw2": {"Gi0/1": _if("Gi0/1", cdp_neighbor="sw1", neighbor_port="Gi0/1", endpoint_type="Switch")},
+    })
+    assert banner == (
+        "No native-VLAN mismatch found. 1 inter-switch link(s) with both ends collected were compared. "
+        "Uncollected devices, and any trunk whose far end was not collected, are NOT assessed -- this is "
+        "not a fleet-wide guarantee."), banner
+    assert "NOT compared" not in banner, f"vacuous gap clause rendered: {banner}"
+    assert "0 of" not in banner, banner
+
+
+def test_trunk_native_discloses_coverage_even_when_mismatches_are_listed():
+    """The clean case disclosed its blind spot but the FINDINGS case said nothing: rows were listed with no
+    statement of how many links could not be compared at all -- the same concealment, and worse, since a
+    reader looking at real findings most needs to know what the check could not see. Both branches now
+    emit the identical coverage sentence, built once."""
+    import pytest
+    openpyxl = pytest.importorskip("openpyxl")
+    from cisco_toolkit import excel
+    ai = {
+        "sw1": {"Gi0/1": _if("Gi0/1", cdp_neighbor="sw2", neighbor_port="Gi0/1", endpoint_type="Switch",
+                             trunk_native_vlan="1"),
+                "Gi0/2": _if("Gi0/2", cdp_neighbor="ghostA", neighbor_port="Gi0/9", endpoint_type="Switch")},
+        "sw2": {"Gi0/1": _if("Gi0/1", cdp_neighbor="sw1", neighbor_port="Gi0/1", endpoint_type="Switch",
+                             trunk_native_vlan="99")},
+    }
+    wb = openpyxl.Workbook()
+    excel.write_trunk_native_sheet(wb, ai)
+    ws = wb[excel.TRUNK_NATIVE_SHEET_NAME]
+    assert str(ws.cell(2, 2).value) == "1" and str(ws.cell(2, 4).value) == "99"   # the mismatch row itself
+    assert ws.cell(3, 1).value == "coverage"
+    assert ws.cell(3, 2).value == (
+        "1 inter-switch link(s) with both ends collected were compared; 1 of 2 observed link(s) had an "
+        "uncollected far end and were NOT compared. Uncollected devices, and any trunk whose far end was "
+        "not collected, are NOT assessed -- this is not a fleet-wide guarantee."), ws.cell(3, 2).value
+
+
+def test_trunk_native_coverage_counts_the_population_the_check_compares():
+    """The banner's numbers and the mismatch rows must come from ONE walk (_trunk_link_ends), so the disclosed
+    coverage can never describe a different population than the check ran on: the mismatch found here sits on
+    the single comparable link, and the uncollected-far-end link is counted as observed-but-not-compared."""
+    from cisco_toolkit import excel
+    ai = {
+        "sw1": {"Gi0/1": _if("Gi0/1", cdp_neighbor="sw2", neighbor_port="Gi0/1", endpoint_type="Switch",
+                             trunk_native_vlan="1"),
+                "Gi0/2": _if("Gi0/2", cdp_neighbor="ghostA", neighbor_port="Gi0/9", endpoint_type="Switch",
+                             trunk_native_vlan="1")},
+        "sw2": {"Gi0/1": _if("Gi0/1", cdp_neighbor="sw1", neighbor_port="Gi0/1", endpoint_type="Switch",
+                             trunk_native_vlan="99")},
+    }
+    cov = excel.compute_trunk_native_coverage(ai)
+    assert cov == {"links_observed": 2, "links_compared": 1}, cov
+    rows = excel.compute_trunk_native_mismatches(ai)
+    assert len(rows) == 1 and {rows[0]["a_native"], rows[0]["b_native"]} == {"1", "99"}, rows
+    assert len(rows) <= cov["links_compared"]   # a mismatch can only be found on a COMPARED link
+
+
 def test_config_hygiene_sheet_empty_discloses_coverage():
     """[#23] An empty Config Hygiene sheet (no undefined/unused issues) showed nothing, reading as a fleet-wide
     clean bill though only collected devices are assessed. The empty case now discloses the assessed scope."""
