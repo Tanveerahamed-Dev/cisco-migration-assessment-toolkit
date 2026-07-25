@@ -2,3 +2,16 @@
 # core.autocrlf=true would otherwise check them out with CRLF, which breaks the
 # `#!/usr/bin/env bash` shebang ("bad interpreter: ...^M") and the hook silently fails.
 .claude/hooks/*.sh text eol=lf
+
+# Keep the design-sync SOURCE surface LF-only. These files are inputs to the
+# design-system bundle generator, and its `_ds_sync.json` verification anchor hashes the
+# generated artifacts BYTE-wise. A session AUTHORS these with LF; core.autocrlf=true then
+# re-materializes them as CRLF on the next checkout, so the very same content hashes
+# differently and the driver reports the component as "changed" forever — phantom drift
+# that erodes the diff signal real regressions rely on (proven 2026-07-24: the three Skel*
+# components' prompt.md hashed cec8acd63db6 as CRLF vs the live c2910b870625 as LF, with
+# byte-identical text). Pinning eol=lf makes every checkout match what the tools author.
+.design-sync/**/*.md text eol=lf
+.design-sync/**/*.ts text eol=lf
+.design-sync/**/*.tsx text eol=lf
+.design-sync/**/*.json text eol=lf
