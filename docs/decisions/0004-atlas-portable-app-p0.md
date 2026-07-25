@@ -71,10 +71,13 @@ helps only on self-controlled fleets.
 ## Deferred to the owner (calendar items, not session work)
 
 - ~~Order the code-signing certificate~~ — **superseded by D5** (deferred indefinitely, no spend).
-- ~~Delete `..\Enhancements_attic_2026-07-05\`~~ — **DONE 2026-07-25.** Sent to the Recycle Bin
-  rather than hard-deleted, and **re-read there the same day to verify this bullet** — so the
-  inventory is measured against the recovered bytes, not recalled. Full recursive contents,
-  3 files / 896,681 bytes:
+- ~~Delete `..\Enhancements_attic_2026-07-05\`~~ — **DONE 2026-07-25, at the owner's instruction**,
+  executed by session `local_0c935881`. The decision was the owner's and the session only the
+  hands, so this stays an owner calendar item, consistent with the heading above; the 2026-07-24
+  session had gated the action on "tell me and I'll delete", and that instruction is what
+  authorized it. Sent to the Recycle Bin rather than hard-deleted, and **re-read there the same day
+  to verify this bullet** — so the inventory is measured against the recovered bytes, not recalled.
+  Full recursive contents, 3 files / 896,681 bytes:
 
   | file | bytes | credential-pattern scan |
   |---|---|---|
