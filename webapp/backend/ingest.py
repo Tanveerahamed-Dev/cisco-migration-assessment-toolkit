@@ -297,6 +297,12 @@ def _refuse_unsafe_out_dir(out: Path, source: Path) -> None:
                           f"Choose a folder that does not contain the captures.")
 
 
+#: The marker a run leaves when it could NOT certify its output. ONE owner for the name (SSOT
+#: Law 1): it is written here, tested for by the completeness report, and — the reason it must not
+#: be a third literal — decides whether the report may claim the folder is safe to share.
+UNSAFE_MARKER = "DO-NOT-SEND-NOT-REDACTED.txt"
+
+
 def _mark_output_unsafe(out: Path, why: str) -> None:
     """Leave a loud on-disk marker when a run did NOT certify its output.
 
@@ -304,7 +310,7 @@ def _mark_output_unsafe(out: Path, why: str) -> None:
     ``*_redacted*`` — they assert the exact property the run declined to certify, and stderr
     scrolls away. The marker is what a hurried engineer sees in the folder."""
     try:
-        (out / "DO-NOT-SEND-NOT-REDACTED.txt").write_text(
+        (out / UNSAFE_MARKER).write_text(
             "This folder is NOT safe to share.\n\n"
             f"Atlas refused to certify this run: {why}.\n"
             "The files here are named *_redacted* but that property was NOT verified, and at\n"
@@ -400,10 +406,23 @@ def _refuse_reused_out_dir(out: Path, stem: str) -> None:
     set. Refusing costs milliseconds instead of ten minutes, removes the hazard's precondition
     instead of mitigating its consequence, and enforces the habit README-FIELD.txt already
     prescribes. ``--reuse-out`` is the deliberate escape, and it is deliberately a decision the
-    engineer has to make with the folder's contents named in front of them."""
+    engineer has to make with the folder's contents named in front of them.
+
+    The prior set is NOT called "redacted" when ``UNSAFE_MARKER`` sits beside it: that marker means
+    an earlier run could not certify those very files, so describing them as redacted — in the same
+    sentence that offers ``--reuse-out`` — talks the engineer into the one path that carries them
+    forward into a delivery."""
     prior = _prior_set_in(out, stem)
     if not prior:
         return
+    if (out / UNSAFE_MARKER).is_file():
+        raise IngestError(
+            f"{out} holds {UNSAFE_MARKER} and a deliverable set ({len(prior)} file(s), e.g. "
+            f"{', '.join(prior[:3])}) that an earlier run could NOT certify as redacted - those "
+            f"files may contain real client data. Do not render into this folder: any document "
+            f"this run fails to write would leave the uncertified copy in place under the right "
+            f"name, inside a set you are about to send. Move or delete that output first, then "
+            f"use an EMPTY folder. (--reuse-out is deliberately NOT offered here.)")
     raise IngestError(
         f"{out} already holds a redacted deliverable set ({len(prior)} file(s), e.g. "
         f"{', '.join(prior[:3])}). If it is from ANOTHER job, its documents still carry that "
@@ -498,27 +517,48 @@ def _engine_gap_lines(engine_output: str, scrub: Tuple[Path, ...], limit: int = 
 
 def _mark_output_incomplete(out: Path, gaps: List[Dict[str, str]],
                             reasons: List[str]) -> Optional[Path]:
-    """Leave an on-disk note when the set is share-safe but SHORT of the full family. Returns the
-    path actually written, or None — the caller must not promise a file that is not there.
+    """Leave an on-disk note when the set is SHORT of the full family. Returns the path actually
+    written, or None — the caller must not promise a file that is not there.
 
-    Deliberately NOT the ``DO-NOT-SEND`` marker: nothing here is unredacted, and crying leak over
-    a missing document is the false alarm that teaches an engineer to ignore both markers. The
-    file exists for the same reason its sibling does — stderr scrolls away, and the folder is
-    what a hurried engineer actually looks at before zipping it.
+    Deliberately NOT the ``DO-NOT-SEND`` marker: a missing document is not a leak, and crying leak
+    over one is the false alarm that teaches an engineer to ignore both markers. The file exists
+    for the same reason its sibling does — stderr scrolls away, and the folder is what a hurried
+    engineer actually looks at before zipping it.
+
+    **The safety line is CONDITIONAL, and that is the point.** This note used to open with
+    "Everything in this folder IS redacted and safe to share" unconditionally. That sentence is
+    false in a reachable state: a run whose redaction check FAILS leaves ``UNSAFE_MARKER`` and its
+    unredacted documents on disk (nothing is deleted, by design); re-running into the same folder
+    with ``--reuse-out`` — which the reuse refusal itself suggests — and losing one writer leaves
+    that earlier run's UNREDACTED file under the canonical name, reported only as ``stale``. The
+    note then asserted the folder was safe over a document that was not. A false *safe* claim is
+    the mirror of the false *leak* claim this module is organised to avoid, and it is the worse
+    of the two: the leak alarm costs a re-run, this one ships client data. So the claim is made
+    only when the marker is absent, and inverted when it is present.
 
     An existing file of that name that Atlas did NOT write is never clobbered (it could be the
     engineer's own record of what they sent); the note goes to a fallback name instead."""
-    body = [_INCOMPLETE_HEADER, "",
-            "Everything in this folder IS redacted and safe to share - but the engine did not",
-            "produce the whole document family, and a partial set can read as the full one.",
-            "", "Not delivered by this run:"]
+    unsafe = (out / UNSAFE_MARKER).is_file()
+    stale = [g for g in gaps if g["state"] == "stale"]
+    body = [_INCOMPLETE_HEADER, ""]
+    if unsafe:
+        body += [f"DO NOT SEND THIS FOLDER. It also holds {UNSAFE_MARKER}, left by a run whose",
+                 "redaction could not be certified - so files here may contain REAL client data.",
+                 "Read that file first; the list below is only about which documents are missing."]
+    else:
+        body += ["What this run wrote IS redacted - but the engine did not produce the whole",
+                 "document family, and a partial set can read as the full one."]
+    body += ["", "Not delivered by this run:"]
     body += [f"  - {g['name']}  ({g['filename']})\n      {g['state'].upper()}: {g['detail']}"
              for g in gaps]
-    if any(g["state"] == "stale" for g in gaps):
+    if stale:
         body += ["", "STALE means a file from an EARLIER run into this folder is sitting under the",
-                 "name this run's document should have had. If that run was for a DIFFERENT job it",
-                 "identifies another client - redaction keeps hostnames and site codes. Check which",
-                 "job it came from, or delete it and re-run into an EMPTY folder."]
+                 "name this run's document should have had. This run did not write it, so it is NOT",
+                 "covered by this run's redaction check. Two ways that bites: if the earlier run was",
+                 "for a DIFFERENT job it identifies another client (redaction keeps hostnames and",
+                 "site codes), and if the earlier run FAILED its redaction check the file may be",
+                 "UNREDACTED. Check which run it came from, or delete it and re-run into an EMPTY",
+                 "folder."]
     if reasons:
         body += ["", "The engine reported:"] + [f"  {r}" for r in reasons]
     body += ["", "Either re-run the redaction, or tell the recipient which documents are not",
@@ -889,7 +929,7 @@ def run_redaction_folder(path: Any, out_dir: Any, redact_collection: bool = Fals
             # A DO-NOT-SEND marker from an EARLIER failed run into this folder does not apply to
             # this one, and nothing removes it (deleting a safety warning is the wrong direction
             # to err). Surfacing it keeps the folder from saying "unsafe" and "complete" at once.
-            "stale_unsafe_marker": (out / "DO-NOT-SEND-NOT-REDACTED.txt").is_file(),
+            "stale_unsafe_marker": (out / UNSAFE_MARKER).is_file(),
             "engine_warnings": gap_lines if missing else [],
             "n_device_dirs": len(device_dirs) - len(skipped),
             "devices": device_dirs,
