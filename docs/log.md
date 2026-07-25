@@ -52,6 +52,20 @@ Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembe
   output; treat pytest exits 4/5 as RED; and sanity-check that the run actually executed (progress
   dots, `[100%]`, plausible duration) — a sub-minute pass on a ~2200-test suite is a lie.
   bridge-candidate
+- `!lesson` **In a squash-merge repo, every quick "is this branch merged?" check lies — only content
+  settles it.** Cleaning up after the swarm, three standard tools each answered WRONG on branches whose
+  work was fully in `main`: `git cherry` marked them `+` (absent) because squash-merging rewrites the
+  patch-id; `git branch -d` refused them as "not fully merged" because it tests containment in the
+  CURRENT HEAD, not `origin/main` — the checkout sat on an unrelated feature branch; and
+  `git diff main...branch` showed a fat diff because 3-dot compares against the MERGE-BASE, so it
+  displays content `main` already has. I also mis-read my own evidence, grepping the PRODUCTION file
+  for TEST function names and taking the 0 hits as "tests missing from main". What actually settled
+  it: per file, extract the added lines from the 3-dot diff and check each against **main's version of
+  that same file** — all six scratch branches came back 0-absent (208/198/43/27/66/76 lines) and were
+  safe to delete. Rules: use `git merge-base --is-ancestor <branch> origin/main` for containment (never
+  `branch -d`'s verdict, never `--merged` from an unrelated HEAD), and fall back to content comparison
+  whenever history was rewritten — and preserve anything genuinely absent as a ref before deleting.
+  bridge-candidate
 - **The independent refuter earned the whole exercise.** Beyond catching my contamination it found a
   real gap in the merge: `missing` is nullable ON PURPOSE (`None` = never evaluated, `[]` =
   evaluated-clean), but nothing pinned the two ownership statuses #439 added — dropping them from
