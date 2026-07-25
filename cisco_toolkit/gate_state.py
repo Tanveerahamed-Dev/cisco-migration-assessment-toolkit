@@ -47,6 +47,30 @@ another engagement) -- and they report ``GateVerdict.recorded=False`` rather tha
 (``_record_refusal`` enumerates all five). The ledger therefore grows by one row per refused deliverable per
 run; ``show`` counts them beside the overrides and tails the last ten.
 
+**Writes are SERIALISED, and every write re-reads.** All three mutating entry points (``enforce`` via
+``_record_refusal`` / the override line, ``record_decision``, ``bind_engagement``) go through
+``_locked_update``: take an exclusive OS lock on a ``<ledger>.lock`` sidecar, RE-READ the ledger from
+disk, apply the change to *that* state, save, release.
+
+Both halves are required, and the re-read is the one that closes the defect. This used to be a LOST
+UPDATE: a human ``approve`` that had completed and landed on disk between a refusing run's
+``load_store`` and its save was DELETED — the signed gate and its ``approve`` audit row both — while
+the overwriting run reported ``recorded=True`` and the engagement silently reverted to unapproved.
+``save_store``'s atomicity never helped: the result was valid JSON, merely missing a human decision,
+and there are no backups for this store. A lock alone would not have fixed it either — it would
+serialise two writers while still letting the second persist a snapshot that predates the first.
+Passing a stale store is now structurally impossible (``_append_audit`` takes no ``store`` argument),
+and ``record_decision`` / ``bind_engagement`` run their VALIDATION inside the lock as well, because an
+ownership check against stale state could approve into a ledger that had just been bound elsewhere.
+``load_store`` stays deliberately UNLOCKED: it serves ``enforce``'s decision and ``show``'s display,
+and a read that a later write supersedes is ordinary staleness, not a lost update.
+
+**The lock never withholds a deliverable.** It fails soft with a warning where advisory locks do not
+work (network shares, some USB paths), and on timeout it proceeds loudly rather than refusing: the
+kernel releases these locks when a holder dies, so a bounded wait that expires means a live writer
+rather than an abandoned lock file — and blocking every gate operation, including a human ``approve``,
+over a lock file would be a worse defect than the race it prevents. See ``_ledger_lock``.
+
 **Root resolution — the one way this module fails silently.** ``root`` defaults to ``"."``, so the
 store is found only if the *process's working directory* is the engagement. That is right for a
 human ``cisco-assess`` run (it inherits the operator's cwd) and wrong for any wrapper that re-homes
@@ -133,12 +157,15 @@ bind <engagement>``.
 """
 from __future__ import annotations
 
+import contextlib
 import copy
 import getpass
 import json
 import logging
 import os
+import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -322,26 +349,191 @@ def store_path(root: str = ".") -> str:
     return os.path.join(root, STORE_RELPATH)
 
 
-def load_store(root: str = ".") -> Tuple[Optional[dict], str]:
-    """Return ``(store, path)``. ``store`` is None when the file is ABSENT (ungated brownfield).
-    A file that exists but is unreadable / not a JSON object raises GateStateError — once an
-    engagement is gate-tracked, a broken ledger must never be mistaken for "no gates"."""
-    path = store_path(root)
+#: How long to wait for another writer to finish before giving up and proceeding UNLOCKED. Short on
+#: purpose: every critical section here is one small read + one small write (milliseconds), so a wait
+#: this long already means something abnormal.
+LOCK_TIMEOUT_S = 10.0
+
+#: Sidecar suffix. The lock is NEVER taken on the ledger itself: this module deliberately never
+#: rewrites a corrupt ledger, and on Windows ``os.replace`` cannot take a destination while any handle
+#: is open on it — a lock held on the ledger would break the very write it is protecting. Verified the
+#: other way too: ``os.replace`` onto the ledger SUCCEEDS while the sidecar lock is held, which is why
+#: the lock can (and must) span the whole load → mutate → save instead of being dropped before the
+#: rename. A sidecar left behind is inert; it holds no data and is re-locked on the next run.
+LOCK_SUFFIX = ".lock"
+
+
+def _lock_exclusive(fd: int) -> None:
+    """Take an exclusive, NON-BLOCKING lock on ``fd``, or raise OSError. Stdlib only, per this
+    module's no-dependency contract: ``msvcrt`` on Windows, ``fcntl`` elsewhere.
+
+    Branched on ``sys.platform`` rather than ``try: import fcntl`` so a type checker can narrow the
+    platform-specific module (the try/except form reports five unresolved attributes on Windows)."""
+    if sys.platform == "win32":
+        import msvcrt
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _unlock(fd: int) -> None:
+    """Release the lock. Best-effort: closing the fd releases it anyway, so a failure here is never
+    worth propagating out of the ``finally`` that calls it."""
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:                                            # pragma: no cover
+        pass
+
+
+def _open_lock_fd(path: str) -> int:
+    """Open (creating) the sidecar and return its fd. A separate function ONLY so the
+    locking-unavailable path has a narrow seam to fault-inject: patching ``os.open`` instead would
+    also break ``tempfile.mkstemp``, which ``save_store`` uses, and test a different failure.
+
+    Creates the parent directory, exactly as ``save_store`` does. Without this the FIRST write to a
+    new engagement — ``record_decision`` creating the ledger, i.e. the enrolment moment — found no
+    ``docs/`` yet, failed to open the sidecar, and ran unserialised behind an alarming warning on a
+    completely normal path. (Found by running it, not by reading it.)"""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    return os.open(path + LOCK_SUFFIX, os.O_RDWR | os.O_CREAT)
+
+
+@contextlib.contextmanager
+def _ledger_lock(path: str, timeout: Optional[float] = None):
+    """Serialise the whole read-modify-write of the ledger at ``path``. Yields True when the lock was
+    held, False when the write is proceeding UNSERIALISED (and has said so at WARNING).
+
+    **Never raises, and never withholds.** Two ways it declines, both deliberate:
+
+    * **Locking is unavailable** — a filesystem with no working advisory locks (network shares, some
+      exFAT/USB paths, an unwritable directory). Fail SOFT to the historical behaviour with a warning:
+      the run must not die over bookkeeping, which is the established posture in ``_record_refusal``.
+    * **Timeout** — another writer held it for longer than ``timeout``. Proceed, loudly. The
+      alternative (refuse) was rejected: an OS advisory lock is released by the kernel when its
+      holder DIES, so a lock that is still held after a bounded wait means a genuinely active writer
+      or a degraded filesystem — not the abandoned-lock case. Refusing would convert a rare, narrow
+      race into a guaranteed outage that blocks *every* gate operation, including a human trying to
+      ``approve``, with no recourse on a USB stick with no admin rights. Withholding a deliverable
+      over a lock file is its own safety defect. Because the update re-reads inside this block either
+      way, proceeding unlocked is never WORSE than the behaviour that shipped before the lock existed.
+    """
+    # Read the module global at CALL time, not as a default argument: a default binds once at
+    # definition, so `LOCK_TIMEOUT_S` could not be tuned or patched (a test that lowered it still
+    # waited the full 10s, which is how this was noticed).
+    if timeout is None:
+        timeout = LOCK_TIMEOUT_S
+    fd = None
+    try:
+        fd = _open_lock_fd(path)
+    except OSError as e:
+        logger.warning("[gate] could not open the ledger lock beside %s (%s) -- proceeding without "
+                       "serialisation; a concurrent writer could overwrite this update", path, e)
+        yield False
+        return
+
+    deadline = time.monotonic() + timeout
+    held = False
+    try:
+        while True:
+            try:
+                _lock_exclusive(fd)
+                held = True
+                break
+            except OSError as e:
+                if time.monotonic() >= deadline:
+                    logger.warning("[gate] the ledger lock beside %s was held by another writer for "
+                                   "%.0fs (%s) -- proceeding WITHOUT serialisation rather than "
+                                   "withholding; if two runs share this engagement, re-run when the "
+                                   "other finishes and check 'gate_state show'", path, timeout, e)
+                    break
+                time.sleep(0.05)
+        yield held
+    finally:
+        if held:
+            _unlock(fd)
+        os.close(fd)
+
+
+def _locked_update(path: str, apply):
+    """The ONE write path: serialise, RE-READ the ledger from disk, apply the mutation, save.
+
+    Re-reading inside the lock is what actually closes the lost update — a lock around a mutation of
+    a store loaded EARLIER would still serialise two writers while letting the second one persist a
+    snapshot that predates the first. ``apply(store, existed)`` therefore receives the current on-disk
+    state and must express the mutation as an operation on it, not as a pre-computed result. It may
+    raise (``GateStateError`` for a corrupt audit array, or an ownership contradiction) and nothing is
+    written. ``existed`` is False when this call is CREATING the ledger — the enrolment moment that
+    activates enforcement, which ``record_decision``/``bind_engagement`` treat differently from a
+    write to an established one, and which cannot be re-derived after ``_new_store()`` has filled the
+    dict in.
+
+    The re-read also means the FAIL-SOFT path (see ``_ledger_lock``) is no worse than the historical
+    behaviour: without a lock the window between this read and the save is still there, but it is
+    now microseconds of pure computation rather than spanning a caller's whole validation.
+    """
+    with _ledger_lock(path):
+        store = _read_ledger(path)
+        existed = store is not None
+        if store is None:
+            store = _new_store()
+        result = apply(store, existed)
+        save_store(path, store)
+        return result
+
+
+def _read_ledger(path: str) -> Optional[dict]:
+    """Parse the ledger at an explicit PATH. None when ABSENT; GateStateError when present-but-broken.
+    Shared by ``load_store`` (root-relative) and ``_locked_update`` (which already has the path)."""
     if not os.path.exists(path):
-        return None, path
+        return None
     try:
         with open(path, encoding="utf-8") as f:
             store = json.load(f)
-    except (OSError, ValueError) as e:
+    # RecursionError is included because it is a property of the FILE, not a bug here, and this
+    # function's whole contract is that a broken ledger fails CLOSED rather than raising: it
+    # subclasses RuntimeError, so it escaped the (OSError, ValueError) catch as a raw traceback,
+    # killing a run part-way through the deliverable set. Reproduced at ~3200 nesting levels, where
+    # json.load's C scanner still accepts the file. The WRITE side already handles it by name in
+    # _record_refusal; only the read side was missed.
+    except (OSError, ValueError, RecursionError) as e:
         raise GateStateError(f"unreadable gate-state store {path}: {e}") from e
     if not isinstance(store, dict):
         raise GateStateError(f"gate-state store {path} is not a JSON object")
-    return store, path
+    return store
+
+
+def load_store(root: str = ".") -> Tuple[Optional[dict], str]:
+    """Return ``(store, path)``. ``store`` is None when the file is ABSENT (ungated brownfield).
+    A file that exists but is unreadable / not a JSON object raises GateStateError — once an
+    engagement is gate-tracked, a broken ledger must never be mistaken for "no gates".
+
+    READ-ONLY, and deliberately unlocked: callers use it to DECIDE (``enforce``) or to DISPLAY
+    (``show``), and the write paths re-read under the lock anyway, so taking one here would only add
+    contention. A decision made from a store that a concurrent writer then changes is not a lost
+    update — it is the same benign staleness any read has."""
+    path = store_path(root)
+    return _read_ledger(path), path
 
 
 def save_store(path: str, store: dict) -> None:
-    """Atomic write (unique same-dir temp + os.replace) so a crash mid-write, OR a second writer,
-    can never corrupt the audit ledger.
+    """Atomic write (unique same-dir temp + os.replace) so a crash mid-write, or a second writer,
+    can never leave CORRUPT bytes in the audit ledger.
+
+    Scope that claim exactly, because an earlier draft said a second writer "can never corrupt the
+    audit ledger" full stop, which reads as concurrency-safe. What THIS function guarantees is only
+    the atomic swap: every reader sees the complete old file or the complete new one, and two writers
+    cannot interleave into one another's bytes. It does NOT by itself prevent the LOST UPDATE — a
+    second writer overwriting a snapshot loaded earlier, which deleted a signed human approval and
+    reported success. That is prevented one level up, by ``_locked_update`` holding an exclusive lock
+    and RE-READING the ledger before applying any change; ``save_store`` is only its final step and
+    must not be called with a store that was loaded outside that lock. This is a real distinction, not
+    pedantry: the atomic write was already in place while the lost update was live.
 
     The temp name must be UNIQUE, not ``path + ".tmp"``. With a fixed name two writers to one ledger
     share a single scratch file: on Windows the CRT opens it share-deny-none, so their bytes
@@ -467,31 +659,44 @@ def revoked_requirements(store: dict, generator: str) -> List[str]:
     return [k for k in GENERATOR_REQUIRES[generator] if is_revoked(store, k)]
 
 
-def _append_audit(path: str, store: dict, entry: dict) -> dict:
-    """Append one row to the ledger's audit array and persist it.
+def _append_audit(path: str, entry: dict, mutate=None) -> dict:
+    """Append one row to the ledger's audit array and persist it, SERIALISED against other writers.
+
+    Takes no caller-loaded ``store``: it re-reads the ledger under an exclusive lock and applies the
+    change to that fresh state (``_locked_update``). Passing a store in was the lost update — the
+    caller's snapshot could predate a human ``approve`` that had already completed, and writing the
+    whole file back deleted it. ``mutate`` is for the callers that change more than the audit array
+    (``record_decision`` sets a gate, ``bind_engagement`` sets the engagement); it runs on the same
+    fresh store, inside the same lock, so those mutations cannot be based on stale state either.
 
     A PRESENT but non-list ``audit`` is a corrupt ledger and REFUSES, rather than being replaced with
     a fresh list. Discarding it silently destroyed an audit trail and then reported success: a ledger
     whose ``audit`` is a JSON object still loads (``load_store`` validates only the top level), so it
     reaches this path, and the ``show`` CLI's ``isinstance(a, dict)`` filter iterates such a value's
     KEYS and drops them all — printing "audit: 0 entries" both before and after, so the destruction
-    is invisible from the operator's only diagnostic tool. This is the same principle the unreadable
-    branch already applies (a corrupt ledger is EVIDENCE, never something to overwrite); a PARTIALLY
-    corrupt one had the opposite treatment. An ABSENT key is not corruption — older stores predate
-    it, so it is still created.
+    was invisible from the operator's only diagnostic tool (``show`` now reports it; the two guards
+    share one condition on purpose). This is the same principle the unreadable branch already applies
+    (a corrupt ledger is EVIDENCE, never something to overwrite); a PARTIALLY corrupt one had the
+    opposite treatment. An ABSENT key is not corruption — older stores predate it, so it is created.
     """
-    if "audit" in store and not isinstance(store["audit"], list):
-        raise GateStateError(
-            f"gate-state store {path} has a corrupt 'audit' value of type "
-            f"{type(store['audit']).__name__} (expected a list) -- refusing to overwrite it, since "
-            f"that would destroy whatever audit trail it holds. Repair or archive the file by hand.")
-    audit = store.get("audit")
-    if not isinstance(audit, list):
-        audit = []
-        store["audit"] = audit
-    audit.append(entry)
-    save_store(path, store)
-    return entry
+    def _apply(store: dict, existed: bool) -> dict:
+        # Guard BEFORE mutating, so a corrupt ledger is refused without a partial change applied.
+        if "audit" in store and not isinstance(store["audit"], list):
+            raise GateStateError(
+                f"gate-state store {path} has a corrupt 'audit' value of type "
+                f"{type(store['audit']).__name__} (expected a list) -- refusing to overwrite it, "
+                f"since that would destroy whatever audit trail it holds. Repair or archive the "
+                f"file by hand.")
+        if mutate is not None:
+            mutate(store, existed)
+        audit = store.get("audit")
+        if not isinstance(audit, list):
+            audit = []
+            store["audit"] = audit
+        audit.append(entry)
+        return entry
+
+    return _locked_update(path, _apply)
 
 
 def _record_refusal(path: str, store: dict, generator: str, status: str,
@@ -545,7 +750,7 @@ def _record_refusal(path: str, store: dict, generator: str, status: str,
              "engagement": engagement_of(store), "declared": (declared or "").strip() or None,
              "missing": list(missing), "reason": detail}
     try:
-        _append_audit(path, store, entry)
+        _append_audit(path, entry)
     except (OSError, GateStateError, RecursionError) as e:
         # Narrow and enumerated, never a bare `except Exception` (that class of catch is what let an
         # earlier attempt seal "approved" over a swallowed ValueError). OSError: a locked/read-only
@@ -588,23 +793,30 @@ def record_decision(gate: str, decision: str, root: str = ".",
     bad_root = _require_root(root, f"recording {gate}")
     if bad_root:
         raise GateStateError(bad_root)
-    store, path = load_store(root)
-    if store is None:
-        store = _new_store()
-        if (engagement or "").strip():
-            store[ENGAGEMENT_KEY] = engagement.strip()
-    else:
-        owner_err = ownership_error(store, engagement, f"recording {gate}")
-        if owner_err:
-            raise GateStateError(owner_err)
+    path = store_path(root)
     who = by or _whoami()
-    store.setdefault("gates", {})
-    store["gates"][gate] = {"decision": decision, "signed_by": who,
-                            "note": note, "decided_at": _now()}
-    _append_audit(path, store, {"at": _now(), "who": who,
-                                "event": "approve" if decision == "approved" else "revoke",
-                                "gate": gate, "note": note})
-    return store["gates"][gate]
+    rec = {"decision": decision, "signed_by": who, "note": note, "decided_at": _now()}
+
+    # Validate AND mutate on the state read inside the lock, never on a pre-lock snapshot. Both halves
+    # matter: writing back a stale store deleted whatever a concurrent writer had just committed, and
+    # checking OWNERSHIP against a stale store could approve into a ledger that had been bound to a
+    # different engagement in the meantime — the mis-attribution this check exists to stop.
+    def _apply(store: dict, existed: bool) -> None:
+        if not existed:
+            # This call IS the enrolment moment that activates enforcement, so a declared engagement
+            # BINDS the new ledger here. An established one is verified instead (below).
+            if (engagement or "").strip():
+                store[ENGAGEMENT_KEY] = engagement.strip()
+        else:
+            owner_err = ownership_error(store, engagement, f"recording {gate}")
+            if owner_err:
+                raise GateStateError(owner_err)
+        store.setdefault("gates", {})[gate] = rec
+
+    _append_audit(path, {"at": _now(), "who": who,
+                         "event": "approve" if decision == "approved" else "revoke",
+                         "gate": gate, "note": note}, mutate=_apply)
+    return rec
 
 
 def bind_engagement(engagement: str, root: str = ".", by: Optional[str] = None) -> str:
@@ -623,20 +835,26 @@ def bind_engagement(engagement: str, root: str = ".", by: Optional[str] = None) 
     bad_root = _require_root(root, f"binding engagement {ident}")
     if bad_root:
         raise GateStateError(bad_root)
-    store, path = load_store(root)
-    if store is None:
-        store = _new_store()
-    bound = engagement_of(store)
-    if bound is not None and not _same_engagement(bound, ident):
-        raise GateStateError(
-            f"ledger at {path} is already bound to engagement {bound!r}; refusing to re-bind it to "
-            f"{ident!r} -- that would retroactively re-attribute every approval already signed in "
-            f"it. Copy the ledger and bind the copy if you mean to hand it over.")
-    store[ENGAGEMENT_KEY] = ident
+    path = store_path(root)
     who = by or _whoami()
-    _append_audit(path, store, {"at": _now(), "who": who, "event": "bind",
-                                "engagement": ident,
-                                "note": "re-affirmed" if bound is not None else "initial binding"})
+    # The re-bind refusal is checked on the state read INSIDE the lock: a stale read could miss a
+    # binding another writer had just committed and re-point the label anyway, which is exactly the
+    # retroactive re-attribution this refusal exists to prevent.
+    # The note says whether this was the FIRST binding, which is only knowable from the state read
+    # inside the lock — so _apply fills it in. _append_audit appends `entry` after running mutate.
+    entry = {"at": _now(), "who": who, "event": "bind", "engagement": ident, "note": ""}
+
+    def _apply(store: dict, existed: bool) -> None:
+        bound = engagement_of(store)
+        if bound is not None and not _same_engagement(bound, ident):
+            raise GateStateError(
+                f"ledger at {path} is already bound to engagement {bound!r}; refusing to re-bind it "
+                f"to {ident!r} -- that would retroactively re-attribute every approval already "
+                f"signed in it. Copy the ledger and bind the copy if you mean to hand it over.")
+        store[ENGAGEMENT_KEY] = ident
+        entry["note"] = "re-affirmed" if bound is not None else "initial binding"
+
+    _append_audit(path, entry, mutate=_apply)
     return ident
 
 
@@ -797,9 +1015,9 @@ def enforce(generator: str, override_reason: Optional[str] = None,
         # the audit line is the ONLY thing that makes proceeding past a missing approval legitimate,
         # so if it cannot be written the run must not quietly generate the document anyway. Letting
         # the OSError propagate is the fail-closed choice.
-        _append_audit(path, store, {"at": _now(), "who": actor, "event": "override",
-                                    "generator": generator, "missing": missing,
-                                    "reason": override_reason.strip()})
+        _append_audit(path, {"at": _now(), "who": actor, "event": "override",
+                             "generator": generator, "missing": missing,
+                             "reason": override_reason.strip()})
         logger.warning("[GATE OVERRIDDEN] %s generated despite missing approval(s) %s -- "
                        "who=%s reason=%r (audit line appended to %s)",
                        generator, ", ".join(missing), actor, override_reason.strip(), path)
@@ -988,7 +1206,26 @@ def main(argv: Optional[List[str]] = None) -> int:
                   f"by {row.get('signed_by') or '?'} at {row.get('decided_at') or '?'}")
         else:
             print(f"  {key:20s} [   --   ] {arrow:18s} {label}")
-    audit = [a for a in store.get("audit", []) if isinstance(a, dict)]
+    # A PRESENT but non-list `audit` is corruption, and this is the display half of a hazard whose
+    # write half `_append_audit` already refuses -- citing THIS blind spot as its reason. Left
+    # unfixed, the operator's only diagnostic answered a ledger that can no longer record refusals
+    # with either "audit: 0 entries ... 0 refusal(s)" (a dict or a str: filtered to nothing) or a raw
+    # `TypeError: 'NoneType' object is not iterable` (null/int/bool). Both were measured. Saying
+    # "0 refusals" about a ledger that CANNOT record one is the not-observed-reads-as-healthy failure
+    # this module exists to prevent, on the one screen an operator checks.
+    # The condition MUST match _append_audit's exactly ("audit" present and not a list), or the two
+    # halves disagree about the same ledger. A first cut here used `is not None`, which treated an
+    # explicit `"audit": null` as ABSENT and printed "0 entries" -- while _append_audit refuses that
+    # very shape, so recording was broken and the board said otherwise. An absent key is NOT
+    # corruption (older stores predate it); a present non-list is.
+    if "audit" in store and not isinstance(store["audit"], list):
+        _audit_raw = store["audit"]
+        print(f"audit: CORRUPT -- 'audit' is a {type(_audit_raw).__name__}, not a list. Refusals and "
+              f"overrides CANNOT be recorded in this ledger (enforce() reports recorded=False and "
+              f"leaves it untouched, so whatever it holds is preserved as evidence). Repair or "
+              f"archive {path} by hand; do not read the board above as a complete record.")
+        return 1
+    audit = [a for a in store.get("audit") or [] if isinstance(a, dict)]
     overrides = [a for a in audit if a.get("event") == "override"]
     # Refusals are counted beside overrides because they are the same control seen from its other
     # side: an override says a gate was bypassed, a refusal says a deliverable was withheld. Showing
@@ -1010,5 +1247,4 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 
 if __name__ == "__main__":  # pragma: no cover
-    import sys
     sys.exit(main())

@@ -242,6 +242,198 @@ def test_refusal_row_names_the_engagement_it_was_written_against(tmp_path):
     assert row["declared"] is None, "a proximity-matched row must be distinguishable from a verified one"
 
 
+@pytest.mark.parametrize("bad", [{"2026-01-01": "override by lead"}, None, "oops", 5, True])
+def test_show_reports_a_corrupt_audit_instead_of_0_entries_or_a_traceback(tmp_path, bad, capsys):
+    """The DISPLAY half of the hazard whose write half `_append_audit` already refuses -- citing this
+    blind spot as its reason. While a present non-list `audit` makes recording impossible, `show`
+    answered either "audit: 0 entries ... 0 refusal(s)" (a dict/str, filtered to nothing) or a raw
+    TypeError (null/int/bool). Saying "0 refusals" about a ledger that CANNOT record one is
+    not-observed-reads-as-healthy on the one screen an operator checks."""
+    gate_state.record_decision("lld_approved", "approved", root=str(tmp_path), by="qa")
+    ledger = tmp_path / "docs" / "engagement-state.json"
+    store = json.loads(ledger.read_text(encoding="utf-8"))
+    store["audit"] = bad
+    ledger.write_text(json.dumps(store), encoding="utf-8")
+
+    rc = gate_state.main(["--root", str(tmp_path), "show"])
+    out = capsys.readouterr().out
+    assert rc == 1, "a ledger that cannot record refusals reported success"
+    assert "audit: CORRUPT" in out
+    assert "0 refusal(s)" not in out, "still claiming zero refusals about an unrecordable ledger"
+    # And the display must agree with the WRITE half about the same ledger.
+    assert gate_state.enforce("design", root=str(tmp_path)).recorded is False
+
+
+def test_show_treats_an_ABSENT_audit_key_as_normal_not_corrupt(tmp_path, capsys):
+    """The guard must match `_append_audit`'s condition exactly. An absent key is NOT corruption --
+    older stores predate it and it is still created on first write -- so flagging it would fail every
+    legacy ledger. (A first cut used `is not None`, which had the opposite bug: it read an explicit
+    `"audit": null` as absent and printed "0 entries" while recording was broken.)"""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "engagement-state.json").write_text(
+        json.dumps({"schema": 1, "gates": {}}), encoding="utf-8")
+    assert gate_state.main(["--root", str(tmp_path), "show"]) == 0
+    assert "audit: 0 entries" in capsys.readouterr().out
+
+
+def test_a_deeply_nested_ledger_fails_closed_instead_of_raising(tmp_path):
+    """load_store's contract is that a broken ledger fails CLOSED, never raises. RecursionError
+    subclasses RuntimeError, so it escaped the (OSError, ValueError) catch as a raw traceback and
+    killed the run part-way through the deliverable set. It is a property of the FILE, not a bug --
+    json.load's C scanner accepts nesting the pure-Python encoder cannot round-trip. The WRITE side
+    already handled it by name; only the read side was missed."""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "engagement-state.json").write_text(
+        '{"schema":1,"gates":{},"audit":[],"x":%s}' % ("[" * 3200 + "]" * 3200), encoding="utf-8")
+
+    with pytest.raises(gate_state.GateStateError):
+        gate_state.load_store(str(tmp_path))
+    v = gate_state.enforce("design", root=str(tmp_path))
+    assert v.status == "unreadable" and v.proceed is False
+
+
+def test_save_store_docstring_does_not_overclaim_concurrency_safety():
+    """`save_store` guarantees the atomic SWAP, not concurrency safety. An earlier draft said a second
+    writer "can never corrupt the audit ledger" full stop, which reads as safe-against-concurrency --
+    and the atomic write was already in place while the lost update was live, so the distinction is
+    load-bearing rather than pedantic. Pinned as prose because the defect WAS the prose: the sentence
+    must keep pointing at `_locked_update` as the thing that actually serialises."""
+    doc = " ".join((gate_state.save_store.__doc__ or "").split())
+    assert "can never corrupt the audit ledger." not in doc, "the unscoped concurrency claim is back"
+    assert "_locked_update" in doc, \
+        "save_store no longer names what actually prevents the lost update"
+    mod = " ".join((gate_state.__doc__ or "").split())
+    assert "KNOWN RESIDUAL" not in mod, \
+        "the module still calls the lost update a known residual -- it is fixed; update the prose"
+    assert "SERIALISED" in mod and "re-read" in mod.lower(), \
+        "the module docstring stopped documenting how writes are serialised"
+
+
+def test_an_interleaved_approval_survives_a_refusal_write(tmp_path):
+    """THE LOST UPDATE, fixed. Replaces test_the_lost_update_is_real_and_stays_disclosed, which pinned
+    the defect and told its successor to pin the fix instead.
+
+    This is the exact interleave that used to destroy a signed gate: a caller loads the ledger, a
+    human `approve` completes and lands on disk, and only then does the caller write. It no longer
+    matters, because the write RE-READS under an exclusive lock instead of persisting the snapshot it
+    loaded earlier."""
+    gate_state.record_decision("lld_approved", "approved", root=str(tmp_path), by="qa")
+    _stale, path = gate_state.load_store(str(tmp_path))            # a caller's early load
+    gate_state.record_decision("baseline_captured", "approved", root=str(tmp_path), by="LEAD")
+    assert "baseline_captured" in _store(tmp_path)["gates"], "precondition: the approval is on disk"
+
+    gate_state._append_audit(path, {"at": gate_state._now(), "who": "run", "event": "refuse",
+                                    "generator": "design", "status": "pending",
+                                    "missing": ["assessment_approved"]})
+    after = _store(tmp_path)
+    assert "baseline_captured" in after["gates"], \
+        "the refusal write DELETED a human-signed gate approval (lost update)"
+    assert [a["event"] for a in after["audit"]].count("approve") == 2, \
+        "an approve audit row was lost"
+    assert [a["event"] for a in after["audit"]][-1] == "refuse", "the refusal row did not land"
+
+
+def test_concurrent_writers_lose_nothing_threads_and_processes(tmp_path):
+    """Real concurrency, not a simulated interleave. Every writer's row must survive: with an
+    unserialised whole-file rewrite, N racing writers leave far fewer than N rows."""
+    import subprocess
+    import sys
+    import textwrap
+    import threading
+
+    gate_state.record_decision("lld_approved", "approved", root=str(tmp_path), by="seed")
+    path = gate_state.store_path(str(tmp_path))
+
+    # --- threads ---
+    def _w(i):
+        gate_state._append_audit(path, {"at": gate_state._now(), "who": f"t{i}",
+                                        "event": "refuse", "generator": "design"})
+
+    ts = [threading.Thread(target=_w, args=(i,)) for i in range(12)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    rows = [a for a in _store(tmp_path)["audit"] if a.get("who", "").startswith("t")]
+    assert len(rows) == 12, f"threads lost rows: kept {len(rows)} of 12"
+
+    # --- separate processes (the case a GIL-serialised thread test cannot prove) ---
+    prog = textwrap.dedent(f"""
+        import sys
+        sys.path.insert(0, {str(ROOT)!r})
+        from cisco_toolkit import gate_state as gs
+        gs._append_audit({path!r}, {{"at": gs._now(), "who": "p" + sys.argv[1],
+                                     "event": "refuse", "generator": "mop"}})
+    """)
+    script = tmp_path / "w.py"
+    script.write_text(prog, encoding="utf-8")
+    procs = [subprocess.Popen([sys.executable, str(script), str(i)]) for i in range(8)]
+    for p in procs:
+        assert p.wait(timeout=120) == 0, "a writer subprocess failed"
+    prows = [a for a in _store(tmp_path)["audit"] if a.get("who", "").startswith("p")]
+    assert len(prows) == 8, f"processes lost rows: kept {len(prows)} of 8"
+    # and the seed approval is still there after 20 concurrent writes
+    assert "lld_approved" in _store(tmp_path)["gates"]
+
+
+def test_a_held_lock_times_out_and_proceeds_rather_than_withholding(tmp_path, caplog, monkeypatch):
+    """DECIDED: on timeout the write PROCEEDS, loudly — it does not refuse.
+
+    An OS advisory lock is released by the kernel when its holder dies, so a lock still held after a
+    bounded wait means a live writer or a degraded filesystem, never an abandoned lock file. Refusing
+    would turn a rare race into a guaranteed outage that blocks every gate operation — including a
+    human trying to `approve` — with no recourse on a USB stick with no admin rights. Withholding a
+    deliverable over a lock file is its own safety defect."""
+    gate_state.record_decision("lld_approved", "approved", root=str(tmp_path), by="qa")
+    path = gate_state.store_path(str(tmp_path))
+    monkeypatch.setattr(gate_state, "LOCK_TIMEOUT_S", 0.2)
+
+    def _always_busy(fd):
+        raise OSError(13, "held by another writer")
+
+    monkeypatch.setattr(gate_state, "_lock_exclusive", _always_busy)
+    with caplog.at_level(logging.WARNING, logger="cisco_toolkit.gate_state"):
+        gate_state._append_audit(path, {"at": gate_state._now(), "who": "run",
+                                        "event": "refuse", "generator": "design"})
+    assert "WITHOUT serialisation" in caplog.text, "the timeout was silent"
+    assert [a["event"] for a in _store(tmp_path)["audit"]][-1] == "refuse", \
+        "the write was withheld over a lock file instead of proceeding"
+
+
+def test_locking_unavailable_fails_soft_to_the_historical_behaviour(tmp_path, caplog, monkeypatch):
+    """A filesystem with no working advisory locks (network share, some USB paths) must not crash an
+    assessment. Same posture as _record_refusal: the run never dies over bookkeeping."""
+    gate_state.record_decision("lld_approved", "approved", root=str(tmp_path), by="qa")
+    path = gate_state.store_path(str(tmp_path))
+
+    def _no_sidecar(*a, **kw):
+        raise OSError(1, "operation not permitted")
+
+    # Patch the dedicated seam, NOT os.open: tempfile.mkstemp (used by save_store) calls os.open
+    # internally, so patching that would break the write itself and test a different failure.
+    monkeypatch.setattr(gate_state, "_open_lock_fd", _no_sidecar)
+    with caplog.at_level(logging.WARNING, logger="cisco_toolkit.gate_state"):
+        gate_state._append_audit(path, {"at": gate_state._now(), "who": "run",
+                                        "event": "refuse", "generator": "design"})
+    assert "without serialisation" in caplog.text.lower()
+    assert [a["event"] for a in _store(tmp_path)["audit"]][-1] == "refuse", "the write was lost"
+
+
+def test_the_lock_is_a_sidecar_and_never_the_ledger(tmp_path):
+    """The lock MUST NOT be taken on the ledger: this module never rewrites a corrupt ledger, and on
+    Windows os.replace cannot take a destination while a handle is open on it — a lock on the ledger
+    would break the write it protects. Verified the other way too: os.replace SUCCEEDS while the
+    sidecar lock is held, which is why the lock spans the whole load->mutate->save."""
+    gate_state.record_decision("lld_approved", "approved", root=str(tmp_path), by="qa")
+    path = gate_state.store_path(str(tmp_path))
+    with gate_state._ledger_lock(path) as held:
+        assert held is True, "the lock was not acquired on a plain local directory"
+        # The protected write happens INSIDE the lock in production; prove it can.
+        gate_state.save_store(path, gate_state._read_ledger(path))
+    assert os.path.exists(path + gate_state.LOCK_SUFFIX), "expected a sidecar lock file"
+    assert gate_state._read_ledger(path)["gates"]["lld_approved"]["decision"] == "approved"
+
+
 def test_a_corrupt_audit_array_is_refused_not_silently_destroyed(tmp_path):
     """A ledger whose `audit` is not a list still LOADS (load_store validates only the top level),
     so it reaches the write path. Replacing it with a fresh list destroyed an audit trail and then
@@ -291,8 +483,16 @@ def test_a_failed_write_leaves_no_orphan_copy_of_the_ledger(tmp_path):
     with mock.patch.object(os, "replace", side_effect=PermissionError(5, "Access is denied")):
         v = gate_state.enforce("design", root=str(tmp_path))
     assert v.recorded is False
-    strays = [p.name for p in (tmp_path / "docs").iterdir() if p.name != "engagement-state.json"]
+    # The sidecar lock is expected and is NOT a copy of anything -- it must stay EMPTY. Everything
+    # else in docs/ would be leftover ledger content, which is the hazard this pins.
+    docs = tmp_path / "docs"
+    sidecar = "engagement-state.json" + gate_state.LOCK_SUFFIX
+    strays = [p.name for p in docs.iterdir()
+              if p.name not in ("engagement-state.json", sidecar)]
     assert strays == [], f"a failed ledger write left a copy of the audit trail behind: {strays}"
+    if (docs / sidecar).exists():
+        assert (docs / sidecar).stat().st_size == 0, \
+            "the lock sidecar must never hold ledger content -- it is a lock, not a copy"
 
 
 def test_an_override_that_cannot_be_audited_fails_closed(tmp_path):
