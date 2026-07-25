@@ -71,16 +71,65 @@ helps only on self-controlled fleets.
 ## Deferred to the owner (calendar items, not session work)
 
 - ~~Order the code-signing certificate~~ — **superseded by D5** (deferred indefinitely, no spend).
-- ~~Delete `..\Enhancements_attic_2026-07-05\`~~ — **DONE 2026-07-25.** Inventoried before
-  deleting: 3 files / 876 KB holding NO credential material — a regenerable
-  `blast_radius_explorer.html.stale-root-copy`, an example.com scrape stub, and an Excel
-  `.lockfile`; a credential-pattern scan of the only candidate file (password / secret / token /
-  api-key / private-key / `enable secret` / SNMP community) matched nothing. The "confirm rotation
-  first" ordering existed to avoid destroying rotation evidence, and there was none to destroy, so
-  the gate did not apply. Sent to the Recycle Bin rather than hard-deleted — still recoverable.
+- ~~Delete `..\Enhancements_attic_2026-07-05\`~~ — **DONE 2026-07-25, at the owner's instruction**,
+  executed by session `local_0c935881`. The decision was the owner's and the session only the
+  hands, so this stays an owner calendar item, consistent with the heading above; the 2026-07-24
+  session had gated the action on "tell me and I'll delete", and that instruction is what
+  authorized it. Sent to the Recycle Bin rather than hard-deleted, and **re-read there the same day
+  to verify this bullet** — so the inventory is measured against the recovered bytes, not recalled.
+  Full recursive contents, 3 files / 896,681 bytes:
+
+  | file | bytes | credential-pattern scan |
+  |---|---|---|
+  | `blast_radius_explorer.html.stale-root-copy` | 896,156 | 71 keyword hits, **all authored text** — see below |
+  | `raw\example_com.md` | 360 | clean |
+  | `[HISTORY-REDACTED]_BOQ.xlsx.lockfile` | 165 | clean (incl. UTF-16 decode) |
+
+  **All three** were scanned, for password / passwd / secret / `enable secret` / token / api-key /
+  private-key / `BEGIN … PRIVATE KEY` / SNMP community / Cisco type-5 + type-7 / pre-shared / PSK.
+  The earlier claim — "a scan of the only candidate file matched nothing" — was wrong twice over:
+  only one file had been scanned, and that file *does* match. Every one of its 71 hits is authored
+  product text rather than captured state: CIS detector titles ("Local user password storage"),
+  remediation prose ("Store local users with `secret` (Type-8/9)"), PPDIOO questionnaire items, and
+  the explorer's own JS regex literal; both SNMP hits read `snmp-server community <redacted> RW`,
+  i.e. the placeholder, not a community. It is the explorer carrying its built-in DEMO dataset, not
+  a rendered client instance — zero data-injection markers (`__SNAPSHOT_JSON__`, data-script tag)
+  and zero `[HISTORY-REDACTED]*` fleet hostnames. The file says as much itself: "The Python parser already redacted
+  every secret value (SNMP communities, password hashes), so nothing sensitive is rendered."
+  **Conclusion unchanged — no credential material — but the evidence is now complete.**
+
+  **Final disposal — accounted for, and deliberately not carried as an open item.** "Deleted" here
+  means the folder is in the Recycle Bin, not gone: all 896,681 bytes were still readable on
+  2026-07-25 under `C:\$Recycle.Bin\<SID>\$RPY5CEQ`, which is exactly how the scan above was run
+  (a deleted folder stays enumerable via `Shell.Application` `Namespace(0xA)` — the way to check a
+  claim like this instead of trusting the record). Nothing schedules emptying it, and nothing needs
+  to: the scan cleared all three files, and the two with content are a regenerable explorer copy
+  carrying its DEMO dataset plus a 360-byte example.com stub. This paragraph exists so the bytes
+  are *accounted for* rather than merely absent from the Desktop — had the scan found anything,
+  this would be an open owner item above instead of a closed note here.
+
+  **But the credentialed backup this folder existed to quarantine was not in it.** The 2026-07-05
+  entry in `docs/log.md` ("Security pass") records the `devices.json` fleet credential stripped and
+  the "credentialed backup quarantined to `..\Enhancements_attic_2026-07-05\`". The 3 files above
+  are that entry's *Hygiene* quarantines instead (the stale explorer copy + the `raw\` egress
+  artifact); no `devices.json` backup was in the folder — **confirmed against the recovered bytes,
+  not inferred**, since the recursive listing above is the whole folder — and no copy was found
+  elsewhere on the Desktop tree. It was removed sometime before the 2026-07-19 check — **by whom
+  and to where is recorded nowhere**, so one plaintext copy of the pre-rotation credential for 303
+  devices is unaccounted for. That raises the urgency of the rotation below rather than lowering
+  it. What IS verified: the live `devices.json` (303 entries) carries no `password` field, so the
+  07-05 strip held.
+
+  **On the gate — its rationale is inferred, not recorded.** All that was ever written down is the
+  ordering itself, "rotate the credential, then delete that backup" (`docs/log.md`, 2026-07-05).
+  The natural reading is the standard one for a file holding a live secret: destroy the copy only
+  once the secret it carries is dead. On that reading the gate was scoped to the backup — which was
+  already gone before this deletion, so it is moot because the file was missing, not because there
+  was nothing sensitive to protect.
 - **Confirm the 2026-07-05 credential rotation** actually happened — **STILL OPEN**, and now
   independent of the attic (deleting that folder neither performed the rotation nor recorded it).
-  Rotation is an AAA-side action only the owner can perform.
+  The unaccounted-for backup above is why it still matters. Rotation is an AAA-side action only the
+  owner can perform.
 - **Python-less-box smoke**: copy `portable\dist\Atlas\` to a stick (`portable/make_stick.ps1`
   does the layout), run `Atlas.exe --selftest` on a machine without Python — expect
   `SELFTEST: PASS`.
