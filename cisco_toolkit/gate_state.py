@@ -277,6 +277,10 @@ class GateVerdict:
       several statuses legitimately cannot be recorded (see ``_record_refusal``), and a caller must
       be able to tell "refused and written down" from "refused, nothing persisted" rather than
       assume the write happened.
+    * ``engagement`` — what the consulted ledger declares it governs (``None`` = unbound/legacy, or
+      no ledger was reached at all). The IDENTIFIER, never the store path: it is the token a reader
+      joins the per-run manifest copy back to its owning ledger on, and unlike ``store`` it is
+      human-minted and opaque, so sealing it keeps the seal deterministic (see ``_emit``).
     """
 
     generator: str
@@ -287,6 +291,7 @@ class GateVerdict:
     recorded: bool = False
     store: str = ""
     detail: str = ""
+    engagement: Optional[str] = None
 
     def __bool__(self) -> bool:
         """The decision itself — never a re-derivation, just the field that governed the run."""
@@ -682,11 +687,27 @@ def _emit(v: GateVerdict) -> GateVerdict:
     destroys the determinism the seal depends on (pinned by
     ``test_sealed_gate_step_is_deterministic``). The same reasoning already kept ``who``/``at`` out.
     The one human-supplied string that IS sealed is the override ``reason`` — it is the point of the
-    override audit line, and it is caller-provided rather than environment-derived."""
+    override audit line, and it is caller-provided rather than environment-derived.
+
+    ``recorded`` IS sealed, and must be. Without it the sealed row for a refusal whose durable ledger
+    write FAILED was byte-identical to one that succeeded — same ``chain_root`` — so the
+    tamper-evident record could not express that its own durable trail is missing. That is the
+    failure this whole control exists to prevent, one layer up: an audit record asserting a
+    governance trail that is not there. Reproduced before fixing: with ``os.replace`` raising
+    (PermissionError, the routine Windows case when any process holds the ledger — an engineer with
+    it open in an editor) the ledger gained 0 rows and ``recorded`` was False, while the seal was
+    indistinguishable from the healthy run. It is a bool, so it costs the determinism nothing.
+
+    ``engagement`` IS sealed for the same reason, and is the Law-1 half: the module docstring and
+    ``docs/ssot.md`` both say this per-run copy must CITE the audit array as its owner, and a copy
+    naming no owner cannot be reconciled — two records could disagree about which engagement a
+    decision concerned with no way to tell. The identifier is safe to seal where ``store`` is not:
+    it is a human-minted opaque token read from the ledger, stable across runs, not an absolute path.
+    ``None`` (unbound ledger, or no ledger reached) is itself meaningful and seals fine."""
     extra = {"reason": v.detail} if v.overridden else {}
     _record(v.generator, v.status,
             None if v.status in UNEVALUATED else list(v.missing),
-            proceed=v.proceed, **extra)
+            proceed=v.proceed, recorded=v.recorded, engagement=v.engagement, **extra)
     return v
 
 
@@ -748,7 +769,8 @@ def enforce(generator: str, override_reason: Optional[str] = None,
         # append-able by an unrelated run. The evidence lives in the refusing run's log and in the
         # returned verdict; the innocent engagement's audit trail stays clean.
         status = "ownership_unbound" if engagement_of(store) is None else "ownership_mismatch"
-        return _emit(GateVerdict(generator, status, False, store=path, detail=owner_err))
+        return _emit(GateVerdict(generator, status, False, store=path, detail=owner_err,
+                           engagement=engagement_of(store)))
     bound = engagement_of(store)
     if bound and (engagement or "").strip():
         logger.info("[gate] %s: ledger ownership VERIFIED -- engagement %s", generator, bound)
@@ -766,7 +788,7 @@ def enforce(generator: str, override_reason: Optional[str] = None,
         # (test_approved_upstream_proceeds_and_override_is_inert), and a record that inferred
         # "overridden" from the flag here would assert a breach with no audit line behind it.
         return _emit(GateVerdict(generator, "clear", True, store=path,
-                           detail="upstream approvals present"))
+                           detail="upstream approvals present", engagement=bound))
     if override_reason is not None and override_reason.strip():
         actor = who or _whoami()
         # NOT wrapped in _record_refusal's tolerant OSError handling, and deliberately so: do not
@@ -784,7 +806,8 @@ def enforce(generator: str, override_reason: Optional[str] = None,
         # overridden=True is set HERE, at the one site that appended the line, so the verdict and
         # the ledger can never disagree about whether an override happened.
         return _emit(GateVerdict(generator, "pending", True, overridden=True, missing=tuple(missing),
-                           recorded=True, store=path, detail=override_reason.strip()))
+                           recorded=True, store=path, detail=override_reason.strip(),
+                           engagement=bound))
     if override_reason is not None:
         detail = ("--override-gate requires a non-empty reason "
                   "(the who/when/why audit line is the point of the override)")
@@ -792,7 +815,7 @@ def enforce(generator: str, override_reason: Optional[str] = None,
         ok = _record_refusal(path, store, generator, "pending", missing, detail, who,
                              declared=engagement)
         return _emit(GateVerdict(generator, "pending", False, missing=tuple(missing),
-                           recorded=ok, store=path, detail=detail))
+                           recorded=ok, store=path, detail=detail, engagement=bound))
     detail = ("missing upstream approval(s): "
               + ", ".join(f"{k} ({GATE_LABELS[k]})" for k in missing))
     logger.error("[GATE REFUSED] %s: %s. Record the human gate with "
@@ -802,7 +825,7 @@ def enforce(generator: str, override_reason: Optional[str] = None,
     ok = _record_refusal(path, store, generator, "pending", missing, detail, who,
                              declared=engagement)
     return _emit(GateVerdict(generator, "pending", False, missing=tuple(missing),
-                       recorded=ok, store=path, detail=detail))
+                       recorded=ok, store=path, detail=detail, engagement=bound))
 
 
 def pending_approvals(generator: str, root: str = ".",
