@@ -4,6 +4,55 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-25] — `--redact-folder` claimed a folder was "safe to share" over an UNREDACTED file (#478); every defect I shipped this session was in a CLAIM, never in the code
+
+- Built the deliverable-completeness feature, then found **#438 already shipping it** and conceded —
+  but salvaged the orthogonal half as **#440**: `_assert_redaction_phases_ran` read `.phase_timings.json`
+  as a list while the engine writes a dict, so `str.get` raised `AttributeError` into a defensive
+  `except` and that arm was **dead on every real run**. Then closed the successor defect as **#478**:
+  a run whose redaction check FAILS leaves `DO-NOT-SEND-NOT-REDACTED.txt` and its unredacted documents
+  on disk; re-running with `--reuse-out` and losing one writer leaves that UNREDACTED file under the
+  canonical name, reported only as `stale` — while `INCOMPLETE-SET.txt` asserted *"Everything in this
+  folder IS redacted and safe to share."* Reproduced byte-identical against main before fixing.
+- `!lesson` **A hand-fabricated fixture makes the stub AGREE with the parser bug.** The test covering
+  the dead arm faked the sidecar as `json.dumps([{...}])` — exactly the shape the buggy parser expected.
+  Stub and bug agreed, test stayed green, guard was dead. A fixture encodes the author's belief about
+  the producer's format, which is the same belief that produced the bug, so it can only ever confirm it.
+  **Feed at least one test the REAL producer's output**, and assert the VALUES it keys on actually occur
+  (the watched phase names exist only under `--redact`; without that flag the ratchet passes vacuously).
+  bridge-candidate
+- `!lesson` **Fixing a parse is not fixing the guard — enumerate what else still produces silence.**
+  Normalising the shape made the arm fire and left every other unreadable ledger silent: renamed key,
+  rows keyed by name, tuples, `null`, `ok: 0`, `ok: "false"`, or a watched phase with NO row. The bug
+  had moved up one level, not gone. For a safety gate, "cannot confirm" must REFUSE with its own
+  message, distinct from "confirmed failed". Never test a JSON flag with `is False` — `0`, `"false"`,
+  `null` and a missing key all have to count. bridge-candidate
+- `!lesson` **A CLAIM has exits too — grep the sentence's wording, not the function.** After fixing the
+  note, `grep -rn "safe to share"` across `*.py/*.txt/*.md` found the same promise twice in
+  `README-FIELD.txt`, the engineer's ONLY on-site documentation. Code-only would have left the guide
+  contradicting the folder. Prose copies of a safety claim live in READMEs, exit-code tables and console
+  strings — none of which appear in a call graph. Corollary: the ratchet I added to protect that guide
+  asserted a 9-word phrase against a hard-wrapped file as a NEGATIVE assertion — one word of re-wrap and
+  it passes having checked nothing. Match on `" ".join(text.split())` and prove BOTH directions.
+  bridge-candidate
+- `!lesson` **During a wait, query the field that would prove the wait UNNECESSARY.** The user merged
+  #478 at 01:10Z; its queued CI kept running (GitHub does not cancel it), so I polled `check-runs` until
+  05:19 waiting to "merge when green" on something already on main. At 04:49 I ran
+  `gh pr view --json mergeable,mergeStateStatus,reviewDecision` — picking exactly the fields that fit my
+  mental model and omitting **`.state`**, which read MERGED the whole time. A merged PR returns
+  `mergeable=UNKNOWN` and keeps `reviewDecision=REVIEW_REQUIRED` if admin-merged, so every field I DID
+  query looked like "still waiting". Always include `state,mergedAt`; a persistent `UNKNOWN` is itself
+  the tell. bridge-candidate
+- `!lesson` **`busy=true` + 0 jobs is a real wedge; `in_progress: 0` at RUN level is not.** The fleet
+  genuinely wedged once (8 stacked `Runner.Listener` processes — each restart ADDS a pair without
+  stopping the old, so repeated restarts made it worse; fix is kill-all then ONE relaunch, and the
+  relaunch must be the human's because this harness's `NoDefaultCurrentDirectoryInExePath` leaks into
+  every job). But I then called it wedged a second time on the run-level `in_progress: 0` reading while
+  both runners were executing jobs fine — run status lags job status. Check for a live job by
+  `runner_name` across recent runs before touching anything; I nearly killed two healthy jobs. Also: of
+  27 queued runs, 19 belonged to already-MERGED PRs and were pure starvation — cancelling those (never
+  `main`'s) unblocked all four open PRs. bridge-candidate
+
 ## [2026-07-25] — Landed the 5-PR gate swarm (#448/#441/#444/#439/#445): three of my own "verified" resolutions were wrong, and the metric I was watching hid each one
 
 - Merged all five PRs that had been pairwise-conflicting on `cisco_toolkit/gate_state.py` (main
