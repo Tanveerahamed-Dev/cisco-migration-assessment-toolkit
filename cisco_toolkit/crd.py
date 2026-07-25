@@ -37,7 +37,10 @@ def _evidence_facts(snap: dict) -> dict:
     vrfs, n_acl_svis = set(), 0
     for host, ports in ifaces.items():
         for p, d in _as_dict(ports).items():
-            d = d or {}
+            # PER-PORT coercion, not `d or {}`: the container is guarded but a single truthy non-dict
+            # PORT value (interfaces={"acc1": {"Gi1/0/5": 5}} in an uploaded snapshot) survives `or {}`
+            # and crashes d.get("switchport_mode") below -> stored 500. Same class as the section guards.
+            d = _as_dict(d)
             # str()-coerce every device string-field before .strip()/.lower() (audit-6 finding-#3 class): a
             # wrong-typed leaf (a truthy dict/list/number in an uploaded snapshot) would otherwise .strip() -> 500.
             if str(d.get("switchport_mode") or "").lower() == "access" and str(d.get("end_host_mac") or "").strip():
@@ -53,7 +56,10 @@ def _evidence_facts(snap: dict) -> dict:
     # on one number instead of the CRD reporting a looser per-port dual_connection tally (A1 SSOT fix).
     dual = len(_as_list(_as_dict(snap.get("endpoint_dependencies")).get("dual_homed")))
     rn = _as_dict(snap.get("routing_neighbors"))
-    protos = sorted({p.upper() for host in rn for p, nbrs in _as_dict(rn.get(host)).items() if nbrs})
+    # str() the protocol KEY before .upper(): JSON object keys are always strings, so this is latent on
+    # the upload path, but the CLI hands write_crd_docx the IN-PROCESS snapshot dict (never round-tripped
+    # through JSON), where a non-str key would AttributeError. Identical output for every string key.
+    protos = sorted({str(p).upper() for host in rn for p, nbrs in _as_dict(rn.get(host)).items() if nbrs})
     l3f = _as_list(snap.get("l3_forwarding"))
     # Real FHRP only. The parser writes the literal string "none" when no HSRP/VRRP/GLBP is present,
     # and "none".strip() is truthy — so a bare truthiness test mislabels EVERY gateway VLAN as
@@ -66,13 +72,20 @@ def _evidence_facts(snap: dict) -> dict:
     mc = _as_dict(svc.get("multicast"))
     mcast_active = any((
         _as_num(mc.get("active_interfaces")), _as_num(mc.get("active_switch_count")),
-        len(mc.get("classified_groups") or []), len(mc.get("igmp_queriers") or []),
-        any((v or {}).get("operational") for v in (mc.get("ptp") or {}).values()),
+        # coerce, don't `or []`/`or {}`: a truthy non-list/non-dict inside the (already guarded) multicast
+        # block reaches len() / .values() / .get() and aborts the whole CRD (classified_groups=5 -> len(5),
+        # ptp=5 -> 5.values(), ptp={"x": 5} -> 5.get("operational")).
+        len(_as_list(mc.get("classified_groups"))), len(_as_list(mc.get("igmp_queriers"))),
+        any(_as_dict(v).get("operational") for v in _as_dict(mc.get("ptp")).values()),
     ))
     lc = _as_dict(_as_dict(snap.get("lifecycle_risk")).get("summary"))
     coll = _as_dict(_as_dict(snap.get("collection_completeness")).get("summary"))
+    # str()-coerce the RANK LOOKUP KEY: an UNHASHABLE severity (punchlist=[{"severity": ["x"]}] in an
+    # uploaded snapshot) makes dict.get itself raise TypeError: unhashable type -> the whole CRD aborts.
+    # Behaviour-identical for real input: every _SEV_RANK key is a string, so str(x) hits the same entry
+    # for a string severity and misses (-> the 5 default) for everything else, exactly as before.
     punch = sorted([i for i in _as_list(snap.get("punchlist")) if isinstance(i, dict)],
-                   key=lambda i: _SEV_RANK.get(i.get("severity"), 5))
+                   key=lambda i: _SEV_RANK.get(str(i.get("severity")), 5))
     # isinstance-guard the canonical scale once: a TRUTHY non-dict executive_brief (malformed/slimmed snapshot)
     # slips through `or {}` and crashes .get('scale') -> the whole CRD silently aborts (audit L4).
     _eb = snap.get("executive_brief"); _eb_scale = _eb.get("scale") if isinstance(_eb, dict) else None
@@ -107,7 +120,10 @@ def _requirements_overlay(bp: dict) -> dict:
     engagement constraints as OPEN QUESTIONS, never inventing them (coverage-honesty).
     """
     rm = _as_dict(bp.get("requirements_model"))
-    vals = {f.get("key"): f.get("value")
+    # str() the comprehension KEY: an unhashable `key` (fields=[{"key": ["a"]}] in an uploaded snapshot)
+    # makes building this dict raise TypeError: unhashable type -> the whole CRD aborts. Identical for a
+    # real register, whose keys are the string field names the three vals.get() lookups below use.
+    vals = {str(f.get("key")): f.get("value")
             for f in _as_list(rm.get("fields")) if isinstance(f, dict) and f.get("key")}
     return {
         "provided": bool(rm.get("provided")),
@@ -119,7 +135,11 @@ def _requirements_overlay(bp: dict) -> dict:
 
 def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
     """Emit the Customer Requirements Document (.docx) to `output_path`. Fail-soft: a missing
-    python-docx is a warning + skip; any unexpected render error is logged, never raised."""
+    python-docx is a warning + skip, and every snapshot read is defensive so malformed input degrades
+    to placeholders. A genuine render error still propagates to the caller — the CLI phase wrapper
+    logs-and-continues, AssessHub turns it into a clean 500 (the old 'logged, never raised' claim was
+    false: the only `try` here is the optional-import guard, and swallowing errors would be
+    coverage-dishonest; the crash class it hid is now guarded at the read sites instead)."""
     try:
         from docx import Document
         from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -342,8 +362,12 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
 
     if ev["mcast_active"]:
         doc.add_heading("4.3 Multicast & timing", level=2)
-        groups = ev["mcast"].get("classified_groups") or []
-        gname = (groups[0].get("name") or groups[0].get("group")) if groups else "the observed groups"
+        # `classified_groups` is coerced AGAIN here, per ELEMENT: [5] passes the mcast_active length gate
+        # above (len == 1), so this section renders and only then does groups[0].get(...) crash — the
+        # activity check is not a type check, and the crash is two reads downstream of it.
+        groups = _as_list(ev["mcast"].get("classified_groups"))
+        g0 = _as_dict(groups[0]) if groups else {}
+        gname = g0.get("name") or g0.get("group") or "the observed groups"
         req_table([
             ("REQ-T-MC-001", f"Preserve multicast delivery for the {len(groups)} classified group(s) "
                              f"(e.g. {gname}) including snooping/querier behaviour per VLAN.",
@@ -501,7 +525,9 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
     # Design-driven requirements (REQ-D) are derived from the canonical blueprint; register their IDs in
     # the traceability set BEFORE the RTM (§9) renders so they are NOT orphaned from the matrix (a
     # requirement that traces to nothing is the exact review defect the RTM forbids). Their detail is §10.
-    bp_decisions = [d for d in (bp.get("decisions") or []) if isinstance(d, dict)]
+    # `bp` is isinstance-guarded above, but its CHILDREN are not: `or []` lets a truthy non-list through
+    # to `for d in 5` -> TypeError. Coerce, then keep the existing per-element isinstance filter.
+    bp_decisions = [d for d in _as_list(bp.get("decisions")) if isinstance(d, dict)]
     rec = [d for d in bp_decisions if d.get("status") == "recommended"]
     req_d = [(f"REQ-D-{i:03d}", d) for i, d in enumerate(rec, 1)]
     req_ids.extend(rid for rid, _ in req_d)
@@ -548,8 +574,10 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
                    "CCDE basis", "Confirmed?"],
                   [(rid,
                     f"{d.get('title')}: {d.get('recommended_action') or ''}".strip().rstrip(":"),
-                    (d.get("evidence") or {}).get("summary") or d.get("driver") or "—",
-                    (d.get("principle") or {}).get("citation") or "—", "<YES/AMEND>")
+                    # per-decision children coerced: a decision row is isinstance-filtered, but its
+                    # evidence / principle sub-object can still be a truthy scalar -> 5.get(...) -> 500
+                    _as_dict(d.get("evidence")).get("summary") or d.get("driver") or "—",
+                    _as_dict(d.get("principle")).get("citation") or "—", "<YES/AMEND>")
                    for rid, d in req_d],
                   widths=[0.8, 2.7, 2.0, 1.4, 0.8])
         needs = [d for d in bp_decisions if d.get("status") == "needs-requirement"]
@@ -559,9 +587,12 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
                 "observe; answer them in the workshop and the target design right-sizes (the engine never "
                 "assumes an answer):")
             for d in needs:
+                # str()-coerce each element too: `", ".join([7])` raises TypeError even when the list
+                # itself is well-formed (the same wrong-typed-leaf class the device-string reads guard).
                 _label_run(doc.add_paragraph(), f"{d.get('title')} —",
-                           ", ".join(d.get("requirements_needed") or []) or "requirement to confirm", GREY)
-        cov = bp.get("coverage") or {}
+                           ", ".join(str(r) for r in _as_list(d.get("requirements_needed")))
+                           or "requirement to confirm", GREY)
+        cov = _as_dict(bp.get("coverage"))
         if cov.get("caveat"):
             _label_run(doc.add_paragraph(), "Coverage:", cov.get("caveat"), GREY)
 

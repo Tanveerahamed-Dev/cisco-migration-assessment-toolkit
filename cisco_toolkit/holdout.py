@@ -6,8 +6,10 @@ data: today the store holds zero REAL rows and the repo's existing gates stay in
 (:data:`cisco_toolkit.calibration.DEFAULT_N_FLOOR` REAL for any tuning proposal; N >= 20 as the
 descriptive target — DEC-007's hybrid). When the REAL labelled rows reach N >= ACTIVATION_FLOOR,
 :func:`seal` splits them 70/30 optimisation/holdout and freezes the holdout membership in a
-committed, hash-chained manifest (the :mod:`cisco_toolkit.manifest` chain — the same tamper
-evidence as the run ledger). Below the floor — and for surrogate rows in ANY quantity — sealing
+committed, hash-chained manifest (the :mod:`cisco_toolkit.manifest` chain — the same mechanism as
+the run ledger, but a STRONGER claim here: that chain is unkeyed, so on its own it only catches a
+careless edit, and what closes the re-seal hole is COMMITTING the manifest — a forged re-seal has
+to arrive as a visible change to a tracked file in a reviewed diff). Below the floor — and for surrogate rows in ANY quantity — sealing
 REFUSES (:class:`HoldoutActivationError`): only ``source_class == REAL`` counts, decided by the
 same discriminator the D11 gate uses (:func:`cisco_toolkit.calibration.normalize_outcome`), so a
 surrogate flood can no more activate the holdout than it can unlock a tuning proposal.

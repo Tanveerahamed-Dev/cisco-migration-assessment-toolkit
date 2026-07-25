@@ -3,6 +3,11 @@ requirements-capture instrument. python-docx is optional, so the module is skipp
 absent (the generator fails soft the same way). These tests pin the skeleton sections, the
 evidence-primed environment summary, the discipline gating (no section without observed footprint),
 the REQ-ID traceability skeleton, and the fail-soft path."""
+import json
+import os
+import sys
+from pathlib import Path
+
 import pytest
 
 docx = pytest.importorskip("docx")  # skip the file if the optional dep is absent
@@ -533,3 +538,229 @@ def test_crd_requirements_overlay_reads_blueprint_ssot():
     empty = _requirements_overlay({})
     assert empty["provided"] is False and empty["constraints"] == []
     assert empty["availability_tier"] is None and empty["fabric_operating_model"] is None
+
+
+# ======================================================================================================
+# Stored-DoS: a TRUTHY non-dict / non-list value ONE LEVEL INSIDE a well-formed container.
+#
+# The three regressions above (`..._non_dict_executive_brief`, `..._non_dict_design_blueprint`,
+# `..._nondict_sections`) are all SECTION-level: they poison a whole top-level section, which the
+# isinstance guards at crd.py:78/152 and the `_as_dict`/`_as_list` section reads already absorb. They
+# cannot reach the class below, where every CONTAINER is well-formed and passes its upstream gate and
+# only a ROW-INNER field (G2) or a PER-ELEMENT member (G3) is malformed. `x.get(k) or []` catches only
+# FALSY values, so a truthy scalar survives and crashes the NEXT dereference: `len(5)`, `5.values()`,
+# `5.get(...)`, `for d in 5`, `", ".join(5)`.
+#
+# Why it is a stored DoS, not a cosmetic defect: the snapshot is attacker-controllable — the webapp
+# upload's only validation is `isinstance(snap, dict) and "devices" in snap`
+# (webapp/backend/app.py:_parse_snapshot_bytes), the entry sanitizer `textutils.xml_safe_deep` passes
+# int/float/bool/None through unchanged, and the POST is ACCEPTED (201) and the payload STORED before
+# any render. `webapp/backend/deliverables.generate` re-raises after unlinking the temp file, which the
+# read route turns into HTTP 500 — so one accepted upload 500s every later
+# GET /api/snapshots/{id}/deliverable/crd.
+# ======================================================================================================
+def _snap_iface(port_value):
+    """_snap() with ONE per-port interface value replaced; the rest of the fleet stays well-formed so
+    the poisoned port is actually iterated (crd.py _evidence_facts `d = d or {}` -> d.get(...))."""
+    s = _snap()
+    s["interfaces"]["acc1"]["Gi1/0/5"] = port_value
+    return s
+
+
+def _snap_mcast(**over):
+    """_snap() with ONE multicast field replaced. The sibling activity fields are untouched, so the
+    multicast-active gate still fires and §4.3 still renders — poisoning the whole block at once would
+    make the gate skip the section and the case would prove nothing."""
+    s = _snap()
+    s["service_map"]["multicast"].update(over)
+    return s
+
+
+def _snap_mcast_scaled(**over):
+    """_snap_mcast(), plus the engine's canonical `executive_brief.scale` (which every real snapshot
+    publishes). That short-circuits crd.py's `_eb_scale.get("n_vlans") or len(vlan_inventory(snap))`
+    fallback, isolating THIS file's read from cisco_toolkit/analyze.py — `vlan_inventory` carries its own
+    copy of the same `or []` bug on service_map.multicast.igmp_queriers (analyze.py:1632) and is another
+    file's fix. See test_crd_route_survives_scalar_igmp_queriers below, which pins that residue openly
+    instead of hiding it."""
+    s = _snap_mcast(**over)
+    s["executive_brief"] = {"scale": {"n_devices": 2, "n_vlans": 3, "n_endpoints": 2}}
+    return s
+
+
+def _snap_punch(severity):
+    """_snap() with ONE punchlist row's `severity` replaced. An UNHASHABLE value makes the sort key's
+    `_SEV_RANK.get(...)` raise TypeError before any coercion can help — dict.get hashes its argument."""
+    s = _snap()
+    s["punchlist"][0] = {**s["punchlist"][0], "severity": severity}
+    return s
+
+
+def _snap_bp(**over):
+    """_snap_with_register() (a REAL compute_design_blueprint) with ONE blueprint CHILD replaced. The
+    blueprint itself stays a dict, so the isinstance guard at crd.py:152 passes and the child is read."""
+    s = _snap_with_register()
+    s["design_blueprint"].update(over)
+    return s
+
+
+def _snap_bp_field(key):
+    """_snap_with_register() with ONE requirements_model field's `key` replaced. crd.py builds
+    `{f.get("key"): f.get("value") ...}`, so an UNHASHABLE key raises while the dict is being built."""
+    s = _snap_with_register()
+    fields = s["design_blueprint"]["requirements_model"]["fields"]
+    fields[0] = {**fields[0], "key": key}
+    return s
+
+
+def _snap_bp_decision(status, **over):
+    """_snap_with_register() with ONE field of the first REAL `status` decision poisoned. status/title
+    stay intact so the row is still selected and rendered rather than filtered out upstream."""
+    s = _snap_with_register()
+    ds = s["design_blueprint"]["decisions"]
+    i = next(i for i, d in enumerate(ds) if d.get("status") == status)
+    ds[i] = {**ds[i], **over}
+    return s
+
+
+_INNER_POISON = {
+    # crd.py:40 (G3) — a PER-PORT value that is a truthy scalar: `d = d or {}` passed it through to
+    # d.get("switchport_mode") -> AttributeError.
+    "iface_port_int": lambda: _snap_iface(5),
+    "iface_port_str": lambda: _snap_iface("up"),
+    # crd.py:69 (G2) — len(mc.get(...) or []) on a truthy scalar -> TypeError: object of type 'int' has no len()
+    "mcast_classified_groups_int": lambda: _snap_mcast(classified_groups=5),
+    "mcast_igmp_queriers_int": lambda: _snap_mcast_scaled(igmp_queriers=5),
+    # crd.py:70 — (mc.get("ptp") or {}).values() on a scalar (G2), and (v or {}).get(...) per element (G3)
+    "mcast_ptp_int": lambda: _snap_mcast(ptp=5),
+    "mcast_ptp_element_int": lambda: _snap_mcast(ptp={"Gi1/0/1": 5}),
+    # The SUBTLE one (crd.py:345-346, G3): [5] PASSES the crd.py:69 length gate (len == 1 -> mcast_active
+    # True), so §4.3 renders and only THEN does groups[0].get("name") crash. A section-level or
+    # activity-gate guard cannot catch this — the crash is two reads downstream of the check.
+    "mcast_classified_groups_element_int": lambda: _snap_mcast(classified_groups=[5]),
+    # crd.py:504 (G2) — `for d in (bp.get("decisions") or [])` over a scalar -> TypeError: not iterable
+    "bp_decisions_int": lambda: _snap_bp(decisions=5),
+    # crd.py:564-565 (G2) — cov = bp.get("coverage") or {} -> cov.get("caveat") on a scalar
+    "bp_coverage_int": lambda: _snap_bp(coverage=5),
+    # crd.py:551/552 (G2) — (d.get("evidence") or {}).get("summary") / (d.get("principle") or {}).get(...)
+    "bp_decision_evidence_int": lambda: _snap_bp_decision("recommended", evidence=5),
+    "bp_decision_principle_int": lambda: _snap_bp_decision("recommended", principle=5),
+    # crd.py:563 (G2) — ", ".join(d.get("requirements_needed") or []); the list-of-ints variant is the
+    # same reachable line one level deeper (join of a non-str element -> TypeError).
+    "bp_decision_reqneeded_int": lambda: _snap_bp_decision("needs-requirement", requirements_needed=5),
+    "bp_decision_reqneeded_list_of_ints": lambda: _snap_bp_decision("needs-requirement",
+                                                                    requirements_needed=[7]),
+    # crd.py:81 — the punchlist SORT KEY: `_SEV_RANK.get(i.get("severity"), 5)` on an UNHASHABLE
+    # severity raises TypeError inside dict.get itself. Found by recursive-poison fuzzing the whole
+    # snapshot, not by reading the `or []` sites — a different mechanism, same stored-DoS class.
+    "punch_severity_list": lambda: _snap_punch(["x"]),
+    "punch_severity_dict": lambda: _snap_punch({"a": 1}),
+    # crd.py:123 — _requirements_overlay builds `{f.get("key"): ...}`; an UNHASHABLE field key raises
+    # while the comprehension builds the dict. Sits at snapshot depth 5, past the depth cap of the
+    # fuzz sweep — found by enumerating every HASHING site in the file instead.
+    "reqmodel_field_key_list": lambda: _snap_bp_field(["availability_tier"]),
+    "reqmodel_field_key_dict": lambda: _snap_bp_field({"a": 1}),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_INNER_POISON))
+def test_crd_survives_truthy_nondict_inner_value(tmp_path, name):
+    """write_crd_docx must DEGRADE on a truthy non-dict/list inner value, never raise — and still write
+    a readable .docx (a half-written file would be its own delivery defect)."""
+    out = str(tmp_path / f"{name}.docx")
+    write_crd_docx(out, _INNER_POISON[name](), "Poison Fleet")   # must not raise
+    assert os.path.exists(out), f"{name}: no CRD written"
+    Document(out)                                                # and it opens
+
+
+def test_crd_evidence_facts_tolerates_non_str_routing_protocol_key(tmp_path):
+    """crd.py:59 — `p.upper()` over routing_neighbors' PROTOCOL KEYS. Deliberately NOT in the route sweep
+    above: JSON object keys are always strings, so this is unreachable from an upload. It is reachable on
+    the CLI path, which hands write_crd_docx the IN-PROCESS snapshot dict (COLLECT_PARSE_V3_23_0:2886)
+    without a JSON round-trip. Pinned here honestly at the level it can actually occur, rather than
+    dressed up as a stored DoS it is not."""
+    from cisco_toolkit.crd import _evidence_facts
+    snap = _snap()
+    snap["routing_neighbors"] = {"core1": {5: [{"neighbor": "10.0.0.2"}], "ospf": [{"neighbor": "10.0.0.3"}]}}
+    ev = _evidence_facts(snap)                      # must not raise
+    assert "OSPF" in ev["protos"], ev["protos"]     # the real protocol still renders
+    assert "5" in ev["protos"], ev["protos"]        # and the odd key degrades to its string form
+    write_crd_docx(str(tmp_path / "c.docx"), snap, "L")
+
+
+def test_crd_wellformed_output_is_unchanged_by_the_inner_guards(tmp_path):
+    """Non-vacuity anchor for the guards: on WELL-FORMED input every guarded read still yields its real
+    value, so the coercers only ever swallow garbage. `as_list(x)` is identical to `(x or [])` for every
+    list/None input and `as_dict(x)` to `(x or {})` for every dict/None input — this pins that in output
+    terms at each of the guarded sites."""
+    out = str(tmp_path / "good.docx")
+    write_crd_docx(out, _snap_with_register(), "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "PTP-primary" in text              # :345-346 groups[0]["name"] still reaches §4.3 REQ-T-MC-001
+    assert "1 classified group(s)" in text    # :348 len(groups) still counts the real group
+    assert "2 dual-homed endpoint(s)" in text  # :54 canonical endpoint_dependencies read is intact
+    # §10 rows still carry the REAL evidence summary + CCDE citation (:551/:552) and the real
+    # requirements_needed join (:563) and coverage caveat (:564-565) — not "—" placeholders.
+    assert "REQ-D-001" in text
+    assert "growth_horizon" in text                                  # :563 join of a real needs list
+    assert "Design decisions are grounded only in collected evidence" in text   # :564-565 coverage caveat
+    # :551 / :552 — the REAL evidence summary and CCDE citation of the first recommended decision, read
+    # verbatim off the blueprint so a guard that silently degraded them to "—" would fail here.
+    bp = _snap_with_register()["design_blueprint"]
+    first_rec = next(d for d in bp["decisions"] if d["status"] == "recommended")
+    assert first_rec["evidence"]["summary"][:60] in text, "§10 lost the real evidence summary (:551)"
+    assert first_rec["principle"]["citation"][:40] in text, "§10 lost the real CCDE citation (:552)"
+
+
+# ------------------------------------------------------- E2E through the REAL upload -> render route
+@pytest.fixture()
+def hub_client(tmp_path):
+    """The public route the stored-DoS actually travels. base_url=localhost so the default Host passes
+    AssessHub's no-token DNS-rebinding allowlist; raise_server_exceptions=False so a render failure
+    surfaces as a 500 STATUS CODE we can assert on, exactly as a real client experiences it."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+    webapp = str(Path(__file__).resolve().parents[1] / "webapp")
+    if webapp not in sys.path:
+        sys.path.insert(0, webapp)          # make `backend` importable from the tests/ suite
+    from backend.app import create_app
+    app = create_app(db_path=str(tmp_path / "hub.db"))
+    with TestClient(app, base_url="http://localhost", raise_server_exceptions=False) as c:
+        yield c
+
+
+def _store_and_render_crd(client, snap):
+    """POST the snapshot (the upload validates only `isinstance(snap, dict) and 'devices' in snap`, so
+    the poison is ACCEPTED and STORED), then GET the CRD the stored snapshot renders."""
+    cid = client.post("/api/campaigns", json={"name": "c"}).json()["id"]
+    r = client.post(f"/api/campaigns/{cid}/snapshots",
+                    files={"file": ("s.json", json.dumps(snap).encode(), "application/json")},
+                    data={"label": "s"})
+    assert r.status_code == 201, f"upload rejected ({r.status_code}) — the DoS premise needs a 201: {r.text[:200]}"
+    return client.get(f"/api/snapshots/{r.json()['id']}/deliverable/crd")
+
+
+@pytest.mark.parametrize("name", sorted(_INNER_POISON))
+def test_crd_deliverable_route_survives_truthy_nondict_inner_value(hub_client, name):
+    """End-to-end: the accepted-and-stored poison must render 200, not 500. Before the crd.py guards
+    every case here returned 500 from this exact route."""
+    r = _store_and_render_crd(hub_client, _INNER_POISON[name]())
+    assert r.status_code == 200, f"{name}: expected 200, got {r.status_code}: {r.text[:300]}"
+
+
+def test_crd_route_survives_scalar_igmp_queriers(hub_client):
+    """Was xfail(strict=False) while the residue lived OUTSIDE this file, in
+    cisco_toolkit/analyze.py::vlan_inventory (`(... igmp_queriers ...) or []` then `for q in 5`), which
+    crd.py falls back to when executive_brief.scale.n_vlans is absent. analyze.py is guarded now, so the
+    marker is dropped and this asserts for real — a regression in EITHER module fails here instead of
+    being absorbed as an expected failure."""
+    r = _store_and_render_crd(hub_client, _snap_mcast(igmp_queriers=5))
+    assert r.status_code == 200, f"expected 200, got {r.status_code}: {r.text[:300]}"
+
+
+def test_crd_deliverable_route_renders_wellformed_snapshot(hub_client):
+    """Route-level non-vacuity: the same route on a well-formed snapshot returns a real .docx."""
+    r = _store_and_render_crd(hub_client, _snap_with_register())
+    assert r.status_code == 200, r.text[:300]
+    assert r.content[:2] == b"PK", "expected a .docx (zip) body"
+    assert len(r.content) > 10_000, f"suspiciously small CRD: {len(r.content)} bytes"

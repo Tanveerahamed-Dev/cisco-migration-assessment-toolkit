@@ -20,6 +20,7 @@ The validators live in ``cisco_toolkit/d10_eval_set.py`` (one implementation; th
 rather than re-deriving the rules — Law 1 applied to the contract itself).
 """
 import json
+import os
 import pathlib
 
 import pytest
@@ -27,7 +28,7 @@ import pytest
 from cisco_toolkit.d10_eval_set import (
     ANCHOR_BANDS, ANCHOR_CLASSES, ANCHOR_FIELDS, REFERENCE_RELATIONS,
     extract_identifier_queries, find_graph_json, load_anchor_key, load_anchors, load_eval_set,
-    load_thresholds, sha256_normalized, validate_all, verify_multi_hop_edges)
+    load_graph_settled, load_thresholds, sha256_normalized, validate_all, verify_multi_hop_edges)
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -123,13 +124,24 @@ def test_multi_hop_rows_declare_at_least_two_reference_edges():
 def test_multi_hop_edges_exist_in_live_graph():
     """Graph-dependent half: every declared edge must exist verbatim. The graph is gitignored and
     owner-machine-only (the graphify-out worktree trap), so absence is a SKIP with the reason
-    stated — never a silent pass, never a fabricated one."""
+    stated — never a silent pass, never a fabricated one.
+
+    KNOWN RESIDUAL, deliberately not masked: this still false-reds when the live graph is an
+    edge-truncated INCREMENTAL rebuild (full node count, but a re-extracted file's cross-file edges
+    evicted — the .git/hooks/post-commit `changed_paths` path). That is a producer bug, not fixture
+    rot; the mitigation is `python -m graphify update .` (a full rebuild heals it) before running
+    this. A consumer-side "vouch against a same-commit backup" guard was tried and reverted — three
+    refuters showed it masks genuine deletions (`built_at_commit` is HEAD, blind to the tree). So the
+    honest state is: torn reads skip (below), truncated rebuilds fail loudly and are pinned by
+    :func:`test_verify_multi_hop_edges_reports_on_an_edge_truncated_graph`."""
     gp = find_graph_json(str(ROOT))
     if not gp:
         pytest.skip("graph.json not reachable (clean clone / CI / bare worktree) — "
                     "edge existence is verified on the owner machine and at build time")
-    with open(gp, encoding="utf-8") as f:
-        graph = json.load(f)
+    graph, unsettled = load_graph_settled(gp)
+    if unsettled:
+        pytest.skip(f"graph.json could not be read as a settled whole: {unsettled}. A file caught "
+                    f"mid-rewrite by a background rebuild is not evidence about the declared edges")
     meta, rows = load_eval_set(str(ROOT))
     recorded = int(meta.get("graph_provenance", {}).get("nodes", 0))
     live = len(graph.get("nodes", []))
@@ -140,6 +152,85 @@ def test_multi_hop_edges_exist_in_live_graph():
                     f"runs on the owner machine's main-checkout graph")
     problems = verify_multi_hop_edges(rows, graph)
     assert problems == [], "\n".join(problems)
+
+
+def test_verify_multi_hop_edges_reports_on_an_edge_truncated_graph():
+    """The non-weakening pin for the SURVIVING code: a graph with a full node set but a declared
+    edge missing (the edge-truncated incremental-rebuild shape) must still be REPORTED, not masked.
+    This is the case the reverted corroboration guard wrongly skipped; it now fails loudly."""
+    row = {"qid": "M-99", "stratum": "multi_hop", "edges": [
+        {"source": "main()", "source_file": "app.py", "relation": "calls",
+         "target": "helper()", "target_file": "lib.py"}]}
+    # both endpoint nodes present (full node count) but the linking edge evicted → truncated, not stub
+    truncated = {"built_at_commit": "abc",
+                 "nodes": [{"id": "m", "label": "main()", "source_file": "app.py"},
+                           {"id": "h", "label": "helper()", "source_file": "lib.py"}],
+                 "links": []}
+    problems = verify_multi_hop_edges([row], truncated)
+    assert len(problems) == 1 and "M-99" in problems[0] and "helper()" in problems[0]
+
+
+# --- the settled-read guard: graph.json is rewritten under readers by background rebuilds --------
+
+def _mini_graph():
+    return {"built_at_commit": "abc", "nodes": [{"id": "m", "label": "main()"}], "links": []}
+
+
+def test_settled_loader_reports_a_torn_read_instead_of_raising(tmp_path):
+    """The non-atomic-write window: `graphify update` truncates graph.json then streams ~8 MB into
+    it, so a concurrent reader sees half a file. That must degrade to a stated reason, never a
+    JSONDecodeError escaping into the suite as a red."""
+    torn = tmp_path / "graph.json"
+    torn.write_text('{"nodes": [{"id": "a"}, {"id"', encoding="utf-8")
+    graph, reason = load_graph_settled(str(torn), attempts=2, settle=0.01)
+    assert graph is None and "never settled" in reason and "JSONDecodeError" in reason
+
+
+def test_settled_loader_does_not_blame_a_rebuild_for_an_absent_file(tmp_path):
+    """Coverage-honesty: a missing/unreadable file is a state of the FILE. Reporting it as "a
+    rebuild is in flight" would assert a cause we never observed."""
+    graph, reason = load_graph_settled(str(tmp_path / "nope.json"), attempts=3, settle=0.01)
+    assert graph is None
+    assert "could not be opened" in reason and "FileNotFoundError" in reason
+    assert "never settled" not in reason and "being rewritten" not in reason
+
+
+def test_settled_loader_rejects_a_graph_rewritten_under_the_read(tmp_path, monkeypatch):
+    """A file that parsed cleanly but changed identity across the read was mid-rebuild: the bytes we
+    parsed are not the bytes on disk, so the parse is not evidence."""
+    import cisco_toolkit.d10_eval_set as mod
+    path = tmp_path / "graph.json"
+    path.write_text(json.dumps(_mini_graph()), encoding="utf-8")
+    real_stat, calls = os.stat, []
+
+    def shifting_stat(p, *a, **kw):
+        st = real_stat(p, *a, **kw)
+        calls.append(p)
+        if len(calls) % 2 == 0:          # the post-read stat never matches the pre-read one
+            class _S:
+                st_size, st_mtime_ns = st.st_size + 1, st.st_mtime_ns + 1
+            return _S()
+        return st
+
+    monkeypatch.setattr(mod.os, "stat", shifting_stat)
+    graph, reason = load_graph_settled(str(path), attempts=2, settle=0.01)
+    assert graph is None and "rewritten while it was being read" in reason
+
+
+def test_settled_loader_rejects_a_non_object_graph(tmp_path):
+    """`json.load` of `null`/a list parses fine but is not a graph; returning it would hand callers
+    an AttributeError on .get() one line later."""
+    path = tmp_path / "graph.json"
+    path.write_text("null", encoding="utf-8")
+    graph, reason = load_graph_settled(str(path), attempts=1)
+    assert graph is None and "not a JSON object" in reason
+
+
+def test_settled_loader_reads_a_quiet_graph_cleanly(tmp_path):
+    path = tmp_path / "graph.json"
+    path.write_text(json.dumps(_mini_graph()), encoding="utf-8")
+    graph, reason = load_graph_settled(str(path), attempts=1)
+    assert reason is None and graph["built_at_commit"] == "abc"
 
 
 def test_negative_rows_are_unanswerable_by_construction():

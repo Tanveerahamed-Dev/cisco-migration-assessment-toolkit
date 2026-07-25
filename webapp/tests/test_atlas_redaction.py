@@ -9,9 +9,14 @@ Harness discipline matches the sibling files: the engine subprocess is always fa
 writes the snapshot the caller harvests), no real engine run, no real DB.
 """
 
+import io
 import json
+import os
+import re
 import sys
+import time
 import types
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -48,6 +53,44 @@ def _fake_engine(record: dict, snapshot=None, extra_files=()):
         for name in extra_files:
             (out.parent / name).write_bytes(b"deliverable")
         return types.SimpleNamespace(returncode=0, stdout="engine ok", stderr="")
+    return run
+
+
+def _docbytes(name="word/document.xml"):
+    """A minimal REAL zip — .docx/.pptx/.xlsx are zips, and the completeness check reads their
+    central directory to tell a finished document from a truncated one."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(name, "<w:document/>")
+    return buf.getvalue()
+
+
+def _family_engine(record: dict, omit=(), stderr="", truncate=(), extra_files=()):
+    """A COMPLETE engine run — every document of the family, named exactly as the real writers
+    name them — with `omit` naming family keys whose writer "failed" and `truncate` naming ones
+    left 0-byte. Reproduces the fail-soft shape the engine really has: the writer logs a warning
+    and the run still exits 0. Documents are written as real (tiny) zips, because that is what
+    distinguishes a delivered .docx from a half-written one."""
+    from cisco_toolkit.docmeta import cli_artifacts
+
+    def run(cmd, cwd=None, **kw):
+        record["cmd"] = list(cmd)
+        out = Path(cmd[cmd.index("--output") + 1])
+        stem = str(out)[: -len(".xlsx")]
+        Path(stem + ".snapshot.json").write_text(json.dumps(REDACTED_SNAP), encoding="utf-8")
+        for key, _name, filename in cli_artifacts(Path(stem).name):
+            if key in omit:
+                continue
+            target = out.parent / filename
+            if key in truncate:
+                target.write_bytes(b"")          # truncate-then-ENOSPC: the file exists, empty
+            elif filename.endswith((".docx", ".pptx", ".xlsx")):
+                target.write_bytes(_docbytes())
+            else:
+                target.write_text("<html>explorer</html>", encoding="utf-8")
+        for name in extra_files:
+            (out.parent / name).write_bytes(b"deliverable")
+        return types.SimpleNamespace(returncode=0, stdout="engine ok", stderr=stderr)
     return run
 
 
@@ -200,7 +243,7 @@ def test_frozen_dispatch_uses_the_sentinel(monkeypatch, tmp_path):
 # ── the CLI surface ─────────────────────────────────────────────────────────────
 def test_cli_runs_redaction_and_reports_what_it_wrote(monkeypatch, tmp_path, capsys):
     rec = {}
-    monkeypatch.setattr(ing.subprocess, "run", _fake_engine(rec, extra_files=("Deck.pptx",)))
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec, extra_files=("Deck.pptx",)))
     rc = serve.main(["--redact-folder", str(_collection(tmp_path)), "--out", str(tmp_path / "o")])
     out = capsys.readouterr().out
     assert rc == 0
@@ -237,7 +280,14 @@ def test_out_without_redact_folder_is_rejected(tmp_path, capsys):
 def _engine_with_failed_phase(record: dict, phase: str, via: str = "timings"):
     """The engine's _run_phase LOGS AND CONTINUES on any exception 'so the workbook still saves'.
     The snapshot is redacted by a DIRECT call and stays clean, so the workbook can ship real client
-    data while the verified file is spotless and the run exits 0."""
+    data while the verified file is spotless and the run exits 0.
+
+    The `timings` sidecar is written in the engine's REAL shape — a dict whose "phases" key holds
+    the rows (COLLECT_PARSE_V3_23_0._stage_finalize). It was faked here as a bare LIST, which is
+    what the parser happened to expect: the stub and the bug agreed with each other, the test
+    passed, and the sidecar arm was dead on every real run.
+    tests/test_phase_timings_contract.py now pins the shape against a sidecar the real engine
+    wrote, so a fabricated fixture can never certify the wrong format again."""
     def run(cmd, cwd=None, **kw):
         record["cmd"] = list(cmd)
         out = Path(cmd[cmd.index("--output") + 1])
@@ -246,7 +296,9 @@ def _engine_with_failed_phase(record: dict, phase: str, via: str = "timings"):
         out.write_bytes(b"xlsx with UNREDACTED cells")
         if via == "timings":
             Path(stem + ".phase_timings.json").write_text(
-                json.dumps([{"phase": phase, "seconds": 0.1, "ok": False}]), encoding="utf-8")
+                json.dumps({"n_devices": 1, "workers": 1, "total_seconds": 0.1,
+                            "phases": [{"phase": phase, "seconds": 0.1, "ok": False}]}),
+                encoding="utf-8")
             return types.SimpleNamespace(returncode=0, stdout="engine ok", stderr="")
         return types.SimpleNamespace(
             returncode=0, stderr=f"  [SKIP] Phase '{phase}' failed: RuntimeError(); "
@@ -333,6 +385,502 @@ def test_field_messages_are_ascii(monkeypatch, tmp_path):
             assert "—" not in s, f"em-dash in a runtime message at ingest.py line ~{i}: {s[:80]}"
 
 
+# ── the OTHER silence: a set that is safe but SHORT ─────────────────────────────
+# Every deliverable writer in the engine sits in its own try/except that only logs a warning and
+# continues (deliberately: the workbook and snapshot must still save when an optional library is
+# absent). The redaction guards above certify that what IS written is safe and say nothing about
+# what is ABSENT — so a run that rendered 13 of 15 files exited 0, printed "Wrote 13 file(s)", and
+# the engineer could send a partial family believing it was the whole set.
+def test_a_complete_run_reports_nothing_missing(monkeypatch, tmp_path):
+    """Non-vacuity anchor for every case below: when the engine writes the whole family the check
+    must stay SILENT. A completeness check that fires on a good run is worse than none — it is
+    the exact false-alarm shape that trained engineers to ignore the redaction warnings."""
+    rec = {}
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec))
+    out = tmp_path / "share"
+    report = ing.run_redaction_folder(str(_collection(tmp_path)), str(out))
+    assert report["missing"] == []
+    assert report["engine_warnings"] == []
+    assert not (out / "INCOMPLETE-SET.txt").exists()
+    assert len(report["files"]) >= 10, report["files"]
+
+
+def test_a_short_set_is_named_deliverable_by_deliverable(monkeypatch, tmp_path):
+    """The engineer must learn WHICH documents are absent — 'incomplete' alone is unactionable at
+    a client site with no second copy of the tool."""
+    rec = {}
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec, omit=("runbook", "deck")))
+    report = ing.run_redaction_folder(str(_collection(tmp_path)), str(tmp_path / "share"))
+    missing = {m["key"]: m for m in report["missing"]}
+    assert set(missing) == {"runbook", "deck"}
+    assert missing["runbook"]["filename"] == "Assessment_redacted_runbook.docx"
+    assert "Runbook" in missing["runbook"]["name"]
+    # ...and the documents that DID render are still reported as produced.
+    assert "Assessment_redacted_design.docx" in report["files"]
+    # The engine said NOTHING here, and the gap is still caught: the produced-vs-expected diff is
+    # the detector, its warnings only the explanation. Verified against the real engine — running
+    # it with --no-docx --no-pptx drops two documents and logs not one word about either, so a
+    # design that scanned stderr for "write failed" would have missed this exact case.
+    assert report["engine_warnings"] == []
+
+
+def test_a_short_set_is_not_refused(monkeypatch, tmp_path):
+    """Deliberate: a missing document is not a leak. Raising EngineRunError would print 'treat
+    anything already written as UNREDACTED' over files that are correctly redacted — false, and
+    the fastest way to make the real leak alarm unbelievable."""
+    rec = {}
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec, omit=("crd",)))
+    report = ing.run_redaction_folder(str(_collection(tmp_path)), str(tmp_path / "share"))
+    assert report["missing"] and report["files"]      # produced AND disclosed, not refused
+
+
+def test_the_engines_own_reason_is_surfaced(monkeypatch, tmp_path):
+    """The diff detects the gap; the engine's warning explains it. Both matter: 'missing' tells
+    the engineer what to re-send, the reason tells them whether a re-run would even help."""
+    rec = {}
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(
+        rec, omit=("runbook",),
+        stderr="WARNING -   Runbook (DOCX) skipped: python-docx not installed\n"
+               "INFO - [OK] Snapshot: written"))
+    report = ing.run_redaction_folder(str(_collection(tmp_path)), str(tmp_path / "share"))
+    assert any("python-docx not installed" in w for w in report["engine_warnings"])
+    assert not any("[OK] Snapshot" in w for w in report["engine_warnings"]), \
+        "only lines explaining a GAP belong here"
+
+
+def test_a_refused_document_gate_is_reported_as_a_reason(monkeypatch, tmp_path):
+    """A gate refusal is a correct refusal, but the SET is still short — the engineer must not
+    discover that at the client.
+
+    NB this shape is currently UNREACHABLE through --redact-folder: gate_state.enforce resolves
+    docs/engagement-state.json against the engine child's cwd, which is always a fresh temp
+    workdir, so no store is ever found and the design/MOP gates always pass. The case is kept
+    because the reporting must hold if that ever changes; it is not evidence that it happens."""
+    rec = {}
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(
+        rec, omit=("design",),
+        stderr="ERROR - [GATE REFUSED] design: missing upstream approval(s): assessment"))
+    report = ing.run_redaction_folder(str(_collection(tmp_path)), str(tmp_path / "share"))
+    assert [m["key"] for m in report["missing"]] == ["design"]
+    assert any("GATE REFUSED" in w for w in report["engine_warnings"])
+
+
+def test_a_short_set_leaves_an_on_disk_note_that_does_not_cry_leak(monkeypatch, tmp_path):
+    """stderr scrolls away; the folder is what a hurried engineer looks at before zipping it. The
+    note must be honest in BOTH directions — the files here ARE safe to share."""
+    rec = {}
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec, omit=("mop",)))
+    out = tmp_path / "share"
+    ing.run_redaction_folder(str(_collection(tmp_path)), str(out))
+    marker = out / "INCOMPLETE-SET.txt"
+    assert marker.is_file()
+    text = marker.read_text(encoding="ascii")            # cp437 field consoles / Notepad
+    assert "INCOMPLETE" in text and "Assessment_redacted_mop.docx" in text
+    # Still reassures — but scoped to what THIS run wrote. The unqualified claim it used to make
+    # ("Everything in this folder IS redacted and safe to share") was false whenever a document
+    # from an earlier UNCERTIFIED run sat in the folder; see
+    # test_the_note_never_claims_safety_over_an_uncertified_leftover.
+    assert "IS redacted" in text and "DO NOT SEND THIS FOLDER" not in text
+    assert not (out / ing.UNSAFE_MARKER).exists(), \
+        "a missing document must not be reported as an unredacted-output leak"
+
+
+def test_the_note_is_not_counted_as_a_deliverable(monkeypatch, tmp_path):
+    rec = {}
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec, omit=("crd",)))
+    report = ing.run_redaction_folder(str(_collection(tmp_path)), str(tmp_path / "share"))
+    assert "INCOMPLETE-SET.txt" not in report["files"]
+
+
+def test_a_stale_note_is_cleared_once_the_set_is_whole(monkeypatch, tmp_path):
+    """A marker that outlives its cause is the same lie in the other direction."""
+    rec = {}
+    out = tmp_path / "share"
+    src = str(_collection(tmp_path))
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec, omit=("deck",)))
+    ing.run_redaction_folder(src, str(out))
+    assert (out / "INCOMPLETE-SET.txt").is_file()
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec))     # re-run, complete
+    report = ing.run_redaction_folder(src, str(out), reuse_out=True)
+    assert report["missing"] == []
+    assert not (out / "INCOMPLETE-SET.txt").exists()
+
+
+def test_only_atlas_own_note_is_ever_deleted(monkeypatch, tmp_path):
+    """The engineer's own file of that name is not ours to remove."""
+    rec = {}
+    out = tmp_path / "share"
+    out.mkdir()
+    (out / "INCOMPLETE-SET.txt").write_text("my own notes about this job", encoding="ascii")
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec))
+    ing.run_redaction_folder(str(_collection(tmp_path)), str(out))
+    assert (out / "INCOMPLETE-SET.txt").read_text(encoding="ascii") == "my own notes about this job"
+
+
+def test_re_running_into_the_same_folder_still_reports_what_it_wrote(monkeypatch, tmp_path):
+    """Regression: 'produced by this run' was membership-only, so a second run into the same --out
+    saw every re-rendered document as pre-existing and reported 'Wrote 0 file(s)'. Harmless while
+    nothing read that list; the completeness check reads it, and would have called a perfectly
+    complete re-run a set missing all ten deliverables."""
+    rec = {}
+    out = tmp_path / "share"
+    src = str(_collection(tmp_path))
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec))
+    first = ing.run_redaction_folder(src, str(out))
+    # Force a distinguishable mtime even on a coarse (FAT32, 2s) filesystem.
+    for p in out.iterdir():
+        os.utime(p, (0, 0))
+    second = ing.run_redaction_folder(src, str(out), reuse_out=True)
+    assert second["missing"] == []
+    assert set(second["files"]) == set(first["files"])
+
+
+def test_cli_says_the_set_is_short_without_calling_it_unsafe(monkeypatch, tmp_path, capsys):
+    """The field surface: the gap is impossible to miss and is never dressed up as a leak."""
+    rec = {}
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec, omit=("runbook", "opshandbook")))
+    rc = serve.main(["--redact-folder", str(_collection(tmp_path)), "--out", str(tmp_path / "o")])
+    cap = capsys.readouterr()
+    assert rc == 3, "0 must keep meaning complete-and-verified; 1 is the redaction-failure code"
+    assert "INCOMPLETE SET" in cap.out
+    assert "Assessment_redacted_runbook.docx" in cap.out
+    assert "Assessment_redacted_ops_handbook.docx" in cap.out
+    assert "redaction FAILED" not in cap.out and "UNREDACTED" not in cap.out
+    # The path the banner tells the engineer to look at must be the file that actually exists.
+    # The marker name is spelled in ingest.py, serve.py and README-FIELD.txt; nothing but this
+    # reconciles them, and a note nobody can find is the same as no note at all.
+    named = re.search(r"list is saved as (.+INCOMPLETE-SET\.txt)", cap.out)
+    assert named and Path(named.group(1)).is_file(), cap.out
+
+
+def test_the_warning_is_the_last_thing_in_a_redirected_log(monkeypatch, tmp_path, capsys):
+    """`Atlas.exe ... > run.log 2>&1` is the natural thing to do for a ten-minute run at a client
+    site. Python block-buffers stdout and line-buffers stderr when redirected, so a warning on
+    stderr got hoisted ABOVE the command banner — reading as though it belonged to a previous
+    command — and the log ENDED on the reassurance block, making `tail` show a clean success.
+    One stream, warning last: the final words the engineer reads are the ones that qualify it."""
+    rec = {}
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec, omit=("deck",)))
+    serve.main(["--redact-folder", str(_collection(tmp_path)), "--out", str(tmp_path / "o")])
+    cap = capsys.readouterr()
+    assert "INCOMPLETE SET" not in cap.err, "must not straddle two differently-buffered streams"
+    body = cap.out.strip()
+    assert body.index("Checked:") < body.index("INCOMPLETE SET"), \
+        "the qualification must come after the thing it qualifies"
+    tail = "\n".join(body.splitlines()[-6:])
+    assert "INCOMPLETE SET" in tail or "not included" in tail, \
+        f"a `tail` of the log must show the warning, got:\n{tail}"
+
+
+def test_the_reuse_refusal_reaches_the_console_as_a_sentence(monkeypatch, tmp_path, capsys):
+    rec = {}
+    out = tmp_path / "o"
+    src = str(_collection(tmp_path))
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec))
+    assert serve.main(["--redact-folder", src, "--out", str(out)]) == 0
+    rc = serve.main(["--redact-folder", src, "--out", str(out)])
+    err = capsys.readouterr().err
+    assert rc == 1 and "Traceback" not in err
+    assert "--reuse-out" in err and "already holds a redacted deliverable set" in err
+    assert serve.main(["--redact-folder", src, "--out", str(out), "--reuse-out"]) == 0
+
+
+def test_cli_stays_quiet_when_the_family_is_complete(monkeypatch, tmp_path, capsys):
+    rec = {}
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec))
+    rc = serve.main(["--redact-folder", str(_collection(tmp_path)), "--out", str(tmp_path / "o")])
+    cap = capsys.readouterr()
+    assert rc == 0 and "INCOMPLETE" not in cap.err + cap.out
+
+
+# ── what an independent refuter got past the first version of the check ─────────
+# Each case below is a defect an adversarial review demonstrated against the completeness check
+# as first written. They are the difference between a check that closes the silent-partial-set
+# hole and one that only appears to.
+def test_a_truncated_deliverable_is_not_counted_as_delivered(monkeypatch, tmp_path):
+    """The original bug, re-armed. Every writer truncates its target and THEN writes, so a stick
+    that fills mid-render leaves a 0-byte file with a brand-new timestamp; the engine logs a
+    warning and exits 0. A name-and-mtime check certified that folder as the complete family."""
+    rec = {}
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec, truncate=("explorer",)))
+    out = tmp_path / "share"
+    report = ing.run_redaction_folder(str(_collection(tmp_path)), str(out))
+    assert (out / "Assessment_redacted_explorer.html").stat().st_size == 0   # it IS on disk...
+    gap = {m["key"]: m for m in report["missing"]}
+    assert set(gap) == {"explorer"} and gap["explorer"]["state"] == "unusable"
+    assert "0 bytes" in gap["explorer"]["detail"]
+
+
+def test_a_corrupt_document_container_is_not_counted_as_delivered(monkeypatch, tmp_path):
+    """Half a .docx is not a deliverable. A Word file is a zip whose central directory sits at the
+    END, so a truncated one cannot be opened — which is exactly how an interrupted write fails."""
+    rec = {}
+    out = tmp_path / "share"
+    engine = _family_engine(rec)
+
+    def truncating(cmd, **kw):
+        result = engine(cmd, **kw)
+        p = Path(cmd[cmd.index("--output") + 1]).parent / "Assessment_redacted_design.docx"
+        p.write_bytes(p.read_bytes()[:20])      # header survives, central directory does not
+        return result
+
+    monkeypatch.setattr(ing.subprocess, "run", truncating)
+    report = ing.run_redaction_folder(str(_collection(tmp_path)), str(out))
+    gap = {m["key"]: m for m in report["missing"]}
+    assert set(gap) == {"design"} and "not open" in gap["design"]["detail"]
+
+
+def test_a_clock_that_moved_backwards_does_not_condemn_a_perfect_run(monkeypatch, tmp_path):
+    """The alarm-fatigue failure. A strictly-greater mtime test assumes the clock only moves
+    forward; on an air-gapped field laptop (manual time correction) or a FAT32 stick carried
+    across a timezone or a DST boundary, previously-written files read back as NEWER — and every
+    document of a flawless run was reported missing, with a note written into a complete folder."""
+    rec = {}
+    out = tmp_path / "share"
+    src = str(_collection(tmp_path))
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec))
+    ing.run_redaction_folder(src, str(out))
+    for p in out.iterdir():                      # every stamp an hour in the FUTURE
+        os.utime(p, (time.time() + 3600, time.time() + 3600))
+    report = ing.run_redaction_folder(src, str(out), reuse_out=True)
+    assert report["missing"] == [], "a good re-run must never report the whole family missing"
+    assert not (out / "INCOMPLETE-SET.txt").exists()
+    assert len(report["files"]) >= 10
+
+
+def test_reusing_an_output_folder_that_holds_a_set_is_refused_before_any_work(monkeypatch,
+                                                                             tmp_path):
+    """The whole answer to cross-job contamination, and it is PREVENTION, not repair.
+
+    Two engagements sharing one --out plus one failed writer leaves job A's document under exactly
+    the name job B's should have had — and redaction keeps hostnames and site codes, so it
+    identifies job A's client inside job B's delivery. Every after-the-fact treatment was worse:
+    warning about a file the engineer can plainly see is disbelieved; moving it aside mutates the
+    folder, contradicts the manifest the engine already sealed over the pre-move contents, and
+    rips a GOOD same-job document out of an otherwise complete set. Refusing costs milliseconds
+    rather than ten minutes and removes the precondition instead of the symptom."""
+    rec = {}
+    out = tmp_path / "share"
+    src = str(_collection(tmp_path))
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec))
+    ing.run_redaction_folder(src, str(out))                       # job A
+    rec["cmd"] = None
+    with pytest.raises(ing.IngestError) as e:                     # job B, same folder
+        ing.run_redaction_folder(src, str(out))
+    assert rec["cmd"] is None, "must refuse BEFORE spending ten minutes in the engine"
+    msg = str(e.value)
+    assert "already holds a redacted deliverable set" in msg
+    assert "--reuse-out" in msg and "EMPTY folder" in msg
+    assert "hostnames" in msg                    # says WHY, not just what
+
+
+def test_an_empty_or_unrelated_output_folder_is_not_refused(monkeypatch, tmp_path):
+    """The refusal must key on a DELIVERABLE SET, not on the folder being non-empty — an
+    engineer's own notes sitting in the destination are not a reason to stop."""
+    rec = {}
+    out = tmp_path / "share"
+    out.mkdir()
+    (out / "site-notes.txt").write_text("cab booked for 22:00", encoding="ascii")
+    (out / "Assessment_FULL_UNREDACTED.xlsx").write_bytes(b"the engineer's own export")
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec))
+    report = ing.run_redaction_folder(str(_collection(tmp_path)), str(out))   # must not raise
+    assert report["missing"] == []
+
+
+def test_reuse_out_is_the_deliberate_escape(monkeypatch, tmp_path):
+    """Re-running the SAME job after a short set is legitimate and must stay possible."""
+    rec = {}
+    out = tmp_path / "share"
+    src = str(_collection(tmp_path))
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec, omit=("mop",)))
+    ing.run_redaction_folder(src, str(out))
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec))
+    report = ing.run_redaction_folder(src, str(out), reuse_out=True)
+    assert report["missing"] == []
+
+
+def test_a_stale_copy_under_reuse_out_is_reported_as_stale_not_as_absent(monkeypatch, tmp_path):
+    """With --reuse-out the engineer has accepted the folder, so stale becomes reachable again.
+    It must be named as stale, NOT as absent: calling it missing sends them to a folder where the
+    file plainly exists, which reads as a false alarm. Nothing is moved or deleted — the earlier
+    refusal is what prevents the cross-job case, and mutating a same-job folder only ever removed
+    a good document from a complete set."""
+    rec = {}
+    out = tmp_path / "share"
+    src = str(_collection(tmp_path))
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec))
+    ing.run_redaction_folder(src, str(out))
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec, omit=("mop",)))
+    report = ing.run_redaction_folder(src, str(out), reuse_out=True)
+    gap = {m["key"]: m for m in report["missing"]}
+    assert set(gap) == {"mop"} and gap["mop"]["state"] == "stale"
+    assert (out / "Assessment_redacted_mop.docx").is_file()      # untouched
+    note = (out / "INCOMPLETE-SET.txt").read_text(encoding="ascii")
+    assert "EARLIER run" in note and "STALE" in note
+    assert "another client" in note              # hostnames survive redaction by design
+
+
+def test_a_stem_named_file_the_engineer_saved_is_never_claimed(monkeypatch, tmp_path):
+    """Guards a REGRESSION found by review: 'produced by this run' was widened from
+    name-membership to a STEM PREFIX, which re-admitted anything the engineer kept alongside the
+    set. `Assessment_redacted_IP_CROSSWALK.xlsx` — a pseudonym-to-real-IP crosswalk, the one file
+    that must never travel — saved during the multi-minute run was then listed under the
+    share-safe banner. The prefix test passed the old guard test only because its fixture name
+    happened not to start with the stem."""
+    rec = {}
+    out = tmp_path / "share"
+    out.mkdir()
+    crosswalk = out / "Assessment_redacted_IP_CROSSWALK.xlsx"
+    crosswalk.write_bytes(b"240.0.0.1 -> 10.20.30.40")
+    engine = _family_engine(rec)
+
+    def touching(cmd, **kw):
+        result = engine(cmd, **kw)
+        crosswalk.write_bytes(b"240.0.0.1 -> 10.20.30.40  (re-saved mid-run)")
+        return result
+
+    monkeypatch.setattr(ing.subprocess, "run", touching)
+    report = ing.run_redaction_folder(str(_collection(tmp_path)), str(out))
+    assert "Assessment_redacted_IP_CROSSWALK.xlsx" not in report["files"]
+    assert report["missing"] == []               # ...and it is not mistaken for a deliverable
+
+
+def test_an_unreadable_deliverable_does_not_leak_its_path_into_the_note(monkeypatch, tmp_path):
+    """Sibling of the engine-warning scrub: _unusable's own OSError branch carried the absolute
+    --out path (named after the engagement in practice) into a note that gets zipped and sent."""
+    err = OSError(13, "Permission denied")
+    monkeypatch.setattr(ing.Path, "stat", lambda self, **kw: (_ for _ in ()).throw(err))
+    why = ing._unusable(Path(r"D:\Acme-Bank-Merger-share\Assessment_redacted_crd.docx"))
+    assert "Permission denied" in why and "Acme-Bank-Merger" not in why
+
+
+def test_the_engineers_own_note_of_that_name_is_never_overwritten(monkeypatch, tmp_path):
+    """The delete path was guarded and the WRITE path was not — the asymmetry is the defect. An
+    engineer's own record of what they sent is exactly the kind of file this app must not eat."""
+    rec = {}
+    out = tmp_path / "share"
+    out.mkdir()
+    theirs = "Sent to client 14:20 - ref CHG0041233. DO NOT DELETE - audit record."
+    (out / "INCOMPLETE-SET.txt").write_text(theirs, encoding="ascii")
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec, omit=("crd",)))
+    report = ing.run_redaction_folder(str(_collection(tmp_path)), str(out))
+    assert (out / "INCOMPLETE-SET.txt").read_text(encoding="ascii") == theirs
+    # ...and the note still gets written somewhere, and the report says where.
+    assert report["incomplete_note"] == str(out / "INCOMPLETE-SET-ATLAS.txt")
+    assert "Customer Requirements" in Path(report["incomplete_note"]).read_text(encoding="ascii")
+
+
+def test_an_annotated_note_survives_a_later_complete_run(monkeypatch, tmp_path):
+    """The note invites the engineer to act on it, so annotating it is expected behaviour. A
+    startswith-header guard deleted their annotation along with our text."""
+    rec = {}
+    out = tmp_path / "share"
+    src = str(_collection(tmp_path))
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec, omit=("deck",)))
+    ing.run_redaction_folder(src, str(out))
+    note = out / "INCOMPLETE-SET.txt"
+    with note.open("a", encoding="ascii") as fh:
+        fh.write("\n-- 22-Jul 14:20 told client the deck is missing; ref CHG0041233 --\n")
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec))
+    ing.run_redaction_folder(src, str(out), reuse_out=True)
+    assert note.is_file() and "CHG0041233" in note.read_text(encoding="ascii")
+
+
+def test_an_untouched_note_is_still_cleared_when_the_set_is_whole(monkeypatch, tmp_path):
+    """The other half of the same rule: our own unmodified note must not outlive its cause."""
+    rec = {}
+    out = tmp_path / "share"
+    src = str(_collection(tmp_path))
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec, omit=("deck",)))
+    ing.run_redaction_folder(src, str(out))
+    assert (out / "INCOMPLETE-SET.txt").is_file()
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec))
+    ing.run_redaction_folder(src, str(out), reuse_out=True)
+    assert not (out / "INCOMPLETE-SET.txt").exists()
+
+
+def test_the_console_never_promises_a_note_that_was_not_written(monkeypatch, tmp_path, capsys):
+    """A directory (or a read-only file) at that path made the write fail silently while stderr
+    still told the engineer to go and read it."""
+    rec = {}
+    out = tmp_path / "share"
+    (out / "INCOMPLETE-SET.txt").mkdir(parents=True)
+    (out / "INCOMPLETE-SET-ATLAS.txt").mkdir()
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec, omit=("crd",)))
+    rc = serve.main(["--redact-folder", str(_collection(tmp_path)), "--out", str(out)])
+    cap = capsys.readouterr().out
+    assert rc == 3 and "INCOMPLETE SET" in cap
+    assert "list is saved as" not in cap
+    assert "this console is the record" in cap
+
+
+def test_engine_paths_do_not_travel_into_the_shared_note(monkeypatch, tmp_path):
+    """The note is in the folder that gets zipped and sent. Engine breadcrumbs carry the --out
+    path, which in practice is named after the engagement."""
+    rec = {}
+    out = tmp_path / "Acme-Bank-Merger-share"
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(
+        rec, omit=("mop",),
+        stderr=f"WARNING -   MOP (DOCX) write failed: [Errno 28] No space left: "
+               f"'{out}\\Assessment_redacted_mop.docx'"))
+    report = ing.run_redaction_folder(str(_collection(tmp_path)), str(out))
+    assert report["engine_warnings"], "the reason should still be reported"
+    assert not any("Acme-Bank-Merger" in w for w in report["engine_warnings"])
+    assert "Acme-Bank-Merger" not in Path(report["incomplete_note"]).read_text(encoding="ascii")
+
+
+def test_the_explorers_own_skip_message_is_recognised(monkeypatch, tmp_path):
+    """A missing explorer template in the frozen bundle is the likeliest explorer failure, and it
+    logs 'HTML Explorer skipped: template not found' — which a 'skipped: python-' pattern missed,
+    leaving the most likely gap the least explained."""
+    rec = {}
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(
+        rec, omit=("explorer",),
+        stderr="WARNING -   HTML Explorer skipped: template not found at <path>"))
+    report = ing.run_redaction_folder(str(_collection(tmp_path)), str(tmp_path / "share"))
+    assert any("template not found" in w for w in report["engine_warnings"])
+
+
+def test_a_pre_existing_unrelated_file_is_never_claimed_even_if_touched(monkeypatch, tmp_path):
+    """Guards the ORIGINAL protection against the mtime rewrite: an engineer's own export saved
+    while the (multi-minute) run is in flight must not join the share-safe file list."""
+    rec = {}
+    out = tmp_path / "share"
+    out.mkdir()
+    theirs = out / "Assessment_FULL_UNREDACTED.xlsx"
+    theirs.write_bytes(b"pre-existing")
+    engine = _family_engine(rec)
+
+    def touching(cmd, **kw):
+        result = engine(cmd, **kw)
+        theirs.write_bytes(b"pre-existing, re-saved during the run")
+        return result
+
+    monkeypatch.setattr(ing.subprocess, "run", touching)
+    report = ing.run_redaction_folder(str(_collection(tmp_path)), str(out))
+    assert "Assessment_FULL_UNREDACTED.xlsx" not in report["files"]
+
+
+def test_a_leftover_do_not_send_marker_is_called_out(monkeypatch, tmp_path, capsys):
+    """Nothing deletes a DO-NOT-SEND marker (erring towards keeping a safety warning), so a clean
+    run into a folder that holds one leaves it saying 'unsafe' and 'complete' at the same time."""
+    rec = {}
+    out = tmp_path / "share"
+    src = str(_collection(tmp_path))
+    monkeypatch.setattr(ing.subprocess, "run", _fake_engine(rec, snapshot=LEAKY_SNAP))
+    with pytest.raises(ing.EngineRunError):
+        ing.run_redaction_folder(src, str(out))
+    assert (out / "DO-NOT-SEND-NOT-REDACTED.txt").is_file()
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine(rec))
+    # The refused run left a partial set behind, so retrying into the same folder is itself
+    # refused until the engineer opts in - which is the correct order of business here.
+    rc = serve.main(["--redact-folder", src, "--out", str(out), "--reuse-out"])
+    cap = capsys.readouterr().out
+    assert rc == 0
+    assert "EARLIER" in cap and "DO-NOT-SEND-NOT-REDACTED.txt" in cap
+    assert (out / "DO-NOT-SEND-NOT-REDACTED.txt").is_file(), "must not be deleted, only explained"
+
+
 # ── calibration: the checker must be neither blind nor hysterical ───────────────
 @pytest.mark.parametrize("fixture", ["tests/golden/snapshot.json",
                                      "webapp/sample_data/sample_fleet.snapshot.json"])
@@ -378,3 +926,260 @@ def test_checker_is_calibrated_against_real_redacted_snapshots(tmp_path, fixture
     assert coverage >= 0.90, (
         f"the checker now inspects only {coverage:.0%} of {fixture} ({inspected}/{total}); an "
         f"exemption has blinded it (this was 72% when real evidence was being skipped)")
+
+
+# --- empty-string flag values ---------------------------------------------------------------------
+# argparse accepts `--flag ""`, and main() dispatched on truthiness, so an empty value was
+# indistinguishable from "flag not passed". Measured before the fix: `--redact-folder ""` returned
+# 0 and STARTED THE WEB SERVER. The engineer asked for a share-safe deliverable set, got a running
+# cockpit and a success exit code, and nothing anywhere said the redaction had not happened.
+
+def _no_serve(monkeypatch):
+    """Stub the serve path so a regression is a FAILED ASSERT, not a test that binds a port and
+    hangs. `served` flipping to True is the actual defect being detected — asserting only on the
+    exit code would pass for a command that refused AND then somehow served."""
+    state = {"served": False}
+    monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace(
+        run=lambda app, **kw: state.update(served=True)))
+    monkeypatch.setattr(serve, "_schedule_browser_open", lambda url: None)
+    return state
+
+
+def test_empty_redact_folder_refuses_instead_of_serving(monkeypatch, tmp_path, capsys):
+    state = _no_serve(monkeypatch)
+    assert serve.main(["--redact-folder", ""]) == 2
+    assert state["served"] is False, "an empty --redact-folder started the server"
+    assert "empty value" in capsys.readouterr().err
+    # ...including when --out IS supplied, which previously produced the MISLEADING refusal
+    # "--out only applies to --redact-folder" while --redact-folder was in fact supplied.
+    assert serve.main(["--redact-folder", "", "--out", str(tmp_path / "o")]) == 2
+    assert state["served"] is False
+    assert "only apply" not in capsys.readouterr().err
+
+
+def test_empty_out_refuses_instead_of_serving(monkeypatch, tmp_path, capsys):
+    state = _no_serve(monkeypatch)
+    assert serve.main(["--redact-folder", str(tmp_path), "--out", ""]) == 2
+    assert state["served"] is False, "an empty --out started the server"
+    assert "empty value" in capsys.readouterr().err
+    # bare `--out ""` with no --redact-folder must still hit a refusal, not fall through to serving
+    assert serve.main(["--out", ""]) == 2
+    assert state["served"] is False
+
+
+def test_every_path_valued_flag_rejects_an_empty_value(monkeypatch, capsys):
+    """The whole class, not the three flags that happened to be reported. --db "" silently opened
+    a DIFFERENT store than the one named; --dist "" served a different frontend (and disagreed
+    with run_selftest, which already used `is not None` for it); --host "" binds every interface
+    rather than loopback. Whitespace counts as empty - a quoted trailing space is invisible."""
+    state = _no_serve(monkeypatch)
+    for flag in ("--host", "--db", "--dist", "--redact-folder", "--out", "--verify-manifest",
+                 "--expect-root"):
+        for value in ("", "   "):
+            assert serve.main([flag, value]) == 2, f"{flag} {value!r} was not refused"
+            assert state["served"] is False, f"{flag} {value!r} reached the serve path"
+            assert flag in capsys.readouterr().err
+
+
+def test_the_guard_does_not_refuse_real_values(monkeypatch, tmp_path):
+    """Non-vacuity: the guard must reject ONLY empty values. A blanket refusal would pass every
+    assertion above while breaking the normal command."""
+    state = _no_serve(monkeypatch)
+    rc = serve.main(["--db", str(tmp_path / "a.db"), "--port", "8123", "--no-browser"])
+    assert rc == 0 and state["served"] is True, "the guard swallowed a valid invocation"
+
+
+def test_main_forwards_reuse_out_to_run_redaction(monkeypatch):
+    """Direct pin on the dispatch contract, after a merge silently broke it.
+
+    Two changes collided on these lines (#438's --reuse-out and the empty-value guard) and the
+    conflict was resolved by keeping BOTH blocks stacked. `if args.redact_folder is not None`
+    returns for every non-None value, so the second block was unreachable - and it was the only
+    one that forwarded reuse_out. The flag was accepted, silently dropped, and Atlas refused an
+    --out folder the engineer had explicitly authorised.
+
+    #438's own tests did catch it, but only through their console assertions, which read as a
+    message-wording problem. This asserts the argument itself reaches run_redaction, so the next
+    re-stack fails with the actual cause on the line."""
+    seen = {}
+    monkeypatch.setattr(serve, "run_redaction",
+                        lambda src, out, rc=False, ro=False: seen.update(
+                            src=src, out=out, redact_collection=rc, reuse_out=ro) or 0)
+    assert serve.main(["--redact-folder", "S", "--out", "O", "--reuse-out"]) == 0
+    assert seen["reuse_out"] is True, "--reuse-out did not reach run_redaction"
+    seen.clear()
+    assert serve.main(["--redact-folder", "S", "--out", "O"]) == 0
+    assert seen["reuse_out"] is False, "reuse_out must default off - it relaxes a safety refusal"
+
+
+def test_reuse_out_without_redact_folder_is_refused(capsys):
+    """The mirror: --reuse-out relaxes a safety refusal, so it must never be silently ignored
+    when the command it modifies was not given."""
+    assert serve.main(["--reuse-out"]) == 2
+    assert "only apply to --redact-folder" in capsys.readouterr().err
+
+
+def test_two_jobs_in_one_invocation_are_refused_not_silently_dropped(monkeypatch, tmp_path, capsys):
+    """The three subcommands were dispatched by a fixed precedence with NO cross-check, so asking
+    for two performed the first and discarded the rest in silence. Measured before the fix:
+    `--verify-manifest X --redact-folder Y --out Z` printed "manifest OK" and returned 0 while the
+    redaction - the ten-minute job producing the deliverables actually wanted - never ran. Same
+    "asked for X, silently got Y, exit code says success" failure as the empty-value bug, reached
+    by a different route."""
+    state = _no_serve(monkeypatch)
+    monkeypatch.setattr(ing, "run_redaction_folder",
+                        lambda *a, **k: pytest.fail("redaction ran despite a competing job"))
+    src = str(_collection(tmp_path))
+    out = str(tmp_path / "o")
+    for argv in (["--verify-manifest", "m.json", "--redact-folder", src, "--out", out],
+                 ["--redact-folder", src, "--out", out, "--verify-manifest", "m.json"],
+                 ["--selftest", "--redact-folder", src, "--out", out],
+                 ["--selftest", "--verify-manifest", "m.json"]):
+        assert serve.main(argv) == 2, argv
+        assert state["served"] is False
+        err = capsys.readouterr().err
+        assert "one per run" in err, err
+
+
+def test_invisible_and_control_characters_are_not_usable_values(monkeypatch, tmp_path, capsys):
+    """`str.strip()` removes NBSP and the exotic spaces but NOT zero-width space or the BOM, so
+    `--db "\u200b"` passed the empty-value guard and CREATED A REAL STORE named with an invisible
+    character - exactly the "quietly opened a different store than the one you named" outcome that
+    guard exists to stop. An embedded NUL instead raised ValueError from inside pathlib/sqlite3,
+    escaping main() as a traceback after the job banner had printed."""
+    state = _no_serve(monkeypatch)
+    before = set(os.listdir(tmp_path))
+    for value in ("\u200b", "\ufeff", "\u200b\u200c ", "\x00", "a\x00b", "\t"):
+        for flag in ("--db", "--out", "--dist", "--host"):
+            assert serve.main([flag, value]) == 2, (flag, repr(value))
+            assert state["served"] is False, (flag, repr(value))
+            capsys.readouterr()
+    assert set(os.listdir(tmp_path)) == before, "a refused --db value still created a store"
+    # a NUL reaching the redaction path used to crash inside ingest, after the banner
+    src = str(_collection(tmp_path))
+    capsys.readouterr()
+    assert serve.main(["--redact-folder", src, "--out", "\x00"]) == 2
+    assert "Traceback" not in capsys.readouterr().err
+
+
+# ── the safety claim must be scoped to what THIS run wrote ──────────────────────
+# Reachable path, all three steps things the tool's own UX steers the engineer toward:
+#   run 1: the redaction check FAILS -> DO-NOT-SEND marker + the UNREDACTED family stays on disk
+#          (nothing is deleted, by design)
+#   run 2: --reuse-out (the documented escape) and one writer fails -> run 1's UNREDACTED file
+#          survives under the canonical name, reported only as `stale`
+# The note then said "Everything in this folder IS redacted and safe to share" over that file.
+def _leaky_then_clean(monkeypatch, tmp_path, omit=("mop",)):
+    """Leave run 1's uncertified output in the folder, then render over it with --reuse-out."""
+    src = str(_collection(tmp_path))
+    out = tmp_path / "share"
+
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine({}, stderr=""))
+    # run 1 fails its scrub check: mark the folder unsafe and leave the documents where they are
+    monkeypatch.setattr(ing, "_assert_scrubbed",
+                        lambda p: (_ for _ in ()).throw(ing.EngineRunError("REDACTION DID NOT APPLY")))
+    with pytest.raises(ing.EngineRunError):
+        ing.run_redaction_folder(src, str(out))
+    assert (out / ing.UNSAFE_MARKER).is_file(), "run 1 should have marked the folder unsafe"
+    stale_bytes = (out / "Assessment_redacted_mop.docx").read_bytes()
+
+    # run 2 passes its own checks, but does not rewrite the omitted document
+    monkeypatch.setattr(ing, "_assert_scrubbed", lambda p: 0)
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine({}, omit=omit))
+    report = ing.run_redaction_folder(src, str(out), reuse_out=True)
+    assert (out / "Assessment_redacted_mop.docx").read_bytes() == stale_bytes, \
+        "the stale file should be run 1's uncertified copy, byte for byte"
+    return report, out
+
+
+def test_the_note_never_claims_safety_over_an_uncertified_leftover(monkeypatch, tmp_path):
+    """The defect: a false SAFE claim, which is the mirror of the false LEAK claim this module is
+    organised to avoid — and the worse of the two, because a leak alarm costs a re-run while this
+    one ships client data."""
+    report, out = _leaky_then_clean(monkeypatch, tmp_path)
+    assert [g["state"] for g in report["missing"]] == ["stale"]
+    assert report["stale_unsafe_marker"] is True
+
+    note = (out / report["incomplete_note"]).read_text(encoding="ascii")
+    assert "IS redacted and safe to share" not in note
+    assert "DO NOT SEND THIS FOLDER" in note
+    assert ing.UNSAFE_MARKER in note
+
+
+def test_the_note_still_says_what_is_safe_when_nothing_is_uncertified(monkeypatch, tmp_path):
+    """The other edge: with no unsafe marker the note must still reassure, scoped to this run.
+    A warning that fires on every short set is the false alarm that teaches people to ignore it."""
+    src = str(_collection(tmp_path))
+    out = tmp_path / "share"
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine({}, omit=("mop",)))
+    report = ing.run_redaction_folder(src, str(out))
+
+    note = (out / report["incomplete_note"]).read_text(encoding="ascii")
+    assert report["stale_unsafe_marker"] is False
+    assert "DO NOT SEND THIS FOLDER" not in note
+    assert "What this run wrote IS redacted" in note
+
+
+def test_stale_names_the_unredacted_hazard_not_only_the_wrong_client_one(monkeypatch, tmp_path):
+    """STALE explained only the cross-JOB hazard ('identifies another client'). The cross-RUN one —
+    the earlier run may have FAILED its redaction check — is the dangerous reading and was absent."""
+    report, out = _leaky_then_clean(monkeypatch, tmp_path)
+    note = (out / report["incomplete_note"]).read_text(encoding="ascii")
+    assert "UNREDACTED" in note
+    assert "not covered by this run's redaction check" in note.lower() or \
+        "NOT\ncovered by this run's redaction check" in note
+
+
+def test_console_does_not_tell_the_engineer_to_delete_the_warning(monkeypatch, tmp_path, capsys):
+    """The console called the leftover marker stale and said to delete it, next to a line calling
+    the folder safe — while the files it covers were still there under the canonical names."""
+    src = str(_collection(tmp_path))
+    out = tmp_path / "share"
+
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine({}))
+    monkeypatch.setattr(ing, "_assert_scrubbed",
+                        lambda p: (_ for _ in ()).throw(ing.EngineRunError("REDACTION DID NOT APPLY")))
+    with pytest.raises(ing.EngineRunError):
+        ing.run_redaction_folder(src, str(out))
+    monkeypatch.setattr(ing, "_assert_scrubbed", lambda p: 0)
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine({}, omit=("mop",)))
+    capsys.readouterr()
+
+    rc = serve.main(["--redact-folder", src, "--out", str(out), "--reuse-out", "--no-browser"])
+    text = capsys.readouterr().out
+    assert rc == 3, "a short set still reports 3, not a redaction failure"
+    assert "What IS in the folder is redacted and safe to share" not in text
+    assert "DO NOT SEND THIS FOLDER" in text
+    assert "Delete\n  it once you are sure" not in text
+
+
+def test_reuse_is_refused_outright_when_the_folder_is_marked_unsafe(monkeypatch, tmp_path):
+    """The pre-flight refusal called the prior set 'redacted' and offered --reuse-out, in the one
+    case where those files are exactly what must not travel."""
+    src = str(_collection(tmp_path))
+    out = tmp_path / "share"
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine({}))
+    monkeypatch.setattr(ing, "_assert_scrubbed",
+                        lambda p: (_ for _ in ()).throw(ing.EngineRunError("REDACTION DID NOT APPLY")))
+    with pytest.raises(ing.EngineRunError):
+        ing.run_redaction_folder(src, str(out))
+
+    monkeypatch.setattr(ing, "_assert_scrubbed", lambda p: 0)
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine({}))
+    with pytest.raises(ing.IngestError) as e:
+        ing.run_redaction_folder(src, str(out))          # no reuse_out: the pre-flight path
+    msg = str(e.value)
+    assert "could NOT certify" in msg and ing.UNSAFE_MARKER in msg
+    assert "already holds a redacted deliverable set" not in msg
+    assert "--reuse-out is deliberately NOT offered" in msg
+
+
+def test_the_unsafe_marker_name_has_one_owner():
+    """It decides whether the report may claim safety, so a second literal would let the two drift
+    into disagreeing about which file they mean (SSOT Law 1)."""
+    import re as _re
+    for mod in (ing, serve):
+        src = Path(mod.__file__).read_text(encoding="utf-8")
+        literals = _re.findall(r'"DO-NOT-SEND-NOT-REDACTED\.txt"', src)
+        assert len(literals) <= (1 if mod is ing else 0), (
+            f"{Path(mod.__file__).name} restates the marker filename; use ingest.UNSAFE_MARKER")

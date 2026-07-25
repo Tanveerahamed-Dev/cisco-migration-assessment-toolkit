@@ -30,6 +30,18 @@ This module is the one implementation of that fixture's contract:
 Offline, stdlib-only, no egress, no device contact. The graph lives only on the owner machine
 (``graphify-out/`` is gitignored — the worktree trap), so every graph-dependent check degrades to an
 explicit "graph not reachable" rather than a fabricated pass.
+
+The graph is also a LIVE artifact: git hooks rebuild it in the background while tests read it, and
+``graphify update``'s writer is not atomic. Reads inside this module therefore go through
+:func:`load_graph_settled` rather than a bare ``json.load``, so a half-written file degrades to a
+stated reason instead of a spurious error. That guard does not touch what a declared edge must
+satisfy — it only declines to treat a file caught mid-write as evidence.
+
+Declared residual (NOT fixed here): the multi-hop edge check can still false-red when the live graph
+is an edge-truncated INCREMENTAL rebuild — a full node count but a re-extracted file's cross-file
+edges evicted (the post-commit ``changed_paths`` path). That is a producer bug; ``graphify update .``
+(a full rebuild) heals it. The consumer-side "vouch against a same-commit backup" mitigation was
+tried and reverted (it masks genuine deletions, since ``built_at_commit`` is HEAD, blind to the tree).
 """
 from __future__ import annotations
 
@@ -37,6 +49,7 @@ import hashlib
 import json
 import os
 import re
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 # Reference-type relations — an artifact LEANING on another. Structural relations (``contains``,
@@ -217,6 +230,56 @@ def find_graph_json(root: Optional[str] = None) -> Optional[str]:
     except Exception:
         pass
     return None
+
+
+# --- reading the graph safely (it is a LIVE, rewritten-under-you artifact) ------------------------
+#
+# ``graphify-out/graph.json`` is not a static fixture: git hooks rebuild it in the background while
+# the suite runs. The writer used by ``graphify update`` is NOT atomic — ``graphify/export.py::
+# to_json`` does ``open(path, "w")`` then streams ~8 MB of ``json.dump`` — so a reader inside that
+# window sees a truncated file (measured 2026-07-22: 27 of 39 bare ``json.load`` reads failed under a
+# concurrent rewrite). NB this is writer-specific: graphify's ``watch.py`` path DOES write atomically
+# (temp + replace); it is the ``update``/hook path that does not.
+#
+# :func:`load_graph_settled` is the reader-side equivalent of the atomic write we cannot make in a
+# third-party package: parse, and require the file's identity to be unchanged across the read.
+# Callers degrade explicitly — a mid-rebuild graph is never treated as evidence either way.
+GRAPH_SETTLE_ATTEMPTS = 4
+GRAPH_SETTLE_SECONDS = 0.75
+
+
+def load_graph_settled(path: str, attempts: int = GRAPH_SETTLE_ATTEMPTS,
+                       settle: float = GRAPH_SETTLE_SECONDS) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Load ``graph.json``, tolerating a concurrent rebuild. Returns ``(graph, None)`` on a clean
+    settled read, or ``(None, reason)`` when the file could not be read as a stable whole.
+
+    "Settled" means the parse succeeded AND ``(size, mtime_ns)`` were identical immediately before
+    and after it — i.e. no rebuild rewrote the file underneath us. The reason distinguishes a file
+    that is ABSENT/unreadable from one that is churning, so a caller never reports a missing graph as
+    "a rebuild is in flight" (asserting a cause we did not observe)."""
+    attempts = max(1, attempts)
+    last = "unknown"
+    for attempt in range(attempts):
+        try:
+            before = os.stat(path)
+            with open(path, encoding="utf-8") as f:
+                graph = json.load(f)
+            after = os.stat(path)
+        except OSError as exc:
+            # absent / locked / unreadable — a state of the FILE, not evidence of a rebuild
+            return None, f"graph.json could not be opened ({type(exc).__name__}: {exc})"
+        except ValueError as exc:            # JSONDecodeError and UnicodeDecodeError are both this
+            last = f"{type(exc).__name__}: {exc}"
+        else:
+            if (before.st_size, before.st_mtime_ns) == (after.st_size, after.st_mtime_ns):
+                if not isinstance(graph, dict):
+                    return None, f"graph.json is not a JSON object (got {type(graph).__name__})"
+                return graph, None
+            last = "graph.json was rewritten while it was being read"
+        if attempt < attempts - 1:
+            time.sleep(settle)
+    return None, (f"graph.json never settled across {attempts} reads {settle}s apart — it is either "
+                  f"being rewritten by a rebuild or is persistently corrupt ({last})")
 
 
 # --- validators (the one implementation — tests call these, the CLI calls these) -------------------
@@ -455,9 +518,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     problems = validate_all(root)
     _, rows = load_eval_set(root)
     gp = graph_path or find_graph_json(root)
-    if gp:
-        with open(gp, encoding="utf-8") as f:
-            graph = json.load(f)
+    graph, unsettled = (None, None) if not gp else load_graph_settled(gp)
+    if gp and unsettled:
+        print(f"graph.json not readable as a settled whole ({unsettled}) — multi-hop edge check and "
+              f"identifier reproduction skipped, said so rather than passed silently")
+    elif gp and graph is not None:
         problems += verify_multi_hop_edges(rows, graph)
         fresh, prov = extract_identifier_queries(graph)
         committed = [(r["symbol"], r["qrels"][0]["doc"]) for r in rows

@@ -79,6 +79,10 @@ def hidden_imports() -> List[str]:
         "COLLECT_PARSE_V3_23_0",
         # lazy server half (serve.main imports it after the sentinel check)
         "webapp.backend.app",
+        # serve.run_verify_manifest imports this lazily, so --verify-manifest is the one field
+        # command whose module PyInstaller only sees inside a function body. README-FIELD teaches
+        # that command; a ModuleNotFoundError at a client site is the failure this line prevents.
+        "cisco_toolkit.manifest",
         # D2: the full document family ships — these are lazy optional-deps in the generators
         "docx",
         "pptx",

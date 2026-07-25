@@ -14,8 +14,10 @@ keep the ``--override-gate`` flag.
 """
 import json
 import logging
+import os
 import re
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -34,8 +36,8 @@ def test_no_store_warns_and_proceeds(tmp_path, caplog):
     """ABSENT store = ungated brownfield: both generators proceed, loudly, and the warn path must
     never itself create a store (activation is an explicit human `approve`, not a side effect)."""
     with caplog.at_level(logging.WARNING, logger="cisco_toolkit.gate_state"):
-        assert gate_state.enforce("design", root=str(tmp_path)) is True
-        assert gate_state.enforce("mop", root=str(tmp_path)) is True
+        assert gate_state.enforce("design", root=str(tmp_path)).proceed is True
+        assert gate_state.enforce("mop", root=str(tmp_path)).proceed is True
     assert "UNGATED" in caplog.text and "brownfield" in caplog.text
     assert not (tmp_path / "docs" / "engagement-state.json").exists()
 
@@ -46,7 +48,7 @@ def test_mop_without_approved_lld_refuses(tmp_path, caplog):
     """ACCEPTANCE: store exists, baseline captured, but no approved-LLD marker -> MOP refuses."""
     gate_state.record_decision("baseline_captured", "approved", root=str(tmp_path), by="qa")
     with caplog.at_level(logging.ERROR, logger="cisco_toolkit.gate_state"):
-        assert gate_state.enforce("mop", root=str(tmp_path)) is False
+        assert gate_state.enforce("mop", root=str(tmp_path)).proceed is False
     assert "GATE REFUSED" in caplog.text and "lld_approved" in caplog.text
 
 
@@ -55,7 +57,7 @@ def test_design_without_approved_assessment_refuses(tmp_path, caplog):
     approval is a DIFFERENT gate still refuses design generation."""
     gate_state.record_decision("lld_approved", "approved", root=str(tmp_path), by="qa")
     with caplog.at_level(logging.ERROR, logger="cisco_toolkit.gate_state"):
-        assert gate_state.enforce("design", root=str(tmp_path)) is False
+        assert gate_state.enforce("design", root=str(tmp_path)).proceed is False
     assert "assessment_approved" in caplog.text
 
 
@@ -63,9 +65,9 @@ def test_revoke_reactivates_refusal(tmp_path):
     """A revoked approval is not an approval: the gate closes again (fail closed)."""
     for g in ("lld_approved", "baseline_captured"):
         gate_state.record_decision(g, "approved", root=str(tmp_path), by="qa")
-    assert gate_state.enforce("mop", root=str(tmp_path)) is True
+    assert gate_state.enforce("mop", root=str(tmp_path)).proceed is True
     gate_state.record_decision("lld_approved", "revoked", root=str(tmp_path), by="qa")
-    assert gate_state.enforce("mop", root=str(tmp_path)) is False
+    assert gate_state.enforce("mop", root=str(tmp_path)).proceed is False
 
 
 def test_approved_upstream_proceeds_and_override_is_inert(tmp_path):
@@ -73,9 +75,9 @@ def test_approved_upstream_proceeds_and_override_is_inert(tmp_path):
     --override-gate must NOT log a phantom override (nothing was overridden)."""
     for g in ("assessment_approved", "lld_approved", "baseline_captured"):
         gate_state.record_decision(g, "approved", root=str(tmp_path), by="human")
-    assert gate_state.enforce("design", root=str(tmp_path)) is True
+    assert gate_state.enforce("design", root=str(tmp_path)).proceed is True
     assert gate_state.enforce("mop", root=str(tmp_path),
-                              override_reason="redundant flag") is True
+                              override_reason="redundant flag").proceed is True
     assert [a["event"] for a in _store(tmp_path)["audit"]] == ["approve"] * 3
 
 
@@ -88,7 +90,7 @@ def test_override_proceeds_and_appends_audit_line(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="cisco_toolkit.gate_state"):
         ok = gate_state.enforce("mop", override_reason="lab dry-run; CAB waived by ops lead",
                                 root=str(tmp_path), who="tester")
-    assert ok is True
+    assert ok.proceed is True
     line = _store(tmp_path)["audit"][-1]
     assert line["event"] == "override"
     assert line["generator"] == "mop"
@@ -103,7 +105,7 @@ def test_blank_override_reason_still_refuses(tmp_path):
     """The audit line is the point of the override: a whitespace-only reason refuses and no
     override line is written."""
     gate_state.record_decision("assessment_approved", "revoked", root=str(tmp_path), by="qa")
-    assert gate_state.enforce("design", override_reason="   ", root=str(tmp_path)) is False
+    assert gate_state.enforce("design", override_reason="   ", root=str(tmp_path)).proceed is False
     assert all(a["event"] != "override" for a in _store(tmp_path)["audit"])
 
 
@@ -114,8 +116,273 @@ def test_unreadable_store_refuses_even_with_override(tmp_path, caplog):
     (tmp_path / "docs" / "engagement-state.json").write_text("{not json", encoding="utf-8")
     with caplog.at_level(logging.ERROR, logger="cisco_toolkit.gate_state"):
         assert gate_state.enforce("mop", override_reason="try anyway",
-                                  root=str(tmp_path)) is False
+                                  root=str(tmp_path)).proceed is False
     assert "unreadable" in caplog.text
+
+
+# ------------------------------------------------- the refusal is durable too (the audit symmetry)
+
+def test_refusal_appends_a_durable_audit_line(tmp_path):
+    """THE GAP: proceeding despite a missing approval always left a who/when/why line, while
+    REFUSING left nothing anywhere — so an absent design.docx was indistinguishable from a
+    --no-design run. The refusal now writes the same shape of row the override does."""
+    gate_state.record_decision("lld_approved", "approved", root=str(tmp_path), by="qa")
+    v = gate_state.enforce("design", root=str(tmp_path), who="tester")
+    assert v.proceed is False and v.recorded is True
+
+    line = _store(tmp_path)["audit"][-1]
+    assert line["event"] == "refuse"
+    assert line["generator"] == "design"
+    assert line["status"] == "pending"
+    assert line["missing"] == ["assessment_approved"]
+    assert line["who"] == "tester"                       # the WHO
+    assert line["at"]                                    # the WHEN
+    assert "assessment_approved" in line["reason"]       # the WHY
+
+
+def test_refusal_record_survives_the_rerun_it_provokes(tmp_path):
+    """Why the ledger's audit array is the home and a per-run manifest is not: the natural response
+    to a refusal is to re-run, and a per-run seal is overwritten by exactly that. Three refused runs
+    leave three rows, oldest still intact."""
+    gate_state.record_decision("lld_approved", "approved", root=str(tmp_path), by="qa")
+    for _ in range(3):
+        assert gate_state.enforce("design", root=str(tmp_path)).recorded is True
+    refusals = [a for a in _store(tmp_path)["audit"] if a["event"] == "refuse"]
+    assert len(refusals) == 3, "a re-run overwrote the earlier refusals instead of appending"
+
+
+def test_override_on_an_approved_ledger_records_no_breach(tmp_path):
+    """The exact case that sank the previous attempt: it inferred "overridden" from the presence of
+    the flag, but enforce() returns at its approvals-present branch BEFORE reaching the override
+    branch, appending nothing. A verdict claiming a breach with no matching ledger line is a
+    tamper-evident record of something that never happened."""
+    for g in ("assessment_approved", "lld_approved", "baseline_captured"):
+        gate_state.record_decision(g, "approved", root=str(tmp_path), by="human")
+    v = gate_state.enforce("design", root=str(tmp_path), override_reason="ship it anyway")
+    assert v.proceed is True
+    assert v.status == "clear"
+    assert v.overridden is False, "a redundant --override-gate manufactured a phantom override"
+    assert [a["event"] for a in _store(tmp_path)["audit"]] == ["approve"] * 3
+
+
+def test_overridden_is_true_only_where_the_line_was_written(tmp_path):
+    """The other half of the same invariant: a REAL override sets it, and the ledger has the row."""
+    gate_state.record_decision("baseline_captured", "approved", root=str(tmp_path), by="qa")
+    v = gate_state.enforce("mop", override_reason="CAB waived", root=str(tmp_path), who="lead")
+    assert v.proceed is True and v.overridden is True and v.recorded is True
+    assert _store(tmp_path)["audit"][-1]["event"] == "override"
+
+
+def test_unreadable_ledger_is_not_rewritten_by_the_refusal(tmp_path):
+    """A corrupt ledger is EVIDENCE. Recording into it would serialise the parsed dict we never
+    got and destroy the bytes that show the corruption, so this refusal stays unrecorded — and
+    says so, rather than leaving the caller to assume it was written."""
+    (tmp_path / "docs").mkdir()
+    ledger = tmp_path / "docs" / "engagement-state.json"
+    ledger.write_text("{not json", encoding="utf-8")
+    v = gate_state.enforce("design", root=str(tmp_path))
+    assert v.proceed is False and v.status == "unreadable"
+    assert v.recorded is False, "the refusal claimed a durable record it could not have written"
+    assert ledger.read_text(encoding="utf-8") == "{not json", "the corrupt ledger was overwritten"
+
+
+def test_bad_root_refusal_creates_no_ledger(tmp_path):
+    """A mis-set root must not be answered by MAKING the directory tree it names — that is the
+    phantom-ledger bug _require_root exists to close, arriving through the audit path instead."""
+    bad = str(tmp_path / "nope" / "not here")
+    v = gate_state.enforce("design", root=bad)
+    assert v.proceed is False and v.status == "bad_root" and v.recorded is False
+    assert not (tmp_path / "nope").exists()
+
+
+def test_ungated_run_never_creates_a_ledger(tmp_path):
+    """Brownfield proceeds, and must stay brownfield: the first write to a ledger is the human
+    opt-in that ACTIVATES enforcement, so a run must never enrol an engagement as a side effect."""
+    v = gate_state.enforce("design", root=str(tmp_path))
+    assert v.proceed is True and v.status == "ungated" and v.recorded is False
+    assert not (tmp_path / "docs").exists()
+
+
+def test_unrecordable_refusal_is_reported_not_crashed(tmp_path, monkeypatch, caplog):
+    """A locked or read-only ledger (os.replace raises on Windows while any process holds the file)
+    must not turn a working refusal into a crash — the deliverable is already withheld, which is the
+    safe outcome. It degrades to recorded=False, loudly."""
+    gate_state.record_decision("lld_approved", "approved", root=str(tmp_path), by="qa")
+
+    def _boom(path, store):
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(gate_state, "save_store", _boom)
+    with caplog.at_level(logging.ERROR, logger="cisco_toolkit.gate_state"):
+        v = gate_state.enforce("design", root=str(tmp_path))
+    assert v.proceed is False, "a bookkeeping failure changed the gate decision"
+    assert v.recorded is False
+    assert "could NOT be recorded" in caplog.text
+
+
+def test_ownership_refusal_stays_unrecorded_and_says_so(tmp_path):
+    """The one refusal with a readable ledger in reach that still must not write to it: it governs
+    another engagement. Pairs with test_ownership_refusals_are_not_overridable_and_write_nothing —
+    that one pins the bytes, this one pins that the verdict does not CLAIM a record."""
+    root = _approved_ledger(tmp_path, engagement="ACME-2026")
+    v = gate_state.enforce("design", root=str(root), engagement="GLOBEX-2026")
+    assert v.proceed is False and v.status == "ownership_mismatch" and v.recorded is False
+
+
+def test_refusal_row_names_the_engagement_it_was_written_against(tmp_path):
+    """Ownership is verified only when the run DECLARES itself, so on the default path gates apply
+    by PROXIMITY — and a mis-rooted run now WRITES to the ledger it landed next to, where before it
+    only read. An un-attributable row in the wrong client's ledger is indistinguishable from a real
+    one during the DEC-003 weekly review, so the row records both sides."""
+    root = _approved_ledger(tmp_path, engagement="ACME-2026", gates=("lld_approved",))
+    gate_state.enforce("design", root=str(root))          # declares nothing -> proximity match
+    row = json.loads((root / "docs" / "engagement-state.json").read_text(encoding="utf-8"))["audit"][-1]
+    assert row["event"] == "refuse"
+    assert row["engagement"] == "ACME-2026", "the row does not say WHOSE ledger it landed in"
+    assert row["declared"] is None, "a proximity-matched row must be distinguishable from a verified one"
+
+
+def test_a_corrupt_audit_array_is_refused_not_silently_destroyed(tmp_path):
+    """A ledger whose `audit` is not a list still LOADS (load_store validates only the top level),
+    so it reaches the write path. Replacing it with a fresh list destroyed an audit trail and then
+    reported success — and `show`'s isinstance filter made it invisible before AND after. Same
+    posture as the unreadable branch: a corrupt ledger is EVIDENCE."""
+    gate_state.record_decision("lld_approved", "approved", root=str(tmp_path), by="qa")
+    ledger = tmp_path / "docs" / "engagement-state.json"
+    store = json.loads(ledger.read_text(encoding="utf-8"))
+    store["audit"] = {"2026-01-01": "override by lead, CAB waived"}     # a hand-edit / schema variant
+    ledger.write_text(json.dumps(store), encoding="utf-8")
+
+    v = gate_state.enforce("design", root=str(tmp_path))
+    assert v.proceed is False, "a bookkeeping problem changed the gate decision"
+    assert v.recorded is False, "it claimed a record while refusing to write"
+    after = json.loads(ledger.read_text(encoding="utf-8"))["audit"]
+    assert after == {"2026-01-01": "override by lead, CAB waived"}, \
+        "the pre-existing audit trail was overwritten"
+
+
+def test_a_second_writer_cannot_corrupt_the_ledger_via_a_shared_temp(tmp_path):
+    """The temp name must be UNIQUE. With a fixed `path + '.tmp'` two writers to one ledger share a
+    single scratch file, their bytes interleave, and one os.replace promotes the garbage to BE the
+    ledger — after which load_store raises forever and the engagement's approval history is gone
+    (this store has no backups). Recording refusals is what made concurrent writers realistic."""
+    gate_state.record_decision("lld_approved", "approved", root=str(tmp_path), by="qa")
+    ledger = tmp_path / "docs" / "engagement-state.json"
+    seen = []
+    real_replace = os.replace
+
+    def _spy(src, dst):
+        seen.append(str(src))
+        return real_replace(src, dst)
+
+    with mock.patch.object(os, "replace", _spy):
+        gate_state.enforce("design", root=str(tmp_path))
+        gate_state.enforce("mop", root=str(tmp_path))
+    assert len(seen) == 2 and seen[0] != seen[1], \
+        f"both writes shared one temp path — a concurrent writer would interleave into it: {seen}"
+    assert json.loads(ledger.read_text(encoding="utf-8"))["schema"] == 1, "ledger unreadable"
+
+
+def test_a_failed_write_leaves_no_orphan_copy_of_the_ledger(tmp_path):
+    """An orphaned `<ledger>.tmp` is a full COPY of an audit trail holding a row the real ledger does
+    not, sitting in the engagement's own docs/ folder, outliving any curation or redaction of the
+    real one. It must be cleaned up on the failure path, which is now a routine path."""
+    gate_state.record_decision("lld_approved", "approved", root=str(tmp_path), by="qa")
+    with mock.patch.object(os, "replace", side_effect=PermissionError(5, "Access is denied")):
+        v = gate_state.enforce("design", root=str(tmp_path))
+    assert v.recorded is False
+    strays = [p.name for p in (tmp_path / "docs").iterdir() if p.name != "engagement-state.json"]
+    assert strays == [], f"a failed ledger write left a copy of the audit trail behind: {strays}"
+
+
+def test_an_override_that_cannot_be_audited_fails_closed(tmp_path):
+    """The override deliberately does NOT get _record_refusal's tolerant handling: its audit line is
+    the ONLY thing making it legitimate to proceed past a missing approval, so an unwritable ledger
+    must stop the run rather than quietly generate the document. Asserted because the code says
+    'do not make this consistent later' — a stated guarantee with no test is not a guarantee."""
+    gate_state.record_decision("baseline_captured", "approved", root=str(tmp_path), by="qa")
+    with mock.patch.object(os, "replace", side_effect=PermissionError(5, "Access is denied")):
+        with pytest.raises(OSError):
+            gate_state.enforce("mop", override_reason="CAB waived", root=str(tmp_path))
+
+
+# -------------------------------------------------------------- the verdict object's own contracts
+
+def test_enforce_and_pending_approvals_share_one_status_vocabulary(tmp_path):
+    """Law 1 applied to a taxonomy: the deciding path and the disclosing path report the SAME seven
+    statuses, so they can never disagree about one ledger. A parallel enum for "the same situations,
+    as seen by the enforcer" is a copy that drifts — and inventing one was called out explicitly.
+
+    Membership in STATUSES is necessary but nowhere near sufficient: the first version of this test
+    unioned both functions' outputs into one set and asserted only that the union was a subset. It
+    passed with pending_approvals stubbed to return "clear" for every input — a flat contradiction
+    of enforce on the SAME ledger — because it never compared the two per input. Compare per input.
+    """
+    # Each row: (root, engagement, the status BOTH functions must report) — one per reachable
+    # status, so a new branch added to one function and not the other cannot hide in an unswept case.
+    bound = _approved_ledger(tmp_path, engagement="ACME-2026")     # assessment_approved signed
+    unbound_pending = tmp_path / "unbound"
+    unbound_pending.mkdir()
+    gate_state.record_decision("lld_approved", "approved", root=str(unbound_pending), by="qa")
+    corrupt = tmp_path / "corrupt"
+    (corrupt / "docs").mkdir(parents=True)
+    (corrupt / "docs" / "engagement-state.json").write_text("{not json", encoding="utf-8")
+    brownfield = tmp_path / "brownfield"
+    brownfield.mkdir()
+
+    cases = [
+        (str(tmp_path / "gone"), None, "bad_root"),
+        (str(brownfield), None, "ungated"),
+        (str(corrupt), None, "unreadable"),
+        (str(bound), "GLOBEX-2026", "ownership_mismatch"),
+        (str(unbound_pending), "ACME-2026", "ownership_unbound"),
+        (str(bound), "ACME-2026", "clear"),
+        (str(unbound_pending), None, "pending"),
+    ]
+    for root, eng, expected in cases:
+        decided = gate_state.enforce("design", root=root, engagement=eng).status
+        disclosed = gate_state.pending_approvals("design", root=root, engagement=eng)["status"]
+        assert decided == disclosed == expected, (
+            f"root={root!r} engagement={eng!r}: enforce said {decided!r}, pending_approvals said "
+            f"{disclosed!r}, expected {expected!r} — deciding and disclosing disagree about one "
+            f"ledger")
+        assert expected in gate_state.STATUSES
+
+    assert {c[2] for c in cases} == set(gate_state.STATUSES), \
+        "STATUSES grew a value this test never exercises on either function"
+
+
+def test_verdict_is_truthy_exactly_when_it_proceeds(tmp_path):
+    """`if gate_enforce(...)` is the historical call shape at both engine sites, so truthiness must
+    track the decision and nothing else — a dataclass is truthy by default, which would have made
+    every refusal generate its deliverable."""
+    gate_state.record_decision("lld_approved", "approved", root=str(tmp_path), by="qa")
+    refused = gate_state.enforce("design", root=str(tmp_path))
+    assert bool(refused) is False and refused.refused is True
+    gate_state.record_decision("assessment_approved", "approved", root=str(tmp_path), by="qa")
+    allowed = gate_state.enforce("design", root=str(tmp_path))
+    assert bool(allowed) is True and allowed.refused is False
+
+
+def test_empty_missing_never_reads_as_nothing_missing_when_unevaluated(tmp_path):
+    """Coverage honesty (D3) on the governance axis: `missing == ()` after a run that never located
+    a ledger means UNKNOWN, not "nothing outstanding". `status`/`evaluated` carry that, which is why
+    `missing` does not need to be nullable."""
+    unknown = gate_state.enforce("design", root=str(tmp_path / "gone"))
+    assert unknown.missing == () and unknown.evaluated is False
+    gate_state.record_decision("assessment_approved", "approved", root=str(tmp_path), by="qa")
+    known = gate_state.enforce("design", root=str(tmp_path))
+    assert known.missing == () and known.evaluated is True
+
+
+def test_show_counts_refusals_beside_overrides(tmp_path, capsys):
+    """The operator's one diagnostic tool stayed mute about every run the gates actually stopped."""
+    gate_state.record_decision("lld_approved", "approved", root=str(tmp_path), by="qa")
+    gate_state.enforce("design", root=str(tmp_path))
+    assert gate_state.main(["--root", str(tmp_path), "show"]) == 0
+    out = capsys.readouterr().out
+    assert "1 refusal(s)" in out
+    assert "**REFUSED**" in out and "design" in out
 
 
 # ------------------------------------------------------------------------------ schema contracts
@@ -159,19 +426,45 @@ def test_cli_show_absent_store_is_honest(tmp_path, capsys):
 # ------------------------------------------------------------------- engine wiring + Law 1 pins
 
 def test_engine_wires_the_gates_and_the_override_flag():
-    """Source guard: the design/MOP blocks in main() stay gate-guarded and the flag exists.
+    """Source guard: the design/MOP blocks in main() stay gate-guarded and the flags exist.
     (The write functions themselves stay ungated on purpose — the ~60 direct-call tests and the
     webapp regeneration path are additive-compatibility surfaces; the CLI is the enforcement
-    point because that is where --override-gate lives.)"""
+    point because that is where --override-gate lives.)
+
+    ONE guard covering every property of the call site, deliberately: this pinned the ``root=`` /
+    ``engagement=`` threading and the verdict collection as two separate regexes for a while, and
+    because both matched overlapping text, a change satisfying either one alone read as compliant.
+    A single pattern per generator cannot be half-satisfied.
+    """
     src = (ROOT / "COLLECT_PARSE_V3_23_0.py").read_text(encoding="utf-8", errors="ignore")
     assert '"--override-gate"' in src, "the CLI lost the --override-gate flag"
+    assert '"--gate-root"' in src, "the CLI lost the --gate-root flag (gates re-pin to cwd only)"
+    assert '"--engagement"' in src, \
+        "the CLI lost --engagement (ADR-0006: ownership becomes un-verifiable again)"
+    assert '"--fail-on-gate-refusal"' in src, \
+        "the CLI lost --fail-on-gate-refusal (a pipeline can no longer stop on a withheld document)"
     assert "from cisco_toolkit.gate_state import enforce as gate_enforce" in src
-    assert re.search(r'if not args\.no_design and '
-                     r'gate_enforce\("design", override_reason=args\.override_gate\)', src), \
-        "the design write block is no longer gate-guarded"
-    assert re.search(r'if not args\.no_mop and '
-                     r'gate_enforce\("mop", override_reason=args\.override_gate\)', src), \
-        "the MOP write block is no longer gate-guarded"
+    for gen, flag in (("design", "no_design"), ("mop", "no_mop")):
+        # Four properties in one pattern, in order:
+        #  1. `if not args.no_X:` comes FIRST, so a suppressed deliverable never consults the ledger
+        #     and never writes a refusal row about a document nobody asked for;
+        #  2. root= AND engagement= are threaded — a run that declares who it is, on a path that
+        #     forgets to pass the declaration on, silently reverts to proximity (the ADR-0006 defect);
+        #  3. the verdict is COLLECTED, so the exit disposition reads what happened rather than
+        #     re-deriving it from the flags (the defect that sank the previous attempt);
+        #  4. the write is gated on that same collected verdict, not on a second call.
+        assert re.search(rf'if not args\.{flag}:\s+'
+                         rf'{gen}_gate = gate_enforce\("{gen}", '
+                         rf'override_reason=args\.override_gate,\s*'
+                         rf'root=args\.gate_root, engagement=args\.engagement\)\s+'
+                         rf'gate_verdicts\.append\({gen}_gate\)\s+'
+                         rf'if {gen}_gate:', src), \
+            (f"the {gen} block no longer matches the required gate shape: evaluate only when "
+             f"requested, thread root=/engagement=, collect the verdict, gate the write on it")
+    assert re.search(r'if __name__ == "__main__":.*?\n\s*sys\.exit\(main\(\)\)', src, re.S), \
+        ("the bare-script door stopped propagating main()'s exit code -- `python "
+         "COLLECT_PARSE_V3_23_0.py` would silently exit 0 on a refusal again, and "
+         "tests/test_pipeline_golden.py runs through THIS door")
 
 
 def test_ssot_registry_cites_the_gate_state_owner():
@@ -182,6 +475,619 @@ def test_ssot_registry_cites_the_gate_state_owner():
     assert "test_gate_state.py" in txt  # the enforcement column cites this suite
 
 
+# ------------------------------------------------------- root resolution (the silent-ungate class)
+
+#: Directories that are not production source: the repo's own tests (a synthetic cwd is CORRECT
+#: there — it is the isolation), plus vendored/generated/worktree copies of the tree.
+#: Kept in step with .graphifyignore's exclusions: an untracked side-engagement or scratch copy of
+#: the tree would otherwise contribute a second `.../ingest.py::run_redaction_folder` under a key
+#: absent from _UNGATED_BY_DECISION, turning the suite red for an environmental reason.
+_NON_SOURCE_DIRS = frozenset({".claude", ".git", "tests", "graphify-out", "node_modules",
+                              "dist", "build", ".venv", "venv", "_ref", "__pycache__",
+                              "ds-bundle", ".ds-sync", "[HISTORY-REDACTED]_DC_Design", "figgen"})
+
+
+def _flag_literals(node) -> set:
+    """Flags a function really puts in an ARGV list — literals from the list/tuple that holds
+    ``--collection-dir``, plus anything appended/extended/``+=``'d onto a list afterwards.
+
+    Scoped to argv rather than the whole function body because both looser readings were shown to
+    certify non-compliant callers: a source-text scan matched ``--gate-root`` in the explanatory
+    COMMENTS beside compliant call sites, and a whole-function literal scan matched it in a
+    defensive ``assert "--gate-root" not in cmd`` — a line this module's own comments invite
+    someone to write. Comments are absent from the AST; an assertion is not."""
+    import ast
+
+    def literals(n) -> set:
+        return {c.value for c in ast.walk(n)
+                if isinstance(c, ast.Constant) and isinstance(c.value, str)}
+
+    # Pass 1: the argv list/tuple literal, and the NAME it is bound to. Mutations only count if
+    # they target that name — an earlier cut harvested every `.append`/`+=` in the function, so two
+    # unrelated `skipped_flags.append("--no-design")` lines certified an ungated caller as inert.
+    found: set = set()
+    argv_names: set = set()
+    for n in ast.walk(node):
+        if not isinstance(n, (ast.List, ast.Tuple)):
+            continue
+        lits = literals(n)
+        if "--collection-dir" not in lits:
+            continue
+        found |= lits
+        parent = getattr(n, "_gate_parent", None)
+        if isinstance(parent, ast.Assign):
+            argv_names |= {t.id for t in parent.targets if isinstance(t, ast.Name)}
+
+    # Pass 2: mutations of those names only.
+    for n in ast.walk(node):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) \
+                and n.func.attr in ("append", "extend", "insert") \
+                and isinstance(n.func.value, ast.Name) and n.func.value.id in argv_names:
+            found |= literals(n)
+        elif isinstance(n, ast.AugAssign) and isinstance(n.op, ast.Add) \
+                and isinstance(n.target, ast.Name) and n.target.id in argv_names:
+            found |= literals(n.value)
+    return found
+
+
+def _rehomes_the_child(node) -> bool:
+    """True if the function moves the engine off the operator's cwd — ``subprocess(..., cwd=…)``
+    for a child, ``os.chdir()`` for an in-process ``main()``. AST, so a comment cannot trip it.
+
+    Errs toward TRUE (a `**kwargs` splat could hide a cwd), because a false positive only demands
+    that the caller declare a posture, while a false negative is the silent ungating itself."""
+    import ast
+
+    for n in ast.walk(node):
+        if not isinstance(n, ast.Call):
+            continue
+        # os.chdir(...) AND a bare chdir(...) from `from os import chdir`.
+        if isinstance(n.func, ast.Attribute) and n.func.attr == "chdir":
+            return True
+        if isinstance(n.func, ast.Name) and n.func.id == "chdir":
+            return True
+        for kw in n.keywords:
+            if kw.arg is None:      # **kwargs splat — contents unknowable, assume the worst
+                return True
+            if kw.arg == "cwd" and not (isinstance(kw.value, ast.Constant)
+                                        and kw.value.value is None):
+                return True
+    return False
+
+
+#: Synthetic-cwd engine callers that are UNGATED BY DECISION, mapped to a phrase their docstring
+#: must still contain. An exemption with a reason attached is honest; a silent one is the bug this
+#: guard exists for. If someone deletes the reasoning, this fails and they have to re-make the call.
+_UNGATED_BY_DECISION = {
+    "webapp/backend/ingest.py::run_redaction_folder": "deliberately do NOT apply",
+}
+
+
+def _declares_a_posture(node) -> str:
+    """Which legitimate posture this caller declares, or "" for none (see ``_flag_literals``)."""
+    flags = _flag_literals(node)
+    if "--gate-root" in flags:
+        return "enforces (--gate-root)"
+    if {"--no-design", "--no-mop"} <= flags:
+        return "inert (--no-design/--no-mop)"
+    return ""
+
+
+def _engine_launching_functions():
+    """Every production function that builds an engine invocation, as (label, ast node).
+
+    ``--collection-dir`` is the discriminator: it is on every offline engine launch in the repo
+    (subprocess or in-process ``main()``) and appears nowhere else."""
+    import ast
+
+    for path in sorted(ROOT.glob("**/*.py")):
+        rel = path.relative_to(ROOT).as_posix()
+        if _NON_SOURCE_DIRS & set(rel.split("/")[:-1]):
+            continue
+        src = path.read_text(encoding="utf-8", errors="ignore")
+        if "--collection-dir" not in src:
+            continue
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:  # pragma: no cover - a broken source file is another test's problem
+            continue
+        # _flag_literals needs to know which Assign an argv list belongs to, and ast nodes carry no
+        # parent link. Stamp one rather than re-walking per node.
+        for parent in ast.walk(tree):
+            for child in ast.iter_child_nodes(parent):
+                child._gate_parent = parent
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if "--collection-dir" in _flag_literals(node):
+                yield f"{rel}::{node.name}", node
+
+
+def test_no_engine_caller_declares_a_gate_posture():
+    """THE REGRESSION GUARD for this whole class (see gate_state.py 'Root resolution').
+
+    ``enforce()`` resolves ``docs/engagement-state.json`` from the process working directory, so a
+    caller that re-homes the engine child to a scratch dir finds no store, takes the brownfield
+    branch and turns EVERY document gate into an unconditional True — no error, no failure-shaped
+    warning, just two documents quietly missing. Note the asymmetry that hides it: an unreadable
+    store fails closed, an unreachable one fails open.
+
+    Such a caller must therefore DECLARE a posture:
+      (a) enforce — point the gates at the real engagement with ``--gate-root``;
+      (b) inert — generate no gated deliverable at all (``--no-design`` AND ``--no-mop``);
+      (c) ungated by an explicit, documented decision — listed in ``_UNGATED_BY_DECISION`` with
+          the reasoning that justifies it, which this test re-checks is still present.
+
+    ``--redact-folder`` originally declared none and rendered both gated documents for any
+    engagement. The check is per FUNCTION, not per file, because webapp/backend/ingest.py holds
+    call sites of two different postures — file granularity would let one vouch for the other.
+
+    KNOWN COVERAGE LIMITS. State the RULE, not a list of examples — a list reads as exhaustive and
+    this one never was. What is seen: string literals in the list/tuple holding ``--collection-dir``,
+    plus ``append``/``extend``/``insert``/``+=`` **on the name that list is assigned to**. Every
+    other way of building argv is INVISIBLE, including concatenation (``base + [...]``), star-unpack
+    (``[*base, ...]``), a dict or loop that emits flags, ``list(...)``, a module-level constant, a
+    helper function, f-string-composed flags, and an engine launched from module scope rather than
+    a function. ``assert len(inspected) >= 3`` does not protect against those: three callers are
+    found today, so an invisible fourth keeps the count satisfied.
+      * A CONDITIONAL flag reads as declared (``if fast: cmd += ["--no-mop"]``), as does one added
+        and then removed, and as does a flag whose VALUE is empty or nonexistent. NB the direction:
+        an EMPTY ``--gate-root`` value UNGATES (``_normalize_root("")`` is ``"."`` — see
+        ``test_empty_root_still_means_cwd_and_is_not_a_mis_set_root``); only a NONEXISTENT value
+        refuses. So the dangerous reading here is "enforces" on a caller that silently ungates.
+      * ``subprocess.Popen(cmd, …, cwd_positional)`` — cwd passed positionally is not seen.
+      * It OVER-triggers too: any unrelated ``cwd=`` (a ``git`` call) or any ``f(**kwargs)`` marks a
+        function as re-homing, so a legitimately-compliant future caller can be flagged, and so can
+        one that builds argv by concat/star-unpack. That direction is deliberate — but the cheap
+        wrong fix is to silence it with ``--no-design --no-mop``, i.e. deleting deliverables. Read
+        the failure before "fixing" it.
+    This is a tripwire for the shape of mistake that actually happened, not a proof."""
+    import ast
+
+    offenders, undocumented, inspected = [], [], {}
+    for where, node in _engine_launching_functions():
+        if not _rehomes_the_child(node):
+            continue
+        posture = _declares_a_posture(node)
+        if not posture and where in _UNGATED_BY_DECISION:
+            posture = "ungated by decision"
+            if _UNGATED_BY_DECISION[where] not in (ast.get_docstring(node) or ""):
+                undocumented.append(where)
+        inspected[where] = posture
+        if not posture:
+            offenders.append(where)
+
+    assert not undocumented, (
+        "these callers are exempted from the gates by decision, but the reasoning that justifies "
+        "the exemption is gone from their docstring: " + ", ".join(undocumented) +
+        "\nAn exemption without a reason is indistinguishable from the oversight this guards.")
+
+    assert not offenders, (
+        "engine launched with a synthetic cwd and NO declared gate posture, which silently "
+        "disables the PPDIOO document gates: " + ", ".join(offenders) +
+        "\nPass --gate-root <engagement root>, or suppress the gated deliverables with "
+        "--no-design --no-mop, or add it to _UNGATED_BY_DECISION with the reasoning written "
+        "into its docstring.")
+    # A guard that inspects nothing passes trivially. The three known synthetic-cwd callers are
+    # run_redaction_folder (ungated by decision), _assess_tree and build_sample.main (both inert) —
+    # if a rename drops them off the inventory the guard has stopped guarding, which is the failure.
+    assert len(inspected) >= 3, (
+        f"expected >=3 synthetic-cwd engine callers, found {len(inspected)}: {inspected}. "
+        "The inventory stopped matching real call sites — fix the discriminator, do not relax it.")
+    assert "webapp/backend/ingest.py::run_redaction_folder" in inspected, \
+        "the caller this guard exists for dropped off the inventory"
+
+
+def _run_engine_for_gates(tmp_path, gate_root, cwd=None, tag=None):
+    """Run the REAL engine offline over the synthetic fixture, asking for the two gated documents.
+    ``gate_root`` None = omit --gate-root. ``cwd`` None = an empty scratch dir (the re-homed-child
+    shape); pass a directory to model an operator running from the engagement itself.
+    Returns (stdout+stderr, outdir)."""
+    import subprocess
+    import sys
+
+    from openpyxl import Workbook
+
+    import synthetic_fixtures as fx
+
+    base = tmp_path / (tag or ("gated" if gate_root else "ungated"))
+    base.mkdir(parents=True)
+    collection = fx.write_collection(str(base / "collection"))
+    devices = base / "devices.json"
+    devices.write_text(json.dumps(fx.DEVICES), encoding="utf-8")
+    template = base / "template.xlsx"
+    wb = Workbook(); ws = wb.active; ws.title = "Interface Data"
+    ws.append(["Hostname", "Port", "Status"]); wb.save(str(template))
+    out_xlsx = base / "out.xlsx"
+
+    if cwd is None:
+        # The re-homed-child shape: an EMPTY scratch dir, exactly as run_redaction_folder does.
+        # Only --gate-root can reach the ledger from here.
+        cwd = tmp_path / f"scratch_{base.name}"
+        cwd.mkdir()
+
+    cmd = [sys.executable, str(ROOT / "COLLECT_PARSE_V3_23_0.py"),
+           "--no-collect", "--collection-dir", collection,
+           "--devices-file", str(devices), "--template", str(template),
+           "--output", str(out_xlsx), "--workers", "1",
+           "--no-html", "--no-pptx", "--no-crd", "--no-engagement",
+           "--no-opshandbook", "--no-archreview", "--no-docx"]
+    if gate_root is not None:
+        cmd += ["--gate-root", str(gate_root)]
+    proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True,
+                          encoding="utf-8", errors="replace", timeout=600)
+    assert proc.returncode == 0, f"engine failed:\n{proc.stdout}\n{proc.stderr}"
+    return (proc.stdout or "") + (proc.stderr or ""), base
+
+
+def test_gate_root_enforces_gates_the_synthetic_cwd_would_have_disabled(tmp_path):
+    """END-TO-END, through the real CLI: an engagement whose gates are recorded-but-unapproved
+    must NOT get a design or a MOP, even though the engine child runs in an empty scratch dir.
+
+    The second run is the non-vacuity control AND the characterization of the original defect:
+    identical inputs, identical unapproved ledger, only --gate-root omitted -> both documents are
+    written. That is the pre-fix `--redact-folder` behaviour, and it proves the refusal above comes
+    from the flag rather than from a missing renderer or an empty fixture."""
+    engagement = tmp_path / "engagement"
+    engagement.mkdir()   # the root must pre-exist; only docs/ is created by the first decision
+    # Records the store (activating enforcement) with design's and the MOP's upstreams UNAPPROVED:
+    # a revoked LLD is the sharpest case — a peer review that actively said no.
+    gate_state.record_decision("lld_approved", "revoked", root=str(engagement), by="reviewer")
+    assert (engagement / "docs" / "engagement-state.json").is_file()
+
+    out, base = _run_engine_for_gates(tmp_path, engagement)
+    # Bracketed exactly as gate_state emits it. An unbracketed assertion passed while any consumer
+    # matching the real marker (`[GATE REFUSED]`) would have broken on a formatting change.
+    assert "[GATE REFUSED]" in out, f"gates did not fire with --gate-root:\n{out[-3000:]}"
+    written = {p.name for p in base.iterdir()}
+    assert not [n for n in written if n.endswith(("_design.docx", "_mop.docx"))], \
+        f"a gated document was written despite an unapproved ledger: {sorted(written)}"
+
+    out2, base2 = _run_engine_for_gates(tmp_path, None)
+    assert "[GATE REFUSED]" not in out2, \
+        "control run should be ungated (that is the defect it models)"
+    written2 = {p.name for p in base2.iterdir()}
+    assert [n for n in written2 if n.endswith("_design.docx")], \
+        f"control produced no design doc, so the refusal above proves nothing: {sorted(written2)}"
+    assert [n for n in written2 if n.endswith("_mop.docx")], \
+        f"control produced no MOP, so the refusal above proves nothing: {sorted(written2)}"
+
+
+# --------------------------------------------------- a MIS-SET root is an error, not "no gates"
+
+@pytest.mark.parametrize("bad", ["C:/nope/does/not/exist", "definitely/not/here"])
+def test_nonexistent_gate_root_refuses_instead_of_going_brownfield(bad, tmp_path, caplog):
+    r"""The flag whose whole purpose is 'never silently downgrade a gate' must not silently
+    downgrade every gate when mis-set. `--gate-root D:\Engagments\ACME` (typo) or a Windows-quoted
+    `--gate-root "C:\eng\"` (argparse receives a trailing quote) used to hit the absent-store
+    branch and return True — one typo, every gate off, exit 0, no signal."""
+    with caplog.at_level(logging.ERROR, logger="cisco_toolkit.gate_state"):
+        assert gate_state.enforce("design", root=bad).proceed is False
+        assert gate_state.enforce("mop", root=bad).proceed is False
+    assert "not an existing directory" in caplog.text
+
+
+def test_nonexistent_gate_root_is_not_overridable(tmp_path):
+    """Same reasoning as an unreadable store: the override's audit line has nowhere to land, so
+    --override-gate must not talk its way past a root that does not exist."""
+    assert gate_state.enforce("mop", override_reason="ship it",
+                              root=str(tmp_path / "absent")).proceed is False
+
+
+def test_an_omitted_root_still_means_cwd(tmp_path, monkeypatch):
+    """The refusal above must not break the brownfield contract: OMITTING the root is not the same
+    as mis-setting it, so a bare `cisco-assess` in a store-less directory still proceeds."""
+    monkeypatch.chdir(tmp_path)
+    assert gate_state.enforce("design").proceed is True
+
+
+def test_empty_root_still_means_cwd_and_is_not_a_mis_set_root(tmp_path, monkeypatch):
+    """`""` is the argv encoding of OMITTED -- `--gate-root "$ENG_ROOT"` with the var unset, or
+    `cmd += ["--gate-root", cfg.get("gate_root", "")]`. It always behaved exactly like "." because
+    store_path() joins relatively, so refusing it would be a pure REGRESSION: an engagement with
+    every approval recorded would suddenly lose its design and MOP. Refusing a mis-set root must
+    not sweep in the one value that was never mis-set."""
+    monkeypatch.chdir(tmp_path)
+    for g in ("assessment_approved", "lld_approved", "baseline_captured"):
+        gate_state.record_decision(g, "approved", root=str(tmp_path), by="lead")
+    assert gate_state.enforce("design", root="").proceed is True
+    assert gate_state.enforce("mop", root="").proceed is True
+
+
+def test_recording_into_a_nonexistent_root_refuses_instead_of_creating_a_phantom_ledger(tmp_path):
+    r"""The WRITE side needs this more than the read side. save_store() calls os.makedirs, so
+    `gate_state --root D:\Engagments\ACME approve assessment_approved` (typo) used to succeed and
+    print a receipt -- durable state at a path nobody will look at again, while the real
+    engagement stayed unapproved. Worse than the read-side bug, because it is silent AND sticky."""
+    absent = tmp_path / "Engagments" / "ACME"
+    with pytest.raises(gate_state.GateStateError, match="not an existing directory"):
+        gate_state.record_decision("assessment_approved", "approved", root=str(absent), by="lead")
+    assert not absent.exists(), "a mis-set root must not leave a phantom ledger behind"
+
+    # The legitimate case still works: the engagement dir exists, docs/ is created on first approve.
+    real = tmp_path / "acme"
+    real.mkdir()
+    gate_state.record_decision("assessment_approved", "approved", root=str(real), by="lead")
+    assert (real / "docs" / "engagement-state.json").is_file()
+
+
+def test_cli_show_refuses_a_mis_set_root_instead_of_reporting_brownfield(tmp_path, capsys):
+    """`show` is the operator's one diagnostic tool. Answering a typo with "UNGATED (brownfield)"
+    is the exact sentence this module exists to stop anything from saying wrongly."""
+    rc = gate_state.main(["--root", str(tmp_path / "absent"), "show"])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "REFUSING" in out and "UNGATED" not in out
+
+
+# ------------------------------------------------ ADR-0006: ledger ownership, declared not inferred
+
+def _store_at(root: Path) -> dict:
+    return json.loads((root / "docs" / "engagement-state.json").read_text(encoding="utf-8"))
+
+
+def _approved_ledger(tmp_path: Path, engagement=None, gates=("assessment_approved",)) -> Path:
+    """An engagement root whose `gates` are approved, optionally bound to `engagement`."""
+    root = tmp_path / (engagement or "unbound")
+    root.mkdir(parents=True, exist_ok=True)
+    for i, gate in enumerate(gates):
+        gate_state.record_decision(gate, "approved", root=str(root), by="lead",
+                                   engagement=engagement if i == 0 else None)
+    return root
+
+
+def test_unbound_ledger_and_undeclared_run_behave_exactly_as_before(tmp_path):
+    """Row 1 of the ownership table — the backward-compatibility contract.
+
+    Every ledger that exists today is unbound. If adding the field changed their behaviour at all,
+    shipping it would be a silent migration of live engagements, so this pins that it does not:
+    approvals still decide, and nothing starts demanding an identifier."""
+    root = _approved_ledger(tmp_path)
+    assert gate_state.enforce("design", root=str(root)).proceed is True
+    assert gate_state.enforce("mop", root=str(root)).proceed is False       # lld/baseline still unsigned
+    assert gate_state.engagement_of(_store_at(root)) is None
+    assert "engagement" not in _store_at(root), \
+        "an unbound ledger acquired an engagement key just by being read"
+
+
+def test_bound_ledger_with_no_declaration_applies_gates_but_calls_them_unverified(tmp_path, caplog):
+    """Row 2. The operator standing in the engagement root is the historical, legitimate case and
+    must keep working — but the log must not let "it passed" read as "ownership was checked"."""
+    root = _approved_ledger(tmp_path, engagement="ACME-2026")
+    with caplog.at_level(logging.WARNING, logger="cisco_toolkit.gate_state"):
+        assert gate_state.enforce("design", root=str(root)).proceed is True
+    assert "PROXIMITY" in caplog.text and "unverified" in caplog.text
+    assert "ACME-2026" in caplog.text
+
+
+def test_matching_declaration_verifies_ownership(tmp_path, caplog):
+    """Row 3 — the point of the mechanism: the answer is now known to be about this client."""
+    root = _approved_ledger(tmp_path, engagement="ACME-2026")
+    with caplog.at_level(logging.INFO, logger="cisco_toolkit.gate_state"):
+        assert gate_state.enforce("design", root=str(root), engagement="ACME-2026").proceed is True
+    assert "VERIFIED" in caplog.text
+
+
+def test_declaring_a_different_engagement_refuses_even_with_every_approval_present(tmp_path,
+                                                                                   caplog):
+    """Row 4, and THE regression this whole change exists for, end to end.
+
+    The refuted walk-up heuristic printed "all recorded approvals present" for a run of GLOBEX out
+    of engagement ACME's ledger. Here ACME's ledger is fully approved and GLOBEX asks: the answer
+    must be a refusal naming both engagements, and must never contain the approval sentence."""
+    root = _approved_ledger(tmp_path, engagement="ACME-2026")
+    with caplog.at_level(logging.INFO, logger="cisco_toolkit.gate_state"):
+        assert gate_state.enforce("design", root=str(root), engagement="GLOBEX-2026").proceed is False
+    assert "REFUSED" in caplog.text
+    assert "ACME-2026" in caplog.text and "GLOBEX-2026" in caplog.text
+    assert "approvals present" not in caplog.text, \
+        "a cross-engagement run was told another client's approvals were present"
+
+
+def test_declaring_an_engagement_against_an_unbound_ledger_refuses(tmp_path):
+    """Row 5. Adopting an unbound ledger because it happens to be here is exactly the proximity
+    inference this replaced — asking for verification and getting a guess is the worst outcome."""
+    root = _approved_ledger(tmp_path)
+    assert gate_state.enforce("design", root=str(root), engagement="ACME-2026").proceed is False
+
+
+def test_ownership_refusals_are_not_overridable_and_write_nothing(tmp_path):
+    """--override-gate is consent to skip a KNOWN gate; when ownership does not check out, no gate
+    for this engagement has been located, so there is nothing to consent to. Equally important, the
+    refusal must not append its audit line into the other engagement's ledger."""
+    root = _approved_ledger(tmp_path, engagement="ACME-2026")
+    ledger = root / "docs" / "engagement-state.json"
+    before = ledger.read_text(encoding="utf-8")
+    assert gate_state.enforce("design", override_reason="CAB said so", root=str(root),
+                              engagement="GLOBEX-2026").proceed is False
+    assert ledger.read_text(encoding="utf-8") == before, \
+        "a refused cross-engagement run mutated the ledger it was refused access to"
+
+
+def test_engagement_match_ignores_case_and_surrounding_whitespace(tmp_path):
+    """A refusal over `acme-2026` vs `ACME-2026` would teach operators to stop passing
+    --engagement, losing the control entirely. Stored verbatim; only the comparison normalizes."""
+    root = _approved_ledger(tmp_path, engagement="ACME-2026")
+    assert gate_state.enforce("design", root=str(root), engagement="  acme-2026 ").proceed is True
+    assert _store_at(root)["engagement"] == "ACME-2026", "the stored identifier was rewritten"
+
+
+def test_signing_into_another_engagements_ledger_is_refused(tmp_path):
+    """The write side matters more than the read side: an approval landing in the wrong ledger both
+    fails to gate the engagement the lead meant AND silently unblocks a different one."""
+    root = _approved_ledger(tmp_path, engagement="ACME-2026")
+    with pytest.raises(gate_state.GateStateError, match="GLOBEX-2026"):
+        gate_state.record_decision("lld_approved", "approved", root=str(root), by="lead",
+                                   engagement="GLOBEX-2026")
+    assert "lld_approved" not in _store_at(root)["gates"]
+
+
+def test_bind_creates_is_idempotent_and_refuses_a_rebind(tmp_path):
+    """Binding is the one-time act that makes ownership verifiable. Re-binding to a different id
+    would retroactively re-attribute every approval already signed in the ledger — the exact
+    mis-attribution the mechanism exists to prevent — so it is refused, not warned about."""
+    root = tmp_path / "eng"
+    root.mkdir()
+    assert gate_state.bind_engagement("ACME-2026", root=str(root)) == "ACME-2026"
+    assert _store_at(root)["engagement"] == "ACME-2026"
+    assert gate_state.bind_engagement("acme-2026", root=str(root)) == "acme-2026"   # idempotent
+    with pytest.raises(gate_state.GateStateError, match="already bound"):
+        gate_state.bind_engagement("GLOBEX-2026", root=str(root))
+    assert _store_at(root)["engagement"] == "acme-2026", "a refused re-bind still moved the label"
+
+
+def test_is_revoked_distinguishes_withdrawal_from_silence(tmp_path):
+    """The MOP posture in ADR-0006 turns entirely on this distinction: a gate nobody ever signed is
+    unapproved by SILENCE (perhaps an engagement that never opted in), while a revoked gate is a
+    human's positive withdrawal of approval. Only the second justifies withholding a deliverable."""
+    root = tmp_path / "eng"
+    root.mkdir()
+    gate_state.record_decision("lld_approved", "approved", root=str(root), by="lead")
+    gate_state.record_decision("lld_approved", "revoked", root=str(root), by="lead")
+    store = _store_at(root)
+    assert gate_state.is_revoked(store, "lld_approved") is True
+    assert gate_state.is_approved(store, "lld_approved") is False
+    # baseline_captured was never signed at all: missing, but NOT revoked.
+    assert gate_state.is_revoked(store, "baseline_captured") is False
+    assert gate_state.missing_approvals(store, "mop") == ["lld_approved", "baseline_captured"]
+    assert gate_state.revoked_requirements(store, "mop") == ["lld_approved"]
+
+
+def test_pending_approvals_reads_without_deciding_or_writing(tmp_path):
+    """The disclosure primitive's contract, which is what makes it safe on a field path: it never
+    writes (a disclosure that mutates the ledger it reports on is not a disclosure) and it never
+    raises (its callers are paths where an exception aborts a deliverable someone is waiting on)."""
+    root = _approved_ledger(tmp_path, engagement="ACME-2026")
+    ledger = root / "docs" / "engagement-state.json"
+    before = ledger.read_text(encoding="utf-8")
+
+    clear = gate_state.pending_approvals("design", root=str(root), engagement="ACME-2026")
+    assert clear["status"] == "clear" and clear["verified"] is True and clear["missing"] == []
+
+    pending = gate_state.pending_approvals("mop", root=str(root), engagement="ACME-2026")
+    assert pending["status"] == "pending" and "lld_approved" in pending["missing"]
+
+    assert ledger.read_text(encoding="utf-8") == before, "disclosure wrote to the ledger"
+
+    # Every failure mode is a STATUS, never an exception — including ones enforce() refuses on.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    broken = tmp_path / "broken"
+    (broken / "docs").mkdir(parents=True)
+    (broken / "docs" / "engagement-state.json").write_text("{not json", encoding="utf-8")
+    assert gate_state.pending_approvals("design", root=str(tmp_path / "gone"))["status"] \
+        == "bad_root"
+    assert gate_state.pending_approvals("design", root=str(empty))["status"] == "ungated"
+    assert gate_state.pending_approvals("design", root=str(broken))["status"] == "unreadable"
+
+
+def test_pending_approvals_never_reports_another_engagements_approvals(tmp_path):
+    """The disclosure path must fail the same way enforcement does — it is the one destined for the
+    field tool, where a wrong "approved" is read by someone standing at a client site."""
+    root = _approved_ledger(tmp_path, engagement="ACME-2026")
+    verdict = gate_state.pending_approvals("design", root=str(root), engagement="GLOBEX-2026")
+    assert verdict["status"] == "ownership_mismatch"
+    assert verdict["verified"] is False and verdict["missing"] == []
+    assert "ACME-2026" in verdict["summary"] and "GLOBEX-2026" in verdict["summary"]
+    assert "all upstream approvals" not in verdict["summary"], \
+        "a cross-engagement disclosure claimed approvals it never verified"
+
+    unbound = _approved_ledger(tmp_path)
+    assert gate_state.pending_approvals("design", root=str(unbound),
+                                        engagement="ACME-2026")["status"] == "ownership_unbound"
+
+
+def test_cli_bind_and_show_disclose_ownership(tmp_path, capsys):
+    """`show` is the operator's diagnostic tool, so it must say whose board it is printing — and
+    say plainly when the honest answer is "attributed by directory alone"."""
+    root = tmp_path / "eng"
+    root.mkdir()
+    gate_state.record_decision("assessment_approved", "approved", root=str(root), by="lead")
+    assert gate_state.main(["--root", str(root), "show"]) == 0
+    assert "UNBOUND" in capsys.readouterr().out
+
+    assert gate_state.main(["--root", str(root), "bind", "ACME-2026"]) == 0
+    assert "ACME-2026" in capsys.readouterr().out
+    assert gate_state.main(["--root", str(root), "show"]) == 0
+    out = capsys.readouterr().out
+    assert "governs engagement: ACME-2026" in out and "UNBOUND" not in out
+
+    # A cross-engagement approval attempt is refused at the CLI with a non-zero exit, not a receipt.
+    assert gate_state.main(["--root", str(root), "approve", "lld_approved",
+                            "--engagement", "GLOBEX-2026"]) == 1
+    assert "REFUSING" in capsys.readouterr().out
+def test_the_default_gate_root_is_the_operators_cwd(tmp_path):
+    """THE ARM THE FIRST VERSION OF THIS SUITE MISSED, and the one that matters most.
+
+    `--gate-root` defaults to "." so that an ORDINARY `cisco-assess` run -- operator standing in
+    the engagement, flag not passed -- keeps enforcing exactly as it did before the flag existed.
+    Nothing tested that. Mutating the default to anything else (`os.path.expanduser("~")` was the
+    demonstration) left the ENTIRE suite green while silently ungating every real operator run.
+
+    It hid behind the sibling test's shape: both of its arms use an EMPTY cwd, and its control arm
+    EXPECTS ungated when the flag is omitted -- which is precisely what a broken default produces.
+    So the mutant satisfied the control's expectation. Only (flag omitted, cwd = engagement)
+    distinguishes a correct default from a broken one."""
+    engagement = tmp_path / "engagement"
+    engagement.mkdir()
+    gate_state.record_decision("lld_approved", "revoked", root=str(engagement), by="reviewer")
+
+    out, base = _run_engine_for_gates(tmp_path, None, cwd=engagement, tag="default_root")
+
+    assert "[GATE REFUSED]" in out, (
+        "the engine did not consult the engagement in its own working directory -- the "
+        f"--gate-root DEFAULT is broken, which ungates every ordinary CLI run:\n{out[-3000:]}")
+    written = {p.name for p in base.iterdir()}
+    assert not [n for n in written if n.endswith(("_design.docx", "_mop.docx"))], \
+        f"a gated document was written from the operator's own engagement dir: {sorted(written)}"
+
+
+def test_gate_root_default_is_pinned_in_the_parser():
+    """Source guard backing the behavioural test above: the default is a one-token change with
+    repo-wide blast radius, so it is asserted literally as well as exercised."""
+    src = (ROOT / "COLLECT_PARSE_V3_23_0.py").read_text(encoding="utf-8", errors="ignore")
+    assert re.search(r'"--gate-root",\s*default="\."', src), (
+        'the --gate-root default is no longer exactly "." -- anything else silently changes which '
+        'ledger every un-flagged CLI run consults (see test_the_default_gate_root_is_the_operators_cwd)')
+
+
+def test_a_root_that_exists_but_is_a_file_refuses(tmp_path):
+    """`isdir`, not `exists`. Swapping them left the suite green while `--gate-root <...>/
+    engagement-state.json` -- pointing AT the ledger rather than at its engagement, the likeliest
+    way to get this wrong -- read as brownfield and ungated every gate."""
+    gate_state.record_decision("lld_approved", "revoked", root=str(tmp_path), by="qa")
+    ledger = tmp_path / "docs" / "engagement-state.json"
+    assert ledger.is_file()
+    assert gate_state.enforce("mop", root=str(ledger)).proceed is False
+
+    # And the KNOWN GAP, pinned deliberately rather than left to be rediscovered: a wrong root that
+    # happens to be a real directory (here docs/, whose own docs/engagement-state.json does not
+    # exist) still reads as brownfield and UNGATES. _require_root catches a path that is not a
+    # directory, nothing more. Closing this needs the ledger to declare what it governs.
+    assert gate_state.enforce("mop", root=str(tmp_path / "docs")).proceed is True, \
+        "documented gap changed -- update gate_state.py's 'Root resolution' note and docs/ssot.md"
+
+
+def test_a_non_string_root_is_rejected_not_coerced_to_cwd(tmp_path, monkeypatch):
+    """`root or "."` coerced None/0/b"" to the working directory, so record_decision(root=None)
+    created a real ledger in the process cwd and returned a success receipt -- the phantom-ledger
+    outcome _require_root exists to stop, reached by a bad TYPE instead of a bad path. It fired for
+    real during review and wrote docs/engagement-state.json into the repo root."""
+    monkeypatch.chdir(tmp_path)
+    for bad in (None, 0, b""):
+        with pytest.raises(TypeError):
+            gate_state.record_decision("assessment_approved", "approved", root=bad)
+        with pytest.raises(TypeError):
+            gate_state.enforce("design", root=bad)
+    assert not (tmp_path / "docs").exists(), "a bad root must never create a ledger anywhere"
+
+
+def test_cli_approve_refuses_a_mis_set_root_without_a_traceback(tmp_path, capsys):
+    """The write side must not answer a typo with a raw traceback while `show` answers the same
+    mistake with a sentence -- and the write side is the one that used to create phantom state."""
+    rc = gate_state.main(["--root", str(tmp_path / "absent"), "approve", "lld_approved"])
+    out = capsys.readouterr().out
+    assert rc == 1 and "REFUSING" in out
 # ------------------------------------------------- AssessHub: the gates DISCLOSE, they don't block
 
 def test_assesshub_deliverable_download_discloses_gates():
