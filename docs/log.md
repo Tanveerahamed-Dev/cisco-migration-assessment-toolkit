@@ -4,6 +4,48 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-25] — Emptied the PR queue (#476/#477/#478 + #479 closed) and swept the repo to zero merged branches; the sweep's own tooling was the least trustworthy thing in it
+
+- Second half of the gate-swarm session. Merged the three remaining fixes — **#476** (a plan doc that
+  re-opened a decision closed on 2026-07-11 and recommended a lever already measured-REFUTED),
+  **#477** (the Trunk Native-VLAN sheet printed "across the 303 collected device(s)" when 253 were
+  collected, inside the very sentence meant to BOUND the claim; the fix restates it in LINKS and
+  discloses a 50% blind spot), and **#478** (`INCOMPLETE-SET.txt` opened with "Everything in this
+  folder IS redacted and safe to share" while a stale UNREDACTED file from a failed run sat under the
+  canonical name). Closed **#479** as superseded — its premise ("#445 is red, #445/#439 cannot both
+  merge") was true when written and false once the `_emit()` chokepoint landed both. Then swept the
+  repo: **37→13** remote branches, **33→17** local, **10→1** worktrees, **0** open PRs, **0** merged
+  branches left. Final `main` `bd6ad5a`.
+- `!lesson` **State changes between the check and the act — re-verify immediately before anything
+  destructive.** Asked to delete a retro branch, I checked it: 0 commits beyond main, no worktree, an
+  empty ref created minutes earlier. By the time the instruction to delete it arrived, a CONCURRENT
+  session had committed a 49-line retro to it, pushed, and opened a PR. Deleting on the earlier
+  reading would have destroyed that work and orphaned its PR. The window was minutes. Re-run the
+  containment/emptiness check as the FIRST step of the deletion itself, never rely on a reading taken
+  one exchange ago — and in a shared checkout assume another session is writing right now.
+  bridge-candidate
+- `!lesson` **A red required check is not evidence of a defect — on an old branch it is usually the
+  branch's own STALE DEBT.** #477 and #439 both showed `Ruff lint FAIL`, and in both cases it was the
+  identical unused `import pytest` that main had already fixed (`3f7fb6a`, via #444); the branches were
+  47 and 21 commits behind. The fix is `git merge origin/main` (0 conflicts both times), not debugging
+  the lint. Before investigating a failing check on a stale branch, ask whether MAIN already fixed it —
+  measure `git rev-list --count <branch>..origin/main` first. Same family as the runner-contention
+  `cancelled` flakes: on this fleet a red X is more often infrastructure or staleness than code.
+  bridge-candidate
+- `!lesson` **Verify a correction PR's own citations — the genre invites unverified authority.** #476
+  corrected a plan by asserting the decision was already recorded in an owner-doc. That is exactly the
+  claim that would be embarrassing to take on trust, so all three citations were checked against
+  `docs/quality/README.md` on main before merging (the ladder section, the accept-PARTIAL decision, the
+  not-more-models ruling) — all resolved. Likewise #477 claimed it re-derived no canonically-owned
+  fact: `CANONICAL_FACTS` holds 14 keys and none is link-scoped, so the claim held. A PR whose purpose
+  is fixing stale claims is the one where an unchecked citation does the most damage. bridge-candidate
+- **Where the day's defects actually were.** Across every code PR merged today the failing CI check was
+  stale lint debt, while the real defects were all in ASSERTIONS: a banner overstating device coverage,
+  a note declaring a folder safe over an unredacted file, a docstring citing a deleted API, an
+  end-of-run filter matching no status that exists, and this session's own runbook confidently
+  instructing the operator to delete a working feature. The concurrent session's retro reached the
+  same conclusion independently — *the code was fine; every defect was in a claim.*
+
 ## [2026-07-25] — `--redact-folder` claimed a folder was "safe to share" over an UNREDACTED file (#478); every defect I shipped this session was in a CLAIM, never in the code
 
 - Built the deliverable-completeness feature, then found **#438 already shipping it** and conceded —
