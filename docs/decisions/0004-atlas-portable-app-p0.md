@@ -98,6 +98,16 @@ helps only on self-controlled fleets.
   every secret value (SNMP communities, password hashes), so nothing sensitive is rendered."
   **Conclusion unchanged — no credential material — but the evidence is now complete.**
 
+  **Final disposal — accounted for, and deliberately not carried as an open item.** "Deleted" here
+  means the folder is in the Recycle Bin, not gone: all 896,681 bytes were still readable on
+  2026-07-25 under `C:\$Recycle.Bin\<SID>\$RPY5CEQ`, which is exactly how the scan above was run
+  (a deleted folder stays enumerable via `Shell.Application` `Namespace(0xA)` — the way to check a
+  claim like this instead of trusting the record). Nothing schedules emptying it, and nothing needs
+  to: the scan cleared all three files, and the two with content are a regenerable explorer copy
+  carrying its DEMO dataset plus a 360-byte example.com stub. This paragraph exists so the bytes
+  are *accounted for* rather than merely absent from the Desktop — had the scan found anything,
+  this would be an open owner item above instead of a closed note here.
+
   **But the credentialed backup this folder existed to quarantine was not in it.** The 2026-07-05
   entry in `docs/log.md` ("Security pass") records the `devices.json` fleet credential stripped and
   the "credentialed backup quarantined to `..\Enhancements_attic_2026-07-05\`". The 3 files above
