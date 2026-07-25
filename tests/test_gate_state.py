@@ -1152,7 +1152,7 @@ def test_assesshub_gate_disclosure_is_read_only_and_fail_open(tmp_path):
     before = store_file.read_text(encoding="utf-8")
 
     note = mod.gate_disclosure("mop", str(tmp_path))
-    assert note and note["status"] == "ungated", f"a revoked LLD was not disclosed: {note}"
+    assert note and note["status"] == "pending", f"a revoked LLD was not disclosed: {note}"
     assert "lld_approved" in note["missing"]
     assert store_file.read_text(encoding="utf-8") == before, \
         "the disclosure MUTATED the gate ledger -- it must read, never record"
@@ -1166,3 +1166,76 @@ def test_assesshub_gate_disclosure_is_read_only_and_fail_open(tmp_path):
     assert mod.gate_disclosure("runbook", str(tmp_path)) is None
     store_file.write_text("{not json", encoding="utf-8")
     assert mod.gate_disclosure("mop", str(tmp_path))["status"] == "unreadable"
+
+
+def _deliverables_mod():
+    """``backend.deliverables`` for the engine-only CI matrix — see the read-only test above for why
+    this is a package import and not ``spec_from_file_location``."""
+    import sys
+
+    sys.path.insert(0, str(ROOT / "webapp"))
+    try:
+        from backend import deliverables as mod
+    except Exception as e:                       # pragma: no cover - webapp layer absent entirely
+        pytest.skip(f"webapp backend not importable in this environment: {e}")
+    return mod
+
+
+def test_gate_disclosure_token_matches_the_owner_of_the_posture_fact(tmp_path):
+    """The disclosed token must be the SAME token the enforcer and the discloser report.
+
+    Regression pin. ``gate_disclosure`` used to re-derive the status itself and labelled a LOCATED
+    ledger with missing/revoked approvals ``ungated`` — a token ``UNEVALUATED`` reserves for "the
+    approvals were never evaluated" (no ledger, or one that could not be read or bound). The
+    consequence was safety-relevant rather than cosmetic: an AssessHub design/MOP download for an
+    engagement whose LLD approval a human peer review had actively REVOKED answered
+    ``X-Gate-Status: ungated``, which reads as "no gates are tracked here, nothing to worry about",
+    while ``enforce()`` refused the very same ledger as ``pending``.
+
+    So this asserts the token for BOTH states in the same test, plus the property that made the old
+    one wrong in the first place, stated generically: a disclosure naming missing approvals cannot
+    carry an UNEVALUATED status, because on those ``missing == []`` means UNKNOWN. That clause fails
+    for ANY re-inversion, not just a re-appearance of this exact word."""
+    import shutil
+
+    mod = _deliverables_mod()
+    root = str(tmp_path)
+
+    # ---- state 1: NO ledger at all (brownfield). 'ungated' is CORRECT here and must survive.
+    assert not (tmp_path / "docs" / "engagement-state.json").exists()
+    assert gate_state.pending_approvals("mop", root)["status"] == "ungated"
+    assert mod.gate_disclosure("mop", root) is None, \
+        "the brownfield engagement that never opted in must stay silent"
+    assert not (tmp_path / "docs" / "engagement-state.json").exists(), \
+        "the disclosure CREATED a gate ledger -- activation is an explicit human approve"
+
+    # ---- state 2: located ledger, an approval RECORDED then REVOKED by a peer review.
+    gate_state.record_decision("lld_approved", "approved", root=root, by="lead")
+    gate_state.record_decision("baseline_captured", "approved", root=root, by="lead")
+    assert mod.gate_disclosure("mop", root) is None, "an approved ledger must not be flagged"
+    gate_state.record_decision("lld_approved", "revoked", root=root, by="peer-reviewer")
+
+    note = mod.gate_disclosure("mop", root)
+    assert note is not None, "a REVOKED LLD approval was not disclosed at all"
+    assert note["status"] == "pending", (
+        f"the download disclosed {note['status']!r} for a ledger whose lld_approved was REVOKED; "
+        f"the owner of this fact (gate_state.pending_approvals) calls it 'pending'")
+    assert note["status"] not in gate_state.UNEVALUATED, (
+        f"{note['status']!r} means the approvals were NEVER EVALUATED, but this ledger WAS read and "
+        f"names {note['missing']} as missing -- on an UNEVALUATED status that list means UNKNOWN")
+    assert "lld_approved" in note["missing"] and "lld_approved" in note.get("revoked", [])
+
+    # ---- the SSOT property (Law 1): all three paths agree about one ledger. `enforce` is the
+    # BLOCKING api and APPENDS a refusal audit line, so it decides against a COPY of the ledger.
+    disclosed = gate_state.pending_approvals("mop", root)
+    enforced_root = tmp_path / "enforce_copy"
+    shutil.copytree(tmp_path / "docs", enforced_root / "docs")
+    decided = gate_state.enforce("mop", root=str(enforced_root))
+    assert note["status"] == disclosed["status"] == decided.status == "pending", (
+        f"three computations of one gate-posture fact disagree: header={note['status']!r} "
+        f"disclose={disclosed['status']!r} enforce={decided.status!r}")
+    assert decided.proceed is False, "non-vacuity: the copied ledger must really be a refusal"
+
+    # ---- the header the route actually builds (app.py), end to end.
+    header = f"{note['status']}:{','.join(note.get('missing') or ['-'])}"
+    assert header.startswith("pending:") and "lld_approved" in header, header

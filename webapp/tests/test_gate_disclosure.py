@@ -60,7 +60,13 @@ def test_unapproved_gate_discloses_but_still_delivers(tmp_path, engagement, kind
     """The load-bearing case: upstream approval REVOKED (a peer review that actively said no).
 
     A revoked ledger must produce a disclosure header AND a real document — that pairing IS the
-    decision. Asserting only the header would pass if the route had started refusing."""
+    decision. Asserting only the header would pass if the route had started refusing.
+
+    The token is `pending`, the one `gate_state.enforce`/`pending_approvals` report for a LOCATED
+    ledger with missing approvals. It read `ungated` until 2026-07-25 — a token `UNEVALUATED`
+    reserves for approvals that were never evaluated at all, so the header told an operator whose
+    LLD had been REVOKED that no gates were tracked. See
+    tests/test_gate_state.py::test_gate_disclosure_token_matches_the_owner_of_the_posture_fact."""
     # Revoke design's upstream and both of the MOP's, so either kind has an unsatisfied gate.
     for g in ("assessment_approved", "lld_approved", "baseline_captured"):
         gate_state.record_decision(g, "revoked", root=str(engagement), by="reviewer")
@@ -72,8 +78,11 @@ def test_unapproved_gate_discloses_but_still_delivers(tmp_path, engagement, kind
         r = _download(c, sid, kind)
 
     assert r.status_code == 200, f"the gate BLOCKED the download (decision is disclose): {r.text[:200]}"
-    assert r.headers.get("X-Gate-Status", "").startswith("ungated:"), \
-        f"an unapproved gate was not disclosed: {r.headers.get('X-Gate-Status')!r}"
+    gate_hdr = r.headers.get("X-Gate-Status", "")
+    assert gate_hdr.startswith("pending:"), \
+        f"an unapproved gate was not disclosed as pending: {gate_hdr!r}"
+    assert not gate_hdr.startswith("ungated:"), \
+        f"a REVOKED approval was disclosed as 'ungated', which reads as 'no gates here': {gate_hdr!r}"
     # DOCX is a zip — 'PK' proves a real document was streamed, not an empty/stub refusal body.
     assert r.content[:2] == b"PK" and len(r.content) > 5000, \
         f"disclosed but delivered nothing usable ({len(r.content)} bytes)"
