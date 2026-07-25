@@ -3149,18 +3149,27 @@ def write_fhrp_consistency_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfa
     logger.info(f"  [OK] '{FHRP_CONSISTENCY_SHEET_NAME}' sheet: {len(rows)} VLAN(s) with FHRP issues")
 
 
+def _trunk_link_ends(all_interfaces: Dict[str, Dict[str, InterfaceData]]):
+    """Yield (link, a_end, b_end, b_host) for every OBSERVED inter-switch link, each end resolved to its
+    InterfaceData or None when that device/port was not collected. ONE owner of the link-pairing walk: the
+    mismatch rows and the coverage banner both consume it, so the banner can never describe a population
+    different from the one the check actually compared."""
+    from cisco_toolkit.analyze import compute_topology_links, _canon_host, _canon_host_map
+    cmap = _canon_host_map(all_interfaces)
+    for L in compute_topology_links(all_interfaces):
+        a = all_interfaces.get(str(L["a_host"]), {}).get(str(L["a_port"]))
+        bh = cmap.get(_canon_host(str(L["b_host"])))
+        b = all_interfaces.get(bh, {}).get(str(L["b_port"])) if bh else None
+        yield L, a, b, bh
+
+
 def compute_trunk_native_mismatches(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> List[dict]:
     """Native-VLAN mismatches on inter-switch trunks (mirrors the explorer's trunkConsistency native check):
     the two ends of a CDP/LLDP link disagree on the native (untagged) VLAN -> a silent L2 leak between those
     VLANs and a VLAN-hopping exposure. The default native VLAN is 1, so an explicit native on only one end is
     still a mismatch. Reuses analyze.compute_topology_links. Returns [{a_host,a_port,a_native,b_host,b_port,b_native}]."""
-    from cisco_toolkit.analyze import compute_topology_links, _canon_host, _canon_host_map
-    cmap = _canon_host_map(all_interfaces)
     out: List[dict] = []
-    for L in compute_topology_links(all_interfaces):
-        a = all_interfaces.get(str(L["a_host"]), {}).get(str(L["a_port"]))
-        bh = cmap.get(_canon_host(str(L["b_host"])))
-        b = all_interfaces.get(bh, {}).get(str(L["b_port"])) if bh else None
+    for L, a, b, bh in _trunk_link_ends(all_interfaces):
         if a is None or b is None:
             continue
         an = (getattr(a, "trunk_native_vlan", "") or "").strip() or "1"
@@ -3169,6 +3178,18 @@ def compute_trunk_native_mismatches(all_interfaces: Dict[str, Dict[str, Interfac
             out.append({"a_host": str(L["a_host"]), "a_port": str(L["a_port"]), "a_native": an,
                         "b_host": bh, "b_port": str(L["b_port"]), "b_native": bn})
     return out
+
+
+def compute_trunk_native_coverage(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> Dict[str, int]:
+    """What the native-VLAN check could actually COMPARE: links observed vs links whose BOTH ends were
+    collected (the only ones a mismatch is detectable on). Shares _trunk_link_ends with the mismatch
+    computer, so the reported coverage and the checked population cannot drift apart."""
+    observed = compared = 0
+    for _L, a, b, _bh in _trunk_link_ends(all_interfaces):
+        observed += 1
+        if a is not None and b is not None:
+            compared += 1
+    return {"links_observed": observed, "links_compared": compared}
 
 
 TRUNK_NATIVE_SHEET_NAME = "Trunk Native-VLAN"
@@ -3189,14 +3210,31 @@ def write_trunk_native_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceDa
         ws.cell(r, 3, f"{d['b_host']} {d['b_port']}")
         cb = ws.cell(r, 4, d["b_native"]); cb.font = Font(bold=True, color="C00000")
         r += 1
+    # coverage-honest: what this check found is only as wide as what it could COMPARE -- a link whose far end
+    # was never collected is not evidence of consistency (audit-5 #6). State the COMPARED population, never a
+    # device count. Two reasons (QA row 15 + the refutation of its first fix): (1) the old banner rendered
+    # len(all_interfaces) labelled "collected device(s)", but that map holds an entry per in-scope device only
+    # on the --no-collect path -- on a LIVE run an unreachable device is dropped entirely (COLLECT_PARSE_V3_23_0
+    # skips a None cmd_to_file), so NO device count derived from it is honest across both paths; (2) even a
+    # correct collected-device count credits devices that contributed no compared link at all (on M0: 253
+    # devices carry ports, but only 149 sit on a link with both ends collected). Link counts also restate no
+    # canonical fact, so ssot.canonical_facts stays the sole owner of the fleet-wide device figures.
+    # The disclosure is emitted in BOTH branches: listing mismatches while staying silent about how many links
+    # could not be compared conceals the same blind spot as the clean case -- worse, in fact, since a reader
+    # looking at real findings most needs to know what the check could not see.
+    cov = compute_trunk_native_coverage(all_interfaces)
+    _gap = cov["links_observed"] - cov["links_compared"]
+    _coverage = (f"{cov['links_compared']} inter-switch link(s) with both ends collected were compared"
+                 + (f"; {_gap} of {cov['links_observed']} observed link(s) had an uncollected far end and were "
+                    f"NOT compared" if _gap else "")
+                 + ". Uncollected devices, and any trunk whose far end was not collected, are NOT assessed "
+                   "-- this is not a fleet-wide guarantee.")
     if r == 2:
-        # coverage-honest: 'no mismatch' is scoped to the collected devices + observed trunks, NOT a fleet-wide
-        # clean bill of health -- absence of an uncollected far end is not evidence of consistency (audit-5 #6).
-        n_dev = len(all_interfaces or {})
         ws.cell(2, 1, "no mismatch")
-        ws.cell(2, 2, f"No native-VLAN mismatch found among the inter-switch trunks observed across the {n_dev} "
-                      f"collected device(s). Uncollected devices, and any trunk whose far end was not collected, "
-                      f"are NOT assessed -- this is not a fleet-wide guarantee.")
+        ws.cell(2, 2, f"No native-VLAN mismatch found. {_coverage}")
+    else:
+        ws.cell(r, 1, "coverage")
+        ws.cell(r, 2, _coverage)
     for i, w in enumerate([34, 12, 34, 12], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"

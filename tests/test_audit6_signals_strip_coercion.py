@@ -25,8 +25,6 @@ not collide with tests/test_audit6_leaf_coercion.py or any other test module.)""
 
 import copy
 
-import pytest
-
 from cisco_toolkit import design_advisor
 
 POISON = {"x": 1}   # the recursive dict-poison fuzz's replacement value: an unhashable, non-str dict leaf
