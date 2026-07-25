@@ -12,19 +12,27 @@ dependency — this is a source-level contract and must run everywhere.
 """
 import ast
 import re
+import sys
 from pathlib import Path
+
+import pytest
 
 from cisco_toolkit.docmeta import CLI_ARTIFACT_SUFFIX, FAMILY, WEB_ONLY_KINDS, cli_artifacts
 
 ROOT = Path(__file__).resolve().parents[1]
 ENGINE = ROOT / "COLLECT_PARSE_V3_23_0.py"
 
-# What a deliverable suffix LOOKS like. ANY extension: pinning this to (docx|pptx|html) once made
-# the ratchet blind to exactly the case it exists for — a future writer emitting `_board_brief.pdf`
-# would never be mapped, never expected, and permanently outside the completeness check. The
-# leading `_` is what distinguishes a deliverable from the engine's own sidecars, which are
-# `.`-joined (`.snapshot.json`, `.run_manifest.json`, `.phase_timings.json`).
-_SUFFIX_SHAPE = re.compile(r"^_[A-Za-z0-9_]+\.[A-Za-z0-9]{2,5}$")
+# What a deliverable suffix LOOKS like. Extensions up to 8 chars and hyphens are allowed: pinning
+# this to (docx|pptx|html) once made the ratchet blind to exactly the case it exists for — a future
+# writer emitting `_board_brief.pdf` would never be mapped, never expected, and permanently outside
+# the completeness check. `-` and the 8-char bound cost NOTHING (measured: all three shapes match
+# the same 9 literals in the engine today) and cover `_board-brief.docx` (Cisco house naming) and
+# `.drawio`/`.graphml`. The leading `_` is what excludes the engine's own sidecars, which are
+# `.`-joined (`.snapshot.json`, `.run_manifest.json`, `.phase_timings.json`) — the length bound
+# does no exclusion work, so widening it is free.
+# NOT widened further: a shape tolerating a leading `{}`/`%s` was measured at 23 matches, sweeping
+# in the sidecars, `command_index.json` and 7 `show_*.txt` collection filenames.
+_SUFFIX_SHAPE = re.compile(r"^_[A-Za-z0-9_-]+\.[A-Za-z0-9]{2,8}$")
 
 
 def _engine_suffixes() -> set:
@@ -46,11 +54,27 @@ def _engine_suffixes() -> set:
     being too narrow. As of this writing over-detection is zero — every suffix-shaped literal in
     the engine is a deliverable.
 
-    KNOWN GAP, stated rather than papered over: a suffix assembled at runtime
-    (``stem + "_" + kind + ".docx"``) has no literal to find and is invisible to ANY source-level
-    check, this one included. Nothing in the engine does that today. If a writer ever needs to,
-    the map must be updated by hand and this docstring is where the next reader learns why the
-    ratchet did not catch it."""
+    KNOWN GAPS — the exact rule is: **only a suffix that appears verbatim in the engine file as ONE
+    string Constant beginning with ``_`` is seen.** An earlier version of this docstring claimed a
+    missed suffix "has no literal to find and is invisible to ANY source-level check". That was
+    FALSE in both halves, and measured so; a ratchet narrower than its docstring is worse than none,
+    because the docstring is what stops the next reader looking. What is actually missed:
+
+    * ``"{}_board_brief.pdf".format(stem)`` and ``"%s_board_brief.pdf" % stem`` — the literal IS
+      present, it just does not START with ``_``. NB the engine already builds filenames this way
+      (``:1275`` ``tmp = "%s.%d.tmp" % (path, os.getpid())``), so this is not a strawman.
+    * ``stem + ("_board_brief" + ".pdf")`` — split across two Constants; ``ast.parse`` does not
+      constant-fold. (The *implicit* adjacent form ``"_board" "_brief.pdf"`` IS caught — the two
+      spellings behave oppositely, which is worth knowing before you trust a near-miss.)
+    * a suffix assembled fully at runtime (``stem + "_" + kind + ".docx"``) — no literal at all.
+    * **a writer that lives outside this one file.** Only ``COLLECT_PARSE_V3_23_0.py`` is scanned,
+      while writers have been migrating into ``cisco_toolkit/`` for several releases; a module that
+      owns its own suffix constant (the ``capture_integrity.CAPTURE_META_FILENAME`` pattern) is
+      invisible here. This is the likeliest way this ratchet goes stale.
+
+    The durable fix is to invert the direction — give ``docmeta`` an ``artifact_path(stem, kind)``
+    that every writer calls, so the map PRODUCES the filename instead of mirroring it, and every gap
+    above disappears at once. Tracked as a follow-up; this file patches a mirror."""
     return _suffixes_in(ENGINE.read_text(encoding="utf-8", errors="replace"))
 
 
@@ -87,10 +111,21 @@ def test_suffixes_match_what_the_engine_actually_writes():
     in_engine = _engine_suffixes()
     assert in_engine, "the engine's artifact-naming shape changed — update this reconciler"
     mapped = {s for k, s in CLI_ARTIFACT_SUFFIX.items() if k != "workbook"}
+    # The left-hand message deliberately does NOT say "not written by the engine". It cannot know
+    # that: a writer whose filename this reconciler cannot see (see _suffixes_in KNOWN GAPS) lands
+    # here even though the engine really does write it. Asserting the falsehood pointed the one
+    # contributor who had done everything right — added the writer AND mapped it — at deleting the
+    # map entry as the only way to green the suite, which manufactures exactly the unmapped,
+    # unchecked deliverable this map exists to prevent.
     assert mapped == in_engine, (
-        f"docmeta.CLI_ARTIFACT_SUFFIX has drifted from the engine writers.\n"
-        f"  mapped but not written by the engine: {sorted(mapped - in_engine)}\n"
-        f"  written by the engine but unmapped:   {sorted(in_engine - mapped)}")
+        f"docmeta.CLI_ARTIFACT_SUFFIX and the engine source disagree.\n"
+        f"  mapped, but NOT FOUND as a literal in the engine: {sorted(mapped - in_engine)}\n"
+        f"    -> either the writer was removed (drop the map entry), OR it names its output in a\n"
+        f"       way this reconciler cannot see. Check _suffixes_in's KNOWN GAPS first; if the\n"
+        f"       engine really does write it, DO NOT delete the map entry to go green — widen the\n"
+        f"       detector or add the file to the scanned set.\n"
+        f"  found in the engine but unmapped: {sorted(in_engine - mapped)}\n"
+        f"    -> a new deliverable: add it to CLI_ARTIFACT_SUFFIX (and FAMILY).")
     assert CLI_ARTIFACT_SUFFIX["workbook"] == ".xlsx"
 
 
@@ -152,3 +187,60 @@ def test_over_detection_is_currently_zero():
     nothing today. If this ever fails, a non-deliverable literal has taken that shape: classify it
     (map it, or exclude it here with a reason) rather than narrowing the detector back down."""
     assert _engine_suffixes() == {s for k, s in CLI_ARTIFACT_SUFFIX.items() if k != "workbook"}
+
+
+def test_the_documented_gaps_are_the_REAL_gaps():
+    """Pin the KNOWN GAPS list to actual behaviour.
+
+    The first version of that docstring claimed a missed suffix "has no literal to find and is
+    invisible to ANY source-level check" — false in both halves. Documentation of a limitation is
+    itself a claim, and an unpinned one rots the same way a stale map does. If a future change
+    makes one of these visible, this test fails and the docstring gets corrected WITH it."""
+    missed = {
+        "format":     'p = "{}_board_brief.pdf".format(stem)',
+        "percent":    'p = "%s_board_brief.pdf" % stem',
+        "split concat": 'p = stem + ("_board_brief" + ".pdf")',
+        "runtime":    'p = stem + "_" + kind + ".docx"',
+    }
+    for label, code in missed.items():
+        assert not _suffixes_in(code), (
+            f"KNOWN GAPS says the {label} idiom is missed, but the detector now sees it — "
+            f"good news: widen the docstring's gap list to match")
+    # ...and the one that IS caught, whose opposite behaviour the docstring calls out
+    assert _suffixes_in('p = stem + "_board" "_brief.pdf"'), \
+        "implicit adjacent concatenation used to be caught; the docstring says so"
+
+
+def test_the_widened_shape_costs_nothing_and_buys_something():
+    """`-` and the 8-char extension bound were adopted only because they were measured free."""
+    assert _suffixes_in('p = stem + "_board-brief.docx"'), "hyphenated house naming must be seen"
+    assert _suffixes_in('p = stem + "_topology.drawio"'), "a 6-char extension must be seen"
+    # the bound still has to exclude prose-y strings that are not filenames
+    assert not _suffixes_in('x = "_x.toolongextension"')
+    # and the leading `_` still does the sidecar exclusion, which is what keeps this tight
+    for sidecar in (".snapshot.json", ".run_manifest.json", ".phase_timings.json"):
+        assert not _suffixes_in(f'p = stem + "{sidecar}"'), f"{sidecar} is a sidecar, not a deliverable"
+
+
+def test_the_failure_message_never_claims_the_engine_does_not_write_it(monkeypatch):
+    """The highest-severity finding from review: the old message asserted 'not written by the
+    engine' about a file the engine may well write, and the only way to green it was to delete the
+    map entry — manufacturing the exact blind spot the map prevents.
+
+    Checked by TRIGGERING the real failure and reading the real message, not by grepping this file.
+    The first version grepped, and matched its own assertion string — a source-text check on the
+    file that contains the banned phrase can never be anything but self-satisfying."""
+    # A non-empty but INCOMPLETE result — the shape a real unseeable writer produces. (Returning
+    # an empty set instead trips the earlier "naming shape changed" guard and never reaches the
+    # message under test.)
+    incomplete = {s for k, s in CLI_ARTIFACT_SUFFIX.items()
+                  if k not in ("workbook", "design")}
+    monkeypatch.setattr(sys.modules[__name__], "_engine_suffixes", lambda: incomplete)
+    with pytest.raises(AssertionError) as excinfo:
+        test_suffixes_match_what_the_engine_actually_writes()
+    msg = str(excinfo.value)
+    assert "not written by the engine" not in msg, \
+        f"the reconciler asserts something it cannot know:\n{msg}"
+    assert "NOT FOUND as a literal" in msg, "say what was actually observed"
+    assert "DO NOT delete the map entry" in msg, \
+        "the message must steer away from the destructive fix"
