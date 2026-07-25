@@ -4,6 +4,172 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-25] — Emptied the PR queue (#476/#477/#478 + #479 closed) and swept the repo to zero merged branches; the sweep's own tooling was the least trustworthy thing in it
+
+- Second half of the gate-swarm session. Merged the three remaining fixes — **#476** (a plan doc that
+  re-opened a decision closed on 2026-07-11 and recommended a lever already measured-REFUTED),
+  **#477** (the Trunk Native-VLAN sheet printed "across the 303 collected device(s)" when 253 were
+  collected, inside the very sentence meant to BOUND the claim; the fix restates it in LINKS and
+  discloses a 50% blind spot), and **#478** (`INCOMPLETE-SET.txt` opened with "Everything in this
+  folder IS redacted and safe to share" while a stale UNREDACTED file from a failed run sat under the
+  canonical name). Closed **#479** as superseded — its premise ("#445 is red, #445/#439 cannot both
+  merge") was true when written and false once the `_emit()` chokepoint landed both. Then swept the
+  repo: **37→13** remote branches, **33→17** local, **10→1** worktrees, **0** open PRs, **0** merged
+  branches left. Final `main` `bd6ad5a`.
+- `!lesson` **State changes between the check and the act — re-verify immediately before anything
+  destructive.** Asked to delete a retro branch, I checked it: 0 commits beyond main, no worktree, an
+  empty ref created minutes earlier. By the time the instruction to delete it arrived, a CONCURRENT
+  session had committed a 49-line retro to it, pushed, and opened a PR. Deleting on the earlier
+  reading would have destroyed that work and orphaned its PR. The window was minutes. Re-run the
+  containment/emptiness check as the FIRST step of the deletion itself, never rely on a reading taken
+  one exchange ago — and in a shared checkout assume another session is writing right now.
+  bridge-candidate
+- `!lesson` **A red required check is not evidence of a defect — on an old branch it is usually the
+  branch's own STALE DEBT.** #477 and #439 both showed `Ruff lint FAIL`, and in both cases it was the
+  identical unused `import pytest` that main had already fixed (`3f7fb6a`, via #444); the branches were
+  47 and 21 commits behind. The fix is `git merge origin/main` (0 conflicts both times), not debugging
+  the lint. Before investigating a failing check on a stale branch, ask whether MAIN already fixed it —
+  measure `git rev-list --count <branch>..origin/main` first. Same family as the runner-contention
+  `cancelled` flakes: on this fleet a red X is more often infrastructure or staleness than code.
+  bridge-candidate
+- `!lesson` **Verify a correction PR's own citations — the genre invites unverified authority.** #476
+  corrected a plan by asserting the decision was already recorded in an owner-doc. That is exactly the
+  claim that would be embarrassing to take on trust, so all three citations were checked against
+  `docs/quality/README.md` on main before merging (the ladder section, the accept-PARTIAL decision, the
+  not-more-models ruling) — all resolved. Likewise #477 claimed it re-derived no canonically-owned
+  fact: `CANONICAL_FACTS` holds 14 keys and none is link-scoped, so the claim held. A PR whose purpose
+  is fixing stale claims is the one where an unchecked citation does the most damage. bridge-candidate
+- **Where the day's defects actually were.** Across every code PR merged today the failing CI check was
+  stale lint debt, while the real defects were all in ASSERTIONS: a banner overstating device coverage,
+  a note declaring a folder safe over an unredacted file, a docstring citing a deleted API, an
+  end-of-run filter matching no status that exists, and this session's own runbook confidently
+  instructing the operator to delete a working feature. The concurrent session's retro reached the
+  same conclusion independently — *the code was fine; every defect was in a claim.*
+
+## [2026-07-25] — `--redact-folder` claimed a folder was "safe to share" over an UNREDACTED file (#478); every defect I shipped this session was in a CLAIM, never in the code
+
+- Built the deliverable-completeness feature, then found **#438 already shipping it** and conceded —
+  but salvaged the orthogonal half as **#440**: `_assert_redaction_phases_ran` read `.phase_timings.json`
+  as a list while the engine writes a dict, so `str.get` raised `AttributeError` into a defensive
+  `except` and that arm was **dead on every real run**. Then closed the successor defect as **#478**:
+  a run whose redaction check FAILS leaves `DO-NOT-SEND-NOT-REDACTED.txt` and its unredacted documents
+  on disk; re-running with `--reuse-out` and losing one writer leaves that UNREDACTED file under the
+  canonical name, reported only as `stale` — while `INCOMPLETE-SET.txt` asserted *"Everything in this
+  folder IS redacted and safe to share."* Reproduced byte-identical against main before fixing.
+- `!lesson` **A hand-fabricated fixture makes the stub AGREE with the parser bug.** The test covering
+  the dead arm faked the sidecar as `json.dumps([{...}])` — exactly the shape the buggy parser expected.
+  Stub and bug agreed, test stayed green, guard was dead. A fixture encodes the author's belief about
+  the producer's format, which is the same belief that produced the bug, so it can only ever confirm it.
+  **Feed at least one test the REAL producer's output**, and assert the VALUES it keys on actually occur
+  (the watched phase names exist only under `--redact`; without that flag the ratchet passes vacuously).
+  bridge-candidate
+- `!lesson` **Fixing a parse is not fixing the guard — enumerate what else still produces silence.**
+  Normalising the shape made the arm fire and left every other unreadable ledger silent: renamed key,
+  rows keyed by name, tuples, `null`, `ok: 0`, `ok: "false"`, or a watched phase with NO row. The bug
+  had moved up one level, not gone. For a safety gate, "cannot confirm" must REFUSE with its own
+  message, distinct from "confirmed failed". Never test a JSON flag with `is False` — `0`, `"false"`,
+  `null` and a missing key all have to count. bridge-candidate
+- `!lesson` **A CLAIM has exits too — grep the sentence's wording, not the function.** After fixing the
+  note, `grep -rn "safe to share"` across `*.py/*.txt/*.md` found the same promise twice in
+  `README-FIELD.txt`, the engineer's ONLY on-site documentation. Code-only would have left the guide
+  contradicting the folder. Prose copies of a safety claim live in READMEs, exit-code tables and console
+  strings — none of which appear in a call graph. Corollary: the ratchet I added to protect that guide
+  asserted a 9-word phrase against a hard-wrapped file as a NEGATIVE assertion — one word of re-wrap and
+  it passes having checked nothing. Match on `" ".join(text.split())` and prove BOTH directions.
+  bridge-candidate
+- `!lesson` **During a wait, query the field that would prove the wait UNNECESSARY.** The user merged
+  #478 at 01:10Z; its queued CI kept running (GitHub does not cancel it), so I polled `check-runs` until
+  05:19 waiting to "merge when green" on something already on main. At 04:49 I ran
+  `gh pr view --json mergeable,mergeStateStatus,reviewDecision` — picking exactly the fields that fit my
+  mental model and omitting **`.state`**, which read MERGED the whole time. A merged PR returns
+  `mergeable=UNKNOWN` and keeps `reviewDecision=REVIEW_REQUIRED` if admin-merged, so every field I DID
+  query looked like "still waiting". Always include `state,mergedAt`; a persistent `UNKNOWN` is itself
+  the tell. bridge-candidate
+- `!lesson` **`busy=true` + 0 jobs is a real wedge; `in_progress: 0` at RUN level is not.** The fleet
+  genuinely wedged once (8 stacked `Runner.Listener` processes — each restart ADDS a pair without
+  stopping the old, so repeated restarts made it worse; fix is kill-all then ONE relaunch, and the
+  relaunch must be the human's because this harness's `NoDefaultCurrentDirectoryInExePath` leaks into
+  every job). But I then called it wedged a second time on the run-level `in_progress: 0` reading while
+  both runners were executing jobs fine — run status lags job status. Check for a live job by
+  `runner_name` across recent runs before touching anything; I nearly killed two healthy jobs. Also: of
+  27 queued runs, 19 belonged to already-MERGED PRs and were pure starvation — cancelling those (never
+  `main`'s) unblocked all four open PRs. bridge-candidate
+
+## [2026-07-25] — Landed the 5-PR gate swarm (#448/#441/#444/#439/#445): three of my own "verified" resolutions were wrong, and the metric I was watching hid each one
+
+- Merged all five PRs that had been pairwise-conflicting on `cisco_toolkit/gate_state.py` (main
+  `a3f921b`). The last pair was not a merge conflict at all: **#439 and #445 independently implemented
+  the SAME feature** — audit every gate verdict, not just overrides — as a rich `GateVerdict` return
+  vs a module-level `_VERDICTS` ledger sealed into the run manifest. Reconciled with a single
+  `_emit()` chokepoint so the sealed row and the return value are built from one object and cannot
+  disagree, and retired #445's flat `VERDICTS` enum in favour of #439's `STATUSES` (Law 1: a second
+  enum for the same situations is the copy that drifts). Post-merge main: `GateVerdict` 18,
+  `_VERDICTS` 5, `VERDICTS` 0, `if False:` 0.
+- `!lesson` **Three automated conflict resolutions I had "verified" were wrong, and each passed the
+  check I happened to be watching.** (a) A file-level `git checkout --ours` on the shared file scored
+  a perfect `pending_approvals=1` while silently deleting the PR's entire +623-line feature
+  (`GateVerdict=0`) — a file-level flag takes the WHOLE file. (b) Keep-both on a `serve.py` dispatch
+  stacked two `if args.redact_folder` guards where the first (`is not None`) made the second dead;
+  the dead copy was the only one forwarding `--reuse-out`, so the flag was silently dropped —
+  **valid Python, `ast.parse` clean**, caught only by the other PR's tests. (c) My own
+  `list(v.missing) or None` would have collapsed `[]` (evaluated, nothing missing) into `None`
+  (never evaluated) — the "never-checked run scores as a clean zero" inversion. Rule: after a
+  keep-both on any `if`/dispatch region, assert every flag the union claims is REACHED (AST-walk the
+  guards), not merely present; and pair every count-based check with a second metric that would move
+  in the opposite direction. bridge-candidate
+- `!lesson` **A count proves a difference, not its meaning — check the merge-base before calling it
+  staleness.** I measured `pending_approvals` = 5 on one branch vs 1 on main, concluded "stale
+  references to a deleted API", and wrote a runbook telling the user to drive it to 1. At the
+  merge-base the function did not exist: that branch **BUILDS** it (1 def + 4 prose refs + 13
+  references in its own test file) while the other independently documented the opposite design. The
+  delta was a live design divergence between two coherent PRs. Before reading a count as decay, ask
+  what the merge-base had and whether the "extra" side DEFINES what it references
+  (`grep -c '^def <name>'` + check the test file). bridge-candidate
+- `!lesson` **Never point a fault-injecting refuter at a worktree you are still committing from.**
+  I spawned an independent refuter to mutate a security control, gave it the SAME detached worktree
+  I was working in, and a later `git add -A` captured its live injection —
+  `if False: gate_reset_verdicts()` — into a PUSHED commit. Effect if merged: the per-run ledger
+  never resets, so run 2's manifest seals run 1's verdicts — a FALSE audit record, worse than the
+  missing one the PR existed to fix. It survived because the only guard on that property is a SOURCE
+  GREP (`assert "gate_reset_verdicts()" in src`), which stays green against `if False:`. Give a
+  mutating refuter its own checkout; before committing after any parallel agent,
+  `grep -rn 'if False:' --include=*.py`; and never let a source-grep be the sole guard on a runtime
+  property. bridge-candidate
+- `!lesson` **A background task's "completed (exit code 0)" is the SHELL's status, not the tool's.**
+  A full-suite run that died on `--timeout=900` (no `pytest-timeout` installed → pytest exit **4**,
+  usage error, zero tests run) notified as exit 0, and I nearly merged four PRs on it. An
+  unrecognised-flag failure looks nothing like a test failure: no `FAILED` line to grep, short
+  output, fast finish — which reads as "clean run". Judge by the `PIPESTATUS[0]` you echoed INTO the
+  output; treat pytest exits 4/5 as RED; and sanity-check that the run actually executed (progress
+  dots, `[100%]`, plausible duration) — a sub-minute pass on a ~2200-test suite is a lie.
+  bridge-candidate
+- `!lesson` **In a squash-merge repo, every quick "is this branch merged?" check lies — only content
+  settles it.** Cleaning up after the swarm, three standard tools each answered WRONG on branches whose
+  work was fully in `main`: `git cherry` marked them `+` (absent) because squash-merging rewrites the
+  patch-id; `git branch -d` refused them as "not fully merged" because it tests containment in the
+  CURRENT HEAD, not `origin/main` — the checkout sat on an unrelated feature branch; and
+  `git diff main...branch` showed a fat diff because 3-dot compares against the MERGE-BASE, so it
+  displays content `main` already has. I also mis-read my own evidence, grepping the PRODUCTION file
+  for TEST function names and taking the 0 hits as "tests missing from main". What actually settled
+  it: per file, extract the added lines from the 3-dot diff and check each against **main's version of
+  that same file** — all six scratch branches came back 0-absent (208/198/43/27/66/76 lines) and were
+  safe to delete. Rules: use `git merge-base --is-ancestor <branch> origin/main` for containment (never
+  `branch -d`'s verdict, never `--merged` from an unrelated HEAD), and fall back to content comparison
+  whenever history was rewritten — and preserve anything genuinely absent as a ref before deleting.
+  bridge-candidate
+- **The independent refuter earned the whole exercise.** Beyond catching my contamination it found a
+  real gap in the merge: `missing` is nullable ON PURPOSE (`None` = never evaluated, `[]` =
+  evaluated-clean), but nothing pinned the two ownership statuses #439 added — dropping them from
+  `UNEVALUATED` left the ENTIRE gate suite green while a run refused because the ledger belongs to
+  another client sealed as evaluated-with-nothing-missing. Added the pin and proved it fails under
+  that mutation. It also flagged that the widened WITHHELD filter told operators to `approve` /
+  `--override-gate` for statuses documented non-overridable (and where `approve` would sign another
+  engagement's ledger). Merging surfaced three more defects **none of which reading would have
+  found**: sealing absolute paths broke `chain_root` determinism; the engine's end-of-run summary
+  filtered `verdict.startswith("refused")`, which NO status in the new vocabulary satisfies, so every
+  withheld deliverable would have vanished from the operator's last line; and a test dict keyed by
+  verdict name collapsed three scenarios into one.
+
 ## [2026-07-24] — Closed a 3-class stored-DoS series (16 PRs), then consolidated 141 branches to 32 — the cleanup found the bug the hardening missed
 
 - Closed the **truthy-non-container** falsy-guard class across every deliverable generator (#462-#471),
@@ -77,6 +243,90 @@ Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembe
   the branch exists to fix, which renders identically in output. Measure where a conflict lands before deciding a
   rebase is cheap. bridge-candidate
 
+## [2026-07-22] — Gate refusals were unauditable, and the log they belonged in had been truncating itself since PHASE 2.7
+
+- `cisco_toolkit.gate_state` logs `[GATE REFUSED]` on its own logger, but `setup_logging` configured
+  only `CiscoMigrationAutofillV3_14_6` and root has no handlers — so verdicts fell through to
+  `logging.lastResort` (WARNING+ to bare stderr, INFO discarded entirely) and grepping
+  `cisco_migration_autofill_*.log` after a refused run returned nothing. An OVERRIDE always persisted
+  (it appends an audit line to the store); a REFUSAL and the brownfield-ungated case left nothing at
+  all — for a control whose overrides DEC-003 says are reviewed weekly. Fixed both halves: the
+  `cisco_toolkit` tree now shares the engine's handlers (`propagate=False`), and every verdict is
+  recorded structurally and sealed into the run manifest's hash chain as a `{"stage":"gate"}` step,
+  where editing a refusal out breaks `chain_root`. Added a closing `[GATE] … WITHHELD` line because
+  every finalize phase signed off `[OK]` even when both gates refused. Commits 845f388 + c85ca3d.
+- `!lesson` **Judge measured output by EXPECTED MAGNITUDE, not presence.** My own end-to-end proof
+  printed `[OK] sheet lines -> 3 hit(s)` and I reported it as success; ~66 were emitted. The engine
+  re-imports itself by name for attestation, so under `python <script>.py` the module identity is
+  `__main__`, the module body RE-EXECUTES, and a second `FileHandler(mode="w")` truncated the log near
+  the end of every script-path run. A module-level "already configured" flag cannot fix that — the
+  re-executed copy gets fresh globals; the process-global logging registry is the only reliable
+  witness. The disproof was sitting in my own output: "N > 0" is not verification, ask "N of how
+  many?" bridge-candidate
+- `!lesson` **Moving code between modules silently moves it to a different logger tree.** The
+  per-sheet `[OK]` confirmations left the engine and arrived in `cisco_toolkit.excel` in the SAME
+  commit (8aa9a4e); `getLogger(__name__)` put them outside the configured tree and they vanished from
+  the log with no error, for a year, while ~49 later call sites were born mute. When a refactor
+  relocates logging code, check where its records now land — `git log -S` on a log string dates the
+  disappearance precisely. bridge-candidate
+- `!lesson` **Attaching any handler stops `lastResort` firing — so "file-only" silences your
+  warnings.** The tempting quiet-console option (attach the FileHandler, not the StreamHandler) would
+  have removed the WARNING/ERROR lines that currently DO reach stderr, producing a run that refused
+  both gated deliverables and ended in five consecutive `[OK]` lines: "not observed" rendering as
+  healthy, on the last thing the operator sees. Decide handler routing from the failure case, not the
+  happy path. bridge-candidate
+- `!lesson` **Refuters audit MY new diff, not only the pre-existing code — and they contradict each
+  other.** Round 2 found four defects in code I had just written (a re-entry guard that would reuse a
+  CLOSED handler and silently drop every later record; a `verdicts()` "deep copy" that shared nested
+  values; a conftest in `tests/` when `testpaths` also covers `webapp/tests`; a `basicConfig()` call
+  that no-ops when root already has a handler), plus two confidently-worded FALSE claims in my own
+  comments. Two refuters then disagreed on log volume; the source settled it (both per-device sites
+  are conditional). Adjudicate against the code — an accepted-but-wrong criticism is as bad as a
+  shipped defect. bridge-candidate
+- Repo-specific: the durable win is a STRUCTURAL guard that every `return` in `enforce()` is preceded
+  by a `_record(...)`, plus one deriving `VERDICTS` from the source. Enumerating today's outcomes
+  cannot catch tomorrow's; PR #439 adds two unrecorded refusal arms (mis-set `--gate-root`, ledger
+  ownership) and both tests are designed to fail when it rebases, putting the naming decision with
+  the author who knows the semantics. Merge this branch first, then #439.
+## [2026-07-22] — Hardening the run manifest: the task's premise was false, my "fix" was a regression, and the audit record I added sealed a lie
+
+- Task: make the sealed run manifest's write atomic, decide the overwrite policy, consider an exit
+  code for gate refusals — all premised on the manifest being "the durable record of PPDIOO gate
+  verdicts". It was not: `build_run_manifest` sealed only `collect`/`analyze`/`deliver`, and
+  `{"stage": "gate", ...}` existed in no branch, worktree, stash or open PR. Shipped (`b8d4ec3`) is
+  the durability half only — crash-safe write with a logged fallback, `.tmp` excluded from the
+  sealed artifact set, overwrite policy DECIDED as a per-run seal with `manifest.py` + `docs/ssot.md`
+  corrected (they claimed "append-only" unqualified), 9 tests, full suite green. The gate-verdict
+  record was reverted and re-scoped onto PR #439.
+- `!lesson` **`tmp + os.replace` is not a free upgrade over a truncate-write on Windows.**
+  `os.replace` must DELETE its destination, so it raises `PermissionError [WinError 5]` while ANY
+  process holds a handle — including an ordinary reader, because the CRT opens with
+  `FILE_SHARE_READ|FILE_SHARE_WRITE`. The plain `open(path,"w")` succeeds in exactly that case
+  (verified with a share-mode matrix; `FILE_SHARE_DELETE` does not save it). Real triggers: AV
+  on-access scan, search indexer, a viewer left open. Fix = retry briefly (~4x100ms absorbs
+  transient scanners), then fall back in-place and LOG it — never worse than before, atomic when
+  the FS allows, degradation never silent. bridge-candidate
+- `!lesson` **Check what the CALLER does with a write failure before "hardening" the write.** Both
+  call sites wrap the write in `except Exception: logger.warning(...)`, so the new failure mode was
+  swallowed: the run ships and the PREVIOUS manifest stays on disk beside freshly rewritten
+  artifacts — a stale seal that still passes `verify_manifest` while every hash in it is wrong (and
+  a fresh manifest can seal a stale snapshot as this run's evidence). A torn write announces
+  itself; a stale seal certifies a lie. Making a write "safer" in isolation made the system less
+  honest. bridge-candidate
+- `!lesson` **Agreement between reviewers is not evidence when they share a blind spot.** Three
+  independent refuters reviewed the change; two explicitly called the atomic-write half "sound".
+  Only the third — whose assigned lens was crash-safety specifically — reproduced the regression.
+  Assign at least one refuter a lens aimed squarely at the thing you are most confident about, and
+  do not treat 2-of-3 corroboration as confirmation. bridge-candidate
+- `!lesson` **Never re-derive a decision you can read off the decider — and distrust a test you
+  wrote for the code you wrote.** My gate record inferred `disposition="overridden"` from the
+  `--override-gate` flag, but `enforce()` returns True at its `if not missing` branch BEFORE the
+  override branch and appends no audit line — so an override flag on an already-approved ledger
+  sealed a governance breach that never happened, tamper-evidently, with no matching ledger line.
+  My own test asserted that lie as correct, while the repo already pinned the true invariant one
+  layer down (`test_approved_upstream_proceeds_and_override_is_inert`: "a redundant
+  `--override-gate` must NOT log a phantom override"). Grep for an existing invariant before
+  encoding a new one. bridge-candidate
 ## [2026-07-22] — `--redact-folder` silently ungated the PPDIOO gates; four refuter rounds reversed my answer twice and then found my own tests couldn't fail
 
 - The bug: `run_redaction_folder` launches the engine with `cwd=mkdtemp()`, so `gate_state.enforce`

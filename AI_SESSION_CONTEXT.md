@@ -241,8 +241,8 @@ Ranked by severity. All verified against actual source code:
 - **Fix (Phase 1):** Drop `indent=2` — provably free (all consumers compare parsed objects). **Phase 2:** Sparse-encode the interfaces subtree. Optional Phase 3: `gzip` sidecar.
 
 ### 🟡 P10 — Dead / Half-Wired Engines
-- **What:** `manifest.verify_chain` has no production consumer; `external_import` IP_DRIFT is dead (reads a key `analyze.py` never emits); `capture_integrity` only checks running-config.
-- **Fix:** Wire `manifest.verify_chain` into the pipeline; fix the dead `IP_DRIFT` key reference; widen `capture_integrity` to all ~160 collected commands.
+- **What:** ~~`manifest.verify_chain` has no production consumer~~ (**CLOSED 2026-07-22**); `external_import` IP_DRIFT is dead (reads a key `analyze.py` never emits); `capture_integrity` only checks running-config.
+- **Fix:** ~~Wire `manifest.verify_chain` into the pipeline~~ — **rejected, and deliberately not done.** A run that verifies the manifest it just wrote only proves the bytes survived a write→read round trip; the seal exists for the RECEIVER, who is a different party at a later time. Closed instead by shipping the check to them: `python -m cisco_toolkit.manifest verify <path>` / `Atlas.exe --verify-manifest` (exit 4 on a broken chain, `--expect-root` / `--artifacts`), proven against the real pipeline's manifest in `tests/test_pipeline_golden.py`. Still open: fix the dead `IP_DRIFT` key reference; widen `capture_integrity` to all ~160 collected commands.
 
 ### 🟡 P11 — Ollama/LLM Layer Is Not Integrated
 - **What:** `ollama_judge.py`, `ollama_recall.py`, `ollama_retrieval_judge.py` live at the repo root, outside the `cisco_toolkit` package. They are experiments, not features.

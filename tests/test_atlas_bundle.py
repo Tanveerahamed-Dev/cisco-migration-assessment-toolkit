@@ -55,6 +55,9 @@ def test_hidden_imports_cover_the_dynamic_seams():
     assert "COLLECT_PARSE_V3_23_0" in hidden
     # serve.main imports the server half lazily (the engine child never pays for fastapi)
     assert "webapp.backend.app" in hidden
+    # --verify-manifest's module is imported inside a function body too, and README-FIELD teaches
+    # that command to an engineer with no Python and no second machine
+    assert "cisco_toolkit.manifest" in hidden
     # ADR-0004 D2: the full document family ships — docx/pptx are lazy optional-deps
     assert {"docx", "pptx"} <= hidden
     # uvicorn's runtime "auto" selection

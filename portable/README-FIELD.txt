@@ -110,9 +110,15 @@ UNUSABLE (there but empty or truncated - a full disk does this), or
 STALE (left by an earlier run into the same folder, so it may belong to
 another job - only possible with --reuse-out, see below). The same list
 is written to INCOMPLETE-SET.txt in your --out folder. That is NOT a
-leak warning: what is in the folder is redacted and safe. It means the
-SET is short - re-run into an empty folder, or tell the recipient which
+leak warning: what THIS RUN wrote is redacted. It means the SET is
+short - re-run into an empty folder, or tell the recipient which
 documents are not included.
+
+One exception, and the note says so itself: if the folder ALSO holds
+DO-NOT-SEND-NOT-REDACTED.txt, a previous run into it could not be
+certified, and any document listed as STALE was written by THAT run -
+so it is not covered by this run's check and may be UNREDACTED. Read
+that file first and do not send the folder until you have dealt with it.
 
 ONE --out FOLDER PER JOB. Atlas REFUSES to render into a folder that
 already holds a deliverable set, and says so in seconds rather than
@@ -125,7 +131,9 @@ and this cannot happen. To render into a folder anyway - re-running the
 SAME job after a short set is the normal reason - add:  --reuse-out
 
 Exit codes:  0 = complete and verified.  3 = produced, but the set is
-short (safe to share, just not all of it).  1 = failed; do not send.
+short - what this run wrote is redacted, there is just less of it (read
+the note if DO-NOT-SEND-NOT-REDACTED.txt is also present).  1 = failed;
+do not send.
 
 This command produces ten items: the workbook, the explorer, seven Word
 documents and the deck. The Cutover Plan and the NRFU / Acceptance Test
@@ -141,6 +149,32 @@ cleartext secrets out of them IN PLACE (they stay usable for later
 comparisons), add:  --redact-collection
 Rule: raw captures and unredacted output never leave the site except on
 this (encrypted) stick.
+
+PROVING A DELIVERABLE SET IS THE ONE YOU PRODUCED
+-------------------------------------------------
+Every assessment run drops a  <name>.run_manifest.json  beside the
+workbook: a hash-chained ledger of the run plus a SHA-256 of each file it
+produced. To check a set that has been sitting on a share, or that came
+back to you from the client:
+  Atlas.exe --verify-manifest <path to run_manifest.json> --verify-artifacts
+
+"manifest OK" means the ledger still matches its own seal and every file
+listed hashes to what was sealed. It exits non-zero if not, and names the
+files: MISMATCH = changed since the run, MISSING = not in that folder,
+INVALID = the manifest pointed somewhere outside it and was not opened.
+
+WHAT THIS PROVES, AND WHAT IT DOES NOT: the seal is UNKEYED, and the code
+that writes it ships in this app. It catches a careless edit, a dropped
+file or a truncated ledger - it does NOT stop someone who re-seals the
+manifest after editing it, because they can recompute a clean seal. Do
+not present it to a client as proof nobody tampered with anything.
+The one check a re-seal cannot beat is comparing against a chain_root you
+recorded somewhere else at the time of the run:
+  Atlas.exe --verify-manifest <path to run_manifest.json> --expect-root <chain_root>
+So when you hand a set over, copy the chain_root into the report. Open the
+run_manifest.json in Notepad and take the full "chain_root" value - the
+console line at the end of a run shortens it, and a shortened one will not
+match.
 
 CREDENTIALS
 -----------
