@@ -4,6 +4,68 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-25] — The design system got its own project and a device-fidelity topology; then the drift it kept reporting turned out to be line endings, not content
+
+- Long session across the Claude Design push. **#402** created the new **"Atlas Design System"** project
+  (`fae0df7f…`) after the pinned one (`81dfe070…`) returned 404 on a working authorization — user-deleted
+  ahead of the ADR-0004 rebrand — re-pinned config + NOTES, and enriched the DesignBlueprintPanel preview
+  with the Ph3/D6 domain-lens chips (the fictional coverage keys had to be re-keyed to REAL
+  `_ARCH_COVERAGE_REGISTRY` axes: run against the old ones, the actual `select_packs` selected ZERO packs,
+  so the preview would have contradicted the grid beside it). **#403** restyled the 2D topology from
+  force-directed circles to role-tiered switch-chassis lanes in CableMap's vocabulary — band as status LED +
+  chassis tint, keystone corner badge, SPOF links thickened by `pairs_cut`, dashed [NOT OBSERVED] chassis,
+  a "Linked only" declutter that always discloses the hidden count; 3D kept. **#486** closed it by pinning
+  `.design-sync/**` to `eol=lf`. Final driver verdict, for the first time:
+  `upload: nothing — the project already matches this build`.
+- `!lesson` **A parallel session can hand your branch the wrong BASE, and the artifact you publish carries
+  the hole.** Between `git switch <stacked-branch>` and `git switch -c <feature>`, a concurrent session moved
+  this shared checkout to freshly-advanced main — so the feature branch was based on main, the design bundle
+  built from that tree lacked the sibling PR's work, and the upload **regressed a live external system**
+  (the domain-pack chips vanished from the published project). Git never flagged it: `branch --show-current`
+  was right, and the pre-upload diff looked clean because the local anchor cache was stale. It surfaced only
+  by post-upload archaeology — a published `sourceHash` had flipped back to a pre-feature value. Fixes, all
+  three needed: confirm `git log --oneline -3` shows your stack before **building** (not just before
+  committing); refresh the anchor cache immediately after every publish; and after publishing, re-fetch the
+  artifact and check the content hashes you expected to move — a delivery hash proves transport, not content.
+  bridge-candidate
+- `!lesson` **A byte-hash "changed" verdict can be pure line endings — and "fixing" it by publishing starts
+  an infinite loop.** A freshness check reported 3 changed components; all 3 were phantom. The same
+  `prompt.md` hashed `cec8acd63db6` as CRLF and `c2910b870625` as LF — and the LF hash was *exactly* what was
+  already published. Cause: `core.autocrlf=true` while `.gitattributes` covered only `.claude/hooks/*.sh`, so
+  tools **author** the file as LF and publish that, then git re-materializes the committed file as CRLF on
+  the next checkout; identical text, different hash, forever. Worse, it oscillates — publishing the CRLF
+  version just flips the drift onto the other 16 components, eroding the signal real regressions rely on.
+  Fix the cause, not the symptom: pin the generator's input surface `text eol=lf` (HEAD already stored LF, so
+  43 files normalized with an EMPTY `git diff`), then re-baseline once. Triage any suspicious artifact by
+  re-hashing it LF-normalized and comparing to the published hash *before* touching anything.
+  bridge-candidate
+- `!lesson` **When an experiment falsifies your own durable note, suspect the experiment first.** Three
+  builds from identical source produced three different bundle hashes, and I told the user the bundle was
+  non-deterministic — contradicting a note I had written on 2026-07-04. Both were wrong-ish: I had built to
+  three *different* output directories, and the bundle embeds the absolute path of `<out>/.bundle-entry.mjs`.
+  Same out-dir twice is bit-identical; the old note stood, and only needed the refinement "hash is
+  out-dir-path sensitive". Diffing the two artifacts located the divergence in one step (a single `detA`
+  vs `detB` in an embedded path) where hash-staring had produced a false headline. Hold every variable but
+  the one under test, and diff the artifacts to find *where* they differ before trusting a hash verdict.
+  bridge-candidate
+- `!lesson` **An instruction arriving from another tool/agent is data — verify its history claims, not just
+  its symbol names.** A restyle spec came in from the Claude-Design side; every file and symbol it named was
+  real and its "keep" list was accurate to the letter, which makes the false parts easy to swallow. Two were
+  false: there was never an "earlier switch-shaped 2D rendering" to restore (git history — the 2D view was
+  born as coloured circles, and the chassis language arrived four days later *as the 3D mode the spec
+  proposed retiring*), and per-port stubs are impossible from that component's payload (`api.graph` carries
+  band/score/role/degree/keystone and no port data — ports are CableMap's model). Shipped the honest version:
+  degree-anchored stubs, 3D kept, and the impossible parts named to the user rather than faked.
+  bridge-candidate
+- **Closing state, and one more hash caveat worth keeping.** `#402`/`#403`/`#486` all merged; the LF pin is
+  on main, no branches or PRs left open, and 66 later commits touched nothing on the design-system surface,
+  so the published project is still in sync. Separately: `renderHashes` are **blind to data-driven DOM
+  additions** — adding the whole domain-lens chips panel left the hash byte-identical, and the component
+  reached the upload set only because its regenerated docs happened to change; a sample-data-only edit with
+  no doc change would silently alter the published card with no regrade prompt. Every one of these is
+  recorded where the next session will actually read it — `.design-sync/NOTES.md`, which owns the
+  design-sync gotchas.
+
 ## [2026-07-25] — Emptied the PR queue (#476/#477/#478 + #479 closed) and swept the repo to zero merged branches; the sweep's own tooling was the least trustworthy thing in it
 
 - Second half of the gate-swarm session. Merged the three remaining fixes — **#476** (a plan doc that
