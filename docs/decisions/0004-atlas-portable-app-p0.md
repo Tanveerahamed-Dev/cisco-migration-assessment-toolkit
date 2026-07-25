@@ -75,12 +75,29 @@ helps only on self-controlled fleets.
   deleting: 3 files / 876 KB holding NO credential material — a regenerable
   `blast_radius_explorer.html.stale-root-copy`, an example.com scrape stub, and an Excel
   `.lockfile`; a credential-pattern scan of the only candidate file (password / secret / token /
-  api-key / private-key / `enable secret` / SNMP community) matched nothing. The "confirm rotation
-  first" ordering existed to avoid destroying rotation evidence, and there was none to destroy, so
-  the gate did not apply. Sent to the Recycle Bin rather than hard-deleted — still recoverable.
+  api-key / private-key / `enable secret` / SNMP community) matched nothing. Sent to the Recycle
+  Bin rather than hard-deleted — still recoverable.
+
+  **But the credentialed backup this folder existed to quarantine was not in it.** The 2026-07-05
+  entry in `docs/log.md` ("Security pass") records the `devices.json` fleet credential stripped and
+  the "credentialed backup quarantined to `..\Enhancements_attic_2026-07-05\`". The 3 files above
+  are that entry's *Hygiene* quarantines instead (the stale explorer copy + the `raw\` egress
+  artifact); no `devices.json` backup was in the folder, and no copy was found elsewhere on the
+  Desktop tree. It was evidently removed sometime before the 2026-07-19 check — **by whom and to
+  where is recorded nowhere**, so one plaintext copy of the pre-rotation credential for 303 devices
+  is unaccounted for. That raises the urgency of the rotation below rather than lowering it. What
+  IS verified: the live `devices.json` (303 entries) carries no `password` field, so the strip held.
+
+  **On the gate — its rationale is inferred, not recorded.** All that was ever written down is the
+  ordering itself, "rotate the credential, then delete that backup" (`docs/log.md`, 2026-07-05).
+  The natural reading is the standard one for a file holding a live secret: destroy the copy only
+  once the secret it carries is dead. On that reading the gate was scoped to the backup — which was
+  already gone before this deletion, so it is moot because the file was missing, not because there
+  was nothing sensitive to protect.
 - **Confirm the 2026-07-05 credential rotation** actually happened — **STILL OPEN**, and now
   independent of the attic (deleting that folder neither performed the rotation nor recorded it).
-  Rotation is an AAA-side action only the owner can perform.
+  The unaccounted-for backup above is why it still matters. Rotation is an AAA-side action only the
+  owner can perform.
 - **Python-less-box smoke**: copy `portable\dist\Atlas\` to a stick (`portable/make_stick.ps1`
   does the layout), run `Atlas.exe --selftest` on a machine without Python — expect
   `SELFTEST: PASS`.
