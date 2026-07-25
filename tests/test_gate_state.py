@@ -276,20 +276,55 @@ def test_show_treats_an_ABSENT_audit_key_as_normal_not_corrupt(tmp_path, capsys)
     assert "audit: 0 entries" in capsys.readouterr().out
 
 
-def test_a_deeply_nested_ledger_fails_closed_instead_of_raising(tmp_path):
+def test_a_recursionerror_while_parsing_fails_closed_instead_of_raising(tmp_path, monkeypatch):
     """load_store's contract is that a broken ledger fails CLOSED, never raises. RecursionError
     subclasses RuntimeError, so it escaped the (OSError, ValueError) catch as a raw traceback and
-    killed the run part-way through the deliverable set. It is a property of the FILE, not a bug --
-    json.load's C scanner accepts nesting the pure-Python encoder cannot round-trip. The WRITE side
-    already handled it by name; only the read side was missed."""
+    killed the run part-way through the deliverable set. It is a property of the FILE, not a bug.
+
+    Fault-injected at the json.load boundary rather than built from deeply nested text. An earlier
+    version wrote 3200 levels of nesting, which asserted a property of the INTERPRETER, not of this
+    code: it raised on 3.10-3.13 and NOT on 3.14, so CI went red on one matrix leg while the
+    behaviour under test was fine. Whatever depth the running interpreter tolerates, the contract
+    here is the same -- if the parser raises RecursionError, this must surface as GateStateError."""
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "engagement-state.json").write_text(
-        '{"schema":1,"gates":{},"audit":[],"x":%s}' % ("[" * 3200 + "]" * 3200), encoding="utf-8")
+        '{"schema":1,"gates":{},"audit":[]}', encoding="utf-8")
 
+    def _boom(*_a, **_kw):
+        raise RecursionError("maximum recursion depth exceeded while decoding a JSON array")
+
+    monkeypatch.setattr(gate_state.json, "load", _boom)
     with pytest.raises(gate_state.GateStateError):
         gate_state.load_store(str(tmp_path))
     v = gate_state.enforce("design", root=str(tmp_path))
     assert v.status == "unreadable" and v.proceed is False
+
+
+def test_a_ledger_nested_past_this_interpreters_limit_fails_closed(tmp_path):
+    """The same contract against a REAL file rather than a fault injection, at a depth discovered
+    from the running interpreter instead of hard-coded -- so it exercises the true parser on every
+    matrix leg and cannot go red merely because a newer Python parses deeper."""
+    import json as _json
+
+    depth = None
+    for candidate in (2_000, 20_000, 200_000):
+        try:
+            _json.loads("[" * candidate + "]" * candidate)
+        except RecursionError:
+            depth = candidate
+            break
+        except ValueError:                     # some builds report it as a decode error instead
+            depth = candidate
+            break
+    if depth is None:
+        pytest.skip("this interpreter parses 200k-deep JSON without error; "
+                    "the fault-injected sibling test covers the contract")
+
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "engagement-state.json").write_text(
+        '{"schema":1,"gates":{},"audit":[],"x":%s}' % ("[" * depth + "]" * depth), encoding="utf-8")
+    with pytest.raises(gate_state.GateStateError):
+        gate_state.load_store(str(tmp_path))
 
 
 def test_save_store_docstring_does_not_overclaim_concurrency_safety():
