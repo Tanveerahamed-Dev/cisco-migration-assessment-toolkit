@@ -4,6 +4,67 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-25] — Landed the 5-PR gate swarm (#448/#441/#444/#439/#445): three of my own "verified" resolutions were wrong, and the metric I was watching hid each one
+
+- Merged all five PRs that had been pairwise-conflicting on `cisco_toolkit/gate_state.py` (main
+  `a3f921b`). The last pair was not a merge conflict at all: **#439 and #445 independently implemented
+  the SAME feature** — audit every gate verdict, not just overrides — as a rich `GateVerdict` return
+  vs a module-level `_VERDICTS` ledger sealed into the run manifest. Reconciled with a single
+  `_emit()` chokepoint so the sealed row and the return value are built from one object and cannot
+  disagree, and retired #445's flat `VERDICTS` enum in favour of #439's `STATUSES` (Law 1: a second
+  enum for the same situations is the copy that drifts). Post-merge main: `GateVerdict` 18,
+  `_VERDICTS` 5, `VERDICTS` 0, `if False:` 0.
+- `!lesson` **Three automated conflict resolutions I had "verified" were wrong, and each passed the
+  check I happened to be watching.** (a) A file-level `git checkout --ours` on the shared file scored
+  a perfect `pending_approvals=1` while silently deleting the PR's entire +623-line feature
+  (`GateVerdict=0`) — a file-level flag takes the WHOLE file. (b) Keep-both on a `serve.py` dispatch
+  stacked two `if args.redact_folder` guards where the first (`is not None`) made the second dead;
+  the dead copy was the only one forwarding `--reuse-out`, so the flag was silently dropped —
+  **valid Python, `ast.parse` clean**, caught only by the other PR's tests. (c) My own
+  `list(v.missing) or None` would have collapsed `[]` (evaluated, nothing missing) into `None`
+  (never evaluated) — the "never-checked run scores as a clean zero" inversion. Rule: after a
+  keep-both on any `if`/dispatch region, assert every flag the union claims is REACHED (AST-walk the
+  guards), not merely present; and pair every count-based check with a second metric that would move
+  in the opposite direction. bridge-candidate
+- `!lesson` **A count proves a difference, not its meaning — check the merge-base before calling it
+  staleness.** I measured `pending_approvals` = 5 on one branch vs 1 on main, concluded "stale
+  references to a deleted API", and wrote a runbook telling the user to drive it to 1. At the
+  merge-base the function did not exist: that branch **BUILDS** it (1 def + 4 prose refs + 13
+  references in its own test file) while the other independently documented the opposite design. The
+  delta was a live design divergence between two coherent PRs. Before reading a count as decay, ask
+  what the merge-base had and whether the "extra" side DEFINES what it references
+  (`grep -c '^def <name>'` + check the test file). bridge-candidate
+- `!lesson` **Never point a fault-injecting refuter at a worktree you are still committing from.**
+  I spawned an independent refuter to mutate a security control, gave it the SAME detached worktree
+  I was working in, and a later `git add -A` captured its live injection —
+  `if False: gate_reset_verdicts()` — into a PUSHED commit. Effect if merged: the per-run ledger
+  never resets, so run 2's manifest seals run 1's verdicts — a FALSE audit record, worse than the
+  missing one the PR existed to fix. It survived because the only guard on that property is a SOURCE
+  GREP (`assert "gate_reset_verdicts()" in src`), which stays green against `if False:`. Give a
+  mutating refuter its own checkout; before committing after any parallel agent,
+  `grep -rn 'if False:' --include=*.py`; and never let a source-grep be the sole guard on a runtime
+  property. bridge-candidate
+- `!lesson` **A background task's "completed (exit code 0)" is the SHELL's status, not the tool's.**
+  A full-suite run that died on `--timeout=900` (no `pytest-timeout` installed → pytest exit **4**,
+  usage error, zero tests run) notified as exit 0, and I nearly merged four PRs on it. An
+  unrecognised-flag failure looks nothing like a test failure: no `FAILED` line to grep, short
+  output, fast finish — which reads as "clean run". Judge by the `PIPESTATUS[0]` you echoed INTO the
+  output; treat pytest exits 4/5 as RED; and sanity-check that the run actually executed (progress
+  dots, `[100%]`, plausible duration) — a sub-minute pass on a ~2200-test suite is a lie.
+  bridge-candidate
+- **The independent refuter earned the whole exercise.** Beyond catching my contamination it found a
+  real gap in the merge: `missing` is nullable ON PURPOSE (`None` = never evaluated, `[]` =
+  evaluated-clean), but nothing pinned the two ownership statuses #439 added — dropping them from
+  `UNEVALUATED` left the ENTIRE gate suite green while a run refused because the ledger belongs to
+  another client sealed as evaluated-with-nothing-missing. Added the pin and proved it fails under
+  that mutation. It also flagged that the widened WITHHELD filter told operators to `approve` /
+  `--override-gate` for statuses documented non-overridable (and where `approve` would sign another
+  engagement's ledger). Merging surfaced three more defects **none of which reading would have
+  found**: sealing absolute paths broke `chain_root` determinism; the engine's end-of-run summary
+  filtered `verdict.startswith("refused")`, which NO status in the new vocabulary satisfies, so every
+  withheld deliverable would have vanished from the operator's last line; and a test dict keyed by
+  verdict name collapsed three scenarios into one.
+
 ## [2026-07-22] — Gate refusals were unauditable, and the log they belonged in had been truncating itself since PHASE 2.7
 
 - `cisco_toolkit.gate_state` logs `[GATE REFUSED]` on its own logger, but `setup_logging` configured
