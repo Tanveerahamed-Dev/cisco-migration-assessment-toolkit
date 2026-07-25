@@ -261,11 +261,14 @@ def _parse_snapshot_bytes(raw: bytes) -> Dict[str, Any]:
     return snap
 
 
-def _send_file(path: str, media_type: str, filename_stem: str, suffix: str) -> FileResponse:
-    """Stream a generated temp file and delete it afterwards; filename is sanitized."""
+def _send_file(path: str, media_type: str, filename_stem: str, suffix: str,
+               headers: Dict[str, str] | None = None) -> FileResponse:
+    """Stream a generated temp file and delete it afterwards; filename is sanitized.
+    `headers` carries out-of-band notes about the file (e.g. X-Gate-Status) without touching its
+    bytes — the download stays byte-identical to the CLI's output."""
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", filename_stem).strip("_") or "file"
     return FileResponse(
-        path, media_type=media_type, filename=f"{safe}{suffix}",
+        path, media_type=media_type, filename=f"{safe}{suffix}", headers=headers,
         background=BackgroundTask(lambda p=path: os.path.exists(p) and os.unlink(p)),
     )
 
@@ -1007,7 +1010,13 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
             except Exception as e:  # generation failure (e.g. a malformed snapshot)
                 raise HTTPException(500, f"Failed to generate {kind}: {e}") from e
         spec = deliverables.SPECS[kind]
-        return _send_file(path, spec.media, meta["label"], f"_{kind}.{spec.ext}")
+        # PPDIOO document gates DISCLOSE on this surface rather than refuse (the reasoning, and the
+        # known residual, are in deliverables.generate's docstring). Surfaced as a response header
+        # so it is visible to the SPA and to curl without changing the bytes of the document.
+        gate_note = deliverables.gate_disclosure(kind)
+        headers = {"X-Gate-Status": f"{gate_note['status']}:"
+                                    f"{','.join(gate_note.get('missing') or ['-'])}"} if gate_note else None
+        return _send_file(path, spec.media, meta["label"], f"_{kind}.{spec.ext}", headers=headers)
 
     @app.delete("/api/snapshots/{snapshot_id}", status_code=204)
     def delete_snapshot(snapshot_id: int):

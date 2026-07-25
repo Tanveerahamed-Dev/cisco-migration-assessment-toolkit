@@ -1088,3 +1088,81 @@ def test_cli_approve_refuses_a_mis_set_root_without_a_traceback(tmp_path, capsys
     rc = gate_state.main(["--root", str(tmp_path / "absent"), "approve", "lld_approved"])
     out = capsys.readouterr().out
     assert rc == 1 and "REFUSING" in out
+# ------------------------------------------------- AssessHub: the gates DISCLOSE, they don't block
+
+def test_assesshub_deliverable_download_discloses_gates():
+    """DECISION PIN (2026-07-22): AssessHub's on-demand design/MOP download consults the document
+    gates and DISCLOSES an unsatisfied one; it deliberately does NOT refuse.
+
+    Source guard, the same pattern as ``test_engine_wires_the_gates_and_the_override_flag`` above,
+    and dep-free on purpose: ``tests/`` runs in the engine-only CI matrix where fastapi is absent,
+    so the BEHAVIOURAL half of this decision lives in ``webapp/tests/test_gate_disclosure.py``
+    (guarded by webapp/tests/conftest.py). This half pins the two things a future reader is most
+    likely to undo by accident: that the consult happens at all, and that it stays non-blocking.
+
+    Note the enforcement surface did NOT move into an engine launch, so the caller-inventory guard
+    (``test_no_engine_caller_launches_with_a_synthetic_cwd_ungated``) neither covers nor needs to
+    cover this path: ``deliverables.generate`` calls the writers IN-PROCESS — no engine argv, no
+    ``cwd=`` — so it matches neither of that guard's two discriminators, by construction rather
+    than by omission. Its inventory floor is unaffected by this change."""
+    src = (ROOT / "webapp" / "backend" / "deliverables.py").read_text(encoding="utf-8")
+
+    assert "def gate_disclosure(" in src, "AssessHub lost its document-gate consult"
+    assert re.search(r"disclosure = gate_disclosure\(kind, gate_root\)", src), \
+        "deliverables.generate no longer consults the document gates"
+    # The decision is 'disclose', so the consult must reach a log/verdict and never a refusal.
+    assert "logger.warning" in src.split("disclosure = gate_disclosure")[1][:600], \
+        "the gate verdict is consulted but no longer surfaced -- that is silence, not disclosure"
+    for refusal in ("raise ", "return None", "return \"\""):
+        assert refusal not in src.split("disclosure = gate_disclosure")[1][:600], \
+            (f"deliverables.generate appears to BLOCK on the gate ({refusal!r}). That reverses a "
+             "recorded decision -- an AssessHub campaign has no filesystem engagement root, so a "
+             "server-root ledger would wrongly refuse other campaigns. See the generate docstring.")
+
+    # The route must surface the verdict out-of-band (headers), never by rewriting the document:
+    # 'byte-identical to what the CLI pipeline emits' is this module's documented contract.
+    app_src = (ROOT / "webapp" / "backend" / "app.py").read_text(encoding="utf-8")
+    assert "deliverables.gate_disclosure(kind)" in app_src, \
+        "the deliverable route stopped surfacing the gate verdict"
+    assert "X-Gate-Status" in app_src
+
+
+def test_assesshub_gate_disclosure_is_read_only_and_fail_open(tmp_path):
+    """The disclosure path must never mutate the ledger and never raise — both are load-bearing.
+
+    Mutation: ``enforce()``'s override arm APPENDS an audit line, so building the disclosure on
+    ``enforce`` would make every page refresh forge gate-audit history. Raising: this runs inside a
+    download, and a broken ledger must not be able to withhold a deliverable (that would smuggle
+    blocking back in through the error path).
+
+    Runs in the engine-only CI matrix too: ``backend/__init__.py`` lazy-imports ``create_app``, so
+    ``backend.deliverables`` resolves without fastapi. (A ``spec_from_file_location`` load does NOT
+    work here — deliverables.py's ``from . import engine`` needs a real parent package — and it
+    silently degraded to an always-skip, which pins nothing.)"""
+    import sys
+
+    sys.path.insert(0, str(ROOT / "webapp"))
+    try:
+        from backend import deliverables as mod
+    except Exception as e:                       # pragma: no cover - webapp layer absent entirely
+        pytest.skip(f"webapp backend not importable in this environment: {e}")
+
+    gate_state.record_decision("lld_approved", "revoked", root=str(tmp_path), by="reviewer")
+    store_file = tmp_path / "docs" / "engagement-state.json"
+    before = store_file.read_text(encoding="utf-8")
+
+    note = mod.gate_disclosure("mop", str(tmp_path))
+    assert note and note["status"] == "ungated", f"a revoked LLD was not disclosed: {note}"
+    assert "lld_approved" in note["missing"]
+    assert store_file.read_text(encoding="utf-8") == before, \
+        "the disclosure MUTATED the gate ledger -- it must read, never record"
+
+    # Non-vacuity: the same call is silent once the upstreams are approved, so the assertion above
+    # is reporting the ledger rather than always-truthy.
+    gate_state.record_decision("lld_approved", "approved", root=str(tmp_path), by="reviewer")
+    gate_state.record_decision("baseline_captured", "approved", root=str(tmp_path), by="reviewer")
+    assert mod.gate_disclosure("mop", str(tmp_path)) is None
+    # Ungated kinds and a corrupt ledger both stay quiet/soft rather than blowing up the download.
+    assert mod.gate_disclosure("runbook", str(tmp_path)) is None
+    store_file.write_text("{not json", encoding="utf-8")
+    assert mod.gate_disclosure("mop", str(tmp_path))["status"] == "unreadable"
