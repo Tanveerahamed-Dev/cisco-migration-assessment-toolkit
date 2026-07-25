@@ -8,6 +8,8 @@ Windows boxes), and never name a CLI flag the shipped argparse surfaces don't ac
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 GUIDE = ROOT / "portable" / "README-FIELD.txt"
 
@@ -111,3 +113,96 @@ def test_every_flag_the_guide_names_exists_in_a_shipped_argparse():
     named = set(_FLAG.findall(GUIDE.read_text(encoding="ascii")))
     unknown = named - valid
     assert not unknown, f"field guide names flags no shipped surface has: {sorted(unknown)}"
+
+
+# ── the field guide's claim about the DRAFT stamp must stay TRUE ────────────────
+
+#: Writers whose output opens with a Document Control table (docmeta.add_document_control), and
+#: writers that produce a deliverable with NO such marking. README-FIELD tells the engineer which
+#: is which, so drift in EITHER direction makes the field guide lie.
+_STAMPED = ("design", "mop", "crd", "engagement", "archreview", "ops", "runbook")
+_UNSTAMPED = ("excel", "html", "deck")
+
+
+def test_field_guide_draft_stamp_claim_matches_the_writers():
+    """README-FIELD says the seven Word documents carry a draft Status row and that the workbook,
+    explorer and deck do NOT — the deck being the one most likely shown to a client.
+
+    That paragraph replaced an earlier one claiming EVERY document was stamped, which was false in
+    exactly the direction that matters. Source-level, so it fails when a writer is added or when
+    one of the three unstamped renderers quietly gains (or the seven quietly lose) the table."""
+    # Match the CALL, not the name: every stamped writer also NAMES add_document_control on its
+    # `from cisco_toolkit.docmeta import ...` line, so a substring scan passed even with the call
+    # deleted. Verified by gutting ops.py's call while keeping the import — this file stayed green.
+    _CALL = re.compile(r"(?<!import )\badd_document_control\s*\(")
+    src = {m: (ROOT / "cisco_toolkit" / f"{m}.py").read_text(encoding="utf-8", errors="ignore")
+           for m in _STAMPED + _UNSTAMPED}
+    missing = [m for m in _STAMPED if not _CALL.search(src[m])]
+    unexpected = [m for m in _UNSTAMPED if _CALL.search(src[m])]
+
+    # ...and the claim side. The first version of this test never opened the guide at all: the
+    # whole paragraph could be deleted, or rewritten to "every document is stamped", and it passed
+    # while its own docstring claimed "drift in EITHER direction makes the field guide lie".
+    # Whitespace-NORMALISED: the guide is hard-wrapped to ~70 columns, so any phrase long enough to
+    # be worth pinning will straddle a line break sooner or later. Asserting the raw text made this
+    # check depend on where the wrap happened to fall — re-flowing the paragraph (not changing a
+    # word of its meaning) turned it red.
+    guide = " ".join(GUIDE.read_text(encoding="ascii").split())
+    assert "seven Word documents" in guide, \
+        "the guide no longer states the count this test pins (or changed its wording)"
+    assert "carry NO such marking" in guide, (
+        "the guide must keep naming the artifacts that are NOT stamped — the deck is the one most "
+        "likely shown to a client, and an earlier version of this paragraph claimed EVERY document "
+        "was stamped, which was false in exactly that direction")
+    assert not missing, (
+        f"README-FIELD promises a Document Control status row these writers no longer emit: "
+        f"{missing}. Fix the writer or the guide — an engineer is told to take it literally.")
+    assert not unexpected, (
+        f"README-FIELD tells the engineer {unexpected} carry NO draft marking, but they now do. "
+        f"Update the guide: under-claiming teaches them to distrust it.")
+    assert len(_STAMPED) == 7, "the guide says 'seven Word documents' — keep the count in step"
+
+
+def test_the_draft_status_row_really_reaches_a_rendered_document(tmp_path):
+    """Non-vacuity for the test above: prove the row is in the FILE, not just the source. The
+    guide's whole point is that the engineer can open the document and see it."""
+    pytest.importorskip("docx")
+    import docx
+
+    from cisco_toolkit import design
+
+    out = tmp_path / "d.docx"
+    design.write_design_doc_docx(str(out), {"devices": {"SW1": {"model": "C9300"}}}, "AJ")
+    text = "\n".join(c.text for t in docx.Document(str(out)).tables
+                     for r in t.rows for c in r.cells)
+    assert "Status" in text, "the Document Control table lost its Status row"
+    assert "DRAFT" in text and "not yet reviewed" in text, (
+        f"the rendered document no longer says it is an unreviewed draft, which is what "
+        f"README-FIELD tells the engineer to rely on. Table text:\n{text[:600]}")
+
+
+def test_the_guide_does_not_promise_the_whole_folder_is_safe():
+    """The short-set paragraph is where an UNCONDITIONAL safety promise does the most damage.
+
+    A run whose redaction check fails leaves DO-NOT-SEND-NOT-REDACTED.txt and its unredacted
+    documents in the folder (nothing is deleted, by design). Re-rendering into that folder with
+    --reuse-out and losing one writer leaves that earlier run's UNREDACTED file under the canonical
+    name, reported only as STALE. The guide used to tell the engineer, flatly, that a short set is
+    "safe to share" — and this file is the only documentation they have on site, so it is the last
+    place that claim can go unqualified. Scope it to what the run wrote, and name the exception."""
+    text = GUIDE.read_text(encoding="ascii")
+    # Matched on WHITESPACE-NORMALISED text, never line by line. This guide is hard-wrapped at ~70
+    # columns, so any phrase long enough to be worth asserting will eventually straddle a newline —
+    # and for a NEGATIVE assertion that is the silent direction: the banned sentence comes back,
+    # wraps one word earlier, and the guard passes having checked nothing. (Verified: the phrase
+    # below sits on one line in the version this test was written against, and stops matching if
+    # that sentence re-wraps by a single word.)
+    flat = " ".join(text.split()).lower()
+    assert "what is in the folder is redacted and safe" not in flat, (
+        "README-FIELD claims the whole --out folder is safe; scope it to what THIS RUN wrote "
+        "(a document left by an earlier uncertified run can still be sitting in it)")
+    assert "DO-NOT-SEND-NOT-REDACTED.txt" in text, (
+        "the guide must name the marker it tells the engineer to look for")
+    assert "unredacted" in flat, (
+        "the guide must say the STALE case can be UNREDACTED, not only that it may name "
+        "another client")

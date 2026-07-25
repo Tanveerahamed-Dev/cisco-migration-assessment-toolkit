@@ -576,3 +576,396 @@ def test_design_doc_survives_xml_illegal_chars(tmp_path):
     write_design_doc_docx(out, snap, "AJ" + bad)                          # must NOT raise
     assert os.path.exists(out)
     Document(out)                                                         # and be a valid, openable .docx
+
+
+# --- Truthy-non-dict section hardening (the `or {}` / `or []` falsy-guard class) ----------------------
+# A section whose value is a TRUTHY non-dict / non-list scalar (a corrupt or slimmed --no-collect
+# snapshot) slips the `or {}` / `or []` guards and is then .items()-ed / .get()-ed / iterated, aborting
+# the whole As-Built Design DOCX -> HTTP 500 on the webapp /design route + a CLI exception. Same class
+# already hardened in analyze.vlan_inventory, the executive_brief read, stp_roots and the decisions loop.
+# Each malformed section must degrade to EMPTY (coverage-honest), never crash.
+
+def _poison_base():
+    """Minimal snapshot that still drives every crash site under test: one device, so the §3.1 inventory,
+    §3.4 BoM, §3.5 software and §6 NOS-mix loops all run and every guarded site is actually reached."""
+    return {"devices": {"sw1": {"hostname": "sw1", "model": "C9300-48T", "platform": "ios",
+                                "sw_version": "17.9"}}}
+
+
+@pytest.mark.parametrize("section, value", [
+    ("routing_neighbors", 5),                    # _is_l3: (routing_neighbors or {}).get(host)
+    ("routing_neighbors", {"sw1": 5}),           # §2.3: rn.items() then (d or {}).get(proto) on a scalar per-host value
+    ("interfaces", 5),                           # _segmentation_facts + LLD §3.3: (interfaces or {}).items()/.get(h)
+    ("interfaces", {"sw1": 5}),                  # scalar ports row -> (ports or {}).items()
+    ("interfaces", {"sw1": {"Vlan10": 5}}),      # scalar port-detail -> d.get('vrf') / d.get('svi_ip')
+    ("fhrp", 5),                                 # §2.4 resilience: for g in fhrp: g.get('issues')
+    ("lifecycle_risk", 5),                       # lifecycle.get('per_device')
+    ("endpoint_identity", 5),                    # §6: [e for e in endpoint_identity ...] (scalar not iterable)
+])
+def test_design_tolerates_truthy_non_dict_section(tmp_path, section, value):
+    """A truthy non-dict/non-list section must degrade to empty, never abort the design DOCX."""
+    import os
+    snap = _poison_base()
+    snap[section] = value
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "Poison")          # must not raise
+    assert os.path.exists(out)
+
+
+def test_design_tolerates_scalar_device_value(tmp_path):
+    """The devices-value class: a device whose value is a truthy non-dict is dereferenced with .get() in
+    FOUR loops -- §3.1 inventory (devices[h]), §3.4 BoM + §3.5 software ((d or {}).get), and §6 NOS-mix
+    (devices.values()). Guarding only one of the four leaves the other three crashing."""
+    import os
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, {"devices": {"sw1": 5}}, "Poison")   # must not raise
+    assert os.path.exists(out)
+
+
+def test_design_tolerates_every_in_scope_section_non_dict_at_once(tmp_path):
+    """Kitchen-sink: every section in the hardened crash class a truthy scalar at once -- the builder must
+    still emit an openable .docx (l3_forwarding/capacity are already _R-guarded; the rest are fixed here)."""
+    import os
+    snap = {"devices": {"sw1": 5}, "interfaces": 5, "routing_neighbors": 5, "fhrp": 5,
+            "lifecycle_risk": 5, "endpoint_identity": 5, "l3_forwarding": 5, "capacity": 5}
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "Poison")          # must not raise
+    assert os.path.exists(out)
+    Document(out)                                        # ...and it opens as a valid document
+
+
+# --- Comprehensive crash-class sweep: EVERY top-level section x EVERY poison shape --------------------
+# The falsy-guard (`or {}` / `or []`) crash class is closed section-by-section only if EVERY section the
+# generator dereferences is proven against EVERY malformed shape a corrupt/slimmed snapshot can carry.
+# The four poison shapes are chosen to reach different guards: a scalar / a string (iterable! a bare
+# `for x in section` would walk its chars) / a list-of-scalars (slips a `_R`-less row loop) / a
+# dict-with-a-scalar-VALUE ({"k":1} -- survives the OUTER `_D` and reaches the INNER deref, e.g.
+# stp_roots->vmap.items(), redistribution->len(v); a top-level-only guard is NOT enough).
+
+_ALL_DESIGN_SECTIONS = [
+    "devices", "interfaces", "l3_forwarding", "routing_neighbors", "stp_roots", "redistribution",
+    "fhrp", "capacity", "lifecycle_risk", "vpc", "failure_impact", "punchlist", "subnet_intelligence",
+    "service_map", "executive_brief", "design_blueprint", "qos_audit", "endpoint_identity",
+]
+_DESIGN_POISONS = [5, "x", [1, 2], {"k": 1}]
+
+
+@pytest.mark.parametrize("poison", _DESIGN_POISONS)
+@pytest.mark.parametrize("section", _ALL_DESIGN_SECTIONS)
+def test_design_poison_sweep_every_section_x_every_poison(tmp_path, section, poison):
+    """Every section the As-Built Design DOCX reads, set to each malformed shape, must degrade to empty
+    and still emit an OPENABLE .docx -- never abort the whole deliverable (HTTP 500 on /design + a CLI
+    exception). 18 sections x 4 shapes = 72 cases. Non-vacuity was verified out-of-band by reverting the
+    guards: stp_roots/redistribution/vpc/punchlist/subnet_intelligence/qos_audit crash without them,
+    incl. redistribution+{"k":1} -> TypeError(len(scalar)) and stp_roots+{"k":1} -> vmap.items()."""
+    import os
+    snap = {"devices": {"sw1": {}}}
+    snap[section] = poison
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "l")   # must not raise
+    assert os.path.exists(out)
+    Document(out)                            # ...and open as a valid document
+
+
+def test_design_wellformed_still_renders_newly_guarded_sections(tmp_path):
+    """Golden-unchanged: routing the newly-hardened sections through _D/_R is IDENTITY on well-formed
+    input, so a well-formed snapshot must STILL render the STP root placement (stp_roots) and the
+    redistribution boundaries (redistribution) -- the two sections no prior test pinned. An over-broad
+    guard that emptied them would fail here rather than silently ship a blank section. (punchlist and
+    subnet_intelligence golden are already pinned by test_design_reconciles_to_snapshot.)"""
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, _snap(), "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "core1 roots 2 VLAN(s)" in text                                  # stp_roots -> §2.2 root placement
+    assert "Redistribution boundaries" in text and "route-redistribution edge" in text  # redistribution -> §2.3
+    assert "1 route-redistribution edge" in text                            # the one edge in _snap() is counted
+
+
+# --- NESTED falsy-guard poison: the crash class the top-level sweep CANNOT reach ---------------------
+# The sweep above sets snap[section] = poison. For a CONTAINER section that is enough, but for a section
+# the generator only reads THROUGH (design_blueprint, service_map.multicast, qos_audit, lifecycle_risk,
+# punchlist rows) it is VACUOUS: with design_blueprint = {"k": 1} every inner bp.get(...) returns None,
+# and `or {}` / `or []` DOES catch None -- so every §4/§5 gate goes falsy and the guarded code never runs.
+#
+# The real stored availability DoS lives one to three levels DOWN: a WELL-FORMED blueprint whose
+# `decisions` / `doctrine.<domain>` / `target_state.addressing_plan.subnets` (…) value is a TRUTHY
+# non-dict / non-list. It survives `or {}` / `or []`, survives the webapp's only validation
+# (isinstance(snap, dict) and "devices" in snap) and survives xml_safe_deep (int/float/bool/None pass
+# through unchanged), is STORED by the accepted POST, and then aborts every later
+# GET /api/snapshots/{id}/deliverable/design with an HTTP 500.
+#
+# So the base below is a FULLY-POPULATED snapshot that satisfies every render gate, and exactly ONE
+# nested value is poisoned per case (poisoning several at once lets an upstream gate skip the row and
+# silently re-vacuates the test).
+
+def _rich_design_snap():
+    """A snapshot that reaches EVERY gated render site the nested sweep poisons: the full
+    design_blueprint (summary / scorecard / decisions / coverage / doctrine / target_state and all five
+    target-state sub-plans), plus multicast, qos_audit, lifecycle_risk. Pinned as non-vacuous by
+    test_rich_design_snap_reaches_every_nested_guard_site."""
+    return {
+        "devices": {"sw1": {"hostname": "sw1", "model": "C9300-48T", "platform": "ios",
+                            "sw_version": "17.9"}},
+        "lifecycle_risk": {"per_device": [{"host": "sw1", "model": "C9300-48T", "band": "Past-EoS"}]},
+        "service_map": {"multicast": {
+            "active_switch_count": 1, "active_interfaces": 2,
+            "classified_groups": [{"group": "224.0.1.129", "name": "PTP-primary",
+                                   "category": "Broadcast-AV"}],
+            "igmp_queriers": [{"switch": "sw1", "vlan": "10"}],
+            "ptp": {"sw1": {"operational": True}}}},
+        "qos_audit": {
+            "summary": {"n_devices": 1, "n_assessable": 1, "modes": {"trust-dscp": 1},
+                        "n_voice_ports": 3},
+            "findings": [{"host": "sw1", "label": "no ingress marking", "severity": "Medium"}]},
+        "design_blueprint": {
+            "summary": {"headline": "Two-tier campus, single-gateway exposure"},
+            "tradeoff_scorecard": [{"label": "Availability", "score": 2, "posture": "Fair",
+                                    "evidence": "one gateway on VLAN 20"}],
+            "decisions": [
+                {"status": "recommended", "priority": "P1", "domain": "L3", "title": "Add FHRP",
+                 "driver": "single point of failure", "recommended_action": "HSRP pair",
+                 "alternatives": "anycast gateway", "tradeoffs": "cost vs availability",
+                 "evidence": {"summary": "VLAN 20 has one SVI", "fields": ["l3_forwarding"],
+                              "devices": ["sw1"]},
+                 "principle": {"id": "CCDE-AV-1", "title": "First-hop redundancy",
+                               "citation": "Cisco Campus Design Guide"}},
+                {"status": "needs-requirement", "title": "What is the RTO?",
+                 "requirements_needed": ["recovery time objective"], "axes": ["availability"]},
+            ],
+            "coverage": {"caveat": "1 of 1 device collected"},
+            "doctrine": {"Campus": [{"title": "Redundant first hop", "recommended_action": "HSRP/VRRP",
+                                     "citation": "CVD", "engine_actionable": True}]},
+            "target_state": {
+                "summary": {"headline": "Collapsed core with redundant gateways"},
+                "dimensions": [{"area": "L3", "current": "single gateway", "target": "HSRP pair",
+                                "rationale": "availability", "confidence": "Medium"}],
+                "replacement_bom": {"n_replace": 1, "n_refresh": 1, "note": "indicative",
+                                    "replace_now": [["WS-C2960X-48FPD-L", 2]],
+                                    "refresh_soon": [["C9300-48T", 1]]},
+                "segmentation_plan": {"observed": "single global table", "target": "two VRFs",
+                                      "requirement_needed": "zone list"},
+                "addressing_plan": {"status": "candidate", "supernet": "10.20.0.0/16",
+                                    "n_allocated": 1, "note": "candidate only", "mode": "zone-aware",
+                                    "zones": [{"zone": "PROD", "summary": "10.20.0.0/20",
+                                               "n_vlans": 1}],
+                                    "subnets": [{"vlan": "10", "hosts": 5,
+                                                 "subnet": "10.20.10.0/24", "note": "sized"}]},
+                "wave_plan": {"n_move_groups": 1, "largest_group": 1, "n_waves": 1, "wave_cap": 5,
+                              "note": "candidate", "waves": [{"wave": 1, "kind": "L2-coupled",
+                                                              "n_switches": 1}]},
+                "scope_note": "1 device in scope",
+                "coverage": {"caveat": "target state is a proposal"},
+            },
+        },
+    }
+
+
+def _set_path(obj, path, value):
+    """Set one dotted path inside a nested dict/list structure; an integer segment indexes a list."""
+    keys = path.split(".")
+    cur = obj
+    for k in keys[:-1]:
+        cur = cur[int(k)] if isinstance(cur, list) else cur[k]
+    last = keys[-1]
+    if isinstance(cur, list):
+        cur[int(last)] = value
+    else:
+        cur[last] = value
+    return obj
+
+
+# Every nested read the design writer dereferences after a `or {}` / `or []` (or a bare subscript /
+# absent-only `.get(k, [])` default, which the falsy guard does not even attempt). Grouped by cluster.
+_NESTED_DESIGN_POISON_PATHS = [
+    # --- design_blueprint.* (§1 headline, §4 decisions/doctrine, §5 target state) ---
+    "design_blueprint.summary",                                   # §1 _sm.get("headline")
+    "design_blueprint.decisions",                                 # §4 list-comp + build_design_traceability
+    "design_blueprint.decisions.0.evidence",                      # §4.2 (evidence or {}).get("summary")
+    "design_blueprint.decisions.0.evidence.fields",               # traceability: join over ev["fields"]
+    "design_blueprint.decisions.0.evidence.devices",              # traceability: ev["devices"][:8] slice
+    "design_blueprint.decisions.0.principle",                     # §4.2 (principle or {}).get("citation")
+    "design_blueprint.decisions.1.requirements_needed",           # §4.3 ", ".join(...)
+    "design_blueprint.decisions.1.axes",                          # §4.3 ", ".join(...)
+    "design_blueprint.tradeoff_scorecard",                        # §4.1 `for s in sc`
+    "design_blueprint.tradeoff_scorecard.0",                      # §4.1 per-element s.get(...)
+    "design_blueprint.coverage",                                  # §4 cov.get("caveat")
+    "design_blueprint.doctrine",                                  # §4.4 doctrine.values()
+    "design_blueprint.doctrine.Campus",                           # §4.4 len(v) / `for it in v`
+    "design_blueprint.doctrine.Campus.0",                         # §4.4 per-element it.get(...)
+    "design_blueprint.target_state",                              # §5 ts.get("dimensions")
+    "design_blueprint.target_state.summary",                      # §5 (summary or {}).get("headline")
+    "design_blueprint.target_state.dimensions",                   # §5 `for d in ts_dims`
+    "design_blueprint.target_state.dimensions.0",                 # §5 per-element d.get(...)
+    "design_blueprint.target_state.replacement_bom",              # §5.1 bom.get("n_replace")
+    "design_blueprint.target_state.replacement_bom.replace_now",  # §5.1 `for m, q in bom.get(k, [])`
+    "design_blueprint.target_state.replacement_bom.refresh_soon",  # §5.1 same, absent-only default
+    "design_blueprint.target_state.segmentation_plan",            # §5.2 segp.get("observed")
+    "design_blueprint.target_state.addressing_plan",              # §5.3 ap.get("status")
+    "design_blueprint.target_state.addressing_plan.zones",        # §5.3 bare `for z in ap["zones"]`
+    "design_blueprint.target_state.addressing_plan.zones.0",      # §5.3 per-element z.get(...)
+    "design_blueprint.target_state.addressing_plan.subnets",      # §5.3 bare ap["subnets"][:60] + len()
+    "design_blueprint.target_state.addressing_plan.subnets.0",    # §5.3 per-element s.get(...)
+    "design_blueprint.target_state.wave_plan",                    # §5.4 wp.get("waves")
+    "design_blueprint.target_state.wave_plan.waves",              # §5.4 bare wp["waves"][:40]
+    "design_blueprint.target_state.wave_plan.waves.0",            # §5.4 per-element w.get(...)
+    "design_blueprint.target_state.coverage",                     # §5 (coverage or {}).get("caveat")
+    # --- service_map.multicast.* (§2.5) ---
+    "service_map.multicast",                                      # mc.get("classified_groups")
+    "service_map.multicast.classified_groups",                    # len(groups) / groups[:15]
+    "service_map.multicast.classified_groups.0",                  # per-element g.get(...)
+    "service_map.multicast.igmp_queriers",                        # len(queriers)
+    "service_map.multicast.ptp",                                  # ptp.values() / len(ptp)
+    # --- qos_audit.* (§2.7) ---
+    "qos_audit.summary",                                          # qsum.get("n_devices")
+    "qos_audit.summary.modes",                                    # qmodes.items()
+    "qos_audit.findings",                                         # (findings or [])[:12]
+    "qos_audit.findings.0",                                       # per-element f.get(...)
+    # --- lifecycle_risk.per_device (feeds §3.1 EoL band + §3.4 BoM) ---
+    "lifecycle_risk.per_device",                                  # `for r in (per_device or [])`
+    "lifecycle_risk.per_device.0",                                # per-element r.get("host")
+]
+
+
+@pytest.mark.parametrize("poison", _DESIGN_POISONS)
+@pytest.mark.parametrize("path", _NESTED_DESIGN_POISON_PATHS)
+def test_design_tolerates_nested_truthy_non_container(tmp_path, path, poison):
+    """One nested value set to a truthy non-dict / non-list must degrade to EMPTY and still emit an
+    openable .docx — never abort the whole As-Built Design Document (a stored HTTP 500 on the webapp
+    /deliverable/design route, and a CLI exception)."""
+    import os
+    snap = _set_path(_rich_design_snap(), path, poison)
+    out = str(tmp_path / "d.docx")
+    # This call used to be wrapped in a try/except that xfail-ed exactly one case
+    # (service_map.multicast.igmp_queriers = 5), because the identical falsy-guard bug lived OUT OF UNIT
+    # in cisco_toolkit/analyze.py::vlan_inventory -- the ONE canonical VLAN derivation that
+    # design.py:_vlan_inventory delegates to and crd.py shares. analyze.py is guarded now, so that
+    # except-branch is dead and the tolerance is removed: every path/poison is asserted directly.
+    write_design_doc_docx(out, snap, "Poison")          # must not raise
+    assert os.path.exists(out)
+    Document(out)                                        # ...and open as a valid document
+
+
+@pytest.mark.parametrize("poison", _DESIGN_POISONS)
+def test_design_tolerates_nested_poison_punchlist_devices(tmp_path, poison):
+    """§4 punch-list fallback (rendered only when design_blueprint carries NO decisions): a row whose
+    'devices' is a truthy non-list crashes the [:4] slice / len(). deck.py already fixed this exact
+    shape; the design doc was the remaining surface."""
+    import os
+    snap = {"devices": {"sw1": {"model": "C9300-48T"}},
+            "punchlist": [{"severity": "Critical", "category": "L3 design",
+                           "title": "VLAN 20 has a single gateway", "devices": poison}]}
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "Poison")          # must not raise
+    assert os.path.exists(out)
+    Document(out)
+
+
+def test_rich_design_snap_reaches_every_nested_guard_site(tmp_path):
+    """ANTI-VACUITY + golden-unchanged, in one pin. The nested sweep is only meaningful if the
+    UN-poisoned base actually executes every guarded site, so this asserts each gated section renders
+    AND that its well-formed values survive the coercers unchanged (as_list/as_dict are identity on a
+    well-formed list/dict). An over-broad guard that emptied a section, or a gate that stopped firing,
+    fails here instead of silently re-vacuating the sweep."""
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, _rich_design_snap(), "Rich Fleet")
+    d = Document(out)
+    text = _all_text(d)
+    heads = [p.text for p in d.paragraphs if p.style.name in ("Heading 1", "Heading 2", "Heading 3")]
+    for token in ("2.5 Multicast & timing design", "2.7 Quality of service (configured posture)",
+                  "4.1 Design trade-off scorecard", "4.2 Recommended target-state design decisions",
+                  "4.3 Open design questions (requirements to confirm)",
+                  "4.4 Design doctrine applied (CCDE-grounded reference)", "Campus (1)",
+                  "4.5 Design traceability matrix",
+                  "5. Proposed Target-State Architecture (candidate)",
+                  "5.1 Replacement Bill of Materials (target procurement)",
+                  "5.2 Target segmentation", "5.3 Net-new IP addressing plan (candidate)",
+                  "5.4 Candidate migration wave plan"):
+        assert any(h == token for h in heads), f"gate never fired: {token}; have {heads}"
+    for token in (
+        "Two-tier campus, single-gateway exposure",   # bp.summary.headline           (§1)
+        "PTP-primary",                                # multicast.classified_groups   (§2.5)
+        "1 IGMP-snooping querier",                    # multicast.igmp_queriers len() (§2.5)
+        "1 of 1 device(s) report an operational",     # multicast.ptp values()/len()  (§2.5)
+        "1 device(s) trust-dscp",                     # qos_audit.summary.modes       (§2.7)
+        "no ingress marking",                         # qos_audit.findings            (§2.7)
+        "Past-EoS",                                   # lifecycle_risk.per_device     (§3.1/§3.4)
+        "Availability",                               # tradeoff_scorecard            (§4.1)
+        "Add FHRP",                                   # decisions (recommended)       (§4.2)
+        "VLAN 20 has one SVI",                        # decisions[].evidence.summary  (§4.2)
+        "Cisco Campus Design Guide",                  # decisions[].principle.citation(§4.2)
+        "recovery time objective",                    # decisions[].requirements_needed (§4.3)
+        "availability",                               # decisions[].axes              (§4.3)
+        "1 of 1 device collected",                    # bp.coverage.caveat            (§4)
+        "Redundant first hop",                        # doctrine.<domain>[]           (§4.4)
+        "l3_forwarding",                              # traceability evidence.fields  (§4.5)
+        "Collapsed core with redundant gateways",     # target_state.summary.headline (§5)
+        "HSRP pair",                                  # target_state.dimensions       (§5)
+        "WS-C2960X-48FPD-L",                          # replacement_bom.replace_now   (§5.1)
+        "Refresh (near-LDoS / past-EoS)",             # replacement_bom.refresh_soon  (§5.1)
+        "single global table",                        # segmentation_plan.observed    (§5.2)
+        "10.20.0.0/20",                               # addressing_plan.zones         (§5.3)
+        "10.20.10.0/24",                              # addressing_plan.subnets       (§5.3)
+        "L2-coupled",                                 # wave_plan.waves               (§5.4)
+        "target state is a proposal",                 # target_state.coverage.caveat  (§5)
+    ):
+        assert token in text, f"well-formed value lost after guarding: {token!r}"
+
+
+def test_design_deliverable_route_does_not_500_on_nested_poison(tmp_path):
+    """E2E through the REAL stored-DoS route. The upload is accepted (201) and stored verbatim — the
+    only validation is isinstance(snap, dict) and 'devices' in snap — so a nested truthy non-container
+    that raises inside write_design_doc_docx makes EVERY later GET of the design deliverable a 500
+    (webapp/backend/deliverables.py re-raises after unlinking the temp file; app.py maps it to 500).
+    The route must answer 200 with a real .docx instead."""
+    import json
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    from webapp.backend.app import create_app
+
+    snap = _set_path(_rich_design_snap(),
+                     "design_blueprint.target_state.addressing_plan.subnets", 5)
+    app = create_app(db_path=str(tmp_path / "e2e.db"))
+    # base_url=localhost so the DNS-rebinding Host allowlist passes; raise_server_exceptions=False so a
+    # stored DoS shows up as a 500 STATUS (how a real client experiences it) rather than a raised error.
+    with TestClient(app, base_url="http://localhost", raise_server_exceptions=False) as c:
+        cid = c.post("/api/campaigns", json={"name": "c"}).json()["id"]
+        r = c.post(f"/api/campaigns/{cid}/snapshots",
+                   files={"file": ("s.json", json.dumps(snap).encode(), "application/json")},
+                   data={"label": "poison"})
+        assert r.status_code == 201, r.text          # accepted + STORED first -> a stored DoS
+        sid = r.json()["id"]
+        g = c.get(f"/api/snapshots/{sid}/deliverable/design")
+    assert g.status_code == 200, f"stored DoS: {g.status_code} {g.text[:400]}"
+    assert g.content[:2] == b"PK"                    # a real .docx (zip), not an error page
+
+
+# --- leaf-type class: a non-str leaf reaching a string operation ------------------------------------
+# DISTINCT from the truthy-non-container class: `l3_forwarding[]` is a well-formed list of well-formed
+# dicts and `risk` is PRESENT -- it is the LEAF type. `(x or "")` does NOT coerce a non-str, so
+# `"single-gateway" in 5` raises `TypeError: argument of type 'int' is not iterable`. The snapshot is
+# attacker-controllable (upload -> deliverables.generate("design", snap) -> HTTP 500).
+@pytest.mark.parametrize("bad", [5, 1.5, True, [1, 2], {"a": 1}],
+                         ids=["int", "float", "bool", "list", "dict"])
+def test_design_survives_nonstr_l3_risk_leaf(tmp_path, bad):
+    """A non-str `risk` leaf must degrade, not crash the single-gateway tally."""
+    snap = {"devices": {"sw1": {"hostname": "sw1"}},
+            "l3_forwarding": [{"switch": "sw1", "vlan": "10", "risk": bad}]}
+    out = tmp_path / "leafrisk.docx"
+    write_design_doc_docx(str(out), snap, "Poison")      # must not raise
+    assert out.is_file(), f"no design doc for risk={bad!r}"
+
+
+def test_design_nonstr_risk_coercion_keeps_single_gateway_tally(tmp_path):
+    """Non-vacuity companion: str() must be identity for well-formed risk strings -- a real
+    single-gateway exposure must still be counted, so an over-broad guard fails here."""
+    snap = {"devices": {"sw1": {"hostname": "sw1"}, "sw2": {"hostname": "sw2"}},
+            "l3_forwarding": [{"switch": "sw1", "vlan": "10", "risk": "single-gateway exposure"},
+                              {"switch": "sw2", "vlan": "20", "risk": "single-gateway exposure"}]}
+    out = tmp_path / "wfrisk.docx"
+    write_design_doc_docx(str(out), snap, "WF")
+    assert out.is_file()
+    txt = "\n".join(p.text for p in Document(str(out)).paragraphs)
+    txt += "\n".join(c.text for t in Document(str(out)).tables for r in t.rows for c in r.cells)
+    assert "2" in txt, "the single-gateway tally (2) must survive the str() coercion"

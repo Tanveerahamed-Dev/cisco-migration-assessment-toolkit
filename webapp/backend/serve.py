@@ -156,6 +156,30 @@ def _schedule_browser_open(url: str) -> None:
     t.start()
 
 
+#: Characters that make a value unusable as a path/host but survive `str.strip()`: the zero-width
+#: and BOM codepoints (str.strip removes NBSP and the exotic spaces, but NOT these), plus every C0
+#: control including NUL.
+_INVISIBLE = "​‌‍⁠﻿"
+
+
+def _unusable_value(value: str):
+    """Why this CLI value cannot be used, as a sentence fragment, or None if it is fine.
+
+    Two ways a value looked present and was not. A string of zero-width spaces passes
+    `str.strip()`, so `--db "\\u200b"` sailed through the empty-value guard and CREATED A REAL
+    SQLITE STORE named with an invisible character - the very "quietly opened a different store
+    than the one you named" outcome that guard exists to stop, reached with a value that is not
+    technically blank. And an embedded NUL raises ValueError deep inside pathlib/sqlite3
+    (`ingest.py` resolve, `sqlite3.connect`), escaping main() as a traceback after the job banner
+    had already printed - this file's contract is a plain sentence, never a traceback."""
+    if any(ch == "\x00" or ord(ch) < 32 for ch in value):
+        return "contains a control character, which is not a usable path or host."
+    if not value.strip().strip(_INVISIBLE).strip():
+        return ("was given an empty value (or one made only of invisible characters)."
+                if value.strip() else "was given an empty value.")
+    return None
+
+
 # ── shared write probe (selftest + pre-serve) ──────────────────────────────────
 def _writable_failure(dirpath: Path):
     """OSError text if `dirpath` cannot be created and written — the write-locked-stick /
@@ -245,7 +269,8 @@ def run_selftest(dist_dir=None, db_path=None) -> int:
 
 
 # ── --redact-folder: the share-safe deliverable set, from the stick ─────────────
-def run_redaction(src: str, out: str, redact_collection: bool = False) -> int:
+def run_redaction(src: str, out: str, redact_collection: bool = False,
+                  reuse_out: bool = False) -> int:
     """Render a redacted deliverable set — the "before it leaves the site" step (ADR-0004 P3).
 
     Field-facing, so every failure is a plain sentence, never a traceback: this runs at a client
@@ -261,7 +286,8 @@ def run_redaction(src: str, out: str, redact_collection: bool = False) -> int:
     if redact_collection:
         print("  --redact-collection: the RAW captures will also be scrubbed IN PLACE.")
     try:
-        report = ingest_mod.run_redaction_folder(src, out, redact_collection=redact_collection)
+        report = ingest_mod.run_redaction_folder(src, out, redact_collection=redact_collection,
+                                                 reuse_out=reuse_out)
     except ingest_mod.IngestError as e:
         print(f"{APP_TITLE}: cannot redact that folder - {e}", file=sys.stderr)
         return 1
@@ -273,6 +299,22 @@ def run_redaction(src: str, out: str, redact_collection: bool = False) -> int:
           f"Wrote {len(report['files'])} file(s):")
     for name in report["files"]:
         print(f"    {name}")
+    # No PPDIOO gate line is printed here ON PURPOSE — this run cannot identify the engagement's
+    # ledger (see ingest.run_redaction_folder), and every document already carries its own
+    # "DRAFT - generated; not yet reviewed" status. A gate verdict inferred from whichever ledger
+    # happened to sit nearby would be worse than silence: it could report another client's
+    # approvals as this engagement's.
+    # The leftover marker is reported, but NOT as "safe to delete". This run passing its checks
+    # says nothing about the files the earlier FAILED run left here — and those files can still be
+    # in the folder under the canonical names (reported below as STALE). Telling the engineer to
+    # delete the one warning that covers them, next to a line claiming the folder is safe, is how
+    # unredacted client data gets sent.
+    if report.get("stale_unsafe_marker"):
+        print(f"\n  WARNING: this folder still holds {ingest_mod.UNSAFE_MARKER} from an EARLIER\n"
+              f"  run whose redaction could NOT be certified. This run passed its own checks, but\n"
+              f"  that says nothing about files the earlier run left here - any document listed as\n"
+              f"  STALE below was written by THAT run, not this one. Read that file, and do not\n"
+              f"  delete it until the output it refers to is gone.")
     # Say exactly what was checked. The engine pseudonymizes IPs, MACs and serials, but the
     # verification here covers surviving PRIVATE IPv4 in the snapshot plus proof that the engine's
     # redaction phases actually ran. Claiming more than that ("every IP/MAC/serial ... verified")
@@ -283,7 +325,70 @@ def run_redaction(src: str, out: str, redact_collection: bool = False) -> int:
           "  NOT checked: MACs, serials, public/IPv6 addresses, or the workbook's own cells.\n"
           "  HOSTNAMES ARE KEPT BY DESIGN - device names and site codes still identify the\n"
           "  client. Review before sending.")
-    return 0
+    # An engine writer that fails is fail-soft by design (the workbook and snapshot still save),
+    # so a short set otherwise reaches the engineer as an unqualified success banner: two fewer
+    # files look exactly like a full family unless you know the set by heart. Not a refusal -
+    # what IS here is redacted and safe.
+    #
+    # Printed LAST, and on stdout. When the engineer redirects a 10-minute run to a log
+    # (`Atlas.exe ... > run.log 2>&1`, the natural thing to do), Python block-buffers stdout and
+    # line-buffers stderr: the warning got hoisted ABOVE the command banner, so it read as
+    # belonging to a previous command, and the log ENDED on the reassurance block. A `tail` showed
+    # a clean success. One stream, warning last, so the final word is the warning.
+    missing = report.get("missing") or []
+    if not missing:
+        return 0
+    print(f"\n  INCOMPLETE SET - {len(missing)} deliverable(s) were NOT produced:")
+    for m in missing:
+        print(f"    {m['state'].upper():9} {m['name']}  ({m['filename']})\n"
+              f"              {m['detail']}")
+    for line in report.get("engine_warnings") or []:
+        print(f"    engine: {line}")
+    # Only promise the note if it was really written - a read-only folder, or a file of that
+    # name Atlas did not author, means there is no note to go and read.
+    note = report.get("incomplete_note")
+    print(f"  The same list is saved as {note}." if note else
+          "  (Could not write the note into the output folder - this console is the record.)")
+    # Scoped to what THIS run wrote. The unqualified version ("What IS in the folder is redacted
+    # and safe to share") was false whenever a STALE document from an earlier, uncertified run sat
+    # in the folder — see ingest._mark_output_incomplete for the full reachable path.
+    if report.get("stale_unsafe_marker"):
+        print(f"  DO NOT SEND THIS FOLDER until you have read {ingest_mod.UNSAFE_MARKER} above -\n"
+              f"  files from the earlier uncertified run may contain REAL client data.")
+    else:
+        print("  What THIS RUN wrote is redacted. Anything listed as STALE above was not written\n"
+              "  by this run and is not covered by its redaction check. The SET is short: re-run\n"
+              "  into an empty folder, or tell the recipient which documents are not included.")
+    # Exit 3, not 0: this command exists to certify a deliverable set, so "0" must keep meaning
+    # "complete and verified". Nothing consumes the code today, which is exactly why adopting it
+    # now is free and adopting it later would be a breaking change. It is deliberately NOT 1 -
+    # that is the redaction-failure code, and this output is safe.
+    return 3
+
+
+# ── --verify-manifest: does a delivered manifest still match its own seal? ──────
+def run_verify_manifest(path: str, expect_root=None, artifacts: bool = False) -> int:
+    """Check a ``*.run_manifest.json`` from the stick. There is no Python on a field laptop, so
+    ``python -m cisco_toolkit.manifest verify`` — the repo-side command — is unreachable there;
+    this is the same check behind the one door, delegating to the same function so the two can
+    never drift apart."""
+    from cisco_toolkit import manifest as manifest_mod  # lazy: the engine-child path skips it
+
+    res = manifest_mod.verify_file(
+        path, expect_root=expect_root,
+        artifacts_dir=(os.path.dirname(os.path.abspath(path)) or ".") if artifacts else None)
+    if res["ok"]:
+        print(f"{APP_TITLE}: manifest OK - {res['reason']}")
+    else:
+        print(f"{APP_TITLE}: manifest INTEGRITY FAILURE - {res['reason']}", file=sys.stderr)
+    for a in res["artifacts"]:
+        if a["state"] != "ok":
+            print(f"    [{a['state']}] {a['name']}", file=sys.stderr)
+    if res["ok"] and not expect_root:
+        print("  The seal is unkeyed, so this proves the file was not carelessly edited - NOT that\n"
+              "  nobody re-sealed it. To pin it to the run, compare --expect-root against the\n"
+              "  chain_root recorded in the report.")
+    return 0 if res["ok"] else 4
 
 
 # ── entry point ─────────────────────────────────────────────────────────────────
@@ -326,17 +431,91 @@ def main(argv=None) -> int:
                         help="with --redact-folder: ALSO scrub cleartext secrets from the raw "
                              "captures IN PLACE (rewrites the source folder; still "
                              "--compare/--trend-able)")
+    parser.add_argument("--verify-manifest", default=None, metavar="FILE",
+                        help="check a delivered <name>.run_manifest.json against its own hash chain "
+                             "and exit (0 clean, 4 broken). Unkeyed: catches careless edits, not a "
+                             "forger who re-seals - add --expect-root to pin it to its run")
+    parser.add_argument("--expect-root", default=None, metavar="SHA256",
+                        help="with --verify-manifest: the chain_root recorded out of band (in the "
+                             "report) that this file must match")
+    parser.add_argument("--verify-artifacts", action="store_true",
+                        help="with --verify-manifest: ALSO re-hash every deliverable listed in the "
+                             "manifest, from the manifest's own folder (missing counts as a failure)")
+    parser.add_argument("--reuse-out", action="store_true",
+                        help="with --redact-folder: render into an --out folder that already "
+                             "holds a deliverable set. Refused by default: if that set is from "
+                             "another job, any document this run fails to write leaves that "
+                             "client's copy in this delivery under the right name")
     parser.add_argument("--version", action="version", version=_version_line())
     args = parser.parse_args(argv)
+
+    # ── empty-string flag values ───────────────────────────────────────────────
+    # argparse accepts `--flag ""`, and every dispatch below is a truthiness test, so an empty
+    # value behaves EXACTLY as if the flag had never been passed. Measured, not theorised:
+    # `--redact-folder ""` fell through the redaction branch AND its own refusal and STARTED THE
+    # WEB SERVER (rc=0), so an engineer who asked for a share-safe deliverable set got a running
+    # cockpit and a success code; `--out ""` did the same; `--db ""` quietly opened a different
+    # store than the one they named. A field command that does something other than what was
+    # asked, while reporting success, is the exact failure this surface exists to prevent.
+    #
+    # Guarded as a CLASS in one place rather than as N truthiness checks each of which has to be
+    # remembered: the next path-valued flag someone adds is covered by construction. Empty is
+    # never a meaningful value for any of these - a real path, host or hash is always required.
+    for flag, value in (("--host", args.host), ("--db", args.db), ("--dist", args.dist),
+                        ("--redact-folder", args.redact_folder), ("--out", args.out),
+                        ("--verify-manifest", args.verify_manifest),
+                        ("--expect-root", args.expect_root)):
+        if value is None:
+            continue
+        bad = _unusable_value(str(value))
+        if bad:
+            print(f"{APP_TITLE}: {flag} {bad} Omit the flag to take the default, or pass a real "
+                  f"one - Atlas will not guess which you meant.", file=sys.stderr)
+            return 2
+
+    # ── one job per invocation ─────────────────────────────────────────────────
+    # The three subcommands below are dispatched by a fixed precedence with no cross-check, so
+    # asking for two silently performed the FIRST and discarded the rest: measured,
+    # `--verify-manifest X --redact-folder Y --out Z` printed "manifest OK" and returned 0 while
+    # the redaction - a ten-minute job producing the deliverables the operator actually wanted -
+    # never ran, with nothing on either stream saying so. Same "asked for X, silently got Y, exit
+    # code says success" failure as the empty-value bug above, reached by a different route.
+    jobs = [name for name, wanted in (("--selftest", args.selftest),
+                                      ("--verify-manifest", args.verify_manifest is not None),
+                                      ("--redact-folder", args.redact_folder is not None)) if wanted]
+    if len(jobs) > 1:
+        print(f"{APP_TITLE}: {' and '.join(jobs)} each ask Atlas to do a different job, and it "
+              f"does one per run. Re-run them one at a time, in the order you want them.",
+              file=sys.stderr)
+        return 2
 
     if args.selftest:
         return run_selftest(dist_dir=args.dist, db_path=args.db)
 
-    if args.redact_folder:
-        return run_redaction(args.redact_folder, args.out, args.redact_collection)
-    if args.out or args.redact_collection:
-        print(f"{APP_TITLE}: --out and --redact-collection only apply to --redact-folder.",
-              file=sys.stderr)
+    if args.verify_manifest is not None:    # `is not None`: --verify-manifest "" must be REFUSED,
+        # not fall through and quietly start the server instead of running the check that was asked for
+        return run_verify_manifest(args.verify_manifest, args.expect_root, args.verify_artifacts)
+    if args.expect_root is not None or args.verify_artifacts:   # `is not None`: --expect-root ""
+        print(f"{APP_TITLE}: --expect-root and --verify-artifacts only apply to --verify-manifest.",
+              file=sys.stderr)                                  # must still be refused, not ignored
+        return 2
+
+    # `is not None`, not truthiness: the class guard above already rejects "", but a dispatch site
+    # should not silently depend on a distant check to be correct.
+    #
+    # This block is the UNION of two changes that collided here (#438's --reuse-out and the
+    # empty-value guard). The merge resolved it by keeping BOTH blocks stacked, which is why the
+    # second pair below used to be dead: `if args.redact_folder is not None` returns for every
+    # non-None value, so `if args.redact_folder` after it could never run. The dead copy was the
+    # ONLY one that forwarded `reuse_out`, so `--reuse-out` was silently dropped and Atlas refused
+    # an --out folder the engineer had explicitly authorised (exit 1, caught by #438's own tests).
+    # Keep this as ONE pair: `is not None` from the guard, `reuse_out` + the 3-flag message
+    # from #438. Re-stacking them re-breaks whichever half is listed second.
+    if args.redact_folder is not None:
+        return run_redaction(args.redact_folder, args.out, args.redact_collection, args.reuse_out)
+    if args.out is not None or args.redact_collection or args.reuse_out:
+        print(f"{APP_TITLE}: --out, --redact-collection and --reuse-out only apply to "
+              f"--redact-folder.", file=sys.stderr)
         return 2
 
     # Field refusal #1 — write-locked stick / read-only folder: friendly line, not a traceback.

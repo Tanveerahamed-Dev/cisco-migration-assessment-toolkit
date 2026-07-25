@@ -622,9 +622,14 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
             # (false-health -- a blind device reads identical to a verified-low one). If the stored section is
             # stale -- uncollected devices exist but it carries NO 'Unassessed' band -- recompute with the current
             # engine so the live Risk Register surfaces them as a coverage gap (audit-4 #20).
+            # isinstance-guard (summary._as_list) over `or []`: a TRUTHY non-list health_scores (an int in a
+            # malformed/hostile upload) survives `or []` and 500s this `for h in` iteration -> unhandled 500 on
+            # GET /section/device_dossiers. Likewise the stored device_dossiers 'summary' may be a truthy
+            # non-dict, so guard it before .get('bands') rather than trusting `or {}`.
             _has_blind = any(isinstance(h, dict) and h.get("band") == "Insufficient Data"
-                             for h in (snap.get("health_scores") or []))
-            _bands = (data.get("summary") or {}).get("bands") if isinstance(data, dict) else None
+                             for h in summary._as_list(snap.get("health_scores")))
+            _summ = data.get("summary") if isinstance(data, dict) else None
+            _bands = _summ.get("bands") if isinstance(_summ, dict) else None
             if _has_blind and isinstance(_bands, dict) and not _bands.get("Unassessed"):
                 from cisco_toolkit.analyze import compute_device_dossiers
                 data = compute_device_dossiers(

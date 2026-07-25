@@ -296,7 +296,10 @@ to the append-only, committed `holdout_access.jsonl`:
 
 **Audit trail, not proof:** the rows are plaintext in a repo anyone with a checkout can read;
 *mathematical proof of non-use does not exist and is not claimed* (the contract says so plainly).
-What the mechanism gives is tamper-evidence (hash chain), attributable access (this log, reviewed
+What the mechanism gives is tamper-evidence (hash chain — in the *careless-edit* sense: the chain is
+unkeyed and `manifest.build_manifest` is public, so what actually closes the re-seal hole is that
+this manifest is **committed**, making a forged re-seal a visible change to a tracked file; see
+`holdout-contract.md` §3), attributable access (this log, reviewed
 weekly alongside the gate-override log), and pre-registration. Discipline — refusal below the
 floor, seal→tamper→verify-fails, access-logged, contract figures reconciled to their code owners —
 is pinned by `tests/test_holdout.py`.
@@ -390,7 +393,7 @@ files, each headed by a `{"_meta": …}` line; loaders/validators in
 P2-2 pool judging appends to a *separate* pooled-qrels file; a post-hoc edit to these files is a
 protocol violation and the pins make it loud. Validate offline with
 `python -m cisco_toolkit.d10_eval_set --verify` (graph-dependent checks skip off the owner machine,
-saying so).
+and also when the live `graph.json` is caught mid-rewrite by a background rebuild — both say so).
 
 ## `retrieval_eval` — the Phase-2 falsification harness (P2-2) + `d10-pooled-qrels.jsonl`
 

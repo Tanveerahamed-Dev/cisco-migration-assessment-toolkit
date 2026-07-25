@@ -19,7 +19,10 @@ The four rules (each a real defect the coasting trap or context bloat would othe
    ``RECORD_EXACT`` a verbatim contract. The through-line is *replace stale, don't accumulate* — so two
    entries making the same claim are an ``ADD`` where ``REPLACE``/``MERGE`` was due, and are flagged.
    (The other operators are writer-intent discipline the store can't read; the linter mechanically
-   enforces only the anti-accumulation *symptom* — a duplicated claim.)
+   enforces only the anti-accumulation *symptom* — a duplicated claim.) A second, independently-arrived-at
+   vocabulary corroborates the same shape: Cognee's v1.0 ``remember``/``recall``/``forget``/``improve``
+   memory-lifecycle API (verified 2026-07-19, ``memory/cognee-evaluation-2026-07-19.md``) — evidence this
+   is a convergent design, not an idiosyncratic one.
 
 Distinct from ``docs/log.md`` (the raw per-session ``/retro`` log — the SOURCE) and from the vault
 (career/domain knowledge, promoted via ``/ingest``). This store is the *distilled repo/engine facts*
