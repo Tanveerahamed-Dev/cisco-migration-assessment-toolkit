@@ -4,6 +4,58 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-26] — Reviewed #490 and found 8 defects, every one in the RECORD and none in the act; recovering the deleted folder from the Recycle Bin refuted the evidence its own bullet cited
+
+- `/code-review` over #490 (docs-only, +13/−5, closing the ADR-0004 attic item). Eight findings, all
+  surviving verification; **seven fixed in-repo via #496** (5 commits, 10/10 green, merged `64aeb0a`),
+  the eighth in the agent-memory store. Nothing was wrong with what was *done* — the attic deletion was
+  correct, owner-authorized, and the folder held nothing sensitive. Every defect was in how it was
+  written down: an omitted fact, an invented rationale, evidence narrower than its claim, a missing
+  actor, bytes nobody pointed at, and two checklist regressions.
+- `!lesson` **A "deleted" folder is still readable, and that is how you audit a claim about it.** The
+  bullet certified "3 files holding NO credential material" on a scan of *one* unnamed file. The folder
+  had gone to the **Recycle Bin**, so it was recovered (`Shell.Application` `Namespace(0xA)` →
+  `C:\$Recycle.Bin\<SID>\$R…`, no admin needed) and all three files re-scanned. The stated evidence was
+  wrong **twice**: only 1 of 3 scanned, *and* that file matched — 71 hits. All 71 were authored product
+  text (CIS detector titles, remediation prose, questionnaire items, its own JS regex) and both SNMP
+  hits read `snmp-server community <redacted> RW`, the placeholder. Conclusion held, evidence did not.
+  Recover the artifact and re-run the check rather than re-reading the sentence about it. `bridge-candidate`
+- `!lesson` **A verification claim inherits the scope of its evidence, not its assertion.** "All three
+  files are clean" backed by "a scan of the only candidate file" is the `"not observed" → "healthy"`
+  slide in miniature, and it is invisible while the conclusion happens to be right. Same shape as the
+  #430 leak-check that flagged the blueprint's own `"supernet, e.g. 10.0.0.0/16"`: a keyword hit is not
+  a finding, and a keyword *miss* over a subset is not a clean bill. State what was checked, name it,
+  and say what was excluded and why. `bridge-candidate`
+- `!lesson` **The fact that resolves an audit gap may be unknowable from artifacts — ask, don't infer.**
+  The ADR recorded a destructive action with no actor under a heading reading "not session work". The
+  transcript trail pointed at an *unauthorized* deletion (it happened inside an unrelated design-sync
+  session, justified by that session's own reading that the gate was moot, which also listed it as the
+  owner's TODO). The owner then confirmed they *had* instructed it — the 07-24 "tell me and I'll delete"
+  gate was met. Asserting either way off that evidence would have written a fabricated authorization
+  into a security record; one question settled it. `bridge-candidate`
+- `!lesson` **A monitor whose exit line cannot distinguish "succeeded" from "gave up" is barely a
+  monitor.** The first CI watcher used `jq` — **not installed on this box** (`gh --jq` works; it is
+  built in) — so its emit *and* its break condition were dead: it would have run 20 min, emitted zero
+  events, and exited on the same `MONITOR EXITING` line it prints on success. Silence read as "still
+  running". Rewrote with awk/grep and a terminal `VERDICT: ALL CHECKS COMPLETE|GAVE UP` naming any
+  non-passing check. Caught only because an unrelated command surfaced `jq: command not found`. Related
+  pipe trap re-confirmed on the merge itself: `gh pr merge … | tail; echo $?` reports **tail's** status
+  — the merge was verified by `state=MERGED` + `merge-base --is-ancestor`, never by that 0. `bridge-candidate`
+- `!lesson` **"I approved it" is not evidence an approval exists.** PRs opened via `gh` run under the
+  owner's own account, and GitHub forbids self-approval — so `reviews` stays **empty** forever and
+  `reviewDecision` is permanently `REVIEW_REQUIRED`. The owner clicked; nothing could register. Check
+  `gh pr view --json reviews` the moment an approval is reported instead of discovering it at merge
+  time, and never ask them to "try again". Merge path here is admin bypass (`enforce_admins:false`),
+  which needs the human to *name* it — an `AskUserQuestion` option reading "I run `gh pr merge --admin`"
+  is what unlocked it. Also corrected a stale note claiming a branch-protection *read* is itself
+  blocked; that denial was context-specific. `bridge-candidate`
+- Bookkeeping: 5 stale "attic deletion" references reconciled in the agent-memory store (49 entries /
+  1 protected, guard-reconciled before and after); one note made the single declared owner of that fact.
+  Branch deleted both sides after checking it carried no open PR. **Still open and unchanged: confirming
+  the 2026-07-05 credential rotation** — ADR-0004 now records why it matters more than it looked, since
+  a plaintext copy of the pre-rotation credential for 303 devices left the attic before the 07-19 check
+  and its disposal is recorded nowhere.
+
 ## [2026-07-25] — The design system got its own project and a device-fidelity topology; then the drift it kept reporting turned out to be line endings, not content
 
 - Long session across the Claude Design push. **#402** created the new **"Atlas Design System"** project
