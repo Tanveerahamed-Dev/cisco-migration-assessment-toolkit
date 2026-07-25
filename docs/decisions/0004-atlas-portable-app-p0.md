@@ -71,22 +71,41 @@ helps only on self-controlled fleets.
 ## Deferred to the owner (calendar items, not session work)
 
 - ~~Order the code-signing certificate~~ — **superseded by D5** (deferred indefinitely, no spend).
-- ~~Delete `..\Enhancements_attic_2026-07-05\`~~ — **DONE 2026-07-25.** Inventoried before
-  deleting: 3 files / 876 KB holding NO credential material — a regenerable
-  `blast_radius_explorer.html.stale-root-copy`, an example.com scrape stub, and an Excel
-  `.lockfile`; a credential-pattern scan of the only candidate file (password / secret / token /
-  api-key / private-key / `enable secret` / SNMP community) matched nothing. Sent to the Recycle
-  Bin rather than hard-deleted — still recoverable.
+- ~~Delete `..\Enhancements_attic_2026-07-05\`~~ — **DONE 2026-07-25.** Sent to the Recycle Bin
+  rather than hard-deleted, and **re-read there the same day to verify this bullet** — so the
+  inventory is measured against the recovered bytes, not recalled. Full recursive contents,
+  3 files / 896,681 bytes:
+
+  | file | bytes | credential-pattern scan |
+  |---|---|---|
+  | `blast_radius_explorer.html.stale-root-copy` | 896,156 | 71 keyword hits, **all authored text** — see below |
+  | `raw\example_com.md` | 360 | clean |
+  | `[HISTORY-REDACTED]_BOQ.xlsx.lockfile` | 165 | clean (incl. UTF-16 decode) |
+
+  **All three** were scanned, for password / passwd / secret / `enable secret` / token / api-key /
+  private-key / `BEGIN … PRIVATE KEY` / SNMP community / Cisco type-5 + type-7 / pre-shared / PSK.
+  The earlier claim — "a scan of the only candidate file matched nothing" — was wrong twice over:
+  only one file had been scanned, and that file *does* match. Every one of its 71 hits is authored
+  product text rather than captured state: CIS detector titles ("Local user password storage"),
+  remediation prose ("Store local users with `secret` (Type-8/9)"), PPDIOO questionnaire items, and
+  the explorer's own JS regex literal; both SNMP hits read `snmp-server community <redacted> RW`,
+  i.e. the placeholder, not a community. It is the explorer carrying its built-in DEMO dataset, not
+  a rendered client instance — zero data-injection markers (`__SNAPSHOT_JSON__`, data-script tag)
+  and zero `[HISTORY-REDACTED]*` fleet hostnames. The file says as much itself: "The Python parser already redacted
+  every secret value (SNMP communities, password hashes), so nothing sensitive is rendered."
+  **Conclusion unchanged — no credential material — but the evidence is now complete.**
 
   **But the credentialed backup this folder existed to quarantine was not in it.** The 2026-07-05
   entry in `docs/log.md` ("Security pass") records the `devices.json` fleet credential stripped and
   the "credentialed backup quarantined to `..\Enhancements_attic_2026-07-05\`". The 3 files above
   are that entry's *Hygiene* quarantines instead (the stale explorer copy + the `raw\` egress
-  artifact); no `devices.json` backup was in the folder, and no copy was found elsewhere on the
-  Desktop tree. It was evidently removed sometime before the 2026-07-19 check — **by whom and to
-  where is recorded nowhere**, so one plaintext copy of the pre-rotation credential for 303 devices
-  is unaccounted for. That raises the urgency of the rotation below rather than lowering it. What
-  IS verified: the live `devices.json` (303 entries) carries no `password` field, so the strip held.
+  artifact); no `devices.json` backup was in the folder — **confirmed against the recovered bytes,
+  not inferred**, since the recursive listing above is the whole folder — and no copy was found
+  elsewhere on the Desktop tree. It was removed sometime before the 2026-07-19 check — **by whom
+  and to where is recorded nowhere**, so one plaintext copy of the pre-rotation credential for 303
+  devices is unaccounted for. That raises the urgency of the rotation below rather than lowering
+  it. What IS verified: the live `devices.json` (303 entries) carries no `password` field, so the
+  07-05 strip held.
 
   **On the gate — its rationale is inferred, not recorded.** All that was ever written down is the
   ordering itself, "rotate the credential, then delete that backup" (`docs/log.md`, 2026-07-05).
