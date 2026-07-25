@@ -124,12 +124,66 @@ the field tool an engagement identifier, which is a change to its inputs, not to
 ## Consequences
 
 - New: `--engagement` on the engine CLI; `bind` verb and `--engagement` on `approve`/`revoke`;
-  `show` prints the engagement governed or a loud `UNBOUND`.
-- Existing ledgers and existing invocations are unaffected until someone binds one.
+  `show` prints the engagement governed or a loud `UNBOUND`. *(Re-verified item by item against
+  main on 2026-07-25 — all present.)*
+- ~~Existing ledgers and existing invocations are unaffected until someone binds one.~~
+  **Corrected 2026-07-25 — see the Correction below.** What holds is the narrower claim: the
+  **ownership model** is inert until a ledger is bound — an unbound ledger read by an undeclared
+  run decides exactly as it did before, and ownership itself never refuses. The ledger FILE is a
+  separate matter: a missing-approval refusal now appends an audit row to *any* readable ledger,
+  bound or not.
 - Auto-discovery is now explicitly a **non-goal**. A future "smarter resolver" would be
   re-introducing the defect this closes.
 - Pinned by `tests/test_gate_state.py` (the ownership table row by row, non-overridability,
   write-path refusal, re-bind refusal, the disclosure contract, and the engine source guard).
+  *(Re-verified 2026-07-25: all five table rows, `..._not_overridable_and_write_nothing`,
+  `..._signing_into_another_engagements_ledger_is_refused`, `..._refuses_a_rebind`,
+  `..._pending_approvals_reads_without_deciding_or_writing` and the engine source guard are
+  present.)*
+
+## Correction (2026-07-25) — "existing ledgers are unaffected" was false
+
+This ADR had exactly one commit (`1c5304f`) and was never revisited when the refusal-audit
+reconciliation landed, so a Consequences bullet went stale in a way that mattered: it told a reader
+that adopting ADR-0006 could not touch an existing ledger file. It can.
+
+The falsifier is **not** the ownership model. It is the refusal-audit feature (`GateVerdict` /
+`_record_refusal`, commit `f64c655`) which rode into the same PR #439 from a different session and
+was later reconciled with #445: `enforce()` now appends a durable `refuse` row for every refusal
+that has a readable ledger to write to, so that the *safe* path is as auditable as the override.
+`cisco_toolkit/gate_state.py` says so directly — "The ledger therefore grows by one row per refused
+deliverable per run."
+
+Reproduced against main (legacy ledger, never bound; run declares nothing):
+
+```
+bound?  None      audit rows BEFORE: 1
+enforce("mop")  ->  status=pending, proceed=False
+                  audit rows AFTER : 2
+new row: {"event":"refuse","generator":"mop","status":"pending",
+          "engagement":null,"declared":null,
+          "missing":["lld_approved","baseline_captured"], ...}
+still unbound?  None
+```
+
+The boundary is exact, and the ownership half of it is intact — only a `pending` verdict (a
+readable ledger that located a gate and it said no) is recorded:
+
+| ledger / run | status | ledger written? |
+| --- | --- | --- |
+| unbound, undeclared | `pending` | **yes** |
+| bound ACME, declares ACME | `pending` | **yes** |
+| bound ACME, declares GLOBEX | `ownership_mismatch` | no |
+| unbound, declares ACME | `ownership_unbound` | no |
+
+The two ownership refusals write nothing by design — appending would enrol an unenrolled
+engagement, or let one engagement's run touch another's ledger. They are two of the five members of
+`gate_state.UNEVALUATED` (`bad_root`, `ungated`, `unreadable`, `ownership_mismatch`,
+`ownership_unbound`), which report `GateVerdict.recorded=False` rather than implying a write, and
+are pinned by `test_ownership_refusals_are_not_overridable_and_write_nothing` and
+`test_ownership_refusal_stays_unrecorded_and_says_so`.
+
+Decision content (D1–D4) is unchanged; this is a factual correction to Consequences only.
 
 **related:** `cisco_toolkit/gate_state.py :: ENGAGEMENT_KEY`, `ownership_error`, `engagement_of`,
 `bind_engagement`, `enforce`, `record_decision`, `pending_approvals`, `is_revoked`,
