@@ -100,8 +100,9 @@ never built, and I recommend **keeping it out of P3**:
 
 - **NEW:** enable BitLocker-To-Go on the physical stick (admin, one-time; README-FIELD will
   carry the steps).
-- Still owed from P2: `Atlas.exe --selftest` once on a **Python-less** PC; delete
-  `..\Enhancements_attic_2026-07-05\` after confirming the 07-05 credential rotation.
+- Still owed from P2: `Atlas.exe --selftest` once on a **Python-less** PC. (~~delete
+  `..\Enhancements_attic_2026-07-05\`~~ — DONE 2026-07-25, see ADR-0004; confirming the 07-05
+  credential rotation is **still open** and is now independent of the attic.)
 
 ## Exit gate & bookkeeping
 
