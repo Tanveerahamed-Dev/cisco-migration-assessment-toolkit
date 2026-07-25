@@ -45,6 +45,26 @@ Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembe
   end-of-run filter matching no status that exists, and this session's own runbook confidently
   instructing the operator to delete a working feature. The concurrent session's retro reached the
   same conclusion independently — *the code was fine; every defect was in a claim.*
+- **Closing verification, and one revival the sweep paid for.** The 31 `refs/preserved/*` were pushed
+  to origin (`refs/preserved/*`, NOT `refs/heads/*` — durable without reappearing as branches) and then
+  audited BY CONTENT rather than by commit count: per ref, per file, `comm -23` the added lines against
+  **main's version of that same file**. That reduced 31 candidates to exactly ONE genuinely-unlanded,
+  still-relevant piece — and caught two claims of mine that were wrong in the dangerous direction
+  (`fix-coverage-honesty-fmc-rest-pagination` read as unlanded while main held a HARDENED SUPERSET, its
+  guard wrapping `urlsplit().port` in try/except because that RAISES ValueError on a non-integer port;
+  reopening it would have REGRESSED a security guard. `harden-security-expensive-get-cross-site` read
+  as unlanded while main had the guard 11× over, its single "absent" line the boilerplate
+  `with TestClient(app) as c:`). The one real candidate was rebased 101 commits onto main, its tests
+  proved live by fault injection (stub `gate_disclosure` → `None`, 3 tests go red), and merged as
+  **#487** — closing the hole #448 recorded as its own open item (b): `deliverables.py::generate`
+  served design/MOP over HTTP with no gate check. It landed only because #439's per-campaign ledger
+  merged the same day, which is what the earlier attempt (#437) was refuted for lacking. Then the
+  checks that per-PR CI structurally cannot do: the **full gate on final `main`** (`3617272`) — Ruff
+  clean, suite `PYTEST_EXIT=0` — because each of the day's PRs was verified against a `main` that then
+  moved 14 times, and `webapp/backend/serve.py` alone absorbed changes from **13** of those merges
+  while `gate_state.py` was refactored twice before #487 landed on top; and a full offline graphify
+  re-extract from the main checkout (**9443 nodes / 16118 edges**, both UP from 9422/16083 — the
+  shrink-guard signal that it was a healthy full rebuild, not a truncating incremental).
 
 ## [2026-07-25] — `--redact-folder` claimed a folder was "safe to share" over an UNREDACTED file (#478); every defect I shipped this session was in a CLAIM, never in the code
 
