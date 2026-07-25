@@ -190,6 +190,24 @@
   artifacts — OUTSIDE plan globs, correctly untouched, NOT orphans). `report_validate` {19,1,0,0,1}.
 - **`templates/` in the project is app/user-side content** (topology-panel template + restyle notes from
   Claude-Design usage) — never write or delete under it; it is not part of the synced bundle.
+- ✅ **2026-07-24 PHANTOM-DRIFT CLASS FOUND AND RETIRED — line endings, not content.** A freshness check of the
+  live project against main reported "3 changed components" (`Skeleton`/`SkelLines`/`SkelTable`) + `bundle`.
+  It was **100% phantom**: their `prompt.md` hashed `cec8acd63db6` as CRLF but `c2910b870625` as LF — and
+  `c2910b870625` is EXACTLY the live hash, i.e. byte-identical text. Root cause: `core.autocrlf=true` +
+  `.gitattributes` pinning only `.claude/hooks/*.sh`. A session **authors** `.design-sync/docs|previews/*` with
+  the Write tool as **LF** and uploads that; git then re-materializes the committed file as **CRLF** on the next
+  checkout, so the same content hashes differently forever. It oscillates: whoever syncs next flips the other
+  16. (Confirmed against the 07-21 receipt — those 3 were authored in that session.)
+  **Fix (this session):** `.gitattributes` now pins `.design-sync/**/*.{md,ts,tsx,json}` `text eol=lf`, the 43
+  tracked files were rewritten to LF in the worktree (HEAD already stored LF — `git diff` empty, ZERO content
+  change), and the live project was re-baselined ONCE so live == an LF build. Scope was verified minimal, not
+  guessed: of the emitted artifacts only **prompt.md moved (16/19) + README**; **`.jsx` 0/19, `.d.ts` 0/19,
+  `renderHashes` 0/19, `styleSha` identical** → provably zero visual change (both contact sheets eyeballed
+  anyway; 16 grades re-recorded citing the renderHash==live evidence). Upload: sentinel → 66 files → re-arm →
+  anchor last; live `Kpi.prompt.md` + anchor re-fetched == local (`bundleSha12 cc27dcdc8d83`). **A follow-up
+  driver run then printed, for the first time, `upload: nothing — the project already matches this build`.**
+  Do NOT "fix" a future CRLF/LF flip by uploading — `webapp/frontend/**` is deliberately NOT pinned (its line
+  endings never reach the artifacts: esbuild normalizes, the emitted `_ds_bundle.js` contains ZERO CRLF).
 
 ## Re-sync risks (what can silently go stale)
 - **`sample-data.ts` is hand-inlined** against `webapp/frontend/src/api.ts` interfaces — an engine/API field
@@ -209,6 +227,20 @@
   `.design-sync/.cache/remote-sync.json` and run the driver with `--remote` so unchanged components skip
   re-verification.
 - Never regenerate sample data from real [HISTORY-REDACTED] snapshots (no-egress; the file ships to claude.ai).
+- **A "changed" component can be a LINE-ENDING phantom — always ask what MOVED before uploading** (2026-07-24).
+  `sourceHashes` are byte-wise, so CRLF-vs-LF alone flips a component to "changed" with identical text. Triage
+  in one command before touching the live project — if the LF-normalized hash equals the LIVE hash, it is
+  phantom and an upload is pure churn (it just flips the drift onto the other components):
+  `python -c "import hashlib;b=open(P,'rb').read();print(hashlib.sha256(b).hexdigest()[:12], hashlib.sha256(b.replace(b'\r\n',b'\n')).hexdigest()[:12])"`
+  Only `prompt.md`/`README` are exposed (they carry authored doc text verbatim); `.jsx`/`.d.ts`/`_ds_bundle.js`
+  are generator-normalized and immune. `.gitattributes` now pins `.design-sync/**` to LF so this cannot recur —
+  if it somehow does, fix the line endings, never the live project.
+- **`bundleSha12` is OUT-DIR-PATH sensitive** (2026-07-24): the bundle embeds the absolute path of
+  `<out>/.bundle-entry.mjs`, so building to a different `--out` (or from a worktree) changes the hash with
+  byte-identical source. Rebuilding to the SAME out-dir twice is bit-for-bit identical, so the 07-04
+  "deterministic within a fixed toolchain" note STANDS — but compare hashes only across same-path builds, and
+  never conclude "non-deterministic" from builds that used different out-dirs (that mistake was made and
+  corrected in this session).
 - **Branch-stack + anchor-cache discipline around every upload** (from the 2026-07-19 wrong-base incident):
   BEFORE building a bundle, confirm `git log --oneline -3` actually shows the stack you think you are on (a
   concurrent session can move the shared checkout between two of your own git commands); IMMEDIATELY after
