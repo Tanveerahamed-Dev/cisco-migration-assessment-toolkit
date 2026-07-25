@@ -71,9 +71,16 @@ helps only on self-controlled fleets.
 ## Deferred to the owner (calendar items, not session work)
 
 - ~~Order the code-signing certificate~~ — **superseded by D5** (deferred indefinitely, no spend).
-- **Confirm the 2026-07-05 credential rotation** actually happened, then delete
-  `..\Enhancements_attic_2026-07-05\` (verified still present 2026-07-19; `raw\` now holds 1 file /
-  ~1 KB). Rotation is an AAA-side action only the owner can perform.
+- ~~Delete `..\Enhancements_attic_2026-07-05\`~~ — **DONE 2026-07-25.** Inventoried before
+  deleting: 3 files / 876 KB holding NO credential material — a regenerable
+  `blast_radius_explorer.html.stale-root-copy`, an example.com scrape stub, and an Excel
+  `.lockfile`; a credential-pattern scan of the only candidate file (password / secret / token /
+  api-key / private-key / `enable secret` / SNMP community) matched nothing. The "confirm rotation
+  first" ordering existed to avoid destroying rotation evidence, and there was none to destroy, so
+  the gate did not apply. Sent to the Recycle Bin rather than hard-deleted — still recoverable.
+- **Confirm the 2026-07-05 credential rotation** actually happened — **STILL OPEN**, and now
+  independent of the attic (deleting that folder neither performed the rotation nor recorded it).
+  Rotation is an AAA-side action only the owner can perform.
 - **Python-less-box smoke**: copy `portable\dist\Atlas\` to a stick (`portable/make_stick.ps1`
   does the layout), run `Atlas.exe --selftest` on a machine without Python — expect
   `SELFTEST: PASS`.
