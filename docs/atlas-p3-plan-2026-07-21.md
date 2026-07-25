@@ -96,13 +96,18 @@ never built, and I recommend **keeping it out of P3**:
 - If the owner wants browser-driven live collection later, it becomes a P4 candidate with its own
   security review. The ADR amendment records the deferral + revisit trigger.
 
-## Owner checklist (calendar items, unchanged + one new)
+## Owner checklist (calendar items)
+
+One bullet per item, open ones first — a status that changes does not belong in the heading.
 
 - **NEW:** enable BitLocker-To-Go on the physical stick (admin, one-time; README-FIELD will
   carry the steps).
-- Still owed from P2: `Atlas.exe --selftest` once on a **Python-less** PC. (~~delete
-  `..\Enhancements_attic_2026-07-05\`~~ — DONE 2026-07-25, see ADR-0004; confirming the 07-05
-  credential rotation is **still open** and is now independent of the attic.)
+- Still owed from P2: `Atlas.exe --selftest` once on a **Python-less** PC.
+- Still owed from P2: **confirm the 2026-07-05 credential rotation** — independent of the attic,
+  and made *more* urgent rather than less by the unaccounted-for credentialed backup ADR-0004
+  now records.
+- ~~delete `..\Enhancements_attic_2026-07-05\`~~ — DONE 2026-07-25 at the owner's instruction;
+  ADR-0004 carries the verified inventory.
 
 ## Exit gate & bookkeeping
 
