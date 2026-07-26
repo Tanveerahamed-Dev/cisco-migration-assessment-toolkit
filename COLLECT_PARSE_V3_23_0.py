@@ -3217,22 +3217,42 @@ def _stage_finalize(ctx: "AnalysisContext") -> None:
     # Phase 39: sealed run-manifest chain-of-custody (roadmap D2 + J4). The offline, deterministic answer to a
     # GAIT-style audit trail: a hash-chained ledger of the pipeline stages + per-artifact sha256 + the
     # coverage-honest abstention ledger, sealed by chain_root. LAST emit so it hashes every produced artifact.
+    # Observed, never re-derived: the closing gate summary below MUST NOT claim the seal from the
+    # manifest file merely EXISTING. write_json_file leaves the PREVIOUS manifest intact when it
+    # fails, so a re-run to the same --output whose seal failed leaves an earlier run's manifest on
+    # disk -- and an os.path.isfile() check then reported "Sealed" while pointing the operator at a
+    # manifest that can carry the OPPOSITE verdict. Reproduced end-to-end: an approved run followed
+    # by a revoked run whose manifest write failed ended on "Sealed in the run manifest's 'gate'
+    # step" three lines below "manifest write FAILED", with proceed=true still on disk for both
+    # deliverables this run withheld. This is the repo's "existence != delivery" class.
+    _manifest_sealed = False
     try:
         _run_manifest = build_run_manifest(out_xlsx, snap_dict)
         _manifest_path = os.path.splitext(os.path.abspath(out_xlsx))[0] + ".run_manifest.json"
         write_json_file(_manifest_path, _run_manifest)
+        _manifest_sealed = True
         logger.info(f"[OK] Run manifest (chain-of-custody): {_manifest_path}  "
                     f"(chain_root {str(_run_manifest.get('chain_root', ''))[:12]}…, "
                     f"{len(_run_manifest.get('artifacts') or [])} artifact(s))")
     except Exception as e:
-        # A lost manifest is normally cosmetic, but when this run reached a gate verdict the manifest
-        # is the ONLY durable record of it (a refusal writes nothing to the store). Losing that must
-        # not be quieter than the refusal it was recording, so escalate rather than warn.
+        # A lost manifest is normally cosmetic; when this run reached a gate verdict it is evidence,
+        # so escalate rather than warn. What it is NOT is the only record: a refusal over missing
+        # approvals appends a durable `refuse` row to the gate ledger (gate_state's audit array),
+        # which is the cross-run owner the manifest only caches. Saying "the only durable record is
+        # now lost" while that row sits in the ledger this same run wrote is a false alarm -- it
+        # would send an auditor hunting for evidence that is exactly where it should be.
         from cisco_toolkit import gate_state as _gs
-        if _gs.verdicts():
+        _v = _gs.verdicts()
+        if _v:
+            _in_ledger = [v for v in _v if v.get("recorded")]
+            _only_here = [v for v in _v if not v.get("recorded")]
+            _where = ("; the gate ledger still holds the durable row(s) for %s"
+                      % ", ".join(v["generator"] for v in _in_ledger) if _in_ledger else "")
+            _lost = ("; NOTHING durable was recorded for %s -- the [GATE] log lines above are the "
+                     "only trace" % ", ".join(v["generator"] for v in _only_here)) if _only_here else ""
             logger.error(f"  Run manifest write FAILED and this run has gate verdicts "
-                         f"{[v['verdict'] for v in _gs.verdicts()]} -- the only durable record of "
-                         f"them is now lost (non-fatal to the run): {e}")
+                         f"{[v['verdict'] for v in _v]} -- the tamper-evident per-run seal of them "
+                         f"is lost{_where}{_lost} (non-fatal to the run): {e}")
         else:
             logger.warning(f"  Run manifest write failed (non-fatal): {e}")
 
@@ -3274,33 +3294,63 @@ def _stage_finalize(ctx: "AnalysisContext") -> None:
         from cisco_toolkit import gate_state as _gs
         _refused = [v for v in _gs.verdicts() if v.get("proceed") is False]
         if _refused:
-            # Don't claim the seal unconditionally: this runs AFTER the manifest write, whose failure
-            # arm above exists precisely for the case where nothing was sealed. Saying "sealed" there
-            # would make the operator's LAST line false about the very record it points them to.
-            _sealed = os.path.isfile(os.path.splitext(os.path.abspath(out_xlsx))[0]
-                                     + ".run_manifest.json")
-            # Remediation is per-STATUS, not one-size-fits-all: `approve`/`--override-gate` only
-            # apply to a located ledger that said "pending". For bad_root there is no ledger to
-            # write to, and for ownership_* the ledger governs ANOTHER engagement -- both are
-            # documented non-overridable, so advising an override there is false guidance on the
-            # last line the operator reads.
-            _unfixable = sorted({str(v.get("verdict")) for v in _refused
-                                 if str(v.get("verdict")) != "pending"})
-            _how = ("record the approval ('python -m cisco_toolkit.gate_state approve <gate>') "
-                    "or re-run with --override-gate \"<reason>\" (audited)."
-                    if not _unfixable else
-                    "NOT overridable (%s): fix the gate root, or declare/bind the right engagement "
-                    "-- --override-gate is consent to skip a KNOWN gate and none was located."
-                    % ", ".join(_unfixable))
-            logger.error("[GATE] %d deliverable(s) WITHHELD by the PPDIOO document gates: %s -- %s %s",
+            # THIS run's seal outcome, threaded from the write itself -- never os.path.isfile(). A
+            # stale manifest from an earlier run to the same --output satisfies an existence check
+            # while carrying the OPPOSITE verdict, which made the operator's LAST line contradict
+            # the failure logged three lines above it. See the comment at the manifest write.
+            _sealed = _manifest_sealed
+            _stale = (not _sealed) and os.path.isfile(
+                os.path.splitext(os.path.abspath(out_xlsx))[0] + ".run_manifest.json")
+            # Remediation is per-STATUS, not one-size-fits-all, and not collapsed to the WORST
+            # status either: a run can withhold the design over a missing approval (fixable by
+            # `approve`) and the MOP over an unreadable ledger (fixable only by repairing the file).
+            # Advice that names one and not the other is unactionable for whichever it dropped, on
+            # the last line the operator reads.
+            _fix_for = {
+                "pending": "record the approval ('python -m cisco_toolkit.gate_state approve "
+                           "<gate>') or re-run with --override-gate \"<reason>\" (audited)",
+                "bad_root": "fix --gate-root -- it does not point at an existing directory, so no "
+                            "ledger was located (NOT overridable: an override is consent to skip a "
+                            "KNOWN gate)",
+                "unreadable": "repair or remove the gate ledger -- it exists but could not be "
+                              "parsed, and it is deliberately never rewritten so the corruption "
+                              "stays as evidence (NOT overridable)",
+                "ownership_mismatch": "this ledger governs a DIFFERENT engagement -- point "
+                                      "--gate-root at the right one, or correct --engagement (NOT "
+                                      "overridable: no gate for this engagement was located)",
+                "ownership_unbound": "bind the ledger to this engagement once ('python -m "
+                                     "cisco_toolkit.gate_state bind <ID>') so the declaration can "
+                                     "be verified (NOT overridable)",
+            }
+            _statuses = sorted({str(v.get("verdict")) for v in _refused})
+            _how = " ".join(f"[{s}] {_fix_for.get(s, 'no remediation is known for this status.')}."
+                            for s in _statuses)
+            if _sealed:
+                _seal_note = "Sealed in the run manifest's 'gate' step."
+            elif _stale:
+                # The dangerous case: a file IS there, so an operator who checks will find one.
+                _seal_note = ("NOT SEALED -- THIS run's manifest write failed. A manifest from an "
+                              "EARLIER run is still on disk at that path and does NOT describe this "
+                              "run; do not read it as this run's record.")
+            else:
+                _seal_note = ("NOT SEALED -- the run manifest was not written, so these log lines "
+                              "and the gate ledger's audit rows are the only record.")
+            # Name where the durable record actually is, per deliverable: `recorded` is observed at
+            # the moment of the write, so this cannot claim a ledger row that was never appended.
+            _rec = [v["generator"] for v in _refused if v.get("recorded")]
+            _unrec = [v["generator"] for v in _refused if not v.get("recorded")]
+            _durable = (("Durable ledger row(s) written for %s. " % ", ".join(_rec)) if _rec else "")
+            if _unrec:
+                _durable += ("NO durable ledger row for %s (see the [GATE REFUSED] line(s) above "
+                             "for why). " % ", ".join(_unrec))
+            logger.error("[GATE] %d deliverable(s) WITHHELD by the PPDIOO document gates: %s -- %s %s%s",
                          len(_refused),
                          "; ".join(f"{v['generator']} (missing: "
                                    f"{', '.join(v.get('missing') or []) or 'not evaluated'})"
                                    for v in _refused),
                          _how,
-                         "Sealed in the run manifest's 'gate' step."
-                         if _sealed else "NOT SEALED -- the run manifest was not written, so this "
-                                         "log line is the only record of the refusal.")
+                         _durable,
+                         _seal_note)
     except Exception as e:
         logger.warning(f"  gate summary failed (non-fatal): {e}")
 
