@@ -159,6 +159,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import errno
 import getpass
 import json
 import logging
@@ -362,6 +363,18 @@ LOCK_TIMEOUT_S = 10.0
 #: rename. A sidecar left behind is inert; it holds no data and is re-locked on the next run.
 LOCK_SUFFIX = ".lock"
 
+#: errnos meaning "this filesystem cannot do advisory locks", as opposed to "another writer holds it".
+#: The distinction is load-bearing: a CONTENDED lock is worth waiting out, an UNSUPPORTED one will
+#: raise identically forever, so waiting burns the whole timeout on every single write and blames a
+#: writer that does not exist. Realistic on an SMB share or some removable media — i.e. exactly the
+#: USB-stick field deployment (ADR-0004), where a 10s stall per ledger write would be very visible.
+_LOCK_UNSUPPORTED_ERRNOS = frozenset({
+    errno.ENOLCK,        # no locks available (common on network filesystems)
+    errno.EOPNOTSUPP,    # operation not supported by the filesystem
+    errno.EINVAL,        # some drivers report an unsupported lock request this way
+    getattr(errno, "ENOTSUP", errno.EOPNOTSUPP),   # alias on some platforms
+})
+
 
 def _lock_exclusive(fd: int) -> None:
     """Take an exclusive, NON-BLOCKING lock on ``fd``, or raise OSError. Stdlib only, per this
@@ -409,6 +422,14 @@ def _ledger_lock(path: str, timeout: Optional[float] = None):
     """Serialise the whole read-modify-write of the ledger at ``path``. Yields True when the lock was
     held, False when the write is proceeding UNSERIALISED (and has said so at WARNING).
 
+    **NOT REENTRANT — never nest this, directly or transitively.** These are per-handle OS locks, so a
+    second acquire from the SAME process does not recurse: the inner attempt loses, waits out the whole
+    timeout, then proceeds unserialised and re-creates the exact lost update the lock exists to close
+    (measured: outer=True, inner=False, the inner row survived and the outer mutation did not). No
+    caller nests today — ``_ledger_lock`` is used only by ``_locked_update``, which is used only by
+    ``_append_audit`` — and that shape is load-bearing, not incidental. If a future mutation must
+    read-modify-write inside another, express it as ONE ``apply`` callback, not a second lock.
+
     **Never raises, and never withholds.** Two ways it declines, both deliberate:
 
     * **Locking is unavailable** — a filesystem with no working advisory locks (network shares, some
@@ -437,15 +458,30 @@ def _ledger_lock(path: str, timeout: Optional[float] = None):
         yield False
         return
 
-    deadline = time.monotonic() + timeout
     held = False
     try:
+        # Inside the try, so a bad `timeout` argument cannot leak the fd we just opened (arithmetic on
+        # a non-number raises here, and only the finally below closes it).
+        deadline = time.monotonic() + timeout
         while True:
             try:
                 _lock_exclusive(fd)
                 held = True
                 break
             except OSError as e:
+                # UNSUPPORTED is not CONTENDED. A filesystem with no working advisory locks (an SMB
+                # share, some exFAT/USB paths) raises immediately and will raise identically forever,
+                # so waiting out the timeout bought nothing and cost the FULL timeout on EVERY write
+                # -- measured 10.04s per ledger write -- while telling the operator another writer was
+                # holding the lock, which was simply false and sends them looking for a second run
+                # that does not exist. Break at once, with its own message.
+                if e.errno in _LOCK_UNSUPPORTED_ERRNOS:
+                    logger.warning("[gate] advisory locks are not available for %s (%s) -- proceeding "
+                                   "without serialisation. This is normal on a network share or some "
+                                   "removable media; nothing is holding the lock. Avoid running two "
+                                   "writers against this engagement while it is on such a volume",
+                                   path, e)
+                    break
                 if time.monotonic() >= deadline:
                     logger.warning("[gate] the ledger lock beside %s was held by another writer for "
                                    "%.0fs (%s) -- proceeding WITHOUT serialisation rather than "
@@ -487,25 +523,55 @@ def _locked_update(path: str, apply):
         return result
 
 
+#: A read or a rename can lose a race with the OTHER operation on the ledger, so both retry briefly.
+#: Deliberately tiny: the window is a single ``os.replace`` (microseconds), so a handful of ~5 ms
+#: sleeps covers it without any caller waiting perceptibly. NOT the lock timeout — this exists because
+#: ``load_store`` is deliberately UNLOCKED, so a reader can always collide with a writer's rename.
+_RACE_RETRIES = 6
+_RACE_BACKOFF_S = 0.005
+
+
 def _read_ledger(path: str) -> Optional[dict]:
     """Parse the ledger at an explicit PATH. None when ABSENT; GateStateError when present-but-broken.
-    Shared by ``load_store`` (root-relative) and ``_locked_update`` (which already has the path)."""
+    Shared by ``load_store`` (root-relative) and ``_locked_update`` (which already has the path).
+
+    A transient OSError is RETRIED briefly. On Windows ``os.replace`` must momentarily make the
+    destination inaccessible, so a read landing in that instant gets ``[Errno 13] Permission denied``
+    on a PERFECTLY HEALTHY ledger. Measured before this retry existed: 357 of 25,348 reads (1.41%)
+    while a single writer appended, and every one surfaced as ``status="unreadable"`` — a
+    NON-overridable refusal that withholds the deliverable. A 1-in-70 spurious withholding is not
+    staleness; it is the fail-closed posture firing on a file that is fine.
+
+    Only OSError is retried. A ValueError/RecursionError is a property of the file's CONTENT and cannot
+    change on a retry, so those still fail closed immediately — delaying the honest "this ledger is
+    corrupt" answer would be strictly worse. If the OSError outlasts the window it still raises: a
+    genuinely unreadable ledger must stay unreadable.
+    """
     if not os.path.exists(path):
         return None
-    try:
-        with open(path, encoding="utf-8") as f:
-            store = json.load(f)
-    # RecursionError is included because it is a property of the FILE, not a bug here, and this
-    # function's whole contract is that a broken ledger fails CLOSED rather than raising: it
-    # subclasses RuntimeError, so it escaped the (OSError, ValueError) catch as a raw traceback,
-    # killing a run part-way through the deliverable set. Reproduced at ~3200 nesting levels, where
-    # json.load's C scanner still accepts the file. The WRITE side already handles it by name in
-    # _record_refusal; only the read side was missed.
-    except (OSError, ValueError, RecursionError) as e:
-        raise GateStateError(f"unreadable gate-state store {path}: {e}") from e
-    if not isinstance(store, dict):
-        raise GateStateError(f"gate-state store {path} is not a JSON object")
-    return store
+    last: Optional[OSError] = None
+    for attempt in range(_RACE_RETRIES):
+        try:
+            with open(path, encoding="utf-8") as f:
+                store = json.load(f)
+        except OSError as e:                       # lost the race with a writer's rename, or real
+            last = e
+            if attempt < _RACE_RETRIES - 1:
+                time.sleep(_RACE_BACKOFF_S)
+                continue
+            raise GateStateError(f"unreadable gate-state store {path}: {e}") from e
+        # RecursionError is included because it is a property of the FILE, not a bug here, and this
+        # function's whole contract is that a broken ledger fails CLOSED rather than raising: it
+        # subclasses RuntimeError, so it escaped the (OSError, ValueError) catch as a raw traceback,
+        # killing a run part-way through the deliverable set. Reproduced at ~3200 nesting levels, where
+        # json.load's C scanner still accepts the file. The WRITE side already handles it by name in
+        # _record_refusal; only the read side was missed.
+        except (ValueError, RecursionError) as e:
+            raise GateStateError(f"unreadable gate-state store {path}: {e}") from e
+        if not isinstance(store, dict):
+            raise GateStateError(f"gate-state store {path} is not a JSON object")
+        return store
+    raise GateStateError(f"unreadable gate-state store {path}: {last}")   # pragma: no cover
 
 
 def load_store(root: str = ".") -> Tuple[Optional[dict], str]:
@@ -515,8 +581,16 @@ def load_store(root: str = ".") -> Tuple[Optional[dict], str]:
 
     READ-ONLY, and deliberately unlocked: callers use it to DECIDE (``enforce``) or to DISPLAY
     (``show``), and the write paths re-read under the lock anyway, so taking one here would only add
-    contention. A decision made from a store that a concurrent writer then changes is not a lost
-    update — it is the same benign staleness any read has."""
+    contention. Reading a store that a concurrent writer then changes is not a lost update — the
+    decision is merely made from a slightly older snapshot.
+
+    That much IS benign. What is NOT, and what an earlier version of this note wrongly folded into the
+    same sentence, is the COLLISION: being unlocked means a read can land inside a writer's
+    ``os.replace`` and fail with ``[Errno 13] Permission denied`` on a healthy ledger, which
+    ``enforce`` then reports as ``unreadable`` — a non-overridable refusal that withholds the
+    deliverable. Measured at 1.41% of reads under one concurrent writer. ``_read_ledger`` now retries a
+    transient OSError for a few milliseconds, which closes it; the staleness above is the only
+    remaining consequence of not locking here."""
     path = store_path(root)
     return _read_ledger(path), path
 
@@ -553,6 +627,13 @@ def save_store(path: str, store: dict) -> None:
     here: truncate-and-rewrite is exactly how an audit ledger gets destroyed, and the caller already
     degrades safely (``_record_refusal`` → ``recorded=False``, loudly; the deliverable stays
     withheld). That is the opposite trade-off from ``manifest.py``, whose seal is regenerable.
+
+    The rename IS retried briefly, which is not the same thing. A reader holding the ledger open for
+    the microseconds it takes to parse is enough to make ``os.replace`` fail with ``[WinError 5]``, and
+    ``load_store`` is deliberately unlocked, so an ordinary concurrent ``enforce()`` produces exactly
+    that. Measured: 1 in 629 production-path writes at 14-way concurrency, and on the
+    ``record_decision``/``bind_engagement`` paths it RAISED out of a human ``approve``. Retrying a few
+    milliseconds lets the reader finish; it never rewrites in place, so the invariant above is intact.
     """
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".",
@@ -567,7 +648,18 @@ def save_store(path: str, store: dict) -> None:
             # a short or zero-length ledger, which json.load rejects -> permanently "unreadable" and
             # never re-appendable. Same class as the 0-byte-DB-passes-quick_check defect.
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+        for attempt in range(_RACE_RETRIES):
+            try:
+                os.replace(tmp, path)
+                break
+            except OSError:
+                # A concurrent READER, not a code bug: load_store is unlocked by design, so a reader
+                # can hold the destination for the instant it parses. Give it a few ms to finish. On
+                # the last attempt let it propagate -- a destination held by something that is NOT a
+                # transient reader (an editor, an AV scan) must still surface, loudly, to the caller.
+                if attempt == _RACE_RETRIES - 1:
+                    raise
+                time.sleep(_RACE_BACKOFF_S)
         promoted = True
     finally:
         if not promoted:
