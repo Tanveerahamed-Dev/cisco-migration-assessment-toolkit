@@ -4,6 +4,53 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-26] — Chased the briefing's one open item, found the instrument was lying; behind it, a procurement count stale by 2×
+
+- Goal-directed session off `/briefing`'s single flagged item (REC-6). Two deliverables: the **REC-6
+  optics reconciliation refreshed to v8.0** (side engagement, gitignored — the artifact on disk plus
+  memory are the only durable records) and **#498**, which fixes the briefing that pointed there.
+  Full local suite green (`PYTEST_EXIT=0`, `[100%]`, ~3.8k outcomes); #498 CI 10/10.
+- `!lesson` **A derived quantity is a cache of the DESIGN, not of the invoice — re-derive it on every
+  version bump.** REC-6's optic count was computed against HLD v7.5 and never revisited. v8.0 rewrote
+  §16: servers went to **4-NIC bonds** (it assumed 2/node) and the consuming sites changed (**QDC5 +
+  QDC3**, not QDC5 + QDC4 — the "DR" site has no HCI or backup cluster). Switch-side `SFP-10G-SR`
+  **38 → ~66**: procuring to the stale figure arrives **half short**. Its *supply* side was perfect —
+  240 LR / 32 25G reconcile to the digit against the real SO — so the BOQ was never the problem, the
+  §16 it was computed against moved underneath it. The file was 3 days old and *looked* current:
+  freshness of the FILE says nothing about freshness of its INPUTS. `bridge-candidate`
+- `!lesson` **An instrument that infers STATE from PROSE reports fiction, and the error only grows.**
+  The briefing counted TODO/FIXME across `docs/**/*.md`: 3 of its 4 hits came from one sentence
+  *asserting the census is zero*, the 4th from a retro bullet using the word — real code debt was
+  **0**. Its open-items counter scanned `docs/log.md`, which is append-only, so one retro sentence
+  naming REC-6 reported it open **forever** with no status check — and REC-6's real home is a
+  gitignored folder it never scanned, so it could not have known either way. A narrative log is not a
+  state register. Third instance of a class the script had already fixed once (its own comment: *"the
+  cumulative count cried wolf"*) — when you find one, grep for the rest of the class. `bridge-candidate`
+- `!lesson` **A guard that tests for markers contains markers.** Scoping the TODO scan to source
+  re-poisoned it the moment `tests/` was included: `test_morning_briefing.py`, the file pinning the
+  behaviour, contributed **13 phantom hits**. Any scanner whose subject is a *token* must exclude the
+  code that tests it. Caught only by re-running against the real repo — the fixture alone was green.
+  `bridge-candidate`
+- `!lesson` **Greedy `\d+` backtracks to satisfy a lookahead, silently inventing matches.**
+  `Te1/1/0/(\d+)(?!\s*[-–]\s*\d)` against `Te1/1/0/25–32` matches **"2"** — `\d+` gives back digits
+  until the lookahead passes. That produced three FALSE port collisions and nearly shipped a wrong
+  defect list. Anchor whole tokens instead of prefix+number-with-lookahead; the corrected pass found
+  the 2 REAL ones. `bridge-candidate`
+- `!lesson` **Refute your own headline number before someone spends money on it, and bound the blast
+  radius before assigning severity.** Re-derived the counts mechanically rather than re-reading the
+  tally (reproduced 38/16 exactly), then checked whether the HLD's port collision reached the build
+  docs — ConfigPack names 3 interface tokens, none in range; **MOP and NRFU name no physical ports at
+  all** — so it is one section of one document and the register the cabling audit works from is
+  correct. HIGH → MEDIUM on evidence, not feel. A "clean" grep also needs a false-negative check:
+  searched long-form interface names too. `bridge-candidate`
+- Raised, deliberately NOT changed: `session-brief.sh` reads `C:\Vaults\brain\wiki\log.md` every
+  SessionStart while CLAUDE.md and ADR-0001 A1 both say reading vault pages from repo sessions is not
+  granted. It extracts only `/ingest`+`/lint` timestamps — no knowledge crosses, nothing leaves the
+  machine — so it is letter-vs-intent, but a future doctrine test would fail it and removing the read
+  breaks both the rot watch and the bridge watermark. Owner's call; two resolutions in memory. Also
+  declined a `docs/open-items.md` register: a second index for an axis `docs/ssot.md` already covers,
+  when the one genuinely open item (the 07-05 credential rotation) is already in two owner docs.
+
 ## [2026-07-26] — Reviewed #490 and found 8 defects, every one in the RECORD and none in the act; recovering the deleted folder from the Recycle Bin refuted the evidence its own bullet cited
 
 - `/code-review` over #490 (docs-only, +13/−5, closing the ADR-0004 attic item). Eight findings, all
