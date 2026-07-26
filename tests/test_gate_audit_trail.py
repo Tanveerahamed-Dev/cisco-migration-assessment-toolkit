@@ -270,7 +270,7 @@ def test_verdicts_returns_a_deep_copy(tmp_path):
     handed_out[0]["verdict"] = "approved"
     assert gate_state.verdicts() == [
         {"generator": "design", "verdict": "pending", "missing": ["assessment_approved"],
-         "proceed": False}]
+         "proceed": False, "recorded": True, "engagement": None}]
 
 
 def test_refusal_reason_is_recorded_not_just_logged(tmp_path):
@@ -280,7 +280,8 @@ def test_refusal_reason_is_recorded_not_just_logged(tmp_path):
     gate_state.enforce("mop", root=str(tmp_path))
     row, = gate_state.verdicts()
     assert row == {"generator": "mop", "verdict": "pending",
-                   "missing": ["baseline_captured"], "proceed": False}
+                   "missing": ["baseline_captured"], "proceed": False,
+                   "recorded": True, "engagement": None}
 
 
 # ------------------------------------------------------------- the seal: the auditable record
@@ -294,7 +295,7 @@ def test_refusal_is_sealed_into_the_run_manifest(tmp_path, monkeypatch):
     man = _manifest_for(tmp_path)
     assert _gate_step(man)["verdicts"] == [
         {"generator": "design", "verdict": "pending", "missing": ["assessment_approved"],
-         "proceed": False}]
+         "proceed": False, "recorded": True, "engagement": None}]
     ok, broken = M.verify_manifest(man)
     assert ok, f"manifest chain broken at rows {broken}"
 
@@ -335,8 +336,76 @@ def test_sealed_gate_step_is_deterministic(tmp_path, monkeypatch):
     second = _manifest_for(tmp_path)
     assert first["chain_root"] == second["chain_root"]
     row, = _gate_step(first)["verdicts"]
-    assert set(row) == {"generator", "verdict", "missing", "proceed", "reason"}, \
-        "unexpected key in a SEALED verdict row -- who/when belong to the store's audit line"
+    assert set(row) == {"generator", "verdict", "missing", "proceed", "reason",
+                        "recorded", "engagement"}, \
+        ("unexpected key in a SEALED verdict row -- who/when/store belong to the store's audit line, "
+         "never the seal: they are environment-derived and would make chain_root vary run-to-run. "
+         "`recorded` and `engagement` ARE sealed on purpose -- a bool and an opaque human-minted "
+         "identifier, both deterministic. Without them the seal cannot say whether its own durable "
+         "trail exists, nor which engagement it belongs to.")
+
+
+def test_seal_distinguishes_a_refusal_whose_durable_write_FAILED(tmp_path, monkeypatch):
+    """The seal must be able to say that its own durable trail is MISSING.
+
+    Before ``recorded`` was sealed, a refusal whose ledger write failed produced a row -- and a
+    ``chain_root`` -- byte-identical to one that succeeded. The tamper-evident record could not
+    express "this refusal was withheld but NOTHING was persisted", which is the same class of defect
+    the gate exists to prevent, one layer up: an audit record asserting a governance trail that is
+    not there.
+
+    ``os.replace`` raising PermissionError is not a contrived fault: it is the routine Windows case
+    when any process holds the ledger -- an engineer with docs/engagement-state.json open in an
+    editor while a scheduled assessment runs.
+    """
+    monkeypatch.chdir(tmp_path)
+    _write_store(tmp_path)
+
+    gate_state.enforce("design", root=str(tmp_path))
+    healthy_row, = _gate_step(_manifest_for(tmp_path))["verdicts"]
+    healthy_root = _manifest_for(tmp_path)["chain_root"]
+
+    gate_state.reset_verdicts()
+    import unittest.mock as _mock
+    with _mock.patch.object(os, "replace", side_effect=PermissionError(5, "Access is denied")):
+        v = gate_state.enforce("design", root=str(tmp_path))
+    assert v.refused and v.recorded is False, "precondition: the durable write must have failed"
+    failed_row, = _gate_step(_manifest_for(tmp_path))["verdicts"]
+
+    assert healthy_row != failed_row, \
+        ("the seal cannot distinguish a durably-recorded refusal from one whose ledger write FAILED "
+         "-- it asserts an audit trail that does not exist")
+    assert healthy_row["recorded"] is True and failed_row["recorded"] is False
+    # Same decision, different durability => different chain: the difference is TAMPER-EVIDENT, not
+    # merely present in a field a reader might ignore.
+    assert _manifest_for(tmp_path)["chain_root"] != healthy_root
+
+
+def test_sealed_row_cites_its_owning_engagement(tmp_path, monkeypatch):
+    """Law 1: this per-run row is a COPY of the ledger's audit array, so it must name its owner.
+    Sealing the opaque identifier (never the absolute store path) is what lets a reader join the
+    manifest copy back to the ledger that owns it -- without it, two records can disagree about
+    which engagement a decision concerned with no way to reconcile them."""
+    monkeypatch.chdir(tmp_path)
+    _write_store(tmp_path)
+    gate_state.bind_engagement("ACME-2026", root=str(tmp_path), by="lead")
+
+    gate_state.reset_verdicts()
+    gate_state.enforce("design", root=str(tmp_path), engagement="ACME-2026")
+    row, = _gate_step(_manifest_for(tmp_path))["verdicts"]
+    assert row["engagement"] == "ACME-2026", "the sealed copy names no owner (Law 1)"
+    assert "store" not in row, \
+        "the ABSOLUTE store path must never be sealed -- it would make chain_root machine-specific"
+
+    # An UNBOUND ledger seals None rather than omitting the key: "this ledger declares no owner" is
+    # itself a fact a reconciler needs, and is distinct from "the key was never recorded".
+    other = tmp_path / "unbound"
+    other.mkdir()
+    _write_store(other)
+    gate_state.reset_verdicts()
+    gate_state.enforce("design", root=str(other))
+    unbound_row, = gate_state.verdicts()
+    assert unbound_row["engagement"] is None and "engagement" in unbound_row
 
 
 def test_reset_verdicts_prevents_cross_run_bleed(tmp_path):
