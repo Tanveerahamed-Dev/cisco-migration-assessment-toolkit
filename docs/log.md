@@ -4,6 +4,61 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-26] — Closed the gate-refusal audit gap; every defect found afterwards was in a claim about the work, not the work
+
+- Shipped **#494** (refusals now append a durable `refuse` row to the ledger's audit array; `enforce`
+  returns a `GateVerdict` instead of a bool; `sys.exit(main())` on the bare-script door; opt-in
+  `--fail-on-gate-refusal`), then **#501** for the three follow-ups a 71-agent refuter round measured,
+  and **#502** for a flake the post-merge gate on `main` exposed. Also merged #491–#493, #495, #500 and
+  swept every branch — repo is at one branch, one worktree, zero open PRs bar #502.
+- `!lesson` **An audit feature printed a claim about its own audit trail without reading the field it
+  had just added for exactly that purpose.** `[GATE] … The refusal(s) are recorded in the gate ledger`
+  was emitted unconditionally, while `GateVerdict.recorded` — added in the *same commit*, with a
+  docstring saying a caller must be able to tell "written down" from "nothing persisted" *rather than
+  assume* — went unread. Five of six refusal statuses record nothing, so `--gate-root <typo>` sent an
+  operator hunting for rows that never existed. **After adding any `recorded`/`verified`/`partial`
+  flag whose purpose is to prevent an assumption, grep every production consumer and confirm one
+  branches on it — a flag nothing reads is a comment.** A user-facing sentence stating a fact must be
+  derived from the value that decided it, never printed alongside it. `bridge-candidate`
+- `!lesson` **When two branches implement one feature, the file git reports as CLEANLY MERGED is where
+  the breakage lands.** Replaying #439 vs #445: `gate_state.py` and `ssot.md` CONFLICTED — the safe
+  outcome, because a human is forced to look — while `COLLECT_PARSE_V3_23_0.py` auto-merged with zero
+  markers into a file holding *both* designs. Measured: keeping one side gave `ImportError` at engine
+  import; keeping the other imported fine and then failed **46 gate tests**. Conflict markers appear
+  where diffs touch the SAME lines, so two designs adding *different* call sites merge happily and
+  incoherently. **Replay the merge in a detached worktree and, for each plausible resolution, `import`
+  the entry module and run the feature's tests — "git says clean" is the finding, not the
+  reassurance.** `bridge-candidate`
+- `!lesson` **Identical CI red, three unrelated non-code causes in one day** — `gh pr checks` flattens
+  all of them to "fail". Discriminate by job `steps[]` and the *shape*: `steps=0` + minutes of queue
+  time = fleet starvation (re-run); `steps=0` + a simultaneous cluster across both workflows + runners
+  `offline` = a GitHub-side outage (the runner `_diag` log said `POST …/broker…/session → 500`, and
+  `grep -c "Listening for Jobs"` was **0**; wait, do not re-run into it); `steps=0` + *instant* fail on
+  hosted labels = billing. Proved the last one by unsetting `CI_RUNNER` and dispatching: jobs correctly
+  took `labels=ubuntu-latest` and all 10 died instantly — this repo is PRIVATE, so hosted minutes are
+  the wall the self-hosted fleet exists to avoid. Two mechanics worth keeping: **already-queued jobs
+  keep their resolved `runs-on`** (you cannot redirect an existing queue), and a queued job cannot be
+  rerun individually. `bridge-candidate`
+- `!lesson` **Two ways a test proved nothing while looking rigorous.** (a) *Entering below the caller*:
+  both lost-update tests called the write helper directly, so a refuter reverted **only `enforce`'s
+  call site** and all 7 gate-touching test files still exited 0 while a completed human `approve` was
+  destroyed with `recorded=True`. Pin the entry point production actually uses, then mutate that call
+  site and confirm your test notices. (b) *Asserting an environment constant*: hard-coding 3200 levels
+  of JSON nesting to provoke `RecursionError` pinned how deeply the **interpreter** parses — green on
+  3.10–3.13, red on 3.14, with the code fine. Fault-inject the exception at the boundary you own, or
+  discover the threshold from the running interpreter; a magic number that works on your box is a
+  portability bug in the test. `bridge-candidate`
+- `!lesson` **A guard can sit on the wrong side of the hazard it names.** The post-merge full gate on
+  `main` went red once, then green on an identical re-run — a flake, in a test untouched for three PRs.
+  `_boot_hardening` skips its backup when `newest >= db_mtime`, and `shutil.copy2` PRESERVES the source
+  mtime, so a session whose writes land in the same filesystem tick as its own boot leaves them equal
+  and the NEXT boot skips — the restore comes back a whole session short (`['day1-a','day1-b']` instead
+  of three). The existing `time.sleep(1.1)` calls sat *between* sessions: they advanced the wall clock
+  when the comparison needed the mtime to move **after its own backup was copied**, buying 2.2s of
+  suite time and no determinism. Replaced with an explicit `os.utime` bump — 15/15 clean. **Run the
+  full gate on merged `main` after a wave anyway: it found this, and the honest conclusion was the
+  opposite of what the red implied.** `bridge-candidate`
+
 ## [2026-07-26] — Refused a merge I was authorized to make, deadlocked the goal I was given, then reversed on re-reading the instruction
 
 - Close-out of the goal session above. **#498** (briefing fix) → `51eb6f5` and **#499** (retro) →
