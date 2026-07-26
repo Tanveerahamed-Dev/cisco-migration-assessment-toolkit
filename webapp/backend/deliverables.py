@@ -41,30 +41,39 @@ def gate_disclosure(kind: str, gate_root: str = ".") -> dict | None:
     """The PPDIOO document-gate verdict for `kind`, as a DISCLOSURE — never a refusal.
 
     None means "nothing to say": an ungated deliverable, an engagement that never opted in (no
-    store — gate_state's brownfield branch), or approvals all present. A dict means the ledger
-    says this document's upstream approvals are missing/revoked; see `generate` for why AssessHub
-    discloses where the CLI refuses.
+    store — gate_state's brownfield branch), or approvals all present. A dict means the ledger says
+    this document's upstream approvals are missing/revoked, or that the gate state could not be
+    determined at all; see `generate` for why AssessHub discloses where the CLI refuses.
 
-    Reads with `load_store`/`missing_approvals` rather than `enforce()` on purpose: `enforce` is
-    the BLOCKING api and its override arm APPENDS an audit line, which a read for a download
-    header must never do. Total/fail-open like `_reconcile_gate` — a gate ledger problem must
-    never be able to withhold a deliverable, which is the whole point of this mode."""
+    The status token is NOT computed here. `gate_state.pending_approvals` owns the gate-posture
+    fact (SSOT Law 1) and is the read-only counterpart of the deciding path `enforce()` — same
+    `STATUSES` vocabulary, never writes, never raises, which is exactly this surface's contract.
+    Re-deriving the token locally is what inverted it: a LOCATED ledger with missing/revoked
+    approvals was labelled `ungated`, a token `gate_state.UNEVALUATED` reserves for "the approvals
+    were NEVER EVALUATED". So an AssessHub MOP download for an engagement whose LLD a peer review
+    had actively REVOKED disclosed `X-Gate-Status: ungated` — the one word that reads as "no gates
+    are tracked here, nothing to worry about" — while `enforce()` and `pending_approvals()` both
+    called the same ledger `pending`. Three computations of one fact, and the third disagreed.
+
+    Not `enforce()`, for two reasons that both still hold: it is the BLOCKING api, and its override
+    arm APPENDS an audit line, which a read for a download header must never do. Total/fail-open
+    like `_reconcile_gate` — a gate ledger problem must never be able to withhold a deliverable,
+    which is the whole point of this mode."""
     try:
         from cisco_toolkit import gate_state
         if kind not in gate_state.GENERATOR_REQUIRES:
             return None
-        try:
-            store, path = gate_state.load_store(gate_root)
-        except gate_state.GateStateError as e:
-            # Unreadable ≠ absent. The CLI fails CLOSED here; we cannot, so we say so loudly —
-            # an operator who broke their ledger must not read silence as "gates are fine".
-            return {"status": "unreadable", "generator": kind, "detail": str(e)}
-        if store is None:
-            return None                       # never opted in — unchanged brownfield behaviour
-        missing = gate_state.missing_approvals(store, kind)
-        if not missing:
+        posture = gate_state.pending_approvals(kind, gate_root)
+        if posture["status"] in ("ungated", "clear"):
+            # ungated = no ledger, never opted in (unchanged brownfield behaviour);
+            # clear = every upstream approval recorded. Both have nothing to disclose.
             return None
-        return {"status": "ungated", "generator": kind, "missing": missing, "store": path}
+        # Everything else is disclosed — `pending`, and also the remaining UNEVALUATED statuses
+        # (`unreadable`, `bad_root`). Unknown ≠ absent: the CLI fails CLOSED there, we cannot, so we
+        # say so loudly rather than let an operator read silence as "gates are fine". On those,
+        # `missing == []` means UNKNOWN, not "nothing missing", which is why `status` leads the
+        # header. `detail` mirrors `summary` for the pre-existing key shape.
+        return {**posture, "detail": posture.get("summary", "")}
     except Exception:                         # noqa: BLE001 - a broken ledger never blocks a download
         return None
 
