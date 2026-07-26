@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -344,6 +345,45 @@ def test_save_store_docstring_does_not_overclaim_concurrency_safety():
         "the module docstring stopped documenting how writes are serialised"
 
 
+def test_an_interleaved_approval_survives_a_refusal_through_ENFORCE(tmp_path, monkeypatch):
+    """THE LOST UPDATE through the PRODUCTION CALL PATH — enforce() -> _record_refusal ->
+    _append_audit -> _locked_update — rather than by invoking the write helper directly.
+
+    Its sibling below drives `_append_audit` itself, which leaves a real hole: a refuter reverted ONLY
+    enforce's call site to the faithful pre-fix body and every gate-touching test file still exited 0,
+    while the interleave destroyed a completed human `approve` (and its `approve` audit row) with
+    recorded=True. A test that bypasses the caller cannot see a caller that regressed.
+
+    The interleave lands exactly where it used to hurt: `enforce` reads the ledger to DECIDE (that read
+    is deliberately unlocked), and the human approval completes on disk in the gap between that
+    decision-read and the refusal write. Wrapping `load_store` is what puts it there — the approval is
+    fully committed before `_append_audit` is entered, so only the re-read inside the lock saves it.
+    """
+    gate_state.record_decision("assessment_approved", "revoked", root=str(tmp_path), by="lead")
+    real_load, real_record = gate_state.load_store, gate_state.record_decision
+    fired = []
+
+    def _load_then_a_human_approves(root=".", *a, **kw):
+        out = real_load(root, *a, **kw)
+        if not fired:                     # once, from enforce's decision-read
+            fired.append(True)
+            real_record("lld_approved", "approved", root=str(tmp_path), by="HUMAN-LEAD")
+        return out
+
+    monkeypatch.setattr(gate_state, "load_store", _load_then_a_human_approves)
+    v = gate_state.enforce("design", root=str(tmp_path), who="run")
+    monkeypatch.undo()
+
+    assert fired, "the interleave never fired -- enforce no longer reads via load_store; re-target it"
+    assert v.refused and v.recorded is True, "precondition: a recorded refusal over a missing approval"
+    after = _store(tmp_path)
+    assert "lld_approved" in after["gates"], \
+        "enforce's refusal write DELETED a human-signed gate approval (lost update via the real path)"
+    assert after["gates"]["lld_approved"]["signed_by"] == "HUMAN-LEAD"
+    assert [a["event"] for a in after["audit"]].count("approve") == 1, "the approve audit row was lost"
+    assert after["audit"][-1]["event"] == "refuse", "the refusal row did not land"
+
+
 def test_an_interleaved_approval_survives_a_refusal_write(tmp_path):
     """THE LOST UPDATE, fixed. Replaces test_the_lost_update_is_real_and_stays_disclosed, which pinned
     the defect and told its successor to pin the fix instead.
@@ -351,7 +391,10 @@ def test_an_interleaved_approval_survives_a_refusal_write(tmp_path):
     This is the exact interleave that used to destroy a signed gate: a caller loads the ledger, a
     human `approve` completes and lands on disk, and only then does the caller write. It no longer
     matters, because the write RE-READS under an exclusive lock instead of persisting the snapshot it
-    loaded earlier."""
+    loaded earlier.
+
+    NB this drives `_append_audit` DIRECTLY, so it cannot catch a regression in enforce's CALL SITE —
+    that is what the ENFORCE-path test above exists for. Keep both."""
     gate_state.record_decision("lld_approved", "approved", root=str(tmp_path), by="qa")
     _stale, path = gate_state.load_store(str(tmp_path))            # a caller's early load
     gate_state.record_decision("baseline_captured", "approved", root=str(tmp_path), by="LEAD")
@@ -452,6 +495,106 @@ def test_locking_unavailable_fails_soft_to_the_historical_behaviour(tmp_path, ca
                                         "event": "refuse", "generator": "design"})
     assert "without serialisation" in caplog.text.lower()
     assert [a["event"] for a in _store(tmp_path)["audit"]][-1] == "refuse", "the write was lost"
+
+
+@pytest.mark.parametrize("code", ["ENOLCK", "EOPNOTSUPP", "EINVAL"])
+def test_an_unsupported_lock_gives_up_at_once_instead_of_burning_the_timeout(
+        tmp_path, caplog, monkeypatch, code):
+    """UNSUPPORTED is not CONTENDED, and conflating them cost the FULL timeout on EVERY write.
+
+    A filesystem with no working advisory locks raises immediately and will keep raising, so waiting
+    bought nothing: measured 10.04s per ledger write, with a warning blaming "another writer" that does
+    not exist — actively misleading on a network share or the exFAT USB stick this ships on. Targets
+    _lock_exclusive (the real seam a bad filesystem fails at), not _open_lock_fd."""
+    import errno as _errno
+    gate_state.record_decision("lld_approved", "approved", root=str(tmp_path), by="qa")
+    path = gate_state.store_path(str(tmp_path))
+    monkeypatch.setattr(gate_state, "LOCK_TIMEOUT_S", 5.0)     # generous, so a burn is unmistakable
+
+    def _unsupported(_fd):
+        raise OSError(getattr(_errno, code), "unsupported by this filesystem")
+
+    monkeypatch.setattr(gate_state, "_lock_exclusive", _unsupported)
+    t0 = time.monotonic()
+    with caplog.at_level(logging.WARNING, logger="cisco_toolkit.gate_state"):
+        gate_state._append_audit(path, {"at": gate_state._now(), "who": "run",
+                                        "event": "refuse", "generator": "design"})
+    elapsed = time.monotonic() - t0
+
+    assert elapsed < 1.0, f"burned {elapsed:.1f}s waiting for a lock this filesystem cannot grant"
+    assert "not available" in caplog.text, "did not say the filesystem cannot lock"
+    assert "held by another writer" not in caplog.text, "still blames a writer that does not exist"
+    assert [a["event"] for a in _store(tmp_path)["audit"]][-1] == "refuse", "the write was lost"
+
+
+def test_a_contended_lock_still_waits_rather_than_giving_up_instantly(tmp_path, monkeypatch):
+    """Non-vacuity guard for the test above: the fast-path must fire ONLY for unsupported errnos. A
+    genuinely CONTENDED lock is worth waiting out, so EACCES must still consume the timeout."""
+    import errno as _errno
+    gate_state.record_decision("lld_approved", "approved", root=str(tmp_path), by="qa")
+    path = gate_state.store_path(str(tmp_path))
+    monkeypatch.setattr(gate_state, "LOCK_TIMEOUT_S", 0.4)
+    monkeypatch.setattr(gate_state, "_lock_exclusive",
+                        lambda _fd: (_ for _ in ()).throw(OSError(_errno.EACCES, "held")))
+    t0 = time.monotonic()
+    gate_state._append_audit(path, {"at": gate_state._now(), "who": "run",
+                                    "event": "refuse", "generator": "design"})
+    assert time.monotonic() - t0 >= 0.3, "a contended lock gave up instantly instead of waiting"
+
+
+def test_a_reader_racing_a_writers_rename_does_not_read_as_unreadable(tmp_path):
+    """`load_store` is deliberately UNLOCKED, so a read can land inside a writer's os.replace and get
+    [Errno 13] on a PERFECTLY HEALTHY ledger — which enforce() then reports as `unreadable`, a
+    NON-overridable refusal that withholds the deliverable. Measured before the retry: 357 of 25,348
+    reads (1.41%) under one concurrent writer. Not staleness; the fail-closed posture firing on a file
+    that is fine."""
+    import threading
+    gate_state.record_decision("assessment_approved", "approved", root=str(tmp_path), by="HUMAN")
+    path = gate_state.store_path(str(tmp_path))
+    stop = threading.Event()
+
+    def _writer():
+        while not stop.is_set():
+            try:
+                gate_state._append_audit(path, {"at": gate_state._now(), "who": "w",
+                                                "event": "refuse", "generator": "mop"})
+            except Exception:                      # noqa: BLE001 - the writer's own errors are not
+                pass                               # what this test is about
+    t = threading.Thread(target=_writer)
+    t.start()
+    try:
+        bad, n, t0 = [], 0, time.monotonic()
+        while time.monotonic() - t0 < 3.0:
+            v = gate_state.enforce("design", root=str(tmp_path))
+            n += 1
+            if v.status != "clear":
+                bad.append(v.status)
+    finally:
+        stop.set()
+        t.join()
+    assert n > 200, f"only {n} reads -- too few to exercise the race"
+    assert not bad, f"{len(bad)} of {n} reads on a HEALTHY ledger refused: {sorted(set(bad))}"
+
+
+def test_a_writer_racing_a_transient_reader_still_records(tmp_path):
+    """The mirror image: a reader holding the ledger for the microseconds it parses is enough to make
+    os.replace fail with [WinError 5]. enforce() degraded loudly (correct), but record_decision and
+    bind_engagement RAISED it out of a HUMAN `approve` — measured 1 in 629 production-path writes at
+    14-way concurrency. The rename retries; it never falls back to rewriting in place."""
+    import threading
+    gate_state.record_decision("lld_approved", "approved", root=str(tmp_path), by="qa")
+    path = gate_state.store_path(str(tmp_path))
+    fh = open(path, encoding="utf-8")
+    fh.read()
+    threading.Timer(0.012, fh.close).start()       # a real reader finishing mid-retry
+    try:
+        gate_state.record_decision("baseline_captured", "approved", root=str(tmp_path), by="HUMAN-LEAD")
+    finally:
+        if not fh.closed:
+            fh.close()
+    gates = _store(tmp_path)["gates"]
+    assert "baseline_captured" in gates, "the human approval was lost to a transient reader"
+    assert "lld_approved" in gates, "the pre-existing signed gate was lost"
 
 
 def test_the_lock_is_a_sidecar_and_never_the_ledger(tmp_path):
