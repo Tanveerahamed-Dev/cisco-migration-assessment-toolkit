@@ -70,7 +70,14 @@ def open_items():
     hits = {}
     try:
         for f in glob.glob("docs/**/*.md", recursive=True):
-            if "/briefings/" in f.replace("\\", "/"):   # skip our OWN emitted briefings (self-reference)
+            rf = f.replace("\\", "/")
+            # Skip SELF-REFERENTIAL accumulations. Two of them, same disease as the "34 await
+            # promotion" cry-wolf removed below:
+            #   - our own emitted briefings (we would re-read yesterday's output as evidence);
+            #   - docs/log.md, which is append-only NARRATIVE HISTORY. One retro sentence naming
+            #     REC-6 kept it reported as an open item forever, with no status check anywhere —
+            #     a monotonically-growing false positive. A log is not a state register.
+            if "/briefings/" in rf or rf.endswith("docs/log.md"):
                 continue
             t = read(f)
             for pat, label in ((r"\bGI-\d+", "GI"), (r"\bREC-\d+", "REC")):
@@ -81,14 +88,27 @@ def open_items():
     return {k: sorted(v) for k, v in hits.items()}
 
 def todos():
+    # Code-debt markers live in SOURCE. Scanning docs/ counted PROSE ABOUT markers and was pure
+    # noise: 3 of the 4 it last reported came from ONE sentence asserting the census is zero
+    # ("TODO/FIXME/HACK/XXX/stub/commented-out/bare-except all zero"), and the 4th from a retro
+    # bullet using the word. Real code-debt count was 0. Every future retro mentioning "TODO"
+    # would add another. Source globs only — a document discussing debt is not debt.
     n = 0; files = set()
     try:
-        for f in glob.glob("docs/**/*.md", recursive=True) + glob.glob("cisco_toolkit/**/*.py", recursive=True):
-            if "/briefings/" in f.replace("\\", "/"):    # skip our OWN emitted briefings (self-reference)
-                continue
-            c = len(re.findall(r"\b(?:TODO|FIXME|XXX)\b", read(f)))
-            if c:
-                n += c; files.add(f)
+        # SHIPPING source only. tests/ is deliberately excluded: a file ABOUT markers contains
+        # markers, so tests/test_morning_briefing.py (which pins this very behaviour) re-poisoned
+        # the count with 13 phantom hits the moment tests/ was included. Same trap one directory
+        # over — the scanner must not be able to read its own guard as debt.
+        seen = set()
+        for pat in ("cisco_toolkit/**/*.py", "webapp/**/*.py", "portable/**/*.py", "*.py"):
+            for f in glob.glob(pat, recursive=True):
+                rf = f.replace("\\", "/")
+                if rf in seen:
+                    continue
+                seen.add(rf)
+                c = len(re.findall(r"\b(?:TODO|FIXME|XXX)\b", read(f)))
+                if c:
+                    n += c; files.add(rf)
     except Exception:
         pass
     return n, len(files)
@@ -181,7 +201,7 @@ L.append(f"- **Lessons**: {les} !lesson bullet(s); {bc_life} tagged bridge-candi
 if oi:
     L.append("- **Open items**: " + "; ".join(f"{k} {len(v)} ({', '.join(v[:6])}{'...' if len(v) > 6 else ''})" for k, v in sorted(oi.items())))
 else:
-    L.append("- **Open items**: none detected (GI-/REC- patterns in docs/)")
+    L.append("- **Open items**: none detected (GI-/REC- patterns in docs/, excluding the append-only log + our own briefings)")
 L.append(f"- **TODO/FIXME**: {td} across {tf} file(s)")
 L.append(f"- **Quality scorecard**: {fmt_scorecard(rows)}")
 if sc_verdict:
