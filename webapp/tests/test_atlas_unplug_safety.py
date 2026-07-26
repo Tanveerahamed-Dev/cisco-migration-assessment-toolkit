@@ -15,7 +15,6 @@ import os
 import shutil
 import sqlite3
 import sys
-import time
 import types
 from pathlib import Path
 
@@ -380,11 +379,20 @@ def test_the_documented_restore_procedure_actually_works(tmp_path):
         for label in labels:
             s.create_campaign(label)
         s.close()
+        # Force the store's mtime PAST the backup this session just took, rather than sleeping and
+        # hoping. `_boot_hardening` skips the backup when `newest >= db_mtime` (storage.py:174), and
+        # `shutil.copy2` PRESERVES the source mtime, so the backup's mtime equals the db's mtime as of
+        # that boot. If this session's writes then land in the same filesystem tick as its own boot,
+        # the two stay equal and the NEXT boot SKIPS its backup -- leaving the newest backup a whole
+        # session stale, which is exactly the `names` assertion below. Sleeping BETWEEN sessions could
+        # not fix that: it advances the wall clock, but the comparison needs the db's mtime to move
+        # after its own backup was copied. Deterministic idiom, already used by the rotation test
+        # above (os.utime), and it drops ~2.2s of sleeping from the suite.
+        bumped = db.stat().st_mtime + 2       # +2s: unambiguous, far under the 60s clock-skew warning
+        os.utime(db, (bumped, bumped))
 
     atlas_session(["day1-a", "day1-b"])
-    time.sleep(1.1)                      # mtime must advance for the boot backup to be due
     atlas_session(["day2-a"])
-    time.sleep(1.1)
     atlas_session(["day3-a", "day3-b"])
 
     db.write_bytes(b"\x00" * 4096 + b"torn")          # the yank
