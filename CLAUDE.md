@@ -1,14 +1,18 @@
 ## graphify
 
-This project has a knowledge graph at graphify-out/ (~7.0k nodes — `graphify-out/GRAPH_REPORT.md` header is the authoritative count; after the 2026-07-03 de-pollution that also
+This project has a knowledge graph at graphify-out/ (~9.5k nodes as of 2026-07-27 — `graphify-out/GRAPH_REPORT.md` header is the authoritative count and this figure is only a cache of it, so re-read the header rather than trusting this line; after the 2026-07-03 de-pollution that also
 excluded untracked scratch + side-engagement dirs — `ds-bundle/`+`.ds-sync/` (design-sync output), `[HISTORY-REDACTED]_DC_Design/`,
 `compass_artifact_*`, `scratch_*` — which had diluted it ~27%; the earlier 2026-06-25 pass excluded the stale `_ref/`
 engine copy + the graph's own `graphify-out/` dumps — see `.graphifyignore`). The live graph is
 **AST-only / no-egress** (the offline `update` re-extract): it is reproducible on an air-gapped host and contains
 NO LLM-derived nodes — the de-pollution rebuild intentionally dropped a prior LLM-semantic "rationale" layer
-(~434 nodes — NB: a DIFFERENT thing from the current extractor's ~2.1k `file_type: rationale` nodes, which
-are AST-extracted docstrings/comments — every one carries `_origin: ast`, no egress; same word, not a
-regression) because regenerating the LLM layer needs an LLM call = egress, which the no-egress doctrine forbids
+(~434 nodes — NB: a DIFFERENT thing from the current extractor's ~2.9k `file_type: rationale` nodes, which
+are AST-extracted docstrings/comments carrying `_origin: ast`, no egress; same word, not a
+regression. Scope that precisely: **zero** nodes anywhere carry an LLM origin, which is the invariant that
+matters, but a handful — 11 of ~9.5k, 3 of them rationale — carry NO `_origin` at all. Those are the
+hand-CURATED layer that survives re-extraction, which `update` reports as "backed up curated graph";
+curated ≠ LLM-derived, so the doctrine holds, but "every node is `_origin: ast`" would be the wrong check —
+assert no LLM origin instead) because regenerating the LLM layer needs an LLM call = egress, which the no-egress doctrine forbids
 (sole carve-out: a **local** Ollama on 127.0.0.1 is on-host compute, not egress — ADR 0001 Amendment 1;
 `ollama_recall.py` + `ollama_judge.py`. The carve-out licenses local INFERENCE only — it does NOT
 re-authorize `graphify label` or any LLM-derived graph nodes: the graph stays AST-only for
@@ -20,8 +24,10 @@ never a linked worktree**: `graphify-out/` is untracked AND `.graphifyignore` ex
 so a worktree carries no `graph.json` — every verb there errors `graph file not found`, and a `graphify
 update .` run from a worktree builds a degenerate PARTIAL graph. (That is the P3-E1 trap: the
 "122-node / file-granular / `affected "fn()"` returns No node match" reading came from a worktree run;
-the real main-checkout graph is ~7.5k nodes and **function-granular** — `affected "parse_qos_config()"`,
-`explain`, `path` all resolve function symbols as advertised. Verified graphify 0.9.6, 2026-07-11.)
+the real main-checkout graph is thousands of nodes and **function-granular** — `affected "parse_qos_config()"`,
+`explain`, `path` all resolve function symbols as advertised. Verified graphify 0.9.6, 2026-07-11.) NB the
+extractor indexes functions, classes and docstrings, NOT module-level assignments: a constant such as
+`_RACE_RETRIES` is not a node, so `affected` on one returns nothing and that is a scope limit, not a stale graph.
 
 Rules:
 - For codebase questions, run `python -m graphify query "<question>"` first. Use `python -m graphify path "<A>" "<B>"`
