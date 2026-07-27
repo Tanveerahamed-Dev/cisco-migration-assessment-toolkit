@@ -470,12 +470,20 @@ def test_a_held_lock_times_out_and_proceeds_rather_than_withholding(tmp_path, ca
         raise OSError(13, "held by another writer")
 
     monkeypatch.setattr(gate_state, "_lock_exclusive", _always_busy)
+    started = time.monotonic()
     with caplog.at_level(logging.WARNING, logger="cisco_toolkit.gate_state"):
         gate_state._append_audit(path, {"at": gate_state._now(), "who": "run",
                                         "event": "refuse", "generator": "design"})
+    elapsed = time.monotonic() - started
     assert "WITHOUT serialisation" in caplog.text, "the timeout was silent"
     assert [a["event"] for a in _store(tmp_path)["audit"]][-1] == "refuse", \
         "the write was withheld over a lock file instead of proceeding"
+    # The patched LOCK_TIMEOUT_S must actually be HONOURED. Without this the test passed either way,
+    # just 10s slower -- which is exactly how the original default-argument bug hid: `timeout` was
+    # bound at function DEFINITION, so patching the module global did nothing and every run waited
+    # the full built-in timeout. A behavioural assertion with no timing assertion cannot see that.
+    assert elapsed < 3.0, (
+        f"waited {elapsed:.1f}s for a 0.2s timeout -- LOCK_TIMEOUT_S is not being read at call time")
 
 
 def test_locking_unavailable_fails_soft_to_the_historical_behaviour(tmp_path, caplog, monkeypatch):
@@ -595,6 +603,114 @@ def test_a_writer_racing_a_transient_reader_still_records(tmp_path):
     gates = _store(tmp_path)["gates"]
     assert "baseline_captured" in gates, "the human approval was lost to a transient reader"
     assert "lld_approved" in gates, "the pre-existing signed gate was lost"
+
+
+def test_the_enrolment_moment_is_serialised_not_fail_soft(tmp_path, caplog):
+    """The FIRST write to a new engagement creates the ledger, and `docs/` does not exist yet. Before
+    `_open_lock_fd` created the parent, that call could not open its sidecar, so the enrolment moment
+    -- the one write that ACTIVATES enforcement -- ran unserialised behind an alarming warning on a
+    completely normal path. The existing sidecar test cannot see this: it runs inside an explicit
+    `_ledger_lock` on an already-created ledger, so `docs/` is always there by then."""
+    assert not (tmp_path / "docs").exists(), "precondition: a brand-new engagement root"
+    with caplog.at_level(logging.WARNING, logger="cisco_toolkit.gate_state"):
+        gate_state.record_decision("assessment_approved", "approved", root=str(tmp_path), by="lead")
+    assert "without serialisation" not in caplog.text.lower(), \
+        "the enrolment write fell back to unserialised because docs/ did not exist yet"
+    assert _store(tmp_path)["gates"]["assessment_approved"]["decision"] == "approved"
+
+
+def test_record_decision_validates_ownership_against_state_read_INSIDE_the_lock(tmp_path):
+    """`record_decision` moved its ownership check inside the lock so it cannot approve into a ledger
+    that was bound elsewhere in the meantime. Nothing pinned that: this lands a concurrent `bind`
+    between the caller's entry and its write, which is the interleave the move exists to stop."""
+    gate_state.bind_engagement("ACME-2026", root=str(tmp_path), by="lead")
+    real_read = gate_state._read_ledger
+    fired = []
+
+    def _someone_rebinds_then_we_read(path):
+        # The rebind must land BEFORE the locked read, or the read cannot see it — that IS the
+        # property under test (validate against state read inside the lock, not the caller's
+        # expectation). A first cut mutated the file AFTER the read and returned the stale store,
+        # so the check passed and the test proved nothing.
+        if not fired:
+            fired.append(True)
+            led = tmp_path / "docs" / "engagement-state.json"
+            store = json.loads(led.read_text(encoding="utf-8"))
+            store["engagement"] = "GLOBEX-2026"          # a different engagement takes the ledger
+            led.write_text(json.dumps(store), encoding="utf-8")
+        return real_read(path)
+
+    gate_state._read_ledger = _someone_rebinds_then_we_read
+    try:
+        with pytest.raises(gate_state.GateStateError, match="GLOBEX-2026"):
+            gate_state.record_decision("lld_approved", "approved", root=str(tmp_path),
+                                       by="lead", engagement="ACME-2026")
+    finally:
+        gate_state._read_ledger = real_read
+    assert fired, "the interleave never fired -- re-target it"
+    assert "lld_approved" not in _store(tmp_path)["gates"], \
+        "an approval landed in a ledger that had just been bound to another engagement"
+
+
+@pytest.mark.parametrize("scenario", ["rebind_refusal", "corrupt_audit"])
+def test_a_refused_write_leaves_no_sidecar_behind(tmp_path, scenario):
+    """A refusal must leave the directory exactly as it found it. `_open_lock_fd` runs BEFORE the
+    mutation is validated, so a re-bind refusal or a corrupt-audit refusal used to drop a 0-byte
+    `<ledger>.lock` into a ledger's folder the operation had just declined to touch -- including,
+    for a mis-declared run, another engagement's folder. Small, but this module's whole posture is
+    that a refusal changes nothing."""
+    docs = tmp_path / "docs"
+    if scenario == "rebind_refusal":
+        gate_state.bind_engagement("ACME-2026", root=str(tmp_path), by="lead")
+        for f in docs.iterdir():                       # drop the sidecar the successful bind made
+            if f.name.endswith(gate_state.LOCK_SUFFIX):
+                f.unlink()
+        before = {p.name for p in docs.iterdir()}
+        with pytest.raises(gate_state.GateStateError):
+            gate_state.bind_engagement("GLOBEX-2026", root=str(tmp_path), by="lead")
+    else:
+        docs.mkdir(parents=True)
+        (docs / "engagement-state.json").write_text(
+            json.dumps({"schema": 1, "gates": {}, "audit": {"2026": "hand-edited"}}), encoding="utf-8")
+        before = {p.name for p in docs.iterdir()}
+        v = gate_state.enforce("design", root=str(tmp_path))
+        assert v.recorded is False, "precondition: the write must have been refused"
+
+    strays = {p.name for p in docs.iterdir()} - before
+    assert strays == set(), f"a refused write left files behind: {sorted(strays)}"
+
+
+def test_a_vanished_ledger_is_not_resurrected_as_an_empty_one(tmp_path):
+    """If the ledger disappears between the read that DECIDED and the write that records, re-creating
+    it is wrong: the decision was made against content that no longer exists, and `_new_store()` would
+    resurrect an EMPTY ledger carrying only the row being written. Reproduced before the fix: a ledger
+    bound to ACME-2026 with a signed `lld_approved` came back as gates=[], audit=['override'],
+    engagement=None -- the signed gate AND the ADR-0006 binding gone, replaced by a row asserting an
+    override of approvals nobody could still see. The override arm fails CLOSED, so refusing here also
+    correctly withholds the document."""
+    gate_state.bind_engagement("ACME-2026", root=str(tmp_path), by="lead")
+    gate_state.record_decision("lld_approved", "approved", root=str(tmp_path), by="HUMAN",
+                               engagement="ACME-2026")
+    path = gate_state.store_path(str(tmp_path))
+    real_read = gate_state._read_ledger
+    fired = []
+
+    def _read_then_vanish(p):
+        out = real_read(p)
+        if not fired:
+            fired.append(True)
+            os.remove(p)                    # the file goes away inside enforce's window
+        return out
+
+    gate_state._read_ledger = _read_then_vanish
+    try:
+        with pytest.raises(gate_state.GateStateError, match="disappeared"):
+            gate_state.enforce("design", root=str(tmp_path), override_reason="CAB waived",
+                               engagement="ACME-2026")
+    finally:
+        gate_state._read_ledger = real_read
+    assert fired, "the interleave never fired -- re-target it"
+    assert not os.path.exists(path), "an EMPTY ledger was resurrected in place of the real one"
 
 
 def test_the_lock_is_a_sidecar_and_never_the_ledger(tmp_path):

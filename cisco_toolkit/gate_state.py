@@ -496,7 +496,7 @@ def _ledger_lock(path: str, timeout: Optional[float] = None):
         os.close(fd)
 
 
-def _locked_update(path: str, apply):
+def _locked_update(path: str, apply, require_existing: bool = False):
     """The ONE write path: serialise, RE-READ the ledger from disk, apply the mutation, save.
 
     Re-reading inside the lock is what actually closes the lost update — a lock around a mutation of
@@ -512,15 +512,49 @@ def _locked_update(path: str, apply):
     The re-read also means the FAIL-SOFT path (see ``_ledger_lock``) is no worse than the historical
     behaviour: without a lock the window between this read and the save is still there, but it is
     now microseconds of pure computation rather than spanning a caller's whole validation.
+
+    ``require_existing`` is for callers that ALREADY read a ledger and are only appending to it. If
+    the file has vanished between their read and this write, re-creating it is wrong: the caller's
+    decision was made against content that no longer exists, and ``_new_store()`` would resurrect an
+    EMPTY ledger carrying only the row being written. Reproduced with the override path — a ledger
+    bound to ACME-2026 with a signed ``lld_approved`` came back as ``gates=[]``,
+    ``audit=['override']``, ``engagement=None``: the signed gate and the ADR-0006 binding both gone,
+    replaced by a row asserting an override of approvals nobody could still see. Refuse instead; the
+    file is evidence and its disappearance is not something a write should paper over.
+
+    A sidecar this call CREATED is removed when the update raises, so a refusal leaves the directory
+    exactly as it found it. Without that, a re-bind refusal or a corrupt-audit refusal dropped a
+    0-byte ``<ledger>.lock`` into a ledger's folder the operation had just declined to touch — small,
+    but this module's whole posture is that a refusal changes nothing.
     """
-    with _ledger_lock(path):
-        store = _read_ledger(path)
-        existed = store is not None
-        if store is None:
-            store = _new_store()
-        result = apply(store, existed)
-        save_store(path, store)
+    sidecar = path + LOCK_SUFFIX
+    sidecar_pre_existed = os.path.exists(sidecar)
+    try:
+        with _ledger_lock(path):
+            store = _read_ledger(path)
+            existed = store is not None
+            if require_existing and not existed:
+                raise GateStateError(
+                    f"gate-state store {path} disappeared between this run's read and its write -- "
+                    f"refusing to re-create it, which would resurrect an EMPTY ledger holding only "
+                    f"this row and silently discard whatever approvals it had. Restore the file (or "
+                    f"its backup) and re-run.")
+            if store is None:
+                store = _new_store()
+            result = apply(store, existed)
+            save_store(path, store)
         return result
+    except BaseException:
+        # A refusal must leave the directory as it found it. Only remove a sidecar THIS call created
+        # (never one that was already there, which another writer may be holding), and never let the
+        # cleanup mask the real error. BaseException so a KeyboardInterrupt/SIGTERM tidies up too --
+        # the lock is already released and the fd closed by _ledger_lock's own finally.
+        if not sidecar_pre_existed:
+            try:
+                os.remove(sidecar)
+            except OSError:                      # pragma: no cover - best-effort; a held sidecar stays
+                pass
+        raise
 
 
 #: A read or a rename can lose a race with the OTHER operation on the ledger, so both retry briefly.
@@ -751,7 +785,7 @@ def revoked_requirements(store: dict, generator: str) -> List[str]:
     return [k for k in GENERATOR_REQUIRES[generator] if is_revoked(store, k)]
 
 
-def _append_audit(path: str, entry: dict, mutate=None) -> dict:
+def _append_audit(path: str, entry: dict, mutate=None, require_existing: bool = False) -> dict:
     """Append one row to the ledger's audit array and persist it, SERIALISED against other writers.
 
     Takes no caller-loaded ``store``: it re-reads the ledger under an exclusive lock and applies the
@@ -788,7 +822,7 @@ def _append_audit(path: str, entry: dict, mutate=None) -> dict:
         audit.append(entry)
         return entry
 
-    return _locked_update(path, _apply)
+    return _locked_update(path, _apply, require_existing=require_existing)
 
 
 def _record_refusal(path: str, store: dict, generator: str, status: str,
@@ -842,7 +876,7 @@ def _record_refusal(path: str, store: dict, generator: str, status: str,
              "engagement": engagement_of(store), "declared": (declared or "").strip() or None,
              "missing": list(missing), "reason": detail}
     try:
-        _append_audit(path, entry)
+        _append_audit(path, entry, require_existing=True)
     except (OSError, GateStateError, RecursionError) as e:
         # Narrow and enumerated, never a bare `except Exception` (that class of catch is what let an
         # earlier attempt seal "approved" over a swallowed ValueError). OSError: a locked/read-only
@@ -1107,9 +1141,14 @@ def enforce(generator: str, override_reason: Optional[str] = None,
         # the audit line is the ONLY thing that makes proceeding past a missing approval legitimate,
         # so if it cannot be written the run must not quietly generate the document anyway. Letting
         # the OSError propagate is the fail-closed choice.
+        # require_existing for the same reason: this override was decided FROM a ledger read moments
+        # ago, so if that file has since vanished, re-creating it would resurrect an EMPTY ledger
+        # whose only content is a row claiming an override of approvals nobody can still see. The
+        # raised GateStateError then correctly withholds the document instead of generating it
+        # against evidence that no longer exists.
         _append_audit(path, {"at": _now(), "who": actor, "event": "override",
                              "generator": generator, "missing": missing,
-                             "reason": override_reason.strip()})
+                             "reason": override_reason.strip()}, require_existing=True)
         logger.warning("[GATE OVERRIDDEN] %s generated despite missing approval(s) %s -- "
                        "who=%s reason=%r (audit line appended to %s)",
                        generator, ", ".join(missing), actor, override_reason.strip(), path)
