@@ -144,6 +144,42 @@ def test_related_rows_excludes_the_document_being_written():
     assert related_rows(exclude="mop") == rows
 
 
+def test_related_rows_marks_the_web_only_kinds_the_engine_never_writes():
+    """The table lists the whole FAMILY, but `cli_artifacts` (what a COMPLETE engine CLI/Atlas run
+    leaves on disk) deliberately excludes `cutover` and `nrfu` — AssessHub renders those. Unmarked,
+    an offline delivery advertised a Cutover Plan and an NRFU/ATP that are not in the folder and that
+    no engine writer produces. Every OTHER row must stay unannotated (the note is not decoration)."""
+    from cisco_toolkit.docmeta import (CLI_ARTIFACT_SUFFIX, FAMILY, WEB_ONLY_KINDS,
+                                       WEB_ONLY_ROLE_NOTE)
+    assert WEB_ONLY_KINDS and not (WEB_ONLY_KINDS & set(CLI_ARTIFACT_SUFFIX))
+    by_name = dict(related_rows())
+    for key, name, _role in FAMILY:
+        role = by_name[name]
+        if key in WEB_ONLY_KINDS:
+            assert WEB_ONLY_ROLE_NOTE in role, f"{name} does not disclose its producer"
+            assert "AssessHub" in role and "not produced by the offline engine run" in role
+        else:
+            assert WEB_ONLY_ROLE_NOTE not in role, f"{name} wrongly marked web-only"
+
+
+def test_related_documents_intro_does_not_assert_a_reconciliation_it_never_ran():
+    """The intro asserted "the set is internally consistent (every number reconciles)"
+    UNCONDITIONALLY — in the same front matter where add_excellence_front's single-source-of-truth
+    line may report that NONE of the figures could be reconciled, or that some disagreed. A claim of
+    verification is not furniture: the reconcile verdict has one owner (ssot.summary, rendered under
+    'At a Glance'), and this block must point at it rather than pre-empt it."""
+    from docx import Document
+
+    from cisco_toolkit.docmeta import add_related_documents
+    doc = Document()
+    add_related_documents(doc, exclude=("mop",), intro=True)
+    text = _all_text(doc)
+    assert "one of a set generated from the same assessment snapshot" in text   # the provenance fact
+    assert "every number reconciles" not in text
+    assert "internally consistent" not in text
+    assert "single-source-of-truth line" in text and "does not assert it" in text
+
+
 def test_document_control_renders_all_furniture():
     doc = Document()
     add_document_control(doc, document="Unit Doc", label="Fleet X", engine_version="V9",

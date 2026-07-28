@@ -89,6 +89,35 @@ def test_verdict_word_without_qa_marker_is_none():
                               date="d", commit="c") is None
 
 
+def test_prose_heading_in_verdict_shape_is_not_a_verdict():
+    """The per-artifact signature is only worth anything if the "<artifact>" half is an ARTIFACT.
+
+    `([A-Za-z][\\w./+-]{1,40})` matches ANY word, so every one of these ordinary prose headings
+    satisfied the anti-fabrication signature and minted a QA scorecard row with no reviewer and no
+    artifact behind it — proposer == verifier at the persistence layer, feeding summarize_trend,
+    selfcheck.check_judge_trust and the calibration nerve."""
+    for prose in ("Verdict: APPROVE",
+                  "Status: BLOCK",
+                  "Recommendation: APPROVE",
+                  "Result - BLOCK",
+                  "Decision: APPROVED",
+                  "Summary\nOverall: APPROVE\nEverything looks fine.\n"):
+        assert S.parse_qa_verdict(prose, date="d", commit="c") is None, prose
+
+
+def test_real_reviewer_verdict_shapes_still_parse():
+    """The other side of the allow-list: every documented reviewer shape must still record — a
+    named artifact file, a bare deliverable-family word, and a prefixed engagement filename."""
+    for good in ("design.docx — BLOCK",
+                 "MOP - BLOCK",
+                 "runbook.docx: APPROVE",
+                 "[HISTORY-REDACTED]_Assessment_redacted_archreview.docx — APPROVE",
+                 "> workbook — APPROVE",
+                 "NRFU — BLOCK",          # web-rendered deliverables have no _FAMILY label...
+                 "cutover: APPROVE"):     # ...but a verdict on one is still a real verdict
+        assert S.parse_qa_verdict(good, date="d", commit="c") is not None, good
+
+
 def test_laws_tripped_filters_stray_tokens():
     txt = "design.docx — BLOCK\nfinding: trips Law 3 and L10 but an ID like L47 is not a Law."
     row = S.parse_qa_verdict(txt, date="d", commit="c")
@@ -190,6 +219,35 @@ def test_is_provisional_predicate():
     # a judge-baseline / malformed row is not a verdict at all
     assert S.is_provisional({"verdict": None, "score": None}) is False
     assert S.is_provisional("not a dict") is False
+
+
+def test_score_does_not_buy_a_judge_verdict_out_of_the_tnr_floor(tmp_path):
+    """A numeric `score` used to short-circuit the predicate to False on ANY row, on the unverified
+    assumption that a score proves the deterministic harness produced it — so adding one field to a
+    judge verdict disabled the whole JUDGE_TNR_FLOOR enforcement, including the append_row choke
+    point whose stated job is that fabricated confidence cannot be persisted."""
+    judged = {"verdict": "APPROVE", "judge_tnr": 0.2, "reviewed_by": "deliverable-qa-reviewer"}
+    assert S.is_provisional(judged) is True
+    assert S.is_provisional(dict(judged, score=100)) is True        # the score does not rebut a judge
+    assert S.judge_provenance(dict(judged, score=100))              # and the reason is readable
+    # judge provenance via the stamped TNR alone (no reviewed_by declared) is enough
+    assert S.is_provisional({"verdict": "APPROVE", "score": 100, "judge_tnr": 0.2}) is True
+    # a genuine deterministic harness row (no judge signal at all) stays non-provisional
+    assert S.is_provisional({"verdict": "APPROVE", "score": 100, "judge_tnr": None}) is False
+    # ENFORCE at the choke point: the lying row cannot persist provisional=false
+    sc = str(tmp_path / "sc.jsonl")
+    lying = {"date": "d", "deliverable": "set", "score": 100, "verdict": "APPROVE",
+             "judge_tnr": 0.2, "provisional": False, "counterexamples": 0, "laws_tripped": [],
+             "commit": "c", "notes": "n", "reviewed_by": "deliverable-qa-reviewer"}
+    assert S.append_row(dict(lying), sc) is True
+    assert S.read_rows(sc)[0]["provisional"] is True
+
+
+def test_stamp_judge_trust_strips_a_score_from_a_transcript_verdict():
+    """The writer side: a QA verdict comes from a transcript, and the numeric eval score is the
+    golden harness's job — so a caller cannot hand a judge verdict a score on the way in."""
+    stamped = S.stamp_judge_trust({"verdict": "APPROVE", "score": 100}, [])
+    assert stamped["score"] is None and stamped["provisional"] is True
 
 
 def test_run_hook_stamps_judge_tnr_from_latest_baseline(tmp_path):

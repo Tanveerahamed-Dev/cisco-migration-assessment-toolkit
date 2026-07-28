@@ -86,6 +86,59 @@ def test_no_egress_claim_names_its_documented_exceptions():
     assert "gen_port_registry.py" in (c["method"] + c["detail"])
 
 
+def test_no_egress_walk_reaches_subpackages_and_the_exception_is_not_dead():
+    """The walk must be RECURSIVE, and its documented exception must be doing real work.
+
+    Regression: `_iter_py` enumerated `os.listdir` (top level only), so
+    `cisco_toolkit/data/gen_port_registry.py` — which imports `urllib.request` and fetches
+    iana.org — was never opened, and `NO_EGRESS_EXCEPTIONS` was DEAD CODE. The panel published
+    "0 network-library imports across N analysis modules" over a file it had not read, on the
+    client-facing Trust & Sovereignty sheet. Two halves, both load-bearing: the scan REACHES the
+    subpackage file (it is a real offender before the exception is subtracted), and the claim
+    reports the exception as APPLIED rather than as matching nothing."""
+    from cisco_toolkit.attestation import (NETWORK_IMPORTS, NO_EGRESS_EXCEPTIONS,
+                                           NO_EGRESS_EXCLUDE, scan_imports)
+    pkg = os.path.join(ROOT, "cisco_toolkit")
+    n, offenders = scan_imports(pkg, NETWORK_IMPORTS, exclude=NO_EGRESS_EXCLUDE)
+    assert "data/gen_port_registry.py" in offenders, (
+        "the subpackage file was never scanned -> the documented exception is dead code "
+        f"(offenders={offenders})")
+    assert "urllib.request" in offenders["data/gen_port_registry.py"]
+    assert set(offenders) <= set(NO_EGRESS_EXCEPTIONS), f"undocumented egress import: {offenders}"
+    c = _by_id(compute_attestation())["no_egress_import_graph"]
+    assert c["result"] == HOLDS
+    assert "exception(s) applied: data/gen_port_registry.py -> urllib.request" in c["detail"]
+    assert "matched nothing" not in c["detail"], "a never-firing exception is a stale charter"
+
+
+def test_network_import_in_a_SUBPACKAGE_is_violated(tmp_path):
+    """A banned import one directory down must flip the claim, naming its relative path — the
+    top-level-only walk reported HOLDS over exactly this shape."""
+    pkg = _fake_pkg(tmp_path, {"clean.py": "X = 1\n"})
+    sub = tmp_path / "fakepkg" / "sub"
+    sub.mkdir()
+    (sub / "evil.py").write_text("import socket\n", encoding="utf-8")
+    c = _by_id(compute_attestation(toolkit_dir=pkg,
+                                   collector_module="no_such_collector_module_xyz"))[
+        "no_egress_import_graph"]
+    assert c["result"] == VIOLATED
+    assert "sub/evil.py" in c["detail"] and "socket" in c["detail"]
+
+
+def test_charter_exclusion_is_path_scoped_not_basename_scoped(tmp_path):
+    """`rest_collect.py` is excluded as a top-level charter case; a same-named file in a
+    SUBPACKAGE is a different module and must still be judged (a basename-keyed exclusion would
+    silently exempt it)."""
+    pkg = _fake_pkg(tmp_path, {"rest_collect.py": 'import requests\n'})
+    sub = tmp_path / "fakepkg" / "vendor"
+    sub.mkdir()
+    (sub / "rest_collect.py").write_text("import requests\n", encoding="utf-8")
+    c = _by_id(compute_attestation(toolkit_dir=pkg,
+                                   collector_module="no_such_collector_module_xyz"))[
+        "no_egress_import_graph"]
+    assert c["result"] == VIOLATED and "vendor/rest_collect.py" in c["detail"]
+
+
 def test_rest_get_only_claim_counts_the_single_login_post():
     c = _by_id(compute_attestation())["rest_collect_get_only"]
     assert c["result"] == HOLDS

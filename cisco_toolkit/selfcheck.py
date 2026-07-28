@@ -51,6 +51,21 @@ GUARD_FILES = [
 # cisco_toolkit.memory_guard (one source of truth) and imported lazily inside the check, so a deleted
 # guard module reads RED there instead of breaking this module's import.
 
+# --- the D12 verbatim floor (see check_protected_artifact / protected_body_integrity) -------------
+# D12 says the protected tier survives a consolidation pass VERBATIM. Existence + the frontmatter
+# marker + "each of the 8 short anchors appears somewhere" is satisfied by a BULLET LIST of the
+# anchors — i.e. by exactly the compression D12 forbids (measured: an artifact reduced to the 8
+# anchor strings read GREEN, "all 8 canonical anchors pinned"). The byte-exact mechanism
+# (memory_guard.verify_snapshot's sha256) needs a pre-pass baseline and is reachable only from the
+# manual CLI wrapper, and a standing check cannot use bytes anyway: a legitimate human edit is not a
+# D12 violation. These two floors reject the compressed SHAPE instead, and both are reported with
+# their measured values so the verdict is never a bare assertion.
+#: body characters required per character of canonical anchor text (real artifact measures 14.1x).
+PROTECTED_MIN_BODY_RATIO = 5
+#: characters of surrounding doctrine required on an anchor's own line (real artifact's min is 44) —
+#: a bullet holding nothing but the anchor is a keyword, not the constraint.
+PROTECTED_MIN_ANCHOR_CONTEXT = 24
+
 
 def _check(name: str, status: str, detail: str) -> Dict[str, str]:
     return {"name": name, "status": status, "detail": detail}
@@ -257,9 +272,16 @@ def check_judge_trust(root: str) -> Dict[str, str]:
                           f"fabricated confidence: {len(fabricated)} APPROVE row(s) persisted "
                           f"provisional=false with judge_tnr null/< {SCD.JUDGE_TNR_FLOOR} "
                           f"(first: {fabricated[0]}) — a below-floor judge's APPROVE must stay advisory")
-        judged = [r for r in rows
-                  if str(r.get("verdict") or "").strip().upper().startswith("APPROVE")
-                  and SCD._num(r.get("score")) is None]
+        approvals = [r for r in rows
+                     if str(r.get("verdict") or "").strip().upper().startswith("APPROVE")]
+        # A scored row is exempt from the floor as "deterministic harness output" — a claim NOTHING
+        # in the schema authenticates. Rows that also carry judge provenance are judged rows again
+        # (scorecard.is_provisional narrows the exemption); the rest keep it, so COUNT and DISCLOSE
+        # them instead of letting the exemption absorb rows out of the denominator silently.
+        judged, score_exempt = [], []
+        for r in approvals:
+            (score_exempt if (SCD._num(r.get("score")) is not None
+                              and not SCD.judge_provenance(r)) else judged).append(r)
         advisory = sum(1 for r in judged if SCD.is_provisional(r))
         base = SCD.latest_judge_baseline(rows)
         if base is None:
@@ -276,10 +298,52 @@ def check_judge_trust(root: str) -> Dict[str, str]:
             else:
                 state = "clears the floor — freshly-stamped APPROVEs are gating"
             tail = f"latest judge-baseline TNR={tnr} ({base.get('date')}), floor {SCD.JUDGE_TNR_FLOOR}: {state}"
+        if score_exempt:
+            tail += (f"; {len(score_exempt)} scored APPROVE row(s) exempt from the floor as "
+                     "deterministic harness output — that producer is DECLARED, not authenticated "
+                     "(no producer identity in the row schema), so the exemption is disclosed here "
+                     "rather than counted as verified trust")
         return _check("judge_trust", GREEN,
                       f"{advisory}/{len(judged)} judge-APPROVE row(s) advisory (non-gating); {tail}")
     except Exception as e:
         return _check("judge_trust", UNKNOWN, f"could not evaluate: {e!r}")
+
+
+def protected_body_integrity(body: str, constraints: List[Tuple[str, str]]) -> List[str]:
+    """Problems showing the protected entry was COMPRESSED rather than retained verbatim (D12).
+
+    Pure over the artifact's body text, so it is exhaustively unit-testable. Two floors, each
+    reported with the value it measured:
+
+    * **volume** — the body must be at least :data:`PROTECTED_MIN_BODY_RATIO`x the total length of
+      the canonical anchors. A keyword list of the anchors measures ~1.2x; the real artifact 14.1x.
+    * **anchor context** — an anchor that appears ONLY on lines holding little else
+      (< :data:`PROTECTED_MIN_ANCHOR_CONTEXT` characters beyond the anchor) has been reduced to a
+      keyword: the constraint is the sentence, not the phrase. An anchor absent altogether is NOT
+      reported here — ``memory_guard.unpinned_constraints`` owns that loss class.
+
+    Deliberately a SHAPE test, not a byte pin: bytes cannot distinguish a compression pass from a
+    legitimate human edit, and the byte-exact mechanism (``memory_guard snapshot|verify``) brackets a
+    consolidation run rather than standing watch. Empty == the entry still reads as doctrine prose."""
+    text = body or ""
+    problems: List[str] = []
+    total = sum(len(a) for _, a in constraints)
+    n_body = len(text.strip())
+    if total and n_body < PROTECTED_MIN_BODY_RATIO * total:
+        problems.append(
+            f"body COMPRESSED toward a keyword list: {n_body} chars for {total} chars of canonical "
+            f"anchors ({n_body / total:.1f}x, floor {PROTECTED_MIN_BODY_RATIO}x) — D12 requires the "
+            "protected tier verbatim, not a summary of it")
+    bare = []
+    for cid, anchor in constraints:
+        margins = [len(ln.strip()) - len(anchor) for ln in text.splitlines() if anchor in ln]
+        if margins and max(margins) < PROTECTED_MIN_ANCHOR_CONTEXT:
+            bare.append(f"{cid} (max {max(margins)} chars of context, floor "
+                        f"{PROTECTED_MIN_ANCHOR_CONTEXT})")
+    if bare:
+        problems.append(f"{len(bare)}/{len(constraints)} canonical constraint(s) survive only as a "
+                        f"bare keyword, not as the doctrine sentence: {', '.join(bare)}")
+    return problems
 
 
 def check_protected_artifact(root: str, memory_dir: Optional[str] = None) -> Dict[str, str]:
@@ -319,6 +383,7 @@ def check_protected_artifact(root: str, memory_dir: Optional[str] = None) -> Dic
     # The pinned expectation, reconciled via the guard's own loss detector: an entry named after the
     # artifact must survive in the live store (deletion OR a name-pin rewrite reads as dropped).
     expected = [MG.MemoryEntry(name=os.path.splitext(MG.PROTECTED_ARTIFACT)[0], body="", meta={"protected": "true"})]
+    body_measure = ""
     if MG.missing_protected(expected, store) or not os.path.exists(os.path.join(mdir, MG.PROTECTED_ARTIFACT)):
         problems.append(f"{MG.PROTECTED_ARTIFACT} dropped from the store ({mdir}) — the D12 never-delete tier is gone")
     else:
@@ -330,6 +395,12 @@ def check_protected_artifact(root: str, memory_dir: Optional[str] = None) -> Dic
         if unpinned:
             problems.append(f"{len(unpinned)}/{len(MG.CANONICAL_SAFETY_CONSTRAINTS)} canonical constraint(s) "
                             f"unpinned by any protected entry (first: {unpinned[0]})")
+        # D12 is a VERBATIM requirement: the checks above are all satisfied by an artifact compressed
+        # to a list of the anchor phrases, which is the compression they exist to catch.
+        problems += protected_body_integrity(entry.body, MG.CANONICAL_SAFETY_CONSTRAINTS)
+        body_measure = (f", body {len(entry.body.strip())} chars = "
+                        f"{len(entry.body.strip()) / max(1, sum(len(a) for _, a in MG.CANONICAL_SAFETY_CONSTRAINTS)):.1f}x "
+                        "the anchor text (not compressed to a keyword list)")
     # Index coverage: MEMORY.md is what re-surfaces the fact at session start (BLK-1 route d).
     try:
         index_text = open(os.path.join(mdir, "MEMORY.md"), encoding="utf-8", errors="replace").read()
@@ -343,7 +414,9 @@ def check_protected_artifact(root: str, memory_dir: Optional[str] = None) -> Dic
         return _check("protected_artifact", RED, "; ".join(problems))
     return _check("protected_artifact", GREEN,
                   f"{MG.PROTECTED_ARTIFACT} pinned: protected marker intact, all {len(MG.CANONICAL_SAFETY_CONSTRAINTS)} "
-                  f"canonical anchors pinned + doctrine-reconciled, MEMORY.md indexes it")
+                  f"canonical anchors pinned + doctrine-reconciled, MEMORY.md indexes it"
+                  f"{body_measure}. Structural pin — the BYTE-exact D12 check is "
+                  "`python -m cisco_toolkit.memory_guard snapshot|verify` around a consolidation pass")
 
 
 def check_graph_fresh(root: str, *, now: float, stale_days: int = 7) -> Dict[str, str]:
@@ -428,24 +501,47 @@ def check_graph_commit_current(root: str, *, stale_py_files: int = 30) -> Dict[s
     return _check("graph_commit", status, detail)
 
 
+def _guarded(name: str, fn, *args, **kwargs) -> Dict[str, str]:
+    """Run one check; ANY exception becomes an UNKNOWN row NAMING the failure.
+
+    This is what makes the module docstring's "a check that raises is caught and reported UNKNOWN,
+    never crashes the nightly run" true. It was not: nothing wrapped the checks and the per-check
+    guards caught only ``OSError``, so a single non-UTF-8 byte in ``scorecard.jsonl`` /
+    ``pir_outcomes.jsonl`` / ``nightly_runs.jsonl`` / ``learnings.md`` raised ``UnicodeDecodeError``
+    (a ``ValueError``) straight out of :func:`run_selfcheck` — the immune system went dark instead of
+    reporting that it had gone dark, which is the one failure mode this module exists to prevent.
+    UNKNOWN (not RED): the check was not evaluated, and an unevaluated check is never a verdict —
+    it still forces 'GREEN-with-gaps', so it can never read as plain green."""
+    try:
+        return fn(*args, **kwargs)
+    except Exception as e:                       # noqa: BLE001 — a dark check must still report
+        return _check(name, UNKNOWN,
+                      f"check RAISED {type(e).__name__}: {e} — it could not be evaluated at all "
+                      "(reported as a gap; absence of a signal is never GREEN)")
+
+
 def run_selfcheck(root: Optional[str] = None, *, now: Optional[float] = None,
                   graph_stale_days: int = 7, memory_dir: Optional[str] = None) -> Dict[str, Any]:
     """Run every check and summarize. ``now`` defaults to wall-clock and ``memory_dir`` to the real
     agent-memory store (both injected in tests — pytest must never touch the per-machine store). RED
     checks lead the briefing; the overall verdict is RED if any check is RED, else GREEN if none are
-    UNKNOWN, else 'GREEN-with-gaps' (coverage-honest: unknowns are disclosed, not hidden)."""
+    UNKNOWN, else 'GREEN-with-gaps' (coverage-honest: unknowns are disclosed, not hidden).
+
+    Every check runs through :func:`_guarded`, so one that raises is reported UNKNOWN under its own
+    name and the remaining checks still run — a broken check can never take the whole nightly run
+    (and with it every other signal) down with it."""
     root = _repo_root(root)
     now = now if now is not None else time.time()
     checks = [
-        check_scorecard_substrate(root),
-        check_pir_substrate(root),
-        check_nightly_ledger(root),
-        check_learnings_discipline(root),
-        check_guards_nonvacuous(root),
-        check_judge_trust(root),
-        check_protected_artifact(root, memory_dir=memory_dir),
-        check_graph_fresh(root, now=now, stale_days=graph_stale_days),
-        check_graph_commit_current(root),
+        _guarded("scorecard_substrate", check_scorecard_substrate, root),
+        _guarded("pir_outcomes_substrate", check_pir_substrate, root),
+        _guarded("nightly_ledger", check_nightly_ledger, root),
+        _guarded("learnings_discipline", check_learnings_discipline, root),
+        _guarded("guards_nonvacuous", check_guards_nonvacuous, root),
+        _guarded("judge_trust", check_judge_trust, root),
+        _guarded("protected_artifact", check_protected_artifact, root, memory_dir=memory_dir),
+        _guarded("graph_fresh", check_graph_fresh, root, now=now, stale_days=graph_stale_days),
+        _guarded("graph_commit", check_graph_commit_current, root),
     ]
     n_red = sum(1 for c in checks if c["status"] == RED)
     n_unknown = sum(1 for c in checks if c["status"] == UNKNOWN)

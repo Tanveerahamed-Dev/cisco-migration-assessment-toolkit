@@ -267,16 +267,29 @@ def _annotate_mtu(res: dict, snap, required_mtu=None) -> dict:
             res["mtu_bottleneck_hop"] = {"host": h, "out_intf": i, "mtu": mtu_min}
 
     total = len(observed) + len(unobserved)
+    blind = "MTU not collected on {} of {} hops".format(len(unobserved), total)
     # Verdict precedence (coverage-honest):
     #  - no reached path to audit, or nothing observed at all           -> INDETERMINATE (abstain)
+    #  - a PROVEN violation of `required_mtu` on an observed hop        -> below_required (see note)
     #  - any hop's MTU was not collected                                -> INDETERMINATE, disclosing N of M
     #  - a genuine narrowing among the observed hops                    -> bottleneck
     #  - every hop observed AND equal                                   -> uniform
+    #
+    # below_required comes FIRST because it is the only branch grounded in the caller's requirement rather
+    # than in the spread of what happened to be observed: the bottleneck branch fires on mtu_min < mtu_max,
+    # which is false exactly when EVERY hop is uniformly too narrow -- the normal shape of the 1500-byte
+    # underlay that silently drops VXLAN (this function's docstring calls it "the single most
+    # engagement-relevant missing check"), which used to report the clean one-word `uniform`. It outranks
+    # the unobserved-hop abstention because a hop measured below the requirement is PROVEN, not inferred;
+    # the remaining blind spots are appended to the same string, never dropped.
     if not res.get("reached") or not observed:
-        res["mtu_verdict"] = ("INDETERMINATE -- MTU not collected on {} of {} hops".format(len(unobserved), total)
-                              if unobserved else "INDETERMINATE -- no reached path to audit")
+        res["mtu_verdict"] = ("INDETERMINATE -- " + blind if unobserved
+                              else "INDETERMINATE -- no reached path to audit")
+    elif jumbo:
+        res["mtu_verdict"] = "below_required -- {} of {} observed hop(s) under the required {} (min {})".format(
+            len(jumbo), len(observed), req, res["mtu_min"]) + ("; " + blind if unobserved else "")
     elif unobserved:
-        res["mtu_verdict"] = "INDETERMINATE -- MTU not collected on {} of {} hops".format(len(unobserved), total)
+        res["mtu_verdict"] = "INDETERMINATE -- " + blind
     elif res.get("mtu_bottleneck_hop") is not None:
         res["mtu_verdict"] = "bottleneck"
     else:
@@ -284,7 +297,8 @@ def _annotate_mtu(res: dict, snap, required_mtu=None) -> dict:
     return res
 
 
-def trace_fib_path(snap, src_ip: str, dst_ip: str, max_hops: int = 32, required_mtu=None) -> dict:
+def trace_fib_path(snap, src_ip: str, dst_ip: str, max_hops: int = 32, required_mtu=None,
+                   disclose: bool = False) -> dict:
     """Compute the L3 forwarding path src_ip -> dst_ip by resolving FIB lookups host-to-host over snap['routes'] --
     the COMPUTED upgrade to the L2 topology 'lower bound' (analyze.py trace_full_flow). At each host the dst is
     resolved by longest-prefix-match; ALL equal-cost (ECMP) legs are explored; the next-hop IP locates the next
@@ -309,18 +323,31 @@ def trace_fib_path(snap, src_ip: str, dst_ip: str, max_hops: int = 32, required_
       * mtu_bottleneck_hop  -- {host, out_intf, mtu} of the lowest observed hop when it is below the maximum
                                observed (a genuine narrowing), else None.
       * mtu_verdict         -- 'uniform' (every hop observed AND equal) | 'bottleneck' (a hop is lower than the
-                               source's) | 'INDETERMINATE -- MTU not collected on N of M hops' (a missing MTU is
-                               ABSTENTION, NEVER a fabricated 1500-byte pass; also INDETERMINATE if the trace did
-                               not resolve a reached path to audit).
+                               source's) | 'below_required -- N of M observed hop(s) under the required X' (a
+                               PROVEN violation of `required_mtu`, including the uniformly-too-narrow path that
+                               has no internal spread at all) | 'INDETERMINATE -- MTU not collected on N of M
+                               hops' (a missing MTU is ABSTENTION, NEVER a fabricated 1500-byte pass; also
+                               INDETERMINATE if the trace did not resolve a reached path to audit).
       * mtu_unobserved_hops -- [{host, out_intf}] the traced hops whose MTU was not collected (the disclosed blind spots).
       * jumbo_blackhole     -- when `required_mtu` is given (e.g. 1550 for VXLAN, 9216 for a jumbo underlay), each
                                OBSERVED hop whose MTU < required as {host, out_intf, mtu, required}. A hop with no
                                collected MTU is disclosed in mtu_unobserved_hops, never asserted a blackhole.
 
+    EVIDENCE DISCLOSURE (`disclose=True`, additive; default off to keep the frozen result shape the
+    executed explorer-parity gate compares -- see _trace):
+      * drop_evidence       -- on a computed:unreachable, 'observed_discard' (a Null0/discard egress was
+                               SEEN) vs 'no_route_observed' (derived from an EMPTY lookup). The latter is
+                               NOT proof the device drops the packet: snap['routes'] is scoped by
+                               build.scope_routes to prefixes covering in-scope SVI subnets + the default,
+                               so a scoped-out route is indistinguishable from an absent one here.
+      * ecmp_dropping_legs  -- equal-cost legs PROVEN to blackhole while a sibling leg carries the flow
+                               (reached is a genuine existential over the leg set, but ~50% loss must not
+                               be swallowed by it).
+
     Returns {src, dst, hops:[{host, match, next_hop, out_intf, source}], status, computed, reached,
     mtu_min, mtu_bottleneck_hop, mtu_verdict, mtu_unobserved_hops, jumbo_blackhole}."""
     fibs, connected, l3_hosts = _build(snap)
-    res = _trace(fibs, connected, l3_hosts, src_ip, dst_ip)
+    res = _trace(fibs, connected, l3_hosts, src_ip, dst_ip, disclose=disclose)
     return _annotate_mtu(res, snap, required_mtu)
 
 
@@ -370,12 +397,136 @@ def _build(snap):
     return fibs, connected, l3_hosts
 
 
-def _trace(fibs, connected, l3_hosts, src_ip, dst_ip):
-    """Core trace over PREBUILT (fibs, connected, l3_hosts); coverage-honest semantics per trace_fib_path()."""
+def _resolver(fibs, connected, l3_hosts, dst_ip):
+    """The memoized per-host forwarding resolution toward ONE dst -> (explore, explore_set, leg_outcome).
 
-    def _result(hops, status, reached):
-        return {"src": src_ip, "dst": dst_ip, "hops": hops, "status": status,
-                "computed": status.startswith("computed"), "reached": reached}
+    Each returns the 4-tuple ``(status, reached, hops_from_here, evidence)``. `evidence` carries the two
+    facts the status alone cannot express, and both are findings the review named:
+
+      * ``drop_evidence`` -- WHY a `computed:unreachable` was returned. 'observed_discard' is a POSITIVE
+        observation (a Null0/discard egress: the router was seen to drop the packet). 'no_route_observed'
+        is derived from ABSENCE -- and `snap['routes']` is NOT the device's RIB: `build.scope_routes` keeps
+        only routes whose prefix covers an in-scope SVI subnet, plus the default. So an empty lookup is
+        equally consistent with "this router drops it" and "that route was scoped out of the snapshot",
+        and callers that must not confuse the two (reachability_diff) can now tell them apart.
+      * ``ecmp_dropping_legs`` -- equal-cost legs PROVEN to drop while a sibling leg does not. Forwarding
+        over an ECMP set is a genuine existential (a flow can hash onto any leg, so ANY leg reaching means
+        the dst IS reachable), but a leg that blackholes is ~50% packet loss on the very flows this model
+        certifies 'reached'; it must be disclosed rather than swallowed by the existential.
+
+    Shared by _trace (whole path) and ecmp_consistency (per leg) so the two surfaces cannot drift apart."""
+    memo, computing = {}, set()                             # per-resolver; the verdict-from-a-host is intrinsic
+
+    def _rank(status):                                      # reach > any lower bound > a definitive drop
+        return 2 if status.startswith("computed:reached") else (1 if status.startswith("lower_bound") else 0)
+
+    def _cache(host, res):
+        if not (res[0].endswith(":loop") or res[0].endswith(":max_hops")):
+            memo[host] = res                                # cache only path-INDEPENDENT verdicts (not loop/cutoff)
+        return res
+
+    def explore_set(hosts, amb_status):
+        """Resolve forwarding from a SET of candidate hosts for ONE unknown-but-fixed hop -- a next-hop IP or the
+        source IP shared by >1 collected host (a transit/multi-access subnet, where the exact owner can't be pinned
+        without interface-IP data). Definitive ONLY when every candidate agrees: all reach -> reached; all
+        definitively drop -> unreachable; any disagreement or lower bound -> the ambiguous lower bound. This keeps
+        recall (the common case: every possible forwarder routes the dst alike) without guessing which is real."""
+        if len(hosts) == 1:
+            return explore(hosts[0])
+        results = [explore(h) for h in hosts]
+        if all(r[1] for r in results):
+            return ("computed:reached", True, results[0][2], results[0][3])   # every possible forwarder reaches
+        if all(r[0] == "computed:unreachable" for r in results):
+            return ("computed:unreachable", False, results[0][2], results[0][3])   # all definitively drop
+        return (amb_status, False, [], {})                            # disagreement / a lower bound -> ambiguous
+
+    def leg_outcome(host, m):
+        """ONE installed (equal-cost) leg from `host` -> (hop_record, outcome_4tuple): what a flow that hashes
+        onto THIS leg does. A connected match is delivery; a Null0/discard egress is an observed drop; anything
+        else defers to the next-hop owner(s)."""
+        hop = {"host": host, "match": m.get("match", ""), "next_hop": str(m.get("next_hop", "") or ""),
+               "out_intf": str(m.get("out_intf", "") or ""), "source": str(m.get("source", "") or "")}
+        if _is_connected(m.get("source")):
+            return hop, ("computed:reached", True, [hop], {})         # dst is directly attached on this leg
+        if _is_discard(m.get("out_intf")):                            # Null0/discard egress -> definitive drop
+            return hop, ("computed:unreachable", False, [hop], {"drop_evidence": "observed_discard"})
+        nh = str(m.get("next_hop", "")).strip()
+        nxts = _hosts_owning_ip(connected, nh, exclude=host) if nh else []
+        if not nxts:
+            return hop, ("lower_bound:next_hop_not_collected", False, [hop], {})
+        sub = explore_set(nxts, "lower_bound:ambiguous_next_hop")
+        return hop, (sub[0], sub[1], [hop] + sub[2], dict(sub[3]))
+
+    def explore(host):
+        """(status, reached, hops_from_host, evidence) for the dst from `host`, exploring every equal-cost (ECMP)
+        leg -- a router load-balances so the flow can take any leg: reach if ANY leg reaches. MEMOIZED per host
+        (the verdict is intrinsic to the host, not to how it was reached), so a shared-subnet fan-out is linear,
+        not exponential; an in-progress host is a forwarding loop (returned but never cached)."""
+        if host in memo:
+            return memo[host]
+        if host in computing:
+            return ("lower_bound:loop", False, [], {})     # cycle back-edge -- path-dependent, do not cache
+        legs = fib_lookup_all(fibs.get(host, []), dst_ip)
+        if not legs:
+            if host in l3_hosts:                                       # a router: no match + no default -> drop
+                # DEFINITIVE per the routes we hold -- but derived from ABSENCE, and snap['routes'] is a SCOPED
+                # subset of the RIB (see this function's docstring), so the evidence kind is disclosed.
+                return _cache(host, ("computed:unreachable", False, [], {"drop_evidence": "no_route_observed"}))
+            # an L2 access switch / device with no L3 evidence forwards to an (uncollected) upstream default-gateway
+            # -> its empty match is indeterminate, not a fabricated drop (audit-5 #0).
+            return _cache(host, ("lower_bound:no_l3_routing", False, [], {}))
+        computing.add(host)
+        best, outcomes = None, []
+        for m in legs:
+            hop, cand = leg_outcome(host, m)
+            outcomes.append((hop, cand))
+            if best is None:
+                best = cand
+            elif not best[1] and (cand[1] or _rank(cand[0]) > _rank(best[0])):
+                # the FIRST reaching leg wins (ECMP existential) and is never displaced; among non-reaching
+                # legs the most informative wins (a lower bound beats a definitive drop). Unlike the previous
+                # version this does NOT break out of the loop: the siblings of a reaching leg are exactly the
+                # legs that may be blackholing, and they cannot be disclosed without resolving them.
+                best = cand
+        computing.discard(host)
+        ev = dict(best[3])
+        drops = [(h, c) for h, c in outcomes if c[0] == "computed:unreachable"]
+        if drops and len(drops) < len(outcomes):            # legs DISAGREE: some proven to drop, some not
+            ev["ecmp_dropping_legs"] = [
+                {"host": host, "match": h["match"], "next_hop": h["next_hop"], "out_intf": h["out_intf"],
+                 "leg_status": c[0], "drop_evidence": c[3].get("drop_evidence", "")} for h, c in drops
+            ] + list(ev.get("ecmp_dropping_legs") or [])
+        elif drops and best[0] == "computed:unreachable":
+            # EVERY leg drops: the host-level verdict is only as positively-evidenced as its weakest leg --
+            # one absence-derived leg means the whole drop could be a scoping artifact.
+            kinds = {c[3].get("drop_evidence", "") for _h, c in drops}
+            ev["drop_evidence"] = ("no_route_observed" if "no_route_observed" in kinds
+                                   else ("observed_discard" if "observed_discard" in kinds
+                                         else ev.get("drop_evidence", "")))
+        return _cache(host, (best[0], best[1], best[2], ev))
+
+    return explore, explore_set, leg_outcome
+
+
+def _trace(fibs, connected, l3_hosts, src_ip, dst_ip, disclose=False):
+    """Core trace over PREBUILT (fibs, connected, l3_hosts); coverage-honest semantics per trace_fib_path().
+
+    `disclose` adds the two evidence keys (`drop_evidence`, `ecmp_dropping_legs`, see _resolver) to the
+    result. It is OFF by default because trace_fib_path's result dict is compared KEY-FOR-KEY against the
+    explorer's embedded JS port by the EXECUTED parity gate (tests/test_explorer_js_parity.py), which
+    projects out only the named MTU-enrichment keys -- an unconditional new key there would report the two
+    surfaces as diverged. reachability_diff, the cutover surface these disclosures exist for, always asks
+    for them."""
+
+    def _result(hops, status, reached, ev=None):
+        r = {"src": src_ip, "dst": dst_ip, "hops": hops, "status": status,
+             "computed": status.startswith("computed"), "reached": reached}
+        if disclose:
+            ev = ev or {}
+            r["ecmp_dropping_legs"] = list(ev.get("ecmp_dropping_legs") or [])
+            r["drop_evidence"] = (str(ev.get("drop_evidence") or "")
+                                  if status == "computed:unreachable" else "")
+        return r
 
     sip, dip = _ip(src_ip), _ip(dst_ip)
     if sip is None or dip is None:
@@ -387,78 +538,12 @@ def _trace(fibs, connected, l3_hosts, src_ip, dst_ip):
     if not src_hosts:
         return _result([], "lower_bound:src_host_not_found", False)
 
-    def _rank(status):                                      # reach > any lower bound > a definitive drop
-        return 2 if status.startswith("computed:reached") else (1 if status.startswith("lower_bound") else 0)
-
-    memo, computing = {}, set()                             # per-trace; the verdict-from-a-host is intrinsic
-
-    def _cache(host, res):
-        if not (res[0].endswith(":loop") or res[0].endswith(":max_hops")):
-            memo[host] = res                                # cache only path-INDEPENDENT verdicts (not loop/cutoff)
-        return res
-
-    def _explore_set(hosts, amb_status):
-        """Resolve forwarding from a SET of candidate hosts for ONE unknown-but-fixed hop -- a next-hop IP or the
-        source IP shared by >1 collected host (a transit/multi-access subnet, where the exact owner can't be pinned
-        without interface-IP data). Definitive ONLY when every candidate agrees: all reach -> reached; all
-        definitively drop -> unreachable; any disagreement or lower bound -> the ambiguous lower bound. This keeps
-        recall (the common case: every possible forwarder routes the dst alike) without guessing which is real."""
-        if len(hosts) == 1:
-            return _explore(hosts[0])
-        results = [_explore(h) for h in hosts]
-        if all(r[1] for r in results):
-            return ("computed:reached", True, results[0][2])          # every possible forwarder reaches
-        if all(r[0] == "computed:unreachable" for r in results):
-            return ("computed:unreachable", False, results[0][2])     # every possible forwarder definitively drops
-        return (amb_status, False, [])                                # disagreement / a lower bound -> ambiguous
-
-    def _explore(host):
-        """(status, reached, hops_from_host) for the dst from `host`, exploring every equal-cost (ECMP) leg -- a
-        router load-balances so the flow can take any leg: reach if ANY leg reaches. MEMOIZED per host (the verdict
-        is intrinsic to the host, not to how it was reached), so a shared-subnet fan-out is linear, not exponential;
-        an in-progress host is a forwarding loop (returned but never cached)."""
-        if host in memo:
-            return memo[host]
-        if host in computing:
-            return ("lower_bound:loop", False, [])         # cycle back-edge -- path-dependent, do not cache
-        legs = fib_lookup_all(fibs.get(host, []), dst_ip)
-        if not legs:
-            if host in l3_hosts:                                       # a router: no match + no default -> definitive drop
-                return _cache(host, ("computed:unreachable", False, []))
-            # an L2 access switch / device with no L3 evidence forwards to an (uncollected) upstream default-gateway
-            # -> its empty match is indeterminate, not a fabricated drop (audit-5 #0).
-            return _cache(host, ("lower_bound:no_l3_routing", False, []))
-        computing.add(host)
-        best = None
-        for m in legs:
-            hop = {"host": host, "match": m["match"], "next_hop": str(m.get("next_hop", "") or ""),
-                   "out_intf": str(m.get("out_intf", "") or ""), "source": str(m.get("source", "") or "")}
-            if _is_connected(m.get("source")):
-                best = ("computed:reached", True, [hop])              # dst is directly attached on this leg
-                break
-            if _is_discard(m.get("out_intf")):                       # Null0/discard egress -> definitive drop
-                cand = ("computed:unreachable", False, [hop])
-            else:
-                nh = str(m.get("next_hop", "")).strip()
-                nxts = _hosts_owning_ip(connected, nh, exclude=host) if nh else []
-                if not nxts:
-                    cand = ("lower_bound:next_hop_not_collected", False, [hop])
-                else:
-                    sub = _explore_set(nxts, "lower_bound:ambiguous_next_hop")
-                    cand = (sub[0], sub[1], [hop] + sub[2])
-            if cand[1]:
-                best = cand                                          # ECMP existential: any leg reaches
-                break
-            if best is None or _rank(cand[0]) > _rank(best[0]):
-                best = cand                                          # most informative: lower_bound beats a drop
-        computing.discard(host)
-        return _cache(host, best)
-
+    _explore, _explore_set, _leg = _resolver(fibs, connected, l3_hosts, dst_ip)
     try:
-        status, reached, hops = _explore_set(src_hosts, "lower_bound:ambiguous_src")
+        status, reached, hops, ev = _explore_set(src_hosts, "lower_bound:ambiguous_src")
     except RecursionError:                                  # pathological deep chain -- stay total
         return _result([], "lower_bound:max_hops", False)
-    return _result(hops, status, reached)
+    return _result(hops, status, reached, ev)
 
 
 def reachability_diff(old_snap, new_snap, pairs) -> dict:
@@ -473,7 +558,20 @@ def reachability_diff(old_snap, new_snap, pairs) -> dict:
     never a false 'preserved' or 'newly_blocked'. Verdicts: preserved | newly_blocked (a REGRESSION: a
     previously-working flow now drops) | newly_reachable | both_unreachable | inconclusive.
 
-    Returns {pairs:[{src,dst,old_status,new_status,verdict}], summary:{verdict:count}}. Pure/offline; total."""
+    Two evidence disclosures ride on every row -- they are what makes these verdicts falsifiable:
+      * old_/new_drop_evidence -- 'observed_discard' (a Null0/discard egress was SEEN to drop it) vs
+        'no_route_observed' (an EMPTY lookup). When BOTH sides are 'no_route_observed' the pair is
+        'inconclusive', NOT 'both_unreachable': neither snapshot ever observed a route for that flow and
+        snap['routes'] is a SCOPED subset of the RIB (build.scope_routes keeps only prefixes covering an
+        in-scope SVI subnet, plus the default), so counting it as a definitive NON-regression silently
+        absorbs a flow the change really broke.
+      * ecmp_dropping_legs (the NEW / post-change side) -- equal-cost legs proven to blackhole while a
+        sibling still carries the flow. A cutover that blackholes one of two legs is ~50% packet loss and
+        used to read 'preserved' with nothing else said; those pairs are also collected into the returned
+        `ecmp_partial_drop` list so a caller cannot miss them.
+
+    Returns {pairs:[{src,dst,old_status,new_status,verdict,old_drop_evidence,new_drop_evidence,
+    ecmp_dropping_legs}], summary:{verdict:count}, ecmp_partial_drop:[...]}. Pure/offline; total."""
     of, nf = _build(old_snap), _build(new_snap)            # build each snapshot's FIB ONCE, not per pair
     # audit-5 #0: a device's L2/L3 nature is INTRINSIC -- it does not become an L2 access switch when a cutover
     # removes one of its routes. Classify L3 from the UNION of both snapshots so a router that loses its default/
@@ -486,8 +584,8 @@ def reachability_diff(old_snap, new_snap, pairs) -> dict:
             src, dst = pair[0], pair[1]
         except (TypeError, IndexError, KeyError):
             continue
-        o = _trace(of[0], of[1], l3_union, src, dst)
-        n = _trace(nf[0], nf[1], l3_union, src, dst)
+        o = _trace(of[0], of[1], l3_union, src, dst, disclose=True)
+        n = _trace(nf[0], nf[1], l3_union, src, dst, disclose=True)
         if not (o["computed"] and n["computed"]):
             v = "inconclusive"
         elif o["reached"] and n["reached"]:
@@ -496,11 +594,19 @@ def reachability_diff(old_snap, new_snap, pairs) -> dict:
             v = "newly_blocked"
         elif not o["reached"] and n["reached"]:
             v = "newly_reachable"
+        elif o["drop_evidence"] == "no_route_observed" and n["drop_evidence"] == "no_route_observed":
+            # NEITHER side ever observed a route for this flow. That is not a proven "blocked before and
+            # after" (a non-regression) -- with a scoped route set it is equally the shape of a flow whose
+            # carrying route is simply not in either snapshot. Abstain rather than certify.
+            v = "inconclusive"
         else:
             v = "both_unreachable"
-        rows.append({"src": src, "dst": dst, "old_status": o["status"], "new_status": n["status"], "verdict": v})
+        rows.append({"src": src, "dst": dst, "old_status": o["status"], "new_status": n["status"], "verdict": v,
+                     "old_drop_evidence": o["drop_evidence"], "new_drop_evidence": n["drop_evidence"],
+                     "ecmp_dropping_legs": n["ecmp_dropping_legs"]})
         summary[v] = summary.get(v, 0) + 1
-    return {"pairs": rows, "summary": summary}
+    return {"pairs": rows, "summary": summary,
+            "ecmp_partial_drop": [r for r in rows if r["ecmp_dropping_legs"]]}
 
 
 def _l3_hops(trace: dict) -> list:
@@ -604,21 +710,29 @@ def _iface_acl(interfaces: dict, host: str, out_intf: str):
 def ecmp_consistency(snap, src_ip: str, dst_ip: str) -> dict:
     """ECMP multipath-consistency (Batfish multipathConsistency analog; §3.4 optional). For the equal-cost leg set
     a router installs toward `dst_ip`, flag when the legs would NOT be treated ALIKE -- a flow that hashes onto one
-    leg then behaves differently from a sibling, mimicking intermittent loss. Two divergence classes are checked
-    over the collected egress interfaces of the leg set at the FIRST L3 host on the path:
+    leg then behaves differently from a sibling, mimicking intermittent loss. THREE divergence classes are checked
+    over the leg set at the FIRST L3 host on the path:
       * mtu  -- the legs' egress MTUs differ (a jumbo flow blackholes only on the narrow leg);
-      * acl  -- the legs carry different ingress/egress ACL treatment (one leg filters, another passes).
+      * acl  -- the legs carry different ingress/egress ACL treatment (one leg filters, another passes);
+      * forwarding -- a leg is PROVEN not to deliver the flow (a Null0/discard egress, or a downstream RIB that
+        definitively drops it) while a sibling leg is not. Comparing only MTU and ACL NAMES left the loudest
+        divergence of all invisible: two legs identical in every attribute where one silently blackholes the
+        packets that hash onto it -- the ~50%-loss shape trace_fib_path's ECMP existential reports 'reached'.
 
     COVERAGE-HONEST: a single-leg (non-ECMP) lookup is 'not_ecmp'; a leg whose egress interface was not collected
-    is DISCLOSED in `unobserved_legs` and can NOT prove OR disprove consistency, so with any blind leg the verdict
-    is 'INDETERMINATE', never a fabricated 'consistent'. Verdicts: not_ecmp | consistent | inconsistent |
-    INDETERMINATE. Returns {host, dst, leg_count, mtu_divergence, acl_divergence, unobserved_legs, verdict}.
-    Pure/offline; total on bad input -- resolves the leg set at the source-owning host only (a bounded, local check)."""
+    is DISCLOSED in `unobserved_legs`, one whose MTU field was not collected in `mtu_unobserved_legs`, and one
+    whose forwarding could not be resolved (next hop behind an uncollected host, an ambiguous owner, a loop) in
+    `forwarding_unresolved_legs` -- none of them can prove OR disprove consistency, so with any blind leg the
+    verdict is 'INDETERMINATE', never a fabricated 'consistent'. Verdicts: not_ecmp | consistent | inconsistent |
+    INDETERMINATE. Returns {host, dst, leg_count, mtu_divergence, acl_divergence, forwarding_divergence,
+    unobserved_legs, mtu_unobserved_legs, forwarding_unresolved_legs, verdict}. Pure/offline; total on bad input
+    -- resolves the leg set at the source-owning host only (a bounded, local check)."""
     snap = snap if isinstance(snap, dict) else {}
     interfaces = snap.get("interfaces") if isinstance(snap.get("interfaces"), dict) else {}
-    fibs, connected, _l3 = _build(snap)
+    fibs, connected, l3_hosts = _build(snap)
     base = {"host": None, "dst": dst_ip, "leg_count": 0, "mtu_divergence": [],
-            "acl_divergence": [], "unobserved_legs": [], "verdict": "not_ecmp"}
+            "acl_divergence": [], "forwarding_divergence": [], "unobserved_legs": [],
+            "mtu_unobserved_legs": [], "forwarding_unresolved_legs": [], "verdict": "not_ecmp"}
 
     src_hosts = _hosts_owning_ip(connected, src_ip)
     if len(src_hosts) != 1:                   # no owner, or an ambiguous transit/multi-access src -> can't localize
@@ -631,6 +745,26 @@ def ecmp_consistency(snap, src_ip: str, dst_ip: str) -> dict:
     if len(legs) < 2:
         base["verdict"] = "not_ecmp"          # a single installed path -> multipath consistency is not applicable
         return base
+
+    # FORWARDING dimension: resolve what a flow hashed onto EACH leg actually does (the same resolver
+    # trace_fib_path drives, so the two surfaces cannot disagree about a leg).
+    _explore, _explore_set, _leg_outcome = _resolver(fibs, connected, l3_hosts, dst_ip)
+    fwd_drop, fwd_ok, fwd_blind = [], [], []
+    for leg in legs:
+        _hop, (st, reached, _hops, ev) = _leg_outcome(host, leg)
+        row = {"out_intf": str(leg.get("out_intf", "") or ""), "next_hop": str(leg.get("next_hop", "") or ""),
+               "leg_status": st}
+        if st == "computed:unreachable":
+            row["drop_evidence"] = ev.get("drop_evidence", "")
+            fwd_drop.append(row)                 # PROVEN not to deliver the flow
+        elif reached:
+            fwd_ok.append(row)
+        else:
+            fwd_blind.append(row)                # trail lost -> proves nothing either way
+    base["forwarding_unresolved_legs"] = fwd_blind
+    if fwd_drop and len(fwd_drop) < len(legs):
+        # at least one leg definitively blackholes while a sibling does not -> the legs are NOT alike.
+        base["forwarding_divergence"] = fwd_drop
 
     mtus, acls, iface_blind, mtu_blind = [], [], [], []
     for leg in legs:
@@ -667,12 +801,12 @@ def ecmp_consistency(snap, src_ip: str, dst_ip: str) -> dict:
     if len(obs_acls) > 1:
         base["acl_divergence"] = [{"out_intf": oi, "acl_in": ai, "acl_out": ao} for oi, ai, ao in acls]
 
-    if base["mtu_divergence"] or base["acl_divergence"]:
+    if base["mtu_divergence"] or base["acl_divergence"] or base["forwarding_divergence"]:
         base["verdict"] = "inconsistent"      # a proven divergence dominates -- the legs are NOT treated alike
-    elif iface_blind or mtu_blind:
-        base["verdict"] = "INDETERMINATE"     # ANY blind spot (whole leg, or just its MTU) -> can't certify
+    elif iface_blind or mtu_blind or fwd_blind:
+        base["verdict"] = "INDETERMINATE"     # ANY blind spot (whole leg, its MTU, or its forwarding)
     else:
-        base["verdict"] = "consistent"        # every leg fully observed and aligned on MTU + ACL
+        base["verdict"] = "consistent"        # every leg fully observed and aligned on MTU + ACL + forwarding
     return base
 
 
@@ -732,7 +866,8 @@ def reachability_delta(old_snap, new_snap, pairs=None, limit: int = 24, max_pair
     snapshot when `pairs` is None, so it reflects the pre-change topology). COVERAGE-HONEST: only DEFINITIVE
     verdicts count -- ambiguous / incomplete-collection pairs are 'inconclusive', never a fabricated regression.
 
-    Returns {summary, newly_blocked, newly_reachable, preserved, inconclusive, pairs_tested, subnets_tested,
+    Returns {summary, newly_blocked, newly_reachable, preserved, inconclusive, inconclusive_pairs,
+    ecmp_partial_drop, pairs_tested, subnets_tested,
     subnets_total, assessed, capped}. The headline is newly_blocked -- a flow the change definitively broke. The
     sample is BOUNDED (subnets_total vs subnets_tested, capped) and ONE representative host per subnet -- the
     caller MUST disclose that (a no-silent-caps requirement), so subnets_total/capped/assessed are explicit.
@@ -755,6 +890,9 @@ def reachability_delta(old_snap, new_snap, pairs=None, limit: int = 24, max_pair
         # the inconclusive PAIRS themselves (not just the count): the pre-change certificate (precert.py)
         # must NAME each blind-spot flow with its lost-trail statuses, never just tally them. Additive key.
         "inconclusive_pairs": [p for p in diff["pairs"] if p["verdict"] == "inconclusive"],
+        # flows the change leaves REACHABLE but over an ECMP set with a proven-blackholing leg (~50% loss):
+        # a 'preserved' verdict is true and insufficient, so the pairs are named here too. Additive key.
+        "ecmp_partial_drop": diff.get("ecmp_partial_drop") or [],
         "preserved": summary.get("preserved", 0),
         "both_unreachable": summary.get("both_unreachable", 0),
         "inconclusive": summary.get("inconclusive", 0),

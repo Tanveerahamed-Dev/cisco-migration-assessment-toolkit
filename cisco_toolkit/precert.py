@@ -288,6 +288,11 @@ def compute_precert(snap_before: Dict[str, Any], snap_after: Dict[str, Any],
 
 # Worst-first ranking; accept the snapshot's literal "NOT READY" and the calibration-canonical "NOT_READY".
 _READINESS_RANK = {"NOT READY": 2, "NOT_READY": 2, "CAUTION": 1, "READY": 0}
+#: The distribution bucket for a move-group whose readiness label is absent or unrecognised. It is a
+#: COVERAGE state, not a readiness rating — it is never ranked (an unassessed group cannot be scored
+#: better or worse than an assessed one), it forbids a READY verdict, and it keeps
+#: `readiness_distribution` summing to `n_groups` so a dropped group is visible in the certificate.
+UNRATED = "UNRATED"
 
 
 def _canon_readiness(v: Any) -> str:
@@ -311,6 +316,12 @@ def compute_readiness_freeze(snap: Dict[str, Any], *, mode: str = "shadow") -> d
     Coverage-honest, exact:
       * verdict = the WORST move-group readiness (never rated better than its weakest group);
       * no per-move-group readiness at all -> INDETERMINATE (asserts NOTHING — this is not READY);
+      * a move-group whose readiness label is ABSENT or UNRECOGNISED is UNRATED: it is counted in
+        `readiness_distribution` (which therefore always sums to `n_groups`), NAMED in `blind_spots`,
+        and it forbids a READY verdict — an unassessed group is not evidence of readiness, and a
+        freeze is the tamper-evident record a cutover is authorised against. (Before this, such a
+        group silently contributed to nothing: `_READINESS_RANK.get('', -1)` never beat the seed and
+        `''` is not a key of `dist`, so 2 READY + 2 never-assessed groups certified READY.)
       * every not-collected device is NAMED as a blind spot (its readiness inputs are absent, so any
         move-group containing it is a PARTIAL prediction — absence of evidence is not readiness).
     `mode='real'` marks a genuine pre-cutover freeze (commit it BEFORE the window; the outcome later
@@ -321,7 +332,8 @@ def compute_readiness_freeze(snap: Dict[str, Any], *, mode: str = "shadow") -> d
     groups_in = groups_in if isinstance(groups_in, list) else []
 
     groups: List[dict] = []
-    dist = {"READY": 0, "CAUTION": 0, "NOT READY": 0}
+    dist = {"READY": 0, "CAUTION": 0, "NOT READY": 0, UNRATED: 0}
+    unrated: List[str] = []
     worst_rank, worst = -1, ""
     for g in groups_in:
         if not isinstance(g, dict):
@@ -329,12 +341,19 @@ def compute_readiness_freeze(snap: Dict[str, Any], *, mode: str = "shadow") -> d
         rd = _canon_readiness(g.get("readiness"))
         if rd in dist:
             dist[rd] += 1
+        else:                              # absent or unrecognised label -> UNRATED, never dropped
+            dist[UNRATED] += 1
+            raw = str(g.get("readiness", "") or "").strip()
+            unrated.append(f"move-group {str(g.get('group'))!r} is UNRATED ("
+                           + (f"unrecognised readiness label {raw!r}" if raw else "no readiness label")
+                           + ") - it was never assessed, so it can neither be certified READY nor "
+                             "counted toward one")
         rank = _READINESS_RANK.get(rd, -1)
         if rank > worst_rank:
             worst_rank, worst = rank, rd
         blocking = [c.get("check") for c in (g.get("checks") or [])
                     if isinstance(c, dict) and str(c.get("status", "")).lower() in ("fail", "warn")]
-        groups.append({"group": g.get("group"), "readiness": rd,
+        groups.append({"group": g.get("group"), "readiness": rd or UNRATED,
                        "n_fail": int(g.get("n_fail") or 0), "n_warn": int(g.get("n_warn") or 0),
                        "blocking": blocking})
 
@@ -345,7 +364,7 @@ def compute_readiness_freeze(snap: Dict[str, Any], *, mode: str = "shadow") -> d
     not_collected = sorted(str(d.get("host")) for d in (cc.get("devices") or [])
                            if isinstance(d, dict) and str(d.get("status", "")).lower().startswith("not"))
     n_missing = int(summ.get("not_collected") or 0) or len(not_collected)
-    blind_spots: List[str] = []
+    blind_spots: List[str] = list(unrated)
     if n_missing:
         blind_spots.append(
             f"{n_missing} of {summ.get('inventory', '?')} inventoried device(s) were not collected "
@@ -358,8 +377,15 @@ def compute_readiness_freeze(snap: Dict[str, Any], *, mode: str = "shadow") -> d
                 "(this is not READY; re-run analysis and re-freeze)")
     else:
         verdict = worst or "INDETERMINATE"
+        if unrated and verdict == "READY":
+            # A worst-of over the RATED groups only is a lower bound: an unassessed group could be
+            # the worst one. Never certify READY across an open blind spot (the same rule
+            # compute_precert encodes as "a certificate is never PASS with an open blind spot").
+            verdict = "INDETERMINATE"
         note = (f"worst-of {len(groups)} move-group(s): {dist['NOT READY']} NOT READY, "
                 f"{dist['CAUTION']} CAUTION, {dist['READY']} READY"
+                + (f", {dist[UNRATED]} UNRATED (never assessed - named in blind_spots; a READY "
+                   "verdict is withheld while any group is unrated)" if unrated else "")
                 + (f"; {n_missing} device(s) uncollected (blind spots named)" if n_missing else ""))
 
     stamp = _stamp(s)
@@ -416,7 +442,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     d = cert["readiness_distribution"]
     cov = cert["coverage"]
     print(f"[precert-readiness] mode={cert['mode']}  verdict={cert['verdict']}  groups={cert['n_groups']}")
-    print(f"  distribution : {d['NOT READY']} NOT READY / {d['CAUTION']} CAUTION / {d['READY']} READY")
+    print(f"  distribution : {d['NOT READY']} NOT READY / {d['CAUTION']} CAUTION / {d['READY']} READY"
+          f" / {d.get(UNRATED, 0)} UNRATED (never assessed)")
     print(f"  coverage     : {cov['collected']} of {cov['inventory']} collected; "
           f"{cov['not_collected']} uncollected (blind spots: {len(cert['blind_spots'])})")
     print(f"  prediction_hash: {cert['prediction_hash']}")

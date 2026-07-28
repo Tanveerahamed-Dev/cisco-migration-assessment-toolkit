@@ -65,6 +65,12 @@ def _parse_compute_routes(cid, sid):
     cutover/section/trend) — guarding only some would leave a trivially-equivalent cross-origin bypass."""
     return [
         f"/api/campaigns/{cid}/trend",
+        # /api/snapshots/{id} is in this list, NOT in the cheap-read list below: whenever the cached
+        # summary's engine_schema trails the live one, _summary_freshened does a full snapshot parse,
+        # an engine summarize() AND a store.update_summary() DB WRITE. See
+        # test_snapshot_meta_is_guarded_because_it_can_parse_and_write for the discriminating case —
+        # the demo seed writes a CURRENT-schema summary, so on this fixture the heavy branch never runs.
+        f"/api/snapshots/{sid}",
         f"/api/snapshots/{sid}/section/{_SECTION}",
         f"/api/snapshots/{sid}/graph",
         f"/api/snapshots/{sid}/cable_map",
@@ -156,13 +162,39 @@ def test_sandboxed_explorer_iframe_origin_null_still_loads(client):
 
 def test_cheap_read_routes_are_not_cross_site_guarded(client):
     """The provenance guard is scoped to the compute/parse/generate routes; genuinely cheap metadata reads
-    (health, campaign list, snapshot meta) stay governed by CORS + the token/loopback access guard (a
-    cross-site page still cannot READ the hidden response). Blanket-blocking them would be an out-of-scope
-    behaviour change, so assert it did NOT happen."""
-    sid = _seed(client)
-    for path in ("/api/health", "/api/campaigns", f"/api/snapshots/{sid}"):
+    (health, campaign list) stay governed by CORS + the token/loopback access guard (a cross-site page
+    still cannot READ the hidden response). Blanket-blocking them would be an out-of-scope behaviour
+    change, so assert it did NOT happen. `/api/snapshots/{id}` used to be pinned here and is NOT cheap —
+    it moved to the guarded list; see the test below."""
+    _seed(client)
+    for path in ("/api/health", "/api/campaigns"):
         r = client.get(path, headers={"sec-fetch-site": "cross-site"})
         assert r.status_code == 200, f"{path} must not be provenance-guarded ({r.status_code})"
+
+
+def test_snapshot_meta_is_guarded_because_it_can_parse_and_write(client):
+    """[#59] `GET /api/snapshots/{id}` was pinned above as a route that "must not be provenance-guarded",
+    and that only held because the demo-seed fixture writes a CURRENT-schema summary first, so
+    `_summary_freshened`'s heavy branch never ran in the test. Make the premise discriminating: age the
+    stored summary's engine_schema, and the same GET becomes a full multi-MB snapshot parse + an engine
+    summarize() + a `store.update_summary()` DATABASE WRITE. It is therefore both a member of the
+    expensive-GET class and a state-CHANGING GET — and `_cross_site_write` returns False for GET by
+    construction, so the CSRF guard cannot see it and this dependency is the only guard there is."""
+    sid = _seed(client)
+    store = client.app.state.store
+    store.update_summary(sid, {"engine_schema": "V0.0.0-stale", "n_switches": -1})
+
+    # cross-site: refused BEFORE the parse/compute — and, crucially, before the write
+    r = client.get(f"/api/snapshots/{sid}", headers={"sec-fetch-site": "cross-site"})
+    assert r.status_code == 403, r.text
+    assert store.get_snapshot_meta(sid)["summary"]["engine_schema"] == "V0.0.0-stale", \
+        "a cross-site GET drove a store.update_summary() write"
+
+    # same-origin: the self-heal still runs, so guarding the route did not break the feature
+    r = client.get(f"/api/snapshots/{sid}", headers={"sec-fetch-site": "same-origin"})
+    assert r.status_code == 200, r.text
+    assert r.json()["summary"]["engine_schema"] != "V0.0.0-stale"
+    assert store.get_snapshot_meta(sid)["summary"]["engine_schema"] != "V0.0.0-stale"
 
 
 # ── defense 2: concurrency cap on the heavy generators ───────────────────────────
@@ -208,6 +240,42 @@ def test_pir_report_generation_is_capped(tmp_path, monkeypatch):
         return f"/api/executions/{c.post(f'/api/snapshots/{sid}/executions', json={}).json()['id']}/report"
 
     _cap_shed_case(tmp_path, monkeypatch, "cap_report.db", make)
+
+
+def test_ingest_and_upload_writes_take_a_generation_slot(tmp_path, monkeypatch):
+    """[#60] The cap was applied to a NAMED LIST of three routes (explorer render, deliverable, PIR docx)
+    rather than to the structural property that earned it — "this handler does heavy work". The two
+    heaviest operations in the app took no slot at all: `/ingest` and `/ingest-folder` each fork a real
+    engine child with a 600s timeout, and both they and `/snapshots` buffer up to
+    ingest.MAX_ARCHIVE_BYTES in memory (transiently ~2x at the b"".join), bounded only by Starlette's
+    40-worker threadpool. Assert every heavy WRITE sheds at capacity — and note each assertion would
+    still pass on the old code with a DIFFERENT status (400 / 201), so it pins the cap, not the route."""
+    import json
+
+    monkeypatch.delenv("ASSESSHUB_TOKEN", raising=False)
+    monkeypatch.setenv("ASSESSHUB_MAX_CONCURRENT_GENERATIONS", "1")
+    app = create_app(db_path=str(tmp_path / "cap_writes.db"))
+    with TestClient(app, base_url="http://localhost") as c:
+        cid = c.post("/api/campaigns", json={"name": "cap"}).json()["id"]
+        snap = json.dumps({"devices": {"sw1": {}}}).encode()
+        assert app.state.generation_semaphore.acquire(blocking=False)   # occupy the only slot
+        try:
+            shed = [
+                c.post(f"/api/campaigns/{cid}/snapshots",
+                       files={"file": ("s.json", snap, "application/json")}),
+                c.post(f"/api/campaigns/{cid}/ingest",
+                       files={"file": ("c.zip", b"PK\x03\x04not-a-zip", "application/zip")}),
+                c.post(f"/api/campaigns/{cid}/ingest-folder",
+                       json={"path": str(tmp_path / "no-such-collection")}),
+            ]
+            for r in shed:
+                assert r.status_code == 503, f"{r.request.url.path} ran at capacity ({r.status_code})"
+                assert r.headers.get("retry-after") == "5"
+        finally:
+            app.state.generation_semaphore.release()
+        # once the slot frees, the same upload succeeds — the cap sheds load, it does not wedge the route
+        assert c.post(f"/api/campaigns/{cid}/snapshots",
+                      files={"file": ("s.json", snap, "application/json")}).status_code == 201
 
 
 def test_default_capacity_allows_normal_single_use(client):

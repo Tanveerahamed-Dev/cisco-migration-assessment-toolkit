@@ -28,9 +28,29 @@ from cisco_toolkit.model import Verdict
 # A co-finite set over protocol tokens: ("only", {…}) = exactly these; ("allexcept", {…}) = all but these.
 PROTO_FULL: Tuple[str, frozenset] = ("allexcept", frozenset())
 
+# Cisco accepts BOTH the keyword and the IANA protocol NUMBER in an ACE's protocol field, and the parser
+# stores whichever the config used, verbatim (parse.py `rule["proto"] = toks[0].lower()` -> 'proto': '6').
+# Compared as RAW STRINGS, `deny 6 any host X` and `permit tcp any host X` model as DISJOINT protocol sets:
+# the permit is not reported shadowed, and search_filters hands back a witness asserting a packet is
+# permitted when the earlier numeric deny drops it — the unsafe direction. Canonicalising the number onto
+# its keyword is what makes the two intersect. Numbers per the IOS/NX-OS ACL protocol-keyword table; an
+# unlisted token stays itself (it still compares equal to the same token, so nothing is lost).
+_PROTO_ALIASES = {
+    "1": "icmp", "2": "igmp", "4": "ipinip", "6": "tcp", "9": "igrp", "17": "udp", "41": "ipv6",
+    "46": "rsvp", "47": "gre", "50": "esp", "51": "ahp", "58": "icmpv6", "88": "eigrp", "89": "ospf",
+    "94": "nos", "103": "pim", "108": "pcp", "112": "vrrp", "115": "l2tp", "132": "sctp",
+    "ah": "ahp", "ip-in-ip": "ipinip", "ipinip-in-ip": "ipinip",     # cross-platform keyword spellings
+}
+
+
+def _canon_proto(tok: Any) -> str:
+    """One protocol token -> its canonical form ('6' -> 'tcp'), lower-cased and stripped. Never raises."""
+    t = str(tok if tok is not None else "").strip().lower()
+    return _PROTO_ALIASES.get(t, t)
+
 
 def _proto_of(tok: Any) -> Tuple[str, frozenset]:
-    t = str(tok or "ip").lower()
+    t = _canon_proto(tok) or "ip"
     return PROTO_FULL if t == "ip" else ("only", frozenset({t}))
 
 
@@ -63,13 +83,30 @@ def _collapse(nets):
     return list(ipaddress.collapse_addresses(nets)) if nets else []
 
 
+def _bounds(n):
+    """(first_addr_int, last_addr_int, version) -- the containment test `subnet_of` performs, precomputed.
+
+    `ipaddress.subnet_of` is a richly-guarded stdlib call (functools total-ordering, isinstance checks) and
+    these two functions are the innermost loop of the whole box algebra: resolving object-group ACEs (each
+    side a prefix SET) turns one line-pair into |A|x|B| of them, so a 60-member group over 200 lines was
+    ~5.6M subnet_of calls / ~23s. The integer form is the same predicate at a fraction of the cost, and it
+    is total across families (subnet_of RAISES on a v4/v6 pair)."""
+    return int(n.network_address), int(n.broadcast_address), n.version
+
+
 def _pref_inter(A, B):
+    if not A or not B:
+        return []
+    Bb = [(_bounds(b), b) for b in B]
     out = []
     for a in A:
-        for b in B:
-            if a.subnet_of(b):
+        (an, ax, av) = _bounds(a)
+        for (bn, bx, bv), b in Bb:
+            if bv != av:
+                continue                                  # different family -> no overlap (never a raise)
+            if an >= bn and ax <= bx:
                 out.append(a)
-            elif b.subnet_of(a):
+            elif bn >= an and bx <= ax:
                 out.append(b)
     return _collapse(out)
 
@@ -77,11 +114,15 @@ def _pref_inter(A, B):
 def _pref_diff(A, B):
     res = list(A)
     for b in B:
+        bn, bx, bv = _bounds(b)
         new = []
         for r in res:
-            if r.subnet_of(b):
+            rn, rx, rv = _bounds(r)
+            if rv != bv:
+                new.append(r)                             # different family -> disjoint
+            elif rn >= bn and rx <= bx:
                 continue                                  # r removed entirely
-            elif b.subnet_of(r):
+            elif bn >= rn and bx <= rx:
                 new.extend(r.address_exclude(b))          # b strictly inside r -> split
             else:
                 new.append(r)                             # disjoint
@@ -253,10 +294,15 @@ def _box_subtract(A, B):
     return out
 
 
+def _is_group_spec(spec) -> bool:
+    return isinstance(spec, dict) and spec.get("group") is not None
+
+
 def _rule_box(rule, ogs, host) -> Tuple[dict, str]:
     """Parsed rule -> (over-approximating box, status). Unevaluable dims fall back to FULL."""
-    src, st_s = _addr_prefixes(rule.get("src"), ogs, host)
-    dst, st_d = _addr_prefixes(rule.get("dst"), ogs, host)
+    src_spec, dst_spec = rule.get("src"), rule.get("dst")
+    src, st_s = _addr_prefixes(src_spec, ogs, host)
+    dst, st_d = _addr_prefixes(dst_spec, ogs, host)
     sport = _port_intervals(rule.get("sport"))
     dport = _port_intervals(rule.get("dport"))
     box = {
@@ -273,9 +319,41 @@ def _rule_box(rule, ogs, host) -> Tuple[dict, str]:
     if status == "ok":
         if rule.get("time_range"):
             status = "timerange"
-        elif rule.get("unevaluable") or src is None or dst is None or sport is None or dport is None:
+        elif src is None or dst is None or sport is None or dport is None:
+            status = "unevaluable"                          # a dimension THIS module could not resolve
+        elif rule.get("unevaluable") and not (_is_group_spec(src_spec) or _is_group_spec(dst_spec)):
+            # The parser's own flag, MINUS the one cause this module resolves natively. parse.py's
+            # _acl_addr returns unevaluable=True for EVERY object-group address spec (it cannot expand
+            # them), so honoring the flag unconditionally made _group_prefixes/_addr_prefixes DEAD CODE
+            # on real snapshots: every object-group ACE landed in n_indeterminate with a reason blaming
+            # a "non-contiguous wildcard". When the rule's group reference RESOLVED (undefined/cyclic
+            # were caught above, and a bad member leaves src/dst None), the flag is fully explained and
+            # the exact box stands. Every OTHER cause still abstains: an unknown port name (val None ->
+            # the dim is None) and an address token the parser could not read — for that one the parser
+            # substitutes `any`, so this flag is the ONLY signal and it must never be dropped.
+            # Residual (documented, not silent): an ACE carrying BOTH a resolvable object-group AND an
+            # unreadable address token is indistinguishable from `object-group X ... any` and would be
+            # treated as evaluable; the two shapes are not separable from the parser's output.
             status = "unevaluable"
     return box, status
+
+
+def _uneval_detail(rule, ogs, host) -> str:
+    """NAME the dimension that could not be modelled, instead of blaming a non-contiguous wildcard for
+    every abstention (the reason string is surfaced on the shipped 'ACL Shadow Analysis' sheet)."""
+    bits = []
+    for key in ("src", "dst"):
+        pl, _st = _addr_prefixes(rule.get(key), ogs, host)
+        if pl is None:
+            bits.append("%s address (IPv6, a non-contiguous wildcard, or a token the parser could not read)" % key)
+    for key in ("sport", "dport"):
+        if _port_intervals(rule.get(key)) is None:
+            bits.append("%s (unknown port name or malformed operator)" % key)
+    if bits:
+        return "cannot model " + "; ".join(bits)
+    if rule.get("unevaluable"):
+        return "the parser flagged this line unevaluable — an address/port form it could not model"
+    return "unparseable address/port"
 
 
 def _finding(idx, rule, reason, blocking_lines=None, different_action=False, detail=""):
@@ -306,7 +384,7 @@ def analyze_acl(rules: List[dict], object_groups: Optional[dict] = None, host: O
             findings.append(_finding(i, r, "INDETERMINATE", detail="stateful established/reflexive — forward match depends on connection state"))
             continue
         if st in ("unevaluable", "timerange"):
-            why = "time-range — active only in a window" if st == "timerange" else "unparseable address/port (e.g. non-contiguous wildcard)"
+            why = "time-range — active only in a window" if st == "timerange" else _uneval_detail(r, ogs, host)
             findings.append(_finding(i, r, "INDETERMINATE", detail=why))
             continue
         if _box_empty(box):
@@ -379,34 +457,54 @@ def compute_filter_line_reachability(snap: Dict[str, Any]) -> Dict[str, Any]:
 
 # --------------------------------------------------------------------------- searchFilters (witness-or-proof)
 def _headers_box(h):
+    """Query headers -> (5-D box, [header keys this IPv4 algebra cannot model]).
+
+    The IPv4-family guard the RULE side has carried since the first review wave (`_addr_prefixes`
+    ~:106/:118, "IPv6 -> abstain, never mangle into a wrong v4 prefix") applies identically here — the
+    header side was simply missing it, and it fails two ways: an IPv6 CIDR reaches `_pref_inter` and
+    raises TypeError ("not of the same version") out of search_filters, while a BARE v6 address (no '/')
+    fell through `str(v) + "/32"` into the except branch and was silently answered over the WHOLE IPv4
+    space (0.0.0.0/0) — a wrong answer being worse than a crash."""
     h = h or {}
+    unmodelled = []
 
     def addr(key):
         v = h.get(key)
         if not v:
             return list(_FULL_NET)
+        s = str(v).strip()
         try:
-            return [ipaddress.ip_network(v, strict=False)] if "/" in str(v) else [ipaddress.ip_network(str(v) + "/32")]
+            if "/" in s:
+                net = ipaddress.ip_network(s, strict=False)
+            else:
+                ip = ipaddress.ip_address(s.split("%", 1)[0])       # tolerate a zone-id, like fib._ip
+                net = ipaddress.ip_network("%s/%d" % (ip, 32 if ip.version == 4 else 128))
         except (ValueError, TypeError):
+            return list(_FULL_NET)                                  # unreadable value -> no constraint
+        if net.version != 4:
+            unmodelled.append(key)                                  # IPv6 -> abstain (never a v4 answer)
             return list(_FULL_NET)
+        return [net]
 
     def prt(key):
         v = h.get(key)
         return [(int(v), int(v))] if v is not None else [(0, 65535)]
 
     proto = _proto_of(h.get("proto")) if h.get("proto") else PROTO_FULL
-    return {"proto": proto, "src": addr("src"), "dst": addr("dst"), "sport": prt("sport"), "dport": prt("dport")}
+    return ({"proto": proto, "src": addr("src"), "dst": addr("dst"),
+             "sport": prt("sport"), "dport": prt("dport")}, unmodelled)
 
 
 def _proto_witness(bp, header_proto):
     """A concrete protocol token admitted by the box's proto set (so the witness actually achieves the verdict)."""
     kind, s = bp if (isinstance(bp, tuple) and len(bp) == 2) else ("allexcept", frozenset())
     if kind == "only":
-        return sorted(s)[0] if s else (header_proto or "ip")
-    for cand in (header_proto, "icmp", "tcp", "udp", "1", "6", "17", "ip"):     # allexcept S: pick one not excluded
-        if cand and cand not in s:
-            return cand
-    return header_proto or "ip"
+        return sorted(s)[0] if s else (_canon_proto(header_proto) or "ip")
+    for cand in (header_proto, "icmp", "tcp", "udp", "gre", "esp", "ospf", "ip"):   # allexcept S: one not excluded
+        c = _canon_proto(cand)                     # canonical, so '6' is not offered when 'tcp' is excluded
+        if c and c not in s:
+            return c
+    return _canon_proto(header_proto) or "ip"
 
 
 def _witness(box, headers):
@@ -424,12 +522,25 @@ def search_filters(rules: List[dict], headers: Dict[str, Any], action: str = "pe
                    object_groups: Optional[dict] = None, host: Optional[str] = None) -> Dict[str, Any]:
     """Is there a packet in `headers`' flow-space that the ACL resolves to `action`?
 
-    Returns {result:'WITNESS', flow:{…}} with a concrete 5-tuple, {result:'PROVEN_NONE'} when no packet
-    in the space gets `action`, or {result:'INDETERMINATE', detail} when an unevaluable line overlaps the
-    undecided query space (coverage-honest: never a false PROVEN_NONE)."""
+    Returns {result:'WITNESS', flow:{…}, matched_by} with a concrete 5-tuple, {result:'PROVEN_NONE',
+    detail} when no packet in the space gets `action`, or {result:'INDETERMINATE', detail} when the query
+    cannot be decided (an unevaluable line overlaps the undecided space, or the query itself is outside
+    the model — an IPv6 header). Coverage-honest: never a false PROVEN_NONE.
+
+    The terminating **implicit `deny ip any any`** every Cisco ACL carries IS modelled: whatever the
+    explicit lines leave unmatched is DENIED, so `action='deny'` on an all-permit ACL yields a witness
+    rather than "proven to deny nothing" — a formal proof of 'no' for a filter that in reality blocks
+    everything but its permits. (An empty rule list therefore models an ACL that exists with no ACEs:
+    the implicit deny still terminates it.)"""
     ogs = object_groups or {}
     action = (action or "permit").lower()
-    q_remaining = [_headers_box(headers)]
+    q_box, unmodelled = _headers_box(headers)
+    if unmodelled:                                     # IPv6 query vs an IPv4-only algebra -> abstain
+        return {"result": "INDETERMINATE",
+                "detail": "query header %s is IPv6; this filter algebra models IPv4 only (the rule side "
+                          "abstains identically) — an IPv4 answer would not be about the packet asked "
+                          "about" % ", ".join(sorted(set(unmodelled)))}
+    q_remaining = [q_box]
     hits: List[dict] = []
     for i, r in enumerate(rules or []):
         if not q_remaining:
@@ -442,7 +553,7 @@ def search_filters(rules: List[dict], headers: Dict[str, Any], action: str = "pe
             continue
         if st != "ok":
             if hits:                                       # a witness already matched an earlier first-match line -> sound
-                return {"result": "WITNESS", "flow": _witness(hits[0], headers)}
+                return {"result": "WITNESS", "flow": _witness(hits[0], headers), "matched_by": "explicit line"}
             return {"result": "INDETERMINATE", "detail": "line %d (%s) is unevaluable and overlaps the query space" % (i, r.get("raw", ""))}
         if (r.get("action") or "").lower() == action:
             hits.extend(overlaps)
@@ -451,5 +562,13 @@ def search_filters(rules: List[dict], headers: Dict[str, Any], action: str = "pe
             new_q.extend(_box_subtract(b, box))
         q_remaining = [b for b in new_q if not _box_empty(b)]
     if hits:
-        return {"result": "WITNESS", "flow": _witness(hits[0], headers)}
-    return {"result": "PROVEN_NONE"}
+        return {"result": "WITNESS", "flow": _witness(hits[0], headers), "matched_by": "explicit line"}
+    if action == "deny" and q_remaining:
+        # The implicit `deny ip any any` that terminates EVERY Cisco ACL: the query space the explicit
+        # lines did not consume is denied by it. Without this the function "proved" (PROVEN_NONE) that an
+        # ACL with no explicit deny denies nothing.
+        return {"result": "WITNESS", "flow": _witness(q_remaining[0], headers),
+                "matched_by": "implicit deny ip any any"}
+    return {"result": "PROVEN_NONE",
+            "detail": "no packet in the query space resolves to '%s' (the terminating implicit "
+                      "`deny ip any any` is included in the model)" % action}

@@ -182,15 +182,22 @@ def compare_same_train(a: CiscoVersion, b: CiscoVersion) -> Optional[int]:
 def choose_target(current: Any, fixed: List[Any], *, platform_hint: Optional[str] = None) -> Dict[str, Any]:
     """Decide the upgrade target for ONE device against ONE CVE's ``fixed`` list.
 
-    Returns ``{current, target, needs_upgrade, reason, same_train_fixes, cross_train_fixes}`` where
-    ``needs_upgrade`` ∈ ``{True, False, MANUAL_VERIFY, TARGET_PENDING}``:
+    Returns ``{current, target, needs_upgrade, reason, same_train_fixes, cross_train_fixes,
+    unparsed_fixes}`` where ``needs_upgrade`` ∈ ``{True, False, MANUAL_VERIFY, TARGET_PENDING}``:
 
     * ``True``  — current is behind the (single) same-train fix; ``target`` = that fix.
     * ``False`` — current already >= the (single) same-train fix; ``target`` = the met fix (for the record).
     * ``MANUAL_VERIFY`` — current unparseable; OR fixes exist but none is on the device's train (a migration);
       OR **>= 2 distinct fixed releases land on the device's own train** (ambiguous which is required — a MIN
-      would under-target and leave it vulnerable, a MAX could force a needless upgrade, so neither is asserted).
+      would under-target and leave it vulnerable, a MAX could force a needless upgrade, so neither is asserted);
+      OR **any entry of the same ``fixed`` list is unrecognized** — it could be a same-train release ABOVE the
+      one we can read, and asserting the readable one would ship a remediation MOP whose TARGET_RELEASE is
+      still vulnerable. That is the module contract stated at the top of this file ("Any release string the
+      parser does not recognize -> MANUAL-VERIFY"), applied to the ``fixed`` list and not only to ``current``.
     * ``TARGET_PENDING`` — no (parseable) fixed release supplied at all.
+
+    Every unrecognized entry is DISCLOSED in ``unparsed_fixes`` (and named in ``reason``) — it is never
+    silently dropped just because a sibling entry parsed.
     """
     cur = parse_version(current, platform_hint=platform_hint)
     fixed_list = [f for f in (fixed or []) if f]
@@ -201,7 +208,7 @@ def choose_target(current: Any, fixed: List[Any], *, platform_hint: Optional[str
                     f"current release {str(current)!r} not recognized by the comparator -- verify by hand",
                     )
     parsed_fixes = [(f, parse_version(f, platform_hint=platform_hint)) for f in fixed_list]
-    unparsed = [f for f, pv in parsed_fixes if pv is None]
+    unparsed = [str(f) for f, pv in parsed_fixes if pv is None]
     same_by_norm = {pv.normalized: pv for _, pv in parsed_fixes if pv is not None and pv.same_train(cur)}
     same_norms = sorted(same_by_norm)
     cross_train = sorted({pv.normalized for _, pv in parsed_fixes if pv is not None and not pv.same_train(cur)})
@@ -210,8 +217,21 @@ def choose_target(current: Any, fixed: List[Any], *, platform_hint: Optional[str
         # Fixes exist but land on other trains (or none parsed) -> a migration / hand check, never a guess.
         why = ("no fix on the device's train -- the published fix is a different train (migration is a "
                "platform/design decision, not a mechanical upgrade)") if cross_train else \
-              ("no fixed release could be parsed" + (f" ({', '.join(map(str, unparsed))})" if unparsed else ""))
-        return _row(current, None, MANUAL_VERIFY, why, same_train=[], cross_train=cross_train)
+              ("no fixed release could be parsed" + (f" ({', '.join(unparsed)})" if unparsed else ""))
+        return _row(current, None, MANUAL_VERIFY, why, same_train=[], cross_train=cross_train,
+                    unparsed=unparsed)
+
+    if unparsed:
+        # An entry of the SAME fixed list the comparator cannot read. It may well be a release on THIS
+        # device's train and ABOVE the one that parsed (the openVuln feed mixes prose-y and per-platform
+        # forms), so asserting the readable fix as the target would ship a TARGET_RELEASE that is still
+        # vulnerable -- and the earlier code discarded it silently the moment any sibling parsed, which
+        # also defeated the >=2-same-train-fixes ambiguity guard below. Fail closed, and NAME it.
+        return _row(current, None, MANUAL_VERIFY,
+                    f"{len(unparsed)} fixed release(s) not recognized by the comparator "
+                    f"({', '.join(unparsed)}) alongside same-train fix(es) ({', '.join(same_norms)}) -- "
+                    f"an unread entry could be a higher fix on this train; verify by hand",
+                    same_train=same_norms, cross_train=cross_train, unparsed=unparsed)
 
     if len(same_by_norm) > 1:
         # >=2 DISTINCT fixed releases on the device's own train (e.g. a CVE re-referenced by an amended
@@ -233,10 +253,12 @@ def choose_target(current: Any, fixed: List[Any], *, platform_hint: Optional[str
 
 
 def _row(current: Any, target: Optional[str], needs: Any, reason: str,
-         same_train: Optional[List[str]] = None, cross_train: Optional[List[str]] = None) -> Dict[str, Any]:
+         same_train: Optional[List[str]] = None, cross_train: Optional[List[str]] = None,
+         unparsed: Optional[List[str]] = None) -> Dict[str, Any]:
     return {"current": (str(current) if current not in (None, "") else None), "target": target,
             "needs_upgrade": needs, "reason": reason,
-            "same_train_fixes": same_train or [], "cross_train_fixes": cross_train or []}
+            "same_train_fixes": same_train or [], "cross_train_fixes": cross_train or [],
+            "unparsed_fixes": unparsed or []}
 
 
 def _merge_host_decision(decisions: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -264,7 +286,8 @@ def _merge_host_decision(decisions: List[Dict[str, Any]]) -> Dict[str, Any]:
     return _row(current, best.normalized, bool(needs),
                 "aggregate of applicable CVEs (target clears the highest same-train first-fix)",
                 same_train=sorted({s for d in decisions for s in d["same_train_fixes"]}),
-                cross_train=sorted({s for d in decisions for s in d["cross_train_fixes"]}))
+                cross_train=sorted({s for d in decisions for s in d["cross_train_fixes"]}),
+                unparsed=sorted({u for d in decisions for u in d.get("unparsed_fixes") or []}))
 
 
 # =====================================================================================================
@@ -365,6 +388,7 @@ def build_upgrade_targets(advisories: List[Dict[str, Any]], device_versions: Dic
             "needs_upgrade": merged["needs_upgrade"], "reason": merged["reason"],
             "cves": sorted(per_host_cves[host]),
             "same_train_fixes": merged["same_train_fixes"], "cross_train_fixes": merged["cross_train_fixes"],
+            "unparsed_fixes": merged.get("unparsed_fixes") or [],   # never silently dropped intel
         })
     rows.sort(key=lambda r: (_needs_rank(r["needs_upgrade"]), r["host"]))
 

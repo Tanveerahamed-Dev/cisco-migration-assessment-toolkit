@@ -296,7 +296,8 @@ def test_readiness_freeze_is_worst_of_and_coverage_honest():
     cert = compute_readiness_freeze(_readiness_snap(groups, cc), mode="shadow")
     assert cert["schema"] == READINESS_SCHEMA and cert["mode"] == "shadow"
     assert cert["verdict"] == "CAUTION"                               # worst-of (never the better READY)
-    assert cert["readiness_distribution"] == {"READY": 1, "CAUTION": 1, "NOT READY": 0}
+    assert cert["readiness_distribution"] == {"READY": 1, "CAUTION": 1, "NOT READY": 0, "UNRATED": 0}
+    assert sum(cert["readiness_distribution"].values()) == cert["n_groups"]   # no group falls out
     assert cert["groups"][1]["blocking"] == ["STP consistency"]      # only the fail/warn check is blocking
     assert cert["coverage"]["not_collected"] == 2
     assert cert["coverage"]["not_collected_hosts"] == ["x-uncollected", "y-uncollected"]  # NAMED + sorted
@@ -308,6 +309,43 @@ def test_readiness_freeze_worst_of_promotes_not_ready():
     groups = [{"group": "G1", "readiness": "CAUTION", "checks": []},
               {"group": "G2", "readiness": "NOT READY", "n_fail": 1, "checks": []}]
     assert compute_readiness_freeze(_readiness_snap(groups))["verdict"] == "NOT READY"
+
+
+def test_readiness_freeze_never_certifies_ready_over_an_unassessed_group():
+    """A move-group whose readiness label is absent or unrecognised used to be silently DROPPED:
+    `_canon_readiness` returned '', `_READINESS_RANK.get('', -1)` never beat the seed and '' is not a
+    key of the distribution — so the group inflated `n_groups` and contributed to neither the
+    worst-of verdict, the distribution, nor `blind_spots`. Measured before the fix: 2 READY + 1
+    never-assessed + 1 typo'd group certified **READY** over 4 groups with an empty blind-spot list,
+    and `prediction_hash` made that false READY the tamper-evident pre-cutover record."""
+    groups = [{"group": "G1", "readiness": "READY", "checks": []},
+              {"group": "G2", "readiness": "READY", "checks": []},
+              {"group": "G3-never-assessed", "checks": []},               # no readiness key at all
+              {"group": "G4-typo", "readiness": "Not-Ready!", "checks": []}]
+    cert = compute_readiness_freeze(_readiness_snap(groups), mode="real")
+    assert cert["verdict"] == "INDETERMINATE"                             # NOT READY-over-blind-spots
+    d = cert["readiness_distribution"]
+    assert d == {"READY": 2, "CAUTION": 0, "NOT READY": 0, "UNRATED": 2}
+    assert sum(d.values()) == cert["n_groups"] == 4                       # the distribution accounts
+    blind = " ".join(cert["blind_spots"])                                 # ...and both are NAMED
+    assert "G3-never-assessed" in blind and "no readiness label" in blind
+    assert "G4-typo" in blind and "Not-Ready!" in blind
+    assert [g["readiness"] for g in cert["groups"]] == ["READY", "READY", "UNRATED", "UNRATED"]
+    assert "UNRATED" in cert["verdict_note"]
+
+
+def test_readiness_freeze_unrated_group_does_not_mask_a_worse_rating():
+    """The verdict is still the WORST of what WAS assessed — an unrated group withholds READY, it
+    does not erase a NOT READY (a freeze must not read better OR emptier than its evidence)."""
+    groups = [{"group": "G1", "readiness": "NOT READY", "n_fail": 1, "checks": []},
+              {"group": "G2", "checks": []}]
+    cert = compute_readiness_freeze(_readiness_snap(groups))
+    assert cert["verdict"] == "NOT READY"
+    assert cert["readiness_distribution"]["UNRATED"] == 1 and cert["blind_spots"]
+    # all-unrated asserts nothing at all
+    allbad = compute_readiness_freeze(_readiness_snap([{"group": "X"}, {"group": "Y"}]))
+    assert allbad["verdict"] == "INDETERMINATE" and allbad["n_groups"] == 2
+    assert allbad["readiness_distribution"]["UNRATED"] == 2
 
 
 def test_readiness_freeze_empty_is_indeterminate_never_ready():

@@ -101,8 +101,14 @@ LLM_IMPORTS = frozenset({
 #   walk; its own floor (GET-only except the single login POST) is the third claim.
 # - data/gen_port_registry.py is a dev-only data-pack generator (urllib to IANA), not
 #   import-reachable from the runtime pipeline — a documented exception, disclosed in detail.
+# Both are keyed by the path RELATIVE to the scanned package root (posix separators), because
+# the walk is recursive: a bare basename would exempt a same-named file in ANY subpackage.
+# (Until this was fixed the walk was top-level only, so `gen_port_registry.py` — one directory
+# down — was never scanned and its exception was DEAD CODE: the panel published "0 network-library
+# imports" over a file that fetches iana.org. :func:`_claim_no_egress` now NAMES what it exempted
+# and reports an exception that matched nothing, so the exemption cannot go dead again unnoticed.)
 NO_EGRESS_EXCLUDE = frozenset({"rest_collect.py"})
-NO_EGRESS_EXCEPTIONS = frozenset({"gen_port_registry.py"})
+NO_EGRESS_EXCEPTIONS = frozenset({"data/gen_port_registry.py"})
 
 _COLLECTOR_MODULE = "COLLECT_PARSE_V3_23_0"
 
@@ -125,27 +131,38 @@ def imported_names(tree):
 
 
 def _iter_py(dirpath, exclude=frozenset()):
-    for name in sorted(os.listdir(dirpath)):
-        if name.endswith(".py") and name not in exclude:
-            yield os.path.join(dirpath, name)
+    """Every .py under `dirpath` at ANY depth, as (relpath, abspath) with posix relpaths.
+
+    RECURSIVE by construction: a top-level-only walk cannot see a subpackage, and this walk is
+    the evidence behind a client-facing claim — a module the walk never opened must never be
+    counted as one it cleared. `exclude` holds relpaths (charter exclusions)."""
+    for root, dirs, files in os.walk(dirpath):
+        dirs[:] = sorted(d for d in dirs if d != "__pycache__" and not d.startswith("."))
+        for name in sorted(files):
+            if not name.endswith(".py"):
+                continue
+            path = os.path.join(root, name)
+            rel = os.path.relpath(path, dirpath).replace(os.sep, "/")
+            if rel in exclude:
+                continue
+            yield rel, path
 
 
-def scan_imports(dirpath, banned, exclude=frozenset(), exceptions=frozenset()):
-    """AST import-walk over every top-level .py in dirpath -> (n_scanned, offenders) where
-    offenders maps basename -> sorted banned imports found. `exceptions` are documented
-    exceptions dropped AFTER the scan (so they stay visible in the code, not the verdict)."""
+def scan_imports(dirpath, banned, exclude=frozenset()):
+    """AST import-walk over every .py under dirpath (any depth) -> (n_scanned, offenders) where
+    offenders maps the posix RELPATH -> sorted banned imports found. Documented exceptions are
+    NOT applied here: the caller subtracts them so the claim can NAME what it exempted (an
+    exception silently absorbed inside the scan is how the last one went dead)."""
     offenders = {}
     n = 0
-    for path in _iter_py(dirpath, exclude):
+    for rel, path in _iter_py(dirpath, exclude):
         n += 1
         src = open(path, encoding="utf-8", errors="replace").read()
         tree = ast.parse(src, filename=path)
         bad = sorted({name for name in imported_names(tree)
                       if any(name == b or name.startswith(b + ".") for b in banned)})
         if bad:
-            offenders[os.path.basename(path)] = bad
-    for exc in exceptions:
-        offenders.pop(exc, None)
+            offenders[rel] = bad
     return n, offenders
 
 
@@ -183,29 +200,40 @@ def _claim_read_only(collector_module):
 
 
 def _claim_no_egress(toolkit_dir):
-    method = ("AST import-walk (any nesting depth, lazy imports included) over the analysis "
-              "package for network libraries; charter exclusion: rest_collect.py (the opt-in "
-              "REST collector, covered by its own GET-only claim); documented dev-only "
-              "exception: gen_port_registry.py (data-pack generator, not pipeline-reachable)")
+    method = ("RECURSIVE AST import-walk (every subpackage, any nesting depth, lazy imports "
+              "included) over the analysis package for network libraries; charter exclusion: "
+              "rest_collect.py (the opt-in REST collector, covered by its own GET-only claim); "
+              "documented dev-only exception: data/gen_port_registry.py (data-pack generator, "
+              "not pipeline-reachable) — subtracted AFTER the scan and named in the result")
     cid = "no_egress_import_graph"
     if not os.path.isdir(toolkit_dir):
         return _claim(cid, method, NOT_EVALUATED,
                       f"analysis-package source tree not available at {toolkit_dir!r} "
                       "(installed without sources?) — cannot walk the import graph")
     try:
-        n, offenders = scan_imports(toolkit_dir, NETWORK_IMPORTS,
-                                    exclude=NO_EGRESS_EXCLUDE, exceptions=NO_EGRESS_EXCEPTIONS)
+        n, offenders = scan_imports(toolkit_dir, NETWORK_IMPORTS, exclude=NO_EGRESS_EXCLUDE)
     except (OSError, SyntaxError, ValueError) as e:
         return _claim(cid, method, NOT_EVALUATED, f"source walk failed: {e!r}")
     if n == 0:
         return _claim(cid, method, NOT_EVALUATED,
                       f"no python sources found under {toolkit_dir!r} — nothing was proven")
-    if offenders:
+    # Documented exceptions are subtracted HERE, and disclosed: what was exempted (with the
+    # import that made it an offender) and any declared exception that matched NOTHING — a
+    # never-firing exception means either the walk cannot see the file or the charter is stale.
+    exempt = {rel: bad for rel, bad in offenders.items() if rel in NO_EGRESS_EXCEPTIONS}
+    unexplained = {rel: bad for rel, bad in offenders.items() if rel not in NO_EGRESS_EXCEPTIONS}
+    stale = sorted(e for e in NO_EGRESS_EXCEPTIONS if e not in offenders)
+    if unexplained:
         return _claim(cid, method, VIOLATED,
-                      f"network-egress import(s) in the offline analysis pipeline: {offenders}")
+                      f"network-egress import(s) in the offline analysis pipeline: {unexplained}")
+    exempt_txt = ("; documented exception(s) applied: "
+                  + ", ".join(f"{rel} -> {','.join(bad)}" for rel, bad in sorted(exempt.items()))
+                  if exempt else "; no documented exception was needed")
+    stale_txt = (f"; declared exception(s) that matched nothing (stale charter?): {stale}"
+                 if stale else "")
     return _claim(cid, method, HOLDS,
-                  f"0 network-library imports across {n} analysis modules (excluded by "
-                  "charter: rest_collect.py; documented exception: gen_port_registry.py)")
+                  f"0 unexplained network-library imports across {n} analysis modules "
+                  f"(recursive walk; excluded by charter: rest_collect.py{exempt_txt}{stale_txt})")
 
 
 def _claim_rest_get_only(rest_path):

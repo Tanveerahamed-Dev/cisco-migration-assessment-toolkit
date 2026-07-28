@@ -218,7 +218,12 @@ def _derive_outcome(state: Dict[str, Any], status: str) -> str:
     decisions = [w["closeout"]["decision"] for w in state["waves"]]
     if any(d == "ROLLED BACK" for d in decisions):
         return OUTCOME_ROLLED_BACK
-    if any(d != "COMPLETE" for d in decisions):
+    # `not decisions` first: over an EMPTY wave list both `any()` guards are vacuously False, so a run
+    # with zero waves fell through to SUCCESSFUL and the PIR printed "Outcome: SUCCESSFUL" in green as its
+    # title-page verdict over its own "0 of 0 wave(s) completed" body (pir_docx). Every other branch here
+    # requires positive evidence; this one required none. Nothing was implemented, so the honest outcome
+    # is PARTIALLY IMPLEMENTED — the same verdict as a run whose waves did not all close COMPLETE.
+    if not decisions or any(d != "COMPLETE" for d in decisions):
         return OUTCOME_PARTIAL
     failed = any(c["result"] == "fail" for w in state["waves"] for c in w["checks"])
     skipped = any(s["status"] == "skipped" for w in state["waves"] for s in w["steps"])

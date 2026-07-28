@@ -78,6 +78,14 @@ CLI_ARTIFACT_SUFFIX = {
 #: Family kinds AssessHub renders in the web layer; no engine writer produces them.
 WEB_ONLY_KINDS = frozenset({"cutover", "nrfu"})
 
+#: Appended to a WEB_ONLY_KINDS entry's role in the Related-Documents table. The table lists the
+#: whole FAMILY, so a CLI/Atlas delivery — whose complete set is CLI_ARTIFACT_SUFFIX, which excludes
+#: these two — used to advertise a Cutover Plan and an NRFU/ATP that no engine writer produces and
+#: that are not in the folder. Naming the producer keeps the cross-reference true in BOTH channels
+#: (the web set really does contain them) instead of dropping rows in one.
+WEB_ONLY_ROLE_NOTE = (" — rendered in AssessHub from the stored snapshot; not produced by the "
+                      "offline engine run, so it may not be part of this delivery")
+
 
 def cli_artifacts(stem):
     """``[(key, name, filename)]`` a complete engine CLI run writes for output stem ``stem``.
@@ -107,9 +115,13 @@ DEFAULT_ROLES = ("Customer network owner", "Customer operations lead",
 def related_rows(exclude=()):
     """(name, role) rows for the Related-Documents table, excluding the document being written.
     `exclude` is a family key or an iterable of keys; a bare string is treated as one key (set("mop")
-    would otherwise dissolve into letters and silently keep the document in its own related list)."""
+    would otherwise dissolve into letters and silently keep the document in its own related list).
+
+    A WEB_ONLY_KINDS row carries WEB_ONLY_ROLE_NOTE: it is a real member of the family, but no engine
+    writer produces it, so an offline delivery must not advertise it as if it were enclosed."""
     ex = {exclude} if isinstance(exclude, str) else set(exclude)
-    return [(name, role) for key, name, role in FAMILY if key not in ex]
+    return [(name, role + (WEB_ONLY_ROLE_NOTE if key in WEB_ONLY_KINDS else ""))
+            for key, name, role in FAMILY if key not in ex]
 
 
 def add_table(doc, headers, rows, widths=None, *, fixed=True):
@@ -171,10 +183,17 @@ def add_related_documents(doc, *, exclude=(), audience=None, intro=False):
     PIR writers (which carry their own control tables) call it directly (V3.23.152 review cleanup)."""
     doc.add_heading("Related documents", level=2)
     if intro:
+        # NOT "the set is internally consistent (every number reconciles)". That was asserted
+        # unconditionally, in the same front matter where add_excellence_front's single-source-of-truth
+        # line may report the opposite (figures published but never reconciled, or reconciled with
+        # violations) — a verification claimed by furniture that ran no verification. The reconcile
+        # VERDICT has one owner (ssot.summary, rendered in 'At a Glance'); this block states only the
+        # provenance fact it can vouch for and points at that owner (SSOT Law 1).
         doc.add_paragraph(
-            "This document is one of a set generated from the same assessment snapshot — the set is "
-            "internally consistent (every number reconciles) and should travel together with the "
-            "engagement's statement of work and change records.")
+            "This document is one of a set generated from the same assessment snapshot, and should "
+            "travel together with the engagement's statement of work and change records. Whether the "
+            "set's headline figures were reconciled against the raw evidence is reported per document "
+            "on the single-source-of-truth line under 'At a Glance' — this block does not assert it.")
     add_table(doc, ["Document", "Role in the set"], related_rows(exclude), widths=[2.7, 4.0])
     if audience:
         _kv(doc, "Intended audience:", audience)

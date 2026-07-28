@@ -162,6 +162,33 @@ def test_multiple_distinct_same_train_fixes_is_manual_verify_not_min():
     assert set(d["same_train_fixes"]) == {"17.9.2", "17.9.6"}
 
 
+def test_unparseable_entry_in_a_fixed_list_is_never_silently_dropped():
+    """C2 regression (review 2026-07-28 #26): an entry the comparator cannot read VANISHED the moment a
+    sibling entry parsed onto the device's train. A CVE fixed on 17.9.6 — spelled 'Cisco IOS XE 17.9.6' by
+    the feed — shipped TARGET_RELEASE 17.9.4, a release that is STILL VULNERABLE, and nothing in the row,
+    the reason or same_train_fixes disclosed the dropped release. It also defeated the >=2-same-train-fixes
+    ambiguity guard, because only one fix was left to count. Fail closed and NAME the unread entry."""
+    d = choose_target("17.9.2", ["17.9.4", "Cisco IOS XE 17.9.6"], platform_hint="ios-xe")
+    assert d["needs_upgrade"] == MANUAL_VERIFY and d["target"] is None     # NOT 17.9.4 (still vulnerable)
+    assert d["unparsed_fixes"] == ["Cisco IOS XE 17.9.6"]
+    assert "Cisco IOS XE 17.9.6" in d["reason"]
+    # and it survives the per-host merge + the join, into the row an engineer actually reads
+    res = UT.build_upgrade_targets(
+        [{"id": "CVE-2023-20198", "fixed": ["17.9.4", "Cisco IOS XE 17.9.6"]}],
+        {"H": {"sw_version": "17.9.2", "platform": "ios-xe"}}, {"http_server_flagged": ["H"]},
+        cve_map={"CVE-2023-20198": {"group": "http_server_flagged", "applies_to": ("ios", "ios-xe"),
+                                    "surface": "web"}})
+    row = next(r for r in res["rows"] if r["host"] == "H")
+    assert row["needs_upgrade"] == MANUAL_VERIFY and row["target"] is None
+    assert row["unparsed_fixes"] == ["Cisco IOS XE 17.9.6"]
+
+
+def test_a_fully_parseable_fixed_list_still_yields_a_confident_target():
+    """The fail-closed gate must not swallow the confident cases it is not about."""
+    d = choose_target("17.9.1", ["17.9.4a"], platform_hint="ios-xe")
+    assert d["needs_upgrade"] is True and d["target"] == "17.9.4a" and d["unparsed_fixes"] == []
+
+
 def test_multiple_same_train_fixes_never_reports_false_current():
     # device between two listed fixes must NOT be called "already current" while a higher fix exists
     d = choose_target("17.9.4", ["17.9.6", "17.9.2"], platform_hint="ios-xe")

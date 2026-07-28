@@ -4419,7 +4419,18 @@ def write_l3_forwarding_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceD
 #: value is the engineer's annotation and must survive a re-run. EVERY OTHER column is device-derived:
 #: it is a claim about what this collection SAW, so a blank there must clear the cell rather than leave
 #: the previous run's value standing beside a freshly-overwritten Status. (review #88)
-_HUMAN_OWNED_COLS = frozenset({"system_owner", "endpoint_location"})
+#: Columns a blank must NOT clear, because a blank there is not "the device stopped reporting it".
+#:
+#: `system_owner` / `endpoint_location` are pure annotation — the engine never observes them.
+#: `endpoint_type` is HYBRID and belongs here for a sharper reason: `build.py` sets it only inside
+#: the CDP/LLDP neighbour loop, so a port with no CDP neighbour (a PC, a non-CDP phone, anything
+#: unmanaged) has no engine value on ANY run — which is precisely the port where an engineer types
+#: one in, because the engine cannot tell them what it is. Clearing on blank would therefore delete
+#: that annotation on every single re-run, and only ever for the ports whose annotation is worth
+#: most. Weigh the two failure modes: a stale endpoint_type is cosmetic, while a stale VLAN, native
+#: VLAN, trunk or BPDU-guard is a cutover decision made on last quarter's evidence. Review #88 is
+#: about the second kind; this column is the first.
+_HUMAN_OWNED_COLS = frozenset({"system_owner", "endpoint_location", "endpoint_type"})
 
 
 def append_interface_rows(ws, header_row: int, col_map: Dict[str,int],

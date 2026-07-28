@@ -25,7 +25,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from starlette.background import BackgroundTask
 
 from cisco_toolkit import brand_tokens
 
@@ -52,9 +51,22 @@ _ALLOWED_SECTIONS = {k for k, _ in summary.SECTION_LABELS} | {
 }
 
 
+# --- write-model length caps -------------------------------------------------------
+# EVERY string a write model accepts is capped. The caps started on GateIn alone (V3.23.159), but the
+# property that earned them there is shared by every sibling: the value is stored VERBATIM, echoed by
+# every later fetch, and rendered into a DOCX table cell (the war-room notes/observations become the
+# PIR's as-executed record). Capping one model and not its twins guards a named subset of a structural
+# class, so the vector just relocates to the next unguarded field. Sizes are per ROLE, not per model,
+# so a new model has an obvious precedent to copy:
+_LEN_TOKEN = 40      # a closed vocabulary token (status / decision / kind / gate key)
+_LEN_NAME = 200      # a label, wave name, campaign name, operator
+_LEN_NOTE = 2000     # free text an engineer types (notes, observations, descriptions)
+_LEN_PATH = 4096     # a filesystem path (Windows extended-length paths reach 32k, but not usefully)
+
+
 class CampaignIn(BaseModel):
-    name: str
-    description: str = ""
+    name: str = Field(max_length=_LEN_NAME)
+    description: str = Field(default="", max_length=_LEN_NOTE)
 
 
 class CompareIn(BaseModel):
@@ -63,49 +75,49 @@ class CompareIn(BaseModel):
 
 
 class FolderIngestIn(BaseModel):
-    path: str
-    label: str = ""
+    path: str = Field(max_length=_LEN_PATH)
+    label: str = Field(default="", max_length=_LEN_NAME)
 
 
 class ExecutionIn(BaseModel):
-    label: str = ""
-    operator: str = ""
+    label: str = Field(default="", max_length=_LEN_NAME)
+    operator: str = Field(default="", max_length=_LEN_NAME)
 
 
 class StepIn(BaseModel):
-    wave: str
+    wave: str = Field(max_length=_LEN_NAME)
     index: int
-    status: str  # pending | done | skipped
-    note: str = ""
-    operator: str = ""
+    status: str = Field(max_length=_LEN_TOKEN)  # pending | done | skipped
+    note: str = Field(default="", max_length=_LEN_NOTE)
+    operator: str = Field(default="", max_length=_LEN_NAME)
 
 
 class CheckIn(BaseModel):
-    wave: str
+    wave: str = Field(max_length=_LEN_NAME)
     index: int
-    result: str  # pending | pass | fail | na
-    observed: str = ""
-    operator: str = ""
+    result: str = Field(max_length=_LEN_TOKEN)  # pending | pass | fail | na
+    observed: str = Field(default="", max_length=_LEN_NOTE)
+    operator: str = Field(default="", max_length=_LEN_NAME)
 
 
 class CloseoutIn(BaseModel):
-    wave: str
-    decision: str  # COMPLETE | ROLLED BACK | DEFERRED
-    note: str = ""
-    operator: str = ""
+    wave: str = Field(max_length=_LEN_NAME)
+    decision: str = Field(max_length=_LEN_TOKEN)  # COMPLETE | ROLLED BACK | DEFERRED
+    note: str = Field(default="", max_length=_LEN_NOTE)
+    operator: str = Field(default="", max_length=_LEN_NAME)
 
 
 class EventIn(BaseModel):
-    kind: str  # note | deviation
-    text: str
-    wave: str = ""
-    operator: str = ""
+    kind: str = Field(max_length=_LEN_TOKEN)  # note | deviation
+    text: str = Field(max_length=_LEN_NOTE)
+    wave: str = Field(default="", max_length=_LEN_NAME)
+    operator: str = Field(default="", max_length=_LEN_NAME)
 
 
 class FinishIn(BaseModel):
-    status: str  # completed | aborted
-    note: str = ""
-    operator: str = ""
+    status: str = Field(max_length=_LEN_TOKEN)  # completed | aborted
+    note: str = Field(default="", max_length=_LEN_NOTE)
+    operator: str = Field(default="", max_length=_LEN_NAME)
 
 
 class GateIn(BaseModel):
@@ -116,6 +128,34 @@ class GateIn(BaseModel):
     decision: str = Field(max_length=20)  # go | no-go | slipped | pending (pending clears)
     signed_by: str = Field(default="", max_length=120)
     note: str = Field(default="", max_length=500)
+
+
+def _max_json_body_bytes() -> int:
+    """Ceiling on a NON-multipart /api request body (env ASSESSHUB_MAX_JSON_BODY_BYTES, default 1 MiB).
+
+    The per-field caps above reject an oversized value, but only AFTER Starlette has buffered the whole
+    body and json.loads has materialised it — so a single 1 GB `{"name": "AAAA…"}` is still a memory
+    spike on an unauthenticated loopback POST. This is the complement: refuse by declared Content-Length
+    before anything is read. Multipart is exempt — the two upload routes do their own chunked read
+    against ingest.MAX_ARCHIVE_BYTES, which is the right (much larger) limit for a collection archive.
+    LIMITATION: a chunked request declares no Content-Length and is not covered here; the per-field
+    caps remain its backstop. Always >= 64 KiB; a non-integer env value falls back to the default."""
+    try:
+        return max(64 * 1024, int(os.environ.get("ASSESSHUB_MAX_JSON_BODY_BYTES", str(1024 * 1024))))
+    except ValueError:
+        return 1024 * 1024
+
+
+def _declared_body_too_large(request: Request) -> bool:
+    if request.method not in _UNSAFE_METHODS:
+        return False
+    if "multipart/form-data" in (request.headers.get("content-type") or "").lower():
+        return False
+    try:
+        declared = int(request.headers.get("content-length", "") or 0)
+    except ValueError:
+        return False
+    return declared > _max_json_body_bytes()
 
 
 # --- client-data confidentiality (Plan A / Tier-1 #4) -------------------------------
@@ -144,16 +184,38 @@ def _cors_origins() -> List[str]:
     return [o.strip() for o in raw.split(",") if o.strip()]
 
 
+# Starlette's in-process TestClient has no socket; it stamps this fixed sentinel peer into the ASGI
+# scope. Honoured ONLY while the process is actually executing a pytest test (PYTEST_CURRENT_TEST is
+# set per-item by pytest itself), so the literal cannot act as a bypass in a shipped Atlas/uvicorn
+# deployment. It is not merely unreachable-by-construction: uvicorn's proxy-headers middleware copies
+# X-Forwarded-For into scope["client"] VERBATIM without checking it parses as an IP, so an operator
+# who widens forwarded_allow_ips beyond the default would otherwise let a remote client name itself
+# "testclient" and be read as loopback.
+_ASGI_TEST_HARNESS_HOST = "testclient"
+
+
+def _under_pytest() -> bool:
+    return "PYTEST_CURRENT_TEST" in os.environ
+
+
 def _client_is_loopback(request: Request) -> bool:
-    """True when the ASGI peer is loopback (or an in-process test harness, which has no
-    real socket). Deliberately conservative: a peer with a non-loopback IP is NOT loopback.
+    """True when the ASGI peer is loopback (or the in-process test harness, which has no real socket).
+
+    Deliberately conservative in BOTH directions: a peer with a non-loopback IP is NOT loopback, and an
+    UNKNOWN peer is not loopback either. `request.client` is None whenever the server puts no "client"
+    in the ASGI scope — a Unix-domain-socket bind, and several ASGI adapters/proxies. That case used to
+    return True, i.e. the guard failed OPEN: in no-token mode every request through such a deployment
+    satisfied the loopback half of the access guard, leaving only the Host allowlist, whose value a raw
+    client picks for itself. Unknown position is not local position, so it fails CLOSED and the operator
+    sets ASSESSHUB_TOKEN — already the documented posture for any proxied / non-loopback bind.
     NB uvicorn runs proxy_headers=True, so behind a trusted proxy request.client reflects
     X-Forwarded-For — but forwarded_allow_ips defaults to 127.0.0.1, so a REMOTE peer's forged
-    header is ignored. The safe posture for any non-loopback / proxied bind is a token
-    (ASSESSHUB_TOKEN): token mode ignores peer position entirely, closing this deployment edge."""
+    header is ignored. Token mode ignores peer position entirely, closing this deployment edge."""
     host = getattr(request.client, "host", None)
-    if host is None or host == "testclient":
-        return True
+    if host is None:
+        return False
+    if host == _ASGI_TEST_HARNESS_HOST:
+        return _under_pytest()
     return host == "::1" or host.startswith("127.")
 
 
@@ -263,15 +325,29 @@ def _parse_snapshot_bytes(raw: bytes) -> Dict[str, Any]:
 
 
 def _send_file(path: str, media_type: str, filename_stem: str, suffix: str,
-               headers: Dict[str, str] | None = None) -> FileResponse:
-    """Stream a generated temp file and delete it afterwards; filename is sanitized.
-    `headers` carries out-of-band notes about the file (e.g. X-Gate-Status) without touching its
-    bytes — the download stays byte-identical to the CLI's output."""
+               headers: Dict[str, str] | None = None) -> Response:
+    """Return a generated temp file's BYTES as the response and delete the file IMMEDIATELY.
+
+    The temp file is a fully-rendered, UNREDACTED client deliverable — hostnames, IPs, serials, parsed
+    configs — sitting in the OS temp dir. Cleanup used to run only in a Starlette `BackgroundTask`,
+    which fires after the body has been fully sent, so a client disconnect mid-download (or a killed
+    process, the normal way a USB-stick field app ends) left that document in %TEMP% PERMANENTLY.
+    Reading the bytes and unlinking before the response object exists removes the window entirely:
+    there is no path through this function that returns while the file is still on disk. These are
+    DOCX/PPTX deliverables (hundreds of KB) and every caller already holds a generation slot, so
+    buffering is bounded and cheap; the download stays byte-identical to the CLI's output.
+    `headers` carries out-of-band notes about the file (e.g. X-Gate-Status) without touching its bytes.
+    """
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", filename_stem).strip("_") or "file"
-    return FileResponse(
-        path, media_type=media_type, filename=f"{safe}{suffix}", headers=headers,
-        background=BackgroundTask(lambda p=path: os.path.exists(p) and os.unlink(p)),
-    )
+    try:
+        data = Path(path).read_bytes()
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+    out = dict(headers or {})
+    # `safe` is [A-Za-z0-9._-] only, so the quoted form needs no RFC 5987 `filename*` companion.
+    out["content-disposition"] = f'attachment; filename="{safe}{suffix}"'
+    return Response(content=data, media_type=media_type, headers=out)
 
 
 # --- compute-heavy GET hardening (GET-based resource-exhaustion follow-up) ------------
@@ -292,10 +368,16 @@ def _send_file(path: str, media_type: str, filename_stem: str, suffix: str,
 #      deliberately STRICTER (we also block cross-site *navigations*, so a cross-site <iframe> embed of the
 #      explorer is refused too). Verified against real Chromium: same-origin iframe load -> same-origin;
 #      cross-site embed (iframe/img/no-cors fetch) -> cross-site.
-#   2. A concurrency cap on the three heavy GENERATORS (explorer render, deliverable, PIR report), so even a
-#      same-origin burst or a non-browser flood (which defense 1 can't see) can't run unbounded heavy
-#      generations in parallel — excess load is shed with 503 + Retry-After. The parse/compute routes are
-#      NOT capped: a normal dashboard load fans out several of them at once, so throttling that would be wrong.
+#   2. A concurrency cap on every HEAVY request handler, so even a same-origin burst or a non-browser flood
+#      (which defense 1 can't see) can't run unbounded heavy work in parallel — excess load is shed with
+#      503 + Retry-After. "Heavy" is the structural property, not a route list: the three document/HTML
+#      GENERATORS (explorer render, deliverable, PIR report) AND the three INGEST/UPLOAD writes, each of
+#      which buffers up to ingest.MAX_ARCHIVE_BYTES in memory (transiently ~2x that at the b"".join) and,
+#      for the two collection routes, forks a real engine child with a 600s timeout. The uploads were the
+#      two heaviest operations in the app and took no slot at all, bounded only by Starlette's threadpool
+#      — the cap was written as a named list of three routes rather than as the property that earned it.
+#      The parse/compute GETs are still NOT capped: a normal dashboard load fans out several of them at
+#      once, so throttling that would be wrong.
 # LIMITATION (defense 1): an ABSENT Sec-Fetch-Site is treated as trustworthy (curl / server-to-server /
 # pre-2023 browsers legitimately omit it — fail-open matches the web.dev policy). Browsers only emit it for a
 # "potentially trustworthy" URL, so a no-token instance reached via a NON-canonical loopback hostname (e.g.
@@ -382,6 +464,14 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                                            "must originate from the AssessHub UI, not another "
                                            "site (CSRF protection)."},
                                 status_code=403)
+        # Same placement reasoning as the CSRF refusal: before the auth check, so the body ceiling
+        # holds identically in token and no-token modes. Costs one header read; nothing is buffered.
+        if _declared_body_too_large(request):
+            return JSONResponse({"detail": f"Request body exceeds the "
+                                           f"{_max_json_body_bytes() // 1024} KB limit for this "
+                                           f"endpoint (file uploads use the /snapshots and /ingest "
+                                           f"routes, which accept much larger archives)."},
+                                status_code=413)
         token = os.environ.get("ASSESSHUB_TOKEN", "")
         if token:
             supplied = request.headers.get("authorization", "")
@@ -512,57 +602,68 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
 
     # -- snapshots ---------------------------------------------------------
     @app.post("/api/campaigns/{campaign_id}/snapshots", status_code=201)
-    async def upload_snapshot(campaign_id: int, file: UploadFile = File(...),
-                              label: str = Form("")) -> Dict[str, Any]:
+    async def upload_snapshot(campaign_id: int, request: Request, file: UploadFile = File(...),
+                              label: str = Form("", max_length=_LEN_NAME)) -> Dict[str, Any]:
         if not store.get_campaign(campaign_id):
             raise HTTPException(404, "Campaign not found")
-        # Hard size cap (chunked) like the sibling /ingest endpoint -- `await file.read()` with no bound let a
-        # multi-GB upload exhaust server memory before parsing (a trivial DoS on an unauthenticated POST).
-        chunks: List[bytes] = []
-        received = 0
-        while chunk := await file.read(1024 * 1024):
-            received += len(chunk)
-            if received > ingest.MAX_ARCHIVE_BYTES:
-                raise HTTPException(
-                    413, f"Snapshot exceeds the {ingest.MAX_ARCHIVE_BYTES // (1024 * 1024)} MB upload limit")
-            chunks.append(chunk)
-        snap = _parse_snapshot_bytes(b"".join(chunks))
-        lbl = label.strip() or (file.filename or "snapshot").rsplit(".", 1)[0]
-        return store.add_snapshot(campaign_id, lbl, snap, summary.summarize(snap))
+        # Slot taken BEFORE the read: the memory is the cost here (up to MAX_ARCHIVE_BYTES buffered,
+        # transiently ~2x at the b"".join), so capping only the parse would leave the peak unbounded.
+        with _generation_slot(request.app.state.generation_semaphore):
+            # Hard size cap (chunked) like the sibling /ingest endpoint -- `await file.read()` with no bound
+            # let a multi-GB upload exhaust server memory before parsing (a trivial DoS on an
+            # unauthenticated POST).
+            chunks: List[bytes] = []
+            received = 0
+            while chunk := await file.read(1024 * 1024):
+                received += len(chunk)
+                if received > ingest.MAX_ARCHIVE_BYTES:
+                    raise HTTPException(
+                        413,
+                        f"Snapshot exceeds the {ingest.MAX_ARCHIVE_BYTES // (1024 * 1024)} MB upload limit")
+                chunks.append(chunk)
+            snap = _parse_snapshot_bytes(b"".join(chunks))
+            lbl = label.strip() or (file.filename or "snapshot").rsplit(".", 1)[0]
+            return store.add_snapshot(campaign_id, lbl, snap, summary.summarize(snap))
 
     @app.post("/api/campaigns/{campaign_id}/ingest", status_code=201)
-    async def ingest_collection(campaign_id: int, file: UploadFile = File(...),
-                                label: str = Form("")) -> Dict[str, Any]:
+    async def ingest_collection(campaign_id: int, request: Request, file: UploadFile = File(...),
+                                label: str = Form("", max_length=_LEN_NAME)) -> Dict[str, Any]:
         """Upload a raw collection ZIP (per-device show-command outputs); the real engine pipeline
         runs server-side and the resulting snapshot is stored like an uploaded one."""
         if not store.get_campaign(campaign_id):
             raise HTTPException(404, "Campaign not found")
-        # Read with a hard cap — the uncompressed-size guard inside ingest can only run after the
-        # whole body is in memory, which is too late against a multi-GB upload.
-        chunks: List[bytes] = []
-        received = 0
-        while chunk := await file.read(1024 * 1024):
-            received += len(chunk)
-            if received > ingest.MAX_ARCHIVE_BYTES:
-                raise HTTPException(
-                    413, f"Archive exceeds the {ingest.MAX_ARCHIVE_BYTES // (1024 * 1024)} MB upload limit")
-            chunks.append(chunk)
-        raw = b"".join(chunks)
-        try:
-            # The engine run blocks for seconds-to-minutes; off the event loop so the rest of the
-            # API (including a live war-room console) stays responsive.
-            snap, report = await run_in_threadpool(ingest.run_collection_zip, raw)
-        except ingest.IngestError as e:
-            raise HTTPException(400, str(e)) from e
-        except ingest.EngineRunError as e:
-            raise HTTPException(500, str(e)) from e
-        lbl = label.strip() or (file.filename or "collection").rsplit(".", 1)[0]
-        meta = store.add_snapshot(campaign_id, lbl, snap, summary.summarize(snap))
-        meta["ingest"] = report
-        return meta
+        # The heaviest handler in the app: buffers up to MAX_ARCHIVE_BYTES and then forks a real engine
+        # child with a 600s timeout. It holds a generation slot for BOTH halves (see the section note on
+        # defense 2) — the cap must key on "heavy work", not on a list of three document routes.
+        with _generation_slot(request.app.state.generation_semaphore):
+            # Read with a hard cap — the uncompressed-size guard inside ingest can only run after the
+            # whole body is in memory, which is too late against a multi-GB upload.
+            chunks: List[bytes] = []
+            received = 0
+            while chunk := await file.read(1024 * 1024):
+                received += len(chunk)
+                if received > ingest.MAX_ARCHIVE_BYTES:
+                    raise HTTPException(
+                        413,
+                        f"Archive exceeds the {ingest.MAX_ARCHIVE_BYTES // (1024 * 1024)} MB upload limit")
+                chunks.append(chunk)
+            raw = b"".join(chunks)
+            try:
+                # The engine run blocks for seconds-to-minutes; off the event loop so the rest of the
+                # API (including a live war-room console) stays responsive.
+                snap, report = await run_in_threadpool(ingest.run_collection_zip, raw)
+            except ingest.IngestError as e:
+                raise HTTPException(400, str(e)) from e
+            except ingest.EngineRunError as e:
+                raise HTTPException(500, str(e)) from e
+            lbl = label.strip() or (file.filename or "collection").rsplit(".", 1)[0]
+            meta = store.add_snapshot(campaign_id, lbl, snap, summary.summarize(snap))
+            meta["ingest"] = report
+            return meta
 
     @app.post("/api/campaigns/{campaign_id}/ingest-folder", status_code=201)
-    async def ingest_collection_folder(campaign_id: int, body: FolderIngestIn) -> Dict[str, Any]:
+    async def ingest_collection_folder(campaign_id: int, body: FolderIngestIn,
+                                       request: Request) -> Dict[str, Any]:
         """Ingest a SERVER-LOCAL collection folder — the portable-app 'one door' path (ADR-0004
         P1): on the stick the collection already sits beside the app, so a ZIP round-trip is pure
         friction. Same engine pipeline and the same middleware guards as every write (access guard
@@ -574,17 +675,19 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         Downloads, a UNC share), parses it, and stores a snapshot the caller reads back in full."""
         if not store.get_campaign(campaign_id):
             raise HTTPException(404, "Campaign not found")
-        try:
-            snap, report = await run_in_threadpool(
-                functools.partial(ingest.run_collection_folder, body.path, contain=True))
-        except ingest.IngestError as e:
-            raise HTTPException(400, str(e)) from e
-        except ingest.EngineRunError as e:
-            raise HTTPException(500, str(e)) from e
-        lbl = body.label.strip() or Path(body.path).name or "folder"
-        meta = store.add_snapshot(campaign_id, lbl, snap, summary.summarize(snap))
-        meta["ingest"] = report
-        return meta
+        # Forks the same engine child with the same 600s timeout as /ingest — same generation slot.
+        with _generation_slot(request.app.state.generation_semaphore):
+            try:
+                snap, report = await run_in_threadpool(
+                    functools.partial(ingest.run_collection_folder, body.path, contain=True))
+            except ingest.IngestError as e:
+                raise HTTPException(400, str(e)) from e
+            except ingest.EngineRunError as e:
+                raise HTTPException(500, str(e)) from e
+            lbl = body.label.strip() or Path(body.path).name or "folder"
+            meta = store.add_snapshot(campaign_id, lbl, snap, summary.summarize(snap))
+            meta["ingest"] = report
+            return meta
 
     def _summary_freshened(snapshot_id: int, meta: Dict[str, Any]) -> Dict[str, Any]:
         """Heal a headline summary frozen by an OLDER engine schema than the one now recomputing the
@@ -605,7 +708,13 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         meta["summary"] = fresh
         return meta
 
-    @app.get("/api/snapshots/{snapshot_id}")
+    @app.get("/api/snapshots/{snapshot_id}",
+             # NOT a cheap metadata read: whenever the cached summary's engine_schema trails the live
+             # one, _summary_freshened does a full multi-MB snapshot parse, an engine summarize() AND a
+             # store.update_summary() DATABASE WRITE. So it belongs to the guarded expensive-GET class
+             # on both counts — and it is a state-CHANGING GET, which _cross_site_write cannot see
+             # (it returns False for GET by construction), leaving this dependency as the only guard.
+             dependencies=[Depends(_forbid_cross_site)])
     def get_snapshot(snapshot_id: int) -> Dict[str, Any]:
         meta = store.get_snapshot_meta(snapshot_id)
         if not meta:

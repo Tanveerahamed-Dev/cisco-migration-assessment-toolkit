@@ -1742,3 +1742,180 @@ def test_section_device_dossiers_recomputes_stale_unassessed(client):
     assert data["summary"]["bands"].get("Unassessed", 0) >= 1            # blind device surfaced, not silently 'Low'
     blind = next(d for d in data["per_device"] if d["host"] == "blind1")
     assert blind["risk_band"] == "Unassessed" and "routine" not in blind["verdict"].lower()
+
+
+# ── whole-repo review, 2026-07-28 ───────────────────────────────────────────────────
+_XML_POISON = chr(0xFFFF) + chr(0xFFFE) + chr(0xD800) + "\x0b\x1f"   # noncharacters + lone surrogate + C0
+
+
+def test_web_layer_docx_survives_xml_illegal_device_text(client):
+    """[#80 — stored DoS on Atlas's one door] Device free-text is collected with errors='ignore', which
+    passes valid-UTF-8 C0 control chars, U+FFFE/U+FFFF noncharacters and lone surrogates straight through.
+    The web-layer table helper wrote raw `str(v)` into DOCX cells with no `xml_safe()` (its engine twin
+    `cisco_toolkit.docmeta.add_table` sanitizes), so `doc.save()` raised and the deliverable route returned
+    HTTP 500 for that snapshot PERMANENTLY — the snapshot is stored verbatim, so every later download 500s
+    too. tests/test_docx_family_xml_safe.py parametrizes only the seven ENGINE writers, so that guard was
+    green while this hole was live. Drives the real ASGI app end to end: upload, then download twice."""
+    import io
+    import json
+
+    pytest.importorskip("docx")
+    from docx import Document
+
+    bad = _XML_POISON
+    cid = client.post("/api/campaigns", json={"name": "xmlpoison"}).json()["id"]
+    snap = {
+        "devices": {"core1": {"model": "N9K" + bad, "hostname": "core1" + bad}},
+        "lifecycle_risk": {"per_device": [{"host": "core1" + bad, "model": "C9300" + bad,
+                                           "sw_version": "17.9" + bad, "band": "Past EoS"}]},
+        # a DIRECT-paragraph path too (§2 "Phase II tests by category" joins raw snapshot categories),
+        # which sanitizing only the table helper would not cover
+        "validation_plan": {"items": [{"device": "core1" + bad, "category": "FHRP" + bad,
+                                       "severity": "High", "check": "hsrp" + bad,
+                                       "command": "show standby" + bad, "expect": "Active" + bad}]},
+        "service_map": {"services": [{"service": "dns" + bad, "category": "core" + bad,
+                                      "port": "53", "proto": "udp"}]},
+    }
+    # ensure_ascii so the poison travels as \uXXXX escapes; json.loads restores the raw chars server-side
+    raw = json.dumps(snap, ensure_ascii=True).encode("ascii")
+    sid = client.post(f"/api/campaigns/{cid}/snapshots",
+                      files={"file": ("s.json", raw, "application/json")},
+                      data={"label": "poison"}).json()["id"]
+
+    r = client.get(f"/api/snapshots/{sid}/deliverable/nrfu")
+    if r.status_code == 503:
+        pytest.skip("python-docx not installed on this runner")
+    assert r.status_code == 200, r.text          # was 500: "All strings must be XML compatible"
+    doc = Document(io.BytesIO(r.content))        # and a valid, openable .docx
+    cells = [c.text for t in doc.tables for row in t.rows for c in row.cells]
+    assert any("C9300" in c for c in cells)      # device text still renders, only the bad bytes are stripped
+    assert not any(ch in c for c in cells for ch in bad)
+    # permanence: the snapshot is stored, so a second read must not 500 either
+    assert client.get(f"/api/snapshots/{sid}/deliverable/nrfu").status_code == 200
+
+
+def test_the_other_two_web_writers_also_survive_xml_illegal_device_text(tmp_path):
+    """[#80, residual] Sanitizing the shared table/kv helper is necessary but NOT sufficient: both
+    remaining web-layer writers put device-derived text on DIRECT paths that bypass it. §3 of each
+    renders `doc.add_heading(f"Wave {order} — {group}")`, reading the move-group name straight from
+    the snapshot, so one lone surrogate still aborted `doc.save()` — and because the upload path
+    stores the snapshot verbatim, the 500 repeated on every later read. The engine writers deep-
+    sanitize at their entry for exactly this reason; these two now do the same.
+
+    Called directly rather than through the route, so this fails on the WRITER even where the HTTP
+    layer would mask it (503 without python-docx, or a route-level guard added later)."""
+    pytest.importorskip("docx")
+    from backend import cutover_docx, execution, pir_docx
+
+    bad = _XML_POISON
+    # Waves come from top-level `wave_sequencing`, and §3's direct add_heading only runs per wave --
+    # a fixture that builds ZERO waves skips the very path under test and passes either way. Assert
+    # the precondition so this can never silently become vacuous again.
+    snap = {"devices": {"core1" + bad: {}},
+            "wave_sequencing": [{"group": "wave-a" + bad,
+                                 "make_before_break": ["core1" + bad],
+                                 "hard_cutover": [], "hard_cutover_endpoints": 1}]}
+    from backend import cutover
+    assert cutover.build_plan(snap)["waves"], "precondition: the fixture must build at least one wave"
+
+    cut = tmp_path / "c.docx"
+    cutover_docx.write_cutover_docx(str(cut), snap, "label" + bad)
+    assert cut.stat().st_size > 0, "cutover writer produced nothing"
+
+    state = execution.start_run(snap, "label" + bad, operator="op" + bad)
+    assert state["waves"], "precondition: the run must carry a wave for §3 to render"
+    execution.finish(state, "completed", "note" + bad, "by" + bad)
+    pir = tmp_path / "p.docx"
+    pir_docx.write_pir_docx(str(pir), state, "label" + bad)
+    assert pir.stat().st_size > 0, "pir writer produced nothing"
+
+
+def test_docx_style_add_table_sanitizes_like_its_engine_twin():
+    """[#80, unit] The shared web-layer style helper is the structural fix point — cutover_docx, nrfu_docx
+    and pir_docx all render their tables through it, so the sanitize is pinned at the helper rather than at
+    one writer's entry, and a new web-layer writer inherits it."""
+    import io
+
+    pytest.importorskip("docx")
+    from backend.docx_style import add_table, kv, new_document
+
+    doc = new_document()
+    t = add_table(doc, ["H" + _XML_POISON], [["v" + _XML_POISON], [None]])
+    kv(doc.add_paragraph(), "L" + _XML_POISON + ":", "v" + _XML_POISON)
+    assert t.rows[0].cells[0].text == "H"
+    assert t.rows[1].cells[0].text == "v"
+    doc.save(io.BytesIO())        # the operation that used to raise ValueError / UnicodeEncodeError
+
+
+def test_nrfu_coverage_column_requires_a_derived_test(tmp_path):
+    """[#23 / EX-nrfu-004] §2.1 printed "Tested — <phase or default>" UNCONDITIONALLY, so a RECOMMENDED
+    decision with no `design_nrfu` item read as covered — while the prose two lines above promises that a
+    gap is "an explicit coverage boundary, not a silent gap". A test lead signs the ATP believing a
+    decision has test cases it does not. Discriminating fixture: two recommended decisions, only ONE of
+    which has a design_nrfu item."""
+    pytest.importorskip("docx")
+    from docx import Document
+
+    from backend.nrfu_docx import write_nrfu_docx
+    snap = {
+        "devices": {"a": {}}, "executive_brief": {"scale": {"n_devices": 1}},
+        "lifecycle_risk": {"per_device": []}, "validation_plan": {"items": []},
+        "service_map": {"services": []}, "application_intelligence": {"domains": []},
+        "design_blueprint": {"decisions": [
+            {"id": "covered-decision", "title": "Covered decision", "priority": "High",
+             "status": "recommended"},
+            {"id": "uncovered-decision", "title": "Uncovered decision", "priority": "Critical",
+             "status": "recommended"}]},
+        "design_nrfu": {"items": [{"decision_id": "covered-decision", "phase": "pre-cutover"}]},
+    }
+    out = str(tmp_path / "nrfu_cov.docx")
+    write_nrfu_docx(out, snap, "Coverage Fleet")
+    d = Document(out)
+    rows = [[c.text for c in r.cells] for t in d.tables for r in t.rows]
+    covered = next(r for r in rows if r and r[0] == "Covered decision")
+    uncovered = next(r for r in rows if r and r[0] == "Uncovered decision")
+    assert covered[2] == "Tested — pre-cutover"
+    assert "Tested" not in uncovered[2] and "NOT COVERED" in uncovered[2]
+    # and the gap is disclosed as a scope limit, not left to the table alone
+    text = "\n".join(p.text for p in d.paragraphs)
+    assert "1 recommended design decision(s) have NO acceptance test" in text
+
+
+def test_execution_outcome_needs_positive_evidence_of_completion():
+    """[#22] `_derive_outcome` fell through to SUCCESSFUL on a run with ZERO waves, because
+    `any(d == "ROLLED BACK")` and `any(d != "COMPLETE")` are both vacuously False over an empty list.
+    `pir_docx` then renders "Outcome: SUCCESSFUL" in green as the title-page verdict over a record whose
+    own body says "0 of 0 wave(s) completed". Every other branch of this function requires positive
+    evidence; this one required none."""
+    from backend import execution
+
+    empty = {"waves": [], "events": [], "status": "in_progress"}
+    assert execution._derive_outcome(empty, "completed") == execution.OUTCOME_PARTIAL
+    assert execution._derive_outcome(empty, "aborted") == execution.OUTCOME_ABORTED
+    # a run that DID complete a wave is still SUCCESSFUL — the fix must not blanket-demote
+    ok = {"waves": [{"closeout": {"decision": "COMPLETE"}, "checks": [], "steps": []}],
+          "events": [], "status": "in_progress"}
+    assert execution._derive_outcome(ok, "completed") == execution.OUTCOME_SUCCESS
+
+
+def test_cutover_move_group_zero_endpoints_is_not_masked():
+    """[#54 `or`-masks-zero] `_int(mg.get("endpoints")) or hard_ep` replaced a move group's genuine 0
+    endpoints with the hard-cutover figure. The value is an SSOT headline (fleet_summary['n_endpoints'])
+    AND the final tie-break of the pilot-first wave ordering, so the masked 0 both overstates the fleet
+    and mis-ranks the run-of-show. `storage.add_snapshot` documents the same guard as `is not None`."""
+    from backend import cutover
+
+    snap = {
+        "devices": {"sw1": {}},
+        "wave_sequencing": [{"group": "G1", "make_before_break": [], "hard_cutover": ["sw1"],
+                             "hard_cutover_endpoints": 42}],
+        "move_groups": [{"group": "G1", "switches": ["sw1"], "endpoints": 0}],
+    }
+    plan = cutover.build_plan(snap)
+    assert plan["waves"][0]["endpoints"] == 0                 # was 42 (hard_ep) via `or`
+    assert plan["waves"][0]["hard_cutover_endpoints"] == 42   # the distinct count is unchanged
+
+    # an ABSENT / unparseable move-group count still falls back to hard_ep (presence, not truthiness)
+    for bad in ({}, {"endpoints": None}, {"endpoints": "n/a"}):
+        s = dict(snap, move_groups=[{"group": "G1", "switches": ["sw1"], **bad}])
+        assert cutover.build_plan(s)["waves"][0]["endpoints"] == 42, bad

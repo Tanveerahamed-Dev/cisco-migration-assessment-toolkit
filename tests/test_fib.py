@@ -420,6 +420,118 @@ def test_reachability_delta_discloses_bounded_coverage():
     assert d2["assessed"] is False and d2["subnets_total"] == 0 and d2["capped"] is False
 
 
+# ---------------------------------------------------------------------------------------------------------------
+# Review wave 2026-07-28 (#27 ECMP existential, #28 scoped-out route read as a forwarding decision). Both are
+# about EVIDENCE: the verdicts stay, but what they are grounded in must be disclosed rather than assumed.
+# ---------------------------------------------------------------------------------------------------------------
+
+def _ecmp_blackhole_snap(blackhole=True):
+    """R1 installs TWO equal-cost OSPF legs to 10.9.9.0/24: via R2 (delivers, dst connected) and via R3, which
+    either forwards on to R2 or (blackhole=True) summarises the prefix to Null0 -- a PROVEN drop for every flow
+    that hashes onto that leg, i.e. ~50% packet loss on a destination the tracer certifies 'reached'."""
+    r3_tail = ({"prefix": "10.9.9.0/24", "source": "static", "next_hop": "", "out_intf": "Null0"} if blackhole
+               else {"prefix": "10.9.9.0/24", "source": "static", "next_hop": "10.0.23.2", "out_intf": "Gi0/2"})
+    return {"routes": {
+        "R1": [{"prefix": "10.0.1.0/24", "source": "connected", "out_intf": "Vlan1"},
+               {"prefix": "10.0.12.0/30", "source": "connected", "out_intf": "Gi0/1"},
+               {"prefix": "10.0.13.0/30", "source": "connected", "out_intf": "Gi0/2"},
+               {"prefix": "10.9.9.0/24", "source": "ospf", "next_hop": "10.0.12.2", "out_intf": "Gi0/1"},
+               {"prefix": "10.9.9.0/24", "source": "ospf", "next_hop": "10.0.13.3", "out_intf": "Gi0/2"}],
+        "R2": [{"prefix": "10.0.12.0/30", "source": "connected", "out_intf": "Gi0/1"},
+               {"prefix": "10.0.23.0/30", "source": "connected", "out_intf": "Gi0/2"},
+               {"prefix": "10.9.9.0/24", "source": "connected", "out_intf": "Vlan99"}],
+        "R3": [{"prefix": "10.0.13.0/30", "source": "connected", "out_intf": "Gi0/1"},
+               {"prefix": "10.0.23.0/30", "source": "connected", "out_intf": "Gi0/2"}, r3_tail]}}
+
+
+def test_ecmp_blackholing_leg_is_disclosed_not_swallowed_by_the_existential():
+    """[review #27] 'any leg reaches' is the right model (a router load-balances, so the dst IS deliverable),
+    but a sibling leg proven to blackhole is ~50% loss and must be NAMED. The default result shape stays frozen
+    -- it is compared key-for-key against the explorer's JS port (tests/test_explorer_js_parity.py) -- so the
+    evidence rides on the opt-in `disclose` and is always on in reachability_diff."""
+    snap = _ecmp_blackhole_snap()
+    t = fib.trace_fib_path(snap, "10.0.1.5", "10.9.9.5")
+    assert t["status"] == "computed:reached" and t["reached"] is True     # the existential is CORRECT
+    assert set(t) == {"src", "dst", "hops", "status", "computed", "reached", "mtu_min", "mtu_bottleneck_hop",
+                      "mtu_verdict", "mtu_unobserved_hops", "jumbo_blackhole"}, "frozen default shape"
+
+    d = fib.trace_fib_path(snap, "10.0.1.5", "10.9.9.5", disclose=True)
+    assert d["status"] == "computed:reached"
+    legs = d["ecmp_dropping_legs"]
+    assert len(legs) == 1 and legs[0]["host"] == "R1" and legs[0]["out_intf"] == "Gi0/2"
+    assert legs[0]["next_hop"] == "10.0.13.3" and legs[0]["leg_status"] == "computed:unreachable"
+    # the healthy fabric discloses nothing
+    assert fib.trace_fib_path(_ecmp_blackhole_snap(blackhole=False), "10.0.1.5", "10.9.9.5",
+                              disclose=True)["ecmp_dropping_legs"] == []
+
+
+def test_reachability_diff_names_a_cutover_that_blackholes_one_ecmp_leg():
+    """[review #27] The pre-cutover proof called this change 'preserved' with nothing else said. The verdict is
+    still true (the flow is deliverable), so it stays -- but the dropping leg is now on the row AND collected
+    into ecmp_partial_drop, on both reachability_diff and reachability_delta."""
+    before, after = _ecmp_blackhole_snap(blackhole=False), _ecmp_blackhole_snap(blackhole=True)
+    d = fib.reachability_diff(before, after, [("10.0.1.5", "10.9.9.5")])
+    row = d["pairs"][0]
+    assert row["verdict"] == "preserved"
+    assert [leg["out_intf"] for leg in row["ecmp_dropping_legs"]] == ["Gi0/2"]
+    assert len(d["ecmp_partial_drop"]) == 1 and d["ecmp_partial_drop"][0]["dst"] == "10.9.9.5"
+    # and the unchanged fabric reports nothing to disclose
+    clean = fib.reachability_diff(before, before, [("10.0.1.5", "10.9.9.5")])
+    assert clean["ecmp_partial_drop"] == [] and clean["pairs"][0]["ecmp_dropping_legs"] == []
+    delta = fib.reachability_delta(before, after, pairs=[("10.0.1.5", "10.9.9.5")])
+    assert len(delta["ecmp_partial_drop"]) == 1
+
+
+def _scoped_snap(with_route=True):
+    """What build.scope_routes actually leaves in snap['routes']: a host's in-scope connected subnets plus the
+    routes whose prefix COVERS an in-scope subnet (+ the default). R1 is a proven L3 router (a connected /30
+    transit) whose route toward 10.8.8.0/24 is simply not in the snapshot, and it has no default."""
+    r1 = [{"prefix": "10.1.1.0/24", "source": "connected", "out_intf": "Vlan1"},
+          {"prefix": "10.0.12.0/30", "source": "connected", "out_intf": "Gi0/1"}]
+    if with_route:
+        r1 = r1 + [{"prefix": "10.8.8.0/24", "source": "ospf", "next_hop": "10.0.12.2", "out_intf": "Gi0/1"}]
+    return {"routes": {"R1": r1,
+                       "R2": [{"prefix": "10.0.12.0/30", "source": "connected", "out_intf": "Gi0/1"},
+                              {"prefix": "10.8.8.0/24", "source": "connected", "out_intf": "Vlan8"}]}}
+
+
+def _null0_snap():
+    return {"routes": {"R1": [{"prefix": "10.1.1.0/24", "source": "connected", "out_intf": "Vlan1"},
+                              {"prefix": "10.0.12.0/30", "source": "connected", "out_intf": "Gi0/1"},
+                              {"prefix": "10.8.8.0/24", "source": "static", "next_hop": "", "out_intf": "Null0"}]}}
+
+
+def test_drop_from_an_empty_lookup_is_disclosed_as_absence_derived():
+    """[review #28] A computed:unreachable from an EMPTY lookup is derived from absence, and snap['routes'] is
+    NOT the RIB (build.scope_routes keeps only prefixes covering an in-scope SVI subnet, plus the default), so
+    it is equally consistent with 'the route was scoped out'. A Null0 egress, by contrast, was positively
+    OBSERVED. The two used to be indistinguishable in the result."""
+    absent = fib.trace_fib_path(_scoped_snap(with_route=False), "10.1.1.5", "10.8.8.9", disclose=True)
+    assert absent["status"] == "computed:unreachable"
+    assert absent["drop_evidence"] == "no_route_observed"
+    seen = fib.trace_fib_path(_null0_snap(), "10.1.1.5", "10.8.8.9", disclose=True)
+    assert seen["status"] == "computed:unreachable"
+    assert seen["drop_evidence"] == "observed_discard"
+    # a reached trace carries no drop evidence at all
+    assert fib.trace_fib_path(_scoped_snap(True), "10.1.1.5", "10.8.8.9", disclose=True)["drop_evidence"] == ""
+
+
+def test_both_sides_never_observed_a_route_is_inconclusive_not_a_clean_non_regression():
+    """[review #28] both_unreachable is counted as a NON-regression. When NEITHER snapshot ever observed a
+    route for the flow, that verdict certifies a forwarding decision from two absences -- and a flow the change
+    really broke raises no alarm. It must abstain instead; a positively-observed discard on both sides is still
+    definitive, and a route the change REMOVED is still the newly_blocked regression the diff exists for."""
+    absent = fib.reachability_diff(_scoped_snap(False), _scoped_snap(False), [("10.1.1.5", "10.8.8.9")])
+    assert absent["pairs"][0]["verdict"] == "inconclusive"
+    assert absent["pairs"][0]["old_drop_evidence"] == "no_route_observed"
+    assert absent["summary"].get("both_unreachable", 0) == 0
+    observed = fib.reachability_diff(_null0_snap(), _null0_snap(), [("10.1.1.5", "10.8.8.9")])
+    assert observed["pairs"][0]["verdict"] == "both_unreachable"          # positively evidenced -> definitive
+    assert observed["pairs"][0]["new_drop_evidence"] == "observed_discard"
+    regression = fib.reachability_diff(_scoped_snap(True), _scoped_snap(False), [("10.1.1.5", "10.8.8.9")])
+    assert regression["pairs"][0]["verdict"] == "newly_blocked"           # recall is NOT traded away
+
+
 def test_real_route_source_codes_map_correctly():
     """Format-fidelity vs REAL [HISTORY-REDACTED] snapshot source values (a mix of expanded names AND raw codes with the '*'
     candidate-default marker): 's*' is static, 'o*ia' is OSPF inter-area, '' is unknown. _is_connected and the

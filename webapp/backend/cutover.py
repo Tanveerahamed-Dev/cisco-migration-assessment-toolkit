@@ -50,6 +50,19 @@ def _int(v: Any, default: int = 0) -> int:
         return default
 
 
+def _int_or_none(v: Any) -> Optional[int]:
+    """``_int`` that preserves ABSENT / unparseable as ``None`` instead of collapsing it onto 0.
+
+    Needed wherever a genuine 0 is a real published count and a fallback must fire ONLY when the field
+    is missing: ``_int(x) or fallback`` silently replaces a reported 0 with the fallback (this project's
+    ``or``-masks-zero class — ``storage.add_snapshot`` documents the same guard as ``is not None`` for the
+    canonical n_devices)."""
+    try:
+        return int(v)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def _as_dict(v: Any) -> Dict[str, Any]:
     """Coerce a snapshot section/sub-section to a dict. A truthy NON-dict (an int/str/list in a malformed or
     hostile upload) would otherwise survive `... or {}` and 500 the very next `.get`/`.items()` -- a stored
@@ -349,7 +362,12 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
         mg = _match_move_group(switches, move_groups)
 
         hard_ep = _int(seq.get("hard_cutover_endpoints"))
-        endpoints = _int(mg.get("endpoints")) or hard_ep
+        # PRESENCE, not truthiness: a move group that genuinely reports 0 endpoints is a real count, and
+        # `_int(...) or hard_ep` silently adopted the hard-cutover figure instead. This value is an SSOT
+        # headline (it feeds fleet_summary['n_endpoints']) AND the final tie-break of the pilot-first wave
+        # ordering below, so a masked 0 both overstates the fleet and mis-ranks the run-of-show.
+        mg_endpoints = _int_or_none(mg.get("endpoints"))
+        endpoints = mg_endpoints if mg_endpoints is not None else hard_ep
         n_fail = _int((readiness or {}).get("n_fail"))
         n_warn = _int((readiness or {}).get("n_warn"))
 

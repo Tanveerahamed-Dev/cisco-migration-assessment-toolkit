@@ -31,14 +31,33 @@ def _doctrine_root(tmp_path):
     return root
 
 
-def _protected_store(tmp_path, *, protected=True, anchors=True, indexed=True):
+def _prose_body():
+    """The artifact shaped like the REAL one: each canonical anchor inside a doctrine SENTENCE.
+
+    The fixture used to write the anchors as a bare list — which is precisely the compressed shape
+    D12 forbids, so the store this suite called healthy was itself the counterexample. Keep this
+    prose (a fixture that manufactures the precondition proves nothing about the check)."""
+    return "\n".join(
+        f"- **{cid}.** The pinned invariant is: {anchor}. It is retained verbatim by every "
+        f"consolidation pass, never summarised, and reconciles to the doctrine owner in CLAUDE.md."
+        for cid, anchor in MG.CANONICAL_SAFETY_CONSTRAINTS)
+
+
+def _protected_store(tmp_path, *, protected=True, anchors=True, indexed=True, compressed=False):
     """A synthetic agent-memory store shaped like the real one. The artifact marks protection via the
     `protected:` frontmatter key ONLY (no `type: constraint`), so flipping that single key genuinely
-    unprotects it — the real artifact carries both markers, which only makes it harder to unprotect."""
+    unprotects it — the real artifact carries both markers, which only makes it harder to unprotect.
+
+    `compressed=True` writes the anchors as a bare keyword list: every anchor still present, marker
+    still on, still indexed — the D12 tier reduced to keywords by a consolidation pass."""
     store = tmp_path / "agent-memory"
     store.mkdir(exist_ok=True)
-    body = ("\n".join(anchor for _, anchor in MG.CANONICAL_SAFETY_CONSTRAINTS)
-            if anchors else "anchors edited out\n")
+    if not anchors:
+        body = "anchors edited out\n"
+    elif compressed:
+        body = "\n".join("- " + anchor for _, anchor in MG.CANONICAL_SAFETY_CONSTRAINTS)
+    else:
+        body = _prose_body()
     (store / "protected-constraints.md").write_text(
         "---\nname: protected-constraints\ndescription: pinned safety tier\n"
         "metadata:\n  node_type: memory\n  protected: " + ("true" if protected else "false")
@@ -344,6 +363,36 @@ def test_protected_artifact_gutted_body_goes_red(tmp_path):
     assert c["status"] == SC.RED and "unpinned" in c["detail"]
 
 
+def test_protected_artifact_compressed_to_a_keyword_list_goes_red(tmp_path):
+    """THE D12 verbatim floor. The artifact exists, still marks itself protected, still contains
+    every canonical anchor and is still indexed in MEMORY.md — and has been compressed to a bullet
+    list of the anchors, which is exactly what the never-compressible tier forbids. Every existing
+    sub-check passes on that shape, so before the floor this read GREEN ("all 8 canonical anchors
+    pinned") over a compressed safety tier."""
+    root = _doctrine_root(tmp_path)
+    c = SC.check_protected_artifact(root, memory_dir=_protected_store(tmp_path, compressed=True))
+    assert c["status"] == SC.RED, c["detail"]
+    assert "COMPRESSED" in c["detail"] or "bare keyword" in c["detail"]
+
+
+def test_protected_body_integrity_measures_both_floors():
+    """The pure decision (no I/O): a keyword list trips both floors, a bare-anchor bullet trips the
+    context floor even inside a long entry, and doctrine prose trips neither. An anchor that is
+    ABSENT is not this function's loss class (memory_guard.unpinned_constraints owns it)."""
+    cons = MG.CANONICAL_SAFETY_CONSTRAINTS
+    keyword_list = "\n".join("- " + a for _, a in cons)
+    probs = SC.protected_body_integrity(keyword_list, cons)
+    assert probs and any("COMPRESSED" in p for p in probs)
+    assert any("bare keyword" in p for p in probs)
+    assert SC.protected_body_integrity(_prose_body(), cons) == []
+    # padded to clear the volume floor, but each anchor still stands alone -> still caught
+    padded = keyword_list + "\n" + ("filler prose about the engagement. " * 60)
+    assert any("bare keyword" in p for p in SC.protected_body_integrity(padded, cons))
+    # an absent anchor is NOT reported here (no occurrence -> no context claim to make)
+    assert SC.protected_body_integrity("", cons) != []          # empty body still trips volume
+    assert not any("bare keyword" in p for p in SC.protected_body_integrity("", cons))
+
+
 def test_protected_artifact_index_prune_goes_red(tmp_path):
     """BLK-1 route (d): a MEMORY.md prune that drops the index line orphans the fact from
     session-start re-surfacing — RED; a missing index entirely is the same loss class."""
@@ -440,6 +489,61 @@ def test_run_selfcheck_absent_store_is_green_with_gaps_not_green(tmp_path):
     byname = {c["name"]: c for c in rep["checks"]}
     assert byname["protected_artifact"]["status"] == SC.UNKNOWN
     assert "signal_absent" in byname["protected_artifact"]["detail"]
+
+
+def test_run_selfcheck_survives_an_undecodable_substrate_file(tmp_path):
+    """The module docstring's promise — "a check that raises is caught and reported UNKNOWN, never
+    crashes the nightly run" — made mechanical. `run_selfcheck` wrapped nothing and the per-check
+    guards caught only OSError, so ONE non-UTF-8 byte in a feedback substrate raised
+    UnicodeDecodeError (a ValueError) out of the whole run: the immune system went dark instead of
+    reporting that it had gone dark, and the nightly clock/briefing lost every other signal too."""
+    root = _healthy_root(tmp_path, None)
+    q = os.path.join(root, "docs", "quality")
+    for name in ("scorecard.jsonl", "pir_outcomes.jsonl", "nightly_runs.jsonl"):
+        with open(os.path.join(q, name), "wb") as f:
+            f.write(b'{"date": "2026-07-28"}\n\xff\xfe not utf-8\n')
+    rep = SC.run_selfcheck(root, now=1.0, memory_dir=_protected_store(tmp_path))
+    byname = {c["name"]: c for c in rep["checks"]}
+    assert len(rep["checks"]) == 9                       # every check still reported
+    for name in ("scorecard_substrate", "pir_outcomes_substrate", "nightly_ledger"):
+        assert byname[name]["status"] == SC.UNKNOWN, byname[name]
+        assert "UnicodeDecodeError" in byname[name]["detail"]
+    assert rep["verdict"] != "GREEN"                     # an unevaluated check is never plain green
+    assert SC.render(rep)                                # and the report still renders
+
+
+def test_run_selfcheck_reports_a_raising_check_under_its_own_name(tmp_path, monkeypatch):
+    """A check that raises for ANY reason is reported UNKNOWN by name, and the run continues."""
+    root = _healthy_root(tmp_path, None)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("guard exploded")
+
+    monkeypatch.setattr(SC, "check_guards_nonvacuous", _boom)
+    rep = SC.run_selfcheck(root, now=1.0, memory_dir=_protected_store(tmp_path))
+    byname = {c["name"]: c for c in rep["checks"]}
+    assert byname["guards_nonvacuous"]["status"] == SC.UNKNOWN
+    assert "RuntimeError" in byname["guards_nonvacuous"]["detail"]
+    assert byname["scorecard_substrate"]["status"] == SC.GREEN     # the others still ran
+
+
+def test_judge_trust_discloses_unauthenticated_score_exemption(tmp_path):
+    """A scored APPROVE is exempt from the TNR floor as "deterministic harness output" — a claim the
+    row schema cannot authenticate. The exemption must be DISCLOSED, not silently absorb the row out
+    of the denominator; and a row that also carries judge provenance is a judge verdict again, so a
+    scored, reviewed_by-stamped, below-floor APPROVE persisted provisional=false is still RED."""
+    root = str(tmp_path)
+    _scorecard_with(root, [{"date": "2026-07-28", "deliverable": "golden", "score": 100,
+                            "verdict": "APPROVE", "judge_tnr": None, "provisional": False}])
+    c = SC.check_judge_trust(root)
+    assert c["status"] == SC.GREEN
+    assert "1 scored APPROVE row(s) exempt" in c["detail"] and "not authenticated" in c["detail"]
+    root2 = str(tmp_path / "r2")
+    os.makedirs(root2, exist_ok=True)
+    _scorecard_with(root2, [{"date": "2026-07-28", "deliverable": "set", "score": 100,
+                             "verdict": "APPROVE", "judge_tnr": 0.2, "provisional": False,
+                             "reviewed_by": "deliverable-qa-reviewer"}])
+    assert SC.check_judge_trust(root2)["status"] == SC.RED
 
 
 def test_run_selfcheck_red_leads(tmp_path):
