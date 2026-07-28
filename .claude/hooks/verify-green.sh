@@ -15,7 +15,11 @@ set -u
 cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" || exit 0
 
 # Fail open: if git can't tell us what changed, don't trap the user.
-changed=$(git status --porcelain 2>/dev/null | grep -E '\.py$' || true)
+# The trailing `"?` matters: git QUOTES a porcelain path containing a space or a non-ASCII
+# byte ("my probe.py"), so such a line ends in a quote, not in .py — and the gate silently
+# stopped applying to exactly the files whose names are unusual. Fail-open on an unreadable
+# git is deliberate; failing open on a NAME is not.
+changed=$(git status --porcelain 2>/dev/null | grep -E '\.py"?$' || true)
 [ -z "$changed" ] && exit 0
 
 PY=$(command -v python || command -v python3 || echo python)

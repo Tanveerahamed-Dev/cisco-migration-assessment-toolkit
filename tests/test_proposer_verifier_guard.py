@@ -40,6 +40,13 @@ READONLY_ANALYSTS = (
 # Edit/Write are the pair the plan names; MultiEdit/NotebookEdit are the same capability class.
 WRITE_CAPABLE = {"edit", "write", "multiedit", "notebookedit"}
 
+#: The read-only analysts' tools must be a SUBSET of this. An allowlist, not a denylist, because a
+#: denylist of four names cannot see the two ways an analyst silently gains write capability:
+#: `tools: *` (the documented all-tools form -- it parses to ['*'], which is truthy and contains no
+#: denylisted name, so every parametrized case stayed green while the agent held Edit/Write), and any
+#: write-capable tool this repo has not met yet. Guard the property, not the enumeration.
+READONLY_TOOLS = {"read", "grep", "glob", "bash", "websearch", "webfetch", "todowrite", "task"}
+
 # A minimal real reviewer verdict (per-artifact signature) the record arms accept.
 VERDICT = "runbook.docx — BLOCK\nFindings:\nrunbook §2 | 60 switches | snapshot = 58 | High\n"
 
@@ -208,13 +215,29 @@ def test_readonly_analyst_roster_is_pinned(agent):
     assert not gained, (
         f"{agent}: read-only analyst gained write-capable tool(s) {gained} — this breaks the "
         f"proposer != verifier roster (P0-2/G-002); authors and verifiers must stay disjoint")
+    # ...and the allowlist half, which is what actually closes the class. `tools: *` names no
+    # denylisted tool yet grants every tool there is, so the check above cannot see it.
+    unknown = sorted(t for t in tools if t.casefold() not in READONLY_TOOLS)
+    assert not unknown, (
+        f"{agent}: read-only analyst declares tool(s) {unknown} that are not on the read-only "
+        f"allowlist. If '*' is there, the agent now holds Edit/Write and the roster is broken; if "
+        f"it is a genuinely read-only tool, add it to READONLY_TOOLS deliberately")
 
 def test_roster_pin_parser_is_not_vacuous():
-    """The pin must be failable: the parser sees a planted Edit, and sees the real files' tools."""
+    """The pin must be failable: the parser sees a planted Edit, sees the wildcard grant, and sees
+    the real files' tools."""
     planted = "---\nname: x\ntools: Read, Edit, Bash\n---\nbody"
     assert "Edit" in _agent_tools(planted)
     assert _agent_tools("no frontmatter at all") is None
     assert _agent_tools("---\nname: x\n---\nbody") is None      # frontmatter but no tools: line
+    # The wildcard: truthy, names nothing write-capable, and grants everything. The denylist half
+    # passes it; the allowlist half must not.
+    wild = _agent_tools("---\nname: x\ntools: *\n---\nbody")
+    assert wild == ["*"], f"wildcard form no longer parses as expected: {wild!r}"
+    assert not [t for t in wild if t.casefold() in WRITE_CAPABLE], \
+        "precondition: the denylist genuinely cannot see '*' — that is why the allowlist exists"
+    assert [t for t in wild if t.casefold() not in READONLY_TOOLS] == ["*"], \
+        "the allowlist must reject the wildcard grant"
     # and at least one real analyst file parses to a non-empty allowlist (paths are right)
     real = _agent_tools((AGENTS_DIR / "deliverable-qa-reviewer.md").read_text(encoding="utf-8"))
     assert real and "Read" in real

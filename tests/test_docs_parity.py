@@ -49,4 +49,17 @@ def test_product_files_exist():
     assert "All rights reserved" in lic
     assert (ROOT / "CHANGELOG.md").is_file(), "CHANGELOG.md is missing"
     ch = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert "Unreleased" in ch and "v3.23.176" in ch
+    assert "Unreleased" in ch
+    # The shipped version must APPEAR in the changelog. The previous form asserted a hardcoded
+    # "v3.23.176" — eight minor versions behind by the time this was caught, and permanently true
+    # because CHANGELOG.md is append-only. That is an environment constant, not a property of the
+    # release: every version from 3.24 to 3.31 could have gone unlogged with the test green. Derive
+    # the expectation from pyproject, the way this file's sibling checks derive theirs from the
+    # explorer MODES registry.
+    version = re.search(r'^version\s*=\s*"([^"]+)"',
+                        (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
+                        re.M).group(1)
+    assert version in ch, (
+        f"pyproject version {version} has no entry in CHANGELOG.md — the changelog is stale "
+        f"against the shipped release (this is what the old hardcoded-version assertion could "
+        f"never detect)")

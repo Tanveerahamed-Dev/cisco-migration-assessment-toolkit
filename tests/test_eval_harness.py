@@ -6,10 +6,12 @@ Two guarantees, tiered:
   deliverable scores a true 100 (every grounded Law verified, nothing tripped, nothing unverified),
   AND three deliberately-broken mutants each trip exactly their target Law. The mutants are the
   load-bearing half — they prove the harness is **non-vacuous** (a guard that cannot fail is red).
-* **Full** (release — set ``EVAL_FULL=1``): render the whole DOCX family from the known-good
+* **Full** (also always, since 2026-07-28): render the whole DOCX family from the known-good
   snapshot and re-score with the rendered text, exercising the render checks (excellence furniture +
   the rendered self-verification badge byte-matching the machine fact count); plus, opportunistically,
-  score the real on-disk assessment snapshot if one is present.
+  score the real on-disk assessment snapshot if one is present. This tier was gated behind
+  ``EVAL_FULL=1``, which no workflow, hook or script ever set — so the only tests covering the
+  rendered furniture had never run. Un-gated for 2.1s of runtime.
 
 Coverage-honesty is asserted as a first-class property: a partial snapshot's unverifiable Laws come
 back ``unverified`` (disclosed), never a fabricated pass; an empty deliverable scores ``None``, never
@@ -24,8 +26,19 @@ import pytest
 from cisco_toolkit import eval_harness as E
 from cisco_toolkit import ssot
 
-EVAL_FULL = bool(os.environ.get("EVAL_FULL"))
-_full = pytest.mark.skipif(not EVAL_FULL, reason="full eval tier — set EVAL_FULL=1 (release gate)")
+# The "full tier" used to be gated behind EVAL_FULL=1 and described as the release gate -- but that
+# variable is set NOWHERE in this repository: not in .github/workflows, not in .claude/hooks, not in
+# pytest.ini, not in any release script. So the two tests below had never run in any lane, and they
+# are the only ones that render the whole DOCX family from the known-good snapshot and assert the
+# rendered-tier checks: the [NOT OBSERVED] furniture (guardrail 3), the SSOT badge, and the
+# byte-match between the rendered citation count and ssot.summary(snap)["n_facts"]. Any writer could
+# have stopped emitting those and every lane would have stayed green.
+#
+# Measured before removing the gate: the two tests add 2.1s to a 0.6s file. A release gate nobody
+# runs is not a gate; 2 seconds is not a reason to keep one.
+def _full(fn):
+    """Identity passthrough, kept only so the full-tier tests stay greppable as a group."""
+    return fn
 
 # The same writer roster the excellence ratchet renders (tests/test_deliverable_excellence.py).
 WRITERS = [

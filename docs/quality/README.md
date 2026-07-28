@@ -55,9 +55,10 @@ Example (illustrative — do not hand-edit real data in):
   citations byte-match, and the machine-checkable Deliverable-Excellence Laws present (the repo-grounded
   subset **L1/L2/L3/L6/L8/L9/L10**; the full ten-Law Standard is owned by the external Deliverable Excellence
   Kit, so Laws with no in-repo signal are reported UNVERIFIED, never a blanket 10/10). **Tiered** in
-  `tests/test_eval_harness.py`: the snapshot-only **smoke** set runs on every change (the `verify-green`
-  gate); `EVAL_FULL=1` adds the **full** set on release — render the DOCX family + the rendered-citation
-  checks, and score the real on-disk snapshot. The harness's `ScoreResult.to_scorecard_row()` emits the
+  `tests/test_eval_harness.py`: the snapshot-only **smoke** set and the **full** set — render the DOCX
+  family + the rendered-citation checks, and score the real on-disk snapshot — both now run on every
+  change. The full set was gated behind an `EVAL_FULL=1` that nothing in the repo ever set, so it had
+  never run anywhere; it costs 2.1s. The harness's `ScoreResult.to_scorecard_row()` emits the
   same schema, so a release run can append a *scored* row.
 - `/briefing` (live) reads the tail of this file and renders the trend in the morning digest.
 
