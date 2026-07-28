@@ -10,15 +10,20 @@ name: webapp-ci
 # pytest.ini, can break these jobs while touching no file under webapp/ or cisco_toolkit/ — and
 # because none of these three jobs is a required branch-protection context, a filtered-out run is
 # indistinguishable from a green one at the merge button.
+# The ROOT conftest.py belongs on that list for the same reason and was missing it. pytest's
+# confcutdir is the rootdir, so `python -m pytest webapp/tests` loads /conftest.py as a plugin —
+# verified 2026-07-28 with `--trace-config`, which registers BOTH /conftest.py and
+# webapp/tests/conftest.py for that exact command. It installs an autouse fixture on every backend
+# test and mutates sys.path, so breaking it reds the backend job while matching no other entry here.
 # (Spelled out twice on purpose — the GitHub Actions workflow parser does not support YAML
 # anchors/aliases, so the two lists must be kept identical by hand; tests/test_hooks_automation.py
 # asserts they still match.)
 on:
   push:
     branches: [main]
-    paths: ["webapp/**", "cisco_toolkit/**", "COLLECT_PARSE_V3_23_0.py", "requirements.txt", "requirements-dev.txt", "pyproject.toml", "pytest.ini", ".github/workflows/webapp-ci.yml"]
+    paths: ["webapp/**", "cisco_toolkit/**", "COLLECT_PARSE_V3_23_0.py", "conftest.py", "requirements.txt", "requirements-dev.txt", "pyproject.toml", "pytest.ini", ".github/workflows/webapp-ci.yml"]
   pull_request:
-    paths: ["webapp/**", "cisco_toolkit/**", "COLLECT_PARSE_V3_23_0.py", "requirements.txt", "requirements-dev.txt", "pyproject.toml", "pytest.ini", ".github/workflows/webapp-ci.yml"]
+    paths: ["webapp/**", "cisco_toolkit/**", "COLLECT_PARSE_V3_23_0.py", "conftest.py", "requirements.txt", "requirements-dev.txt", "pyproject.toml", "pytest.ini", ".github/workflows/webapp-ci.yml"]
   workflow_dispatch:
 
 permissions:

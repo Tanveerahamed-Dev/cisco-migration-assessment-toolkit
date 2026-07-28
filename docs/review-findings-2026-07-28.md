@@ -723,3 +723,38 @@ silently shrink).
 
 Zero new instances of the worst class, from a detector proven to fire. That is a stronger statement
 than "we looked again and found nothing".
+
+### The gate, finally pinned down — and two claims reconciled
+
+Round 5's automation pass proved the CONSEQUENCE of the timeout deterministically, which neither my
+measurements nor the round-3 note managed. Rather than race the clock, it put a `timeout` shim first
+on PATH rewriting `540` to `3`, left `verify-green.sh` byte-untouched, and drove the real hook against
+a fixture repo whose only test fails:
+
+> `verify-green: pytest exceeded 540s and was terminated - allowing stop (fail-open).` — **exit 0,
+> in 4 seconds, over a RED suite.**
+
+That is the proof the finding always needed: when the cap is hit, a genuinely failing suite ends the
+turn silently, and Claude Code discards a stderr notice on exit 0.
+
+**Two claims to reconcile, because they disagree and only one can be stated.** The round-5 pass
+concluded the blocking path is "unreachable on this box"; its own timing run had the suite at 57%
+after 577s — but that run was contaminated (a parallel session, i.e. this one, was editing
+`analyze.py` underneath it, which the agent disclosed). My six full-suite runs on effectively the
+same tree measured 428s, 440s, 620s, 628s, 1055s and 1326s, tracking machine load. **Two of those
+finished inside the cap**, so "unreachable" is too strong: the blocking path IS reached on a quiet
+machine, and the gate does work there. The accurate statement remains load-dependent fail-open.
+
+**But round 5 found something structural that timing does not touch, and it makes the defect worse
+than "sometimes slow".** The green marker is written ONLY on `rc=0` (`verify-green.sh:72`), so the
+exit-124 path caches nothing. A turn that hits the cap therefore fails open AND leaves the next turn
+to burn another full 540s and fail open again — the cost is paid every time and never amortized. On a
+loaded machine the gate is not a gate that occasionally misses; it is a fixed 540s tax that returns
+nothing.
+
+Also newly pinned, all previously unexecuted by any test: `session-brief.sh` and `statusline.sh` (each
+proven able to emit 0 bytes / a degraded fallback and still exit 0 — the exact shape that kept three
+hooks dead until round 2), and the fact that nothing asserted the hook scripts `settings.json` NAMES
+actually exist. A renamed script exits 127, and Claude Code blocks a Stop hook only on exit 2, so the
+repo's load-bearing gate would silently cease to exist while every hook test stayed green.
+Per-hook coverage: round 2 measured 4 of 9; round 5 leaves it at **10 of 10**.
