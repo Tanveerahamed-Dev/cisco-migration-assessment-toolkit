@@ -463,7 +463,7 @@
    "output_drops": "",
    "port_channel": "",
    "poe": "",
-   "risk": "ok",
+   "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
    "severity": "Info"
   },
   {
@@ -480,7 +480,7 @@
    "output_drops": "",
    "port_channel": "",
    "poe": "",
-   "risk": "ok",
+   "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
    "severity": "Info"
   },
   {
@@ -497,7 +497,7 @@
    "output_drops": "",
    "port_channel": "",
    "poe": "",
-   "risk": "ok",
+   "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
    "severity": "Info"
   },
   {
@@ -514,7 +514,7 @@
    "output_drops": "",
    "port_channel": "Po1",
    "poe": "",
-   "risk": "ok",
+   "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
    "severity": "Info"
   },
   {
@@ -531,7 +531,7 @@
    "output_drops": "",
    "port_channel": "Po1",
    "poe": "",
-   "risk": "ok",
+   "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
    "severity": "Info"
   },
   {
@@ -565,7 +565,7 @@
    "output_drops": "",
    "port_channel": "",
    "poe": "",
-   "risk": "ok",
+   "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
    "severity": "Info"
   },
   {
@@ -616,7 +616,7 @@
    "output_drops": "",
    "port_channel": "Po1",
    "poe": "",
-   "risk": "ok",
+   "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
    "severity": "Info"
   },
   {
@@ -683,8 +683,8 @@
    "next_hop": "Vlan10",
    "primary_subnet": "10.0.10.0/24",
    "secondary": "10.0.10.2/32",
-   "tracking": "",
-   "risk": "ok",
+   "tracking": "[NOT OBSERVED]",
+   "risk": "[NOT OBSERVED] - no 'show track' evidence; object tracking NOT assessed",
    "severity": "Info"
   },
   {
@@ -698,8 +698,8 @@
    "next_hop": "Vlan20",
    "primary_subnet": "10.0.20.0/24",
    "secondary": "10.0.20.2/32",
-   "tracking": "",
-   "risk": "ok",
+   "tracking": "[NOT OBSERVED]",
+   "risk": "[NOT OBSERVED] - no 'show track' evidence; object tracking NOT assessed",
    "severity": "Info"
   },
   {
@@ -713,7 +713,7 @@
    "next_hop": "Vlan30",
    "primary_subnet": "10.0.30.0/24",
    "secondary": "10.0.30.1/32",
-   "tracking": "",
+   "tracking": "[NOT OBSERVED]",
    "risk": "single-gateway",
    "severity": "Medium"
   },
@@ -728,8 +728,8 @@
    "next_hop": "Vlan10",
    "primary_subnet": "10.0.10.0/24",
    "secondary": "10.0.10.3/32",
-   "tracking": "",
-   "risk": "ok",
+   "tracking": "[NOT OBSERVED]",
+   "risk": "[NOT OBSERVED] - no 'show track' evidence; object tracking NOT assessed",
    "severity": "Info"
   },
   {
@@ -743,8 +743,8 @@
    "next_hop": "Vlan20",
    "primary_subnet": "10.0.20.0/24",
    "secondary": "10.0.20.3/32",
-   "tracking": "",
-   "risk": "ok",
+   "tracking": "[NOT OBSERVED]",
+   "risk": "[NOT OBSERVED] - no 'show track' evidence; object tracking NOT assessed",
    "severity": "Info"
   }
  ],
@@ -3014,7 +3014,7 @@
     {
      "check": "Port-channels healthy",
      "status": "pass",
-     "note": "all members bundled / none",
+     "note": "all members bundled",
      "phase": "Baseline capture"
     },
     {
@@ -6405,34 +6405,6 @@
    {
     "line_index": 0,
     "action": "permit",
-    "raw": "permit tcp object-group MGMT_HOSTS any eq 22",
-    "reason": "INDETERMINATE",
-    "verdict": "indeterminate",
-    "blocking_lines": [],
-    "different_action": false,
-    "detail": "unparseable address/port (e.g. non-contiguous wildcard)",
-    "host": "core1",
-    "acl": "MGMT_IN",
-    "source_command": "show running-config",
-    "citation": "acls.core1.MGMT_IN[0]"
-   },
-   {
-    "line_index": 1,
-    "action": "deny",
-    "raw": "deny ip any any",
-    "reason": "INDETERMINATE",
-    "verdict": "indeterminate",
-    "blocking_lines": [],
-    "different_action": false,
-    "detail": "an earlier unevaluable line may overlap \u2014 cannot prove reachable or dead",
-    "host": "core1",
-    "acl": "MGMT_IN",
-    "source_command": "show running-config",
-    "citation": "acls.core1.MGMT_IN[1]"
-   },
-   {
-    "line_index": 0,
-    "action": "permit",
     "raw": "permit tcp any any established",
     "reason": "INDETERMINATE",
     "verdict": "indeterminate",
@@ -6474,11 +6446,11 @@
    }
   ],
   "summary": {
-   "n_findings": 5,
+   "n_findings": 3,
    "n_shadowed": 0,
    "n_different_action": 0,
    "n_unmatchable": 0,
-   "n_indeterminate": 5,
+   "n_indeterminate": 3,
    "n_bad_reference": 0
   }
  },
@@ -6507,6 +6479,7 @@
    "n_error": 0,
    "n_empty": 0,
    "n_unverified_prompt": 0,
+   "n_unreadable": 0,
    "n_hosts_affected": 2
   }
  },
@@ -6521,9 +6494,9 @@
    },
    {
     "id": "no_egress_import_graph",
-    "method": "AST import-walk (any nesting depth, lazy imports included) over the analysis package for network libraries; charter exclusion: rest_collect.py (the opt-in REST collector, covered by its own GET-only claim); documented dev-only exception: gen_port_registry.py (data-pack generator, not pipeline-reachable)",
+    "method": "RECURSIVE AST import-walk (every subpackage, any nesting depth, lazy imports included) over the analysis package for network libraries; charter exclusion: rest_collect.py (the opt-in REST collector, covered by its own GET-only claim); documented dev-only exception: data/gen_port_registry.py (data-pack generator, not pipeline-reachable) \u2014 subtracted AFTER the scan and named in the result",
     "result": "HOLDS",
-    "detail": "0 network-library imports across 68 analysis modules (excluded by charter: rest_collect.py; documented exception: gen_port_registry.py)"
+    "detail": "0 unexplained network-library imports across 69 analysis modules (recursive walk; excluded by charter: rest_collect.py; documented exception(s) applied: data/gen_port_registry.py -> urllib.request)"
    },
    {
     "id": "rest_collect_get_only",
@@ -6535,7 +6508,7 @@
     "id": "no_llm_runtime",
     "method": "AST import-walk over the analysis package (rest_collect.py included) + the collector entry module for LLM/GenAI SDK imports \u2014 the pipeline is deterministic and air-gapped, no model call at runtime",
     "result": "HOLDS",
-    "detail": "0 LLM/GenAI SDK imports across 70 modules (analysis package + collector entry)"
+    "detail": "0 LLM/GenAI SDK imports across 71 modules (analysis package + collector entry)"
    }
   ]
  },
