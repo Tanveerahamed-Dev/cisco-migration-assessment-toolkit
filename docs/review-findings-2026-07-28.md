@@ -322,3 +322,98 @@ Options, none of which a review should pick unilaterally:
    fixture that builds the pipeline once would likely reclaim most of it. Biggest win, own project.
 3. **Accept it and lean on CI** — but `webapp/tests` is already gated by no required check (above),
    so CI is not currently a complete backstop either.
+
+---
+
+# Round 3 — the five files that had only ever been sampled
+
+Round 2's coverage ledger left one row with an empty cell and four files carrying nothing but round
+1's 8-candidate sample. Round 3 closed both. Five deep passes, each owning a disjoint file set, each
+instructed to refute before fixing and to prove every fix by reverting it.
+
+| Target | Lines | Fixed | Refuted |
+|---|---:|---:|---:|
+| `cisco_toolkit/excel.py` | 4,583 | 6 | 6 |
+| `cisco_toolkit/design_advisor.py` | 4,897 | 6 | 4 |
+| `cisco_toolkit/parse.py` | 4,623 | 4 | 4 |
+| `design_kb.py` + `COLLECT_PARSE_V3_23_0.py` | 7,588 | 6 | 6 |
+| `portable/` + `research_lane/` + `ollama_*` | ~1,840 | 7 | 4 |
+
+The refutation counts matter as much as the fixes: 24 candidates were disproven against the code
+rather than "fixed" defensively. Examples — the four Excel structural caps are unreachable
+(`wb.create_sheet` has exactly one call site, every sheet name is a module constant); a suspected
+dead half-duplex check is sound because `parse.py:4393` calls `.capitalize()`; `parse_security`
+cannot fabricate a hardening report from an error banner because `cmdio._load_cmd_output` screens
+`% Invalid input` upstream and `parse_security("")` returns `{}`.
+
+## The three that reached, or could have reached, a human
+
+1. **A read verb with a write tacked onto it passed the wire gate.** `is_ssh_wire_command` was
+   `^show\s+\S` — a check on the FIRST WORD. `show running-config | redirect bootflash:x` (NX-OS
+   WRITES that file), `show run | tftp://host/x` (ships the config off the box), `show version ;
+   reload`, and a read verb followed by an embedded NEWLINE all passed the guard whose whole purpose
+   is to forbid them — netmiko writes the string to the channel verbatim, so every embedded line is
+   typed at a live exec prompt. Not reachable by today's 100 wire-eligible commands; the point of a
+   positive grammar is that a LATER entry is excluded by default, and this is the one entry a prefix
+   check cannot see. Now whole-string.
+2. **The published attestation asserted the same thing on the same broken basis.**
+   `read_only_command_surface` is one of four claims the engine PUBLISHES, and
+   `attestation.py :: READ_ONLY_CMD` had the identical prefix-only weakness — so the engine would
+   have certified a read-only command surface while carrying a command that writes to bootflash.
+   Escalated by the collector pass because the file was outside its ownership. Proven by reverting:
+   *"attestation published HOLDS for a registry containing 'show running-config | redirect
+   bootflash:pwn.txt'"*.
+3. **`STP Root Bridges` printed `Aligned? = yes` for VLANs it never compared.** `stp_root_findings`
+   ABSTAINS for a VLAN with no collected gateway SVI — it cannot be in `misaligned`, there being
+   nothing to be misaligned with — and the writer read that abstention as an empty findings list.
+   On an access-only collection every gateway sits on an uncollected core, so the whole sheet reads
+   aligned. The converted deliverable in `graphify-out` shows dozens of consecutive rows doing
+   exactly that.
+
+## Enumerating the exits, again
+
+Fixing (2) meant finding that the read-only grammar had **four** consumers in three spellings:
+`attestation.py`, two sites in `tests/test_readonly_and_no_egress.py`, and a *re-derived copy* in
+`tests/test_nrfu_export.py` — which guards the command files an engineer actually executes during
+NRFU, and so was the worst place to hold the weaker rule. All four now compose from one owner via
+`is_read_only_command(..., extra_verbs=)`, which widens the VERB list only: `traceroute 10.0.0.1 ;
+reload` is still rejected.
+
+The same shape appeared on the sanitizer. `research_lane.sanitize` (producer side) and
+`intel_feed.verify_feed` (consumer side) are the two halves of one Rule-3 gate, and both did a
+literal token match — so they shared a blind spot exactly, and the second could never catch what the
+first missed: an operator's `"Acme Bank"` never matched the device spelling `ACME-BANK-CORE-01`, and
+a feed arrived attested `sanitized: true` with an EMPTY redaction list. One owner now
+(`textutils.forbidden_token_pattern`).
+
+## A false alarm on good output
+
+`_written_by_this_run` decided "did this run write it?" from `(mtime, size)` inequality against a
+pre-run stat. Re-running the same collection into the same folder produces byte-identical documents,
+and an immediate same-size rewrite moves neither field — measured here, `st_mtime` delta `0.0` every
+time. The document WAS rewritten and the check said it was not, so it was reported *"left by an
+EARLIER run into this folder … check which job it belongs to"*: a freshly-redacted set telling the
+engineer it might belong to another client. Fixed by stamping a sentinel mtime a day back on the
+engine-owned files before the run, so a rewrite is detectable regardless of tick granularity — and
+regardless of which direction the clock moved, which the original inequality was deliberately
+protecting and which a strictly-greater test would have broken.
+
+## Open, and honestly so
+
+**`webapp/tests/test_atlas_redaction.py` is order-dependent.** Under a full-suite run it fails
+intermittently, naming a different test each time (`test_the_note_never_claims_safety_over_an_
+uncertified_leftover`, `test_stale_names_…`, `test_an_untouched_note_is_still_cleared_…`). It is
+**pre-existing** — proven by stashing all of this session's work and reproducing at HEAD. It passes
+in isolation and in fixed order. The mtime fix above is a real defect fixed on its own evidence, but
+it is **NOT proven to be the cause of this flake**: a repro that looked deterministic stopped
+reproducing on both sides of the fix, so the two are not shown to be connected. Left open rather
+than declared solved.
+
+## Two errors of mine, recorded because the review is the wrong place to be tidy
+
+- I called `.design-sync/.cache/resync-run.log` a committed client-name leak. It is gitignored and
+  `git ls-files` on it is empty — my `grep -r` walked the filesystem, not the index. No leak.
+- My first test for the mtime defect **passed with the fix reverted**. It raced the tick rather than
+  forcing it, so it pinned nothing — the exact class this review exists to find, written by the
+  reviewer. Replaced with one that simulates the coarse tick deterministically and was then shown to
+  fail without the fix and pass with it.
