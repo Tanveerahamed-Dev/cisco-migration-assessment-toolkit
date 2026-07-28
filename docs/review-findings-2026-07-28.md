@@ -640,3 +640,37 @@ It is strictly stronger than before and still discriminates: reverting the abste
 turns it red. Whether a wholly unassessed axis should ALSO downgrade READY is a separate design
 decision, deliberately not taken here — and the docstring now says which assertions would change if
 it ever is.
+
+## The gate that fails open — five measurements, and why the obvious fix is not taken
+
+Recorded in round 3 as "the suite outgrew its own gate". Four rounds of full-suite runs on
+effectively the same tree now give a much better picture, and it corrects the original framing.
+
+| run | elapsed | machine state |
+|---|---:|---|
+| round 3 | 1055s | 5 agents running |
+| round 3 (`-p no:randomly`) | 428s | quiet |
+| round 4 | 440s | quiet |
+| round 4 | 620s | moderate |
+| round 4 final | 628s | moderate |
+| round 4 (background, concurrent) | 1326s | 7 agents running |
+
+`.claude/hooks/verify-green.sh` bounds at `timeout 540` and fails OPEN on exit 124.
+
+**The original claim — "the gate always times out and always allows the stop" — was wrong**, and it
+was drawn from a single 1055s measurement taken while five agents were running. On a quiet machine
+the suite is ~440s and the gate works exactly as designed. It fails open under load. That is a
+materially different defect: not "the gate is dead" but "the gate is disabled precisely when the
+machine is busiest", which is also when a turn is most likely to be doing something substantial.
+
+**Why the obvious fix is not taken.** `tests/test_pipeline_golden.py` calls `_run_pipeline` ten
+times, and **seven of those calls pass identical arguments** — seven full engine subprocesses (~12s
+each) producing byte-identical output. Collapsing them to one shared run is standard practice and
+saves ~72s. It is not done here because the arithmetic does not close the finding: 620s − 72s = 548s,
+still over the 540s bound. It would add risk to the golden test infrastructure in exchange for
+headroom that does not cross the line, and a change that only *nearly* fixes a safety gate is worse
+than a clearly-recorded one that does not.
+
+The real options remain the owner's: shard the gate (and say so plainly, so "green" keeps meaning
+what it says), invest in suite performance as its own project, or accept load-dependent fail-open and
+lean on CI — noting that `webapp/tests` does not execute in a required check either (traced above).
