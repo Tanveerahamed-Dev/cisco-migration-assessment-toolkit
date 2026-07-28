@@ -208,8 +208,22 @@ only**. The coverage ledger below is what made that measurable, and it is why ro
 | `webapp/backend/` | 16 | 5,907 | per-file | `graph.py` (via the frontend findings) |
 | `.claude/` + `.github/` | 14 | 1,185 | **never reviewed** | hooks + workflows |
 | root, `portable/`, `research_lane/` | 19 | 6,092 | per-file | — |
-| *excluded:* `.design-sync/` | 21 | 1,023 | side-engagement scratch (CLAUDE.md) | — |
+| *excluded:* `.design-sync/` | 21 | 1,023 | design tooling, outside the build (verified — see below) | — |
 | **total** | **396** | **138,702** | | |
+
+**On the one exclusion.** This row originally read "side-engagement scratch (CLAUDE.md)", which was
+wrong: CLAUDE.md and `.graphifyignore` exclude `ds-bundle/` and `.ds-sync/` — the design-sync *output*
+bundle — not `.design-sync/`, which is a different directory and is deliberately tracked
+(`.gitignore:61` names the committed set: `config.json`, `NOTES.md`, `conventions.md`, `previews/`,
+`docs/`, `overrides/`). Excluding it from the review is still right, but for reasons that were
+checked rather than cited: nothing under `cisco_toolkit/`, `webapp/backend/`, `portable/` or
+`research_lane/` references it; `webapp/frontend/tsconfig.json` is `include: ["src"]`, so the
+`previews/*.tsx` never enter the build gate; and no vite/rollup root reaches it. Its `NOTES.md` also
+asserts a confidentiality invariant in prose — the sample fleet must stay fictional because
+design-sync uploads it to claude.ai — which was verified mechanically here and **holds**: no hostname
+from `tests/golden/snapshot.json` appears in it, and every IP literal is private, loopback or a
+reserved documentation range (TEST-NET / 198.18 / 203.0.113). `.design-sync/.cache/` is gitignored,
+so the absolute paths in its local `resync-run.log` are not committed.
 
 ## What round 2 found
 
