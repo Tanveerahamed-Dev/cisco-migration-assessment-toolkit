@@ -200,16 +200,21 @@ only**. The coverage ledger below is what made that measurable, and it is why ro
 
 ## Coverage ledger (`git ls-files`, code only)
 
-| Area | Files | Lines | Round 1 | Round 2 |
-|---|---:|---:|---|---|
-| `tests/` + `webapp/tests/` | 209 | 53,221 | pattern-audit | **exhaustive AST scan** (205 files / 2,772 test fns) |
-| `cisco_toolkit/` | 71 | 63,398 | per-file | deep re-pass on `analyze.py`; **`blast_radius_explorer.html` (10,500 lines) reviewed for the first time** |
-| `webapp/frontend/` | 46 | 7,876 | **never reviewed** | api + pages, components |
-| `webapp/backend/` | 16 | 5,907 | per-file | `graph.py` (via the frontend findings) |
-| `.claude/` + `.github/` | 14 | 1,185 | **never reviewed** | hooks + workflows |
-| root, `portable/`, `research_lane/` | 19 | 6,092 | per-file | — |
-| *excluded:* `.design-sync/` | 21 | 1,023 | design tooling, outside the build (verified — see below) | — |
-| **total** | **396** | **138,702** | | |
+| Area | Files | Lines | Round 1 | Round 2 | Round 3 |
+|---|---:|---:|---|---|---|
+| `tests/` + `webapp/tests/` | 209 | 53,221 | pattern-audit | **exhaustive AST scan** (205 files / 2,772 test fns) | — |
+| `cisco_toolkit/` | 71 | 63,398 | per-file | deep re-pass on `analyze.py`; **`blast_radius_explorer.html` (10,500 lines) reviewed for the first time** | **deep pass on the 4 remaining large files** (`parse`, `design_advisor`, `excel`, `design_kb`) |
+| `webapp/frontend/` | 46 | 7,876 | **never reviewed** | api + pages, components | — |
+| `webapp/backend/` | 16 | 5,907 | per-file | `graph.py` (via the frontend findings) | `ingest.py` (via the Atlas boundary) |
+| `.claude/` + `.github/` | 14 | 1,185 | **never reviewed** | hooks + workflows | — |
+| root, `portable/`, `research_lane/` | 19 | 6,092 | per-file | — | **the three trust boundaries** + `COLLECT_PARSE` |
+| *excluded:* `.design-sync/` | 21 | 1,023 | design tooling, outside the build (verified — see below) | — | mechanical guard added (`test_design_sync_no_client_data.py`) |
+| **total** | **396** | **138,702** | | | |
+
+Every row now carries at least one pass beyond round 1's sample. That is the strongest honest claim
+available: it says the whole repo was **looked at deliberately**, not that it is defect-free. Depth
+still varies — `tests/` was audited mechanically for vacuity shapes rather than read for content, and
+`webapp/frontend/` had one pass, not two.
 
 **On the one exclusion.** This row originally read "side-engagement scratch (CLAUDE.md)", which was
 wrong: CLAUDE.md and `.graphifyignore` exclude `ds-bundle/` and `.ds-sync/` — the design-sync *output*
