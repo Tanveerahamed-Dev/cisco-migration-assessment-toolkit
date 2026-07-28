@@ -43,6 +43,24 @@ describe("CausalFlowPanel (render)", () => {
     expect(await screen.findByText("causal_flows 1 failed")).toBeInTheDocument();
   });
 
+  // Guardrail 3: "not observed" must never silently become "healthy". An empty flow list used to
+  // `return null` — the panel vanished off the page, which reads as "no root-cause stories to answer
+  // for" and is indistinguishable from a snapshot that never carried the model at all.
+  it("states the empty case instead of vanishing (an absent panel reads as an all-clear)", async () => {
+    vi.spyOn(api, "causalFlows").mockResolvedValue(
+      { flows: [], families: [], summary: { n_flows: 0, n_families: 0, n_critical: 0, by_severity: {} } } as never);
+    const { container } = render(<CausalFlowPanel snapId={1} />);
+    expect(await screen.findByText(/No causal flows were derived from this snapshot\./)).toBeInTheDocument();
+    expect(container.querySelector(".panel")).toBeTruthy();          // the panel is still on the page
+    expect(screen.getByText(/not a clean bill of health/i)).toBeInTheDocument();
+  });
+
+  it("marks a MISSING causal-flow model [NOT OBSERVED] rather than empty-but-fine", async () => {
+    vi.spyOn(api, "causalFlows").mockResolvedValue(null as never);   // 204 / older engine -> j() yields null
+    render(<CausalFlowPanel snapId={1} />);
+    expect(await screen.findByText(/\[NOT OBSERVED\]/)).toBeInTheDocument();
+  });
+
   it("selects the first flow by default, then swaps to the clicked card's flow (final state, not mid-animation)", async () => {
     vi.spyOn(api, "causalFlows").mockResolvedValue(causalFlows as never);
     render(<CausalFlowPanel snapId={1} />);

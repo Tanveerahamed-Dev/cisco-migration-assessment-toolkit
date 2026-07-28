@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, bandColor, readyColor, sevColor, SnapshotMeta } from "../api";
-import { Bars, CountUp, ErrorBox, Gauge, Loading, SegBar, SevChip, SkelTable, useAsync } from "../components/ui";
+import { Bars, CountUp, ErrorBox, Gauge, Loading, SegBar, SevChip, SkelLines, SkelTable, useAsync } from "../components/ui";
 import TopologyGraph from "../components/TopologyGraph";
 import CableMap from "../components/CableMap";
 import CutoverPlanner from "../components/CutoverPlanner";
@@ -21,37 +21,69 @@ function cell(v: any): string {
 }
 function truncate(s: string, n = 90) { return s.length > n ? s.slice(0, n) + "…" : s; }
 
+/* Render caps. The table is a viewport onto the section, NOT the section — so whenever a cap bites,
+   say so (audit FE-4). Silently stopping at 200 rows while the tab badge above still reads the FULL
+   engine count (t.count) is the coverage-honesty failure in table form: on the canonical 303-device
+   fleet the Health-scores tab announced "303" and rendered 200, and 103 devices simply were not
+   there for an engineer who scrolled to the last row and concluded they had seen the fleet. Same for
+   the 8-column cap, which drops whole FIELDS with no trace. The full set is always in the workbook /
+   explorer deliverable, which is what the note points at. */
+const ROW_CAP = 200;
+const COL_CAP = 8;
+
+function TruncNote({ shown, total, cols, allCols }:
+  { shown: number; total: number; cols?: number; allCols?: number }) {
+  const rowsCut = total > shown;
+  const colsCut = cols !== undefined && allCols !== undefined && allCols > cols;
+  if (!rowsCut && !colsCut) return null;
+  return (
+    <div className="faint" style={{ fontSize: 11, marginTop: 8 }}>
+      ⚠ Showing {rowsCut ? `the first ${shown} of ${total} rows` : `all ${total} rows`}
+      {colsCut ? ` and ${cols} of ${allCols} columns` : ""} — this view is capped, not the data.
+      The remaining {rowsCut ? `${total - shown} row(s)` : "column(s)"} are NOT absent: open the
+      workbook or the Explorer below for the complete section.
+    </div>
+  );
+}
+
 function GenericTable({ data }: { data: any }) {
   if (Array.isArray(data)) {
     if (data.length === 0) return <div className="faint" style={{ fontSize: 13 }}>Empty.</div>;
     const first = data[0];
     if (first && typeof first === "object" && !Array.isArray(first)) {
-      const cols = Array.from(new Set(data.flatMap((r: any) => Object.keys(r || {})))).slice(0, 8);
+      const allCols = Array.from(new Set(data.flatMap((r: any) => Object.keys(r || {}))));
+      const cols = allCols.slice(0, COL_CAP);
       return (
-        <div style={{ overflow: "auto" }}>
-          <table className="tbl">
-            <thead><tr>{cols.map((c) => <th key={c}>{c}</th>)}</tr></thead>
-            <tbody>
-              {data.slice(0, 200).map((r: any, i: number) => (
-                <tr key={`${cell(r?.[cols[0]])}|${i}`} className="row-reveal" style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}>
-                  {cols.map((c) => <td key={c} title={cell(r?.[c])}>{truncate(cell(r?.[c]))}</td>)}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div>
+          <div style={{ overflow: "auto" }}>
+            <table className="tbl">
+              <thead><tr>{cols.map((c) => <th key={c}>{c}</th>)}</tr></thead>
+              <tbody>
+                {data.slice(0, ROW_CAP).map((r: any, i: number) => (
+                  <tr key={`${cell(r?.[cols[0]])}|${i}`} className="row-reveal" style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}>
+                    {cols.map((c) => <td key={c} title={cell(r?.[c])}>{truncate(cell(r?.[c]))}</td>)}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <TruncNote shown={ROW_CAP} total={data.length} cols={cols.length} allCols={allCols.length} />
         </div>
       );
     }
     // array of arrays / scalars
     return (
-      <div style={{ overflow: "auto" }}>
-        <table className="tbl"><tbody>
-          {data.slice(0, 200).map((r: any, i: number) => (
-            <tr key={i} className="row-reveal" style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}>
-              {(Array.isArray(r) ? r : [r]).map((v: any, k: number) => <td key={k} title={cell(v)}>{truncate(cell(v))}</td>)}
-            </tr>
-          ))}
-        </tbody></table>
+      <div>
+        <div style={{ overflow: "auto" }}>
+          <table className="tbl"><tbody>
+            {data.slice(0, ROW_CAP).map((r: any, i: number) => (
+              <tr key={i} className="row-reveal" style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}>
+                {(Array.isArray(r) ? r : [r]).map((v: any, k: number) => <td key={k} title={cell(v)}>{truncate(cell(v))}</td>)}
+              </tr>
+            ))}
+          </tbody></table>
+        </div>
+        <TruncNote shown={ROW_CAP} total={data.length} />
       </div>
     );
   }
@@ -251,9 +283,28 @@ function EmptyPanel({ title, note }: { title: string; note: string }) {
 }
 
 function RiskRegisterPanel({ snapId }: { snapId: number }) {
-  const { data, error } = useAsync(() => api.section(snapId, "device_dossiers").catch(() => null), [snapId]);
+  // audit FE-2: the fetch used to carry its OWN `.catch(() => null)`, so useAsync's `error` never
+  // fired and EVERY failure — a 403 cross-site refusal, a 500 from the device_dossiers recompute, a
+  // 503 — landed on the "older snapshots didn't compute it" empty state. That is a positive claim
+  // about the SNAPSHOT made from a server fault, and this is the one panel that surfaces the
+  // 'Unassessed' coverage gap, so the failure mode erased exactly the blind devices it exists to
+  // show. `loading` is read for the same reason: without it the same false claim rendered for the
+  // whole duration of the fetch. Absence, error and not-yet-known are now three distinct states.
+  const { data, error, loading } = useAsync(() => api.section(snapId, "device_dossiers"), [snapId]);
   const dd = data?.data;
-  if (error) return null;   // optional enrichment — error noise is worse than silence
+  if (loading && !data) return <div className="panel"><h3>Device Risk Register · the senior-engineer read</h3><SkelTable /></div>;
+  if (error) {
+    return (
+      <div className="panel">
+        <h3>Device Risk Register · the senior-engineer read</h3>
+        <ErrorBox msg={error} />
+        <div className="faint" style={{ fontSize: 11, marginTop: 8 }}>
+          The register could NOT be loaded — this is not evidence that the fleet carries no stacked
+          risk, and any un-assessed device is still un-assessed. Reload before relying on this page.
+        </div>
+      </div>
+    );
+  }
   if (!dd?.per_device?.length) {
     return <EmptyPanel title="Device Risk Register · the senior-engineer read"
       note="No per-device risk register in this snapshot — older snapshots didn't compute it." />;
@@ -263,17 +314,34 @@ function RiskRegisterPanel({ snapId }: { snapId: number }) {
   // risk-flagged rows; it is surfaced as its own count in the panel header instead.
   const flagged = dd.per_device.filter((d: any) => d.risk_band !== "Low" && d.risk_band !== "Unassessed");
   const shown = (flagged.length ? flagged : dd.per_device).slice(0, 8);
+  // audit FE-1: the risk chip below is a mutually-exclusive ternary chain, so `Unassessed` only ever
+  // reached the header when Severe AND Elevated were both zero — i.e. the coverage gap was hidden by
+  // exactly the finding that makes it matter (3 Severe + 40 Unassessed rendered "3 Severe" and the
+  // 40 blind devices appeared nowhere, since `flagged` drops them from the rows too). The gap gets
+  // its OWN chip, always, independent of the risk chip. "Not observed" is not "healthy".
+  const nUnassessed = Number(bands.Unassessed) || 0;
   return (
     <div className="panel">
       <h3>
         Device Risk Register · the senior-engineer read
-        <span className="chip" style={{ marginLeft: 10, color: bands.Severe ? "var(--crit)" : bands.Elevated ? "var(--risk)" : bands.Unassessed ? "var(--text-faint)" : "var(--ok)" }}>
-          {bands.Severe ? `${bands.Severe} Severe` : bands.Elevated ? `${bands.Elevated} Elevated` : bands.Unassessed ? `${bands.Unassessed} not assessed` : "no stacked risk"}
+        <span className="chip" style={{ marginLeft: 10, color: bands.Severe ? "var(--crit)" : bands.Elevated ? "var(--risk)" : nUnassessed ? "var(--text-faint)" : "var(--ok)" }}>
+          {bands.Severe ? `${bands.Severe} Severe` : bands.Elevated ? `${bands.Elevated} Elevated` : nUnassessed ? `${nUnassessed} not assessed` : "no stacked risk"}
         </span>
+        {nUnassessed > 0 && !!(bands.Severe || bands.Elevated) && (
+          <span className="chip" title="No evidence was collected for these devices — they are a coverage gap, not a clean result"
+                style={{ marginLeft: 6, color: "var(--text-faint)" }}>
+            + {nUnassessed} not assessed
+          </span>
+        )}
       </h3>
       <div className="faint" style={{ fontSize: 12, marginBottom: 10 }}>
         Every per-device axis stacked per asset — risk index = topology impact × exposure; CR-xx chips mark
         independent risks coinciding on one box (hover for the why). Full ranking in the "Risk register" section below.
+        {nUnassessed > 0 && (
+          <> <b style={{ color: "var(--text-dim)" }}>{nUnassessed} device(s) were NOT assessed</b> (no evidence
+            collected) and are excluded from the ranking below — un-assessed is a blind spot, never a clean bill
+            of health.</>
+        )}
       </div>
       <RegisterTable rows={shown} />
     </div>
@@ -308,8 +376,27 @@ function Keystones({ meta }: { meta: SnapshotMeta }) {
 }
 
 function DeliverablesPanel({ snapId }: { snapId: number }) {
-  const { data } = useAsync(() => api.meta(), []);
+  // audit FE-3: same class as the Risk Register — `useAsync` was destructured for `data` only, so
+  // both "still loading" and "/api/meta failed" fell through to the flat assertion "No deliverables
+  // are available from this server build", which is a claim about the SERVER derived from not
+  // knowing. Loading and failure are now said as themselves.
+  const { data, error, loading } = useAsync(() => api.meta(), []);
   const items = data?.deliverables || [];
+  if (loading && !data) {
+    return <div className="panel"><h3>Deliverables · generated from this snapshot</h3><SkelLines n={2} /></div>;
+  }
+  if (error) {
+    return (
+      <div className="panel">
+        <h3>Deliverables · generated from this snapshot</h3>
+        <ErrorBox msg={error} />
+        <div className="faint" style={{ fontSize: 11, marginTop: 8 }}>
+          The deliverable catalogue could not be read — this does NOT mean the server has no
+          deliverables. Reload before concluding a document is unavailable.
+        </div>
+      </div>
+    );
+  }
   if (!items.length) {
     return <EmptyPanel title="Deliverables · generated from this snapshot"
       note="No deliverables are available from this server build." />;

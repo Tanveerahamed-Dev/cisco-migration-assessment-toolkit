@@ -146,6 +146,43 @@ describe("DesignBlueprintPanel (render)", () => {
     expect(screen.getByText(/^Pass criteria:$/)).toBeInTheDocument();
   });
 
+  // A capped table that truncates SILENTLY is a coverage lie: an engineer provisions from the net-new
+  // IP plan on screen, and 40 rows with no remainder reads as the whole plan. The cap stays (a 4000-row
+  // table helps nobody) — the remainder must be disclosed, the house "+N more" idiom.
+  it("discloses the remainder when the net-new IP plan is capped at 40 rows", async () => {
+    const subnets = Array.from({ length: 45 }, (_, i) => ({ vlan: 100 + i, hosts: 12, subnet: `10.${i}.0.0/24` }));
+    vi.spyOn(api, "design").mockResolvedValue({
+      ...design,
+      target_state: { dimensions: [], addressing_plan: { status: "candidate", subnets, note: "Candidate /24-per-VLAN allocation." } },
+    } as never);
+    vi.spyOn(api, "architectureCoverage").mockResolvedValue(archCoverage as never);
+    vi.spyOn(api, "domainPacks").mockResolvedValue(domainPacks as never);
+    const { container } = render(<DesignBlueprintPanel snapId={1} />);
+    await screen.findByText("Right-size to requirements (the WHY)");
+
+    // the cap is real...
+    const rows = Array.from(container.querySelectorAll("table.tbl tbody tr"))
+      .filter((tr) => /10\.\d+\.0\.0\/24/.test(tr.textContent || ""));
+    expect(rows.length).toBe(40);
+    // ...and the 5 rows it drops are stated, next to the true total
+    expect(screen.getByText(/Showing/)).toBeInTheDocument();
+    expect(screen.getByText(/5 more row\(s\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Net-new IP plan · 45 subnet\(s\)/)).toBeInTheDocument();
+  });
+
+  it("adds no truncation notice when the plan fits under the cap", async () => {
+    const subnets = [{ vlan: 10, hosts: 4, subnet: "10.0.0.0/24" }];
+    vi.spyOn(api, "design").mockResolvedValue({
+      ...design,
+      target_state: { dimensions: [], addressing_plan: { status: "candidate", subnets, note: "n/a" } },
+    } as never);
+    vi.spyOn(api, "architectureCoverage").mockResolvedValue(archCoverage as never);
+    vi.spyOn(api, "domainPacks").mockResolvedValue(domainPacks as never);
+    render(<DesignBlueprintPanel snapId={1} />);
+    await screen.findByText("Right-size to requirements (the WHY)");
+    expect(screen.queryByText(/more row\(s\)/)).not.toBeInTheDocument();
+  });
+
   it("ArchitectureCoveragePanel resolves colors from real theme tokens, never the dead #888/#ccc fallbacks", async () => {
     vi.spyOn(api, "design").mockResolvedValue(design as never);
     vi.spyOn(api, "architectureCoverage").mockResolvedValue(archCoverageWithRow as never);

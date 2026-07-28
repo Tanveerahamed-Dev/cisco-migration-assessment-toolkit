@@ -214,3 +214,51 @@ describe("ExecutionPage", () => {
     expect(screen.queryByText(/No entries yet/i)).not.toBeInTheDocument();
   });
 });
+
+// ── FE-10: the finish-confirm must not disagree with the backend's own outcome derivation ──
+// webapp/backend/execution.py :: _derive_outcome is
+//   `if not decisions or any(d != "COMPLETE" for d in decisions): return OUTCOME_PARTIAL`
+// so a wave closed out DEFERRED forces PARTIALLY IMPLEMENTED — while the page's `open` counter
+// (waves with NO decision) reads 0 and used to show the unconditional "the outcome is derived for
+// the PIR" wording, i.e. no warning at all before an irreversible, signed sign-off.
+describe("ExecutionPage · finish-confirm matches the backend outcome derivation", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  function closedAs(decision: string) {
+    const st = execState();
+    st.waves[0].closeout = { decision, at: "2026-01-01T11:00:00Z", by: "eng", note: "" };
+    return st;
+  }
+
+  it("FE-10: a DEFERRED-closed wave warns that finishing derives PARTIALLY IMPLEMENTED", async () => {
+    vi.spyOn(api, "getExecution").mockResolvedValue(closedAs("DEFERRED"));
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(snapMeta);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    renderExec();
+    fireEvent.click(await screen.findByRole("button", { name: /Finish run/i }));
+    expect(confirm).toHaveBeenCalledTimes(1);
+    const msg = confirm.mock.calls[0][0] as string;
+    expect(msg).toMatch(/other than COMPLETE/);
+    expect(msg).toContain("PARTIALLY IMPLEMENTED");
+  });
+
+  it("FE-10: a ROLLED BACK wave predicts ROLLED BACK, matching _derive_outcome's precedence", async () => {
+    vi.spyOn(api, "getExecution").mockResolvedValue(closedAs("ROLLED BACK"));
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(snapMeta);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    renderExec();
+    fireEvent.click(await screen.findByRole("button", { name: /Finish run/i }));
+    expect(confirm.mock.calls[0][0] as string).toContain("ROLLED BACK");
+  });
+
+  it("FE-10: an all-COMPLETE run keeps the plain confirm — the fix must not cry wolf", async () => {
+    vi.spyOn(api, "getExecution").mockResolvedValue(closedAs("COMPLETE"));
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(snapMeta);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    renderExec();
+    fireEvent.click(await screen.findByRole("button", { name: /Finish run/i }));
+    const msg = confirm.mock.calls[0][0] as string;
+    expect(msg).toMatch(/becomes read-only/);
+    expect(msg).not.toMatch(/PARTIALLY IMPLEMENTED/);
+  });
+});

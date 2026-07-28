@@ -32,9 +32,25 @@ def build_graph(snap: Dict[str, Any], keystones: Optional[List[str]] = None) -> 
     node_ids = set(ifaces.keys()) | set(health.keys()) | set(devices.keys())
     ks = set(keystones or [])
 
+    # CANONICAL -> RAW node id. Both sides of the comparison must live in the same namespace, and
+    # they did not: `node_ids` holds RAW snapshot keys while `target` came back from `canon()`, which
+    # lower-cases (engine.canon_host('[HISTORY-REDACTED]-CORE-01.lab') -> '[HISTORY-REDACTED]-core-01'). So on any fleet whose
+    # hostnames are not already lower-case -- [HISTORY-REDACTED]-CORE-01 / [HISTORY-REDACTED]-ACC-14, i.e. the Cisco norm -- EVERY
+    # neighbour failed the `target not in node_ids` test and the graph came back with ZERO edges.
+    # Measured on the shipped sample fleet: 23 nodes / 25 edges as stored, 23 nodes / 0 edges with
+    # the same fleet upper-cased. That does not render as an error; it renders as a fabric of
+    # unlinked switches with an EMPTY single-point-of-failure overlay, while the cable map directly
+    # below draws the real topology (it resolves through a canon map -- analyze.py `scanned_map` --
+    # which is the idiom copied here). Absence of resolvable evidence presented as an absence of
+    # chokepoints is the one thing this codebase's doctrine forbids.
+    by_canon: Dict[str, str] = {}
+    for raw in sorted(node_ids):                  # sorted -> deterministic winner on a canon collision
+        by_canon.setdefault(canon(raw) or raw, raw)
+
     # Edges from CDP neighbours, undirected + de-duped, only between known switch nodes.
     seen: set = set()
     edges: List[Dict[str, Any]] = []
+    offscan: set = set()
     for host, host_ifaces in ifaces.items():
         if not isinstance(host_ifaces, dict):
             continue
@@ -44,8 +60,20 @@ def build_graph(snap: Dict[str, Any], keystones: Optional[List[str]] = None) -> 
             nb = str(d.get("cdp_neighbor") or "").strip()   # tolerate a wrong-typed cdp_neighbor (list/int) -> never 500s /graph
             if not nb:
                 continue
-            target = canon(nb)
-            if not target or target == host or target not in node_ids:
+            ckey = canon(nb)
+            if not ckey:
+                continue
+            target = by_canon.get(ckey)
+            if target is None:
+                # A neighbour this snapshot never collected. Dropping it keeps the view an
+                # INTER-SWITCH fabric (the docstring's intent: APs and phones do not belong here),
+                # but silently dropping it also removed genuine infrastructure -- on the shipped
+                # sample that includes wan-edge-rtr1.lab, so the topology showed an estate with no
+                # WAN egress while the cable map listed it as an `uncollected` peer. Report them so
+                # the surface can disclose the difference rather than the two views just disagreeing.
+                offscan.add(nb)
+                continue
+            if target == host:
                 continue
             key = tuple(sorted((host, target)))
             if key in seen:
@@ -67,6 +95,14 @@ def build_graph(snap: Dict[str, Any], keystones: Optional[List[str]] = None) -> 
         degree[e["source"]] = degree.get(e["source"], 0) + 1
         degree[e["target"]] = degree.get(e["target"], 0) + 1
         m = lc.get(tuple(sorted((e["source"], e["target"]))))
+        # `is_bridge` stays a plain bool so the existing consumers keep working, but it can no longer
+        # be read as a VERDICT on its own: `else False` means "we did not measure this link", and it
+        # was rendering identically to a measured "this link is redundant". With `link_centrality`
+        # absent entirely -- an older snapshot, or a run where the section was not computed -- all 25
+        # edges of the sample fleet came back False while 17 of them are genuine bridges, so the SVG
+        # drew a fully grey fabric under a legend still advertising the red single-point-of-failure
+        # key. `bridge_assessed` is the third state the payload had no way to express.
+        e["bridge_assessed"] = m is not None
         e["is_bridge"] = bool(m.get("is_bridge")) if m else False
         e["pairs_cut"] = engine.as_num(m.get("pairs_cut")) if m else 0   # fail-soft: a JSON Infinity would 500 /graph
 
@@ -82,7 +118,15 @@ def build_graph(snap: Dict[str, Any], keystones: Optional[List[str]] = None) -> 
             "keystone": nid in ks,
         })
 
-    return {"nodes": nodes, "edges": edges}
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        # Coverage, so the surface can tell "measured redundant" from "never measured" and
+        # "no neighbours" from "neighbours we could not resolve". Both were previously
+        # indistinguishable from a healthy fabric.
+        "link_centrality_assessed": bool(lc),
+        "offscan_peers": sorted(offscan),
+    }
 
 
 def cable_map_from_snapshot(snap: Dict[str, Any]) -> Dict[str, Any]:

@@ -30,10 +30,27 @@ function GateBoard({ id, latest, toast }: { id: number; latest: number; toast: (
     }
     return null;
   }
+  // audit FE-8: the guard above only fires on the FIRST load. useAsync keeps `data` across a
+  // refetch, so once the board had ever loaded a later failure (a 403 cross-site refusal, a 404
+  // after the campaign's snapshot set changed, a dropped connection) set `error` while the stale
+  // grid kept rendering — indistinguishable from a successful refresh. The board is a governance
+  // record; showing a superseded wave set as if it were current is the wrong failure. Disclose the
+  // stale read ABOVE the grid rather than replacing it (the last-known board is still useful).
+  const staleBanner = error ? (
+    <div className="panel" style={{ borderColor: "var(--risk)", padding: "8px 12px", marginBottom: 10 }}>
+      <b style={{ color: "var(--risk)" }}>Gate board is STALE.</b>{" "}
+      <span className="dim" style={{ fontSize: 12.5 }}>
+        The last refresh failed ({error}) — the sign-offs below are the previous read and may not
+        reflect the current campaign.
+      </span>
+    </div>
+  ) : null;
   const records = recOverride ?? data.records;
   // union: waves derivable from the latest snapshot + any wave that already has recorded history
   const waves = Array.from(new Set([...data.waves, ...records.map((r) => r.wave)]));
-  if (waves.length === 0) return null;
+  // A board with nothing to show hides itself (by design) — but never at the cost of hiding a failed
+  // refresh, which is the difference between "no waves" and "we could not find out".
+  if (waves.length === 0) return staleBanner && <div className="panel">{staleBanner}</div>;
   const rec = new Map(records.map((r) => [`${r.wave}|${r.gate}`, r]));
 
   async function cycle(wave: string, gate: string) {
@@ -58,6 +75,7 @@ function GateBoard({ id, latest, toast }: { id: number; latest: number; toast: (
 
   return (
     <div className="panel">
+      {staleBanner}
       <div className="spread" style={{ marginBottom: 6 }}>
         <h3 style={{ margin: 0 }}>Gate board · T-minus sign-offs</h3>
         <input value={signer} onChange={(e) => setSigner(e.target.value)} placeholder="signed by…"
@@ -183,6 +201,7 @@ export default function CampaignPage() {
   const [cmpA, setCmpA] = useState<number | "">("");
   const [cmpB, setCmpB] = useState<number | "">("");
   const [cmp, setCmp] = useState<any>(null);
+  const [cmpErr, setCmpErr] = useState<string | null>(null);
 
   async function upload() {
     const f = fileRef.current?.files?.[0];
@@ -213,8 +232,13 @@ export default function CampaignPage() {
   }
   async function runCompare() {
     if (cmpA === "" || cmpB === "" || cmpA === cmpB) { toast("Pick two different snapshots."); return; }
+    // audit FE-7: a failed re-compare used to leave the PREVIOUS pair's verdict on screen under the
+    // newly-selected pair — the reader attributes an old CLEAN/REGRESSED to snapshots it was never
+    // computed from. Drop the stale result first and say the run failed where the result would be.
+    setCmp(null);
+    setCmpErr(null);
     try { setCmp(await api.compare(Number(cmpA), Number(cmpB))); }
-    catch (e: any) { toast(e.message); }
+    catch (e: any) { setCmpErr(e.message || String(e)); toast(e.message); }
   }
   async function delCampaign() {
     if (!confirm("Delete this campaign and all its snapshots?")) return;
@@ -328,30 +352,52 @@ export default function CampaignPage() {
             <div className="panel">
               <h3>Compare two waves</h3>
               <div className="row-flex" style={{ gap: 8 }}>
-                <select value={cmpA} onChange={(e) => setCmpA(Number(e.target.value))}>
+                {/* audit FE-6: `Number(e.target.value)` turned the "from…"/"to…" placeholder ("") into
+                    0, which is not "" — so the `cmpA === ""` guard passed and the app POSTed
+                    /api/compare with old_id 0, getting back the server's "One or both snapshots not
+                    found" 404 instead of the local "Pick two different snapshots." prompt. Keep ""
+                    as "" so the unselected state stays distinguishable from a real id. */}
+                <select value={cmpA} onChange={(e) => setCmpA(e.target.value === "" ? "" : Number(e.target.value))}>
                   <option value="">from…</option>
                   {snaps.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
                 </select>
                 <span className="faint">→</span>
-                <select value={cmpB} onChange={(e) => setCmpB(Number(e.target.value))}>
+                <select value={cmpB} onChange={(e) => setCmpB(e.target.value === "" ? "" : Number(e.target.value))}>
                   <option value="">to…</option>
                   {snaps.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
                 </select>
               </div>
               <button className="btn" style={{ marginTop: 10 }} onClick={runCompare}>Compare</button>
+              {cmpErr && (
+                <div style={{ marginTop: 12 }}>
+                  <ErrorBox msg={cmpErr} />
+                  <div className="faint" style={{ fontSize: 11, marginTop: 6 }}>
+                    No comparison was produced for this pair — nothing below is a result for it.
+                  </div>
+                </div>
+              )}
               {cmp && (
                 <div style={{ marginTop: 14, fontSize: 13 }}>
                   <div className="row-flex" style={{ marginBottom: 8 }}>
                     <span className="chip" style={{ color: VERDICT_COLOR[cmp.verdict] || "var(--text-dim)" }}><span className="dot" /> {cmp.verdict}</span>
                   </div>
                   <div className="grid cols-2" style={{ gap: 8 }}>
-                    <div>Opened: <b style={{ color: "var(--crit)" }}>{cmp.findings?.n_opened ?? "—"}</b> ({cmp.findings?.n_opened_high ?? 0} high)</div>
+                    {/* `?? "—"` (not `?? 0`) throughout: an absent count is unknown, not a measured
+                        zero. n_opened_high used to land on `?? 0`, so a comparison with no findings
+                        block read "— (0 high)" — half honest, half a fabricated all-clear. */}
+                    <div>Opened: <b style={{ color: "var(--crit)" }}>{cmp.findings?.n_opened ?? "—"}</b> ({cmp.findings?.n_opened_high ?? "—"} high)</div>
                     <div>Resolved: <b style={{ color: "var(--ok)" }}>{cmp.findings?.n_resolved ?? "—"}</b></div>
                     <div>Regressed: <b style={{ color: "var(--crit)" }}>{cmp.health?.n_regressed ?? "—"}</b></div>
                     <div>Improved: <b style={{ color: "var(--ok)" }}>{cmp.health?.n_improved ?? "—"}</b></div>
                     {/* physical cabling delta (EDA cable-map SSOT) — coverage-honest: 'not assessed' is disclosed, never a silent zero */}
                     <div>Cables ±: <b>{cmp.cabling?.assessed ? `${cmp.cabling.summary?.n_added ?? 0} added / ${cmp.cabling.summary?.n_removed ?? 0} removed` : "not assessed"}</b></div>
-                    <div>Cables down: <b style={{ color: (cmp.cabling?.summary?.n_went_down ?? 0) > 0 ? "var(--crit)" : "var(--ok)" }}>{cmp.cabling?.assessed ? (cmp.cabling.summary?.n_went_down ?? 0) : "—"}</b></div>
+                    {/* audit FE-5: the colour was computed from `n_went_down ?? 0` BEFORE the
+                        `assessed` check that picks the text, so an UNASSESSED cabling delta rendered
+                        its "—" in var(--ok) — a green em-dash, i.e. the not-observed case painted as
+                        the healthy case. Colour now follows the same assessed gate as the text. */}
+                    <div>Cables down: <b style={{ color: !cmp.cabling?.assessed ? "var(--text-faint)" : (cmp.cabling.summary?.n_went_down ?? 0) > 0 ? "var(--crit)" : "var(--ok)" }}
+                                       title={cmp.cabling?.assessed ? undefined : "No cable-map evidence in one or both snapshots — not assessed, not clean"}>
+                      {cmp.cabling?.assessed ? (cmp.cabling.summary?.n_went_down ?? 0) : "—"}</b></div>
                   </div>
                 </div>
               )}

@@ -1,6 +1,7 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { api } from "../api";
 import SnapshotPage from "./Snapshot";
 
 // Integration test of the snapshot cockpit: it renders the KPI hero from the summary, and it PINS the
@@ -113,5 +114,124 @@ describe("Snapshot cockpit", () => {
     fireEvent.click(toggle);
 
     expect(await screen.findByRole("button", { name: /hide explorer/i })).toHaveAttribute("aria-expanded", "true");
+  });
+});
+
+// ── coverage-honesty audit (FE-1 / FE-2 / FE-3 / FE-4) ────────────────────────
+// CLAUDE.md guardrail 3: "not observed" must NEVER silently become "healthy". These pin the four
+// places on this page where it did — three of them by rendering a positive claim about the SNAPSHOT
+// or the SERVER out of a state that was really "we do not know yet" or "the request failed".
+describe("Snapshot cockpit · coverage honesty", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const richSummary = {
+    avg_health: 72, n_critical: 3, n_switches: 40, version: "V3.23.0",
+    punchlist: { crit_high: 5, total: 20, by_severity: { High: 3 }, by_category: { Security: 4 } },
+    readiness: { READY: 30, CAUTION: 8, "NOT READY": 2 },
+    bands: { Good: 25, Critical: 3 },
+    sections: [{ key: "health_scores", label: "Health scores", count: 303 }],
+    lifecycle: { past_eos: 2 }, keystones: [],
+  };
+  const richMeta = {
+    id: 1, campaign_id: 1, label: "Demo Fleet", n_devices: 303, script_version: "V3.23.0",
+    uploaded_at: "2026-06-13T06:32:00Z", summary: richSummary,
+  };
+
+  function dossiers(bands: Record<string, number>, per_device: any[]) {
+    return { section: "device_dossiers", data: { note: "", summary: { bands }, per_device } };
+  }
+  const dev = (host: string, risk_band: string) =>
+    ({ host, risk_band, risk_index: 50, impact_score: 5, exposure_score: 5, verdict: "v", compound: [] });
+
+  // FE-1: the risk chip was a mutually-exclusive ternary chain, so the Unassessed (no-evidence)
+  // count only ever reached the header when Severe AND Elevated were both zero — the coverage gap
+  // was hidden by exactly the finding that makes it matter.
+  it("FE-1: un-assessed devices are disclosed even when Severe devices exist", async () => {
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(richMeta as any);
+    vi.spyOn(api, "meta").mockRejectedValue(new Error("no meta"));
+    vi.spyOn(api, "section").mockResolvedValue(
+      dossiers({ Severe: 3, Unassessed: 40, Low: 260 },
+        [dev("sw-a", "Severe"), dev("sw-b", "Severe"), dev("blind-1", "Unassessed")]) as any,
+    );
+    renderSnap();
+    const panel = await waitFor(() => {
+      const p = screen.getByText(/Device Risk Register/).closest(".panel")!;
+      if (!p.querySelector("tbody tr")) throw new Error("register not loaded");
+      return p;
+    });
+    // the 40 blind devices are named — they are excluded from the RANKING, never from the page
+    expect(panel.textContent).toContain("40");
+    expect(panel.textContent).toMatch(/not assessed/i);
+    expect(panel.textContent).toMatch(/never a clean bill of health/i);
+  });
+
+  // FE-2: the fetch carried its own `.catch(() => null)`, so a 403/500/503 landed on the benign
+  // "older snapshots didn't compute it" empty state — a claim about the snapshot manufactured from
+  // a server fault, on the one panel that surfaces blind devices.
+  it("FE-2: a failed risk-register load reads as an error, not as 'this snapshot has none'", async () => {
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(richMeta as any);
+    vi.spyOn(api, "meta").mockRejectedValue(new Error("no meta"));
+    vi.spyOn(api, "section").mockRejectedValue(new Error("dossier recompute exploded"));
+    renderSnap();
+    await screen.findByRole("heading", { name: "Demo Fleet" });
+    // scoped to the register panel — the section tab renders its own ErrorBox for the same rejection
+    const panel = await waitFor(() => {
+      const p = screen.getByText(/Device Risk Register/).closest(".panel")!;
+      if (!p.textContent?.includes("dossier recompute exploded")) throw new Error("not surfaced yet");
+      return p;
+    });
+    expect(panel.textContent).toMatch(/Something went wrong/);
+    expect(panel.textContent).toMatch(/still un-assessed/);
+    expect(screen.queryByText(/older snapshots didn't compute it/)).toBeNull();
+  });
+
+  // FE-2/FE-3: the same false claims used to render for the WHOLE duration of the fetch, because
+  // neither panel read `loading`.
+  it("FE-2/FE-3: while loading, neither panel asserts an absence it has not established", async () => {
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(richMeta as any);
+    vi.spyOn(api, "section").mockReturnValue(new Promise(() => {}) as any);  // never settles
+    vi.spyOn(api, "meta").mockReturnValue(new Promise(() => {}) as any);
+    renderSnap();
+    await screen.findByRole("heading", { name: "Demo Fleet" });
+    expect(screen.queryByText(/older snapshots didn't compute it/)).toBeNull();
+    expect(screen.queryByText(/No deliverables are available from this server build/)).toBeNull();
+  });
+
+  // FE-3: a failed /api/meta is a fact about the request, not about the server's document family.
+  it("FE-3: a failed deliverable catalogue does not read as 'this build has no deliverables'", async () => {
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(richMeta as any);
+    vi.spyOn(api, "section").mockRejectedValue(new Error("x"));
+    vi.spyOn(api, "meta").mockRejectedValue(new Error("meta 503 shed"));
+    renderSnap();
+    await screen.findByRole("heading", { name: "Demo Fleet" });
+    expect(await screen.findByText("meta 503 shed")).toBeInTheDocument();
+    expect(screen.queryByText(/No deliverables are available from this server build/)).toBeNull();
+  });
+
+  // FE-4: the section table caps at 200 rows / 8 columns while the tab badge keeps announcing the
+  // engine's FULL count — on the 303-device fleet, 103 devices were simply not there for a reader
+  // who scrolled to the last row.
+  it("FE-4: a row/column-capped section table discloses the cap instead of ending silently", async () => {
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(richMeta as any);
+    vi.spyOn(api, "meta").mockRejectedValue(new Error("x"));
+    const rows = Array.from({ length: 303 }, (_, i) => ({
+      host: `sw-${i}`, band: "Good", score: 90, a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, dropped: "x",
+    }));
+    vi.spyOn(api, "section").mockImplementation(async (_id: number, name: string) => {
+      if (name === "device_dossiers") throw new Error("no dossiers");
+      return { section: name, data: rows } as any;
+    });
+    const { container } = renderSnap();
+    await screen.findByRole("heading", { name: "Demo Fleet" });
+    const big = await waitFor(() => {
+      const t = Array.from(container.querySelectorAll("table.tbl")).find((x) => x.querySelectorAll("tbody tr").length > 50);
+      if (!t) throw new Error("section table not rendered");
+      return t;
+    });
+    expect(big.querySelectorAll("tbody tr").length).toBe(200);   // the cap itself is unchanged
+    const note = big.closest("div")!.parentElement!.textContent || "";
+    expect(note).toMatch(/first 200 of 303 rows/);
+    expect(note).toMatch(/8 of 10 columns/);
+    expect(note).toMatch(/NOT absent/);
   });
 });

@@ -446,16 +446,62 @@ export interface CableMap {
   summary: { n_nodes: number; n_cables: number; n_tiers: number; op: Record<CableOp, number> };
 }
 
+/** A failed API call, carrying the HTTP status so a caller can tell the backend's guard responses
+ *  apart instead of collapsing them all into one opaque string (audit FE-11). The hardened backend
+ *  answers 403 (cross-site write / compute-heavy GET refused), 413 (declared body over the JSON
+ *  ceiling), 422 (a per-field length cap), 409 (the run/wave is already closed) and 503 + Retry-After
+ *  (the generation-concurrency cap shed the request) — a 503 shed is transient and worth retrying,
+ *  a 404 is not, and nothing downstream could distinguish them from `new Error(detail)`.
+ *  `.message` is unchanged for the plain-string `detail` case, which is every hand-written
+ *  HTTPException in webapp/backend/app.py. */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly retryAfter: number | null;
+  constructor(message: string, status: number, retryAfter: number | null = null) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.retryAfter = retryAfter;
+  }
+  /** The generation cap (503 + Retry-After) and a transient upstream — safe to offer a retry. */
+  get retryable(): boolean {
+    return this.status === 503 || this.status === 429;
+  }
+}
+
+/** FastAPI's RequestValidationError body is `{"detail": [{loc, msg, type}, ...]}`, NOT a string —
+ *  the per-field caps (_LEN_NOTE / _LEN_NAME / _LEN_TOKEN in app.py) all reject through it. Raw
+ *  JSON.stringify put `[{"type":"string_too_long","loc":["body","note"],…}]` in the war-room toast,
+ *  which tells an engineer nothing about which field to shorten. */
+function detailToMessage(detail: unknown): string | null {
+  if (typeof detail === "string") return detail || null;
+  if (Array.isArray(detail)) {
+    const parts = detail
+      .map((d: any) => {
+        if (typeof d === "string") return d;
+        const loc = Array.isArray(d?.loc) ? d.loc.filter((x: unknown) => x !== "body").join(".") : "";
+        const m = typeof d?.msg === "string" ? d.msg : "";
+        return loc && m ? `${loc}: ${m}` : m || loc || null;
+      })
+      .filter(Boolean);
+    return parts.length ? parts.join("; ") : null;
+  }
+  if (detail && typeof detail === "object") return JSON.stringify(detail);
+  return null;
+}
+
 async function j<T>(r: Response): Promise<T> {
   if (!r.ok) {
     let msg = `${r.status} ${r.statusText}`;
     try {
       const b = await r.json();
-      if (b?.detail) msg = typeof b.detail === "string" ? b.detail : JSON.stringify(b.detail);
+      const d = detailToMessage(b?.detail);
+      if (d) msg = d;
     } catch {
       /* ignore */
     }
-    throw new Error(msg);
+    const ra = Number(r.headers?.get?.("retry-after"));
+    throw new ApiError(msg, r.status, Number.isFinite(ra) && ra > 0 ? ra : null);
   }
   return (r.status === 204 ? (null as T) : await r.json()) as T;
 }

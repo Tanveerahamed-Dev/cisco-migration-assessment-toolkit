@@ -151,6 +151,38 @@ describe("useAsync", () => {
     expect(result.current.error).toBe("collection failed");
     expect(result.current.data).toBeNull();
   });
+
+  // Out-of-order responses: the LAST-REQUESTED result must win, not the last-RESOLVED one. Two
+  // requests are routinely in flight (NrfuPanel refires on `register`; reload() races a live fetch),
+  // and an overlay POST that recomputes server-side is easily slower than the GET issued after it.
+  // Ungenerationed, the superseded response wrote last and the panel showed data for requirements
+  // the operator had already cleared — no error, no spinner.
+  it("drops a SUPERSEDED response that resolves after the newer one", async () => {
+    let releaseOld: (v: unknown) => void = () => {};
+    const oldReq = new Promise((res) => { releaseOld = res; });
+    const calls = [() => oldReq, () => Promise.resolve({ which: "new" })];
+    let i = 0;
+    const { result, rerender } = renderHook(({ dep }) => useAsync(() => calls[i++]() as Promise<any>, [dep]),
+      { initialProps: { dep: 1 } });
+    rerender({ dep: 2 });                                   // supersede the still-pending first request
+    await waitFor(() => expect(result.current.data).toEqual({ which: "new" }));
+    await act(async () => { releaseOld({ which: "old" }); await Promise.resolve(); });
+    expect(result.current.data).toEqual({ which: "new" });  // the stale winner is refused
+    expect(result.current.loading).toBe(false);
+  });
+
+  it("a SUPERSEDED rejection cannot blank the fresh data or clear its spinner", async () => {
+    let failOld: (e: unknown) => void = () => {};
+    const oldReq = new Promise((_res, rej) => { failOld = rej; });
+    const calls = [() => oldReq, () => new Promise(() => {})];   // the new request stays in flight
+    let i = 0;
+    const { result, rerender } = renderHook(({ dep }) => useAsync(() => calls[i++]() as Promise<any>, [dep]),
+      { initialProps: { dep: 1 } });
+    rerender({ dep: 2 });
+    await act(async () => { failOld(new Error("stale 500")); await Promise.resolve(); });
+    expect(result.current.error).toBeNull();      // the dead request's failure is not the new one's
+    expect(result.current.loading).toBe(true);    // ...and it must not end the live request's spinner
+  });
 });
 
 // Structure-shaped loading placeholders (animation Unit 23). The sr-only "Loading…" announcement is

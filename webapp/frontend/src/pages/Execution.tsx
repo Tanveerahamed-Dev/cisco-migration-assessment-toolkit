@@ -325,10 +325,21 @@ export default function ExecutionPage() {
     // Predict the verdict the backend will derive: a rolled-back wave dominates PARTIAL.
     const rolledBack = ex.waves.some((w) => w.closeout.decision === "ROLLED BACK");
     const predicted = rolledBack ? "ROLLED BACK" : "PARTIALLY IMPLEMENTED";
+    // audit FE-10: the warning used to key on `open` alone — waves with NO decision. But the backend
+    // (webapp/backend/execution.py :: _derive_outcome) is
+    //     `if not decisions or any(d != "COMPLETE" for d in decisions): return OUTCOME_PARTIAL`
+    // so a wave closed out DEFERRED (or ROLLED BACK) also forces PARTIALLY IMPLEMENTED while
+    // leaving `open === 0`. That combination hit the unconditional "the outcome is derived for the
+    // PIR" wording, which warns of nothing — the engineer signs off expecting SUCCESSFUL and the
+    // PIR reads PARTIALLY IMPLEMENTED. Count every wave that will NOT satisfy the backend's
+    // COMPLETE test, not just the un-closed ones.
+    const notComplete = ex.waves.filter((w) => w.closeout.decision !== "COMPLETE").length;
     const msg = status === "aborted"
       ? "Abort this run? The record is kept and the PIR will show ABORTED."
       : open ? `${open} wave(s) are not closed out — finishing now derives a ${predicted} outcome. Finish anyway?`
-        : "Finish this run? It becomes read-only and the outcome is derived for the PIR.";
+        : notComplete
+          ? `${notComplete} wave(s) closed out as something other than COMPLETE — finishing now derives a ${predicted} outcome. Finish anyway?`
+          : "Finish this run? It becomes read-only and the outcome is derived for the PIR.";
     if (!window.confirm(msg)) return;
     apply(() => api.execFinish(eid, status, "", operator));
   };

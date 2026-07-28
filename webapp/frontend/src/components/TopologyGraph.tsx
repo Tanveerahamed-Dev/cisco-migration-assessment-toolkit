@@ -165,12 +165,34 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
     };
   }, [g.data, linkedOnly]);
   const view = useMemo(() => (model ? layout(model) : null), [model]);
+  // Port stubs, indexed once per layout. This used to be a `view.links.flatMap(...)` INSIDE the
+  // per-node render map — O(nodes x links) on EVERY render, and this component re-renders on every
+  // mousemove of a pan-drag (setT) and on every chassis hover (setHover). At fleet scale (~300
+  // switches / ~400 links) that is ~120k iterations per mouse event on a field laptop.
+  const stubsByNode = useMemo(() => {
+    const m = new Map<string, { p: Pos; crit: boolean }[]>();
+    const add = (id: string, p: Pos, crit: boolean) => {
+      const l = m.get(id); if (l) l.push({ p, crit }); else m.set(id, [{ p, crit }]);
+    };
+    for (const l of view?.links || []) {
+      add(l.source.id, l.a, l.is_bridge);
+      if (l.source.id !== l.target.id) add(l.target.id, l.b, l.is_bridge);
+    }
+    return m;
+  }, [view]);
 
   if (g.loading) return <SkelLines label="Building topology…" />;
   if (g.error) return <ErrorBox msg={g.error} />;
   if (!g.data || !g.data.nodes.length || !view)
     return <div className="faint" style={{ fontSize: 13 }}>No topology to draw.</div>;
   const nUnlinked = g.data.nodes.filter((n: any) => !n.degree).length;
+  // NOT-OBSERVED, never "no SPOFs here". A fleet drawn with ZERO links is not evidence of an
+  // unlinked estate: /graph resolves a CDP neighbour by matching a CANONICALISED (lower-cased,
+  // domain-stripped) name against the RAW snapshot hostnames, so an estate whose hostnames are not
+  // already lower-case resolves nothing and every switch arrives degree 0. Silence there also
+  // silences the red single-point-of-failure overlay, which is exactly the reading an engineer must
+  // not take from a picture. Say it on the face of the diagram.
+  const noLinks = g.data.nodes.length > 1 && !g.data.edges.length;
 
   const focus = sel || hover;
   const neighbors = new Set<string>();
@@ -229,6 +251,16 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
 
   return (
     <div>
+      {noLinks && (
+        <div className="panel" role="status" style={{ padding: "8px 12px", marginBottom: 10, borderColor: "var(--crit)", fontSize: 12 }}>
+          <b style={{ color: "var(--crit)" }}>[NOT OBSERVED] — no inter-switch link resolved for any of the {g.data.nodes.length} switches.</b>{" "}
+          <span className="dim">
+            This diagram therefore shows no fabric and no single-point-of-failure link. Read it as
+            “topology not established”, never as “no chokepoints”. Cross-check the Physical cable map
+            panel and the Chokepoints section — if they show links, the neighbour names did not resolve here.
+          </span>
+        </div>
+      )}
       <div className="spread" style={{ marginBottom: 10 }}>
         <div className="legend" style={{ margin: 0 }}>
           {legendBands.map((b) => (
@@ -244,7 +276,7 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
           {nUnlinked > 0 && (
             <button className="btn ghost"
               style={{ padding: "4px 9px", ...(linkedOnly ? { borderColor: "var(--accent)", color: "var(--accent)" } : {}) }}
-              title={`Hide the ${nUnlinked} switch(es) with no observed CDP link (uncollected or standalone). The count stays disclosed — hidden, never silently absent.`}
+              title={`Hide the ${nUnlinked} switch(es) for which no CDP link was resolved in this snapshot. Why is NOT observed — standalone, uncollected, or a neighbour name that did not resolve are indistinguishable here. The count stays disclosed — hidden, never silently absent.`}
               onClick={() => { setLinkedOnly((v) => !v); setSel(null); }}>{linkedOnly ? "☑" : "☐"} Linked only</button>
           )}
           <div className="row-flex" style={{ gap: 0, border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }} role="group" aria-label="Topology view mode">
@@ -305,9 +337,7 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
             {view.nodes.map((n) => {
               const faded = dim(n.id);
               const na = unassessed(n);
-              const stubs = view.links.flatMap((l) =>
-                l.source.id === n.id ? [{ p: l.a, crit: l.is_bridge }] :
-                l.target.id === n.id ? [{ p: l.b, crit: l.is_bridge }] : []);
+              const stubs = stubsByNode.get(n.id) || [];
               return (
                 <g key={n.id} transform={`translate(${n.x},${n.y})`} style={{ cursor: "pointer", opacity: faded ? 0.25 : 1 }}
                   onMouseEnter={() => setHover(n.id)} onMouseLeave={() => setHover(null)}

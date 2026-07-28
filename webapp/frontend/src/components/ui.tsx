@@ -112,18 +112,28 @@ export function usePositionTween(targets: ReadonlyMap<string, Pt>, duration = 40
   return shown;
 }
 
-/* ---- async data hook ---- */
+/* ---- async data hook ----
+   GENERATION-GUARDED: every start claims a ticket and only the LATEST ticket may write state. Without
+   it the winner was whichever request happened to RESOLVE last, not the one last REQUESTED — two
+   requests are routinely in flight here (NrfuPanel refires on `register` when you hit Right-size /
+   Reset; `reload()` fires alongside an in-flight fetch), and an overlay POST that recomputes the
+   blueprint server-side is easily slower than the plain GET issued after it. The stale response then
+   won and the panel showed a checklist that did NOT match the applied requirements, with no error and
+   no spinner to warn anyone. Superseded responses are now dropped whole — data, error AND loading, so
+   a discarded failure can neither blank the fresh data nor clear the fresh request's spinner. ---- */
 export function useAsync<T>(fn: () => Promise<T>, deps: any[] = []) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const gen = useRef(0);
   const run = useCallback(() => {
+    const my = ++gen.current;
     setLoading(true);
     setError(null);
     fn()
-      .then((d) => setData(d))
-      .catch((e) => setError(e.message || String(e)))
-      .finally(() => setLoading(false));
+      .then((d) => { if (my === gen.current) setData(d); })
+      .catch((e) => { if (my === gen.current) setError(e.message || String(e)); })
+      .finally(() => { if (my === gen.current) setLoading(false); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
   useEffect(run, [run]);

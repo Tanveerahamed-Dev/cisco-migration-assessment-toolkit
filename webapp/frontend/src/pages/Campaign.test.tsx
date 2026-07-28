@@ -256,3 +256,112 @@ describe("folder ingest", () => {
     expect(ing).not.toHaveBeenCalled();
   });
 });
+
+// ── coverage-honesty + stale-state audit (FE-5 / FE-6 / FE-7 / FE-8) ─────────
+describe("CampaignPage · coverage honesty and stale state", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  function mountTwoWaves() {
+    vi.spyOn(api, "getCampaign").mockResolvedValue(campaign({ snapshots: [snap(1), snap(2)] }));
+    vi.spyOn(api, "getGates").mockResolvedValue(emptyGates);
+    vi.spyOn(api, "trend").mockRejectedValue(new Error("no trend"));
+    return renderCampaign();
+  }
+  const cablesDownCell = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll("div"))
+      .find((d) => d.textContent?.startsWith("Cables down:"))!.querySelector("b")!;
+
+  // FE-5: the colour was computed from `n_went_down ?? 0` BEFORE the `assessed` check that picks the
+  // text, so an UNASSESSED cabling delta rendered its "—" in var(--ok): the not-observed case
+  // painted as the healthy case.
+  it("FE-5: an un-assessed cabling delta is neutral, never the healthy green", async () => {
+    const { container } = mountTwoWaves();
+    vi.spyOn(api, "compare").mockResolvedValue({
+      verdict: "CLEAN", findings: {}, health: {}, cabling: { assessed: false, summary: {} },
+    });
+    await screen.findByText("Compare two waves");
+    fireEvent.change(container.querySelectorAll("select")[0], { target: { value: "1" } });
+    fireEvent.change(container.querySelectorAll("select")[1], { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+    const cell = await waitFor(() => cablesDownCell(container));
+    expect(cell.textContent).toBe("—");
+    expect(cell.style.color).not.toBe("var(--ok)");
+    expect(cell.style.color).toBe("var(--text-faint)");
+    // an ASSESSED clean result keeps its green — the fix must not neutralise real evidence
+    expect(screen.getByText("not assessed")).toBeInTheDocument();
+  });
+
+  it("FE-5: an ASSESSED zero still reads green — a measured 0 is real data", async () => {
+    const { container } = mountTwoWaves();
+    vi.spyOn(api, "compare").mockResolvedValue({
+      verdict: "CLEAN", findings: {}, health: {}, cabling: { assessed: true, summary: { n_went_down: 0 } },
+    });
+    await screen.findByText("Compare two waves");
+    fireEvent.change(container.querySelectorAll("select")[0], { target: { value: "1" } });
+    fireEvent.change(container.querySelectorAll("select")[1], { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+    const cell = await waitFor(() => {
+      const c = cablesDownCell(container);
+      if (c.textContent !== "0") throw new Error("not yet");
+      return c;
+    });
+    expect(cell.style.color).toBe("var(--ok)");
+  });
+
+  // FE-6: Number("") === 0, so the placeholder option defeated the `cmpA === ""` guard and the app
+  // POSTed /api/compare with old_id 0 — the user got the server's 404 instead of the local prompt.
+  it("FE-6: the unselected 'from…' placeholder never reaches /api/compare", async () => {
+    const { container } = mountTwoWaves();
+    const cmp = vi.spyOn(api, "compare");
+    await screen.findByText("Compare two waves");
+    fireEvent.change(container.querySelectorAll("select")[1], { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+    expect(await screen.findByText("Pick two different snapshots.")).toBeInTheDocument();
+    expect(cmp).not.toHaveBeenCalled();
+  });
+
+  // FE-7: a failed re-compare left the PREVIOUS pair's verdict on screen under the newly-selected
+  // pair — an old CLEAN/REGRESSED attributed to snapshots it was never computed from.
+  it("FE-7: a failed re-compare drops the stale verdict and says the run failed", async () => {
+    const { container } = mountTwoWaves();
+    const cmp = vi.spyOn(api, "compare")
+      .mockResolvedValueOnce({ verdict: "REGRESSED", findings: { n_opened: 9 }, health: {}, cabling: { assessed: true, summary: {} } })
+      .mockRejectedValueOnce(new Error("compare shed: 503"));
+    await screen.findByText("Compare two waves");
+    fireEvent.change(container.querySelectorAll("select")[0], { target: { value: "1" } });
+    fireEvent.change(container.querySelectorAll("select")[1], { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+    await screen.findByText("REGRESSED");
+
+    fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+    await waitFor(() => expect(cmp).toHaveBeenCalledTimes(2));
+    // surfaced twice on purpose: the transient toast AND a persistent panel where the result would be
+    expect((await screen.findAllByText("compare shed: 503")).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText(/nothing below is a result for it/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("REGRESSED")).toBeNull());
+  });
+
+  // FE-8: useAsync keeps `data` across a refetch, so the `!data` guard only ever caught the FIRST
+  // load — a later failure set `error` while the superseded grid kept rendering as if current.
+  it("FE-8: a failed gate-board REFETCH is disclosed instead of leaving a silently stale board", async () => {
+    vi.spyOn(api, "getCampaign").mockResolvedValue(campaign({ snapshots: [snap(1)] }));
+    const gates = vi.spyOn(api, "getGates")
+      .mockResolvedValueOnce({ cadence: [{ key: "cab", label: "CAB", when: "T-2d" }], waves: ["Wave-A"], records: [] })
+      .mockRejectedValue(new Error("gates refused: 403 cross-site"));
+    vi.spyOn(api, "setGate").mockRejectedValue(new Error("403 cross-site"));
+    const { container } = renderCampaign();
+
+    const cell = await waitFor(() => {
+      const c = container.querySelector('[data-wave="Wave-A"][data-gate="cab"]');
+      if (!c) throw new Error("board not rendered");
+      return c as HTMLElement;
+    });
+    fireEvent.click(cell);                              // POST fails -> reload() -> GET fails too
+    await waitFor(() => expect(gates.mock.calls.length).toBeGreaterThan(1));
+
+    expect(await screen.findByText(/Gate board is STALE/)).toBeInTheDocument();
+    expect(screen.getByText(/gates refused: 403 cross-site/)).toBeInTheDocument();
+    // the last-known board is still shown — disclosed, not erased (the governance record is useful)
+    expect(container.querySelector('[data-wave="Wave-A"][data-gate="cab"]')).toBeTruthy();
+  });
+});

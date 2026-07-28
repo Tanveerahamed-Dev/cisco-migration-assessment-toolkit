@@ -214,7 +214,28 @@ export default function CausalFlowPanel({ snapId }: { snapId: number }) {
   if (loading) return <div className="panel"><h3>Causal Flow · every finding's root-cause story</h3><SkelLines /></div>;
   if (error) return <div className="panel"><h3>Causal Flow · every finding's root-cause story</h3><ErrorBox msg={error} /></div>;
   const cf = data as CausalFlows;
-  if (!cf || !cf.flows?.length) return null;   // data-gated: older snapshots without findings show nothing
+  // Coverage-honest empty state (guardrail 3). This used to `return null` — the whole panel VANISHED,
+  // which an engineer reads as "no root-cause stories to answer for". That is indistinguishable from
+  // "the model was never computed for this snapshot": compute_causal_flows derives its flows from the
+  // structural-SPOF / cross-layer / design-decision / punch-list sections, so an empty list is also what
+  // an older engine, or an uncollected set of those sections, produces. Absence is stated, never rendered
+  // as an all-clear (the CutoverPlanner "No migration waves were derived" treatment).
+  if (!cf || !cf.flows?.length) {
+    return (
+      <div className="panel">
+        <h3>Causal Flow · every finding's root-cause story</h3>
+        <div className="dim" style={{ fontSize: 13, marginTop: 6 }}>
+          {cf ? "No causal flows were derived from this snapshot." : "[NOT OBSERVED] — this snapshot carries no causal-flow model."}
+        </div>
+        <div className="faint" style={{ fontSize: 11, marginTop: 6 }}>
+          This is not a clean bill of health. An empty list is equally what a snapshot predating the
+          causal-flow engine, or one whose source sections (structural SPOFs, cross-layer, design decisions,
+          punch-list) were not collected, produces. Reconcile against the Architecture coverage panel before
+          reading it as “nothing to fix”.
+        </div>
+      </div>
+    );
+  }
 
   const famSet = fam === "all" ? cf.flows : cf.flows.filter((f) => f.family === fam);
   const sevCounts: Record<string, number> = {};
