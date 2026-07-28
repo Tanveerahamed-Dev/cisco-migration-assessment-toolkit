@@ -147,6 +147,85 @@ def test_stop_hook_is_inert_when_no_python_changed(tmp_path):
     assert _run_hook(repo).returncode == 0, "a non-Python change was gated"
 
 
+def _branch_repo(tmp_path, body):
+    """A repo with a real base branch and one commit on a feature branch — the shape the gate
+    actually runs in. A repo with no `main` and no upstream has nothing to diff against, which is
+    exactly how an earlier version of this test passed while proving nothing."""
+    subprocess.run([_GIT, "init", "-q", "-b", "main", "."], cwd=tmp_path, check=True)
+    for k, v in (("user.email", "t@t"), ("user.name", "t")):
+        subprocess.run([_GIT, "config", k, v], cwd=tmp_path, check=True)
+    # The BASE must differ from `body`, or `git commit` on the feature branch finds nothing to
+    # commit and the branch carries no .py change at all — which is how the first cut of this test
+    # failed: it was asserting against a repo whose feature branch was identical to its base.
+    (tmp_path / "test_base.py").write_text(_GREEN_TEST, encoding="utf-8")
+    # Every real Python repo ignores this; without it the hook's own pytest run creates
+    # __pycache__/ and moves `git status` for a reason that has nothing to do with the code under
+    # test — which the porcelain precondition below correctly refused to accept.
+    (tmp_path / ".gitignore").write_text("__pycache__/\n.pytest_cache/\n", encoding="utf-8")
+    subprocess.run([_GIT, "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run([_GIT, "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    subprocess.run([_GIT, "switch", "-qc", "feature"], cwd=tmp_path, check=True)
+    (tmp_path / "test_probe.py").write_text(body, encoding="utf-8")
+    subprocess.run([_GIT, "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run([_GIT, "commit", "-qm", "work"], cwd=tmp_path, check=True)
+    committed = subprocess.run([_GIT, "diff", "--name-only", "main...HEAD"], cwd=tmp_path,
+                               capture_output=True, text=True).stdout
+    assert "test_probe.py" in committed, (
+        f"precondition: the feature branch must carry a COMMITTED .py change vs main, got {committed!r}")
+    return tmp_path
+
+
+@_needs_shell
+def test_stop_hook_still_gates_after_the_change_is_COMMITTED(tmp_path):
+    """The gate read `git status --porcelain` — the WORKING TREE only — so it went completely inert
+    the moment a turn's Python changes were committed, which is the ordinary end-of-work action in
+    this repo rather than an edge case. Reproduced before the fix: the identical red suite blocked
+    at exit 2 while uncommitted and allowed at exit 0 once committed. CLAUDE.md advertises this hook
+    as blocking "after any .py change"."""
+    p = _run_hook(_branch_repo(tmp_path, _RED_TEST))
+    assert p.returncode == 2, (
+        f"a red suite committed to a feature branch did NOT block (rc={p.returncode}) — the gate is "
+        f"inert for committed work. stderr={p.stderr[-300:]!r}")
+
+
+@_needs_shell
+def test_stop_hook_skips_the_rerun_when_nothing_changed_since_green(tmp_path):
+    """...and the reason gating committed work is affordable. Without this the full ~2,000-test
+    suite would re-run on EVERY turn of any branch carrying a .py commit, including docs-only and
+    question-only turns. The state key covers HEAD, the porcelain status, the tracked diff CONTENT
+    and every untracked file, so it moves whenever anything the suite would see moves.
+
+    Honest scope: this pins that the marker is WRITTEN and that a content-only edit INVALIDATES it.
+    It does NOT pin that the cache is actually consulted — deleting the skip leaves the hook
+    correct, just slower, so both paths return 0 on green and no exit code can tell them apart.
+    Verified by mutation: disabling the skip does not turn this test red, and that is the right
+    answer rather than a reason to add a flaky timing assertion."""
+    repo = _branch_repo(tmp_path, _GREEN_TEST)
+
+    # Leave the file MODIFIED-but-green before the first run, so that the later red edit changes
+    # only its CONTENT and not `git status --porcelain`. Without this the file goes clean->modified
+    # and the porcelain text moves too, so a key built from the status alone would still change and
+    # the assertion below would pass against a key that never looked at content. (Caught by
+    # mutation: removing `git diff HEAD` from the key left this test green.)
+    (repo / "test_probe.py").write_text(_GREEN_TEST + "\n# edit\n", encoding="utf-8")
+    porcelain_before = subprocess.run([_GIT, "status", "--porcelain"], cwd=str(repo),
+                                      capture_output=True, text=True).stdout
+
+    assert _run_hook(repo).returncode == 0, "precondition: a green branch must be allowed"
+    marker = repo / ".git" / "verify-green.ok"
+    assert marker.is_file(), "a green run must record WHICH tree it proved"
+    assert _run_hook(repo).returncode == 0, "an unchanged follow-up turn must skip the re-run"
+
+    (repo / "test_probe.py").write_text(_RED_TEST + "\n# edit\n", encoding="utf-8")
+    porcelain_after = subprocess.run([_GIT, "status", "--porcelain"], cwd=str(repo),
+                                     capture_output=True, text=True).stdout
+    assert porcelain_after == porcelain_before, (
+        "precondition: this case only discriminates while `git status` is byte-identical across the "
+        f"edit, got {porcelain_before!r} -> {porcelain_after!r}")
+    assert _run_hook(repo).returncode == 2, \
+        "a content-only edit slipped past the green marker — the key is not tracking content"
+
+
 @_needs_shell
 def test_stop_hook_still_gates_a_path_git_has_to_quote(tmp_path):
     """git QUOTES a porcelain path containing a space, so the line ends in `"` and not in
