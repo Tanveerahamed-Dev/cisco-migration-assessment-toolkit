@@ -2090,10 +2090,22 @@ def compute_migration_readiness(all_interfaces, move_groups, health_scores,
             checks.append(("STP consistency", "warn",
                            f"no spanning-tree evidence for {', '.join(missing_stp)} — "
                            "STP consistency not assessable"))
+        elif not stp_collected:
+            # Nothing to compare anywhere in the run. #12 disclosed this honestly in the NOTE but
+            # left the status 'pass', and excel.py:3589 paints the Status cell green from
+            # _STATUS_FILL — so the Migration Readiness sheet showed a green PASS for an axis that
+            # was never observed, with the caveat one column to the right. A colour is a claim
+            # (the same rule this review applied to the Capacity sheet's amber fills), and the
+            # Status column is precisely what a reader scans. 'info' keeps #12's no-cry-wolf
+            # property intact — the verdict inspects only fail/warn — while withdrawing the health
+            # claim. Now identical to its two siblings (checks 11 and 12) rather than a third
+            # spelling of the same situation.
+            checks.append(("STP consistency", "info",
+                           "NOT ASSESSABLE — spanning tree was not collected anywhere in this run, "
+                           "so consistency could not be compared. This is an ABSENCE of evidence, "
+                           "not a clean spanning tree."))
         else:
-            checks.append(("STP consistency", "pass",
-                           "no inconsistent ports" if stp_collected
-                           else "no inconsistent ports / spanning tree not collected this run"))
+            checks.append(("STP consistency", "pass", "no inconsistent ports"))
         # 6 port-channels healthy -- same treatment, but the coverage set has to be joined against
         # interface-evidenced port-channel MEMBERSHIP: a missing EtherChannel row means "bundle state
         # never observed" only for a switch that has members, and means "nothing to assess" for one

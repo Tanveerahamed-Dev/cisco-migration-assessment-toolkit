@@ -674,3 +674,52 @@ than a clearly-recorded one that does not.
 The real options remain the owner's: shard the gate (and say so plainly, so "green" keeps meaning
 what it says), invest in suite performance as its own project, or accept load-dependent fail-open and
 lean on CI — noting that `webapp/tests` does not execute in a required check either (traced above).
+
+## Round 5 — closing the class instead of the instances
+
+Four rounds found the same defect four times, at four layers, by four different agents: a verdict
+asserted over an empty evidence set. Finding instances one at a time is not closing a class, so this
+round swept the repo for the SHAPES rather than for more instances.
+
+**Shape A — `<missing> = X - evidence if evidence else []`.** An empty evidence set makes the
+difference empty, so "nothing is missing" reads as "everything is covered".
+
+Found one real instance, and it was in the function R4-1 had just been fixed in:
+`analyze.py:2086`, the STP-consistency check — **a third sibling I had missed while fixing the other
+two.** Exactly the "enumerate every exit before marking" failure, committed by me, one commit after
+writing about it.
+
+It is a milder variant, and worth stating precisely rather than inflating: the NOTE was already
+honest ("spanning tree not collected this run"), only the STATUS said `pass`. That matters because
+`excel.py:3589` paints the Status cell green from `_STATUS_FILL` — so the Migration Readiness sheet
+showed a green PASS for an unobserved axis with the caveat one column to the right, and the Status
+column is exactly what a reader scans. This review had already established the rule in that same
+file: a colour is a claim.
+
+Fixing it required amending a test that **deliberately pinned** `status == "pass"` (a considered
+decision from round-2 finding #12). The no-cry-wolf contract that decision protects is untouched —
+`info` cannot flip the verdict any more than `pass` can, since the verdict inspects only
+`fail`/`warn`. Three sibling checks now behave identically instead of three different ways.
+
+**Shape B — `max(..., default=0)` rendered into a sentence.** Six sites. All refuted by running
+them: `archreview.py:592` ("Largest observed VLAN carries N endpoint(s)") looked like the strongest
+candidate and is already guarded at line 570, which emits "No endpoint MACs were captured, so
+per-VLAN endpoint counts are unknown." The rest are over non-evidence collections.
+
+**Shape D — a verdict seeded optimistic, then refined in a loop.** This is the shape that produced
+BE-2 and R4-1, so it mattered most.
+
+**My first sweep for it was wrong, and its own failure is the finding worth keeping.** The pattern
+required the verdict word to START the assignment, so it matched `gate = ...` but not
+`fleet_gate = ...` — i.e. it missed the exact instance that motivated writing it. A sweep that cannot
+find its own motivating case proves nothing about the cases it did not find. Widened to any
+identifier CONTAINING a verdict word, then validated against the known instance as a positive
+control before trusting the result — the same "prove the detector fires" discipline this review
+demanded of the guards it audited. On the widened pattern: four sites, one already fixed (BE-2), three
+refuted by reading their branches (`precert.py` handles blind spots explicitly; `aclcheck.py` is a
+classification with real `unevaluable` branches; `serve.py`'s Atlas selftest builds a fixed list where
+`if _frozen()/else` guarantees exactly one `engine-entry` check, so the count can neither be zero nor
+silently shrink).
+
+Zero new instances of the worst class, from a detector proven to fire. That is a stronger statement
+than "we looked again and found nothing".

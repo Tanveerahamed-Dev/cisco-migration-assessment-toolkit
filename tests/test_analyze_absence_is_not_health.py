@@ -66,10 +66,25 @@ def test_readiness_does_not_cry_wolf_when_nothing_was_collected_anywhere():
         [{"group": "G", "switches": ["sw1"]}], [{"switch": "sw1", "band": "Excellent"}],
         [], [], [], [], analyze.build_dependency_map({"sw1": {}}, [], []))
     by = {c["check"]: c for c in out[0]["checks"]}
-    assert by["STP consistency"]["status"] == "pass"
+    # No cry wolf — the #12 contract this test is named for. `info` satisfies it exactly as `pass`
+    # did: compute_migration_readiness derives the verdict from fail/warn only, so neither status
+    # can flip a group to CAUTION.
+    assert by["STP consistency"]["status"] != "warn"
+    assert out[0]["readiness"] == "READY" and out[0]["n_warn"] == 0
+
+    # ...but STP was collected NOWHERE, so the check may not read as health either. It used to
+    # publish "pass" with the disclosure in the note; excel.py:3589 paints the Status cell green
+    # from _STATUS_FILL, so the Migration Readiness sheet showed a green PASS for an unobserved
+    # axis with the caveat one column to the right. The Status column is what a reader scans.
+    assert by["STP consistency"]["status"] == "info"
+    assert "NOT ASSESSABLE" in by["STP consistency"]["note"]
+    flat = " ".join(by["STP consistency"]["note"].split())     # prose: survive a re-wrap
+    assert "no inconsistent ports" not in flat, "still asserts a clean spanning tree"
+
+    # Port-channels is a genuinely DIFFERENT case and must stay `pass`: sw1 bundles nothing, so
+    # there is nothing to assess — which is not the same as "not assessed". If this ever flips to
+    # the abstention, the fix has over-reached from "no evidence" into "no subject".
     assert by["Port-channels healthy"]["status"] == "pass"
-    # ...but the note may not ASSERT a clean spanning tree that was never looked at
-    assert "not collected" in by["STP consistency"]["note"]
 
 
 # --------------------------------------------------------------------------- #13
