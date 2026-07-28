@@ -54,9 +54,22 @@ def test_states_are_the_three_honest_tokens_only():
     allowed = {"published", "collected_but_empty", "not_collected"}
     for s in census["sections"]:
         assert s["state"] in allowed, f"{s['key']} carries a non-honest state {s['state']!r}"
-    # and each row reuses the SAME token abstention_reason returns (one source of truth)
-    for s in census["sections"]:
-        assert s["state"] == ssot.abstention_reason(SNAP, s["key"])
+    # NON-VACUITY (mutation-proved, 2026-07-28): this used to close with
+    #   assert s["state"] == ssot.abstention_reason(SNAP, s["key"])
+    # while compute_schema_census's own body is literally `state = abstention_reason(snap, key)` —
+    # an f(x) == f(x) identity that NO mutation of abstention_reason can fail, because both sides
+    # move together. (Changing its `return "collected_but_empty"` to `return "published"` — a
+    # coverage-honesty lie — left this test green; only the sibling below caught it.) The set check
+    # above is the same tautology one level out: those three tokens ARE the function's codomain.
+    # Pin the expected state PER KEY instead, so a token that flips is a red test here too.
+    assert {s["key"]: s["state"] for s in census["sections"]} == {
+        "script_version": "published",
+        "routes": "published",
+        "vpc": "published",
+        "acls": "collected_but_empty",
+        "overlay": "collected_but_empty",
+        "punchlist": "collected_but_empty",
+    }
 
 
 def test_present_but_empty_reads_collected_but_empty_not_blind_spot():

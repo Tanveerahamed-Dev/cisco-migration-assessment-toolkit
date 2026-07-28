@@ -46,12 +46,21 @@ def test_webapp_suite_skips_cleanly_without_web_deps():
         "webapp/tests/conftest.py lost its collection guard (engine-only CI would ERROR)"
 
 
-def test_webapp_un_collection_is_announced_not_silent():
+def test_webapp_un_collection_is_announced_not_silent(monkeypatch):
     """...and when it DOES skip, it must say so. `collect_ignore_glob` emits no skip report and
     no reason line, and pytest.ini sets `-q`, so a run that silently dropped ~20 webapp test
     files — the Atlas redaction suite, security hardening, unplug safety — looked exactly like a
     full green one, including to the verify-green Stop hook. Asserted against the guard's own
-    state rather than its source text, so the assertion cannot rot into a grep."""
+    state rather than its source text, so the assertion cannot rot into a grep.
+
+    BOTH branches are DRIVEN, not observed. This test used to read whichever branch the box it
+    ran on happened to take — and every box that matters day to day (the developer machine, the
+    verify-green Stop hook, webapp-ci) has the web deps installed, so it only ever asserted
+    `announced is None` and the announcement itself was pinned by nothing. Proven vacuous by
+    mutation (2026-07-28): deleting the entire announcement from
+    `webapp/tests/conftest.py::pytest_report_collectionfinish` — leaving a bare `return None` —
+    left this test GREEN. It is the engine-only runner, where nobody is watching, that needs the
+    banner, so the missing-deps state is now forced here instead of waited for."""
     import importlib.util as _ilu
     spec = _ilu.spec_from_file_location(
         "_webapp_conftest_probe", os.path.join(ROOT, "webapp", "tests", "conftest.py"))
@@ -61,12 +70,26 @@ def test_webapp_un_collection_is_announced_not_silent():
         "the guard no longer publishes which deps are missing — un-collection is silent again"
     assert hasattr(mod, "pytest_report_collectionfinish"), \
         "the guard no longer announces the un-collection to the terminal reporter"
+
+    # The branch that matters, forced: deps missing -> the run must SAY the suites did not run,
+    # and must name which dependency caused it (a bare "something was skipped" is not actionable).
+    monkeypatch.setattr(mod, "MISSING_WEB_DEPS", ("fastapi", "httpx"))
     announced = mod.pytest_report_collectionfinish(None)
-    if mod.MISSING_WEB_DEPS:
-        assert announced and "NOT COLLECTED" in announced, \
-            "web deps are missing but the run says nothing about the dropped suites"
-    else:
-        assert announced is None, "nothing was dropped, so nothing should be announced"
+    assert announced, "web deps missing and the run says NOTHING about the dropped suites"
+    assert "NOT COLLECTED" in announced, f"the un-collection is not stated plainly: {announced!r}"
+    assert "fastapi" in announced, f"the announcement does not name the missing dep: {announced!r}"
+
+    # ...and the quiet branch stays quiet, so this cannot be greened by an always-on banner that
+    # operators would learn to ignore.
+    monkeypatch.setattr(mod, "MISSING_WEB_DEPS", ())
+    assert mod.pytest_report_collectionfinish(None) is None, \
+        "nothing was dropped, so nothing should be announced"
+
+    # ...and on THIS box the guard's real state and the collection decision must agree.
+    monkeypatch.undo()
+    assert bool(mod.MISSING_WEB_DEPS) == hasattr(mod, "collect_ignore_glob"), (
+        f"MISSING_WEB_DEPS={mod.MISSING_WEB_DEPS!r} disagrees with whether the directory is "
+        f"actually un-collected — the announcement would describe the wrong run")
 
 
 def test_coverage_measures_the_entry_module():

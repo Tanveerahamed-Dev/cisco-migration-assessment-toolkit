@@ -115,6 +115,41 @@ def test_portchannel_check_discloses_a_pre_existing_down_member():
     assert "all members in (P)" in pc3[0]["expect"] and pc3[0]["severity"] == "Medium"
 
 
+def test_portchannel_state_never_captured_is_not_certified_all_bundled():
+    """The THIRD arm of the same three-way branch, and the one that was never reached.
+
+    NON-VACUITY (mutation-proved, 2026-07-28). `compute_validation_plan` has three port-channel
+    exits: degraded (ec_bad), NOT-OBSERVED (`_ph_supplied and host not in ec_seen`), and the
+    optimistic all-(P) else. The test above drives arms 1 and 3 — twice — but its two control
+    arms are precisely the configurations where the not-observed guard DECLINES TO FIRE: `out2`
+    passes no protocol_health at all (`_ph_supplied` False) and `out3` passes a healthy record
+    FOR acc1 (so acc1 is in `ec_seen`). Replacing the guard with `elif False:` left the whole
+    file green, and no test in tests/ or webapp/tests/ so much as named the branch.
+
+    That branch is the LIVE one in the field: COLLECT_PARSE_V3_23_0.py always passes
+    `protocol_health=protocol_health`, so `_ph_supplied` is permanently True in production and
+    the untested arm is the one a real run takes whenever `show etherchannel summary` was not
+    captured for a device that has port-channel members. Falling through to "show all members in
+    (P)/bundled state" is exactly the false-health this check exists to prevent: a member already
+    suspended before the change gets certified as a healthy re-bundle.
+
+    Precondition here: protocol_health IS supplied (as production always supplies it) but carries
+    NO EtherChannel row for acc1 — the shape a partial collection produces."""
+    mg, rn, stp, devs = _ctx()
+    other = [{"switch": "distA", "protocol": "HSRP", "severity": "Info", "summary": "ok", "detail": ""}]
+    out = compute_validation_plan(_fabric(), mg, rn, stp, devs, protocol_health=other)
+    pc = _items(out, category="Link", device="acc1")
+    assert pc, "the port-channel check vanished instead of abstaining"
+    expect, check = pc[0]["expect"], pc[0]["check"]
+    assert "NOT OBSERVED" in check, (
+        f"an uncaptured bundle state must SAY it was never observed; got check={check!r}")
+    assert "all members in (P)" not in expect, (
+        "an uncaptured bundle state was certified as the accepted all-(P) good state — a member "
+        f"already suspended pre-cutover would pass the post-cutover ATP. expect={expect!r}")
+    assert "never captured" in expect and "do NOT" in expect
+    assert pc[0]["severity"] == "High", "a missing pre-cutover baseline is not a Medium nicety"
+
+
 def test_empty_inputs_are_tolerated():
     out = compute_validation_plan({})
     assert out["items"] == [] and out["by_wave"] == {}

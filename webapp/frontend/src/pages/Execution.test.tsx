@@ -3,7 +3,7 @@ import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import ExecutionPage, { fmtClock, OUTCOME_COLOR } from "./Execution";
 import { api } from "../api";
-import type { ExecutionState, SnapshotMeta } from "../api";
+import type { ExecCheck, ExecutionState, SnapshotMeta } from "../api";
 
 // ── pure helpers ──────────────────────────────────────────────────────────
 // The war-room elapsed clock: seconds → H:MM:SS, recomputed from started_at each tick.
@@ -212,6 +212,72 @@ describe("ExecutionPage", () => {
 
     expect(await screen.findByText("did a thing")).toBeInTheDocument();
     expect(screen.queryByText(/No entries yet/i)).not.toBeInTheDocument();
+  });
+});
+
+// ── FE-13: an UNVALIDATED wave must not wear the colour of a VALIDATED one ──────────────────
+// The wave header's check counter is `{nPass}✓ {nFail}✗` coloured `nFail ? crit : ok`. A wave whose
+// validation checks are all still `pending` has nFail === 0, so it rendered in exactly the green a
+// wave that passed every check does — "not observed" reading as "healthy" on the surface an engineer
+// scans immediately before pressing "✓ Complete wave".
+describe("ExecutionPage · unrecorded validation is not a pass", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const check = (result: ExecCheck["result"], name: string): ExecCheck => ({
+    category: "l2", severity: "High", check: name, command: "show vlan brief",
+    expect: "vlan 10 up", result, observed: "", at: null, by: "",
+  });
+
+  function withChecks(checks: ExecCheck[]) {
+    const st = execState();
+    st.waves[0].checks = checks;
+    return st;
+  }
+  // the wave header's check tile: the .wmeta cell whose label starts with "checks"
+  const counterIn = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll(".wmeta .lbl"))
+      .find((e) => (e.textContent || "").startsWith("checks"))!.parentElement!;
+
+  it("FE-13: all-pending checks render tone-neutral and say how many are unrecorded", async () => {
+    vi.spyOn(api, "getExecution").mockResolvedValue(withChecks([check("pending", "a"), check("pending", "b")]));
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(snapMeta);
+    const { container } = renderExec();
+    await screen.findByText("Cutover Run A");
+
+    const el = counterIn(container);
+    expect(el.textContent).toMatch(/2 unrecorded/);
+    expect(el.querySelector(".num")!.getAttribute("style")).not.toContain("var(--ok)");
+  });
+
+  it("FE-13: a fully-passed wave keeps the green — the fix must not flatten a real verdict", async () => {
+    vi.spyOn(api, "getExecution").mockResolvedValue(withChecks([check("pass", "a"), check("pass", "b")]));
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(snapMeta);
+    const { container } = renderExec();
+    await screen.findByText("Cutover Run A");
+
+    const el = counterIn(container);
+    expect(el.textContent).not.toMatch(/unrecorded/);
+    expect(el.querySelector(".num")!.getAttribute("style")).toContain("var(--ok)");
+  });
+
+  it("FE-13: a failing check still reds the counter regardless of what is left pending", async () => {
+    vi.spyOn(api, "getExecution").mockResolvedValue(withChecks([check("fail", "a"), check("pending", "b")]));
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(snapMeta);
+    const { container } = renderExec();
+    await screen.findByText("Cutover Run A");
+
+    expect(counterIn(container).querySelector(".num")!.getAttribute("style")).toContain("var(--crit)");
+  });
+
+  it("FE-13: the console strip discloses the run-wide pending validation count", async () => {
+    const st = execState();
+    st.progress.checks = { pending: 7, pass: 2, fail: 0, na: 0 };
+    vi.spyOn(api, "getExecution").mockResolvedValue(st);
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(snapMeta);
+    renderExec();
+    await screen.findByText("Cutover Run A");
+
+    expect(screen.getByText(/7 pending/)).toBeInTheDocument();
   });
 });
 

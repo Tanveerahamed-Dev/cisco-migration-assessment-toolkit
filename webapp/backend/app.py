@@ -13,13 +13,15 @@ import hmac
 import json
 import os
 import re
+import sqlite3
 import tempfile
 import threading
 import urllib.parse
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Annotated, Any, Dict, List
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import Path as PathParam
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -64,14 +66,32 @@ _LEN_NOTE = 2000     # free text an engineer types (notes, observations, descrip
 _LEN_PATH = 4096     # a filesystem path (Windows extended-length paths reach 32k, but not usefully)
 
 
+# --- row identifiers ---------------------------------------------------------------
+# EVERY id this API accepts is a SQLite rowid, which is a signed 64-bit INTEGER — a value outside
+# that range cannot name a row, and sqlite3 refuses to BIND it ("Python int too large to convert to
+# SQLite INTEGER", an OverflowError). Nothing caught it, so `GET /api/snapshots/1000...0` (31 digits)
+# returned HTTP 500 + a server-side traceback instead of "not found", on EVERY id-taking route:
+# measured across all 25 of them (18 GET, 4 POST, 3 DELETE) plus CompareIn's two body ids. The bound
+# lives on ONE shared alias rather than per-route, because "the routes that take an id" is the
+# structural class and a named subset just relocates the crash to the next sibling added —
+# webapp/tests/test_backend.py::test_every_row_id_param_is_range_bounded enumerates app.routes and
+# fails if a new int id param (path OR body) lacks it. Out-of-range now answers 422, exactly as
+# a NON-numeric id already did ("/api/snapshots/abc"), so the two malformed-id shapes agree.
+_SQLITE_INT_MIN = -(2 ** 63)
+_SQLITE_INT_MAX = 2 ** 63 - 1
+RowId = Annotated[int, PathParam(ge=_SQLITE_INT_MIN, le=_SQLITE_INT_MAX)]
+#: The same bound for an id carried in a request BODY (Pydantic model field).
+BodyRowId = Field(ge=_SQLITE_INT_MIN, le=_SQLITE_INT_MAX)
+
+
 class CampaignIn(BaseModel):
     name: str = Field(max_length=_LEN_NAME)
     description: str = Field(default="", max_length=_LEN_NOTE)
 
 
 class CompareIn(BaseModel):
-    old_id: int
-    new_id: int
+    old_id: int = BodyRowId
+    new_id: int = BodyRowId
 
 
 class FolderIngestIn(BaseModel):
@@ -449,15 +469,28 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         allow_methods=["*"], allow_headers=["*"],
     )
 
+    # The FastAPI-generated API-DOCUMENTATION routes. They describe this very API but do NOT sit
+    # under /api/, so the `path.startswith("/api/")` test below skipped them entirely: measured, a
+    # token-protected AssessHub answered `GET /openapi.json` with HTTP 200 and the complete route +
+    # request-model schema to a caller sending no Bearer at all, and the same request from a
+    # NON-loopback peer on a zero-token instance also got 200 while /api/campaigns got 403. That is
+    # the guard-completeness trap this codebase keeps re-learning — the rule was written as a path
+    # PREFIX instead of as "everything this app generates except the SPA shell and liveness".
+    # Read from the app's own attributes rather than hardcoded literals, so renaming docs_url (or
+    # setting one to None to switch it off) cannot silently re-open the hole.
+    _doc_paths = frozenset(p for p in (app.openapi_url, app.docs_url, app.redoc_url,
+                                       app.swagger_ui_oauth2_redirect_url) if p)
+
     @app.middleware("http")
     async def _api_access_guard(request: Request, call_next):
         """Registered AFTER (so wrapping OUTSIDE) CORSMiddleware; skips OPTIONS so
         preflights fall through to CORS. Cross-site writes are refused (CSRF). Token set ->
-        Bearer required on all /api; token unset -> /api is loopback-only AND the Host header
-        must name a loopback target (DNS-rebinding guard, see _request_host_allowed).
-        Health/liveness stays open."""
+        Bearer required on all /api (and on the OpenAPI/docs routes, which describe it);
+        token unset -> those are loopback-only AND the Host header must name a loopback target
+        (DNS-rebinding guard, see _request_host_allowed). Health/liveness stays open."""
         path = request.url.path
-        if (request.method == "OPTIONS" or not path.startswith("/api/")
+        guarded = path.startswith("/api/") or path in _doc_paths
+        if (request.method == "OPTIONS" or not guarded
                 or path == "/api/health"):
             return await call_next(request)
         # Refuse state-changing requests driven by a foreign origin BEFORE any auth check, so
@@ -539,14 +572,14 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         return store.create_campaign(body.name, body.description)
 
     @app.get("/api/campaigns/{campaign_id}")
-    def get_campaign(campaign_id: int) -> Dict[str, Any]:
+    def get_campaign(campaign_id: RowId) -> Dict[str, Any]:
         c = store.get_campaign(campaign_id)
         if not c:
             raise HTTPException(404, "Campaign not found")
         return c
 
     @app.delete("/api/campaigns/{campaign_id}", status_code=204)
-    def delete_campaign(campaign_id: int):
+    def delete_campaign(campaign_id: RowId):
         if not store.delete_campaign(campaign_id):
             raise HTTPException(404, "Campaign not found")
         # A bare 204 — JSONResponse(content=None) would serialize a "null" body, which uvicorn
@@ -555,7 +588,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
 
     @app.get("/api/campaigns/{campaign_id}/trend",
              dependencies=[Depends(_forbid_cross_site)])   # parses EVERY snapshot in the campaign
-    def campaign_trend(campaign_id: int) -> Dict[str, Any]:
+    def campaign_trend(campaign_id: RowId) -> Dict[str, Any]:
         c = store.get_campaign(campaign_id)
         if not c:
             raise HTTPException(404, "Campaign not found")
@@ -574,7 +607,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         return gates.waves_from_snapshot({"migration_readiness": rows})
 
     @app.get("/api/campaigns/{campaign_id}/gates")
-    def get_gates(campaign_id: int) -> Dict[str, Any]:
+    def get_gates(campaign_id: RowId) -> Dict[str, Any]:
         if not store.campaign_exists(campaign_id):
             raise HTTPException(404, "Campaign not found")
         return {"cadence": gates.cadence(),
@@ -582,7 +615,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                 "records": gates.annotate_out_of_order(store.list_gates(campaign_id))}
 
     @app.post("/api/campaigns/{campaign_id}/gates")
-    def set_gate(campaign_id: int, body: GateIn) -> Dict[str, Any]:
+    def set_gate(campaign_id: RowId, body: GateIn) -> Dict[str, Any]:
         if not store.campaign_exists(campaign_id):
             raise HTTPException(404, "Campaign not found")
         wave = body.wave.strip()
@@ -605,7 +638,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
 
     # -- snapshots ---------------------------------------------------------
     @app.post("/api/campaigns/{campaign_id}/snapshots", status_code=201)
-    async def upload_snapshot(campaign_id: int, request: Request, file: UploadFile = File(...),
+    async def upload_snapshot(campaign_id: RowId, request: Request, file: UploadFile = File(...),
                               label: str = Form("", max_length=_LEN_NAME)) -> Dict[str, Any]:
         if not store.get_campaign(campaign_id):
             raise HTTPException(404, "Campaign not found")
@@ -629,7 +662,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
             return store.add_snapshot(campaign_id, lbl, snap, summary.summarize(snap))
 
     @app.post("/api/campaigns/{campaign_id}/ingest", status_code=201)
-    async def ingest_collection(campaign_id: int, request: Request, file: UploadFile = File(...),
+    async def ingest_collection(campaign_id: RowId, request: Request, file: UploadFile = File(...),
                                 label: str = Form("", max_length=_LEN_NAME)) -> Dict[str, Any]:
         """Upload a raw collection ZIP (per-device show-command outputs); the real engine pipeline
         runs server-side and the resulting snapshot is stored like an uploaded one."""
@@ -665,7 +698,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
             return meta
 
     @app.post("/api/campaigns/{campaign_id}/ingest-folder", status_code=201)
-    async def ingest_collection_folder(campaign_id: int, body: FolderIngestIn,
+    async def ingest_collection_folder(campaign_id: RowId, body: FolderIngestIn,
                                        request: Request) -> Dict[str, Any]:
         """Ingest a SERVER-LOCAL collection folder — the portable-app 'one door' path (ADR-0004
         P1): on the stick the collection already sits beside the app, so a ZIP round-trip is pure
@@ -718,7 +751,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
              # on both counts — and it is a state-CHANGING GET, which _cross_site_write cannot see
              # (it returns False for GET by construction), leaving this dependency as the only guard.
              dependencies=[Depends(_forbid_cross_site)])
-    def get_snapshot(snapshot_id: int) -> Dict[str, Any]:
+    def get_snapshot(snapshot_id: RowId) -> Dict[str, Any]:
         meta = store.get_snapshot_meta(snapshot_id)
         if not meta:
             raise HTTPException(404, "Snapshot not found")
@@ -726,7 +759,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
 
     @app.get("/api/snapshots/{snapshot_id}/section/{name}",
              dependencies=[Depends(_forbid_cross_site)])   # full-snapshot parse per call
-    def get_section(snapshot_id: int, name: str) -> Dict[str, Any]:
+    def get_section(snapshot_id: RowId, name: str) -> Dict[str, Any]:
         if name not in _ALLOWED_SECTIONS:
             raise HTTPException(400, f"Unknown section '{name}'")
         snap = store.get_snapshot(snapshot_id)
@@ -764,7 +797,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
 
     @app.get("/api/snapshots/{snapshot_id}/graph",
              dependencies=[Depends(_forbid_cross_site)])
-    def snapshot_graph(snapshot_id: int) -> Dict[str, Any]:
+    def snapshot_graph(snapshot_id: RowId) -> Dict[str, Any]:
         meta = store.get_snapshot_meta(snapshot_id)
         snap = store.get_snapshot(snapshot_id)
         if snap is None or meta is None:
@@ -774,7 +807,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
 
     @app.get("/api/snapshots/{snapshot_id}/cable_map",
              dependencies=[Depends(_forbid_cross_site)])
-    def snapshot_cable_map(snapshot_id: int) -> Dict[str, Any]:
+    def snapshot_cable_map(snapshot_id: RowId) -> Dict[str, Any]:
         """EDA-style physical cable map (Python SSOT snap['cable_map']): CDP/LLDP links laid out in role
         tiers, cables coloured by operational status. Recomputed from evidence for pre-feature snapshots."""
         snap = store.get_snapshot(snapshot_id)
@@ -784,7 +817,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
 
     @app.get("/api/snapshots/{snapshot_id}/cutover",
              dependencies=[Depends(_forbid_cross_site)])
-    def snapshot_cutover(snapshot_id: int) -> Dict[str, Any]:
+    def snapshot_cutover(snapshot_id: RowId) -> Dict[str, Any]:
         """Gated, pilot-first cutover plan (run-of-show) synthesized from the snapshot's migration model."""
         snap = store.get_snapshot(snapshot_id)
         if snap is None:
@@ -793,7 +826,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
 
     @app.get("/api/snapshots/{snapshot_id}/archreview",
              dependencies=[Depends(_forbid_cross_site)])
-    def snapshot_archreview(snapshot_id: int) -> Dict[str, Any]:
+    def snapshot_archreview(snapshot_id: RowId) -> Dict[str, Any]:
         """The senior-engineer design review (V3.23.160 engine compute) for this snapshot.
         Fast path: the stored architecture_review section (json_extract, no full-blob parse) when
         the snapshot was produced by V3.23.160+; otherwise computed server-side from the stored
@@ -828,7 +861,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
 
     @app.get("/api/snapshots/{snapshot_id}/causal_flows",
              dependencies=[Depends(_forbid_cross_site)])
-    def snapshot_causal_flows(snapshot_id: int) -> Dict[str, Any]:
+    def snapshot_causal_flows(snapshot_id: RowId) -> Dict[str, Any]:
         """Unified CAUSAL FLOW model (engine compute_causal_flows) — every finding family rendered as one
         trigger -> mechanism -> impact -> mitigation story (cross-layer compounds become a bowtie). This is
         the SAME normalization the explorer's Causal Flow mode shows; computed server-side so the dashboard
@@ -858,7 +891,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
 
     @app.get("/api/snapshots/{snapshot_id}/design",
              dependencies=[Depends(_forbid_cross_site)])
-    def snapshot_design(snapshot_id: int) -> Dict[str, Any]:
+    def snapshot_design(snapshot_id: RowId) -> Dict[str, Any]:
         """The CCDE-grounded target-state DESIGN BLUEPRINT (engine compute_design_blueprint) — the SAME
         object the HLD/LLD DOCX and the explorer Design mode read. Prefers the stored design_blueprint
         section; computes server-side with the same engine function otherwise (one source of truth)."""
@@ -894,7 +927,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
 
     @app.get("/api/snapshots/{snapshot_id}/architecture_coverage",
              dependencies=[Depends(_forbid_cross_site)])   # same lazy compute_* class as /causal_flows
-    def snapshot_architecture_coverage(snapshot_id: int) -> Dict[str, Any]:
+    def snapshot_architecture_coverage(snapshot_id: RowId) -> Dict[str, Any]:
         """Architecture-coverage SSOT (engine compute_architecture_coverage): which architecture CLASSES were
         OBSERVED vs not, across both ingestion channels (ssh show-text / json controller-REST), and what fired
         -- the SAME map the explorer's ✎Design view renders. Coverage-honest: 'not-observed' is NOT 'healthy'.
@@ -904,7 +937,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
 
     @app.get("/api/snapshots/{snapshot_id}/domain_packs",
              dependencies=[Depends(_forbid_cross_site)])   # resolves architecture_coverage (may compute)
-    def snapshot_domain_packs(snapshot_id: int) -> Dict[str, Any]:
+    def snapshot_domain_packs(snapshot_id: RowId) -> Dict[str, Any]:
         """Which DOMAIN SKILL-PACKS (DC/ACI · Enterprise/SD-Access · SP/MPLS-SR · Security/ISE-TrustSec) this
         snapshot engages (Phase-3 / D6). A pack loads IFF one of its architecture classes was OBSERVED in the
         SAME coverage map above -- retrieval-selected by evidence, never a default headcount. Selection is the
@@ -914,7 +947,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         return select_packs(_resolve_architecture_coverage(snapshot_id))
 
     @app.post("/api/snapshots/{snapshot_id}/design")
-    def design_overlay(snapshot_id: int, requirements: Dict[str, Any]) -> Dict[str, Any]:
+    def design_overlay(snapshot_id: RowId, requirements: Dict[str, Any]) -> Dict[str, Any]:
         """Interactive requirements overlay: recompute the blueprint right-sized to a requirements
         register (availability_tier / critical_apps / convergence_budget_ms / growth_horizon /
         fabric_operating_model / constraints / data_classification / address_space / vlan_zones). The
@@ -937,7 +970,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
 
     @app.get("/api/snapshots/{snapshot_id}/design/nrfu",
              dependencies=[Depends(_forbid_cross_site)])   # computes the blueprint + NRFU on the fly
-    def design_nrfu(snapshot_id: int) -> Dict[str, Any]:
+    def design_nrfu(snapshot_id: RowId) -> Dict[str, Any]:
         """Design-driven NRFU/ATP acceptance-test checklist derived from the recommended design
         decisions. One structured item per decision, traceable to the CCDE principle, the evidence
         that triggered it, and the specific devices the NRFU engineer must verify. Items are phased
@@ -956,7 +989,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         return compute_design_nrfu(bp)
 
     @app.post("/api/snapshots/{snapshot_id}/design/nrfu")
-    def design_nrfu_overlay(snapshot_id: int, requirements: Dict[str, Any]) -> Dict[str, Any]:
+    def design_nrfu_overlay(snapshot_id: RowId, requirements: Dict[str, Any]) -> Dict[str, Any]:
         """Right-size the NRFU/ATP checklist to a requirements register (or {"interview_answers": {...}}),
         so the dashboard NRFU tab reflects right-sizing rather than the baseline. SSOT: derived server-side
         from the SAME overlay blueprint POST /design returns (compute_design_blueprint -> compute_design_nrfu)
@@ -993,7 +1026,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
             return execution.with_progress(execution_id, rec["snapshot_id"], rec["state"])
 
     @app.post("/api/snapshots/{snapshot_id}/executions", status_code=201)
-    def start_execution(snapshot_id: int, body: ExecutionIn) -> Dict[str, Any]:
+    def start_execution(snapshot_id: RowId, body: ExecutionIn) -> Dict[str, Any]:
         """Materialize the snapshot's cutover plan into a live, frozen execution run."""
         snap = store.get_snapshot(snapshot_id)
         if snap is None:
@@ -1009,58 +1042,70 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         with execution.MUTATION_LOCK:
             if not body.label.strip():
                 state["label"] = f"Cutover run {store.count_executions(snapshot_id) + 1}"
-            eid = store.create_execution(snapshot_id, state)
+            try:
+                eid = store.create_execution(snapshot_id, state)
+            except sqlite3.IntegrityError as e:
+                # The snapshot was DELETED between the read above and this insert — a colleague
+                # clearing a campaign while the war room starts its run. executions.snapshot_id is a
+                # foreign key (storage._SCHEMA) with PRAGMA foreign_keys=ON, so the insert is refused
+                # and the raw IntegrityError escaped as HTTP 500 + a server-side traceback. Nothing
+                # is wrong with the REQUEST: the row it names is simply gone, which is the same 404
+                # the read a few milliseconds earlier would have returned. `_mutate_execution` already
+                # treats the mirror-image race (`save_execution` -> 0 rows) as a 404; this is the
+                # start-side sibling that was left raw. The plan build is unaffected — it ran off the
+                # snapshot already in memory — so nothing partial is persisted.
+                raise HTTPException(404, "Snapshot not found") from e
         return execution.with_progress(eid, snapshot_id, state)
 
     @app.get("/api/snapshots/{snapshot_id}/executions")
-    def list_executions(snapshot_id: int) -> List[Dict[str, Any]]:
+    def list_executions(snapshot_id: RowId) -> List[Dict[str, Any]]:
         if not store.get_snapshot_meta(snapshot_id):
             raise HTTPException(404, "Snapshot not found")
         return store.list_executions(snapshot_id)
 
     @app.get("/api/executions/{execution_id}")
-    def get_execution(execution_id: int) -> Dict[str, Any]:
+    def get_execution(execution_id: RowId) -> Dict[str, Any]:
         rec = store.get_execution(execution_id)
         if not rec:
             raise HTTPException(404, "Execution run not found")
         return execution.with_progress(rec["id"], rec["snapshot_id"], rec["state"])
 
     @app.post("/api/executions/{execution_id}/step")
-    def execution_step(execution_id: int, body: StepIn) -> Dict[str, Any]:
+    def execution_step(execution_id: RowId, body: StepIn) -> Dict[str, Any]:
         return _mutate_execution(
             execution_id,
             lambda st: execution.apply_step(st, body.wave, body.index, body.status,
                                             body.note, body.operator))
 
     @app.post("/api/executions/{execution_id}/check")
-    def execution_check(execution_id: int, body: CheckIn) -> Dict[str, Any]:
+    def execution_check(execution_id: RowId, body: CheckIn) -> Dict[str, Any]:
         return _mutate_execution(
             execution_id,
             lambda st: execution.apply_check(st, body.wave, body.index, body.result,
                                              body.observed, body.operator))
 
     @app.post("/api/executions/{execution_id}/closeout")
-    def execution_closeout(execution_id: int, body: CloseoutIn) -> Dict[str, Any]:
+    def execution_closeout(execution_id: RowId, body: CloseoutIn) -> Dict[str, Any]:
         return _mutate_execution(
             execution_id,
             lambda st: execution.apply_closeout(st, body.wave, body.decision,
                                                 body.note, body.operator))
 
     @app.post("/api/executions/{execution_id}/event")
-    def execution_event(execution_id: int, body: EventIn) -> Dict[str, Any]:
+    def execution_event(execution_id: RowId, body: EventIn) -> Dict[str, Any]:
         return _mutate_execution(
             execution_id,
             lambda st: execution.add_event(st, body.kind, body.text, body.wave, body.operator))
 
     @app.post("/api/executions/{execution_id}/finish")
-    def execution_finish(execution_id: int, body: FinishIn) -> Dict[str, Any]:
+    def execution_finish(execution_id: RowId, body: FinishIn) -> Dict[str, Any]:
         return _mutate_execution(
             execution_id,
             lambda st: execution.finish(st, body.status, body.note, body.operator))
 
     @app.get("/api/executions/{execution_id}/report",
              dependencies=[Depends(_forbid_cross_site)])
-    def execution_report(execution_id: int, request: Request):
+    def execution_report(execution_id: RowId, request: Request):
         """Post-Implementation Review / as-executed change record for this run, as .docx."""
         rec = store.get_execution(execution_id)
         if not rec:
@@ -1087,7 +1132,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
             rec["state"].get("label", "run"), "_pir.docx")
 
     @app.delete("/api/executions/{execution_id}", status_code=204)
-    def delete_execution(execution_id: int):
+    def delete_execution(execution_id: RowId):
         # Under the mutation lock so a delete can't land inside another request's
         # read-modify-write window (whose save would then be a silent no-op).
         with execution.MUTATION_LOCK:
@@ -1097,7 +1142,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
 
     @app.get("/api/snapshots/{snapshot_id}/explorer", response_class=HTMLResponse,
              dependencies=[Depends(_forbid_cross_site)])
-    def snapshot_explorer(snapshot_id: int, request: Request) -> HTMLResponse:
+    def snapshot_explorer(snapshot_id: RowId, request: Request) -> HTMLResponse:
         meta = store.get_snapshot_meta(snapshot_id)
         snap = store.get_snapshot(snapshot_id)
         if snap is None or meta is None:
@@ -1108,7 +1153,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
 
     @app.get("/api/snapshots/{snapshot_id}/deliverable/{kind}",
              dependencies=[Depends(_forbid_cross_site)])
-    def snapshot_deliverable(snapshot_id: int, kind: str, request: Request):
+    def snapshot_deliverable(snapshot_id: RowId, kind: str, request: Request):
         if kind not in deliverables.SPECS:
             raise HTTPException(400, f"Unknown deliverable '{kind}'")
         meta = store.get_snapshot_meta(snapshot_id)
@@ -1138,7 +1183,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         return _send_file(path, spec.media, meta["label"], f"_{kind}.{spec.ext}", headers=headers)
 
     @app.delete("/api/snapshots/{snapshot_id}", status_code=204)
-    def delete_snapshot(snapshot_id: int):
+    def delete_snapshot(snapshot_id: RowId):
         if not store.delete_snapshot(snapshot_id):
             raise HTTPException(404, "Snapshot not found")
         return Response(status_code=204)

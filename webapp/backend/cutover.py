@@ -103,6 +103,14 @@ GATE_COND = "CONDITIONAL GO"
 GATE_NOGO = "NO-GO"
 _GATE_RANK = {GATE_GO: 0, GATE_COND: 1, GATE_NOGO: 2}
 
+#: FLEET-level only, never a wave gate (so it is deliberately absent from _GATE_RANK, which ranks
+#: waves): there were no waves to gate, so no posture was measured. Coverage honesty — "not observed"
+#: must not read as "healthy" (CLAUDE.md guardrail 3), the same distinction archreview draws with
+#: `not-assessable` and device_dossiers with the `Unassessed` band. Consumers that colour a gate token
+#: degrade to NEUTRAL on an unknown one by construction (`cutover_docx._GATE_INK.get(v, _NAVY)`, and
+#: the SPA's `gateColor` -> `var(--gate-NOTASSESSED, var(--text-faint))`), which is the right rendering.
+GATE_NOT_ASSESSED = "NOT ASSESSED"
+
 
 def _rows(snap: Dict[str, Any], key: str) -> List[Dict[str, Any]]:
     # summary._as_list, not `or []`: a section that is a truthy non-list (an int in a malformed upload)
@@ -439,8 +447,17 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
     for i, w in enumerate(waves, start=1):
         w["order"] = i
 
-    # Fleet roll-up.
-    fleet_gate = GATE_GO
+    # Fleet roll-up = the worst wave gate. VACUOUS-TRUTH GUARD (the exact twin of
+    # execution._derive_outcome's `not decisions` branch): over an EMPTY wave list the loop below
+    # never executes, so the GATE_GO seed survived untouched and the plan published
+    # `"verdict": "GO"` for a snapshot from which NOTHING was derived — cutover_docx then printed
+    # "Cutover posture: GO" in green (_GATE_INK) on the title page, directly above its own body line
+    # "No migration waves were derived from this snapshot", and the SPA drew the same GO badge. Every
+    # other branch here requires positive evidence (a wave that was actually gated); this one
+    # required none. Reproduced end to end through GET /api/snapshots/{id}/cutover on an uploaded
+    # {"devices": {}}. The seed is now the honest token when there is nothing to roll up; with waves
+    # present it is GATE_GO exactly as before, so no assessed fleet's verdict moves.
+    fleet_gate = GATE_GO if waves else GATE_NOT_ASSESSED
     for w in waves:
         if _GATE_RANK[w["gate"]] > _GATE_RANK[fleet_gate]:
             fleet_gate = w["gate"]
@@ -492,7 +509,12 @@ def _fleet_statement(verdict: str, waves: List[Dict[str, Any]], n_mbb: int, n_ha
     n_blind = sum(_int(w.get("n_blind")) for w in waves)
     parts = [f"Cutover posture: {verdict}."]
     if not waves:
-        return "No migration waves were derived from this snapshot."
+        # Lead with the posture here too. The old wording named only the cause ("no waves"), so a
+        # reader who saw the green GO headline above it read this line as a footnote to a passing
+        # plan rather than as the reason the plan has no verdict at all.
+        return (f"Cutover posture: {verdict} — no migration waves were derived from this snapshot, "
+                f"so no cutover posture was assessed. This is an ABSENCE of assessment, not a "
+                f"clean bill of health.")
     if n_blind:
         parts.append(f"{n_blind} device(s) were NOT assessed (collection incomplete) -- they cannot be certified "
                      f"ready, so their wave(s) are gated CONDITIONAL pending collection and this posture is a LOWER "

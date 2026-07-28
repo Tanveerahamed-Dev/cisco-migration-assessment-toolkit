@@ -113,7 +113,6 @@
     "cdp_neighbor": "access1.lab",
     "current_switch_serial": "FCW1234A001",
     "current_switch_ip": "10.0.99.1",
-    "neighbor_switch_serial": "access1.lab",
     "neighbor_switch_ip": "10.0.99.3",
     "stp_fwd_vlans": "10,30",
     "neighbor_port": "Gi0/1",
@@ -171,7 +170,6 @@
     "cdp_neighbor": "core2.lab",
     "current_switch_serial": "FCW1234A001",
     "current_switch_ip": "10.0.99.1",
-    "neighbor_switch_serial": "core2.lab",
     "neighbor_switch_ip": "10.0.99.2",
     "stp_fwd_vlans": "10,30",
     "neighbor_port": "Po1",
@@ -274,7 +272,6 @@
     "cdp_neighbor": "core1.lab",
     "current_switch_serial": "FDO12345ABC",
     "current_switch_ip": "10.0.99.2",
-    "neighbor_switch_serial": "core1.lab",
     "neighbor_switch_ip": "10.0.99.1",
     "stp_fwd_vlans": "10,20",
     "neighbor_port": "Po1",
@@ -314,7 +311,6 @@
     "cdp_neighbor": "wan-edge-rtr1.lab",
     "current_switch_serial": "FDO12345ABC",
     "current_switch_ip": "10.0.99.2",
-    "neighbor_switch_serial": "wan-edge-rtr1.lab",
     "neighbor_switch_ip": "10.0.250.1",
     "neighbor_port": "Gi0/0/1",
     "neighbor_platform": "cisco ASR1001-X"
@@ -326,7 +322,6 @@
     "cdp_neighbor": "SEP00112233AABB",
     "current_switch_serial": "FDO12345ABC",
     "current_switch_ip": "10.0.99.2",
-    "neighbor_switch_serial": "SEP00112233AABB",
     "neighbor_switch_ip": "10.0.40.20",
     "neighbor_port": "Port",
     "neighbor_platform": "Cisco IP Phone 8845"
@@ -339,7 +334,6 @@
     "cdp_neighbor": "AP-floor3-01",
     "current_switch_serial": "FDO12345ABC",
     "current_switch_ip": "10.0.99.2",
-    "neighbor_switch_serial": "AP-floor3-01",
     "neighbor_switch_ip": "10.0.50.30",
     "neighbor_port": "Gi0",
     "neighbor_platform": "cisco AIR-AP2802I-B-K9"
@@ -365,7 +359,6 @@
     "cdp_neighbor": "core1.lab",
     "current_switch_serial": "FOC2233B002",
     "current_switch_ip": "10.0.99.3",
-    "neighbor_switch_serial": "core1.lab",
     "neighbor_switch_ip": "10.0.99.1",
     "stp_fwd_vlans": "10,30",
     "neighbor_port": "Gi1/0/24",
@@ -390,7 +383,6 @@
     "cdp_neighbor": "AP-floor1",
     "current_switch_serial": "FOC2233B002",
     "current_switch_ip": "10.0.99.3",
-    "neighbor_switch_serial": "AP-floor1",
     "neighbor_switch_ip": "10.0.10.50",
     "neighbor_port": "Gi0",
     "neighbor_platform": "cisco AIR-AP2802I"

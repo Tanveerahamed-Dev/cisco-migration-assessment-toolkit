@@ -165,7 +165,23 @@ def test_framework_coverage_sheet_renders_and_is_coverage_honest(tmp_path):
     assert "NIST 800-53 r5" in joined                               # the framework label
     assert "NOT a full framework audit" in joined                   # (2) coverage-honesty disclosed
     assert "PCI-DSS v4.0" in joined and "DISA Cisco NDM STIG" in joined   # (3) empty frameworks NOT dropped
-    assert "0 control" in joined.lower() or "not auto-assessed" in joined.lower()  # empty disclosed, not fake-clear
+    # NON-VACUITY (mutation-proved, 2026-07-28): the old form was
+    #   `"0 control" in joined.lower() or "not auto-assessed" in joined.lower()`
+    # and the SECOND disjunct is satisfied by the fixture's own `note`, which this sheet writes
+    # verbatim into A1 ("...are not auto-assessed (never assumed 'pass')"). The assertion therefore
+    # restated its own input: deleting the writer's per-framework 0-controls cell entirely — so PCI
+    # and STIG render as a bare label plus em-dashes, the fake all-clear claim (3) names — left
+    # BOTH this test and the whole of test_excel.py GREEN. Assert the writer's own string, on the
+    # empty frameworks' own ROWS.
+    empty_rows = [[c.value for c in row]
+                  for row in wb2[FRAMEWORK_COVERAGE_SHEET_NAME].iter_rows()
+                  if row and row[0].value in ("PCI-DSS v4.0", "DISA Cisco NDM STIG")]
+    assert len(empty_rows) == 2, f"an auto-assessed-zero framework was dropped: {empty_rows}"
+    for row in empty_rows:
+        disclosure = " ".join(str(v) for v in row if isinstance(v, str))
+        assert "0 controls auto-assessed" in disclosure, (
+            f"{row[0]!r} renders with no 0-controls disclosure — it reads as a clean framework "
+            f"that was never assessed: {row}")
 
 
 # =============================================================================

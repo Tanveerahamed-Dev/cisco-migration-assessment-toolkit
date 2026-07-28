@@ -49,6 +49,63 @@ describe("CableMap (render)", () => {
     expect(panel!.textContent).toContain("core1");
   });
 
+  // FE-15: the sibling TopologyGraph panel banners the "nodes drawn, zero links resolved" case
+  // ([NOT OBSERVED] — read as "topology not established", never "no chokepoints"). CableMap did
+  // not: it drew every chassis unconnected and captioned it "N nodes · 0 cables", with the legend
+  // strip reading "0 up · 0 down · 0 not observed" — an all-zero op census that an engineer reads
+  // as "nothing is down". Zero resolved cables is a COLLECTION result (no CDP/LLDP evidence, or a
+  // neighbour name that did not match), not a fact about the cabling.
+  it("FE-15: a map with nodes but zero resolved cables says [NOT OBSERVED] on its face", async () => {
+    vi.spyOn(api, "cableMap").mockResolvedValue({
+      ...model,
+      cables: [],
+      summary: { n_nodes: 2, n_cables: 0, n_tiers: 2, op: { up: 0, down: 0, unknown: 0 } },
+    } as never);
+    const { container } = render(<CableMap snapId={1} />);
+    await screen.findByText("core1");
+
+    const banner = container.querySelector('[role="status"]');
+    expect(banner).not.toBeNull();
+    expect(banner!.textContent).toMatch(/NOT OBSERVED/);
+    expect(banner!.textContent).toMatch(/no down link|not established/i);
+  });
+
+  it("FE-15: a map that DID resolve cables carries no such banner", async () => {
+    vi.spyOn(api, "cableMap").mockResolvedValue(model as never);
+    const { container } = render(<CableMap snapId={1} />);
+    await screen.findByText("core1");
+    expect(container.querySelector('[role="status"]')).toBeNull();
+  });
+
+  // FE-16: filterModel spreads the source model, so `summary` survives the filter UNCHANGED — the
+  // footer caption ("N nodes · M cables · T tiers · physical CDP/LLDP cabling in role tiers · click
+  // a node …") kept quoting the FLEET totals while the diagram above it drew a subset, and the
+  // legend's op census likewise. The sibling TopologyGraph footer counts what it drew.
+  it("FE-16: the footer caption tracks what is DRAWN once a filter hides part of the fleet", async () => {
+    vi.spyOn(api, "cableMap").mockResolvedValue({
+      nodes: [
+        node("core1", 0, "switch", "core", [{ name: "Gi0/1", peer: "acc1", peer_port: "Gi0/1", op_status: "up", is_pc: false }]),
+        node("acc1", 1, "switch", "access", [{ name: "Gi0/1", peer: "core1", peer_port: "Gi0/1", op_status: "up", is_pc: false }]),
+        node("ap1", 2, "ap", ""),
+      ],
+      cables: [cable("core1", "Gi0/1", "acc1", "Gi0/1"), cable("acc1", "Gi0/2", "ap1", "Gi0/1")],
+      tiers: [["core1"], ["acc1"], ["ap1"]],
+      summary: { n_nodes: 3, n_cables: 2, n_tiers: 3, op: { up: 2, down: 0, unknown: 0 } },
+    } as never);
+    const { container } = render(<CableMap snapId={1} />);
+    await screen.findByText("core1");
+
+    const footer = () => Array.from(container.querySelectorAll(".faint"))
+      .find((e) => /physical CDP\/LLDP cabling/.test(e.textContent || ""))!.textContent!;
+    expect(footer()).toMatch(/3 nodes · 2 cables/);          // unfiltered: the engine summary, verbatim
+
+    fireEvent.click(screen.getByRole("button", { name: /Fabric only/i }));
+
+    // the AP and its cable are gone from the picture — the caption must not keep claiming them
+    expect(footer()).toMatch(/2 of 3 nodes/);
+    expect(footer()).toMatch(/1 of 2 cables/);
+  });
+
   it("selecting a cable also shows the panel, retargeting its key to the new selection", async () => {
     vi.spyOn(api, "cableMap").mockResolvedValue(model as never);
     const { container } = render(<CableMap snapId={1} />);

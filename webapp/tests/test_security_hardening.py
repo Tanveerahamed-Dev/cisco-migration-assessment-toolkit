@@ -570,3 +570,42 @@ def test_downloaded_deliverable_leaves_no_temp_file(client, tmp_path, monkeypatc
     eid = client.post(f"/api/snapshots/{sid}/executions", json={}).json()["id"]
     assert client.get(f"/api/executions/{eid}/report").status_code == 200
     assert list(private.glob("assesshub_*")) == [], "a rendered client deliverable was left in %TEMP%"
+
+
+# ------------------------------------- OpenAPI / docs routes (guard COMPLETENESS)
+# The access guard's reach was written as the path PREFIX "/api/", but FastAPI also generates
+# /openapi.json, /docs, /docs/oauth2-redirect and /redoc — routes that describe THIS API and do not
+# live under /api/. They were therefore outside the guard entirely. Measured before the fix: with
+# ASSESSHUB_TOKEN set, `GET /openapi.json` returned 200 and the complete route + request-model schema
+# to a caller sending no Bearer; from a NON-loopback peer on a zero-token instance it also returned
+# 200 while /api/campaigns returned 403. Same class as every other finding in this file — a guard
+# stated as a named subset rather than as the structural property it was meant to express.
+def _doc_paths(app):
+    """From the app's own attributes, exactly like the guard: a renamed docs_url stays covered."""
+    return [p for p in (app.openapi_url, app.docs_url, app.redoc_url,
+                        app.swagger_ui_oauth2_redirect_url) if p]
+
+
+def test_openapi_and_docs_require_the_token(client, monkeypatch):
+    monkeypatch.setenv("ASSESSHUB_TOKEN", "s3cret-token")
+    paths = _doc_paths(client.app)
+    assert len(paths) == 4, paths          # the enumeration must not go silently empty
+    for p in paths:
+        assert client.get(p).status_code == 401, p
+        assert client.get(
+            p, headers={"Authorization": "Bearer s3cret-token"}).status_code == 200, p
+
+
+def test_openapi_and_docs_are_loopback_only_without_a_token(client, monkeypatch):
+    """No token -> the API schema is client-adjacent metadata and follows /api's network rule."""
+    monkeypatch.setattr(app_module, "_client_is_loopback", lambda request: False)
+    for p in _doc_paths(client.app):
+        assert client.get(p).status_code == 403, p
+    assert client.get("/api/health").status_code == 200      # liveness stays open
+
+
+def test_zero_token_loopback_dev_flow_still_serves_the_docs(client):
+    """The default developer posture is untouched — the guard adds a network/auth condition, it
+    does not switch the documentation off."""
+    for p in _doc_paths(client.app):
+        assert client.get(p).status_code == 200, p

@@ -230,6 +230,21 @@ def _window_estimate(n_waves: int) -> str:
             "confirm with the change owner and size against each wave's port count and blast radius).")
 
 
+def _blast_for(switches, fi_by_host):
+    """Max endpoints stranded if one of THIS wave's devices is lost mid-move — or None when the
+    failure-impact simulation carries no covering evidence for these switches (coverage-honesty).
+
+    `max(..., default=0)` over `fi_by_host.get(s, {}).get("stranded")` printed a measured-looking
+    **0** for an axis that was never collected, and that 0 is load-bearing TWICE: §x.1's scope row,
+    and the quantified "roll back if ... more endpoints than the §x.1 max-blast-radius figure are
+    affected" trigger — which a fabricated 0 silently rewrites to "roll back if ANY endpoint is
+    affected", i.e. always true in a window whose whole purpose is moving endpoints. An observed
+    `stranded: 0` is still a real 0; only an ABSENT figure abstains."""
+    vals = [_as_num(v) for v in (_as_dict(fi_by_host.get(s)).get("stranded") for s in switches)
+            if v is not None]
+    return max(vals) if vals else None
+
+
 def _oob_evidence_for(switches, ifaces_all):
     """Coverage-honest OOB precondition evidence: return the management-port identifier(s) observed for a
     wave's devices (mgmt0 / Management* / Gi0/0 / Fa0/0, or any interface carrying an mgmt_ip), or None
@@ -472,10 +487,11 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
     for name, switches, _kind, _gnames in waves:
         r, seq, _scen, _vi = _join_group_records(_gnames, switches, readiness_by_group, seq_by_group,
                                                  scen_by_group, val_by_wave)
-        blast = max((_as_num(fi_by_host.get(s, {}).get("stranded")) for s in switches), default=0)
+        blast = _blast_for(switches, fi_by_host)
         rem, pl = _blockers_for(switches)
         ov_rows.append((name, len(switches), r.get("endpoints", "—"),
-                        r.get("readiness", "—"), _strategy_cell(seq, _scen), blast, len(rem) + len(pl)))
+                        r.get("readiness", "—"), _strategy_cell(seq, _scen),
+                        blast if blast is not None else "[NOT OBSERVED]", len(rem) + len(pl)))
     table(["Wave", "Devices", "Endpoint MACs", "Readiness", "Strategy", "Max blast", "Blockers"],
           ov_rows, widths=[1.5, 0.8, 1.0, 1.2, 1.5, 0.9, 0.9])
 
@@ -634,7 +650,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                                                        scen_by_group, val_by_wave)
         playbook = _as_dict(scen.get("playbook"))
         rem, pl = _blockers_for(switches)
-        blast = max((_as_num(fi_by_host.get(s, {}).get("stranded")) for s in switches), default=0)
+        blast = _blast_for(switches, fi_by_host)
         verdict = r.get("readiness", "—")
 
         # The constituent move-groups this wave covers (a coupled-subwave maps to ONE group; an
@@ -661,7 +677,10 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
             ("Readiness verdict", verdict),
             ("Blocking / warning checks", f"{r.get('n_fail', 0)} / {r.get('n_warn', 0)}"),
             ("Cutover strategy", strat_cell),
-            ("Max blast radius (endpoints stranded if a device is lost mid-move)", blast),
+            ("Max blast radius (endpoints stranded if a device is lost mid-move)",
+             blast if blast is not None else
+             "[NOT OBSERVED] — no failure-impact evidence for this wave's devices; do NOT read this "
+             "as zero (it is the threshold the Blast-radius rollback trigger below would size on)"),
             ("Maintenance window", "<DATE> <START>–<END>  ·  owner <NAME>  ·  approver <NAME>"),
             ("Rollback decision time", "<HH:MM> — if validation has not passed by this time, roll back"),
         ], widths=[2.6, 4.2])
@@ -732,11 +751,23 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
             doc.add_paragraph("No Critical/High blockers attributed to this wave's devices. Proceed once "
                               "the global prerequisites are met.")
         else:
+            # Both lists are DISPLAY-capped, and this is the one section the precondition gate points
+            # at: that row states the FULL attributed counts and says "clear or risk-accept before
+            # proceeding (see §blockers)". Silently rendering 10 of 80 punch-list items made an
+            # engineer who cleared everything printed here believe the gate was met — the window opens
+            # on 70 uncleared Critical/High blockers. Every other capped table in this writer discloses
+            # its overflow (§x.3 baselines, §x.4 port map, §x.6 checks); these two did not.
             if pl:
                 table(["Severity", "Category", "Item", "Devices"],
                       [(i.get("severity"), i.get("category") or "—", i.get("title") or "—",
                         ", ".join(str(x) for x in _as_list(i.get("devices")) if x in set(switches)))
                        for i in pl[:10]], widths=[0.9, 1.3, 3.0, 1.6])
+                if len(pl) > 10:
+                    doc.add_paragraph(
+                        f"…and {len(pl) - 10} further Critical/High punch-list item(s) attributed to "
+                        f"this wave and NOT listed above ({len(pl)} in total) — the precondition gate "
+                        "covers all of them, not only the 10 shown. Work the full set from the "
+                        "workbook's Punch List sheet before opening this window.")
             for it in rem[:8]:
                 p = doc.add_paragraph()
                 _label_run(p, f"{it.get('device')} — {it.get('title') or it.get('source') or 'fix'}"
@@ -744,6 +775,11 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                            it.get("why") or "review-only config change; see the Remediation Plan sheet.")
                 for c in _as_strs(it.get("commands"))[:8]:      # same add_paragraph() element class
                     doc.add_paragraph(c, style="List Bullet")
+            if len(rem) > 8:
+                doc.add_paragraph(
+                    f"…and {len(rem) - 8} further Critical/High remediation item(s) for this wave's "
+                    f"devices and NOT listed above ({len(rem)} in total) — see the workbook's "
+                    "Remediation Plan sheet; the precondition gate covers all of them.")
 
         # 2.x.3 pre-cutover baseline capture
         doc.add_heading(f"{wi}.3 Pre-cutover baseline capture", level=2)
@@ -860,7 +896,8 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         # as the live fallback" steps to single-homed switches that have NO second path). Make-before-break
         # is the procedure ONLY when every member is dual-homed; any single-homed member -> hard-cutover flow.
         mbb_hosts, hard_hosts = (seq.get("make_before_break") or []), (seq.get("hard_cutover") or [])
-        if mbb_hosts and not hard_hosts:
+        pure_mbb = bool(mbb_hosts) and not hard_hosts
+        if pure_mbb:
             proc += [
                 ("[DURING] Build the new/target path BESIDE the existing one (do not remove the legacy "
                  "path yet): stage the target device config and bring up the new uplinks per the §"
@@ -872,8 +909,11 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                 ("[DURING] Migrate endpoints leg-by-leg / VLAN-by-VLAN onto the new path, validating "
                  "after each increment; keep the legacy leg as the live fallback.",
                  "each increment re-homes and passes its checks before the next one moves."),
-                ("[POST] Once all load is on the new path and validated, decommission the legacy path.",
-                 "no endpoint remains on the legacy leg (MAC/ARP tables clean)."),
+                # The decommission step USED TO SIT HERE — i.e. the legacy path was torn down BEFORE the
+                # §x.6 go/no-go ran two steps later, while §x.7's rollback told the engineer "the legacy
+                # path was never torn down, this is non-disruptive". A §x.6 failure at 2am therefore met
+                # a rollback whose stated precondition the procedure itself had just destroyed, and this
+                # branch carries NO restore-from-§x.3 step. It is now emitted AFTER the §x.6 gate below.
             ]
         else:  # any single-homed member present (mixed or pure single-homed) -> scheduled-outage flow
             if mbb_hosts and hard_hosts:   # MIXED: do the dual-homed make-before-break FIRST, then the outage
@@ -899,6 +939,16 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         proc.append(("[POST] Run §" + f"{wi}.6 post-cutover validation in full before declaring the wave "
                      "complete.",
                      "every check matches its captured baseline."))
+        if pure_mbb:
+            # Ordered strictly AFTER the §x.6 gate: until §x.6 passes, the legacy path IS the rollback,
+            # and §x.7's non-disruptive fail-back is only true while it is still standing.
+            proc.append((
+                "[POST] ONLY once §" + f"{wi}.6 has passed IN FULL and the wave is accepted: decommission "
+                "the legacy path. Do NOT tear it down earlier — until §" + f"{wi}.6 passes, the legacy "
+                "path IS the §" + f"{wi}.7 rollback, and removing it converts a non-disruptive fail-back "
+                "into a disruptive restore from the §" + f"{wi}.3 configuration backup.",
+                "§" + f"{wi}.6 passed in full BEFORE this step ran; no endpoint remains on the legacy leg "
+                "(MAC/ARP tables clean)."))
         steps(proc)
 
         # 2.x.6 post-cutover validation (reuse the existing validation plan)
@@ -943,9 +993,21 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
              "within the agreed budget (default 5 minutes) after the cutover step, OR endpoints are not "
              "reachable by the §" + f"{wi}.1 rollback decision time.",
              "5 min default — confirm with the change owner"),
-            ("Blast-radius / outage overrun", "Roll back if: the observed outage exceeds the approved "
-             "window, OR more endpoints than the §" + f"{wi}.1 max-blast-radius figure are affected.",
-             "sized from §" + f"{wi}.1 — confirm with the change owner"),
+            # The endpoint half of this trigger is sized on §x.1's max-blast-radius figure. When that
+            # figure is [NOT OBSERVED] the clause must be withdrawn, not evaluated against a
+            # fabricated 0 — "more than 0 endpoints affected" is true the moment the cutover starts,
+            # so the in-window engineer would be reading a trigger that is unconditionally satisfied.
+            ("Blast-radius / outage overrun",
+             ("Roll back if: the observed outage exceeds the approved window, OR more endpoints than "
+              "the §" + f"{wi}.1 max-blast-radius figure are affected."
+              if blast is not None else
+              "Roll back if: the observed outage exceeds the approved window. The §"
+              + f"{wi}.1 max-blast-radius figure is [NOT OBSERVED] (no failure-impact evidence for "
+              "this wave's devices), so NO endpoint threshold is derivable from this assessment — "
+              "agree an explicit one with the change owner before the window; an absent figure is "
+              "NOT a threshold of zero."),
+             ("sized from §" + f"{wi}.1 — confirm with the change owner" if blast is not None else
+              "[NOT OBSERVED] — the change owner must set this threshold")),
             ("Unrecoverable error", "Roll back if: any device err-disables, drops OOB reachability, or "
              "enters a state not covered by this MOP and not resolved within one escalation cycle.",
              "standard AS default — confirm with the change owner"),
@@ -991,10 +1053,23 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                        "shared VLAN — keep the shared VLANs extended on the legacy path and coordinate with "
                        "any sibling sub-waves already cut over before withdrawing anything.",
                        "no sibling sub-wave loses a shared VLAN as a result of this rollback."))
-        if mbb_hosts and not hard_hosts:   # pure make-before-break: the legacy path was never torn down
+        if pure_mbb:   # pure make-before-break: the legacy path stands until §x.6 passes
             rb.append(("Move any migrated endpoints back onto the still-live legacy leg; remove the "
-                       "new path. Because the legacy path was never torn down, this is non-disruptive.",
+                       "new path. The §" + f"{wi}.5 procedure decommissions the legacy path only AFTER "
+                       "§" + f"{wi}.6 has passed in full, so on any §" + f"{wi}.6-triggered rollback the "
+                       "legacy leg is still up and this is non-disruptive.",
                        "all endpoints re-home onto the legacy leg with no loss."))
+            # …and the contingency the old text asserted out of existence: if the trigger fires after
+            # the final §x.5 step, the fail-back above is NOT available and this branch must still name
+            # a restore path — otherwise the pure-make-before-break rollback never references the
+            # §x.3 configuration backup that §x.3 declares mandatory "for the §x.7 rollback".
+            rb.append(("If the legacy path has ALREADY been decommissioned (the trigger fired after the "
+                       "final §" + f"{wi}.5 step), the non-disruptive fail-back above is NOT available: "
+                       "re-apply the pre-change configuration captured in §" + f"{wi}.3 and re-cable to "
+                       "the legacy ports. This restore is DISRUPTIVE — declare the outage and start the "
+                       "outage clock.",
+                       "configuration and cabling match the §" + f"{wi}.3 captured state; the outage is "
+                       "declared and timed."))
         else:
             if mbb_hosts and hard_hosts:   # MIXED: only the dual-homed legs roll back non-disruptively
                 rb.append(("Dual-homed members roll back onto their still-live legacy leg (non-disruptive); "

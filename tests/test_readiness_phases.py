@@ -80,13 +80,33 @@ def test_audit_checks_pass_on_collected_data(cp):
 
 
 def test_audit_checks_never_flip_verdict_when_data_absent(cp):
-    """No topology / counter evidence at all -> the audit checks fall back to
-    'pass' rather than crying wolf, so a clean group stays READY."""
+    """No topology / counter evidence at all -> the audit checks must not cry wolf (the verdict is
+    untouched, which is what this test's name has always meant) AND must not claim coverage.
+
+    This test used to assert `status == "pass"` for both checks. That was the ONLY place in the repo
+    blessing the R4-1 fabrication: with no evidence at all, `gset - topo_hosts` over an empty set is
+    empty, so "nothing is missing" rendered as "topology/dependency map covers all group switches"
+    and the group was published READY. Both halves are now pinned separately, because they are
+    different promises and only one of them was ever in doubt:
+
+      * the no-cry-wolf contract (verdict, n_warn, n_fail) — unchanged, still asserted below;
+      * the coverage claim — must abstain, never assert.
+
+    Whether a wholly unassessed axis should ALSO downgrade READY is a separate design decision and is
+    deliberately NOT taken here; if it is ever taken, the verdict assertions below are what change.
+    """
     move_groups = [{"switches": ["a"], "endpoints": 0}]
     health = [{"switch": "a", "band": "Excellent"}]
     out = cp.compute_migration_readiness({}, move_groups, health, [], [], [], [], _dep())
     by_name = {c["check"]: c for c in out[0]["checks"]}
-    assert by_name["Dependency mapping complete"]["status"] == "pass"
-    assert by_name["Baseline capture"]["status"] == "pass"
+    for name in ("Dependency mapping complete", "Baseline capture"):
+        c = by_name[name]
+        assert c["status"] != "pass", \
+            f"{name!r} reports PASS with no evidence collected at all: {c['note']!r}"
+        assert "NOT ASSESSABLE" in c["note"], f"{name!r} does not disclose that it could not assess"
+        flat = " ".join(c["note"].split())          # prose: a re-wrap must not un-pin this
+        assert "covers all group switches" not in flat
+        assert "captured for all group switches" not in flat
+    # the no-cry-wolf contract this test is named for — an unassessed axis is not a warning
     assert out[0]["readiness"] == "READY"
     assert out[0]["n_warn"] == 0 and out[0]["n_fail"] == 0

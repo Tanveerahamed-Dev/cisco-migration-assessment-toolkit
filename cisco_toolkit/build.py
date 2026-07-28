@@ -667,6 +667,12 @@ _INFRA_PLATFORM_RE = re.compile(
     r"(\bnexus|\bcatalyst|\bn[0-9]k\b|\bc9[0-9]{3}|\bc3[0-9]{3}|\bc2[0-9]{3}|\bws-c[23456]|"
     r"\basr[0-9]|\bisr[0-9]|\bcsr[0-9]|\bncs[- ]?[0-9]|\bcisco[ -][0-9]{4}\b)", re.IGNORECASE)
 
+# The literal strings a device prints INSTEAD of a capability advertisement. These mean "the TLV was
+# absent", i.e. NO capabilities -- not "these are the capabilities". Lower-cased before the lookup.
+# ('not advertised' is the same NX-OS/IOS-XE sentinel parse_neighbors_lldp already screens out of a
+# neighbour's System Name, so the class is known to the codebase; it was just not applied here.)
+_NO_CAPS_SENTINELS = {"not advertised", "n/a", "na", "null", "none", "-", "--"}
+
 
 def _neighbor_is_infra(rec: Dict[str, str]) -> bool:
     """Classify a CDP/LLDP neighbour record (parse_neighbors_detail) as INFRASTRUCTURE (a switch/router in
@@ -681,6 +687,16 @@ def _neighbor_is_infra(rec: Dict[str, str]) -> bool:
     A neighbour with neither an infra capability nor an infra platform is treated as NON-infra."""
     caps = (rec.get("capabilities") or "").strip()
     proto = (rec.get("proto") or "cdp").lower()
+    # An LLDP capability TLV is OPTIONAL, and both IOS-XE and NX-OS render a missing one as literal
+    # TEXT rather than an empty field ('not advertised' on 395 of the 838 LLDP neighbour records in
+    # the [HISTORY-REDACTED] collection; 'null' / 'N/A' elsewhere). Treating that text as a real advertisement made
+    # the `if caps:` branch authoritative and SKIPPED the platform fallback the docstring above
+    # promises for exactly this case -- so a neighbour that advertised NO capabilities could never
+    # be classified infra no matter which switch/router family it named, and dropped silently out
+    # of build_undocumented_neighbors (i.e. out of the shadow-infrastructure reconciliation, where
+    # a missing candidate reads as 'no undocumented infrastructure found').
+    if caps.lower() in _NO_CAPS_SENTINELS:
+        caps = ""
     if caps:
         if proto == "lldp":
             tokens = {t.strip().upper() for t in re.split(r"[,\s]+", caps) if t.strip()}
@@ -1124,7 +1140,17 @@ def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
                                "show running-config | section ^interface")
     run_iface  = _safe_parse(parse_run_config_interfaces, run_out)
     global_run = _load_cmd_output(cmd_to_file, "show running-config")
-    global_bdg = bool(re.search(r"spanning-tree portfast bpduguard default", global_run, re.IGNORECASE))
+    # IOS-XE 16.x+ renamed the PortFast keyword: the global default is `spanning-tree portfast EDGE
+    # bpduguard default` there, and the classic form on older IOS/IOS-XE. Matching only the classic
+    # spelling read the newer platforms as "no global BPDU-Guard default" while the evidence was in
+    # the collected running-config saying the opposite -- so every access port on those boxes carried
+    # an EMPTY stp_bpduguard, which design_advisor/archreview both classify as NOT ASSESSED
+    # ("BPDU Guard state was not captured"). Collected-and-protected therefore rendered as
+    # not-observed; and on a box that also sets bpduguard on one interface explicitly, the
+    # per-host `_bpdu_seen` gate flips and the rest of its ports become an OBSERVED unguarded gap
+    # that does not exist. Measured on the [HISTORY-REDACTED] collection: 25 devices / 647 access ports.
+    global_bdg = bool(re.search(r"spanning-tree\s+portfast\s+(?:edge\s+)?bpduguard\s+default",
+                                global_run, re.IGNORECASE))
     if global_bdg:
         logger.info(f"  [STP] Global portfast bpduguard default enabled on {hostname}")
     for p, v in run_iface.items():
@@ -1292,8 +1318,17 @@ def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
             if not interfaces[local].end_host_ip:
                 interfaces[local].end_host_ip = mgmt_ip
             interfaces[local].neighbor_switch_ip = mgmt_ip
-        if interfaces[local].endpoint_type == 'Switch' or (device_id and re.search(r'(sw|switch|n9k|n7k|c9k|catalyst|nexus)', device_id, re.IGNORECASE)):
-            interfaces[local].neighbor_switch_vtp_domain = switch_identity.get('vtp_domain', '')
+        # `neighbor_switch_vtp_domain` used to be filled with switch_identity['vtp_domain'] -- THIS
+        # switch's own domain, copied onto a column that claims to describe the NEIGHBOUR. It sits
+        # beside `current_switch_vtp_domain`, which step 12 sets from the same value, so the pair was
+        # identical by construction on every inter-switch link (367 of 367 rows on the [HISTORY-REDACTED] collection):
+        # a reader comparing the two columns to spot a VTP-domain mismatch could only ever conclude
+        # "every trunk agrees" -- a health claim manufactured from a self-copy, never observed.
+        # The neighbour's real domain IS advertised ('show cdp neighbors detail' carries a
+        # `VTP Management Domain[ Name]:` line, and the [HISTORY-REDACTED] captures show it genuinely differing
+        # between neighbours), but extracting it belongs to parse.parse_neighbors_cdp -- the owner of
+        # that block format -- not to this join layer. Until it is parsed there, the honest value is
+        # "not observed": an empty column cannot be misread as a match.
         mloc = re.search(r"(rack\s*\d+|r\d+)\s*[-_ ]*\s*(u\d+)?", device_id, re.IGNORECASE)
         if mloc: interfaces[local].endpoint_location = mloc.group(0).strip()
         if local in dual_ports: interfaces[local].dual_connection = "Yes"
@@ -1317,8 +1352,15 @@ def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
         d.current_switch_serial = switch_identity.get('serial_number', '')
         d.current_switch_ip = switch_identity.get('mgmt_ip', '')
         d.current_switch_vtp_domain = switch_identity.get('vtp_domain', '')
-        if d.endpoint_type == 'Switch' and not d.neighbor_switch_serial:
-            d.neighbor_switch_serial = d.cdp_neighbor
+        # `neighbor_switch_serial` used to be filled with d.cdp_neighbor -- the neighbour's HOSTNAME,
+        # written into a column labelled "Neighbor Switch Serial" (581 rows on the [HISTORY-REDACTED] collection where
+        # the two were byte-identical). No serial was ever observed; CDP only embeds one in the
+        # `Device ID: host(FOC1912R0XH)` form, which parse_neighbors_cdp keeps verbatim inside
+        # device_id rather than splitting out. A hostname in a serial column is a fabricated
+        # identifier at the asset-reconciliation step (and --redact's _REDACT_SERIAL_KEYS then
+        # pseudonymised those hostnames to SNxxxx while keeping hostnames everywhere else). The
+        # neighbour's name is already published in its OWN column (`cdp_neighbor`), so leaving this
+        # one empty loses nothing real and stops the column asserting evidence that does not exist.
         # Per-SVI subnet enrichment: among the routes whose outgoing interface is THIS SVI,
         # choose the SVI's CONNECTED subnet as primary -- preferring the prefix that actually
         # contains the SVI's own configured IP -- so a coexisting /32 host route or a
@@ -1331,7 +1373,17 @@ def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
                         svi_routes.append(e)
 
             def _contains_svi_ip(prefix: str) -> bool:
-                ipv = (d.svi_ip or '').split()[0].split('/')[0]
+                # `''.split()` is [], so the old `.split()[0]` raised IndexError for an SVI with NO
+                # configured address -- and this runs inside a sort KEY, so the exception escapes
+                # build_interfaces and (under the default multi-worker parse) the whole device is
+                # dropped with a logged "[FAIL] Parse exception", leaving it in the snapshot with
+                # ZERO interfaces: absence rendered as "this switch has no ports". Reachable whenever
+                # the run-config channel did not land (TACACS command-authorization denying
+                # `show running-config` is screened as an error by _load_cmd_output, so svi_ip is
+                # empty on every SVI) while `show ip route` DID -- and equally for a real SVI with no
+                # IPv4 address (unnumbered / DHCP / v6-only) that a static route exits by interface.
+                _svi_tok = (d.svi_ip or '').split()
+                ipv = _svi_tok[0].split('/')[0] if _svi_tok else ''
                 if not ipv or not prefix:
                     return False
                 try:

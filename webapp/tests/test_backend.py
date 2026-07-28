@@ -1954,3 +1954,165 @@ def test_cutover_move_group_zero_endpoints_is_not_masked():
     for bad in ({}, {"endpoints": None}, {"endpoints": "n/a"}):
         s = dict(snap, move_groups=[{"group": "G1", "switches": ["sw1"], **bad}])
         assert cutover.build_plan(s)["waves"][0]["endpoints"] == 42, bad
+
+
+# --------------------------------------------------------------- row-id range bound
+# A snapshot/campaign/execution id is a SQLite rowid: a signed 64-bit INTEGER. Anything outside that
+# range cannot name a row, and sqlite3 refuses to BIND it with `OverflowError: Python int too large
+# to convert to SQLite INTEGER`. Nothing caught it, so a 31-digit id returned HTTP 500 + a
+# server-side traceback on EVERY id-taking route instead of a clean refusal.
+_OVER_ROW_ID = 10 ** 30
+
+
+def _routes_with_row_id(app):
+    """Every (methods, path) in the REAL app whose path template carries an id parameter."""
+    from fastapi.routing import APIRoute
+
+    out = []
+    for r in app.routes:
+        if not isinstance(r, APIRoute):
+            continue
+        ids = [f.name for f in r.dependant.path_params if f.name.endswith("_id")]
+        if ids:
+            out.append((sorted(m for m in r.methods if m != "HEAD"), r.path, ids))
+    return out
+
+
+def test_out_of_range_row_id_never_500s_on_any_route(client):
+    """[BE-1] Reproduced BEFORE the fix on all 25 id-taking routes: `GET /api/snapshots/10**30`
+    answered `500 Internal Server Error` (sqlite3 OverflowError at bind time), and so did the
+    POST/DELETE siblings and `POST /api/compare`'s two BODY ids. Every one must now refuse cleanly.
+
+    Driven off the app's OWN route table, not a hand-written path list, so a route added later is
+    exercised automatically rather than quietly inheriting the crash."""
+    seen = 0
+    for methods, path, ids in _routes_with_row_id(client.app):
+        url = path
+        for name in ids:
+            url = url.replace("{%s}" % name, str(_OVER_ROW_ID))
+        url = url.replace("{name}", "devices").replace("{kind}", "design")
+        for m in methods:
+            r = client.request(m, url, json={} if m in ("POST", "PUT", "PATCH") else None)
+            assert r.status_code < 500, f"{m} {url} -> {r.status_code} {r.text[:200]}"
+            assert r.status_code == 422, f"{m} {url} -> {r.status_code}"
+            seen += 1
+    assert seen >= 25, f"only exercised {seen} id routes — the enumeration went stale"
+
+    # the two BODY ids take the same bound
+    assert client.post("/api/compare",
+                       json={"old_id": _OVER_ROW_ID, "new_id": 1}).status_code == 422
+    assert client.post("/api/compare",
+                       json={"old_id": 1, "new_id": _OVER_ROW_ID}).status_code == 422
+
+    # BOUNDARY: the largest representable rowid is still a normal 404, not a validation error —
+    # the bound must reject only what SQLite genuinely cannot store.
+    assert client.get(f"/api/snapshots/{2 ** 63 - 1}").status_code == 404
+    assert client.get(f"/api/snapshots/{-(2 ** 63)}").status_code == 404
+    assert client.get(f"/api/snapshots/{2 ** 63}").status_code == 422
+    assert client.get(f"/api/snapshots/{-(2 ** 63) - 1}").status_code == 422
+
+
+def test_every_row_id_param_is_range_bounded(client):
+    """[BE-1, guard COMPLETENESS] The bound is a property of the CLASS 'parameter that names a
+    SQLite row', not of the routes we happened to think of — this repo's recurring failure is a
+    guard applied to a named subset. Enumerate every int id parameter the app declares (path AND
+    body) and fail if one carries no ge/le, so the next sibling route cannot re-open the 500."""
+    import annotated_types
+    from fastapi.routing import APIRoute
+
+    def bounds(field):
+        md = list(getattr(field.field_info, "metadata", None) or [])
+        return ({type(m) for m in md} & {annotated_types.Ge, annotated_types.Le})
+
+    unbounded = []
+    for r in client.app.routes:
+        if not isinstance(r, APIRoute):
+            continue
+        for f in r.dependant.path_params:
+            if f.name.endswith("_id") and len(bounds(f)) != 2:
+                unbounded.append(f"path {r.path}:{f.name}")
+    # body ids live inside the Pydantic models, not on the dependant
+    from backend.app import CompareIn
+
+    for name, fi in CompareIn.model_fields.items():
+        if name.endswith("_id"):
+            kinds = {type(m) for m in (fi.metadata or [])}
+            if not ({annotated_types.Ge, annotated_types.Le} <= kinds):
+                unbounded.append(f"body CompareIn.{name}")
+    assert not unbounded, f"id parameters with no SQLite-INTEGER bound: {unbounded}"
+
+
+# ------------------------------------------------- cutover verdict over zero waves
+def test_cutover_verdict_is_not_go_when_no_waves_were_derived(client):
+    """[BE-2] Vacuous truth, the exact twin of execution._derive_outcome's `not decisions` branch:
+    the fleet roll-up seeded `fleet_gate = GATE_GO` and refined it in a loop over the waves, so an
+    EMPTY wave list left the seed untouched and the plan published `"verdict": "GO"` for a snapshot
+    from which nothing was derived. cutover_docx then printed "Cutover posture: GO" in GREEN on the
+    title page, directly above its own "No migration waves were derived from this snapshot" body
+    line. 'Not observed' must never render as 'healthy' (CLAUDE.md guardrail 3)."""
+    import io
+    import json as _json
+
+    cid = client.post("/api/campaigns", json={"name": "unassessed"}).json()["id"]
+    up = client.post(f"/api/campaigns/{cid}/snapshots",
+                     files={"file": ("m.json", _json.dumps({"devices": {}}).encode(),
+                                     "application/json")},
+                     data={"label": "no-waves"})
+    assert up.status_code == 201, up.text
+    sid = up.json()["id"]
+
+    s = client.get(f"/api/snapshots/{sid}/cutover").json()["summary"]
+    assert s["n_waves"] == 0
+    assert s["verdict"] != "GO"
+    from backend import cutover
+
+    assert s["verdict"] == cutover.GATE_NOT_ASSESSED
+    # the prose must agree with the badge, not footnote it
+    assert "not a clean bill of health" in s["statement"].lower()
+
+    # and the DOCX title page carries the same word (it reads summary['verdict'] directly)
+    r = client.get(f"/api/snapshots/{sid}/deliverable/cutover")
+    if r.status_code == 503:
+        pytest.skip("python-docx not installed on this runner")
+    import zipfile
+
+    with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+        xml = z.read("word/document.xml").decode("utf-8", "replace")
+    assert "Cutover posture: GO" not in xml
+    assert f"Cutover posture: {cutover.GATE_NOT_ASSESSED}" in xml
+
+    # NOT a blanket demotion: an assessed fleet's verdict is unchanged, and the token is
+    # fleet-level only — no WAVE may ever carry it (it is deliberately absent from _GATE_RANK).
+    real = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    plan = client.get(f"/api/snapshots/{real}/cutover").json()
+    assert plan["summary"]["verdict"] in ("GO", "CONDITIONAL GO", "NO-GO")
+    assert plan["waves"]
+    assert all(w["gate"] != cutover.GATE_NOT_ASSESSED for w in plan["waves"])
+
+
+def test_start_execution_loses_the_snapshot_mid_request(client):
+    """[BE-4] `POST /snapshots/{id}/executions` reads the snapshot, builds the plan (seconds, off
+    the lock), then INSERTs. A delete landing in that window makes the executions.snapshot_id
+    foreign key refuse the insert, and the raw sqlite3.IntegrityError escaped as HTTP 500 + a
+    traceback — in the war room, at the moment a run is being started. `_mutate_execution` already
+    maps the mirror-image race (save into a deleted run) to 404; this is its start-side sibling.
+
+    The window is driven for real, not simulated at the store API: get_snapshot returns a genuine
+    snapshot for an id whose row no longer exists, which is exactly what a concurrent DELETE leaves
+    behind."""
+    real = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    store = client.app.state.store
+    snap = store.get_snapshot(real)
+    vanished = real + 9999                       # an id with no row, as after a delete
+    orig = store.get_snapshot
+    store.get_snapshot = lambda sid: (snap if sid == vanished else orig(sid))
+    try:
+        r = client.post(f"/api/snapshots/{vanished}/executions", json={"label": "race"})
+    finally:
+        store.get_snapshot = orig
+    assert r.status_code == 404, f"{r.status_code} {r.text[:200]}"
+    assert "not found" in r.json()["detail"].lower()
+    # nothing partial was persisted for the vanished snapshot
+    assert store.count_executions(vanished) == 0
+    # and the ordinary start still works
+    assert client.post(f"/api/snapshots/{real}/executions", json={}).status_code == 201

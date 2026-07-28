@@ -121,6 +121,20 @@ export default function CableMap({ snapId }: { snapId: number }) {
   if (!raw || !raw.nodes.length || !model || !view)
     return <div className="faint" style={{ fontSize: 13 }}>No cable map — this snapshot has no CDP/LLDP topology links.</div>;
   const cm = model;   // everything below renders the FILTERED view; `raw` keeps the fleet totals
+  // audit FE-15: the sibling TopologyGraph banners the "chassis drawn, zero links resolved" case.
+  // This panel did not — it drew every node unconnected and captioned it "N nodes · 0 cables", with
+  // the legend strip reading "0 up · 0 down · 0 not observed". An all-zero op census reads as
+  // "nothing is down"; it is really "nothing was resolved". Zero cables is a COLLECTION outcome (no
+  // CDP/LLDP evidence captured, or a neighbour name that did not match a collected host — the exact
+  // shape of the hostname-canonicalisation defect that collapsed 25 graph edges to 0), never a
+  // statement about the cabling.
+  const noCables = raw.nodes.length > 0 && raw.cables.length === 0;
+  // audit FE-16: filterModel spreads the source model, so `summary` survives a filter UNCHANGED.
+  // The footer caption and the op census therefore kept quoting FLEET totals while the diagram above
+  // them drew a subset — two different "node counts" visible at once, and the caption is what reads
+  // as the picture's own legend. Engine numbers stay the engine's (never re-derived here); what
+  // changes is that a filtered view says which of them it is actually showing.
+  const filtered = fabricOnly || tierSel != null;
 
   const { pos, anch, W, H, V } = view;
   const nodeByHost: Record<string, CableMapNode> = {}; cm.nodes.forEach((n) => (nodeByHost[n.host] = n));
@@ -150,6 +164,17 @@ export default function CableMap({ snapId }: { snapId: number }) {
 
   return (
     <div>
+      {noCables && (
+        <div className="panel" role="status" style={{ padding: "8px 12px", marginBottom: 10, borderColor: "var(--crit)", fontSize: 12 }}>
+          <b style={{ color: "var(--crit)" }}>[NOT OBSERVED] — no cable resolved between any of the {raw.nodes.length} device(s).</b>{" "}
+          <span className="dim">
+            Every chassis below is drawn unconnected because no CDP/LLDP link resolved in this
+            snapshot, not because the estate is uncabled. Read it as “cabling not established”,
+            never as “no down links” — the 0 down beside the legend counts nothing. Cross-check the
+            Fleet topology panel and whether the collection captured CDP/LLDP neighbours at all.
+          </span>
+        </div>
+      )}
       <div className="spread" style={{ marginBottom: 10 }}>
         <div className="legend" style={{ margin: 0 }}>
           <span className="item"><span style={{ width: 16, borderTop: "3px solid var(--ok)", display: "inline-block" }} /> up</span>
@@ -159,7 +184,7 @@ export default function CableMap({ snapId }: { snapId: number }) {
         </div>
         <div className="row-flex" style={{ gap: 8 }}>
           <span className="faint" style={{ fontSize: 12 }}>
-            {cm.summary.op.up} up · {cm.summary.op.down} down · {cm.summary.op.unknown} not observed
+            {filtered ? "fleet: " : ""}{cm.summary.op.up} up · {cm.summary.op.down} down · {cm.summary.op.unknown} not observed
           </span>
           <button className="btn ghost" style={{ padding: "4px 9px" }} onClick={() => { setOrient((o) => (o === "h" ? "v" : "h")); setT({ x: 0, y: 0, k: 1 }); }}>⇅ {orient === "h" ? "Horizontal" : "Vertical"}</button>
           <button className="btn ghost"
@@ -307,7 +332,10 @@ export default function CableMap({ snapId }: { snapId: number }) {
         )}
       </div>
       <div className="faint" style={{ fontSize: 11, marginTop: 8 }}>
-        {cm.summary.n_nodes} nodes · {cm.summary.n_cables} cables · {cm.summary.n_tiers} tiers · physical CDP/LLDP cabling in role tiers · click a node or cable for detail · scroll to zoom, drag to pan.
+        {filtered
+          ? <>{cm.nodes.length} of {cm.summary.n_nodes} nodes · {cm.cables.length} of {cm.summary.n_cables} cables · {cm.tiers.length} of {cm.summary.n_tiers} tiers drawn (filtered)</>
+          : <>{cm.summary.n_nodes} nodes · {cm.summary.n_cables} cables · {cm.summary.n_tiers} tiers</>}
+        {" "}· physical CDP/LLDP cabling in role tiers · click a node or cable for detail · scroll to zoom, drag to pan.
       </div>
     </div>
   );

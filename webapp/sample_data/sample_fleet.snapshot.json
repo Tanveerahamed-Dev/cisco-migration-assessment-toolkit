@@ -1,7 +1,7 @@
 {
   "schema": "collect_parse_snapshot/1",
   "script_version": "V3.23.0",
-  "generated_at": "2026-07-28T18:11:28.112974",
+  "generated_at": "2026-07-28T20:39:02.793018",
   "devices": {
     "core1": {
       "hostname": "core1",
@@ -534,7 +534,6 @@
         "cdp_neighbor": "access1.lab",
         "current_switch_serial": "FCW1234A001",
         "current_switch_ip": "10.0.99.1",
-        "neighbor_switch_serial": "access1.lab",
         "neighbor_switch_ip": "10.0.99.3",
         "stp_fwd_vlans": "10,30",
         "neighbor_port": "Gi0/1",
@@ -592,7 +591,6 @@
         "cdp_neighbor": "core2.lab",
         "current_switch_serial": "FCW1234A001",
         "current_switch_ip": "10.0.99.1",
-        "neighbor_switch_serial": "core2.lab",
         "neighbor_switch_ip": "10.0.99.2",
         "stp_fwd_vlans": "10,30",
         "neighbor_port": "Po1",
@@ -648,7 +646,6 @@
         "cdp_neighbor": "access2.lab",
         "current_switch_serial": "FCW1234A001",
         "current_switch_ip": "10.0.99.1",
-        "neighbor_switch_serial": "access2.lab",
         "neighbor_switch_ip": "10.0.99.12",
         "neighbor_port": "Gi0/1",
         "neighbor_platform": "cisco WS-C2960X-48"
@@ -660,7 +657,6 @@
         "cdp_neighbor": "access4.lab",
         "current_switch_serial": "FCW1234A001",
         "current_switch_ip": "10.0.99.1",
-        "neighbor_switch_serial": "access4.lab",
         "neighbor_switch_ip": "10.0.99.14",
         "neighbor_port": "Gi0/1",
         "neighbor_platform": "cisco WS-C2960X-48"
@@ -672,7 +668,6 @@
         "cdp_neighbor": "access6.lab",
         "current_switch_serial": "FCW1234A001",
         "current_switch_ip": "10.0.99.1",
-        "neighbor_switch_serial": "access6.lab",
         "neighbor_switch_ip": "10.0.99.16",
         "neighbor_port": "Gi0/1",
         "neighbor_platform": "cisco WS-C2960X-48"
@@ -684,7 +679,6 @@
         "cdp_neighbor": "access8.lab",
         "current_switch_serial": "FCW1234A001",
         "current_switch_ip": "10.0.99.1",
-        "neighbor_switch_serial": "access8.lab",
         "neighbor_switch_ip": "10.0.99.18",
         "neighbor_port": "Gi0/1",
         "neighbor_platform": "cisco WS-C2960X-48"
@@ -696,7 +690,6 @@
         "cdp_neighbor": "access10.lab",
         "current_switch_serial": "FCW1234A001",
         "current_switch_ip": "10.0.99.1",
-        "neighbor_switch_serial": "access10.lab",
         "neighbor_switch_ip": "10.0.99.20",
         "neighbor_port": "Gi0/1",
         "neighbor_platform": "cisco WS-C2960X-48"
@@ -708,7 +701,6 @@
         "cdp_neighbor": "access12.lab",
         "current_switch_serial": "FCW1234A001",
         "current_switch_ip": "10.0.99.1",
-        "neighbor_switch_serial": "access12.lab",
         "neighbor_switch_ip": "10.0.99.22",
         "neighbor_port": "Gi0/1",
         "neighbor_platform": "cisco WS-C2960X-48"
@@ -720,7 +712,6 @@
         "cdp_neighbor": "access14.lab",
         "current_switch_serial": "FCW1234A001",
         "current_switch_ip": "10.0.99.1",
-        "neighbor_switch_serial": "access14.lab",
         "neighbor_switch_ip": "10.0.99.24",
         "neighbor_port": "Gi0/1",
         "neighbor_platform": "cisco WS-C2960X-48"
@@ -732,7 +723,6 @@
         "cdp_neighbor": "dist1.lab",
         "current_switch_serial": "FCW1234A001",
         "current_switch_ip": "10.0.99.1",
-        "neighbor_switch_serial": "dist1.lab",
         "neighbor_switch_ip": "10.0.99.50",
         "neighbor_port": "Gi1/0/3",
         "neighbor_platform": "cisco C9300-48P"
@@ -791,7 +781,6 @@
         "cdp_neighbor": "core1.lab",
         "current_switch_serial": "FDO12345ABC",
         "current_switch_ip": "10.0.99.2",
-        "neighbor_switch_serial": "core1.lab",
         "neighbor_switch_ip": "10.0.99.1",
         "stp_fwd_vlans": "10,20",
         "neighbor_port": "Po1",
@@ -831,7 +820,6 @@
         "cdp_neighbor": "wan-edge-rtr1.lab",
         "current_switch_serial": "FDO12345ABC",
         "current_switch_ip": "10.0.99.2",
-        "neighbor_switch_serial": "wan-edge-rtr1.lab",
         "neighbor_switch_ip": "10.0.250.1",
         "neighbor_port": "Gi0/0/1",
         "neighbor_platform": "cisco ASR1001-X"
@@ -843,7 +831,6 @@
         "cdp_neighbor": "dist2.lab",
         "current_switch_serial": "FDO12345ABC",
         "current_switch_ip": "10.0.99.2",
-        "neighbor_switch_serial": "dist2.lab",
         "neighbor_switch_ip": "10.0.99.51",
         "neighbor_port": "Gi1/0/3",
         "neighbor_platform": "cisco C9300-48P"
@@ -856,7 +843,6 @@
         "cdp_neighbor": "AP-floor3-01",
         "current_switch_serial": "FDO12345ABC",
         "current_switch_ip": "10.0.99.2",
-        "neighbor_switch_serial": "AP-floor3-01",
         "neighbor_switch_ip": "10.0.50.30",
         "neighbor_port": "Gi0",
         "neighbor_platform": "cisco AIR-AP2802I-B-K9"
@@ -868,7 +854,6 @@
         "cdp_neighbor": "access3.lab",
         "current_switch_serial": "FDO12345ABC",
         "current_switch_ip": "10.0.99.2",
-        "neighbor_switch_serial": "access3.lab",
         "neighbor_switch_ip": "10.0.99.13",
         "neighbor_port": "Gi0/1",
         "neighbor_platform": "cisco WS-C2960X-48"
@@ -880,7 +865,6 @@
         "cdp_neighbor": "access5.lab",
         "current_switch_serial": "FDO12345ABC",
         "current_switch_ip": "10.0.99.2",
-        "neighbor_switch_serial": "access5.lab",
         "neighbor_switch_ip": "10.0.99.15",
         "neighbor_port": "Gi0/1",
         "neighbor_platform": "cisco WS-C2960X-48"
@@ -892,7 +876,6 @@
         "cdp_neighbor": "access7.lab",
         "current_switch_serial": "FDO12345ABC",
         "current_switch_ip": "10.0.99.2",
-        "neighbor_switch_serial": "access7.lab",
         "neighbor_switch_ip": "10.0.99.17",
         "neighbor_port": "Gi0/1",
         "neighbor_platform": "cisco WS-C2960X-48"
@@ -904,7 +887,6 @@
         "cdp_neighbor": "access9.lab",
         "current_switch_serial": "FDO12345ABC",
         "current_switch_ip": "10.0.99.2",
-        "neighbor_switch_serial": "access9.lab",
         "neighbor_switch_ip": "10.0.99.19",
         "neighbor_port": "Gi0/1",
         "neighbor_platform": "cisco WS-C2960X-48"
@@ -916,7 +898,6 @@
         "cdp_neighbor": "access11.lab",
         "current_switch_serial": "FDO12345ABC",
         "current_switch_ip": "10.0.99.2",
-        "neighbor_switch_serial": "access11.lab",
         "neighbor_switch_ip": "10.0.99.21",
         "neighbor_port": "Gi0/1",
         "neighbor_platform": "cisco WS-C2960X-48"
@@ -928,7 +909,6 @@
         "cdp_neighbor": "access13.lab",
         "current_switch_serial": "FDO12345ABC",
         "current_switch_ip": "10.0.99.2",
-        "neighbor_switch_serial": "access13.lab",
         "neighbor_switch_ip": "10.0.99.23",
         "neighbor_port": "Gi0/1",
         "neighbor_platform": "cisco WS-C2960X-48"
@@ -940,7 +920,6 @@
         "cdp_neighbor": "access15.lab",
         "current_switch_serial": "FDO12345ABC",
         "current_switch_ip": "10.0.99.2",
-        "neighbor_switch_serial": "access15.lab",
         "neighbor_switch_ip": "10.0.99.25",
         "neighbor_port": "Gi0/1",
         "neighbor_platform": "cisco WS-C2960X-48"
@@ -952,7 +931,6 @@
         "cdp_neighbor": "access17.lab",
         "current_switch_serial": "FDO12345ABC",
         "current_switch_ip": "10.0.99.2",
-        "neighbor_switch_serial": "access17.lab",
         "neighbor_switch_ip": "10.0.99.27",
         "neighbor_port": "Gi0/1",
         "neighbor_platform": "cisco WS-C2960X-48"
@@ -978,7 +956,6 @@
         "cdp_neighbor": "core1.lab",
         "current_switch_serial": "FOC2233B002",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "core1.lab",
         "neighbor_switch_ip": "10.0.99.1",
         "stp_fwd_vlans": "10,30",
         "neighbor_port": "Gi1/0/24",
@@ -1004,7 +981,6 @@
         "cdp_neighbor": "AP-floor1",
         "current_switch_serial": "FOC2233B002",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "AP-floor1",
         "neighbor_switch_ip": "10.0.10.50",
         "neighbor_port": "Gi0",
         "neighbor_platform": "cisco AIR-AP2802I"
@@ -1066,7 +1042,6 @@
         "cdp_neighbor": "core1.lab",
         "current_switch_serial": "FOC2302A002",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "core1.lab",
         "neighbor_switch_ip": "10.0.99.1",
         "stp_fwd_vlans": "10,30",
         "neighbor_port": "Gi1/0/26",
@@ -1092,7 +1067,6 @@
         "cdp_neighbor": "AP-floor1",
         "current_switch_serial": "FOC2302A002",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "AP-floor1",
         "neighbor_switch_ip": "10.0.10.50",
         "neighbor_port": "Gi0",
         "neighbor_platform": "cisco AIR-AP2802I"
@@ -1154,7 +1128,6 @@
         "cdp_neighbor": "core2.lab",
         "current_switch_serial": "FOC2303A003",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "core2.lab",
         "neighbor_switch_ip": "10.0.99.2",
         "stp_fwd_vlans": "10,30",
         "neighbor_port": "Eth1/3",
@@ -1180,7 +1153,6 @@
         "cdp_neighbor": "AP-floor1",
         "current_switch_serial": "FOC2303A003",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "AP-floor1",
         "neighbor_switch_ip": "10.0.10.50",
         "neighbor_port": "Gi0",
         "neighbor_platform": "cisco AIR-AP2802I"
@@ -1242,7 +1214,6 @@
         "cdp_neighbor": "core1.lab",
         "current_switch_serial": "FOC2304A004",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "core1.lab",
         "neighbor_switch_ip": "10.0.99.1",
         "stp_fwd_vlans": "10,30",
         "neighbor_port": "Gi1/0/28",
@@ -1268,7 +1239,6 @@
         "cdp_neighbor": "AP-floor1",
         "current_switch_serial": "FOC2304A004",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "AP-floor1",
         "neighbor_switch_ip": "10.0.10.50",
         "neighbor_port": "Gi0",
         "neighbor_platform": "cisco AIR-AP2802I"
@@ -1330,7 +1300,6 @@
         "cdp_neighbor": "core2.lab",
         "current_switch_serial": "FOC2305A005",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "core2.lab",
         "neighbor_switch_ip": "10.0.99.2",
         "stp_fwd_vlans": "10,30",
         "neighbor_port": "Eth1/5",
@@ -1356,7 +1325,6 @@
         "cdp_neighbor": "AP-floor1",
         "current_switch_serial": "FOC2305A005",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "AP-floor1",
         "neighbor_switch_ip": "10.0.10.50",
         "neighbor_port": "Gi0",
         "neighbor_platform": "cisco AIR-AP2802I"
@@ -1418,7 +1386,6 @@
         "cdp_neighbor": "core1.lab",
         "current_switch_serial": "FOC2306A006",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "core1.lab",
         "neighbor_switch_ip": "10.0.99.1",
         "stp_fwd_vlans": "10,30",
         "neighbor_port": "Gi1/0/30",
@@ -1444,7 +1411,6 @@
         "cdp_neighbor": "AP-floor1",
         "current_switch_serial": "FOC2306A006",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "AP-floor1",
         "neighbor_switch_ip": "10.0.10.50",
         "neighbor_port": "Gi0",
         "neighbor_platform": "cisco AIR-AP2802I"
@@ -1506,7 +1472,6 @@
         "cdp_neighbor": "core2.lab",
         "current_switch_serial": "FOC2307A007",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "core2.lab",
         "neighbor_switch_ip": "10.0.99.2",
         "stp_fwd_vlans": "10,30",
         "neighbor_port": "Eth1/7",
@@ -1532,7 +1497,6 @@
         "cdp_neighbor": "AP-floor1",
         "current_switch_serial": "FOC2307A007",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "AP-floor1",
         "neighbor_switch_ip": "10.0.10.50",
         "neighbor_port": "Gi0",
         "neighbor_platform": "cisco AIR-AP2802I"
@@ -1592,7 +1556,6 @@
         "cdp_neighbor": "core1.lab",
         "current_switch_serial": "FOC2308A008",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "core1.lab",
         "neighbor_switch_ip": "10.0.99.1",
         "stp_fwd_vlans": "10,30",
         "neighbor_port": "Gi1/0/32",
@@ -1618,7 +1581,6 @@
         "cdp_neighbor": "AP-floor1",
         "current_switch_serial": "FOC2308A008",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "AP-floor1",
         "neighbor_switch_ip": "10.0.10.50",
         "neighbor_port": "Gi0",
         "neighbor_platform": "cisco AIR-AP2802I"
@@ -1678,7 +1640,6 @@
         "cdp_neighbor": "core2.lab",
         "current_switch_serial": "FOC2309A009",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "core2.lab",
         "neighbor_switch_ip": "10.0.99.2",
         "stp_fwd_vlans": "10,30",
         "neighbor_port": "Eth1/9",
@@ -1704,7 +1665,6 @@
         "cdp_neighbor": "AP-floor1",
         "current_switch_serial": "FOC2309A009",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "AP-floor1",
         "neighbor_switch_ip": "10.0.10.50",
         "neighbor_port": "Gi0",
         "neighbor_platform": "cisco AIR-AP2802I"
@@ -1764,7 +1724,6 @@
         "cdp_neighbor": "core1.lab",
         "current_switch_serial": "FOC2310A010",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "core1.lab",
         "neighbor_switch_ip": "10.0.99.1",
         "stp_fwd_vlans": "10,30",
         "neighbor_port": "Gi1/0/34",
@@ -1790,7 +1749,6 @@
         "cdp_neighbor": "AP-floor1",
         "current_switch_serial": "FOC2310A010",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "AP-floor1",
         "neighbor_switch_ip": "10.0.10.50",
         "neighbor_port": "Gi0",
         "neighbor_platform": "cisco AIR-AP2802I"
@@ -1850,7 +1808,6 @@
         "cdp_neighbor": "core2.lab",
         "current_switch_serial": "FOC2311A011",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "core2.lab",
         "neighbor_switch_ip": "10.0.99.2",
         "stp_fwd_vlans": "10,30",
         "neighbor_port": "Eth1/11",
@@ -1876,7 +1833,6 @@
         "cdp_neighbor": "AP-floor1",
         "current_switch_serial": "FOC2311A011",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "AP-floor1",
         "neighbor_switch_ip": "10.0.10.50",
         "neighbor_port": "Gi0",
         "neighbor_platform": "cisco AIR-AP2802I"
@@ -1936,7 +1892,6 @@
         "cdp_neighbor": "core1.lab",
         "current_switch_serial": "FOC2312A012",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "core1.lab",
         "neighbor_switch_ip": "10.0.99.1",
         "stp_fwd_vlans": "10,30",
         "neighbor_port": "Gi1/0/36",
@@ -1962,7 +1917,6 @@
         "cdp_neighbor": "AP-floor1",
         "current_switch_serial": "FOC2312A012",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "AP-floor1",
         "neighbor_switch_ip": "10.0.10.50",
         "neighbor_port": "Gi0",
         "neighbor_platform": "cisco AIR-AP2802I"
@@ -2022,7 +1976,6 @@
         "cdp_neighbor": "core2.lab",
         "current_switch_serial": "FOC2313A013",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "core2.lab",
         "neighbor_switch_ip": "10.0.99.2",
         "stp_fwd_vlans": "10,30",
         "neighbor_port": "Eth1/13",
@@ -2048,7 +2001,6 @@
         "cdp_neighbor": "AP-floor1",
         "current_switch_serial": "FOC2313A013",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "AP-floor1",
         "neighbor_switch_ip": "10.0.10.50",
         "neighbor_port": "Gi0",
         "neighbor_platform": "cisco AIR-AP2802I"
@@ -2132,7 +2084,6 @@
         "cdp_neighbor": "core1.lab",
         "current_switch_serial": "FOC2314A014",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "core1.lab",
         "neighbor_switch_ip": "10.0.99.1",
         "stp_fwd_vlans": "10,30",
         "neighbor_port": "Gi1/0/38",
@@ -2158,7 +2109,6 @@
         "cdp_neighbor": "AP-floor1",
         "current_switch_serial": "FOC2314A014",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "AP-floor1",
         "neighbor_switch_ip": "10.0.10.50",
         "neighbor_port": "Gi0",
         "neighbor_platform": "cisco AIR-AP2802I"
@@ -2242,7 +2192,6 @@
         "cdp_neighbor": "core2.lab",
         "current_switch_serial": "FOC2315A015",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "core2.lab",
         "neighbor_switch_ip": "10.0.99.2",
         "stp_fwd_vlans": "10,30",
         "neighbor_port": "Eth1/15",
@@ -2268,7 +2217,6 @@
         "cdp_neighbor": "AP-floor1",
         "current_switch_serial": "FOC2315A015",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "AP-floor1",
         "neighbor_switch_ip": "10.0.10.50",
         "neighbor_port": "Gi0",
         "neighbor_platform": "cisco AIR-AP2802I"
@@ -2352,7 +2300,6 @@
         "cdp_neighbor": "core1.lab",
         "current_switch_serial": "FOC2316A016",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "core1.lab",
         "neighbor_switch_ip": "10.0.99.1",
         "stp_fwd_vlans": "10,30",
         "neighbor_port": "Gi1/0/40",
@@ -2378,7 +2325,6 @@
         "cdp_neighbor": "AP-floor1",
         "current_switch_serial": "FOC2316A016",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "AP-floor1",
         "neighbor_switch_ip": "10.0.10.50",
         "neighbor_port": "Gi0",
         "neighbor_platform": "cisco AIR-AP2802I"
@@ -2462,7 +2408,6 @@
         "cdp_neighbor": "core2.lab",
         "current_switch_serial": "FOC2317A017",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "core2.lab",
         "neighbor_switch_ip": "10.0.99.2",
         "stp_fwd_vlans": "10,30",
         "neighbor_port": "Eth1/17",
@@ -2488,7 +2433,6 @@
         "cdp_neighbor": "AP-floor1",
         "current_switch_serial": "FOC2317A017",
         "current_switch_ip": "10.0.99.3",
-        "neighbor_switch_serial": "AP-floor1",
         "neighbor_switch_ip": "10.0.10.50",
         "neighbor_port": "Gi0",
         "neighbor_platform": "cisco AIR-AP2802I"
@@ -2597,7 +2541,6 @@
         "cdp_neighbor": "core1.lab",
         "current_switch_serial": "FCW2442D002",
         "current_switch_ip": "10.0.40.2",
-        "neighbor_switch_serial": "core1.lab",
         "neighbor_switch_ip": "10.0.99.1",
         "neighbor_port": "Gi1/0/40",
         "neighbor_platform": "cisco WS-C3850-24T"
@@ -2620,7 +2563,6 @@
         "cdp_neighbor": "podacc1.lab",
         "current_switch_serial": "FCW2442D002",
         "current_switch_ip": "10.0.40.2",
-        "neighbor_switch_serial": "podacc1.lab",
         "neighbor_switch_ip": "10.0.99.52",
         "neighbor_port": "Gi0/1",
         "neighbor_platform": "cisco C9300-24T"
@@ -2643,7 +2585,6 @@
         "cdp_neighbor": "podacc2.lab",
         "current_switch_serial": "FCW2442D002",
         "current_switch_ip": "10.0.40.2",
-        "neighbor_switch_serial": "podacc2.lab",
         "neighbor_switch_ip": "10.0.99.53",
         "neighbor_port": "Gi0/1",
         "neighbor_platform": "cisco C9300-24T"
@@ -2666,7 +2607,6 @@
         "cdp_neighbor": "dist2.lab",
         "current_switch_serial": "FCW2442D002",
         "current_switch_ip": "10.0.40.2",
-        "neighbor_switch_serial": "dist2.lab",
         "neighbor_switch_ip": "10.0.99.51",
         "neighbor_port": "Po1",
         "neighbor_platform": "cisco C9300-48P",
@@ -2736,7 +2676,6 @@
         "cdp_neighbor": "core2.lab",
         "current_switch_serial": "FCW2443D003",
         "current_switch_ip": "10.0.40.3",
-        "neighbor_switch_serial": "core2.lab",
         "neighbor_switch_ip": "10.0.99.2",
         "neighbor_port": "Eth1/20",
         "neighbor_platform": "cisco N9K-C93180YC-EX"
@@ -2759,7 +2698,6 @@
         "cdp_neighbor": "podacc1.lab",
         "current_switch_serial": "FCW2443D003",
         "current_switch_ip": "10.0.40.3",
-        "neighbor_switch_serial": "podacc1.lab",
         "neighbor_switch_ip": "10.0.99.52",
         "neighbor_port": "Gi0/2",
         "neighbor_platform": "cisco C9300-24T"
@@ -2782,7 +2720,6 @@
         "cdp_neighbor": "podacc2.lab",
         "current_switch_serial": "FCW2443D003",
         "current_switch_ip": "10.0.40.3",
-        "neighbor_switch_serial": "podacc2.lab",
         "neighbor_switch_ip": "10.0.99.53",
         "neighbor_port": "Gi0/2",
         "neighbor_platform": "cisco C9300-24T"
@@ -2805,7 +2742,6 @@
         "cdp_neighbor": "dist1.lab",
         "current_switch_serial": "FCW2443D003",
         "current_switch_ip": "10.0.40.3",
-        "neighbor_switch_serial": "dist1.lab",
         "neighbor_switch_ip": "10.0.99.50",
         "neighbor_port": "Po1",
         "neighbor_platform": "cisco C9300-48P",
@@ -2848,7 +2784,6 @@
         "trunk_status": "trunking",
         "cdp_neighbor": "dist1.lab",
         "current_switch_serial": "FCW245501",
-        "neighbor_switch_serial": "dist1.lab",
         "neighbor_switch_ip": "10.0.99.50",
         "neighbor_port": "Gi1/0/10",
         "neighbor_platform": "cisco C9300-48P"
@@ -2870,7 +2805,6 @@
         "trunk_status": "trunking",
         "cdp_neighbor": "dist2.lab",
         "current_switch_serial": "FCW245501",
-        "neighbor_switch_serial": "dist2.lab",
         "neighbor_switch_ip": "10.0.99.51",
         "neighbor_port": "Gi1/0/10",
         "neighbor_platform": "cisco C9300-48P"
@@ -2925,7 +2859,6 @@
         "trunk_status": "trunking",
         "cdp_neighbor": "dist1.lab",
         "current_switch_serial": "FCW245502",
-        "neighbor_switch_serial": "dist1.lab",
         "neighbor_switch_ip": "10.0.99.50",
         "neighbor_port": "Gi1/0/11",
         "neighbor_platform": "cisco C9300-48P"
@@ -2947,7 +2880,6 @@
         "trunk_status": "trunking",
         "cdp_neighbor": "dist2.lab",
         "current_switch_serial": "FCW245502",
-        "neighbor_switch_serial": "dist2.lab",
         "neighbor_switch_ip": "10.0.99.51",
         "neighbor_port": "Gi1/0/11",
         "neighbor_platform": "cisco C9300-48P"
@@ -2985,7 +2917,7 @@
       }
     }
   },
-  "collected_at": "2026-07-28T18:11:25.460482",
+  "collected_at": "2026-07-28T20:38:59.385936",
   "physical_health": [
     {
       "switch": "access1",
@@ -27212,7 +27144,7 @@
   },
   "attestation": {
     "schema": "attestation/1",
-    "generated_at": "2026-07-28T15:11:27.887807+00:00",
+    "generated_at": "2026-07-28T17:39:02.485427+00:00",
     "claims": [
       {
         "id": "read_only_command_surface",

@@ -60,6 +60,32 @@ describe("CutoverPlanner (render)", () => {
     expect(screen.getByText("est. total window")).toBeInTheDocument();
   });
 
+  // FE-14: ExecutionRuns destructured useAsync for `data` + `reload` only, so a failed
+  // GET /api/snapshots/{id}/executions (403 from the cross-site guard, 404 "Snapshot not found",
+  // a dropped connection) left `runs === null` and the chip list simply did not render. The
+  // engineer sees a bare "Start execution run" button and concludes no run exists for this
+  // snapshot — then opens a SECOND war room over a cutover another operator already has live.
+  it("FE-14: a failed run list says so instead of looking like 'no runs exist'", async () => {
+    vi.spyOn(api, "cutover").mockResolvedValue(cutover as never);
+    vi.spyOn(api, "meta").mockResolvedValue({ deliverables: [] } as never);
+    vi.spyOn(api, "listExecutions").mockRejectedValue(new Error("403 cross-site refused"));
+    renderPlanner();
+    await screen.findByText("Cutover plan · run-of-show");
+
+    expect(await screen.findByText(/403 cross-site refused/)).toBeInTheDocument();
+    expect(screen.getByText(/not evidence that no run is open/i)).toBeInTheDocument();
+  });
+
+  it("FE-14: a successful empty run list stays quiet — the fix must not cry wolf", async () => {
+    vi.spyOn(api, "cutover").mockResolvedValue(cutover as never);
+    vi.spyOn(api, "meta").mockResolvedValue({ deliverables: [] } as never);
+    vi.spyOn(api, "listExecutions").mockResolvedValue([] as never);
+    renderPlanner();
+    await screen.findByText("Cutover plan · run-of-show");
+
+    expect(screen.queryByText(/not evidence that no run is open/i)).toBeNull();
+  });
+
   it("flips aria-expanded on the wave's run-of-show toggle as it opens/closes", async () => {
     vi.spyOn(api, "cutover").mockResolvedValue(cutover as never);
     vi.spyOn(api, "meta").mockResolvedValue({ deliverables: [] } as never);

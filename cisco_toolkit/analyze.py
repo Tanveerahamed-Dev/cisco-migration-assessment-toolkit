@@ -2163,19 +2163,44 @@ def compute_migration_readiness(all_interfaces, move_groups, health_scores,
         checks.append(("Device health floor", st, note))
 
         # ---- runbook audit checks (additive; never flip the verdict) ----
-        # No-signal fall-back: when the evidence set is wholly absent we cannot
-        # audit it, so we PASS rather than cry wolf (matches the engine's
-        # "fall-back-when-no-data never false-negative" convention).
+        # No-signal fall-back: when the evidence set is wholly absent we cannot audit it, so these
+        # checks do not go to 'warn' — that is the engine's "fall-back-when-no-data never
+        # false-negative" convention and it stands.
+        #
+        # But the fall-back used to emit "pass" WITH AN AFFIRMATIVE NOTE: `gset - topo_hosts` over an
+        # EMPTY topo_hosts is empty, so "nothing is missing" became "topology/dependency map covers
+        # all group switches". With no topology and no counters collected at all, a group was graded
+        # READY / n_warn 0 while asserting coverage of both — the "not observed silently becomes
+        # healthy" class CLAUDE.md guardrail 3 forbids, on the verdict a human schedules a cutover
+        # from. The Device health floor check ~12 lines above already had the right shape for the
+        # same situation ("not assessable"); these two were the siblings it was not applied to.
+        #
+        # 'info' keeps the no-cry-wolf contract intact (the verdict inspects only fail/warn, see
+        # below) while refusing to claim coverage that was never measured. Whether a wholly
+        # unassessed axis should ALSO downgrade READY is a separate design decision, deliberately
+        # not taken here.
         # 11 dependency mapping complete: the group's switches are in the topology graph
-        missing_topo = sorted(gset - topo_hosts) if topo_hosts else []
-        checks.append(("Dependency mapping complete", "pass" if not missing_topo else "warn",
-                       "topology/dependency map covers all group switches" if not missing_topo
-                       else f"no topology data for {', '.join(missing_topo)}"))
+        if not topo_hosts:
+            checks.append(("Dependency mapping complete", "info",
+                           "NOT ASSESSABLE — no topology/dependency evidence was collected for any "
+                           "host, so group coverage could not be checked. This is an ABSENCE of "
+                           "evidence, not coverage."))
+        else:
+            missing_topo = sorted(gset - topo_hosts)
+            checks.append(("Dependency mapping complete", "pass" if not missing_topo else "warn",
+                           "topology/dependency map covers all group switches" if not missing_topo
+                           else f"no topology data for {', '.join(missing_topo)}"))
         # 12 baseline capture: interface/physical counters collected for the group's switches
-        missing_base = sorted(gset - baseline_hosts) if baseline_hosts else []
-        checks.append(("Baseline capture", "pass" if not missing_base else "warn",
-                       "interface/physical counters captured for all group switches" if not missing_base
-                       else f"no baseline counters for {', '.join(missing_base)}"))
+        if not baseline_hosts:
+            checks.append(("Baseline capture", "info",
+                           "NOT ASSESSABLE — no interface/physical counters were collected for any "
+                           "host, so a pre-change baseline could not be confirmed. This is an "
+                           "ABSENCE of evidence, not a captured baseline."))
+        else:
+            missing_base = sorted(gset - baseline_hosts)
+            checks.append(("Baseline capture", "pass" if not missing_base else "warn",
+                           "interface/physical counters captured for all group switches" if not missing_base
+                           else f"no baseline counters for {', '.join(missing_base)}"))
         # 13 rollback plan documented: no offline signal -> 'info' (never affects the verdict)
         checks.append(("Rollback plan documented", "info",
                        "manual: confirm documented rollback + back-out window"))

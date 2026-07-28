@@ -208,6 +208,45 @@ describe("Snapshot cockpit · coverage honesty", () => {
     expect(screen.queryByText(/No deliverables are available from this server build/)).toBeNull();
   });
 
+  // FE-12: summarize() seeds readiness as {READY:0, CAUTION:0, "NOT READY":0} and only ever
+  // INCREMENTS it from snap["migration_readiness"] (webapp/backend/summary.py). A snapshot that
+  // carries no migration_readiness section therefore yields all-zeros — indistinguishable, in the
+  // payload, from a fleet whose groups were all assessed and none came back NOT READY. The tile
+  // painted that as the green `ok` tone with "0✓ 0! 0✕", i.e. a positive readiness verdict derived
+  // from nothing being classified. The CutoverPlanner on the SAME page says "No migration waves
+  // were derived from this snapshot" for the same input.
+  it("FE-12: an unclassified move-group set reads as NOT ASSESSED, not as a green all-ready", async () => {
+    vi.spyOn(api, "getSnapshot").mockResolvedValue({
+      ...richMeta,
+      summary: { ...richSummary, readiness: { READY: 0, CAUTION: 0, "NOT READY": 0 } },
+    } as any);
+    vi.spyOn(api, "meta").mockRejectedValue(new Error("x"));
+    vi.spyOn(api, "section").mockRejectedValue(new Error("x"));
+    renderSnap();
+    await screen.findByRole("heading", { name: "Demo Fleet" });
+
+    const card = screen.getByText("Move-group readiness").closest(".kpi")!;
+    // the fleet IS health-assessed (avg 72), so the page-wide `unknownFleet` neutraliser is OFF —
+    // this tile has to make the distinction on its own evidence
+    expect(card.className).not.toMatch(/\b(ok|crit|watch)\b/);
+    expect(card.textContent).toMatch(/not assessed|NOT OBSERVED/i);
+    // and it must not display a counted-looking zero triple
+    expect(card.textContent).not.toMatch(/0✓/);
+  });
+
+  it("FE-12: a genuinely classified move-group set still reads as measured (the fix must not cry wolf)", async () => {
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(richMeta as any);   // 30 / 8 / 2
+    vi.spyOn(api, "meta").mockRejectedValue(new Error("x"));
+    vi.spyOn(api, "section").mockRejectedValue(new Error("x"));
+    renderSnap();
+    await screen.findByRole("heading", { name: "Demo Fleet" });
+
+    const card = screen.getByText("Move-group readiness").closest(".kpi")!;
+    expect(card.className).toMatch(/\bcrit\b/);        // 2 NOT READY dominates
+    expect(card.textContent).toContain("30✓");
+    expect(card.textContent).not.toMatch(/not assessed/i);
+  });
+
   // FE-4: the section table caps at 200 rows / 8 columns while the tab badge keeps announcing the
   // engine's FULL count — on the 303-device fleet, 103 devices were simply not there for a reader
   // who scrolled to the last row.

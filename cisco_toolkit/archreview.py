@@ -364,11 +364,23 @@ def compute_architecture_review(snap: dict) -> dict:
             "Cisco campus HA design — N+1 power on aggregation nodes")
 
     fi = [r for r in _as_list(snap.get("failure_impact")) if isinstance(r, dict)]
-    keystones = sorted((r for r in fi if _as_int(r.get("stranded")) > 0),
+    # conforms-by-silence guard (matches HIER-2 / RES-3 / L2-2 / L2-3): the old gate was
+    # `snap.get("failure_impact") is None`, which catches ONLY a literally absent key. A simulation
+    # section that is present-but-EMPTY (or a truthy non-list from an uploaded snapshot, which
+    # `_as_list` normalises to []), or rows that carry no `stranded` figure at all, produced an empty
+    # keystone set and fell straight through to CONFORMS — asserting "the failure simulation strands
+    # no endpoints behind any single device / redundancy absorbs any one device loss" over evidence
+    # that was never collected. `stranded: 0` is a real observed zero; a MISSING one is not.
+    fi_measured = [r for r in fi if r.get("stranded") is not None]
+    keystones = sorted((r for r in fi_measured if _as_int(r.get("stranded")) > 0),
                        key=lambda r: -_as_int(r.get("stranded")))
-    if snap.get("failure_impact") is None:
+    if not fi_measured:
         add("RES-4", D2, "No keystone single point of failure", "not-assessable",
-            "The failure-impact simulation is absent from this snapshot.", "—",
+            ("The failure-impact simulation is absent from this snapshot."
+             if not fi else
+             f"The failure-impact section carries {len(fi)} row(s) but none reports a stranded-"
+             "endpoint figure, so single-device blast radius cannot be graded from this evidence."),
+            "—",
             "Re-run the assessment with the current engine.",
             "Availability analysis — single-device blast radius")
     elif keystones:
@@ -380,9 +392,18 @@ def compute_architecture_review(snap: dict) -> dict:
             "the most conservative cutover plan (their waves carry the widest blast radius).",
             "Availability analysis — single-device blast radius",
             evidence=[r.get("host") for r in keystones[:8]])
+    elif len(fi_measured) < len(fi):
+        # partial coverage is a blind spot, never health — the same rule RES-3 applies to PSU inventory
+        add("RES-4", D2, "No keystone single point of failure", "not-assessable",
+            f"Only {len(fi_measured)} of {len(fi)} simulated device(s) report a stranded-endpoint "
+            "figure (none of those strands any endpoint); the rest carry no figure, so fleet blast "
+            "radius cannot be graded from this evidence.", "—",
+            "Re-run the assessment with the current engine so every device is simulated.",
+            "Availability analysis — single-device blast radius")
     else:
         add("RES-4", D2, "No keystone single point of failure", "conforms",
-            "The failure simulation strands no endpoints behind any single device.",
+            f"The failure simulation strands no endpoints behind any single device "
+            f"(all {len(fi_measured)} simulated device(s) report a stranded-endpoint figure).",
             "Redundancy absorbs any one device loss.",
             "Re-verify after each migration wave (the topology changes underneath the simulation).",
             "Availability analysis — single-device blast radius")
@@ -770,11 +791,19 @@ def compute_architecture_review(snap: dict) -> dict:
             "Cisco campus rule of thumb — ≤20:1 access→distribution, ≤4:1 distribution→core")
 
     cap_rows = [r for r in _as_list(snap.get("capacity")) if isinstance(r, dict)]
-    tight = sorted((r for r in cap_rows if isinstance(r.get("port_util"), (int, float))
-                    and r["port_util"] > 90), key=lambda r: -r["port_util"])
-    if not cap_rows:
+    # conforms-by-silence guard: `port_util` is absent-prone (the runbook already excludes rows whose
+    # active-port count was never observed, "port_util can read 0.0 from absent evidence"). The old
+    # test filtered non-numeric rows into oblivion and then graded CONFORMS off whatever survived —
+    # so a capacity section whose utilisation column was never captured asserted "All N device(s)
+    # hold port headroom below the 90% line" over N unmeasured closets, and RAISED the overall grade.
+    cap_measured = [r for r in cap_rows if isinstance(r.get("port_util"), (int, float))]
+    tight = sorted((r for r in cap_measured if r["port_util"] > 90), key=lambda r: -r["port_util"])
+    if not cap_measured:
         add("CAP-2", D5, "Port-capacity headroom for growth", "not-assessable",
-            "No capacity rows in the snapshot.", "—", "Re-run with the current engine.",
+            ("No capacity rows in the snapshot." if not cap_rows else
+             f"{len(cap_rows)} capacity row(s) carry no numeric port-utilisation figure, so port "
+             "headroom cannot be graded from this evidence."),
+            "—", "Re-run with the current engine.",
             "Capacity planning — keep ~10% port headroom per closet")
     elif tight:
         add("CAP-2", D5, "Port-capacity headroom for growth", "advisory",
@@ -784,9 +813,18 @@ def compute_architecture_review(snap: dict) -> dict:
             "Size replacement hardware with ≥10% spare ports per listed closet.",
             "Capacity planning — keep ~10% port headroom per closet",
             evidence=[r.get("hostname") for r in tight])
+    elif len(cap_measured) < len(cap_rows):
+        # partial coverage is a blind spot, never health (same rule as RES-3 / L2-2)
+        add("CAP-2", D5, "Port-capacity headroom for growth", "not-assessable",
+            f"All {len(cap_measured)} device(s) with a captured port-utilisation figure sit below the "
+            f"90% line, but {len(cap_rows) - len(cap_measured)} of {len(cap_rows)} capacity row(s) "
+            "carry no figure — fleet port headroom cannot be graded from this evidence.", "—",
+            "Capture port utilisation for every device, then re-review.",
+            "Capacity planning — keep ~10% port headroom per closet")
     else:
         add("CAP-2", D5, "Port-capacity headroom for growth", "conforms",
-            f"All {len(cap_rows)} device(s) hold port headroom below the 90% line.",
+            f"All {len(cap_measured)} device(s) hold port headroom below the 90% line "
+            "(utilisation captured on every one).",
             "Growth fits without topology workarounds.",
             "Carry the same headroom rule into the BoM for the target build.",
             "Capacity planning — keep ~10% port headroom per closet")
@@ -823,12 +861,26 @@ def compute_architecture_review(snap: dict) -> dict:
             "Assessment doctrine — configured is not healthy; up is not healthy")
 
     hyg = _as_dict(snap.get("config_hygiene"))
-    undef_hosts = {h: _as_int(_as_dict(_as_dict(v).get("summary")).get("undefined"))
-                   for h, v in hyg.items()}
-    undef_hosts = {h: n for h, n in undef_hosts.items() if n > 0}
-    if not hyg:
+
+    def _undef_n(v):
+        """Undefined-reference count for one device, or None when the record evidences NEITHER a
+        count nor a list. `_as_int(<missing>)` coerced to 0, so a hygiene record that never reported
+        the figure was carried to CONFORMS ("No undefined references across the fleet") off silence —
+        the same conforms-by-silence hole guarded at RES-3 / RES-4 / L2-2 / L2-3 / CAP-2. The list is
+        read when the summary lacks the count, so a partial record still yields a real number."""
+        v = _as_dict(v)
+        s = _as_dict(v.get("summary")).get("undefined")
+        if s is not None:
+            return _as_int(s)
+        return len(v["undefined"]) if isinstance(v.get("undefined"), list) else None
+
+    hyg_measured = {h: n for h, n in ((h, _undef_n(v)) for h, v in hyg.items()) if n is not None}
+    undef_hosts = {h: n for h, n in hyg_measured.items() if n > 0}
+    if not hyg or not hyg_measured:
         add("OPS-2", D6, "Clean configuration hygiene", "not-assessable",
-            "Config-hygiene analysis is absent from this snapshot.", "—",
+            ("Config-hygiene analysis is absent from this snapshot." if not hyg else
+             f"{len(hyg)} config-hygiene record(s) report no undefined-reference count, so hygiene "
+             "cannot be graded from this evidence."), "—",
             "Re-run the assessment with the current engine.",
             "Operational hygiene — no undefined references in running configuration")
     elif undef_hosts:
@@ -840,9 +892,18 @@ def compute_architecture_review(snap: dict) -> dict:
             "Resolve or remove each undefined reference before its device migrates.",
             "Operational hygiene — no undefined references in running configuration",
             evidence=undef_hosts)
+    elif len(hyg_measured) < len(hyg):
+        # partial coverage is a blind spot, never health
+        add("OPS-2", D6, "Clean configuration hygiene", "not-assessable",
+            f"All {len(hyg_measured)} device(s) with a captured undefined-reference count are clean, "
+            f"but {len(hyg) - len(hyg_measured)} of {len(hyg)} hygiene record(s) report no count — "
+            "fleet hygiene cannot be graded from this evidence.", "—",
+            "Re-run the assessment with the current engine so every device reports a count.",
+            "Operational hygiene — no undefined references in running configuration")
     else:
         add("OPS-2", D6, "Clean configuration hygiene", "conforms",
-            "No undefined references across the fleet.",
+            f"No undefined references across the fleet ({len(hyg_measured)} device(s) reported a "
+            "count).",
             "Config intent is internally consistent.",
             "Keep the hygiene gate in the target config standard.",
             "Operational hygiene — no undefined references in running configuration")

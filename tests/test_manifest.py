@@ -247,8 +247,16 @@ def test_gutted_manifest_does_not_verify_clean(tmp_path, capsys):
     """`verify_manifest({})` is (True, []) — with no chain and no chain_root there is nothing to
     contradict, so the LIBRARY reports clean. Passed through, that makes the emptiest possible file
     the easiest one to "verify": strip the chain and an auditor reads OK. Absence is not health."""
-    for i, man in enumerate(({}, {"tool": "cisco-assess"}, {"chain": [], "chain_root": m.GENESIS})):
-        assert m.verify_manifest(man)[0] in (True, False)             # library semantics unchanged
+    # `x in (True, False)` — what this used to assert — is true of every bool (and of 0/1), so the
+    # "library semantics unchanged" half pinned nothing at all: verify_manifest could flip either
+    # way on any of these and the line stayed green. Pin the actual per-case answer, because it is
+    # the PREMISE of the test: the library says clean, so the refusal has to come from the CLI.
+    for i, (man, lib_ok) in enumerate((({}, True),
+                                       ({"tool": "cisco-assess"}, True),
+                                       ({"chain": [], "chain_root": m.GENESIS}, False))):
+        assert m.verify_manifest(man)[0] is lib_ok, (
+            f"library semantics moved for {man!r} — if verify_manifest now refuses an empty "
+            f"manifest itself, this test's premise (the CLI is the only backstop) is stale")
         assert m.main(["verify", _write(tmp_path, f"gutted{i}.json", man)]) == 4
         assert "nothing sealed here" in capsys.readouterr().out
 

@@ -219,10 +219,17 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
     doc.add_heading("1. Assessment Header & Executive Summary", level=1)
     _scale = _as_dict(_as_dict(snap_dict.get("executive_brief")).get("scale"))
     _ep_canon = _scale.get("n_endpoints"); _vl_canon = _scale.get("n_vlans")
+    # Coverage-honesty on the headline register: each of these three rows is a COUNT over a snapshot
+    # section, and an absent section counts 0 — which renders as a measured all-clear ("0 bridge
+    # links", "0 / 0 cross-layer findings") on the runbook's own front page. Absence of the analysis
+    # is not absence of the exposure, so an unpublished axis says so (same doctrine as §6.1's
+    # single-gateway abstention and §6.10's syslog "no evidence either way").
+    _NOBS = "[NOT OBSERVED]"
+    _link_v = (lambda v: v if link_centrality else _NOBS)
     table(["Metric", "Value"], [
         ("Devices in scope", n_dev),
-        ("Inter-switch links (CDP/LLDP-derived; Inferred-high)", n_links),
-        ("Bridge links (single points of fabric partition)", len(bridges)),
+        ("Inter-switch links (CDP/LLDP-derived; Inferred-high)", _link_v(n_links)),
+        ("Bridge links (single points of fabric partition)", _link_v(len(bridges))),
         ("Evidenced endpoints (canonical assessment scale)", _ep_canon if isinstance(_ep_canon, int) else ep_total),
         ("Endpoints — access-port host MACs at snapshot (superset of canonical)", ep_total),
         ("Production VLANs (canonical assessment scale)", _vl_canon if isinstance(_vl_canon, int) else len(ep_per_vlan)),
@@ -232,15 +239,26 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         ("Health bands (Critical/Poor/Fair/Good/Excellent)",
          f"{bands.get('Critical',0)} / {bands.get('Poor',0)} / {bands.get('Fair',0)} / "
          f"{bands.get('Good',0)} / {bands.get('Excellent',0)}"),
-        ("Cross-layer findings (Critical / High)", f"{len(crit_cl)} / {len(high_cl)}"),
+        ("Cross-layer findings (Critical / High)",
+         f"{len(crit_cl)} / {len(high_cl)}" if cross_layer else _NOBS),
         ("Punch-list items", len(punchlist)),
     ], widths=[4.8, 2.0])
+    # …and the same discipline on the gating SENTENCE, which is the one line a war-room reader takes
+    # away. With the analyses absent it used to read "0 Critical cross-layer single-point(s) of
+    # failure and 0 bridge link(s) must be resolved ... 0 of 0 move group(s) are NOT READY" — a
+    # complete all-clear manufactured entirely from missing sections.
+    _cl_txt = (f"{len(crit_cl)} Critical cross-layer single-point(s) of failure" if cross_layer else
+               "Critical cross-layer single-point(s) of failure [NOT OBSERVED — no cross-layer "
+               "analysis in this snapshot; absence of the analysis is not absence of the exposure]")
+    _br_txt = (f"{len(bridges)} bridge link(s)" if link_centrality else
+               "bridge link(s) [NOT OBSERVED — no link-centrality analysis in this snapshot]")
+    _rd_txt = (f"{sum(1 for r in mr if r.get('readiness') == 'NOT READY')} of {len(mr)} move group(s) "
+               "are NOT READY on the pre-migration checklist." if mr else
+               "Migration readiness was NOT computed for this snapshot, so no move group can be "
+               "called ready — treat every group as no-go until the pre-migration checklist is run.")
     p = doc.add_paragraph()
     _label_run(p, "Top gating decisions:",
-               f"{len(crit_cl)} Critical cross-layer single-point(s) of failure and {len(bridges)} "
-               f"bridge link(s) must be resolved or risk-accepted before cutover. "
-               f"{sum(1 for r in mr if r.get('readiness') == 'NOT READY')} of {len(mr)} move group(s) "
-               f"are NOT READY on the pre-migration checklist.")
+               f"{_cl_txt} and {_br_txt} must be resolved or risk-accepted before cutover. {_rd_txt}")
 
     # cross-axis migration brief (NEW-V3.23.120)
     eb = snap_dict.get("executive_brief") or {}
@@ -359,9 +377,16 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
     doc.add_heading("5. Topology & Current State", level=1)
     p = doc.add_paragraph()
     _label_run(p, "Confidence:",
-               f"{_CONF_HIGH}. {n_links} inter-switch links reconstructed from CDP/LLDP. "
-               f"{len(bridges)} are bridges (their loss partitions the fabric). Off-scan links are "
-               f"{_CONF_UNKNOWN}.")
+               (f"{_CONF_HIGH}. {n_links} inter-switch links reconstructed from CDP/LLDP. "
+                f"{len(bridges)} are bridges (their loss partitions the fabric). Off-scan links are "
+                f"{_CONF_UNKNOWN}."
+                if link_centrality else
+                # an Inferred-high confidence label asserted over ZERO reconstructed links claimed a
+                # structural conclusion the snapshot never carried
+                f"{_CONF_UNKNOWN}. No link-centrality analysis is present in this snapshot, so the "
+                "inter-switch link and bridge (fabric-partition) counts are [NOT OBSERVED] — not "
+                "zero. Re-run the assessment with the current engine before treating this fabric as "
+                "having no chokepoints."))
     if bridges:
         doc.add_paragraph("Chokepoint links (ranked by structural blast radius; live fault state is "
                           "Unknown until validated):")
@@ -940,15 +965,33 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         "Move Groups and Migration Readiness sheets.")
     ws_by_group = {w.get("group"): w for w in ws}
     mg_rows = []
+    unsequenced = []
     for r in mr:
         g = r.get("group", "")
-        w = ws_by_group.get(g, {})
+        w = ws_by_group.get(g)
+        # `ws_by_group.get(g, {})` turned a group with NO sequencing record into "0 make-before-break /
+        # 0 hard cutover / 0 at-risk endpoints" — under an intro that says single-homed switches take
+        # an outage, that reads as "this group needs no maintenance window". The homing split is the
+        # ONE fact that decides whether a window and an outage are needed, so an absent record abstains.
+        if w is None:
+            unsequenced.append(g)
+            mg_rows.append([g, len(_as_list(r.get("switches"))), r.get("endpoints", 0),
+                            r.get("readiness", ""), "[NOT OBSERVED]", "[NOT OBSERVED]",
+                            "[NOT OBSERVED]"])
+            continue
         mg_rows.append([g, len(_as_list(r.get("switches"))), r.get("endpoints", 0),
                         r.get("readiness", ""), len(_as_list(w.get("make_before_break"))),
                         len(_as_list(w.get("hard_cutover"))), w.get("hard_cutover_endpoints", 0)])
     if mg_rows:
         table(["Group", "Switches", "Endpoints", "Readiness", "Make-before-break",
                "Hard cutover", "At-risk endpoints"], mg_rows, widths=[1.4, 1.0, 1.0, 1.3, 1.4, 1.1, 1.2])
+    if unsequenced:
+        doc.add_paragraph(
+            f"{len(unsequenced)} group(s) carry no wave-sequencing record ({', '.join(str(g) for g in unsequenced[:8])}"
+            + (" …" if len(unsequenced) > 8 else "") + "), so their dual-homed / single-homed split is "
+            f"{_CONF_UNKNOWN}: the make-before-break, hard-cutover and at-risk-endpoint columns above "
+            "are [NOT OBSERVED], NOT zero. Do not plan those groups as outage-free — re-run the "
+            "assessment (or confirm homing per switch) before scheduling their windows.")
 
     # ===== 10. Risk Register (behaviour-based blast radius) =====
     doc.add_heading("10. Risk Register", level=1)

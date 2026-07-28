@@ -55,17 +55,33 @@ def _uploaded_files() -> list[Path]:
     return out
 
 
-def _is_non_routable(token: str) -> bool:
-    """True when the literal cannot identify real infrastructure."""
+def _is_non_identifying(token: str, is_cidr_base: bool) -> bool:
+    """True when the literal cannot identify real client infrastructure.
+
+    NON-VACUITY (mutation-proved, 2026-07-28). This used to return True for `ip.is_private`,
+    which made the check below — the one its own docstring calls "what actually distinguishes
+    'regenerated from a real fleet' from 'synthetic'" — blind to the ONLY address family a real
+    fleet is ever numbered from. Planting four real-shaped client management addresses
+    (10.200.200.1, 10.14.7.22, 172.16.4.9, 192.168.10.254) in providers/sample-data.ts left the
+    whole file GREEN. A switch inventory carries RFC 1918 hosts, essentially never public ones,
+    so the pre-fix rule caught the one case that does not happen and passed the one that does.
+
+    RFC 1918 is therefore an OFFENDER now, with one carve-out: an address written as the base of
+    a CIDR (`10.0.0.0/16`) names an address SPACE, not a device — sample-data.ts legitimately uses
+    it as the target-address-space example. That carve-out is keyed on the trailing '/', so a bare
+    `10.0.0.1` host literal can never claim it.
+    """
     try:
         ip = ipaddress.ip_address(token)
     except ValueError:
         return True  # e.g. a version string like 1.2.3.4.5 -> not an address at all
-    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast:
-        return True
-    if ip.is_unspecified or ip.is_reserved:
-        return True
-    return any(ip in net for net in _DOC_NETS)
+    if any(ip in net for net in _DOC_NETS):
+        return True  # the documented fictional ranges NOTES.md says the fixtures use
+    if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified or ip.is_reserved:
+        return True  # identifies no host anywhere
+    if ip.is_private:
+        return is_cidr_base  # a /nn base is an address space; a bare host literal is client data
+    return False             # anything else is a routable, real-world address
 
 
 def test_design_sync_dir_is_present_and_populated():
@@ -81,21 +97,43 @@ def test_design_sync_dir_is_present_and_populated():
         "sample-data.ts is a stub; the fictional-fleet assertion would be meaningless"
 
 
-def test_no_routable_ip_literals_are_uploaded():
-    """A real snapshot carries routable management addresses; the Meridian fixture must not.
+def test_no_client_identifying_ip_literals_are_uploaded():
+    """A real snapshot carries real management addresses; the Meridian fixture must not.
 
     This is the load-bearing check: it is what actually distinguishes 'regenerated from a real
-    fleet' from 'synthetic'."""
+    fleet' from 'synthetic'. See _is_non_identifying for why "routable" was the wrong bar."""
     offenders: list[str] = []
     for path in _uploaded_files():
         text = path.read_text(encoding="utf-8", errors="ignore")
-        for token in sorted(set(_IPV4.findall(text))):
-            if not _is_non_routable(token):
+        for m in _IPV4.finditer(text):
+            token, is_cidr_base = m.group(0), text[m.end():m.end() + 1] == "/"
+            if not _is_non_identifying(token, is_cidr_base):
                 offenders.append(f"{path.relative_to(_DS)}: {token}")
     assert not offenders, (
-        "routable IPv4 literal(s) in the design-sync upload set — this is what a fixture "
-        "regenerated from a real collection looks like:\n  " + "\n  ".join(offenders)
+        "client-identifying IPv4 literal(s) in the design-sync upload set — this is what a "
+        "fixture regenerated from a real collection looks like. RFC 1918 counts: a real fleet is "
+        "numbered from it, and this directory is the one place in the repo whose contents leave "
+        "the host:\n  " + "\n  ".join(sorted(set(offenders)))
     )
+
+
+def test_the_ip_rule_actually_rejects_a_real_fleet_address():
+    """Guard the guard, at the level of the predicate. The check above is a `not offenders` loop
+    over a clean directory, so it is green whether the rule is right or wrong — the pre-fix
+    version passed with real client management addresses planted in the upload set. Pin the
+    rule's DECISIONS directly, in both directions."""
+    # what a fixture regenerated from a real collection looks like -> REJECTED
+    for host in ("10.200.200.1", "10.14.7.22", "172.16.4.9", "192.168.10.254", "8.8.8.8",
+                 "203.0.114.7"):
+        assert not _is_non_identifying(host, False), f"{host} must count as client-identifying"
+    # a private address is NOT laundered by a trailing slash unless it really is the CIDR base
+    assert not _is_non_identifying("10.14.7.22", False)
+    assert _is_non_identifying("10.0.0.0", True)          # the address-space example, allowed
+    # the documented fictional ranges and the identifies-nobody specials -> allowed either way
+    for ok in ("192.0.2.1", "198.51.100.9", "203.0.113.5", "198.18.0.1", "127.0.0.1",
+               "0.0.0.0", "224.0.0.5", "169.254.1.1"):
+        assert _is_non_identifying(ok, False), f"{ok} must not be flagged"
+    assert _is_non_identifying("1.2.3.4.5", False)        # not an address at all
 
 
 def _config_path_citations() -> list[tuple[str, str]]:

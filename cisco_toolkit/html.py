@@ -151,6 +151,43 @@ def _finding_key(f: dict) -> tuple:
     return (str(f.get("category", "")), _canon_title(str(f.get("title", ""))), devs)
 
 
+_DEVICES_CELL_WIDTH = 60
+
+
+def _devices_cell(devices, width: int = _DEVICES_CELL_WIDTH) -> str:
+    """A finding's device list rendered for the Findings Delta 'Devices' column, WITH the house
+    ``(+N more)`` disclosure when it does not fit.
+
+    The raw ``", ".join(...)[:60]`` this replaces cut mid-token and said nothing about it, so a
+    finding on 9 devices rendered as ``AS25-MGM-CA05R46, ..., DS03-DC`` -- a silent cap in a
+    CUTOVER-GATE artifact, and the reader's two wrong conclusions are (a) the finding is scoped to
+    the devices shown and (b) ``DS03-DC`` is a hostname (it is not; it is the front half of one).
+    Measured on the real [HISTORY-REDACTED] snapshot: 109 of 1805 punch-list findings, and 11 of 115 in
+    webapp/sample_data/sample_fleet.snapshot.json.
+
+    Truncation now lands on a whole-device boundary and the remainder is COUNTED, never dropped
+    silently. ``_as_list`` (not ``or []``) for the same reason ``_finding_key`` uses it: a row-inner
+    scalar ``devices: 5`` survives ``or []`` and raises on ``for d in 5``."""
+    names = [str(d) for d in _as_list(devices)]
+    if not names:
+        return ""
+    joined = ", ".join(names)
+    if len(joined) <= width:
+        return joined
+    shown: List[str] = []
+    used = 0
+    for n in names:
+        add = len(n) + (2 if shown else 0)
+        if shown and used + add > width:
+            break
+        shown.append(n)
+        used += add
+    if not shown:                                  # one device whose name alone exceeds the width
+        shown = [names[0]]
+    hidden = len(names) - len(shown)
+    return ", ".join(shown) + (f" (+{hidden} more)" if hidden else "")
+
+
 def compute_snapshot_delta(old: dict, new: dict) -> dict:
     """Migration-validation delta between two snapshots: switch/interface counts, per-switch health-band
     shifts (regressed vs improved), punch-list findings opened vs resolved, and an overall verdict.
@@ -502,7 +539,7 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
                          ("resolved", delta["findings"]["resolved"])):
         for f in items:
             vals = [state, f.get("severity", ""), f.get("category", ""),
-                    ", ".join(str(d) for d in (f.get("devices") or []))[:60], f.get("title", "")]
+                    _devices_cell(f.get("devices")), f.get("title", "")]
             for c, v in enumerate(vals, 1):
                 cell = ws.cell(row=r, column=c, value=_cv(v)); cell.font = DF; cell.alignment = AL
             ws.cell(row=r, column=1).fill = PatternFill(

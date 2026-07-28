@@ -200,21 +200,27 @@ only**. The coverage ledger below is what made that measurable, and it is why ro
 
 ## Coverage ledger (`git ls-files`, code only)
 
-| Area | Files | Lines | Round 1 | Round 2 | Round 3 |
-|---|---:|---:|---|---|---|
-| `tests/` + `webapp/tests/` | 209 | 53,221 | pattern-audit | **exhaustive AST scan** (205 files / 2,772 test fns) | — |
-| `cisco_toolkit/` | 71 | 63,398 | per-file | deep re-pass on `analyze.py`; **`blast_radius_explorer.html` (10,500 lines) reviewed for the first time** | **deep pass on the 4 remaining large files** (`parse`, `design_advisor`, `excel`, `design_kb`) |
-| `webapp/frontend/` | 46 | 7,876 | **never reviewed** | api + pages, components | — |
-| `webapp/backend/` | 16 | 5,907 | per-file | `graph.py` (via the frontend findings) | `ingest.py` (via the Atlas boundary) |
-| `.claude/` + `.github/` | 14 | 1,185 | **never reviewed** | hooks + workflows | — |
-| root, `portable/`, `research_lane/` | 19 | 6,092 | per-file | — | **the three trust boundaries** + `COLLECT_PARSE` |
-| *excluded:* `.design-sync/` | 21 | 1,023 | design tooling, outside the build (verified — see below) | — | mechanical guard added (`test_design_sync_no_client_data.py`) |
-| **total** | **396** | **138,702** | | | |
+| Area | Files | Lines | Round 1 | Round 2 | Round 3 | Round 4 |
+|---|---:|---:|---|---|---|---|
+| `tests/` + `webapp/tests/` | 209 | 53,221 | pattern-audit | **exhaustive AST scan** (205 files / 2,772 test fns) | — | **3-partition MUTATION audit — 20 tests proven vacuous by breaking the code they claim to pin** |
+| `cisco_toolkit/` | 71 | 63,398 | per-file | deep re-pass on `analyze.py`; **`blast_radius_explorer.html` (10,500 lines) reviewed for the first time** | **deep pass on the 4 remaining large files** (`parse`, `design_advisor`, `excel`, `design_kb`) | mid-tier files: `build`+`html` (swept over **253 real device captures**), `archreview`+`runbook`+`mop`; `analyze.py` R4-1 |
+| `webapp/frontend/` | 46 | 7,876 | **never reviewed** | api + pages, components | — | **second pass** — 5 fixed, 6 refuted |
+| `webapp/backend/` | 16 | 5,907 | per-file | `graph.py` (via the frontend findings) | `ingest.py` (via the Atlas boundary) | **`app.py` deep pass** (largest, never deep-passed) + `cutover.py` |
+| `.claude/` + `.github/` | 14 | 1,185 | **never reviewed** | hooks + workflows | — | — |
+| root, `portable/`, `research_lane/` | 19 | 6,092 | per-file | — | **the three trust boundaries** + `COLLECT_PARSE` | — |
+| *excluded:* `.design-sync/` | 21 | 1,023 | design tooling, outside the build (verified — see below) | — | mechanical guard added (`test_design_sync_no_client_data.py`) | that guard was itself proven VACUOUS and fixed (VB-3) |
+| **total** | **396** | **138,702** | | | | |
 
-Every row now carries at least one pass beyond round 1's sample. That is the strongest honest claim
-available: it says the whole repo was **looked at deliberately**, not that it is defect-free. Depth
-still varies — `tests/` was audited mechanically for vacuity shapes rather than read for content, and
-`webapp/frontend/` had one pass, not two.
+Every row carries at least two passes except `.claude/`+`.github/` (1,185 lines, one pass) and
+root/`portable/`/`research_lane/` (deep-passed once, in round 3). Those are the thinnest remaining
+surfaces and are named here rather than left to be inferred.
+
+**What this ledger does and does not claim.** It says the whole repo was looked at deliberately, with
+increasing depth, and that the deepest passes were verified by mutation rather than by reading. It
+does not say the repo is defect-free. Round 4 is the strongest evidence for that caution, not against
+it: after three rounds and ~220 closed findings, a mutation audit still found 20 tests that pinned
+nothing — including four safety guards and, behind one of them, R4-1. Every round has found the
+previous round's blind spot, and there is no reason to believe round 4 was the last one.
 
 **On the one exclusion.** This row originally read "side-engagement scratch (CLAUDE.md)", which was
 wrong: CLAUDE.md and `.graphifyignore` exclude `ds-bundle/` and `.ds-sync/` — the design-sync *output*

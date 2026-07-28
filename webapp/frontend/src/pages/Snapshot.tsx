@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { api, bandColor, readyColor, sevColor, SnapshotMeta } from "../api";
+import { api, bandColor, readyColor, sevColor, SnapshotMeta, Summary } from "../api";
 import { Bars, CountUp, ErrorBox, Gauge, Loading, SegBar, SevChip, SkelLines, SkelTable, useAsync } from "../components/ui";
 import TopologyGraph from "../components/TopologyGraph";
 import CableMap from "../components/CableMap";
@@ -448,6 +448,19 @@ export default function SnapshotPage() {
   // reads identically to a verified-clean fleet). Neutralize their tone, mirroring the Gauge's own '—' state.
   const unknownFleet = !Number.isFinite(avg);
   const eol = s.lifecycle?.past_eos;
+  // audit FE-12: summarize() (webapp/backend/summary.py) SEEDS readiness as {READY:0, CAUTION:0,
+  // "NOT READY":0} and only ever increments it from snap["migration_readiness"] — so a snapshot with
+  // no migration_readiness section emits the same all-zero object a fully-classified fleet with zero
+  // problems would. The tile keyed its tone on `NOT READY > 0 ? crit : CAUTION > 0 ? watch : ok`,
+  // which lands on the green `ok` for BOTH, and printed "0✓ 0! 0✕" as if the groups had been counted.
+  // The CutoverPlanner further down the SAME page says "No migration waves were derived from this
+  // snapshot" for that input — two surfaces, one fact, opposite verdicts. A real classification always
+  // assigns EVERY move group one of the three labels, so a zero total can only mean nothing was
+  // assessed: say that, and drop the tone (`unknownFleet` can't cover it — avg_health comes from
+  // health_scores, an independent section that is routinely present when this one is not).
+  const rdy = s.readiness || ({} as Summary["readiness"]);
+  const nReady = Number(rdy.READY) || 0, nCaution = Number(rdy.CAUTION) || 0, nNotReady = Number(rdy["NOT READY"]) || 0;
+  const noGroupsAssessed = nReady + nCaution + nNotReady === 0;
 
   const tabs = s.sections;
   const activeTab = tab || (tabs[0]?.key ?? "");
@@ -482,14 +495,22 @@ export default function SnapshotPage() {
           <div className="v"><CountUp value={s.punchlist.crit_high} /><span className="faint" style={{ fontSize: 16, fontWeight: 600 }}> / <CountUp value={s.punchlist.total} /></span></div>
           <div className="hint">prioritised actions</div>
         </div>
-        <div className={`panel kpi ${unknownFleet ? "" : s.readiness["NOT READY"] > 0 ? "crit" : s.readiness.CAUTION > 0 ? "watch" : "ok"}`}>
+        <div className={`panel kpi ${unknownFleet || noGroupsAssessed ? "" : nNotReady > 0 ? "crit" : nCaution > 0 ? "watch" : "ok"}`}>
           <div className="l">Move-group readiness</div>
-          <div className="v" style={{ fontSize: 20, display: "flex", gap: 12 }}>
-            <span style={{ color: readyColor("READY") }}>{s.readiness.READY}✓</span>
-            <span style={{ color: readyColor("CAUTION") }}>{s.readiness.CAUTION}!</span>
-            <span style={{ color: readyColor("NOT READY") }}>{s.readiness["NOT READY"]}✕</span>
+          {noGroupsAssessed ? (
+            <div className="v" style={{ fontSize: 20, color: "var(--text-faint)" }}>—</div>
+          ) : (
+            <div className="v" style={{ fontSize: 20, display: "flex", gap: 12 }}>
+              <span style={{ color: readyColor("READY") }}>{nReady}✓</span>
+              <span style={{ color: readyColor("CAUTION") }}>{nCaution}!</span>
+              <span style={{ color: readyColor("NOT READY") }}>{nNotReady}✕</span>
+            </div>
+          )}
+          <div className="hint">
+            {noGroupsAssessed
+              ? <>not assessed — no move group was classified{eol ? ` · ${eol} past-EoS` : ""}</>
+              : <>ready · caution · not ready{eol ? ` · ${eol} past-EoS` : ""}</>}
           </div>
-          <div className="hint">ready · caution · not ready{eol ? ` · ${eol} past-EoS` : ""}</div>
         </div>
       </div>
 
