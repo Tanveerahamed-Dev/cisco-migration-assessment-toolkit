@@ -276,3 +276,35 @@ radius outside a review's remit. They are the honest answer to "is the repo now 
 | `onWheel` `preventDefault()` is a no-op (React registers `wheel` passive) | needs a ref + non-passive listener; jsdom does not enforce passive semantics, so any test here would pass either way |
 | `vault-guard.sh` over-blocks vault SIBLINGS (`brainstorm/`) | its declared recall-over-precision posture; tightening REDUCES a security control's reach |
 
+
+## Open, and the most important one — the suite outgrew its own gate
+
+`.claude/hooks/verify-green.sh` bounds its pytest run at `timeout 540` and, on exit 124, FAILS OPEN
+so a hang can never wedge a turn. Measured after this review: the full suite takes **1055s**. So the
+gate now *always* times out and *always* allows the stop. It says so on stderr — it is not silent —
+but it no longer gates anything.
+
+That is the second time today this hook stopped applying for a different reason (the first was
+CI-9: it only ever read the working tree). Raising the bound is not available: the Stop hook itself
+has a 600s ceiling, so 540 is already near the maximum.
+
+What the runtime is actually made of, measured with `--durations`:
+
+- ~20 tests each run the **whole engine pipeline** end to end at ~11–13s apiece. All pre-existing;
+  the slowest single test (`test_runbook_survives_truthy_scalar_nested_value`, 22.2s) landed in #457.
+- Attributable to THIS review: the new test files total ~33s, and `compute_attestation` went from
+  67 top-level modules to a **recursive** 69-module AST walk — 2.54s per pipeline run, so ~50s
+  across the suite. That cost is justified: the claim it replaced ("0 network-library imports") was
+  false, which is precisely why `NO_EGRESS_EXCEPTIONS` was dead code.
+- The remaining delta is **not attributed**. The 6m53s baseline was taken mid-session under
+  different machine load than the 1055s run, so the two are not a controlled comparison and I am not
+  going to present them as one.
+
+Options, none of which a review should pick unilaterally:
+
+1. **Shard the gate** — have the hook run a fast, high-signal subset and say plainly that it did,
+   with the full suite in CI. Honest, but weakens the "green means green" contract the repo relies on.
+2. **Speed up the pipeline tests** — ~20 full-engine runs is the whole cost. A shared session-scoped
+   fixture that builds the pipeline once would likely reclaim most of it. Biggest win, own project.
+3. **Accept it and lean on CI** — but `webapp/tests` is already gated by no required check (above),
+   so CI is not currently a complete backstop either.
