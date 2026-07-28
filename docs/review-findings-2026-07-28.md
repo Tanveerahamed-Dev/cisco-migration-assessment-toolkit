@@ -211,9 +211,15 @@ only**. The coverage ledger below is what made that measurable, and it is why ro
 | *excluded:* `.design-sync/` | 21 | 1,023 | design tooling, outside the build (verified — see below) | — | mechanical guard added (`test_design_sync_no_client_data.py`) | that guard was itself proven VACUOUS and fixed (VB-3) |
 | **total** | **396** | **138,702** | | | | |
 
-Every row carries at least two passes except `.claude/`+`.github/` (1,185 lines, one pass) and
-root/`portable/`/`research_lane/` (deep-passed once, in round 3). Those are the thinnest remaining
-surfaces and are named here rather than left to be inferred.
+**Round 5 closed the last row.** `.claude/`+`.github/` — the only area still at one pass — got a
+dedicated automation pass, and it was the right one to revisit: round 2 had found three completely
+dead hooks there, and round 5 found the two that were *still* executed by no test at all, plus a
+read-only agent whose own prompt told it to run a live collection. Per-hook coverage went from 4 of 9
+(round 2) to **10 of 10**.
+
+Every row now carries at least two passes. The thinnest remaining surface is
+root/`portable/`/`research_lane/`, deep-passed once in round 3 across its three trust boundaries —
+named here rather than left to be inferred.
 
 **What this ledger does and does not claim.** It says the whole repo was looked at deliberately, with
 increasing depth, and that the deepest passes were verified by mutation rather than by reading. It
