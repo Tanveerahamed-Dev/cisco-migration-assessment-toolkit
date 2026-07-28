@@ -16,6 +16,7 @@ crashes the nightly run.
 """
 from __future__ import annotations
 
+import ast
 import json
 import os
 import subprocess
@@ -142,9 +143,63 @@ def check_learnings_discipline(root: str) -> Dict[str, str]:
     return _check("learnings_discipline", GREEN, "within discipline (<100 lines, every entry cited, no self-assessment)")
 
 
+def _module_level_skip(tree: "ast.Module") -> bool:
+    """True if the module disables its own collection wholesale — `pytestmark = pytest.mark.skip(...)`
+    (or a list containing one), or a bare `pytest.skip(..., allow_module_level=True)` call."""
+    def _is_skip(node: Any) -> bool:
+        f = node.func if isinstance(node, ast.Call) else node
+        name = ""
+        while isinstance(f, ast.Attribute):
+            name = f.attr if not name else f"{f.attr}.{name}"
+            f = f.value
+        return name.split(".")[-1] in ("skip", "skipif") if name else False
+
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "pytestmark" for t in node.targets):
+            vals = node.value.elts if isinstance(node.value, (ast.List, ast.Tuple)) else [node.value]
+            if any(_is_skip(v) for v in vals):
+                return True
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call) and _is_skip(node.value):
+            return True
+    return False
+
+
+def _live_assertion_count(tree: "ast.Module") -> int:
+    """Assertions that would actually RUN: `assert` statements and `pytest.fail(...)` calls inside a
+    test function that is not itself skip-decorated. Text matching cannot answer this — a comment, a
+    docstring, or a string literal all contain the word `assert` while asserting nothing."""
+    live = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not node.name.startswith("test"):
+            continue
+        if any("skip" in ast.dump(d) for d in node.decorator_list):
+            continue                                  # decorated off -> not a live assertion
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Assert):
+                live += 1
+            elif (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
+                    and sub.func.attr == "fail"):
+                live += 1
+    return live
+
+
 def check_guards_nonvacuous(root: str) -> Dict[str, str]:
-    """Each guard file must exist AND contain an assertion (a deleted/gutted guard is RED, not silently gone)."""
-    missing, vacuous = [], []
+    """Each guard file must exist AND carry an assertion that would actually RUN — a deleted, gutted,
+    or SKIPPED guard is RED, not silently gone.
+
+    Parsed, never grepped. The substring test this replaced ("assert" in the file's text) could not
+    see the three ways a guard stops guarding while still reading green: a module-level
+    `pytest.mark.skip`, an assertion commented out or left in a docstring, and an assertion inside a
+    test that is decorated off. Measured on the old check: all 15 GUARD_FILES rewritten as
+    `pytestmark = pytest.mark.skip("disabled")` + `def test_x(): assert False` returned GREEN "all 15
+    guard suites present and asserting", and a file containing only `# TODO: assert something here
+    one day` did too — i.e. the entire roster (memory_guard, ssot_registry, scorecard, defect_panel,
+    the version pin) could be disabled wholesale and the nightly self-check would still lead the
+    morning briefing all-green. This module's own docstring already said a skipped test is RED."""
+    missing, vacuous, skipped = [], [], []
     for rel in GUARD_FILES:
         p = os.path.join(root, rel)
         if not os.path.exists(p):
@@ -155,16 +210,26 @@ def check_guards_nonvacuous(root: str) -> Dict[str, str]:
         except OSError:
             missing.append(rel)
             continue
-        if "assert" not in txt and "pytest.fail" not in txt:
+        try:
+            tree = ast.parse(txt)
+        except SyntaxError as e:
+            vacuous.append(f"{rel} (does not parse: {e.msg})")
+            continue
+        if _module_level_skip(tree):
+            skipped.append(rel)
+        elif not _live_assertion_count(tree):
             vacuous.append(rel)
-    if missing or vacuous:
+    if missing or vacuous or skipped:
         parts = []
         if missing:
             parts.append(f"missing: {', '.join(missing)}")
+        if skipped:
+            parts.append(f"skipped at module level (collected but never run): {', '.join(skipped)}")
         if vacuous:
-            parts.append(f"no assertions: {', '.join(vacuous)}")
+            parts.append(f"no live assertions: {', '.join(vacuous)}")
         return _check("guards_nonvacuous", RED, "; ".join(parts))
-    return _check("guards_nonvacuous", GREEN, f"all {len(GUARD_FILES)} guard suites present and asserting")
+    return _check("guards_nonvacuous", GREEN,
+                  f"all {len(GUARD_FILES)} guard suites present, collected and asserting")
 
 
 def check_judge_trust(root: str) -> Dict[str, str]:

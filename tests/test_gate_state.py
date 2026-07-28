@@ -619,53 +619,59 @@ def test_the_enrolment_moment_is_serialised_not_fail_soft(tmp_path, caplog):
     assert _store(tmp_path)["gates"]["assessment_approved"]["decision"] == "approved"
 
 
-def test_record_decision_validates_ownership_against_state_read_INSIDE_the_lock(tmp_path):
+def test_record_decision_validates_ownership_against_state_read_INSIDE_the_lock(tmp_path, monkeypatch):
     """`record_decision` moved its ownership check inside the lock so it cannot approve into a ledger
-    that was bound elsewhere in the meantime. Nothing pinned that: this lands a concurrent `bind`
-    between the caller's entry and its write, which is the interleave the move exists to stop."""
+    that was bound elsewhere in the meantime. This lands a concurrent `bind` in the ONE window that
+    discriminates: after the lock is acquired, BEFORE the locked read.
+
+    Getting that window right is the whole test. Firing on `_read_ledger` does NOT work, and looked
+    like it did: `record_decision` calls `_read_ledger` exactly ONCE, so a hook that rebinds and then
+    returns the fresh store makes a PRE-lock check see the rebind too. Measured against a mutant that
+    reads via `load_store` and calls `ownership_error` before `_append_audit` (i.e. the TOCTOU this
+    move exists to close, restored): the old shape passed on the mutant as well as on the real module,
+    so it pinned only "ownership is checked at all". Seaming on `_open_lock_fd` puts the rebind after
+    the caller's own read and before the locked one, which kills that mutant."""
     gate_state.bind_engagement("ACME-2026", root=str(tmp_path), by="lead")
-    real_read = gate_state._read_ledger
+    real_open = gate_state._open_lock_fd
     fired = []
 
-    def _someone_rebinds_then_we_read(path):
-        # The rebind must land BEFORE the locked read, or the read cannot see it — that IS the
-        # property under test (validate against state read inside the lock, not the caller's
-        # expectation). A first cut mutated the file AFTER the read and returned the stale store,
-        # so the check passed and the test proved nothing.
+    def _someone_rebinds_once_we_hold_the_lock(path):
+        fd = real_open(path)
         if not fired:
             fired.append(True)
             led = tmp_path / "docs" / "engagement-state.json"
             store = json.loads(led.read_text(encoding="utf-8"))
             store["engagement"] = "GLOBEX-2026"          # a different engagement takes the ledger
             led.write_text(json.dumps(store), encoding="utf-8")
-        return real_read(path)
+        return fd
 
-    gate_state._read_ledger = _someone_rebinds_then_we_read
-    try:
-        with pytest.raises(gate_state.GateStateError, match="GLOBEX-2026"):
-            gate_state.record_decision("lld_approved", "approved", root=str(tmp_path),
-                                       by="lead", engagement="ACME-2026")
-    finally:
-        gate_state._read_ledger = real_read
+    monkeypatch.setattr(gate_state, "_open_lock_fd", _someone_rebinds_once_we_hold_the_lock)
+    with pytest.raises(gate_state.GateStateError, match="GLOBEX-2026"):
+        gate_state.record_decision("lld_approved", "approved", root=str(tmp_path),
+                                   by="lead", engagement="ACME-2026")
     assert fired, "the interleave never fired -- re-target it"
     assert "lld_approved" not in _store(tmp_path)["gates"], \
         "an approval landed in a ledger that had just been bound to another engagement"
 
 
 @pytest.mark.parametrize("scenario", ["rebind_refusal", "corrupt_audit"])
-def test_a_refused_write_leaves_no_sidecar_behind(tmp_path, scenario):
-    """A refusal must leave the directory exactly as it found it. `_open_lock_fd` runs BEFORE the
-    mutation is validated, so a re-bind refusal or a corrupt-audit refusal used to drop a 0-byte
-    `<ledger>.lock` into a ledger's folder the operation had just declined to touch -- including,
-    for a mis-declared run, another engagement's folder. Small, but this module's whole posture is
-    that a refusal changes nothing."""
+def test_a_refused_write_changes_no_ledger_content(tmp_path, scenario):
+    """A refusal must change nothing that CARRIES EVIDENCE. It may leave the inert `<ledger>.lock`
+    sidecar, and that is deliberate rather than sloppy: the sidecar IS the mutual-exclusion token, a
+    caller cannot prove it created one (`_open_lock_fd` uses O_CREAT, not O_EXCL), and unlinking it on
+    a guess is unsafe on POSIX -- flock binds to the open file description, so the holder keeps its
+    lock on an orphaned inode while the next writer O_CREATs a NEW inode and locks it uncontended,
+    handing two writers the same lock. An earlier cut removed the sidecar on the refusal path and
+    bought a tidy directory listing at the price of that guarantee. The sidecar is gitignored instead.
+
+    What this pins is the property that actually matters: a refused write leaves no NEW ledger, no
+    orphan temp copy, and the existing ledger byte-identical."""
     docs = tmp_path / "docs"
+    inert = {"engagement-state.json" + gate_state.LOCK_SUFFIX}
     if scenario == "rebind_refusal":
         gate_state.bind_engagement("ACME-2026", root=str(tmp_path), by="lead")
-        for f in docs.iterdir():                       # drop the sidecar the successful bind made
-            if f.name.endswith(gate_state.LOCK_SUFFIX):
-                f.unlink()
         before = {p.name for p in docs.iterdir()}
+        ledger_before = (docs / "engagement-state.json").read_bytes()
         with pytest.raises(gate_state.GateStateError):
             gate_state.bind_engagement("GLOBEX-2026", root=str(tmp_path), by="lead")
     else:
@@ -673,21 +679,29 @@ def test_a_refused_write_leaves_no_sidecar_behind(tmp_path, scenario):
         (docs / "engagement-state.json").write_text(
             json.dumps({"schema": 1, "gates": {}, "audit": {"2026": "hand-edited"}}), encoding="utf-8")
         before = {p.name for p in docs.iterdir()}
+        ledger_before = (docs / "engagement-state.json").read_bytes()
         v = gate_state.enforce("design", root=str(tmp_path))
         assert v.recorded is False, "precondition: the write must have been refused"
 
-    strays = {p.name for p in docs.iterdir()} - before
-    assert strays == set(), f"a refused write left files behind: {sorted(strays)}"
+    strays = {p.name for p in docs.iterdir()} - before - inert
+    assert strays == set(), f"a refused write left evidence-bearing files behind: {sorted(strays)}"
+    assert (docs / "engagement-state.json").read_bytes() == ledger_before, \
+        "a refused write modified the ledger it declined to touch"
 
 
-def test_a_vanished_ledger_is_not_resurrected_as_an_empty_one(tmp_path):
+@pytest.mark.parametrize("arm", ["override", "refusal"])
+def test_a_vanished_ledger_is_not_resurrected_as_an_empty_one(tmp_path, monkeypatch, arm):
     """If the ledger disappears between the read that DECIDED and the write that records, re-creating
     it is wrong: the decision was made against content that no longer exists, and `_new_store()` would
     resurrect an EMPTY ledger carrying only the row being written. Reproduced before the fix: a ledger
     bound to ACME-2026 with a signed `lld_approved` came back as gates=[], audit=['override'],
     engagement=None -- the signed gate AND the ADR-0006 binding gone, replaced by a row asserting an
-    override of approvals nobody could still see. The override arm fails CLOSED, so refusing here also
-    correctly withholds the document."""
+    override of approvals nobody could still see.
+
+    Both arms that append from an already-read ledger are covered. The refusal arm is the
+    higher-traffic one and is the one that fails SILENTLY (`_record_refusal` catches GateStateError
+    and degrades to recorded=False), so a mutation that drops its `require_existing` destroys the
+    engagement's whole approval history while the run still reports a tidy refusal."""
     gate_state.bind_engagement("ACME-2026", root=str(tmp_path), by="lead")
     gate_state.record_decision("lld_approved", "approved", root=str(tmp_path), by="HUMAN",
                                engagement="ACME-2026")
@@ -702,15 +716,21 @@ def test_a_vanished_ledger_is_not_resurrected_as_an_empty_one(tmp_path):
             os.remove(p)                    # the file goes away inside enforce's window
         return out
 
-    gate_state._read_ledger = _read_then_vanish
-    try:
-        with pytest.raises(gate_state.GateStateError, match="disappeared"):
-            gate_state.enforce("design", root=str(tmp_path), override_reason="CAB waived",
-                               engagement="ACME-2026")
-    finally:
-        gate_state._read_ledger = real_read
+    monkeypatch.setattr(gate_state, "_read_ledger", _read_then_vanish)
+    kwargs = {"override_reason": "CAB waived"} if arm == "override" else {}
+    v = gate_state.enforce("design", root=str(tmp_path), engagement="ACME-2026", **kwargs)
+    monkeypatch.undo()
+
     assert fired, "the interleave never fired -- re-target it"
     assert not os.path.exists(path), "an EMPTY ledger was resurrected in place of the real one"
+    # Fail CLOSED, and as a SEALED VERDICT rather than an escaping exception. The override arm used to
+    # raise straight out of enforce(), which skipped _emit entirely -- so the one run whose ledger had
+    # vanished was also the one run that recorded no verdict at all -- and, because the sole engine
+    # caller wraps neither gate call, it aborted every later deliverable and the run-manifest seal.
+    assert v.proceed is False, "a vanished ledger must withhold the deliverable"
+    assert v.recorded is False, "nothing was written, so `recorded` must not claim otherwise"
+    assert gate_state.verdicts() and gate_state.verdicts()[-1]["generator"] == "design", \
+        "the gate was decided but no verdict was sealed -- an invisible refusal"
 
 
 def test_the_lock_is_a_sidecar_and_never_the_ledger(tmp_path):
@@ -792,12 +812,23 @@ def test_a_failed_write_leaves_no_orphan_copy_of_the_ledger(tmp_path):
 def test_an_override_that_cannot_be_audited_fails_closed(tmp_path):
     """The override deliberately does NOT get _record_refusal's tolerant handling: its audit line is
     the ONLY thing making it legitimate to proceed past a missing approval, so an unwritable ledger
-    must stop the run rather than quietly generate the document. Asserted because the code says
-    'do not make this consistent later' — a stated guarantee with no test is not a guarantee."""
+    must WITHHOLD the document rather than quietly generate it. Asserted because the code says
+    'do not make this consistent later' — a stated guarantee with no test is not a guarantee.
+
+    Fail-closed is asserted on the DECISION, not on an escaping exception. Propagating was the wrong
+    shape for the right intent: it was the one exit from enforce() that skipped `_emit`, so the run
+    whose audit write failed recorded no verdict at all, and since the engine wraps neither gate call
+    it also destroyed every later deliverable and the run-manifest seal. The document must be
+    withheld; the rest of the run must survive; the verdict must exist and must not claim it was
+    recorded."""
     gate_state.record_decision("baseline_captured", "approved", root=str(tmp_path), by="qa")
     with mock.patch.object(os, "replace", side_effect=PermissionError(5, "Access is denied")):
-        with pytest.raises(OSError):
-            gate_state.enforce("mop", override_reason="CAB waived", root=str(tmp_path))
+        v = gate_state.enforce("mop", override_reason="CAB waived", root=str(tmp_path))
+    assert v.proceed is False, "an unauditable override must NOT generate the document"
+    assert v.overridden is False, "no audit line landed, so nothing may claim an override happened"
+    assert v.recorded is False, "the write failed, so `recorded` must say so"
+    assert gate_state.verdicts() and gate_state.verdicts()[-1]["generator"] == "mop", \
+        "the gate was decided but no verdict was sealed -- an invisible refusal"
 
 
 # -------------------------------------------------------------- the verdict object's own contracts

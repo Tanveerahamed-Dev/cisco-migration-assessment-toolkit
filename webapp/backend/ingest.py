@@ -234,13 +234,49 @@ def run_collection_zip(raw: bytes) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         shutil.rmtree(workdir, ignore_errors=True)
 
 
-def _resolve_and_scan(path: Any) -> Tuple[Path, int]:
+#: Roots the HTTP ingest-folder channel may read from. A client-supplied absolute path is the
+#: caller naming a directory on the SERVER, so it has to be contained: unbounded, the route reads any
+#: directory the process can reach (another engagement's captures, an old collection in Downloads,
+#: a UNC share), parses it, and stores a snapshot the caller then reads back in full — cross-engagement
+#: client evidence exfiltrated through a route documented as "the folder is only READ". Reading is the
+#: exposure here, not writing. Default: the app's own directory tree, which is the documented field
+#: shape (ADR-0004 — "on the stick the collection already sits beside the app"). Override with
+#: ASSESSHUB_INGEST_ROOTS (os.pathsep-separated) for deployments that keep collections elsewhere.
+_INGEST_ROOTS_ENV = "ASSESSHUB_INGEST_ROOTS"
+
+
+def _allowed_ingest_roots() -> List[Path]:
+    raw = os.environ.get(_INGEST_ROOTS_ENV, "").strip()
+    if raw:
+        return [Path(p).expanduser().resolve() for p in raw.split(os.pathsep) if p.strip()]
+    # The bundle root on a stick, or the repo checkout in a dev/server install.
+    return [Path(sys.argv[0]).resolve().parent if getattr(sys, "frozen", False)
+            else Path(__file__).resolve().parents[2]]
+
+
+def _resolve_and_scan(path: Any, *, contain: bool = False) -> Tuple[Path, int]:
     """Resolve a local collection folder and enforce the shared caps — they bound the ENGINE's
-    work, not just archive extraction, so every local channel (ingest, redaction) applies them."""
+    work, not just archive extraction, so every local channel (ingest, redaction) applies them.
+
+    ``contain`` restricts the folder to :func:`_allowed_ingest_roots`. It is ON for the HTTP channel,
+    where the path arrives from a client, and OFF for the CLI/Atlas channels, where the operator IS
+    the caller and naming any folder on their own machine is the whole point of ``--redact-folder``.
+    """
     folder = Path(str(path)).expanduser()
     if not folder.is_dir():
-        raise IngestError(f"Not a directory: {folder}")
+        # The message deliberately does NOT echo the resolved absolute path: differing 400 bodies
+        # turn this route into a filesystem-layout oracle (`~/nope` returned the operator's real home
+        # directory). ingest.py already scrubs resolved paths out of the engine log tail for the same
+        # reason; this sibling did not.
+        raise IngestError("Not a directory, or not readable.")
     folder = folder.resolve()
+    if contain:
+        roots = _allowed_ingest_roots()
+        if not any(folder == r or folder.is_relative_to(r) for r in roots):
+            raise IngestError(
+                "That folder is outside the directories this server may ingest from. Move the "
+                f"collection under the app directory, or set {_INGEST_ROOTS_ENV} to the roots you "
+                "want to allow.")
     n_files = 0
     total = 0
     for dirpath, _dirnames, filenames in os.walk(folder):
@@ -260,14 +296,19 @@ def _resolve_and_scan(path: Any) -> Tuple[Path, int]:
     return folder, n_files
 
 
-def run_collection_folder(path: Any) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def run_collection_folder(path: Any, *, contain: bool = False) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Run the engine over a SERVER-LOCAL collection folder and return
     ``(snapshot_dict, ingest_report)`` — the portable-app channel (ADR-0004 P1).
 
     Read-only on the user's tree: devices.json, the template and every output live in a private
     temp workdir; the engine only READS ``--collection-dir``. The ZIP caps apply here too — they
-    bound the engine's work, not just archive extraction."""
-    folder, n_files = _resolve_and_scan(path)
+    bound the engine's work, not just archive extraction.
+
+    ``contain`` restricts the folder to :func:`_allowed_ingest_roots`. The HTTP route passes True,
+    because there the path is chosen by the CLIENT and reading an arbitrary server directory is the
+    exposure. It defaults False for the in-process/CLI callers, where the operator IS the caller and
+    naming any folder on their own machine is the point (``--redact-folder``)."""
+    folder, n_files = _resolve_and_scan(path, contain=contain)
     workdir = Path(tempfile.mkdtemp(prefix="assesshub_ingest_"))
     try:
         return _assess_tree(folder, n_files, workdir)

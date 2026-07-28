@@ -313,7 +313,7 @@ def compute_fact_lineage(snap: Dict[str, Any]) -> Dict[str, Any]:
     return {"schema": FACT_LINEAGE_SCHEMA, "facts": facts}
 
 
-def reconcile(snap: Dict[str, Any]) -> List[str]:
+def reconcile(snap: Dict[str, Any], _ran: Optional[List[str]] = None) -> List[str]:
     """Return human-readable SSOT violations: a published canonical value that disagrees with an
     independent derivation from the raw evidence. Empty list == every published fact reconciles.
 
@@ -321,6 +321,14 @@ def reconcile(snap: Dict[str, Any]) -> List[str]:
     minimal snapshot whose ``executive_brief.scale`` is ``None``) is SKIPPED, not flagged -- the
     guard fires only when both the published value AND its raw basis are present, so it never
     invents a violation from absent evidence.
+
+    That skipping is why an empty return is NOT by itself a pass. Every check here is gated on its
+    raw basis being present, so a snapshot that publishes all the canonical blocks but carries none
+    of the raw arrays reconciles NOTHING and returns ``[]`` -- indistinguishable, from the return
+    value alone, from a snapshot that reconciled everything. ``_ran`` is the out-parameter that
+    closes that: pass a list and it receives the name of every check that ACTUALLY executed, so a
+    caller can tell "verified, all clean" from "verified nothing". :func:`summary` uses it; nothing
+    else needs to, which is why it stays private rather than changing the return type.
     """
     violations: List[str] = []
     # Every published summary block is coerced via _as_dict, NOT `_dotted(...) or {}`: `or {}` keeps a
@@ -341,7 +349,9 @@ def reconcile(snap: Dict[str, Any]) -> List[str]:
     def check(name: str, published: Any, derived: Any, basis: str) -> None:
         pi, di = _as_int(published), _as_int(derived)
         if pi is None or di is None:
-            return  # not both present -> coverage-honest skip
+            return  # not both present -> coverage-honest skip (and NOT counted as a check that ran)
+        if _ran is not None:
+            _ran.append(name)
         if pi != di:
             violations.append(f"{name}={pi} but {basis}={di}")
 
@@ -474,15 +484,28 @@ def summary(snap: Dict[str, Any]) -> Dict[str, Any]:
     client-facing trust signal ("N headline facts self-verified against the raw evidence") without
     re-running any check itself.
 
-    Returns ``{"verified": bool, "n_facts": int, "n_violations": int}``. ``verified`` is True iff
-    every published canonical fact reconciles. ``n_facts`` counts the canonical facts actually
-    published (None facts -- unpublished blocks -- are not counted, so the signal is coverage-honest
-    about how much was assessable).
+    Returns ``{"verified": bool, "n_facts": int, "n_checked": int, "n_violations": int}``.
+    ``n_facts`` counts the canonical facts actually PUBLISHED; ``n_checked`` counts the ones actually
+    RECONCILED against raw evidence. Those are different numbers and the difference is the whole
+    point: every check in :func:`reconcile` is gated on its raw basis being present, so a snapshot
+    that publishes all 14 canonical blocks but carries no ``health_scores`` / ``endpoint_identity`` /
+    ``lifecycle_risk.per_device`` / ``collection_completeness`` reconciles NOTHING and still had
+    ``n_facts == 14`` with an empty violation list.
+
+    ``verified`` therefore requires ``n_checked > 0`` as well as a clean run. Without that it was
+    True for a snapshot nothing had been verified against, and this dict is the basis of a
+    CLIENT-FACING claim -- ``docmeta.add_excellence_front`` stamps "N headline figures self-verified
+    against the raw evidence -- every number in this document reconciles to one source" into every
+    DOCX deliverable, and the explorer renders the same badge. A self-verification layer asserting a
+    reconciliation it never performed is the failure this whole module exists to prevent, sitting at
+    the top of the trust chain.
     """
     facts = canonical_facts(snap)
-    violations = reconcile(snap)
+    ran: List[str] = []
+    violations = reconcile(snap, _ran=ran)
     return {
-        "verified": not violations,
+        "verified": bool(ran) and not violations,
         "n_facts": sum(1 for value in facts.values() if value is not None),
+        "n_checked": len(ran),
         "n_violations": len(violations),
     }

@@ -156,7 +156,7 @@ def test_reconcile_and_summary_survive_a_malformed_summary_block(snap):
     viol = ssot.reconcile(snap)                     # must not raise
     assert viol == [], viol                          # malformed block is skipped, never invented drift
     s = ssot.summary(snap)                            # must not raise -- the exact add_excellence_front call site
-    assert set(s) == {"verified", "n_facts", "n_violations"}
+    assert set(s) == {"verified", "n_facts", "n_checked", "n_violations"}
     assert s["n_violations"] == 0
     assert isinstance(s["n_facts"], int) and s["n_facts"] >= 0   # coverage-honest: no fabricated fact
 
@@ -207,7 +207,7 @@ def test_reconcile_and_summary_survive_any_poisoned_section(section, poison):
     viol = ssot.reconcile(snap)                        # must not raise
     assert viol == [], (section, poison, viol)         # coverage-honest: malformed section skipped
     s = ssot.summary(snap)                             # must not raise
-    assert set(s) == {"verified", "n_facts", "n_violations"}
+    assert set(s) == {"verified", "n_facts", "n_checked", "n_violations"}
     assert s["n_violations"] == 0 and isinstance(s["n_facts"], int) and s["n_facts"] >= 0
 
 
@@ -317,7 +317,11 @@ def test_summary_counts_only_published_facts():
     """Coverage-honest: n_facts counts canonical facts actually published, not a constant. An empty
     snapshot publishes none."""
     assert ssot.summary({})["n_facts"] == 0
-    assert ssot.summary({})["verified"] is True   # nothing published -> nothing to contradict
+    # Nothing published AND nothing reconciled -> NOT "verified". An empty violation list is not a
+    # pass: every check in reconcile() is gated on its raw basis being present, so a snapshot with no
+    # raw evidence returns [] having verified nothing. `verified` therefore requires n_checked > 0.
+    assert ssot.summary({})["verified"] is False
+    assert ssot.summary({})["n_checked"] == 0
 
 
 # --------------------------------------------------------------------------------------------

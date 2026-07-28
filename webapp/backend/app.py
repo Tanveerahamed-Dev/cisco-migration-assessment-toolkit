@@ -8,6 +8,7 @@ so the whole platform runs from one origin in production.
 from __future__ import annotations
 
 import contextlib
+import functools
 import hmac
 import json
 import os
@@ -565,11 +566,17 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         """Ingest a SERVER-LOCAL collection folder — the portable-app 'one door' path (ADR-0004
         P1): on the stick the collection already sits beside the app, so a ZIP round-trip is pure
         friction. Same engine pipeline and the same middleware guards as every write (access guard
-        + cross-site refusal); the folder is only READ — outputs land in a private temp workdir."""
+        + cross-site refusal); the folder is only READ — outputs land in a private temp workdir.
+
+        ``contain=True`` because "only READ" is not the safety property here — reading is the
+        exposure. The path arrives from the CLIENT, so without containment this route reads any
+        directory the server process can reach (another engagement's captures, an old collection in
+        Downloads, a UNC share), parses it, and stores a snapshot the caller reads back in full."""
         if not store.get_campaign(campaign_id):
             raise HTTPException(404, "Campaign not found")
         try:
-            snap, report = await run_in_threadpool(ingest.run_collection_folder, body.path)
+            snap, report = await run_in_threadpool(
+                functools.partial(ingest.run_collection_folder, body.path, contain=True))
         except ingest.IngestError as e:
             raise HTTPException(400, str(e)) from e
         except ingest.EngineRunError as e:
@@ -1063,9 +1070,31 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
             # not) can send `/../../../etc/passwd`; without the resolve()+containment check that FileResponse
             # served ANY file the process can read — the client-snapshot DB, source, keys — unauthenticated.
             # An escaping / absolute / drive-qualified path falls through to index.html, never a file read.
+            #
+            # The rejection happens BEFORE resolve(), because resolve() is itself a sink — the
+            # containment check after it is correct but runs too late. On Windows a path beginning
+            # `//` is a UNC name, and resolve() performs a LIVE NETWORK LOOKUP for it: measured
+            # through the real app, `GET ///198.51.100.7/share/x` returned 200 after 42.3s, and each
+            # such call opens an outbound SMB session in which Windows offers NTLMv2 credentials.
+            # That is a credential-leak/relay primitive plus a threadpool-exhaustion DoS (this
+            # handler is sync, so each request pins a worker for the whole lookup) on a route with no
+            # token check, no loopback check, no Host allowlist and no generation cap — and an egress
+            # the air-gapped field posture forbids outright. A NUL byte reaches resolve() the same
+            # way and raises ValueError, i.e. an unhandled 500.
             dist = dist_root.resolve()
+            segments = [s for s in re.split(r"[\\/]+", full_path) if s not in ("", ".")]
+            unsafe = (
+                not full_path
+                or not segments
+                or "\x00" in full_path
+                or full_path[0] in "/\\"            # UNC (`//host/share`) or root-absolute
+                or ":" in segments[0]               # drive- (`C:`) or scheme-qualified
+                or any(s == ".." for s in segments)
+            )
+            if unsafe:
+                return FileResponse(dist / "index.html")
             candidate = (dist / full_path).resolve()
-            if full_path and candidate.is_relative_to(dist) and candidate.is_file():
+            if candidate.is_relative_to(dist) and candidate.is_file():
                 return FileResponse(candidate)
             return FileResponse(dist / "index.html")
 

@@ -376,12 +376,22 @@ def add_excellence_front(doc, snap, *, extra_rows=(), heading="At a Glance"):
     if s.get("n_facts"):
         if s.get("verified"):
             _kv(doc, "Single source of truth:",
-                f"✓ {s['n_facts']} headline figures self-verified against the raw evidence — "
-                "every number in this document reconciles to one source.")
+                f"✓ {s['n_checked']} of {s['n_facts']} headline figures self-verified against the "
+                "raw evidence — every number checked reconciles to one source.")
+        elif not s.get("n_checked"):
+            # PUBLISHED but never RECONCILED. Distinct from both other states and it must say so: a
+            # snapshot can publish every canonical block while carrying none of the raw arrays the
+            # checks derive from, and the old text claimed "self-verified ... every number in this
+            # document reconciles to one source" over exactly that. Claiming a verification that did
+            # not run is worse than reporting none.
+            _kv(doc, "Single source of truth:",
+                f"⚠ {s['n_facts']} headline figures published, but NONE could be reconciled against "
+                "raw evidence in this snapshot — they are unverified, not confirmed.")
         else:
             _kv(doc, "Single source of truth:",
-                f"⚠ {s['n_violations']} of {s['n_facts']} headline figures did not reconcile; "
-                "treat flagged numbers with caution (see the assessment-integrity disclosure).")
+                f"⚠ {s['n_violations']} of {s['n_checked']} reconciled headline figures did not "
+                "agree; treat flagged numbers with caution (see the assessment-integrity "
+                "disclosure).")
     rows = list(_glance_rows(snap)) + list(extra_rows)
     add_table(doc, ["Question", "Answer"], rows, widths=[2.6, 4.1], fixed=False)
 

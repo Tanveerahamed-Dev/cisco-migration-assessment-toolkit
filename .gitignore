@@ -84,3 +84,10 @@ docs/quality/query_log.jsonl
 # Atlas portable build outputs (ADR-0004 P2) — the bundle is built, never committed
 portable/build/
 portable/dist/
+
+# gate-ledger lock sidecars. Inert by design (they hold no data and are re-locked on the next run),
+# and deliberately never unlinked: the sidecar IS the mutual-exclusion token, so removing one to tidy
+# a directory can hand two writers the same lock on POSIX. See cisco_toolkit/gate_state.py ::
+# _locked_update. Ignoring them is the right way to keep an engagement folder clean.
+docs/engagement-state.json.lock
+*.json.lock

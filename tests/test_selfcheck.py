@@ -49,9 +49,13 @@ def _protected_store(tmp_path, *, protected=True, anchors=True, indexed=True):
     return str(store)
 
 
-def _write_guards(root, *, gut=None, drop=None):
-    """Create every guard file with a real assertion, optionally gutting/dropping one (for RED cases)."""
+def _write_guards(root, *, gut=None, drop=None, skip=None, commented=None):
+    """Create every guard file with a real assertion, optionally gutting/dropping/disabling one.
+
+    ``skip`` and ``commented`` are the two shapes the old substring check could not see: a file whose
+    text still contains "assert" while nothing in it ever runs."""
     gut, drop = gut or set(), drop or set()
+    skip, commented = skip or set(), commented or set()
     for rel in SC.GUARD_FILES:
         p = os.path.join(root, rel)
         if rel in drop:
@@ -59,7 +63,15 @@ def _write_guards(root, *, gut=None, drop=None):
                 os.remove(p)                     # ensure absent (a prior call may have created it)
             continue
         os.makedirs(os.path.dirname(p), exist_ok=True)
-        body = "def test_x():\n    pass\n" if rel in gut else "def test_x():\n    assert True\n"
+        if rel in skip:
+            body = ('import pytest\npytestmark = pytest.mark.skip("disabled")\n'
+                    "def test_x():\n    assert False\n")
+        elif rel in commented:
+            body = "def test_x():\n    # assert something here one day\n    pass\n"
+        elif rel in gut:
+            body = "def test_x():\n    pass\n"
+        else:
+            body = "def test_x():\n    assert True\n"
         with open(p, "w", encoding="utf-8") as f:
             f.write(body)
 
@@ -102,11 +114,25 @@ def test_guards_nonvacuous_detects_missing_and_gutted(tmp_path):
     # a guard with no assertion -> RED (non-vacuity: a skipped/gutted test is red)
     _write_guards(root, gut={"tests/test_scorecard.py"})
     c = SC.check_guards_nonvacuous(root)
-    assert c["status"] == SC.RED and "no assertions" in c["detail"]
+    assert c["status"] == SC.RED and "no live assertions" in c["detail"]
     # a deleted guard -> RED
     _write_guards(root, drop={"tests/test_council.py"})
     c2 = SC.check_guards_nonvacuous(root)
     assert c2["status"] == SC.RED and "missing" in c2["detail"]
+    # A guard SKIPPED at module level -> RED. The file is present, parses, and its text still
+    # contains "assert" — which is exactly why the old substring check reported GREEN for it. With
+    # every guard in this shape the whole roster is disabled and the nightly self-check led the
+    # morning briefing all-green; this module's docstring already said a skipped test is RED.
+    _write_guards(root, skip={"tests/test_memory_guard.py"})
+    c3 = SC.check_guards_nonvacuous(root)
+    assert c3["status"] == SC.RED and "skipped at module level" in c3["detail"]
+    # An assertion that exists only in a COMMENT -> RED, same reason.
+    _write_guards(root, commented={"tests/test_ssot_registry.py"})
+    c4 = SC.check_guards_nonvacuous(root)
+    assert c4["status"] == SC.RED and "no live assertions" in c4["detail"]
+    # ...and the whole roster in each disabled shape is RED, not just one file.
+    _write_guards(root, skip=set(SC.GUARD_FILES))
+    assert SC.check_guards_nonvacuous(root)["status"] == SC.RED
 
 
 def test_graph_fresh_stale_absent(tmp_path):

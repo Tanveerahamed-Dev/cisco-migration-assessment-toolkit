@@ -32,9 +32,14 @@ import socket
 import sys
 from typing import Any, Dict, List, Optional
 
+from cisco_toolkit.attestation import loopback_only as _loopback_only
 from cisco_toolkit.retrieval_eval import combine_dual, judge_prompts, judge_schema
 
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "127.0.0.1:11434")
+#: Validated at import: the local-inference carve-out is only a carve-out while the endpoint is
+#: genuinely on-host. See cisco_toolkit.attestation.loopback_only. This judge posts the largest and
+#: most sensitive payload of the three (corpus excerpts, incl. vault-digest text), so an unvalidated
+#: endpoint here is the worst of the three egress paths.
+OLLAMA_HOST = _loopback_only(os.environ.get("OLLAMA_HOST", "127.0.0.1:11434"))
 DEFAULT_MODEL = os.environ.get("OLLAMA_JUDGE_MODEL", "qwen3:4b")
 
 

@@ -1421,6 +1421,10 @@ def write_collection_completeness_sheet(wb, cc: dict, parse_yield: Optional[dict
 
 
 HEALTH_SCORES_SHEET_NAME = "Health Scores"
+
+#: What the Score column shows for a device banded "Insufficient Data". A number there is a claim
+#: about the device; this is the absence-is-not-health marker used across the deliverables.
+HEALTH_NOT_OBSERVED = "[NOT OBSERVED]"
 MIGRATION_READINESS_SHEET_NAME = "Migration Readiness"
 SCORE_SENSITIVITY_SHEET_NAME = "Score Sensitivity"   # NEW-V3.23.5
 _READY_FILL = {"READY": "36E08A", "CAUTION": "FFE566", "NOT READY": "FF5775"}
@@ -1436,21 +1440,40 @@ def write_health_scores_sheet(wb, records: List[dict]) -> None:
         c.alignment = Alignment(horizontal="center")
     for r, rec in enumerate(records, 2):
         _lbl, fill = _health_band(rec["score"])
-        if rec.get("band") == "Insufficient Data":            # NEW-V3.23.7: neutral grey, not green
+        # `Insufficient Data` means the device was never really assessed (collection gap, or an
+        # interface parse that yielded nothing). compute_health_scores computes `score` and
+        # `deductions` BEFORE it overrides the band, so such a record arrives here carrying score=100
+        # and deductions=[] -- and the old render printed exactly that plus the literal word
+        # "healthy", behind nothing but a grey fill. An engineer sorting by Score then saw the
+        # never-collected devices ranked as the fleet's HEALTHIEST assets and de-scoped them. The
+        # score is not a finding about the device; suppress it rather than print a fabricated 100.
+        insufficient = rec.get("band") == "Insufficient Data"
+        if insufficient:                                      # NEW-V3.23.7: neutral grey, not green
             fill = "B0B0B0"
         ws.cell(r, 1, rec["switch"])
-        c = ws.cell(r, 2, rec["score"]); c.fill = PatternFill("solid", fgColor=fill); c.font = Font(bold=True)
+        c = ws.cell(r, 2, HEALTH_NOT_OBSERVED if insufficient else rec["score"])
+        c.fill = PatternFill("solid", fgColor=fill); c.font = Font(bold=True)
         c2 = ws.cell(r, 3, rec["band"]); c2.fill = PatternFill("solid", fgColor=fill)
         role = rec.get("role"); crit = rec.get("criticality")   # asset-criticality weighting (transparency)
         ws.cell(r, 4, f"{role} x{crit:g}" if role else "")
         dq = rec.get("data_quality")
         ws.cell(r, 5, "" if dq is None else f"{int(round(dq * 100))}%")
-        ws.cell(r, 6, "; ".join(rec["deductions"]) if rec["deductions"] else "healthy")
+        if insufficient:
+            ws.cell(r, 6, "not scored - insufficient collection; absence of findings here is a "
+                          "blind spot, NOT a clean result")
+        else:
+            ws.cell(r, 6, "; ".join(rec["deductions"]) if rec["deductions"] else "healthy")
     for i, w in enumerate([16, 8, 11, 15, 13, 80], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
-    avg = round(sum(r["score"] for r in records) / len(records)) if records else 0
-    logger.info(f"  [OK] '{HEALTH_SCORES_SHEET_NAME}' sheet: {len(records)} switch(es), avg score {avg}")
+    # Average the SCORED devices only. An unassessed device carries a fabricated 100, so including it
+    # pulled the fleet average UP in proportion to how much of the fleet was never collected.
+    scored = [r for r in records if r.get("band") != "Insufficient Data"]
+    avg = round(sum(r["score"] for r in scored) / len(scored)) if scored else 0
+    n_blind = len(records) - len(scored)
+    logger.info(f"  [OK] '{HEALTH_SCORES_SHEET_NAME}' sheet: {len(records)} switch(es), avg score "
+                f"{avg} over the {len(scored)} scored"
+                + (f" ({n_blind} not scored - insufficient collection)" if n_blind else ""))
 
 def write_score_sensitivity_sheet(wb, records: List[dict]) -> None:
     """Write the 'Score Sensitivity' sheet from compute_score_sensitivity()."""

@@ -728,6 +728,18 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         doc.add_paragraph(
             "Capture and SAVE the output of these commands before any change, so 'good' is defined by "
             "the pre-change state and the post-cutover checks have a baseline to compare against.")
+        # The CONFIGURATION capture is unconditional, and must stay that way: §x.7's rollback says
+        # "re-apply the pre-change configuration captured in §x.3". Before this, that artifact only
+        # existed on the FALLBACK branch below -- when the snapshot carried a validation plan (the
+        # normal case) this section rendered only the plan's show commands, none of which is
+        # 'show running-config'. So on the hard-cutover path, which tears the legacy config down, the
+        # rollback instructed the engineer to restore a file nobody had been told to make -- mid
+        # outage, inside the window, on production gear. A rollback that cites a non-existent artifact
+        # is not a rollback, and CLAUDE.md guardrail 1 requires production change to carry a real one.
+        steps([f"CONFIGURATION BACKUP (required for the §{wi}.7 rollback): on each of "
+               f"{', '.join(switches) or 'the wave devices'}, capture 'show running-config' and save "
+               f"it to the change record. §{wi}.7 restores from exactly this file; without it the "
+               f"rollback cannot be executed."])
         val_items = _val_items
         cap_cmds = []
         seen_cap = set()
@@ -737,10 +749,22 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                 seen_cap.add((dev, cmd))
                 cap_cmds.append((dev, cmd))
         if cap_cmds:
-            table(["Device", "Command to capture"], cap_cmds[:20], widths=[1.8, 4.6])
+            doc.add_paragraph("State baseline for the post-cutover comparison in "
+                              f"§{wi}.6 (in addition to the configuration backup above):")
+            shown = cap_cmds[:20]
+            table(["Device", "Command to capture"], shown, widths=[1.8, 4.6])
+            # Disclose the cap. §x.6 renders up to 40 checks and tells the engineer every one must
+            # match "its captured baseline"; silently listing 20 baselines against 40 checks makes the
+            # surplus either a guess or an unresolvable comparison. Every other capped table in this
+            # writer discloses its overflow; this one did not.
+            if len(cap_cmds) > len(shown):
+                doc.add_paragraph(
+                    f"…and {len(cap_cmds) - len(shown)} further device/command pair(s) not listed "
+                    f"here — capture the full validation-plan set for this wave, not only the "
+                    f"{len(shown)} shown, or the §{wi}.6 checks beyond that point have no baseline.")
         else:
-            steps([f"On each of {', '.join(switches) or 'the wave devices'}: capture "
-                   "'show running-config', 'show ip interface brief', 'show cdp neighbors', "
+            steps([f"On each of {', '.join(switches) or 'the wave devices'}: also capture "
+                   "'show ip interface brief', 'show cdp neighbors', "
                    "'show spanning-tree summary', and (if L3) 'show ip route' / 'show standby brief'."])
 
         # 2.x.4 port / interface mapping & staged configuration (AS migration-service deliverable)

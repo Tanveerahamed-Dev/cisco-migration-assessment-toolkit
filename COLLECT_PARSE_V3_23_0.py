@@ -1209,13 +1209,22 @@ def load_devices(devices_file: str, allow_prompt: bool = True) -> List[dict]:
     }
     for d in data:
         if not isinstance(d, dict):
-            raise ValueError(f"Each devices.json entry must be a JSON object, got {type(d).__name__}: {d!r}")
+            # Same reasoning as the missing-key raise below: the value is caller-supplied and can
+            # carry a credential (a bare "user:pass@host" string), so report its TYPE, not its bytes.
+            raise ValueError(f"Each devices.json entry must be a JSON object, got {type(d).__name__}")
         for alias, key in [("host","ip"),("address","ip"),("name","hostname"),
                            ("user","username"),("pass","password"),("secret","password")]:
             if alias in d and key not in d: d[key] = d[alias]
         for k in ("ip","hostname","username"):     # CHANGED-V3.23.1: 'password' no longer
             if k not in d:                          # hard-required - it may come from env/getpass
-                raise ValueError(f"Missing '{k}' in devices.json entry: {d}")
+                # Name the entry by its IDENTIFYING keys only, never by dumping `d`. The alias pass
+                # three lines above has already copied `pass`/`secret` into d['password'], so
+                # formatting the whole entry put a production device credential in cleartext into an
+                # uncaught traceback -- and, driven from AssessHub, into the web UI's error text
+                # (ingest.py concatenates the engine's stdout+stderr into an EngineRunError message).
+                ident = ", ".join(f"{a}={d[a]!r}" for a in ("hostname", "ip") if a in d) or "<unnamed>"
+                raise ValueError(f"Missing '{k}' in devices.json entry ({ident}). "
+                                 f"Entry keys present: {sorted(d)}")
         for k in ("ip","hostname","username"):
             d[k] = (d.get(k) or "").strip()
         # NEW-V3.23.1: resolve the password WITHOUT forcing plaintext into the file.

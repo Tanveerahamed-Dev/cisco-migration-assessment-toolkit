@@ -863,6 +863,32 @@ def _slim_ports(ports) -> dict:
             for port, rec in ports.items()}
 
 
+def _script_safe_json(value) -> str:
+    """``json.dumps`` hardened for the HTML ``<script>`` DATA context — which is NOT the JS string
+    context ``json.dumps`` alone is correct for.
+
+    Inside ``<script>...</script>`` the HTML tokenizer runs before the JS parser, so a few byte
+    sequences change what the browser considers script text no matter how well-formed the JS is:
+
+      * ``</script`` closes the element early — the classic break-out.
+      * ``<!--`` enters script-data-escaped state, and a following ``<script`` enters
+        script-data-double-escaped, in which the template's own ``</script>`` no longer closes the
+        element. Neither sequence contains ``</``, so the old ``.replace("</", "<\\\\/")`` missed both.
+
+    Escaping EVERY ``<`` as ``\\u003c`` makes all three transitions inexpressible, and is lossless:
+    ``<`` only ever occurs inside JSON string values here, and ``\\u003c`` is a valid escape in both
+    JSON and JS that parses back to ``<``. U+2028/U+2029 are escaped too because ``ensure_ascii=False``
+    would otherwise emit them raw, and they are JS line terminators inside a string literal.
+
+    This is the ONE encoder for anything interpolated into the explorer's script block; the defect it
+    replaces came from the payload and the label being hardened differently.
+    """
+    out = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+    return (out.replace("<", "\\u003c")
+               .replace("\u2028", "\\u2028")
+               .replace("\u2029", "\\u2029"))
+
+
 def _slim_for_embed(snap_dict: dict) -> dict:
     """Return a display-neutral, size-reduced copy of the snapshot for embedding in the
     explorer HTML. Pure (input not mutated); see the block comment above for why each
@@ -906,9 +932,8 @@ def write_html_explorer(output_path: str, snap_dict: dict, label: str) -> None:
       * Missing template -> warn and skip (never crash a run whose workbook already saved).
       * Bootstrap line absent (template changed) -> warn and skip.
       * Snapshot is minified (separators=(',',':')) to keep the embedded payload small.
-      * Any literal '</' inside the data is escaped to '<\\/' so the JSON can never
-        break out of the <script> block (valid JSON escape; parses back to '</').
-      * label is emitted via json.dumps() -> a properly quoted/escaped JS string literal.
+      * BOTH the payload and the label are emitted via ``_script_safe_json`` -- see there. Neither
+        device-derived text nor the caller-supplied label can break out of the <script> block.
     """
     # The explorer template ships INSIDE the package (cisco_toolkit/blast_radius_explorer.html), so it is
     # present in a built wheel and resolves the same whether the package is run from a checkout or a
@@ -931,10 +956,17 @@ def write_html_explorer(output_path: str, snap_dict: dict, label: str) -> None:
         return
 
     slim = _slim_for_embed(snap_dict)                  # NEW-V3.23.90: shrink the in-page payload only
-    embedded = json.dumps(slim, separators=(",", ":"), ensure_ascii=False)
-    embedded = embedded.replace("</", "<\\/")          # cannot break out of <script>
+    # BOTH values go through the same hardening. The label used to get a bare json.dumps() while the
+    # payload beside it got the '</' treatment, and that asymmetry WAS the bug: json.dumps produces a
+    # correct JS string literal but says nothing about the HTML <script> DATA context, so a label of
+    # `pwn</script><script>alert(document.domain)</script>` closed the block early and the injected
+    # script ran under the template's own `script-src 'unsafe-inline'` CSP. The label is
+    # attacker-reachable -- AssessHub takes it as an unsanitized form field that falls back to the
+    # UPLOADED FILENAME, stores it, and serves it back from the explorer route -- so this was stored
+    # XSS with same-origin access to every stored client snapshot.
+    embedded = _script_safe_json(slim)
     replacement = (f"const EMBEDDED_SNAPSHOT={embedded};\n"
-                   f"load(EMBEDDED_SNAPSHOT,{json.dumps(label)},true);")
+                   f"load(EMBEDDED_SNAPSHOT,{_script_safe_json(label)},true);")
 
     # Replace ONLY the last occurrence (the bootstrap), not the button's onclick.
     head, _sep, tail = html.rpartition(bootstrap)

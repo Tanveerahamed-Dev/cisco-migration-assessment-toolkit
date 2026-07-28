@@ -23,7 +23,11 @@ import socket
 import sys
 from typing import Any, Dict, List
 
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "127.0.0.1:11434")
+from cisco_toolkit.attestation import loopback_only as _loopback_only
+
+#: Validated at import: the local-inference carve-out is only a carve-out while the endpoint is
+#: genuinely on-host. See cisco_toolkit.attestation.loopback_only.
+OLLAMA_HOST = _loopback_only(os.environ.get("OLLAMA_HOST", "127.0.0.1:11434"))
 OLLAMA_EMBED_MODEL = os.environ.get("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 
 

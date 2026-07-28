@@ -44,8 +44,11 @@ from typing import Any, Callable, Dict, List, Optional
 
 from cisco_toolkit import defect_panel as P
 from cisco_toolkit import scorecard as SCD
+from cisco_toolkit.attestation import loopback_only as _loopback_only
 
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "127.0.0.1:11434")
+#: Validated at import: the local-inference carve-out is only a carve-out while the endpoint is
+#: genuinely on-host. See cisco_toolkit.attestation.loopback_only.
+OLLAMA_HOST = _loopback_only(os.environ.get("OLLAMA_HOST", "127.0.0.1:11434"))
 DEFAULT_MODEL = os.environ.get("OLLAMA_JUDGE_MODEL", "qwen3:4b")   # 8b swaps on a 16GB CPU host; 4b fits
 
 

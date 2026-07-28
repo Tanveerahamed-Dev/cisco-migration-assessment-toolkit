@@ -94,7 +94,11 @@ def test_known_good_reconciles_clean():
     """Precondition on the fixture itself: it must be a genuine SSOT-clean deliverable."""
     snap = known_good_snapshot()
     assert ssot.reconcile(snap) == []
-    assert ssot.summary(snap) == {"verified": True, "n_facts": 14, "n_violations": 0}
+    # n_checked is the count of facts actually RECONCILED against raw evidence, and is asserted
+    # non-zero on purpose: n_facts alone counts what was PUBLISHED, so a snapshot stripped of its raw
+    # arrays would publish 14 and reconcile 0 while still reporting an empty violation list.
+    assert ssot.summary(snap) == {"verified": True, "n_facts": 14, "n_checked": 16,
+                                  "n_violations": 0}
 
 
 def test_known_good_scores_100_smoke():

@@ -19,9 +19,50 @@ No I/O beyond reading this package's own source files; no network; no new depend
 import ast
 import importlib
 import importlib.util
+import ipaddress
 import os
 import re
 from datetime import datetime, timezone
+
+def loopback_only(hostport: str, *, env_var: str = "OLLAMA_HOST") -> str:
+    """Return ``hostport`` if it names a LOOPBACK endpoint; raise ``ValueError`` otherwise.
+
+    ADR-0001 Amendment 1 carves out exactly one exception to the no-egress doctrine: a **local**
+    Ollama on 127.0.0.1, on the grounds that on-host compute is not egress. That reasoning holds only
+    while the endpoint really is on-host. The three helpers read their endpoint from ``$OLLAMA_HOST``
+    — Ollama's own standard variable, so it is plausibly already set in a shell profile — and built
+    ``f"http://{OLLAMA_HOST}/api/chat"`` from it with no validation, so a single
+    ``OLLAMA_HOST=ollama.corp.example:11434`` silently turned the carve-out into real egress. The
+    payloads make that serious: the retrieval judge posts excerpts from a corpus built out of every
+    git-tracked ``*.py``/``*.md`` plus verified vault-digest entries.
+
+    Deliberately does NOT resolve names: a DNS lookup for an attacker- or misconfiguration-supplied
+    host is itself a network round trip, and resolving would let a hostname that happens to map to
+    127.0.0.1 today point elsewhere tomorrow. An IP literal, or the exact name ``localhost``, only.
+    """
+    host = (hostport or "").strip()
+    if host.startswith("["):                                   # [::1]:11434
+        host = host[1:].split("]", 1)[0]
+    elif host.count(":") == 1:                                 # host:port (never a bare IPv6)
+        host = host.split(":", 1)[0]
+    host = host.strip()
+    if host.lower() == "localhost":
+        return hostport
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError as e:
+        raise ValueError(
+            f"{env_var}={hostport!r} is not a loopback endpoint. The local-inference carve-out "
+            f"(ADR-0001 Amendment 1) permits ON-HOST compute only, so this must be an IP literal on "
+            f"127.0.0.0/8 or ::1, or the name 'localhost'. Cloud/remote LLM calls stay forbidden."
+        ) from e
+    if not ip.is_loopback:
+        raise ValueError(
+            f"{env_var}={hostport!r} points OFF-HOST ({ip}). That is egress, which this repo's "
+            f"no-egress doctrine forbids; the ADR-0001 Amendment 1 carve-out covers a local Ollama "
+            f"on 127.0.0.1 only.")
+    return hostport
+
 
 ATTESTATION_SCHEMA = "attestation/1"
 

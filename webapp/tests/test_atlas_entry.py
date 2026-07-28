@@ -291,7 +291,7 @@ def test_run_collection_folder_enforces_file_count_cap(monkeypatch, tmp_path):
 
 def test_ingest_folder_route_stores_snapshot_with_report(client, monkeypatch):
     monkeypatch.setattr(ing, "run_collection_folder",
-                        lambda p: ({"devices": {"c1": {}}, "interfaces": [1]},
+                        lambda p, **kw: ({"devices": {"c1": {}}, "interfaces": [1]},
                                    {"n_device_dirs": 1, "devices": ["c1"]}))
     cid = _campaign(client)
     r = client.post(f"/api/campaigns/{cid}/ingest-folder",
@@ -303,7 +303,7 @@ def test_ingest_folder_route_stores_snapshot_with_report(client, monkeypatch):
 
 def test_ingest_folder_route_defaults_label_to_folder_name(client, monkeypatch):
     monkeypatch.setattr(ing, "run_collection_folder",
-                        lambda p: ({"devices": {"c1": {}}, "interfaces": [1]}, {}))
+                        lambda p, **kw: ({"devices": {"c1": {}}, "interfaces": [1]}, {}))
     cid = _campaign(client)
     r = client.post(f"/api/campaigns/{cid}/ingest-folder", json={"path": "C:/collections/siteA"})
     assert r.status_code == 201
@@ -312,13 +312,13 @@ def test_ingest_folder_route_defaults_label_to_folder_name(client, monkeypatch):
 
 def test_ingest_folder_route_404_unknown_campaign(client, monkeypatch):
     monkeypatch.setattr(ing, "run_collection_folder",
-                        lambda p: ({"devices": {"c1": {}}, "interfaces": [1]}, {}))
+                        lambda p, **kw: ({"devices": {"c1": {}}, "interfaces": [1]}, {}))
     assert client.post("/api/campaigns/99999/ingest-folder",
                        json={"path": "C:/x"}).status_code == 404
 
 
 def test_ingest_folder_route_maps_ingest_error_to_400(client, monkeypatch):
-    def _bad(path):
+    def _bad(path, **kw):
         raise ing.IngestError("not a directory")
 
     monkeypatch.setattr(ing, "run_collection_folder", _bad)
