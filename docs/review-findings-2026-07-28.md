@@ -190,3 +190,89 @@ the Windows race originally named.
 `:344` `_whoami` is env-forgeable, so every audit `who` is self-asserted ·
 `:107` a whitespace-only `--engagement` downgrades the ownership refusal to proximity matching ·
 `:137` five engine line-number citations in the module docstring are stale.
+
+---
+
+# Round 2 — the surfaces round 1 never looked at
+
+Round 1 was breadth-complete but **depth-sampled** (8 candidates per partition) and covered **Python
+only**. The coverage ledger below is what made that measurable, and it is why round 2 exists.
+
+## Coverage ledger (`git ls-files`, code only)
+
+| Area | Files | Lines | Round 1 | Round 2 |
+|---|---:|---:|---|---|
+| `tests/` + `webapp/tests/` | 209 | 53,221 | pattern-audit | **exhaustive AST scan** (205 files / 2,772 test fns) |
+| `cisco_toolkit/` | 71 | 63,398 | per-file | deep re-pass on `analyze.py`; **`blast_radius_explorer.html` (10,500 lines) reviewed for the first time** |
+| `webapp/frontend/` | 46 | 7,876 | **never reviewed** | api + pages, components |
+| `webapp/backend/` | 16 | 5,907 | per-file | `graph.py` (via the frontend findings) |
+| `.claude/` + `.github/` | 14 | 1,185 | **never reviewed** | hooks + workflows |
+| root, `portable/`, `research_lane/` | 19 | 6,092 | per-file | — |
+| *excluded:* `.design-sync/` | 21 | 1,023 | side-engagement scratch (CLAUDE.md) | — |
+| **total** | **396** | **138,702** | | |
+
+## What round 2 found
+
+Roughly 90 further findings. The three that matter most:
+
+1. **Three hooks were completely dead on this machine.** `python3` here is the Microsoft Store
+   App-Execution-Alias stub — it prints "Python was not found" and exits 49 — and `|| true` swallowed
+   it, so each hook exited 0 having emitted ZERO bytes. One was the `UserPromptSubmit` hook that
+   injects the operating protocol, so **every prompt in every session ran without it**. Nothing could
+   see this: `.claude/settings.json` was read by no test, and only 4 of 9 hooks were ever executed by
+   one. Measured 0 bytes before / 3756 after.
+2. **`verify-green.sh` went inert once changes were COMMITTED** — it read the working tree only, so
+   the repo's most load-bearing gate stopped applying at the ordinary end of a turn's work.
+   Reproduced: identical red suite blocks at exit 2 uncommitted, allows at exit 0 committed.
+3. **The explorer carries a second reachability engine with no behavioural gate.** The existing
+   parity test executes real JS but covers only the FIB tracer; the model core (`buildModel`,
+   `failureImpact`, `tracePath`, `compareModels`) had none, and held 8 divergences from `analyze.py`
+   — including a single-homed path advertised as an STP "transient outage" while the correct
+   "permanent partition" warning sat in the file as **dead code**.
+
+Also: `/graph` matched canonicalised names against RAW hostnames, so any fleet named `[HISTORY-REDACTED]-CORE-01`
+(the Cisco norm) returned **zero edges** — 25 → 0 — drawn as a fabric with an empty SPOF overlay; a
+management VRF made a FLAT fabric grade `advisory` instead of `deviation` (conformance weight 0.7 vs
+0.35); `archreview` counted a port with BPDU Guard **explicitly disabled** as guarded, while
+`design_advisor` counted the same port unguarded off the same field; and `_APP_BAND_RANK` ranked
+"Insufficient Data" *better* than Excellent, so a domain of never-collected switches was nominated as
+the **pilot** wave.
+
+## Self-inflicted, caught by refutation — recorded because they are the useful part
+
+- The `n_checked` field added in round 1 was rendered by `docmeta` as `{n_checked} of {n_facts}`.
+  They are different units (one fact reconciles against several bases), so all seven DOCX
+  deliverables shipped **"20 of 14 headline figures self-verified"** — more than the whole. Found by
+  the SSOT audit, not by me.
+- The suite-non-vacuity meta-guard enumerated via `git ls-files`, so an **untracked** file — the
+  exact case it exists to catch — was invisible, and all three assertions passed over planted
+  violations.
+- The first `/graph` reproduction recursed into field names and renamed `cdp_neighbor` itself,
+  "reproducing" the defect for the wrong reason.
+- The `verify-green` scope test went clean→modified, moving `git status` too, so it passed with
+  content removed from the state key.
+- The explorer's new parity gate was one-sided ("never healthier") and stayed green through a
+  reverted fix; it now asserts both directions.
+
+Every one surfaced by planting the violation and watching the guard NOT go red. A test that has
+never been observed failing is not evidence.
+
+## Open tail — reported, deliberately not fixed
+
+These are real and grounded; each was left because the fix needs a decision, a toolchain, or a blast
+radius outside a review's remit. They are the honest answer to "is the repo now clean?" — no.
+
+| Where | Why not fixed |
+|---|---|
+| `Snapshot.tsx` / `Execution.tsx` — deliverable downloads are plain `<a download>`, so a 403/500/503 body is saved to disk AS the DOCX, and the backend's `X-Gate-Status` disclosure (an unmet PPDIOO gate) is unreadable | needs a fetch+blob download path — the app's primary artifact channel in the field; not safe to rewrite without browser verification |
+| `html._slim_for_embed` strips the `[NOT OBSERVED]` physical-health rows before the explorer sees them | an explorer-side fix alone is inert; needs both halves |
+| four more `badge b-ok">clean` claims in the explorer (layer heatmap, path hazards, addressing, STP root) | each needs its own "was this axis collected?" predicate; a wrong one turns a real pass into a false blind spot |
+| `_linkSig2` (reachability matrix) repeats the parallel-link collapse fixed in `compareModels` | outside the reviewed line range |
+| explorer has no `ecmp_dropping_legs` / `drop_evidence` equivalent | `fib.py` gained them opt-in specifically to keep parity green; surfacing them is a UI decision |
+| `webapp/tests` is in the default testpaths but gated by NO required branch-protection check | adding web deps to a required matrix job risks wedging every merge |
+| `ci.yml` reroutes every matrix job to the self-hosted pool via `vars.CI_RUNNER`, so 5 required checks say `ubuntu-latest` while Linux is never exercised | fleet policy; renaming would change the required contexts |
+| gateway-SVI predicate differs between `segmentation` (VlanN + svi_ip) and `l3_forwarding` (svi_ip OR hsrp OR route) | agrees today; the fix is a producer-level decision in `excel.py` |
+| `CausalFlow` draws `blast === 0` (the not-measured sentinel) as the thinnest connector | the payload carries no separate unmeasured flag, and 0 is also a legitimate measured value |
+| `onWheel` `preventDefault()` is a no-op (React registers `wheel` passive) | needs a ref + non-passive listener; jsdom does not enforce passive semantics, so any test here would pass either way |
+| `vault-guard.sh` over-blocks vault SIBLINGS (`brainstorm/`) | its declared recall-over-precision posture; tightening REDUCES a security control's reach |
+
