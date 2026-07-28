@@ -288,7 +288,7 @@ radius outside a review's remit. They are the honest answer to "is the repo now 
 | four more `badge b-ok">clean` claims in the explorer (layer heatmap, path hazards, addressing, STP root) | each needs its own "was this axis collected?" predicate; a wrong one turns a real pass into a false blind spot |
 | `_linkSig2` (reachability matrix) repeats the parallel-link collapse fixed in `compareModels` | outside the reviewed line range |
 | explorer has no `ecmp_dropping_legs` / `drop_evidence` equivalent | `fib.py` gained them opt-in specifically to keep parity green; surfacing them is a UI decision |
-| `webapp/tests` is in the default testpaths but gated by NO required branch-protection check | adding web deps to a required matrix job risks wedging every merge |
+| `webapp/tests` is in the default testpaths but never EXECUTES in a required check — mechanism verified below | the obvious fix contradicts a documented design decision; see below |
 | `ci.yml` reroutes every matrix job to the self-hosted pool via `vars.CI_RUNNER`, so 5 required checks say `ubuntu-latest` while Linux is never exercised | fleet policy; renaming would change the required contexts |
 | gateway-SVI predicate differs between `segmentation` (VlanN + svi_ip) and `l3_forwarding` (svi_ip OR hsrp OR route) | agrees today; the fix is a producer-level decision in `excel.py` |
 | `CausalFlow` draws `blast === 0` (the not-measured sentinel) as the thinnest connector | the payload carries no separate unmeasured flag, and 0 is also a legitimate measured value |
@@ -409,10 +409,22 @@ protecting and which a strictly-greater test would have broken.
 intermittently, naming a different test each time (`test_the_note_never_claims_safety_over_an_
 uncertified_leftover`, `test_stale_names_…`, `test_an_untouched_note_is_still_cleared_…`). It is
 **pre-existing** — proven by stashing all of this session's work and reproducing at HEAD. It passes
-in isolation and in fixed order. The mtime fix above is a real defect fixed on its own evidence, but
-it is **NOT proven to be the cause of this flake**: a repro that looked deterministic stopped
-reproducing on both sides of the fix, so the two are not shown to be connected. Left open rather
-than declared solved.
+in isolation and in fixed order.
+
+On whether the mtime fix above is its cause, this register contradicted itself and the contradiction
+is worth keeping rather than smoothing over. **Round 2 finding #98 already recorded this flake, named
+the same mechanism, and marked it `verified`** — "`_written_by_this_run` compares (mtime, size) and
+the fake engine writes identical bytes twice". Round 3 then re-derived the same mechanism
+independently, from the production side rather than the test side, and proved the blindness directly
+(`st_mtime` delta `0.0` on every same-size rewrite).
+
+So the mechanism has now been arrived at twice, by two routes. What I could NOT do today is
+demonstrate the causal link on demand: a repro that looked deterministic stopped reproducing on
+**both** sides of the fix. That is weak evidence about the mechanism and strong evidence about the
+measurement — the same suite timed 440s and 1326s on an identical tree, so this box cannot hold a
+timing window still long enough to bisect one. The honest statement is therefore: **cause identified
+with good confidence and fixed on its own merits; elimination of the flake NOT observed.** It stays
+open until a full run demonstrates it, not because the diagnosis is doubted.
 
 ## Two errors of mine, recorded because the review is the wrong place to be tidy
 
@@ -422,3 +434,32 @@ than declared solved.
   forcing it, so it pinned nothing — the exact class this review exists to find, written by the
   reviewer. Replaced with one that simulates the coarse tick deterministically and was then shown to
   fail without the fix and pass with it.
+
+## The `webapp/tests` gate gap, traced end to end
+
+Recorded earlier as a remembered claim; here is the verified chain, because the fix that looks
+obvious is the wrong one.
+
+1. `pytest.ini` sets `testpaths = tests webapp/tests` — both ARE in the default gate.
+2. `.github/workflows/ci.yml:74` runs a bare `python -m pytest`, so the required Tests matrix DOES
+   collect `webapp/tests`.
+3. But `ci.yml` installs only `requirements.txt -r requirements-dev.txt`, and **neither declares
+   `fastapi` or `httpx`** (grepped: zero hits).
+4. `webapp/tests/conftest.py` therefore sets `collect_ignore_glob = ["test_*.py"]` and the whole
+   directory is un-collected — the Atlas redaction suite, the security-hardening suite, the
+   DNS-rebinding allowlist and the unplug-safety suite among them.
+5. They execute only in `webapp-ci.yml:53` (`python -m pytest webapp/tests -q`), which is
+   **path-filtered**.
+
+So the safety suites are collected by a required check and run by a path-filtered one. To this
+repo's credit the un-collection is **loud, by design**: `pytest_report_collectionfinish` prints
+"webapp/tests: NOT COLLECTED — missing … this run's green does not cover them", added precisely
+because `-q` had made a silently-dropped directory look identical to a full pass.
+
+**Why the obvious fix is not obviously right.** Adding `fastapi`/`httpx` to `requirements-dev.txt`
+would make the required matrix run these suites — but the conftest's docstring states the opposite
+intent explicitly: engine-only environments "must skip this directory cleanly", and the engine's own
+CI matrix is named as one of them. Changing that makes every engine matrix job install the web stack.
+That is an architecture decision (does the engine's gate own the web layer's safety suites?), not a
+review fix, so it stays open. The alternative — making `webapp-ci` a required context — is a
+branch-protection change, equally the owner's call.
