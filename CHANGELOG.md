@@ -7,6 +7,42 @@ per change, with verification evidence) lives in
 ## [Unreleased]
 
 ### Fixed
+- **Whole-repo code review — 98 findings closed** (`docs/review-findings-2026-07-28.md` is the
+  register, with per-row status and a limits section). One class dominated every subsystem:
+  **absence of evidence rendered as health**. The workbook stamped `ok` on ports whose
+  `show interfaces` counters were never collected; readiness passed STP and port-channel checks on
+  evidence that was never gathered; an access switch homed to an *uncollected* core reported "no
+  single-homed switch"; an unmeasured host was published with a fabricated `data_quality: 1.0`;
+  `ops.py` counted a null FHRP as first-hop-*redundant*. Two findings invert the same fabrication —
+  the design advisor reported every endpoint port as UNGUARDED when the run-config channel simply
+  had not landed.
+- **The instruments that certify were certifying nothing.** `ssot.summary` reported
+  `verified: True` having reconciled zero facts (it now returns `n_checked`, and `verified` requires
+  it); `selfcheck.check_guards_nonvacuous` grepped for the substring `"assert"`, so all 15 guard
+  suites could be `pytest.mark.skip`-ped and still read GREEN (now AST-parsed); the no-egress
+  attestation published "0 network-library imports" from a walk that never entered subpackages —
+  which is why its documented exception was dead code.
+- **The meta-gate was never executed.** `verify-green.sh`, the Stop hook every other test's meaning
+  rests on, was pinned by two substring greps and never run. Executing it exposed a change detector
+  that missed any path git has to quote. Both fixed and mutation-tested.
+- **Share-safety.** `--redact-collection` reported the *flag* rather than whether the scrub ran, so
+  exit 0 told a field engineer secrets were gone from the stick; an earlier run's snapshot and phase
+  ledger could certify a later one; three failure exits left partial `*_redacted*` files with no
+  DO-NOT-SEND marker; `make_stick.ps1` pinned its `data\` exclusion only on the destination, so a
+  source `data\` mirrored the dev box's store over the field evidence and purged the backups.
+- **Security.** Stored XSS in the explorer label (reachable from an unsanitized upload label that
+  falls back to the filename); the SPA catch-all called `Path.resolve()` on a raw URL path, so a UNC
+  path triggered a live outbound SMB lookup (measured 42.3s, leaking NTLMv2); `/ingest-folder` read
+  any server directory with no containment; `OLLAMA_HOST` was unvalidated, turning the ADR-0001
+  on-host carve-out into real egress; `load_devices` formatted the device password into a ValueError
+  that reaches the AssessHub error body; 17 controller-REST strings were being typed at live device
+  exec prompts.
+- **Wrong answers an engineer acts on.** Two-token IOS route codes (`O IA`, `O E2`, `D EX`, `i L1`)
+  matched nothing, so those routes vanished from the RIB *and* their next-hops grafted onto the
+  previous prefix as phantom ECMP; an unparseable entry in a CVE's fixed-list was dropped, shipping a
+  remediation MOP whose target release is still vulnerable; ECMP was a pure existential, so a
+  destination with one blackholing leg certified reached; the MOP's rollback cited a configuration
+  capture the document never told anyone to take.
 - **Atlas `--redact-folder` no longer reports a short deliverable set as success** (#438): every
   engine deliverable writer is fail-soft (logs a warning, continues, exits 0 — deliberate, and
   unchanged), so a run that rendered all but two documents printed the survivors as though they
