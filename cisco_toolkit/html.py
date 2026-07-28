@@ -16,6 +16,7 @@ from openpyxl.utils import get_column_letter
 from cisco_toolkit import __version__
 from cisco_toolkit.model import DevicePhysical, InterfaceData
 from cisco_toolkit.brand_tokens import WORKBOOK_NAVY_HEX
+from cisco_toolkit.textutils import is_finite_num, xml_safe as _cv
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +25,17 @@ _DIFF_FIELDS = ["status", "switchport_mode", "vlan", "trunk_native_vlan",
                 "trunk_allowed_vlans", "stp_blocked", "port_channel",
                 "svi_ip", "hsrp_behavior", "subnet_primary_route"]
 
-def _macset(s: str) -> set:
-    return set(t for t in re.split(r"[,\s;]+", s or "") if t)
+def _macset(s) -> set:
+    """The MAC-address set of an interface's mac field, tolerant of a malformed value.
+
+    `s or ""` guards None/empty but keeps a TRUTHY non-str (an int, or the `float('inf')` json.loads
+    makes of a bare JSON `Infinity`), and `re.split` then raises `TypeError: expected string or
+    bytes-like object` -- aborting the whole --compare workbook. A container is not a MAC list at all
+    (-> empty set, i.e. 'not observed'); a non-str SCALAR is stringified so a value that really was a
+    single MAC-ish token is still compared rather than silently dropped."""
+    if not isinstance(s, str):
+        s = "" if s is None or isinstance(s, (dict, list, tuple, set)) else str(s)
+    return set(t for t in re.split(r"[,\s;]+", s) if t)
 
 
 # Pre/post-cutover VALIDATION (NEW-V3.23.106). Beyond the raw interface/SVI/MAC diff, compare the
@@ -62,6 +72,53 @@ def _as_dict(x):
     scalar from a malformed --compare/--trend snapshot) flowed into .values()/set() and raised (audit-5 totality);
     `.get(k, {})` likewise returns None for a present-but-null key."""
     return x if isinstance(x, dict) else {}
+
+
+def _renderable_num(v) -> bool:
+    """True for a number that arithmetic and cell-rendering can both survive.
+
+    `isinstance(v, (int, float))` is NOT enough for a value read out of an untrusted snapshot:
+    `json.loads` accepts integer literals of unbounded precision (`10**400` -> OverflowError on any
+    float conversion, including `sum()/len()` and openpyxl's cell writer) and the bare `Infinity` /
+    `-Infinity` / `NaN` tokens (which propagate through an average into a rendered figure).
+
+    Delegates to the ONE owner (textutils.is_finite_num, shared with ssot.reconcile and causal), and
+    keeps `bool` accepted here only because the pre-existing `isinstance(v, (int, float))` filter this
+    replaces accepted it (bool is an int subclass) and a band tally must not change silently."""
+    return isinstance(v, bool) or is_finite_num(v)
+
+
+def _skey(x):
+    """A TOTAL sort key for a set of snapshot-derived labels of possibly MIXED type.
+
+    `sorted()` over a set built from device-derived leaves assumes every member is the same type, but a
+    JSON snapshot can carry `"switch": 10` on one row and `"switch": "10"` on the next (a foreign-tool
+    export, an older schema, a hand-trim) -- and Python 3 raises
+    `TypeError: '<' not supported between instances of 'str' and 'int'`. Unlike the unhashable case this
+    needs no poison at all: two ordinary, JSON-legal rows are enough.
+
+    Strings sort FIRST and EXACTLY as before (the `(0, x)` branch compares the raw str), so the ordering
+    of every well-formed snapshot is byte-identical; non-strings are grouped after them and ordered by
+    their repr, which is deterministic and never raises."""
+    return (0, x) if isinstance(x, str) else (1, str(x))
+
+
+def _hkey(x):
+    """A HASHABLE form of a snapshot LEAF about to be used as a dict key or as the left operand of an
+    `in <dict>` test. _as_dict/_as_list guard the section's SHAPE; this guards the leaf inside a row.
+
+    A dict/list where a label is expected (`health_scores[].switch`, `migration_readiness[].readiness`)
+    is unhashable, and `{r.get('switch'): r}` / `r.get('readiness') in readiness` then raises
+    `TypeError: unhashable type: 'dict'` -- which ABORTS write_diff_workbook and write_campaign_workbook
+    (the --compare / --trend deliverables) and 500s the webapp diff/trend routes on every later read of
+    a stored snapshot. Hashable values pass through UNCHANGED (keys, dedup and sort order over real data
+    are untouched); only the unhashable poison is stringified, so it stays a DISTINCT key rather than
+    silently merging rows or dropping a device. Twin of design_advisor._hkey (audit-7)."""
+    try:
+        hash(x)
+        return x
+    except TypeError:
+        return str(x)
 
 
 def _as_list(x):
@@ -108,12 +165,14 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
     # must degrade, not AttributeError on r.get (audit-4 #15). The ELEMENT filter was present but the SECTION
     # was not coerced -- `health_scores: 5` survives `or []` and dies on `for r in 5` (_as_list, both operands:
     # a guard on only `old` leaves the identical crash reachable through `new` on the same route).
-    oh = {r.get("switch"): r for r in _as_list(old.get("health_scores")) if isinstance(r, dict)}
-    nh = {r.get("switch"): r for r in _as_list(new.get("health_scores")) if isinstance(r, dict)}
+    # _hkey on the KEY leaf: an unhashable dict/list `switch` raised TypeError here, aborting the whole
+    # --compare workbook (and 500ing the webapp diff route) on a snapshot that is stored and re-read.
+    oh = {_hkey(r.get("switch")): r for r in _as_list(old.get("health_scores")) if isinstance(r, dict)}
+    nh = {_hkey(r.get("switch")): r for r in _as_list(new.get("health_scores")) if isinstance(r, dict)}
     regressed: List[dict] = []
     improved: List[dict] = []
     coverage_shifts: List[dict] = []   # transitions in/out of 'Insufficient Data' (coverage events, not health)
-    for sw in sorted(set(oh) & set(nh)):
+    for sw in sorted(set(oh) & set(nh), key=_skey):     # _skey: mixed-type switch labels must not raise
         ob, nb = oh[sw].get("band", ""), nh[sw].get("band", "")
         if ob == nb:
             continue
@@ -195,7 +254,7 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
                         f"{_cs.get('n_no_longer_observed', 0)} no longer observed")
 
     # ---- verdict ----
-    removed_sw = sorted(set(od) - set(nd))
+    removed_sw = sorted(set(od) - set(nd), key=_skey)
     if n_opened_high or regressed or n_newly_blocked or n_cables_down:
         verdict = "REGRESSED"
         bits = []
@@ -300,7 +359,7 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
 
     # Summary (leads with the cutover-validation VERDICT)
     ws = sheet("Summary", ["Metric", "Old", "New", "Delta"])
-    added_sw = sorted(set(nd) - set(od)); removed_sw = sorted(set(od) - set(nd))
+    added_sw = sorted(set(nd) - set(od), key=_skey); removed_sw = sorted(set(od) - set(nd), key=_skey)
     # SSOT (Law 1): the fleet size and the interface totals are the delta's -- `_scn()` = the canonical
     # executive_brief.scale.n_devices, with len() only as the pre-brief fallback, and the _as_dict-guarded
     # interface count. compute_snapshot_delta (just above) already ran on these SAME two inputs and is what
@@ -341,7 +400,7 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
     r = 2
     for m in metrics:
         for c, v in enumerate(m, 1):
-            cell = ws.cell(row=r, column=c, value=v); cell.font = DF; cell.alignment = AL
+            cell = ws.cell(row=r, column=c, value=_cv(v)); cell.font = DF; cell.alignment = AL
         if m[0] == "CUTOVER VERDICT":
             vc = ws.cell(row=r, column=3)
             vc.fill = PatternFill("solid", fgColor=_VERDICT_FILL.get(delta["verdict"], "FFFFFF"))
@@ -352,9 +411,9 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
     # Interface Changes
     ws = sheet("Interface Changes", ["Hostname", "Port", "Change", "Field: Old -> New"])
     r = 2
-    for host in sorted(set(oi) | set(ni)):
+    for host in sorted(set(oi) | set(ni), key=_skey):
         op, npp = oi.get(host, {}), ni.get(host, {})
-        for port in sorted(set(op) | set(npp)):
+        for port in sorted(set(op) | set(npp), key=_skey):
             o, n = op.get(port), npp.get(port)
             if o is None and n is None:
                 continue
@@ -369,32 +428,32 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
                 if not deltas:
                     continue
             for c, v in enumerate([host, port, change, " | ".join(deltas)], 1):
-                cell = ws.cell(row=r, column=c, value=v); cell.font = DF; cell.alignment = AL
+                cell = ws.cell(row=r, column=c, value=_cv(v)); cell.font = DF; cell.alignment = AL
             r += 1
     autofit(ws, 4); ws.column_dimensions["D"].width = 70
 
     # Endpoint (MAC) Changes
     ws = sheet("Endpoint Changes", ["Hostname", "Port", "Change", "MAC"])
     r = 2
-    for host in sorted(set(oi) | set(ni)):
+    for host in sorted(set(oi) | set(ni), key=_skey):
         op, npp = oi.get(host, {}), ni.get(host, {})
-        for port in sorted(set(op) | set(npp)):
+        for port in sorted(set(op) | set(npp), key=_skey):
             om = _macset((op.get(port) or {}).get("end_host_mac", ""))
             nm = _macset((npp.get(port) or {}).get("end_host_mac", ""))
             for mac in sorted(nm - om):
                 for c, v in enumerate([host, port, "MAC appeared", mac], 1):
-                    cell = ws.cell(row=r, column=c, value=v); cell.font = DF; cell.alignment = AL
+                    cell = ws.cell(row=r, column=c, value=_cv(v)); cell.font = DF; cell.alignment = AL
                 r += 1
             for mac in sorted(om - nm):
                 for c, v in enumerate([host, port, "MAC gone", mac], 1):
-                    cell = ws.cell(row=r, column=c, value=v); cell.font = DF; cell.alignment = AL
+                    cell = ws.cell(row=r, column=c, value=_cv(v)); cell.font = DF; cell.alignment = AL
                 r += 1
     autofit(ws, 4)
 
     # SVI / Gateway Changes
     ws = sheet("SVI Changes", ["Hostname", "SVI", "Change", "Detail"])
     r = 2
-    for host in sorted(set(oi) | set(ni)):
+    for host in sorted(set(oi) | set(ni), key=_skey):
         op, npp = oi.get(host, {}), ni.get(host, {})
         svis = sorted({p for p in (set(op) | set(npp)) if re.match(r"^Vlan\d+$", p, re.I)})
         for p in svis:
@@ -413,7 +472,7 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
                     continue
                 ch, detail = "SVI changed", " | ".join(diffs)
             for c, v in enumerate([host, p, ch, detail], 1):
-                cell = ws.cell(row=r, column=c, value=v); cell.font = DF; cell.alignment = AL
+                cell = ws.cell(row=r, column=c, value=_cv(v)); cell.font = DF; cell.alignment = AL
             r += 1
     autofit(ws, 4); ws.column_dimensions["D"].width = 60
 
@@ -428,7 +487,7 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
         for d in rows:
             vals = [d["switch"], direction, d["old_band"], d["new_band"], d["old_score"], d["new_score"]]
             for c, v in enumerate(vals, 1):
-                cell = ws.cell(row=r, column=c, value=v); cell.font = DF; cell.alignment = AL
+                cell = ws.cell(row=r, column=c, value=_cv(v)); cell.font = DF; cell.alignment = AL
             if direction == "REGRESSED":
                 ws.cell(row=r, column=2).fill = PatternFill("solid", fgColor="FFC7CE")
             r += 1
@@ -445,7 +504,7 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
             vals = [state, f.get("severity", ""), f.get("category", ""),
                     ", ".join(str(d) for d in (f.get("devices") or []))[:60], f.get("title", "")]
             for c, v in enumerate(vals, 1):
-                cell = ws.cell(row=r, column=c, value=v); cell.font = DF; cell.alignment = AL
+                cell = ws.cell(row=r, column=c, value=_cv(v)); cell.font = DF; cell.alignment = AL
             ws.cell(row=r, column=1).fill = PatternFill(
                 "solid", fgColor="FFC7CE" if state == "OPENED" else "C6EFCE")
             r += 1
@@ -462,7 +521,7 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
         for p in items:
             vals = [label, p.get("src", ""), p.get("dst", ""), p.get("old_status", ""), p.get("new_status", "")]
             for c, v in enumerate(vals, 1):
-                cell = ws.cell(row=r, column=c, value=v); cell.font = DF; cell.alignment = AL
+                cell = ws.cell(row=r, column=c, value=_cv(v)); cell.font = DF; cell.alignment = AL
             ws.cell(row=r, column=1).fill = PatternFill("solid", fgColor=fill)
             r += 1
     if r == 2:                                            # no regressions to list -> be coverage-honest about WHY
@@ -508,7 +567,7 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
     r = 2
     for vals in cab_rows:
         for c, v in enumerate(vals, 1):
-            cell = ws.cell(row=r, column=c, value=v); cell.font = DF; cell.alignment = AL
+            cell = ws.cell(row=r, column=c, value=_cv(v)); cell.font = DF; cell.alignment = AL
         if str(vals[5]).endswith("-> down"):
             ws.cell(row=r, column=6).fill = PatternFill("solid", fgColor="FFC7CE")
         r += 1
@@ -563,7 +622,7 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
     r = 2
     for vals in cert_rows:
         for c, v in enumerate(vals, 1):
-            cell = ws.cell(row=r, column=c, value=v); cell.font = DF; cell.alignment = AL
+            cell = ws.cell(row=r, column=c, value=_cv(v)); cell.font = DF; cell.alignment = AL
         if vals[0] == "VERDICT":
             vc = ws.cell(row=r, column=5)
             vc.fill = PatternFill("solid", fgColor=_CERT_FILL.get(str(vals[4]), "FFFFFF"))
@@ -600,7 +659,12 @@ def _trend_point(snap: dict) -> dict:
     _hs = snap.get("health_scores")
     have_hs = isinstance(_hs, list)
     hs = [r for r in _hs if isinstance(r, dict)] if have_hs else []
-    scores = [r.get("score") for r in hs if isinstance(r.get("score"), (int, float))]
+    # _renderable_num, not a bare isinstance((int, float)): that admitted the two numeric values a JSON
+    # snapshot can carry but arithmetic cannot survive -- an unbounded-precision int literal
+    # (`sum(scores)/len(scores)` -> "integer division result too large for a float", aborting the whole
+    # --trend workbook) and the bare `Infinity`/`NaN` json.loads accepts (which would render an average
+    # of inf/nan into the campaign deck).
+    scores = [r.get("score") for r in hs if _renderable_num(r.get("score"))]
     bands: Dict[str, int] = {}
     for r in hs:
         bands[str(r.get("band", ""))] = bands.get(str(r.get("band", "")), 0) + 1
@@ -611,8 +675,9 @@ def _trend_point(snap: dict) -> dict:
     _mr = snap.get("migration_readiness")
     have_mr = isinstance(_mr, list)
     for r in (_mr if have_mr else []):
-        if isinstance(r, dict) and r.get("readiness") in readiness:
-            readiness[r["readiness"]] += 1
+        rd = _hkey(r.get("readiness")) if isinstance(r, dict) else None
+        if rd in readiness:                       # _hkey: an unhashable label must not raise on `in`
+            readiness[rd] += 1
     # isinstance-guard (not `or {}`): a TRUTHY non-dict section/subsection (a list/str/int in a malformed
     # --trend/--compare upload) slips past `or {}` and crashes the .get() below -> 500s the unwrapped /trend
     # endpoint and aborts the CLI --trend workbook. Same truthy-non-dict class the deliverables already guard.
@@ -794,15 +859,15 @@ def write_campaign_workbook(snapshots: List[dict], out_path: str) -> None:
     # ---- Campaign Summary (leads with the trajectory verdict) ----
     ws = sheet("Campaign Summary", ["Metric", "First", "Last", "Delta", "Trajectory"])
     vc = ws.cell(row=2, column=1, value="CAMPAIGN VERDICT"); vc.font = Font(name="Calibri", bold=True, size=11)
-    vv = ws.cell(row=2, column=2, value=trend["verdict"])
+    vv = ws.cell(row=2, column=2, value=_cv(trend["verdict"]))
     vv.font = Font(name="Calibri", bold=True, size=11)
     vv.fill = PatternFill("solid", fgColor=_VERDICT_FILL.get(trend["verdict"], "FFFFFF"))
-    ws.cell(row=2, column=3, value=trend["verdict_note"]).alignment = AL
+    ws.cell(row=2, column=3, value=_cv(trend["verdict_note"])).alignment = AL
     ws.merge_cells(start_row=2, start_column=3, end_row=2, end_column=5)
     r = 4
     for t in trend["trajectory"]:
         for c, v in enumerate([t["metric"], t["first"], t["last"], t["delta"], t["direction"]], 1):
-            cell = ws.cell(row=r, column=c, value=v); cell.font = DF; cell.alignment = AL
+            cell = ws.cell(row=r, column=c, value=_cv(v)); cell.font = DF; cell.alignment = AL
         ws.cell(row=r, column=5).fill = PatternFill("solid", fgColor=_DIR_FILL.get(t["direction"], "FFFFFF"))
         r += 1
     if not trend["trajectory"]:
@@ -817,7 +882,7 @@ def write_campaign_workbook(snapshots: List[dict], out_path: str) -> None:
             "n_punchlist", "n_crit_high", "n_not_ready", "past_ldos"]
     for i, pt in enumerate(trend["timeline"], start=2):
         for c, k in enumerate(keys, 1):
-            cell = ws.cell(row=i, column=c, value=pt.get(k, "")); cell.font = DF
+            cell = ws.cell(row=i, column=c, value=_cv(pt.get(k, ""))); cell.font = DF
             cell.alignment = CEN if c >= 4 else AL
     autofit(ws, len(cols))
     if len(trend["timeline"]) >= 2:
@@ -840,7 +905,7 @@ def write_campaign_workbook(snapshots: List[dict], out_path: str) -> None:
         vals = [f"{st['from']} → {st['to']}", st["opened"], st["opened_high"], st["resolved"],
                 st["net"], st["regressed"], st["improved"], st["verdict"]]
         for c, v in enumerate(vals, 1):
-            cell = ws.cell(row=i, column=c, value=v); cell.font = DF
+            cell = ws.cell(row=i, column=c, value=_cv(v)); cell.font = DF
             cell.alignment = CEN if 2 <= c <= 7 else AL
         nf = ws.cell(row=i, column=5)
         nf.fill = PatternFill("solid", fgColor="FFC7CE" if (st["net"] or 0) > 0 else "C6EFCE")

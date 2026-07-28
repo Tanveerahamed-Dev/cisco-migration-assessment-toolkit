@@ -90,7 +90,14 @@ def inspect_capture(command: str, body: str) -> Dict[str, Any]:
     return {"status": "ok", "reason": "", "evidence": ""}
 
 
-_STATUS_ORDER = {"unreadable": 0, "error": 1, "incomplete": 2, "empty": 3, "unverified_prompt": 4}
+# The capture-finding status vocabulary AND its severity order (lower == worse), in one place.
+# PUBLIC because it is a cross-module fact: `coverage_matrix` has to know which of a host's capture
+# findings is the WORST one to cite, and kept its own hand-written tuple until 2026-07-28 — which had
+# already rotted (it never learned `unreadable`, so the worst status a capture can have ranked as
+# UNKNOWN = least severe, and it also inverted `empty` vs `unverified_prompt`). Import this; never
+# restate it (docs/ssot.md, Law 1). `_STATUS_ORDER` stays as the in-module alias.
+STATUS_ORDER = {"unreadable": 0, "error": 1, "incomplete": 2, "empty": 3, "unverified_prompt": 4}
+_STATUS_ORDER = STATUS_ORDER
 
 
 def _finding(host: str, command: str, r: Dict[str, Any]) -> dict:

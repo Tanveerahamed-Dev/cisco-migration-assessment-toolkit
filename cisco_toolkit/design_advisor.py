@@ -19,7 +19,8 @@ import math
 import re
 
 from cisco_toolkit.textutils import (   # shared fail-soft numeric coercion + native-VLAN-1 tokens/predicate
-    NATIVE1_CFG_BASIS, NATIVE1_CFG_UNIT, NATIVE1_OPS_BASIS, NATIVE1_OPS_UNIT, _as_num, is_trunk_mode)
+    NATIVE1_CFG_BASIS, NATIVE1_CFG_UNIT, NATIVE1_OPS_BASIS, NATIVE1_OPS_UNIT, _as_num,
+    bpduguard_state, is_trunk_mode)
 from . import design_kb
 
 PRANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
@@ -109,6 +110,20 @@ def _scalar(x):
     keys lexically and could collide 1 with '1'). None is excluded -- callers already guard it and it is not a
     real device value."""
     return isinstance(x, (str, int, float))
+
+
+def _skey(x):
+    """A TOTAL sort key for a collection of snapshot leaves of possibly MIXED type.
+
+    The third member of the leaf-guard family, and the one that needs no poison at all: `_scalar` keeps
+    str, int AND float (correctly -- all three are legitimate device values), but `sorted()` over a set
+    that mixes them raises `TypeError: '<' not supported between instances of 'str' and 'int'`. Two
+    ordinary JSON-legal rows are enough -- `"switches": [10, "core1"]`, or a `vrf` that is a number on
+    one ACI row and a name on the next (a foreign-tool export or an older schema).
+
+    Strings sort FIRST and EXACTLY as before, so the ordering of every well-formed snapshot is unchanged;
+    non-strings are grouped after them, ordered by their repr, which is deterministic and never raises."""
+    return (0, x) if isinstance(x, str) else (1, str(x))
 
 
 def _hkey(x):
@@ -575,8 +590,12 @@ def _signals(snap):
             _den, _peak, _lim = _r.get("denied"), _r.get("peak"), _r.get("limit")
             if isinstance(_den, int) and _den > 0:
                 _fw_res.append(f"{_fh}: {_name} denied {_den}" + (f" (Limit {_lim})" if isinstance(_lim, int) else ""))
-            elif isinstance(_lim, int) and _lim > 0 and isinstance(_peak, int) and _peak >= 0.9 * _lim:
-                _fw_res.append(f"{_fh}: {_name} peak {_peak}/{_lim} ({int(round(100.0 * _peak / _lim))}%)")
+                        # INTEGER comparison (10*peak >= 9*lim), not `0.9 * _lim`: json.loads accepts an integer
+            # literal of unbounded precision, and `0.9 * 10**400` raises OverflowError -- which aborted
+            # the whole design blueprint (and 500'd /design + /architecture_coverage) over one field.
+            # The percentage below divides int/int, which CPython evaluates without the same overflow.
+            elif isinstance(_lim, int) and _lim > 0 and isinstance(_peak, int) and 10 * _peak >= 9 * _lim:
+                _fw_res.append(f"{_fh}: {_name} peak {_peak}/{_lim} ({round(100 * _peak / _lim)}%)")
     sig["firewall_resource_exhausted"] = _fw_res
     sig["firewall_resource_devices"] = _dev_list(_fw_res, sep=":")
     # MULTI-VENDOR (Arista EOS) -- the FIRST non-Cisco vendor axis (snap['arista'][h]['mlag'] from build_arista).
@@ -1411,7 +1430,12 @@ def _signals(snap):
                 continue
             if not _bpdu_seen.get(host):
                 bpdu_unknown_sw[host] = bpdu_unknown_sw.get(host, 0) + 1     # not assessed != unguarded
-            elif str(pdt.get("stp_bpduguard") or "").strip().lower() not in ("enable", "enabled", "true", "on"):
+            # textutils.bpduguard_state is the ONE owner of this token decision, shared with
+            # archreview L2-2 (cross-module SSOT audit 2026-07-28): the two hand-rolled token sets
+            # disagreed about the producer's own "Disable" value, so the same port read guarded in
+            # one deliverable and unguarded in the other. Behaviour here is unchanged -- only an
+            # affirmative token counts as protected.
+            elif bpduguard_state(pdt.get("stp_bpduguard")) is not True:
                 bpdu_sw[host] = bpdu_sw.get(host, 0) + 1
     sig["bpdu_unguarded"] = sum(bpdu_sw.values())
     sig["bpdu_unguarded_nsw"] = len(bpdu_sw)
@@ -4192,7 +4216,7 @@ def _wave_plan(snap, cap=_WAVE_CAP):
     for gi, g in enumerate(groups):
         # a switch name is a scalar; drop any poisoned dict/list element so the alpha sort can't hit a
         # 'str' < 'dict' TypeError (the groups filter above guarantees >=1 scalar survives here).
-        sw = sorted(s for s in _as_list(g.get("switches")) if _scalar(s))   # alpha sort clusters by site/building/rack
+        sw = sorted((s for s in _as_list(g.get("switches")) if _scalar(s)), key=_skey)   # alpha sort clusters by site/building/rack
         if len(sw) > cap:
             n_subdivided += 1
             for i in range(0, len(sw), cap):
@@ -4478,9 +4502,9 @@ def _aci_move_groups(snap):
     groups = []
     for ten, g in by_tenant.items():
         groups.append({"tenant": ten, "n_vrfs": len(g["vrfs"]), "n_bds": len(g["bds"]), "n_epgs": len(g["epgs"]),
-                       "vrfs": sorted(set(g["vrfs"].values())), "epgs": sorted(set(g["epgs"].values()))[:24],
-                       "unenforced_vrfs": sorted(g["unenforced_vrfs"]), "segmentation_gap": bool(g["unenforced_vrfs"])})
-    groups.sort(key=lambda x: (-x["n_epgs"], x["tenant"]))   # biggest move group (most EPGs) leads the sequencing
+                       "vrfs": sorted(set(g["vrfs"].values()), key=_skey), "epgs": sorted(set(g["epgs"].values()), key=_skey)[:24],
+                       "unenforced_vrfs": sorted(g["unenforced_vrfs"], key=_skey), "segmentation_gap": bool(g["unenforced_vrfs"])})
+    groups.sort(key=lambda x: (-x["n_epgs"], _skey(x["tenant"])))   # biggest move group (most EPGs) leads the sequencing
     return {
         "groups": groups, "n_tenants": len(groups), "n_epgs": sum(g["n_epgs"] for g in groups),
         "n_segmentation_gaps": sum(1 for g in groups if g["segmentation_gap"]),

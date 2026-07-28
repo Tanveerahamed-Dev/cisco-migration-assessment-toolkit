@@ -39,7 +39,8 @@ from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_exce
 from cisco_toolkit.docmeta import as_dict as _docmeta_as_dict
 from cisco_toolkit.docmeta import as_list as _docmeta_as_list
 from cisco_toolkit.textutils import (   # entry deep-sanitize of device text (audit-5) + fail-soft numeric
-    NATIVE1_CFG_BASIS, _as_num, is_trunk_mode, xml_safe, xml_safe_deep)   # coercion + native-VLAN-1 basis
+    NATIVE1_CFG_BASIS, _as_num, bpduguard_state, is_trunk_mode, xml_safe, xml_safe_deep)   # coercion + shared token owners
+from cisco_toolkit import ssot as _ssot_mod   # Law 1 accessors (canonical facts + segmentation posture)
 
 logger = logging.getLogger(__name__)
 
@@ -426,10 +427,15 @@ def compute_architecture_review(snap: dict) -> dict:
             if str(d.get("switchport_mode") or "").lower() != "access":
                 continue
             n_access_ports += 1
-            v = str(d.get("stp_bpduguard") or "").strip().lower()
-            if v:
-                bpdu_data += 1
-                if v not in ("no", "disabled", "off", "false", "-", "--"):
+            # textutils.bpduguard_state is the ONE owner of this token decision (see there). The
+            # hand-rolled `v not in ("no","disabled","off","false","-","--")` this replaced did not
+            # contain the producer's own "Disable", so an edge port with BPDU Guard explicitly OFF
+            # was counted as GUARDED here while design_advisor counted it unguarded off the same
+            # field -- a false-health inversion in the direction that matters.
+            st = bpduguard_state(d.get("stp_bpduguard"))
+            if st is not None:
+                bpdu_data += 1              # assessable: the token proves one state or the other
+                if st:
                     guarded += 1
     # Two DIFFERENT denominators are in play: `bpdu_data` = access ports whose BPDU-Guard state was
     # actually captured (the assessable set), `n_access_ports` = every access port. The old
@@ -921,41 +927,49 @@ def compute_architecture_review(snap: dict) -> dict:
             "Re-grade after the migration (new platforms, new defaults).",
             "CIS Cisco IOS Benchmark — AAA, NTP, logging, SSHv2/VTY, SNMPv3 hardening")
 
-    vrfs = set()
-    n_svis = n_acl_svis = 0
-    for host, ports in interfaces.items():
-        for p, d in _as_dict(ports).items():
-            d = _as_dict(d)
-            vrf = str(d.get("vrf") or "").strip()
-            if vrf and vrf.lower() not in ("default", "global"):
-                vrfs.add(vrf)
-            if re.match(r"^Vlan\d+$", str(p), re.I) and str(d.get("svi_ip") or ""):
-                n_svis += 1
-                if str(d.get("acl_in") or "").strip() or str(d.get("acl_out") or "").strip():
-                    n_acl_svis += 1
+    # SSOT (Law 1): the gateway-tier segmentation posture has ONE owner -- analyze.compute_segmentation
+    # -> snap['segmentation'] -- read here via ssot.segmentation_facts (interface-derived fallback for
+    # pre-segmentation snapshots). The local recount this replaced asked a DIFFERENT question under the
+    # owner's label: it counted every non-default VRF configured ANYWHERE (mgmt0's management VRF, a vPC
+    # keepalive VRF) as a "VRF in use", so on the [HISTORY-REDACTED] fleet it rendered "4 VRF(s) in use" beside the
+    # runbook's "1 VRF(s) across 231 gateway SVI(s)" off the same snapshot -- and, worse, those 4
+    # gateway-less VRFs made `not vrfs` False, downgrading a fabric the owner calls FLAT from the
+    # deviation branch to "advisory / partial enforcement". Only VRFs that actually CARRY a gateway SVI
+    # can segment user traffic, so the gate reads `gateway_vrfs`; the management-only VRFs are still
+    # reported, under their own name, so nothing is dropped.
+    _seg = _ssot_mod.segmentation_facts(snap)
+    gw_vrfs = list(_seg.get("gateway_vrfs") or [])
+    other_vrfs = list(_seg.get("other_vrfs") or [])
+    n_svis = _as_int(_seg.get("n_gateways"))
+    n_acl_svis = _as_int(_seg.get("n_with_acl"))
+    _other = (f" ({len(other_vrfs)} further non-default VRF(s) are configured — "
+              f"{', '.join(other_vrfs[:6])} — but carry no gateway SVI, so they segment no user traffic)"
+              if other_vrfs else "")
     if n_svis == 0:
         add("SEC-2", D7, "Segmentation enforced at the L3 boundary", "not-assessable",
             "No in-scope gateway SVIs to read policy from.", "—",
             "Bring the gateway tier into collection scope.",
             "Segmentation guidance — enforce inter-segment policy at the L3 boundary (VRF / gateway ACL)")
-    elif not vrfs and n_acl_svis * 4 < n_svis:
+    elif not gw_vrfs and n_acl_svis * 4 < n_svis:
         add("SEC-2", D7, "Segmentation enforced at the L3 boundary", "deviation",
-            f"No non-default VRFs and only {n_acl_svis} of {n_svis} gateway SVIs carry an ACL.",
+            f"No gateway SVI sits in a non-default VRF and only {n_acl_svis} of {n_svis} carry an ACL"
+            + _other + ".",
             "Inter-VLAN traffic is openly routed: any compromised segment reaches every other "
             "segment at wire speed.",
             "Use the migration to introduce intended segmentation — VRF separation for true "
             "isolation, gateway ACLs as the minimum policy line.",
             "Segmentation guidance — enforce inter-segment policy at the L3 boundary (VRF / gateway ACL)")
-    elif n_acl_svis < n_svis or not vrfs:
+    elif n_acl_svis < n_svis or not gw_vrfs:
         add("SEC-2", D7, "Segmentation enforced at the L3 boundary", "advisory",
-            (f"{len(vrfs)} VRF(s) in use; " if vrfs else "No non-default VRFs; ")
-            + f"{n_acl_svis} of {n_svis} gateway SVIs carry an ACL.",
+            (f"{len(gw_vrfs)} VRF(s) carry a gateway SVI; " if gw_vrfs
+             else "No gateway SVI sits in a non-default VRF; ")
+            + f"{n_acl_svis} of {n_svis} gateway SVIs carry an ACL" + _other + ".",
             "Partial enforcement leaves unpoliced inter-segment paths.",
             "Close the unpoliced SVIs (or fold them into a VRF) in the target design.",
             "Segmentation guidance — enforce inter-segment policy at the L3 boundary (VRF / gateway ACL)")
     else:
         add("SEC-2", D7, "Segmentation enforced at the L3 boundary", "conforms",
-            f"{len(vrfs)} VRF(s); every gateway SVI carries policy.",
+            f"{len(gw_vrfs)} VRF(s) carry a gateway SVI; every gateway SVI carries policy." + _other,
             "Inter-segment traffic crosses an enforced boundary.",
             "Preserve policy parity through the migration (NRFU verifies).",
             "Segmentation guidance — enforce inter-segment policy at the L3 boundary (VRF / gateway ACL)")

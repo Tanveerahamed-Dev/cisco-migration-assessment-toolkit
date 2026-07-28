@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import math
 from typing import Any, Dict, List, Optional
+from .textutils import is_finite_num   # shared finite-number filter (rejects Infinity/NaN AND the huge int)
 
 # Canonical facts: name -> (dotted snapshot path of the published value, one-line concept).
 # The dotted path is the SINGLE authoritative source; anything else reporting the same concept
@@ -313,6 +314,118 @@ def compute_fact_lineage(snap: Dict[str, Any]) -> Dict[str, Any]:
     return {"schema": FACT_LINEAGE_SCHEMA, "facts": facts}
 
 
+# ---------------------------------------------------------------------------------------------
+# Segmentation posture (Law 1 accessor). The L3 gateway tier's segmentation facts have ONE owner --
+# ``analyze.compute_segmentation`` -> ``snap['segmentation']`` -- but three deliverables
+# (design/crd/archreview) each re-derived their own from ``snap['interfaces']`` and asked a
+# *different* question while using the owner's label: they counted every non-default VRF configured
+# ANYWHERE (mgmt0's management VRF, a vPC keepalive VRF) as a "VRF in use", where the owner counts
+# only the VRF buckets that actually CARRY a gateway SVI. On the [HISTORY-REDACTED] fleet that reads 4 vs 1 for the
+# same phrase, in the same deliverable set, off the same snapshot -- and it flipped archreview's
+# SEC-2 gate off the owner's `flat` verdict. This accessor is the one place both questions are
+# answered, each under its own name.
+# ---------------------------------------------------------------------------------------------
+
+def _is_svi_port(name: Any) -> bool:
+    """True for an SVI port name -- the owner's own predicate, ``^Vlan\\d+$`` (case-insensitive),
+    expressed without a regex so this module stays dependency-light."""
+    s = str(name or "")
+    return s[:4].lower() == "vlan" and s[4:].isdigit()
+
+
+# The names that are NOT a separate routing table: the device's own default/global VRF, plus
+# '(global)' -- the synthetic bucket label analyze.compute_segmentation gives the unsegmented
+# gateways in `segmentation.vrfs`. Reading that label as a real VRF would turn a flat fabric into a
+# 1-VRF "segmented" one at the first read of the owner's own block.
+_GLOBAL_VRF_NAMES = ("default", "global", "(global)")
+
+
+def _is_nondefault_vrf(vrf: str) -> bool:
+    """A VRF name that actually separates a routing table (the shared default/global names are not)."""
+    return bool(vrf) and vrf.lower() not in _GLOBAL_VRF_NAMES
+
+
+def segmentation_facts(snap: Dict[str, Any]) -> Dict[str, Any]:
+    """The L3 segmentation posture, read from its one owner (``snap['segmentation']``).
+
+    Returns ``{n_gateways, n_with_acl, coverage_pct, n_gateway_vrfs, gateway_vrfs, other_vrfs,
+    flat, source}``:
+
+    * ``n_gateways`` / ``n_with_acl`` / ``coverage_pct`` -- the gateway-SVI ACL posture
+      (``segmentation.gateway_acl``).
+    * ``n_gateway_vrfs`` -- how many VRF *buckets* carry a gateway SVI, counting the global table as
+      one (``segmentation.summary.n_vrfs``). This is NOT "how many VRFs are configured".
+    * ``gateway_vrfs`` -- the NON-global VRF names among those; empty on a flat fabric. This is the
+      figure a segmentation claim must be graded on.
+    * ``other_vrfs`` -- non-default VRFs configured somewhere on the fleet that carry NO gateway SVI
+      (management / keepalive VRFs). A DIFFERENT fact, named separately: they segment no user
+      traffic, so counting them as "VRFs in use" reads a flat fabric as partially segmented.
+    * ``flat`` -- the owner's verdict: gateways exist, none in a non-global VRF, none with an ACL.
+
+    Coverage-honest: with ``snap['segmentation']`` absent the gateway figures are DERIVED from
+    ``snap['interfaces']`` using the owner's own predicate and ``source`` reads ``derived``; with
+    neither available the counts are ``None`` (never a fabricated 0) and ``flat`` is ``None``.
+    ``other_vrfs`` is always interface-derived -- the owner publishes no such list. Total on bad
+    input; derives only, never mutates.
+    """
+    snap = snap if isinstance(snap, dict) else {}
+    seg = _as_dict(snap.get("segmentation"))
+    ssum = _as_dict(seg.get("summary"))
+    gacl = _as_dict(seg.get("gateway_acl"))
+
+    # One pass over the interfaces: every non-default VRF seen anywhere, plus the gateway-scoped
+    # derivation (the fallback, and the source of `other_vrfs` in every case).
+    all_vrfs: set = set()
+    gw_buckets: set = set()
+    n_gw_derived = n_acl_derived = 0
+    for _host, ports in _as_dict(snap.get("interfaces")).items():
+        for pname, pdet in _as_dict(ports).items():
+            pdet = _as_dict(pdet)
+            vrf = str(pdet.get("vrf") or "").strip()
+            nondefault = _is_nondefault_vrf(vrf)
+            if nondefault:
+                all_vrfs.add(vrf)
+            if _is_svi_port(pname) and str(pdet.get("svi_ip") or "").strip():
+                n_gw_derived += 1
+                gw_buckets.add(vrf if nondefault else "(global)")
+                if str(pdet.get("acl_in") or "").strip() or str(pdet.get("acl_out") or "").strip():
+                    n_acl_derived += 1
+
+    published = _as_int(gacl.get("n_gateways"))
+    if published is None:
+        published = _as_int(ssum.get("n_gateways"))
+    from_owner = published is not None
+    source = "segmentation" if from_owner else ("derived" if n_gw_derived else "unavailable")
+
+    if from_owner:
+        n_gateways = published
+        n_with_acl = _as_int(gacl.get("n_with_acl"))
+        n_gateway_vrfs = _as_int(ssum.get("n_vrfs"))
+        # the owner's per-VRF gateway census; '(global)' is the unsegmented bucket, never a real VRF
+        gateway_vrfs = sorted({str(r.get("vrf")) for r in _as_list(seg.get("vrfs"))
+                               if isinstance(r, dict) and _is_nondefault_vrf(str(r.get("vrf") or "").strip())})
+        if not _as_list(seg.get("vrfs")):
+            gateway_vrfs = sorted(b for b in gw_buckets if b != "(global)")
+    else:
+        n_gateways = n_gw_derived or None
+        n_with_acl = n_acl_derived if n_gw_derived else None
+        n_gateway_vrfs = len(gw_buckets) or None
+        gateway_vrfs = sorted(b for b in gw_buckets if b != "(global)")
+
+    pct = gacl.get("coverage_pct") if from_owner else None
+    if not isinstance(pct, (int, float)) or isinstance(pct, bool):
+        pct = (round(100.0 * n_with_acl / n_gateways, 1)
+               if (n_gateways and isinstance(n_with_acl, int)) else None)
+
+    flat = ssum.get("flat")
+    if not isinstance(flat, bool):
+        flat = (bool(n_gateways) and not gateway_vrfs and n_with_acl == 0) if n_gateways else None
+
+    return {"n_gateways": n_gateways, "n_with_acl": n_with_acl, "coverage_pct": pct,
+            "n_gateway_vrfs": n_gateway_vrfs, "gateway_vrfs": gateway_vrfs,
+            "other_vrfs": sorted(all_vrfs - set(gateway_vrfs)), "flat": flat, "source": source}
+
+
 def reconcile(snap: Dict[str, Any], _ran: Optional[List[str]] = None) -> List[str]:
     """Return human-readable SSOT violations: a published canonical value that disagrees with an
     independent derivation from the raw evidence. Empty list == every published fact reconciles.
@@ -408,9 +521,13 @@ def reconcile(snap: Dict[str, Any], _ran: Optional[List[str]] = None) -> List[st
         # self-verified facts, so both must be reconciled too (mirroring compute_executive_brief
         # exactly -> no tolerance, no false positives). The mean excludes "Insufficient Data" scores.
         if "avg_health" in posture:
+            # is_finite_num, not `isinstance(...) and math.isfinite(...)`: that idiom rejects the JSON
+            # Infinity/NaN correctly but CRASHES on the other value json.loads accepts -- an integer
+            # literal of unbounded precision, on which math.isfinite() itself raises OverflowError
+            # before it can return False. reconcile() runs inside docmeta.add_excellence_front, so
+            # that aborted EVERY deliverable in the docx family over one health score.
             scored = [h.get("score") for h in health
-                      if isinstance(h, dict) and isinstance(h.get("score"), (int, float))
-                      and math.isfinite(h.get("score"))   # a JSON Infinity/NaN score would make round(mean) raise
+                      if isinstance(h, dict) and is_finite_num(h.get("score"))
                       and h.get("band") != _HEALTH_BAND_NOT_SCORED]
             if scored:
                 check("executive_brief.posture.avg_health", posture.get("avg_health"),

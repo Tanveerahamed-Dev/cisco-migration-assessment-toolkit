@@ -8361,7 +8361,7 @@
     "domain": "Security & segmentation",
     "title": "Segmentation enforced at the L3 boundary",
     "verdict": "advisory",
-    "observed": "1 VRF(s) in use; 2 of 5 gateway SVIs carry an ACL.",
+    "observed": "1 VRF(s) carry a gateway SVI; 2 of 5 gateway SVIs carry an ACL.",
     "implication": "Partial enforcement leaves unpoliced inter-segment paths.",
     "recommendation": "Close the unpoliced SVIs (or fold them into a VRF) in the target design.",
     "reference": "Segmentation guidance \u2014 enforce inter-segment policy at the L3 boundary (VRF / gateway ACL)",

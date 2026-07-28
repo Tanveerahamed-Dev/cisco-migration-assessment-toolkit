@@ -315,8 +315,11 @@ def _request_host_allowed(request: Request) -> bool:
 
 def _parse_snapshot_bytes(raw: bytes) -> Dict[str, Any]:
     try:
-        snap = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        # `ingest.reject_nonfinite` owns the refusal (see there for the stored-DoS it closes); this
+        # is the untrusted-upload half of the same boundary. json.JSONDecodeError subclasses
+        # ValueError, so the one clause covers both a malformed document and that refusal.
+        snap = json.loads(raw.decode("utf-8"), parse_constant=ingest.reject_nonfinite)
+    except (UnicodeDecodeError, ValueError) as e:
         raise HTTPException(status_code=400, detail=f"Not valid snapshot JSON: {e}") from e
     if not isinstance(snap, dict) or "devices" not in snap:
         raise HTTPException(status_code=400,

@@ -70,6 +70,20 @@ def _as_dict(v: Any) -> Dict[str, Any]:
     return v if isinstance(v, dict) else {}
 
 
+def _hkey(v: Any) -> Any:
+    """A HASHABLE form of a snapshot LEAF used as a dict-lookup key (see summary._hkey, the twin).
+
+    _as_dict guards a section's SHAPE; this guards the leaf inside a row. `_SEV_RANK.get(severity)`
+    hashes its argument, so a dict/list `severity` raises `TypeError: unhashable type` -- an unhandled
+    500. Hashable values pass through UNCHANGED (real labels keep their exact rank and sort order);
+    only the unhashable poison is stringified, which matches no rank and degrades to 99 (unknown)."""
+    try:
+        hash(v)
+        return v
+    except TypeError:
+        return str(v)
+
+
 def _as_hosts(v: Any) -> Set[str]:
     """Coerce a snapshot 'hosts'/'switches' field to a set of host strings.
 
@@ -245,7 +259,10 @@ def _wave_remediation(switches: Set[str], rem_by_device: Dict[str, Any]) -> List
                     "severity": it.get("severity", ""),
                     "why": it.get("why", ""),
                 })
-    out.sort(key=lambda r: _SEV_RANK.get(r.get("severity", ""), 99))
+    # _hkey: an unhashable dict/list `severity` leaf makes _SEV_RANK.get() raise
+    # `TypeError: unhashable type` -- an unhandled 500 on /cutover and /executions, and the
+    # snapshot is STORED so it re-crashes on every later read (same class as summary._keystones).
+    out.sort(key=lambda r: _SEV_RANK.get(_hkey(r.get("severity", "")), 99))
     return out
 
 
@@ -267,7 +284,10 @@ def _wave_validation(group: str, val_by_wave: Dict[str, Any]) -> List[Dict[str, 
                 "command": it.get("command", ""),
                 "expect": it.get("expect", ""),
             })
-    out.sort(key=lambda r: _SEV_RANK.get(r.get("severity", ""), 99))
+    # _hkey: an unhashable dict/list `severity` leaf makes _SEV_RANK.get() raise
+    # `TypeError: unhashable type` -- an unhandled 500 on /cutover and /executions, and the
+    # snapshot is STORED so it re-crashes on every later read (same class as summary._keystones).
+    out.sort(key=lambda r: _SEV_RANK.get(_hkey(r.get("severity", "")), 99))
     return out
 
 

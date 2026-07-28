@@ -50,6 +50,28 @@ from .serve import ENGINE_SENTINEL
 _REPO_ROOT = Path(engine.__file__).resolve().parents[2]
 _ENGINE_SCRIPT = _REPO_ROOT / "COLLECT_PARSE_V3_23_0.py"
 
+def reject_nonfinite(token: str):
+    """`json.loads`' hook for the three tokens JSON itself does not define — ``Infinity``,
+    ``-Infinity``, ``NaN``. Python's decoder accepts them by default; the HTTP layer cannot return
+    them, so a snapshot carrying one is a STORED denial of service.
+
+    Confirmed end to end: the token survives the upload, sqlite persists it (``json.dumps`` defaults
+    to ``allow_nan=True``), and every later read materialises a non-finite float — at which point
+    Starlette's ``JSONResponse.render`` calls ``json.dumps(..., allow_nan=False)`` and raises "Out of
+    range float values are not JSON compliant". One poisoned leaf therefore makes
+    ``/snapshots/{id}``, its sections, and everything derived from it answer HTTP 500 FOREVER for
+    that snapshot, with no way to clear it from the UI.
+
+    Refused at the two ingest boundaries rather than sanitised: coercing to null would silently
+    invent a value the uploader never sent, and guarding per read route means every route added
+    later re-inherits the bug. THE one owner — `app._parse_snapshot_bytes` (untrusted upload) and
+    `_assess_tree` (engine output, which derives from untrusted device text) both call it.
+    """
+    raise ValueError(
+        f"non-finite number {token!r}: JSON has no such literal, and a snapshot carrying one cannot "
+        f"be served back over HTTP")
+
+
 MAX_FILES = 20_000
 MAX_ARCHIVE_BYTES = 256 * 1024 * 1024       # compressed upload cap, enforced while reading the body
 MAX_UNCOMPRESSED_BYTES = 500 * 1024 * 1024  # generous: a 60-switch fleet's show outputs are ~tens of MB
@@ -1225,7 +1247,16 @@ def _assess_tree(tree: Path, n_files: int, workdir: Path) -> Tuple[Dict[str, Any
     snap_path = Path(str(out_xlsx)[: -len(".xlsx")] + ".snapshot.json")
     if not snap_path.is_file():
         raise EngineRunError(f"Engine completed but wrote no snapshot. Log tail:\n{log_tail}")
-    snap = json.loads(snap_path.read_text(encoding="utf-8"))
+    # Same non-finite refusal as the upload channel (see reject_nonfinite): this snapshot is about
+    # to be STORED, and a non-finite float in it makes every later read of that stored row answer
+    # HTTP 500 forever. The engine is our own code, but it derives values from untrusted device
+    # output, so "we produced it" is not a guarantee that it is renderable.
+    try:
+        snap = json.loads(snap_path.read_text(encoding="utf-8"), parse_constant=reject_nonfinite)
+    except ValueError as e:
+        raise EngineRunError(
+            f"The engine's snapshot carries a value that cannot be served back over HTTP ({e}). "
+            f"Refusing to store it. Log tail:\n{log_tail}")
     # The engine exits 0 even when it parsed nothing (a device with no matching files just
     # yields an empty section) — don't store a plausible-looking but empty assessment.
     if not snap.get("devices"):

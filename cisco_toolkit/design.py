@@ -29,6 +29,7 @@ from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_exce
 from cisco_toolkit.docmeta import as_dict as _as_dict
 from cisco_toolkit.docmeta import as_list as _as_list
 from cisco_toolkit.textutils import _as_num, xml_safe, xml_safe_deep
+from cisco_toolkit import ssot as _ssot_mod   # Law 1 accessors (canonical facts + segmentation posture)
 
 logger = logging.getLogger(__name__)
 
@@ -65,26 +66,20 @@ def _vlan_inventory(snap: dict):
 
 
 def _segmentation_facts(snap: dict):
-    """Derive a segmentation posture directly from the interfaces (known shape), so the section is
-    accurate regardless of the segmentation compute's internal layout: the set of non-default VRFs in
-    use, and the count of SVIs carrying an ingress/egress ACL. Returns (vrfs:set, n_acl_svis:int,
-    n_svis:int)."""
-    vrfs: set = set()
-    n_acl_svis = 0
-    n_svis = 0
-    _ifaces = snap.get("interfaces")
-    for host, ports in (_ifaces if isinstance(_ifaces, dict) else {}).items():
-        for p, d in (ports if isinstance(ports, dict) else {}).items():
-            if not isinstance(d, dict):
-                continue   # a truthy non-dict port-detail slips `or {}` and crashes d.get() (same class)
-            vrf = str(d.get("vrf") or "").strip()   # str()-coerce a wrong-typed device leaf before .strip() (audit-6 #3 class)
-            if vrf and vrf.lower() not in ("default", "global"):
-                vrfs.add(vrf)
-            if re.match(r"^Vlan\d+$", p, re.IGNORECASE) and (d.get("svi_ip") or ""):
-                n_svis += 1
-                if str(d.get("acl_in") or "").strip() or str(d.get("acl_out") or "").strip():
-                    n_acl_svis += 1
-    return vrfs, n_acl_svis, n_svis
+    """The segmentation posture, read from its ONE owner via ``ssot.segmentation_facts`` (which falls
+    back to the same interface derivation this used to do inline, for pre-``segmentation`` snapshots).
+
+    Returns ``(gw_vrfs:list, other_vrfs:list, n_acl_svis:int, n_svis:int)`` — note the VRF answer is
+    now SPLIT, because the old single ``vrfs`` set conflated two different facts under one label:
+    VRFs that actually CARRY a gateway SVI (what a segmentation claim rests on — the owner's
+    ``segmentation.summary.n_vrfs`` basis) versus non-default VRFs configured anywhere on the box
+    (mgmt0's management VRF, a vPC keepalive VRF), which segment no user traffic. On the [HISTORY-REDACTED] fleet the
+    old count rendered "4 non-default VRF(s)" in §2.6 while §3/§4 of the SAME document reported
+    "202 VLAN(s) across a single global VRF", and the runbook reported "1 VRF(s) across 231 gateway
+    SVI(s)" — three answers to one question in one deliverable set."""
+    facts = _ssot_mod.segmentation_facts(snap)
+    return (list(facts.get("gateway_vrfs") or []), list(facts.get("other_vrfs") or []),
+            _as_num(facts.get("n_with_acl")), _as_num(facts.get("n_gateways")))
 
 
 def build_design_traceability(snap_dict: dict) -> list:
@@ -225,7 +220,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         f"evidence, out of {n_dev} inventoried device(s) in scope (§1). The other {_n_uncollected} "
         "did not collect — their contribution here is [NOT OBSERVED], not zero."
     ) if _n_uncollected > 0 else ""
-    vrfs, n_acl_svis, n_svis = _segmentation_facts(snap)
+    gw_vrfs, other_vrfs, n_acl_svis, n_svis = _segmentation_facts(snap)
 
     # ---- title page ----
     title = doc.add_paragraph(); title.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -300,7 +295,12 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         ("L2-only access nodes", len(l2_hosts)),
         ("VLANs in use", n_vlan),
         ("Gateway SVIs", n_svis),
-        ("Routing VRFs (non-default)", len(vrfs) if vrfs else "0 (single global table)"),
+        # Two rows, not one: a VRF that carries no gateway SVI segments no user traffic, so folding it
+        # into a single "Routing VRFs" count contradicted §2.6/§4's "single global VRF" reading.
+        ("Routing VRFs carrying a gateway SVI",
+         len(gw_vrfs) if gw_vrfs else "0 (every gateway SVI is in the global table)"),
+        ("Other non-default VRFs configured (no gateway SVI)",
+         ", ".join(other_vrfs[:10]) if other_vrfs else "none"),
         ("Gateway SVIs with an ACL applied", f"{n_acl_svis} of {n_svis}"),
         ("Multi-gateway VLANs (FHRP candidates)", n_multi_gw),
         ("vPC / MLAG peerings", len([h for h, v in vpc.items() if v])),
@@ -369,7 +369,14 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
             doc.add_paragraph(f"… and {len(l3f) - 40} more gateway(s); full register in the workbook.")
 
     doc.add_heading("2.4 Resilience & redundancy", level=2)
-    n_single_gw = sum(1 for r in l3f if "single-gateway" in str(r.get("risk") or ""))
+    # DISTINCT VLANs, not l3_forwarding ROWS. The row tally happened to equal the VLAN count on a
+    # clean snapshot (one single-gateway VLAN has, by construction, one gateway row), but the row is a
+    # (switch, VLAN) record, so a merged / re-analysed / uploaded snapshot carrying the same VLAN twice
+    # made this cell disagree with the two surfaces that already count VLANs -- archreview RES-2
+    # (`{str(r.get("vlan")) for r in l3f if "single-gateway" in ...}`) and design_advisor's
+    # sig["single_gw"] -- while runbook 6.1 states in prose that all three report "the same count".
+    # Same unit, one derivation (cross-module SSOT audit 2026-07-28).
+    n_single_gw = len({str(r.get("vlan")) for r in l3f if "single-gateway" in str(r.get("risk") or "")})
     # 'lacking/inconsistent' is the only row sourced from snap['fhrp'] (the problems-only consistency list);
     # n_multi_gw (candidates) and n_fhrp_cfg (running FHRP) are derived from l3_forwarding above so a cleanly
     # FHRP-redundant fabric is credited instead of misrepresented as 0-candidate / 0-FHRP.
@@ -414,9 +421,11 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
 
     doc.add_heading("2.6 Segmentation & security posture", level=2)
     doc.add_paragraph(
-        ("The fabric uses a single global routing table (no non-default VRFs were observed); "
-         if not vrfs else
-         f"The fabric uses {len(vrfs)} non-default VRF(s): {', '.join(sorted(vrfs)[:10])}. ") +
+        ("Every gateway SVI is in the global routing table (no non-default VRF carries one). "
+         if not gw_vrfs else
+         f"{len(gw_vrfs)} non-default VRF(s) carry a gateway SVI: {', '.join(gw_vrfs[:10])}. ") +
+        (f"A further {len(other_vrfs)} non-default VRF(s) are configured ({', '.join(other_vrfs[:6])}) "
+         "but carry no gateway SVI, so they segment no user traffic. " if other_vrfs else "") +
         f"{n_acl_svis} of {n_svis} gateway SVIs carry an ingress/egress ACL. "
         "Where neither a dedicated VRF nor a gateway ACL is present, inter-VLAN traffic is openly "
         "routed — the migration is an opportunity to introduce intended segmentation.")

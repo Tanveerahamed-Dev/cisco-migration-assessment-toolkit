@@ -1748,6 +1748,41 @@ def test_section_device_dossiers_recomputes_stale_unassessed(client):
 _XML_POISON = chr(0xFFFF) + chr(0xFFFE) + chr(0xD800) + "\x0b\x1f"   # noncharacters + lone surrogate + C0
 
 
+def test_a_nonfinite_number_is_refused_at_upload_not_stored(client):
+    """[FUZZ-19 — stored denial of service] `json.loads` accepts the bare `Infinity`/`-Infinity`/`NaN`
+    tokens, which JSON itself does not define. Such a value survived the upload, sqlite persisted it
+    (json.dumps defaults to allow_nan=True), and every later read materialised a non-finite float —
+    at which point Starlette's JSONResponse.render calls json.dumps(allow_nan=False) and raises "Out
+    of range float values are not JSON compliant". One poisoned leaf therefore made
+    /snapshots/{id} and its sections answer HTTP 500 PERMANENTLY, with no way to clear it from the UI.
+
+    Refused at the ingest boundary rather than sanitised: coercing to null would invent a value the
+    uploader never sent, and guarding per read route means every route added later re-inherits it."""
+    cid = client.post("/api/campaigns", json={"name": "nonfinite"}).json()["id"]
+    body = ('{"devices":{"h":{}},"interfaces":{"h":{"Gi1":{}}},'
+            '"health_scores":[{"switch":"h","band":"Good","score":Infinity}]}')
+
+    r = client.post(f"/api/campaigns/{cid}/snapshots",
+                    files={"file": ("s.json", body.encode(), "application/json")},
+                    data={"label": "poison"})
+    assert r.status_code == 400, f"a non-finite number was accepted (HTTP {r.status_code})"
+    assert "non-finite" in r.text, f"the refusal must name the cause, got {r.text[:200]}"
+
+    # ...and nothing was persisted, so no later read can 500 on it.
+    snaps = client.get(f"/api/campaigns/{cid}").json().get("snapshots") or []
+    assert snaps == [], f"the poisoned snapshot was stored despite the refusal: {snaps}"
+
+    # Calibration: a well-formed snapshot still uploads and still reads back cleanly. Without this
+    # the test would pass just as well against a route that rejected every upload.
+    good = ('{"devices":{"h":{}},"interfaces":{"h":{"Gi1":{}}},'
+            '"health_scores":[{"switch":"h","band":"Good","score":90}]}')
+    ok = client.post(f"/api/campaigns/{cid}/snapshots",
+                     files={"file": ("s.json", good.encode(), "application/json")},
+                     data={"label": "clean"})
+    assert ok.status_code == 201, ok.text
+    assert client.get(f"/api/snapshots/{ok.json()['id']}").status_code == 200
+
+
 def test_web_layer_docx_survives_xml_illegal_device_text(client):
     """[#80 — stored DoS on Atlas's one door] Device free-text is collected with errors='ignore', which
     passes valid-UTF-8 C0 control chars, U+FFFE/U+FFFF noncharacters and lone surrogates straight through.

@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional
 
 from . import fib
 from .path_assertions import revalidate
+from .textutils import _as_num          # shared fail-soft numeric coercion (rejects Infinity/NaN)
 
 SCHEMA = "precert/1"
 # Single-snapshot pre-window READINESS freeze (the prediction half of a calibration row).
@@ -129,6 +130,30 @@ def _flows(delta: dict) -> dict:
             "capped": bool(delta.get("capped"))}
 
 
+def _as_dict(v: Any) -> dict:
+    """Coerce a possibly-malformed snapshot block to a dict; a truthy non-dict degrades to ``{}``.
+
+    The house guard (ssot._as_dict / docmeta.as_dict). ``x or {}`` guards None/empty but NOT a truthy
+    non-dict, and the next ``.get`` then raises AttributeError."""
+    return v if isinstance(v, dict) else {}
+
+
+def _as_list(v: Any) -> list:
+    """Coerce a possibly-malformed snapshot block to a list; a truthy non-list degrades to ``[]``.
+
+    The list twin of :func:`_as_dict`. ``x or []`` keeps a truthy non-list (``5``, ``True``, the bare
+    JSON ``Infinity`` json.loads accepts), and the following ``for ... in`` then raises
+    ``TypeError: 'float' object is not iterable`` -- crashing compute_precert /
+    compute_readiness_freeze and, through them, ``html.write_diff_workbook`` (the --compare
+    deliverable, which renders the certificate). Coverage-honest: a malformed block reads as absent."""
+    return v if isinstance(v, list) else []
+
+
+def _dict_rows(v: Any) -> list:
+    """The dict ELEMENTS of a snapshot list section -- the guard for every per-row ``.get()`` loop."""
+    return [r for r in _as_list(v) if isinstance(r, dict)]
+
+
 def _seg_of(snap: Dict[str, Any]) -> dict:
     v = snap.get("segmentation") if isinstance(snap, dict) else None
     return v if isinstance(v, dict) else {}
@@ -141,14 +166,14 @@ def _segmentation_invariants(snap_before: Dict[str, Any], snap_after: Dict[str, 
     silently 'held'). A before snapshot with segmentation data but NO claim (flat network) yields no rows:
     nothing was claimed, so nothing can be violated or blind."""
     b, a = _seg_of(snap_before), _seg_of(snap_after)
-    b_domains = [d for d in (b.get("domains") or []) if isinstance(d, dict)]
-    b_vrfs = [v for v in (b.get("vrfs") or []) if isinstance(v, dict)]
+    b_domains = _dict_rows(b.get("domains"))
+    b_vrfs = _dict_rows(b.get("vrfs"))
     if not (b_domains or b_vrfs):
         return [{"invariant": "segmentation posture preserved", "held": "not_evaluable",
                  "evidence": "no segmentation data in the before snapshot — invariants cannot be derived "
                              "(NOT a statement that segmentation is unchanged)"}]
-    a_domains = {str(d.get("domain")): d for d in (a.get("domains") or []) if isinstance(d, dict)}
-    a_vrf_names = {str(v.get("vrf")) for v in (a.get("vrfs") or []) if isinstance(v, dict)}
+    a_domains = {str(d.get("domain")): d for d in _dict_rows(a.get("domains"))}
+    a_vrf_names = {str(v.get("vrf")) for v in _dict_rows(a.get("vrfs"))}
     a_has = bool(a_domains) or bool(a_vrf_names)
     rows: List[dict] = []
     for d in b_domains:
@@ -351,19 +376,22 @@ def compute_readiness_freeze(snap: Dict[str, Any], *, mode: str = "shadow") -> d
         rank = _READINESS_RANK.get(rd, -1)
         if rank > worst_rank:
             worst_rank, worst = rank, rd
-        blocking = [c.get("check") for c in (g.get("checks") or [])
-                    if isinstance(c, dict) and str(c.get("status", "")).lower() in ("fail", "warn")]
+        blocking = [c.get("check") for c in _dict_rows(g.get("checks"))
+                    if str(c.get("status", "")).lower() in ("fail", "warn")]
+        # _as_num, not int(): a raw int() on a device-derived count raises OverflowError on the bare JSON
+        # Infinity json.loads accepts, ValueError on NaN / a non-numeric string, and TypeError on a
+        # dict/list -- and this runs inside write_diff_workbook, so one bad leaf aborted the whole
+        # --compare deliverable (and 500'd the webapp diff route) instead of degrading that one field.
         groups.append({"group": g.get("group"), "readiness": rd or UNRATED,
-                       "n_fail": int(g.get("n_fail") or 0), "n_warn": int(g.get("n_warn") or 0),
+                       "n_fail": int(_as_num(g.get("n_fail"), 0)), "n_warn": int(_as_num(g.get("n_warn"), 0)),
                        "blocking": blocking})
 
     # Coverage-honest blind spots: NAME every not-collected device (its readiness inputs are absent).
-    cc = s.get("collection_completeness")
-    cc = cc if isinstance(cc, dict) else {}
-    summ = cc.get("summary") if isinstance(cc.get("summary"), dict) else {}
-    not_collected = sorted(str(d.get("host")) for d in (cc.get("devices") or [])
-                           if isinstance(d, dict) and str(d.get("status", "")).lower().startswith("not"))
-    n_missing = int(summ.get("not_collected") or 0) or len(not_collected)
+    cc = _as_dict(s.get("collection_completeness"))
+    summ = _as_dict(cc.get("summary"))
+    not_collected = sorted(str(d.get("host")) for d in _dict_rows(cc.get("devices"))
+                           if str(d.get("status", "")).lower().startswith("not"))
+    n_missing = int(_as_num(summ.get("not_collected"), 0)) or len(not_collected)
     blind_spots: List[str] = list(unrated)
     if n_missing:
         blind_spots.append(

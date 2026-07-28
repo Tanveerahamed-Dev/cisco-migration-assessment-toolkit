@@ -34,6 +34,22 @@ from cisco_toolkit.textutils import (
 
 logger = logging.getLogger(__name__)
 
+
+# --------------------------------------------------------------------------- defensive coercers
+# The house guards (ssot._as_dict / docmeta.as_dict / design_advisor._dict_rows). A sheet writer is
+# handed a raw snapshot SECTION on the `--no-collect` rebuild path, so an untrusted file can make it
+# a truthy non-dict/non-list. `x or {}` / `x or []` keeps that, and the next `.get()` / iteration
+# raises -- which _run_phase catches PER SHEET and logs, so the workbook still SAVES with that entire
+# sheet silently missing. That is a coverage-honesty false all-clear (a reader sees an absent sheet,
+# not a failure), which is why these degrade to empty instead of raising.
+def _sec_dict(v):
+    return v if isinstance(v, dict) else {}
+
+
+def _sec_rows(v):
+    """The dict ELEMENTS of a snapshot list section -- the guard for every per-row `.get()` loop."""
+    return [r for r in v if isinstance(r, dict)] if isinstance(v, list) else []
+
 #: Excel's hard per-cell character limit. openpyxl enforces it by SILENTLY slicing
 #: (`check_string`: `value = value[:32767]`) -- no exception, no warning -- so an oversized cell is
 #: amputated inside a workbook that still reports success. `_xls_sanitize` bounds + DISCLOSES instead.
@@ -42,7 +58,10 @@ _XLSX_TRUNC_NOTE = " … [TRUNCATED: {n:,} chars exceeded Excel's {cap:,}-char c
 
 
 def _xls_sanitize(value):
-    """Strip the characters openpyxl rejects from a string; pass non-strings through unchanged. Covers BOTH the C0
+    """Strip the characters openpyxl rejects from a string; pass every RENDERABLE non-string through unchanged
+    (the two exceptions -- a container, and a non-finite / out-of-float64-range NUMBER -- are bounded by the shared
+    textutils.xml_safe this delegates to; see there for why openpyxl OverflowErrors on the huge int at wb.save()
+    and SILENTLY blanks inf/nan). Covers BOTH the C0
     control chars (0x00-0x08, 0x0B-0x0C, 0x0E-0x1F) AND the U+FFFE/U+FFFF noncharacters + lone surrogates that pass
     openpyxl's check_string but fail wb.save() at XML serialization (multi-domain audit #11). Device-derived
     free-text (a CDP/LLDP neighbour name, an interface description, a banner) -- collected with errors='ignore',
@@ -809,6 +828,10 @@ def write_endpoint_intelligence_sheet(wb, identity: list) -> None:
     (MAC OUI -- a fact) and an inferred migration CLASS + confidence + the evidence that drove it.
     NEW-V3.23.95: renders the precomputed compute_endpoint_identity records (one source of truth with
     the snapshot / runbook / explorer). A class-distribution summary is written above the table."""
+    # Coerce the SECTION ONCE at entry, not per read site: these writers are handed a raw
+    # snapshot section on the --no-collect rebuild, and each reads it in several places (the
+    # row loop AND the summary line), so a per-site guard leaves the next read reachable.
+    identity = _sec_rows(identity)
     cols = ["Switch", "Port", "VLAN", "Endpoint IP", "MACs", "Vendor (OUI fact)",
             "Class (inferred)", "Confidence", "Evidence"]
     if ENDPOINT_INTEL_SHEET_NAME in wb.sheetnames:
@@ -820,7 +843,7 @@ def write_endpoint_intelligence_sheet(wb, identity: list) -> None:
     DAT_C = Alignment(horizontal="center", vertical="center")
     low_fill = PatternFill("solid", fgColor="F2F2F2")   # shade Unknown rows so eyes go to classified ones
     r = 2
-    for rec in (identity or []):
+    for rec in _sec_rows(identity):
         vals = [rec.get("host"), rec.get("port"), rec.get("vlan"), rec.get("ip"),
                 rec.get("mac_count"), rec.get("vendor"), rec.get("endpoint_class"),
                 rec.get("confidence"), rec.get("evidence")]
@@ -833,7 +856,7 @@ def write_endpoint_intelligence_sheet(wb, identity: list) -> None:
         r += 1
     _census_autofit(ws, len(cols), r - 1)
     ws.column_dimensions["I"].width = 42
-    logger.info(f"  [OK] '{ENDPOINT_INTEL_SHEET_NAME}' sheet: {len(identity or [])} endpoint(s)")
+    logger.info(f"  [OK] '{ENDPOINT_INTEL_SHEET_NAME}' sheet: {len(identity)} endpoint(s)")
 
 
 ENDPOINT_DEPS_SHEET_NAME = "Endpoint Dependencies"   # cohesive units / clusters (NEW-V3.23.96)
@@ -843,6 +866,10 @@ def write_endpoint_dependencies_sheet(wb, dependencies: dict) -> None:
     distributed system with its endpoint count and switch/VLAN spread, then the dual-homed endpoints
     (NIC-team / redundant legs to sequence make-before-break) and the per-VLAN app tiers. NEW-V3.23.96:
     renders the precomputed compute_endpoint_dependencies dict (one source of truth)."""
+    # Coerce the SECTION ONCE at entry, not per read site: these writers are handed a raw
+    # snapshot section on the --no-collect rebuild, and each reads it in several places (the
+    # row loop AND the summary line), so a per-site guard leaves the next read reachable.
+    dependencies = _sec_dict(dependencies)
     if ENDPOINT_DEPS_SHEET_NAME in wb.sheetnames:
         del wb[ENDPOINT_DEPS_SHEET_NAME]
     ws = _new_sheet(wb, ENDPOINT_DEPS_SHEET_NAME)
@@ -864,24 +891,25 @@ def write_endpoint_dependencies_sheet(wb, dependencies: dict) -> None:
                 c.fill = warn
         r += 1
 
-    for c in (dep.get("clusters") or []):
+    for c in _sec_rows(dep.get("clusters")):
         row(["Cluster", c.get("vendor", ""), c.get("endpoint_class", ""), c.get("count", ""),
              c.get("switches", ""), c.get("vlans", ""),
              "spans multiple move-groups — coordinate the waves" if c.get("spans_groups") else ""],
             flag=c.get("spans_groups"))
-    for d in (dep.get("dual_homed") or []):
+    for d in _sec_rows(dep.get("dual_homed")):
         row(["Dual-homed", f"{d.get('mac', '')}  [{', '.join(d.get('switches', []))}]",
              d.get("endpoint_class", ""), 1, len(d.get("switches", [])), "",
              "split across move-groups — sequence make-before-break" if d.get("split_across_groups")
              else "NIC-team / redundant legs — make-before-break"],
             flag=d.get("split_across_groups"))
-    for a in (dep.get("affinity") or []):
+    for a in _sec_rows(dep.get("affinity")):
         cls = ", ".join(f"{k} ({v})" for k, v in (a.get("classes") or {}).items())
         row(["VLAN tier", f"VLAN {a.get('vlan', '')}: {cls}", a.get("dominant", ""),
              a.get("total", ""), "", a.get("vlan", ""), ""])
     _census_autofit(ws, len(cols), r - 1)
     ws.column_dimensions["B"].width = 48; ws.column_dimensions["G"].width = 46
-    n = len(dep.get("clusters") or []) + len(dep.get("dual_homed") or []) + len(dep.get("affinity") or [])
+    n = (len(_sec_rows(dep.get("clusters"))) + len(_sec_rows(dep.get("dual_homed")))
+         + len(_sec_rows(dep.get("affinity"))))
     logger.info(f"  [OK] '{ENDPOINT_DEPS_SHEET_NAME}' sheet: {n} dependency row(s)")
 
 
@@ -893,6 +921,10 @@ def write_subnet_reachability_sheet(wb, subnet_intelligence: dict) -> None:
     its endpoints live in (via the SVI that gateways their VLAN). NEW-V3.23.97: renders the precomputed
     compute_subnet_intelligence (one source of truth). Route depth is from the full 'show ip route';
     BGP-received is populated only when the new 'show ip bgp' collection is present."""
+    # Coerce the SECTION ONCE at entry, not per read site: these writers are handed a raw
+    # snapshot section on the --no-collect rebuild, and each reads it in several places (the
+    # row loop AND the summary line), so a per-site guard leaves the next read reachable.
+    subnet_intelligence = _sec_dict(subnet_intelligence)
     if SUBNET_REACH_SHEET_NAME in wb.sheetnames:
         del wb[SUBNET_REACH_SHEET_NAME]
     ws = _new_sheet(wb, SUBNET_REACH_SHEET_NAME)
@@ -903,7 +935,7 @@ def write_subnet_reachability_sheet(wb, subnet_intelligence: dict) -> None:
     AL = Alignment(horizontal="left", vertical="top", wrap_text=True)
     CN = Alignment(horizontal="center", vertical="center")
     r = 2
-    for rec in (subnet_intelligence or {}).get("per_device", []):
+    for rec in _sec_rows(subnet_intelligence.get("per_device")):
         dest = rec.get("destination_subnets", [])
         srcs = ", ".join(f"{k}:{v}" for k, v in (rec.get("reachable_sources") or {}).items())
         served = "; ".join(f"{s.get('subnet')} (gw {s.get('gateway')})" for s in rec.get("served_subnets", [])[:8])
@@ -918,7 +950,7 @@ def write_subnet_reachability_sheet(wb, subnet_intelligence: dict) -> None:
     _census_autofit(ws, len(cols), r - 1)
     ws.column_dimensions["C"].width = 40; ws.column_dimensions["H"].width = 44
     logger.info(f"  [OK] '{SUBNET_REACH_SHEET_NAME}' sheet: "
-                f"{len((subnet_intelligence or {}).get('per_device', []))} device(s)")
+                f"{len(_sec_rows(subnet_intelligence.get('per_device')))} device(s)")
 
 
 MIGRATION_SCENARIO_SHEET_NAME = "Migration Scenarios"   # per-group cutover scenario (NEW-V3.23.98)
@@ -2316,7 +2348,10 @@ def write_attestation_sheet(wb, attestation: dict) -> None:
         del wb[ATTESTATION_SHEET_NAME]
     ws = _new_sheet(wb, ATTESTATION_SHEET_NAME)
     p = attestation if isinstance(attestation, dict) else {}
-    claims = p.get("claims") or []
+    # _sec_rows, not `or []`: a truthy non-list `claims` survived and the genexpr below then raised.
+    # The attestation sheet asserting "zero egress" must never vanish silently -- that is the one
+    # claim a reader trusts most (see _run_phase: a raising sheet writer drops the sheet, not the run).
+    claims = _sec_rows(p.get("claims"))
     n_holds = sum(1 for c in claims if c.get("result") == "HOLDS")
     if claims:
         banner = ("Zero-egress attestation — each claim below was RE-DERIVED at build time from the "
@@ -2928,17 +2963,21 @@ def write_architecture_review_sheet(wb, ar: dict) -> None:
     if ARCHREVIEW_SHEET_NAME in wb.sheetnames:
         del wb[ARCHREVIEW_SHEET_NAME]
     ws = _new_sheet(wb, ARCHREVIEW_SHEET_NAME)
-    A = ar or {}
+    A = _sec_dict(ar)
     # A CRASHED/absent review (the assembly's _unavailable sentinel, or a bare {} with no summary) must NOT
     # render as a clean 'grade N/A · 0 conform · 0 not assessable' scorecard -- that reads as 'reviewed, all
     # fine' when the computation actually failed (false-health). A legit-empty review still carries a summary
     # (n_not_assessable counts the un-evidenced checks), so this only fires on a true compute failure.
-    if A.get("_unavailable") or not A.get("summary"):
+    # `not A.get("summary")` caught an absent/empty summary but NOT a TRUTHY NON-dict one, which then
+    # crashed on `.get("score_pct")`. Coercing it to {} instead would be worse than the crash: it would
+    # render the clean 'grade N/A · 0 conform' scorecard this very guard exists to prevent. An
+    # UNREADABLE summary is a failed computation, so it takes the same UNAVAILABLE path.
+    if A.get("_unavailable") or not isinstance(A.get("summary"), dict) or not A.get("summary"):
         ws.cell(1, 1, "Architecture Review — leading-practice conformance scorecard").font = Font(bold=True, size=11)
         ws.cell(2, 1, "Architecture review unavailable — the conformance computation did not complete for this "
                       "run; no grade is asserted (see assessment_integrity).").font = Font(size=10)
         return
-    s = A.get("summary") or {}
+    s = A["summary"]
     HDR = Font(bold=True, color="FFFFFF", size=10); HFILL = PatternFill("solid", fgColor="434343")
     DAT = Font(name="Calibri", size=10)
     score = s.get("score_pct")
@@ -2957,8 +2996,7 @@ def write_architecture_review_sheet(wb, ar: dict) -> None:
     for i, h in enumerate(["Domain", "Verdict", "Score"], 1):
         c = ws.cell(r, i, h); c.font = HDR; c.fill = HFILL
     r += 1
-    for d in (A.get("domains") or []):
-        d = d if isinstance(d, dict) else {}
+    for d in _sec_rows(A.get("domains")):
         label, fill = _AR_VERDICTS.get(d.get("verdict"), (str(d.get("verdict") or "—"), "FFFFFF"))
         sc = d.get("score_pct")
         for col, v in enumerate([d.get("key"), label, f"{sc}%" if sc is not None else "—"], 1):
@@ -2975,8 +3013,7 @@ def write_architecture_review_sheet(wb, ar: dict) -> None:
         c = ws.cell(r, i, h); c.font = HDR; c.fill = HFILL
         c.alignment = Alignment(horizontal="center", wrap_text=True)
     ws.freeze_panes = ws.cell(r + 1, 1); r += 1
-    for ck in (A.get("checks") or []):
-        ck = ck if isinstance(ck, dict) else {}
+    for ck in _sec_rows(A.get("checks")):
         label, fill = _AR_VERDICTS.get(ck.get("verdict"), (str(ck.get("verdict") or "—"), "FFFFFF"))
         vals = [ck.get("id"), ck.get("domain"), ck.get("title"), label,
                 ", ".join(str(x) for x in (ck.get("evidence") or [])) or "—",
@@ -2988,7 +3025,7 @@ def write_architecture_review_sheet(wb, ar: dict) -> None:
                 c.fill = PatternFill("solid", fgColor=fill)
         r += 1
 
-    queue = A.get("top_actions") or []
+    queue = _sec_rows(A.get("top_actions"))
     if queue:
         r += 1
         ws.cell(r, 1, "Priority remediation queue (severity, then blast radius)").font = \
@@ -2997,7 +3034,6 @@ def write_architecture_review_sheet(wb, ar: dict) -> None:
             c = ws.cell(r, i, h); c.font = HDR; c.fill = HFILL
         r += 1
         for a in queue:
-            a = a if isinstance(a, dict) else {}
             label, fill = _AR_VERDICTS.get(a.get("verdict"), (str(a.get("verdict") or "—"), "FFFFFF"))
             vals = [a.get("rank"), a.get("id"), label, a.get("action"),
                     ", ".join(str(x) for x in (a.get("evidence") or [])) or "—"]

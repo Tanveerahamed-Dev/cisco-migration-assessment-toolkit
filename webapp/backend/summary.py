@@ -24,6 +24,27 @@ def _as_list(v: Any) -> List[Any]:
     non-list degrades gracefully, honouring this function's `Every field degrades gracefully` contract."""
     return v if isinstance(v, list) else []
 
+
+def _hkey(v: Any) -> Any:
+    """A HASHABLE form of a snapshot leaf that is about to be used as a dict key or as the left operand
+    of an `in <dict>` / `<dict>.get(...)` lookup.
+
+    The container and per-element guards above check the SHAPE of a section; this guards the LEAF. A
+    dict/list where a label is expected (`severity`, `readiness`) is unhashable, and `_SEV_RANK.get(...)`
+    / `... in readiness` then raises `TypeError: unhashable type: 'dict'` -- an unhandled HTTP 500. This
+    is not academic: `_keystones` is the shared choke point behind THREE unauthenticated read routes
+    (summarize -> the dashboard, cutover.build_plan -> /cutover, execution.start_run -> /executions), and
+    the snapshot is STORED, so the same upload re-crashes every later read of it.
+
+    Anything already hashable passes through UNCHANGED (real labels are untouched, so no count, order or
+    lookup over valid data changes); only an unhashable dict/list is stringified, which no canonical label
+    matches -- so it degrades to 'unknown', exactly as an unrecognised string already does."""
+    try:
+        hash(v)
+        return v
+    except TypeError:
+        return str(v)
+
 # Detail sections the web UI can render as tabs, in display order. (key, human label)
 SECTION_LABELS: List[tuple] = [
     ("punchlist", "Punch-list"),
@@ -104,7 +125,7 @@ def _keystones(snap: Dict[str, Any], top: int = 8) -> List[Dict[str, Any]]:
     fi = [r for r in _as_list(snap.get("failure_impact")) if isinstance(r, dict)]
     # fail-soft: a malformed stranded (the JSON Infinity a raw int() would 500 on) degrades to 0 in the sort
     # key -- this runs on EVERY unauthenticated snapshot upload (POST /snapshots -> summarize).
-    fi.sort(key=lambda r: (_SEV_RANK.get(r.get("severity", ""), 99),
+    fi.sort(key=lambda r: (_SEV_RANK.get(_hkey(r.get("severity", "")), 99),
                            -engine.as_num(r.get("stranded"))))
     return [{
         "host": r.get("host", ""),
@@ -151,8 +172,9 @@ def summarize(snap: Dict[str, Any]) -> Dict[str, Any]:
 
     readiness = {"READY": 0, "CAUTION": 0, "NOT READY": 0}
     for r in mr:
-        if r.get("readiness") in readiness:
-            readiness[r["readiness"]] += 1
+        rd = _hkey(r.get("readiness"))     # an unhashable dict/list readiness label must not 500 the `in`
+        if rd in readiness:
+            readiness[rd] += 1
 
     _lr = snap.get("lifecycle_risk")
     _lrs = (_lr if isinstance(_lr, dict) else {}).get("summary")    # a truthy NON-dict summary (e.g. an older

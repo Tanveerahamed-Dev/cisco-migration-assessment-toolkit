@@ -25,6 +25,7 @@ from cisco_toolkit.docmeta import SEV_RANK as _SEV_RANK
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_inputs_required, add_table, add_toc
 from cisco_toolkit.docmeta import as_dict as _as_dict, as_list as _as_list   # coerce truthy non-dict/list sections
 from cisco_toolkit.textutils import _as_num, xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5) + fail-soft numeric coercion
+from cisco_toolkit import ssot as _ssot_mod   # Law 1 accessors (canonical facts + segmentation posture)
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,6 @@ def _evidence_facts(snap: dict) -> dict:
     devices = _as_dict(snap.get("devices"))
     ifaces = _as_dict(snap.get("interfaces"))
     endpoints = 0
-    vrfs, n_acl_svis = set(), 0
     for host, ports in ifaces.items():
         for p, d in _as_dict(ports).items():
             # PER-PORT coercion, not `d or {}`: the container is guarded but a single truthy non-dict
@@ -45,11 +45,19 @@ def _evidence_facts(snap: dict) -> dict:
             # wrong-typed leaf (a truthy dict/list/number in an uploaded snapshot) would otherwise .strip() -> 500.
             if str(d.get("switchport_mode") or "").lower() == "access" and str(d.get("end_host_mac") or "").strip():
                 endpoints += 1
-            vrf = str(d.get("vrf") or "").strip()
-            if vrf and vrf.lower() not in ("default", "global"):
-                vrfs.add(vrf)
-            if (d.get("svi_ip") or "") and (str(d.get("acl_in") or "").strip() or str(d.get("acl_out") or "").strip()):
-                n_acl_svis += 1
+    # SSOT (Law 1): the segmentation posture has ONE owner (analyze.compute_segmentation ->
+    # snap['segmentation']), read via ssot.segmentation_facts. The inline recount this replaced asked a
+    # different question under the same label — it treated EVERY non-default VRF on the box (mgmt0's
+    # management VRF, a vPC keepalive VRF) as observed segmentation, so REQ-T-SEC-001 told the customer
+    # to "preserve the observed segmentation: VRF(s) Mgmt-vrf, VPC, management, mgmtVrf" on a fabric the
+    # owner reports FLAT (1 VRF bucket across 231 gateway SVIs) — a requirement written off a fact that
+    # segments no user traffic. It also counted an ACL on ANY port carrying an svi_ip, not just a VlanN
+    # SVI, so its numerator could exceed the design doc's and the archreview's for the same estate.
+    _segf = _ssot_mod.segmentation_facts(snap)
+    gw_vrfs = list(_segf.get("gateway_vrfs") or [])
+    other_vrfs = list(_segf.get("other_vrfs") or [])
+    n_acl_svis = _as_num(_segf.get("n_with_acl"))
+    n_seg_gateways = _as_num(_segf.get("n_gateways"))
     # Dual-homed endpoints: the CANONICAL redundancy-bearing count is the engine's
     # endpoint_dependencies.dual_homed (host MAC observed on two switches) — the SAME source the
     # design blueprint's preserve-dual-homed-endpoints decision reads — so the CRD and the HLD agree
@@ -100,7 +108,9 @@ def _evidence_facts(snap: dict) -> dict:
         # n_endpoints below + design.py's A5 canonical-first read — closes the recompute drift seam).
         "n_vlans": _eb_scale.get("n_vlans") or len(vlan_inventory(snap)),
         "endpoints": endpoints, "dual": dual, "protos": protos, "fhrp_vlans": fhrp_vlans,
-        "vrfs": sorted(vrfs), "n_acl_svis": n_acl_svis, "services": services,
+        # gateway-carrying VRFs vs configured-elsewhere VRFs: two DIFFERENT facts, kept apart (see above)
+        "gw_vrfs": gw_vrfs, "other_vrfs": other_vrfs,
+        "n_acl_svis": n_acl_svis, "n_seg_gateways": n_seg_gateways, "services": services,
         "mcast": mc, "mcast_active": mcast_active, "lifecycle": lc, "coll": coll, "punch": punch,
         "n_l3": len(l3f),
         # canonical endpoint scale (the published single source) with the access-port tally as fallback
@@ -290,7 +300,9 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
         ("Dual-homed endpoints (host MAC on two switches)", ev["dual"]),
         ("Routing protocols observed", ", ".join(ev["protos"]) or "none (pure L2 fleet)"),
         ("Gateway SVIs / FHRP-protected VLANs", f"{ev['n_l3']} / {len(ev['fhrp_vlans'])}"),
-        ("Non-default VRFs", ", ".join(ev["vrfs"]) or "none"),
+        ("Non-default VRFs carrying a gateway SVI", ", ".join(ev["gw_vrfs"]) or "none (flat global table)"),
+        ("Other non-default VRFs (no gateway SVI — segment no user traffic)",
+         ", ".join(ev["other_vrfs"]) or "none"),
         ("Hardware past last-day-of-support (LDoS)", lc.get("n_past_ldos", "—")),
         ("Collection completeness", f"{coll.get('complete', '—')} complete / "
                                     f"{coll.get('partial', '—')} partial / "
@@ -374,13 +386,26 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
              "<owner>", "<H/M/L>", "<YES/AMEND>"),
         ])
 
-    if ev["vrfs"] or ev["n_acl_svis"]:
+    if ev["gw_vrfs"] or ev["n_acl_svis"] or ev["other_vrfs"]:
         doc.add_heading("4.4 Segmentation & security", level=2)
+        # "Preserve the observed segmentation" must name what actually segments USER traffic. A
+        # management/keepalive VRF carries no gateway SVI, so listing it here wrote a carry-forward
+        # requirement off a fabric the engine reports FLAT.
         req_table([
-            ("REQ-T-SEC-001", "Preserve the observed segmentation: VRF(s) "
-                              + (", ".join(ev["vrfs"]) or "—")
-                              + f"; {ev['n_acl_svis']} gateway SVI(s) carry ACLs that must be "
-                              "carried forward or consciously redesigned.",
+            ("REQ-T-SEC-001",
+             ("Preserve the observed segmentation: VRF(s) " + ", ".join(ev["gw_vrfs"])
+              if ev["gw_vrfs"] else
+              f"NO gateway SVI sits in a non-default VRF (all {ev['n_seg_gateways']} are in the global "
+              "table) — there is no VRF segmentation to preserve; the target must introduce it"
+              if ev["n_seg_gateways"] else
+              # coverage-honest: no gateway tier was observed, so neither verdict is assertable
+              "[NOT OBSERVED] — no gateway SVI was collected, so the L3 segmentation posture could "
+              "not be assessed (this is a blind spot, not a flat fabric)")
+             + f"; {ev['n_acl_svis']} gateway SVI(s) carry ACLs that must be "
+               "carried forward or consciously redesigned."
+             + (f" ({len(ev['other_vrfs'])} non-default VRF(s) — {', '.join(ev['other_vrfs'][:6])} — "
+                "exist but carry no gateway SVI; they are management/infrastructure separation, not "
+                "user-traffic segmentation.)" if ev["other_vrfs"] else ""),
              "<owner>", "<H/M/L>", "<YES/AMEND>"),
         ])
 

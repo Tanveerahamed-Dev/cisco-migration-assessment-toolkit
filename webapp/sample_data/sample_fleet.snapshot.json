@@ -1,7 +1,7 @@
 {
   "schema": "collect_parse_snapshot/1",
   "script_version": "V3.23.0",
-  "generated_at": "2026-07-18T13:39:55.821757",
+  "generated_at": "2026-07-28T16:03:41.204188",
   "devices": {
     "core1": {
       "hostname": "core1",
@@ -2985,7 +2985,7 @@
       }
     }
   },
-  "collected_at": "2026-07-18T13:39:49.004535",
+  "collected_at": "2026-07-28T16:03:35.603871",
   "physical_health": [
     {
       "switch": "access1",
@@ -3018,7 +3018,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3035,7 +3035,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3052,7 +3052,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3086,7 +3086,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3103,7 +3103,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3120,7 +3120,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3154,7 +3154,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3171,7 +3171,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3188,7 +3188,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3222,7 +3222,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3239,7 +3239,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3256,7 +3256,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3290,7 +3290,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3341,7 +3341,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3358,7 +3358,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3392,7 +3392,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3443,7 +3443,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3460,7 +3460,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3494,7 +3494,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3545,7 +3545,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3562,7 +3562,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3596,7 +3596,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3647,7 +3647,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3664,7 +3664,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3698,7 +3698,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3749,7 +3749,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3766,7 +3766,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3800,7 +3800,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3817,7 +3817,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3834,7 +3834,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3868,7 +3868,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3885,7 +3885,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3902,7 +3902,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3936,7 +3936,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3953,7 +3953,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -3970,7 +3970,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4004,7 +4004,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4021,7 +4021,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4038,7 +4038,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4072,7 +4072,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4089,7 +4089,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4106,7 +4106,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4140,7 +4140,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4157,7 +4157,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4174,7 +4174,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4208,7 +4208,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4225,7 +4225,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4242,7 +4242,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4276,7 +4276,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4293,7 +4293,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4310,7 +4310,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4327,7 +4327,7 @@
       "output_drops": "",
       "port_channel": "Po1",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4344,7 +4344,7 @@
       "output_drops": "",
       "port_channel": "Po1",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4514,7 +4514,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4633,7 +4633,7 @@
       "output_drops": "",
       "port_channel": "Po1",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4769,7 +4769,7 @@
       "output_drops": "",
       "port_channel": "Po1",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4786,7 +4786,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4803,7 +4803,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4820,7 +4820,7 @@
       "output_drops": "",
       "port_channel": "Po1",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4837,7 +4837,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4854,7 +4854,7 @@
       "output_drops": "",
       "port_channel": "Po1",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4871,7 +4871,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4888,7 +4888,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4905,7 +4905,7 @@
       "output_drops": "",
       "port_channel": "Po1",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4922,7 +4922,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4939,7 +4939,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4956,7 +4956,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4973,7 +4973,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -4990,7 +4990,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -5007,7 +5007,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -5024,7 +5024,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -5041,7 +5041,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     },
     {
@@ -5058,7 +5058,7 @@
       "output_drops": "",
       "port_channel": "",
       "poe": "",
-      "risk": "ok",
+      "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
       "severity": "Info"
     }
   ],
@@ -5074,8 +5074,8 @@
       "next_hop": "Vlan10",
       "primary_subnet": "10.0.10.0/24",
       "secondary": "10.0.10.2/32",
-      "tracking": "",
-      "risk": "ok",
+      "tracking": "[NOT OBSERVED]",
+      "risk": "[NOT OBSERVED] - no 'show track' evidence; object tracking NOT assessed",
       "severity": "Info"
     },
     {
@@ -5089,8 +5089,8 @@
       "next_hop": "Vlan20",
       "primary_subnet": "10.0.20.0/24",
       "secondary": "10.0.20.2/32",
-      "tracking": "",
-      "risk": "ok",
+      "tracking": "[NOT OBSERVED]",
+      "risk": "[NOT OBSERVED] - no 'show track' evidence; object tracking NOT assessed",
       "severity": "Info"
     },
     {
@@ -5104,7 +5104,7 @@
       "next_hop": "Vlan30",
       "primary_subnet": "10.0.30.0/24",
       "secondary": "10.0.30.1/32",
-      "tracking": "",
+      "tracking": "[NOT OBSERVED]",
       "risk": "single-gateway",
       "severity": "Medium"
     },
@@ -5119,8 +5119,8 @@
       "next_hop": "Vlan10",
       "primary_subnet": "10.0.10.0/24",
       "secondary": "10.0.10.3/32",
-      "tracking": "",
-      "risk": "ok",
+      "tracking": "[NOT OBSERVED]",
+      "risk": "[NOT OBSERVED] - no 'show track' evidence; object tracking NOT assessed",
       "severity": "Info"
     },
     {
@@ -5134,8 +5134,8 @@
       "next_hop": "Vlan20",
       "primary_subnet": "10.0.20.0/24",
       "secondary": "10.0.20.3/32",
-      "tracking": "",
-      "risk": "ok",
+      "tracking": "[NOT OBSERVED]",
+      "risk": "[NOT OBSERVED] - no 'show track' evidence; object tracking NOT assessed",
       "severity": "Info"
     },
     {
@@ -5149,8 +5149,8 @@
       "next_hop": "",
       "primary_subnet": "",
       "secondary": "",
-      "tracking": "",
-      "risk": "ok",
+      "tracking": "[NOT OBSERVED]",
+      "risk": "[NOT OBSERVED] - no 'show track' evidence; object tracking NOT assessed",
       "severity": "Info"
     },
     {
@@ -5164,8 +5164,8 @@
       "next_hop": "",
       "primary_subnet": "",
       "secondary": "",
-      "tracking": "",
-      "risk": "ok",
+      "tracking": "[NOT OBSERVED]",
+      "risk": "[NOT OBSERVED] - no 'show track' evidence; object tracking NOT assessed",
       "severity": "Info"
     },
     {
@@ -5179,8 +5179,8 @@
       "next_hop": "",
       "primary_subnet": "",
       "secondary": "",
-      "tracking": "",
-      "risk": "ok",
+      "tracking": "[NOT OBSERVED]",
+      "risk": "[NOT OBSERVED] - no 'show track' evidence; object tracking NOT assessed",
       "severity": "Info"
     },
     {
@@ -5194,8 +5194,8 @@
       "next_hop": "",
       "primary_subnet": "",
       "secondary": "",
-      "tracking": "",
-      "risk": "ok",
+      "tracking": "[NOT OBSERVED]",
+      "risk": "[NOT OBSERVED] - no 'show track' evidence; object tracking NOT assessed",
       "severity": "Info"
     }
   ],
@@ -6343,7 +6343,7 @@
           "ldos": ""
         }
       ],
-      "asof": "2026-07-18"
+      "asof": "2026-07-28"
     },
     "risks": [
       {
@@ -6369,7 +6369,7 @@
         "remediation": "Schedule replacement before LDoS; confirm the migration target covers these."
       }
     ],
-    "asof": "2026-07-18",
+    "asof": "2026-07-28",
     "note": "Reference dates from a curated offline KB (Cisco EoL bulletins); last-day-of-support is often derived = end-of-sale + 5yr. Verify exact dates on Cisco's End-of-Life portal."
   },
   "remediation_plan": {
@@ -16962,7 +16962,7 @@
         {
           "check": "Port-channels healthy",
           "status": "pass",
-          "note": "all members bundled / none",
+          "note": "all members bundled",
           "phase": "Baseline capture"
         },
         {
@@ -17020,7 +17020,7 @@
       "endpoints": 4,
       "readiness": "CAUTION",
       "n_fail": 0,
-      "n_warn": 1,
+      "n_warn": 2,
       "checks": [
         {
           "check": "Redundant uplinks",
@@ -17048,14 +17048,14 @@
         },
         {
           "check": "STP consistency",
-          "status": "pass",
-          "note": "no inconsistent ports",
+          "status": "warn",
+          "note": "no spanning-tree evidence for dist1, dist2, podacc1, podacc2 \u2014 STP consistency not assessable",
           "phase": "Dependency mapping"
         },
         {
           "check": "Port-channels healthy",
           "status": "pass",
-          "note": "all members bundled / none",
+          "note": "all members bundled",
           "phase": "Baseline capture"
         },
         {
@@ -27004,34 +27004,6 @@
       {
         "line_index": 0,
         "action": "permit",
-        "raw": "permit tcp object-group MGMT_HOSTS any eq 22",
-        "reason": "INDETERMINATE",
-        "verdict": "indeterminate",
-        "blocking_lines": [],
-        "different_action": false,
-        "detail": "unparseable address/port (e.g. non-contiguous wildcard)",
-        "host": "core1",
-        "acl": "MGMT_IN",
-        "source_command": "show running-config",
-        "citation": "acls.core1.MGMT_IN[0]"
-      },
-      {
-        "line_index": 1,
-        "action": "deny",
-        "raw": "deny ip any any",
-        "reason": "INDETERMINATE",
-        "verdict": "indeterminate",
-        "blocking_lines": [],
-        "different_action": false,
-        "detail": "an earlier unevaluable line may overlap \u2014 cannot prove reachable or dead",
-        "host": "core1",
-        "acl": "MGMT_IN",
-        "source_command": "show running-config",
-        "citation": "acls.core1.MGMT_IN[1]"
-      },
-      {
-        "line_index": 0,
-        "action": "permit",
         "raw": "permit tcp any any established",
         "reason": "INDETERMINATE",
         "verdict": "indeterminate",
@@ -27073,11 +27045,11 @@
       }
     ],
     "summary": {
-      "n_findings": 5,
+      "n_findings": 3,
       "n_shadowed": 0,
       "n_different_action": 0,
       "n_unmatchable": 0,
-      "n_indeterminate": 5,
+      "n_indeterminate": 3,
       "n_bad_reference": 0
     }
   },
@@ -27234,12 +27206,13 @@
       "n_error": 0,
       "n_empty": 0,
       "n_unverified_prompt": 0,
+      "n_unreadable": 0,
       "n_hosts_affected": 18
     }
   },
   "attestation": {
     "schema": "attestation/1",
-    "generated_at": "2026-07-18T10:39:54.566350+00:00",
+    "generated_at": "2026-07-28T13:03:40.357099+00:00",
     "claims": [
       {
         "id": "read_only_command_surface",
@@ -27249,9 +27222,9 @@
       },
       {
         "id": "no_egress_import_graph",
-        "method": "AST import-walk (any nesting depth, lazy imports included) over the analysis package for network libraries; charter exclusion: rest_collect.py (the opt-in REST collector, covered by its own GET-only claim); documented dev-only exception: gen_port_registry.py (data-pack generator, not pipeline-reachable)",
+        "method": "RECURSIVE AST import-walk (every subpackage, any nesting depth, lazy imports included) over the analysis package for network libraries; charter exclusion: rest_collect.py (the opt-in REST collector, covered by its own GET-only claim); documented dev-only exception: data/gen_port_registry.py (data-pack generator, not pipeline-reachable) \u2014 subtracted AFTER the scan and named in the result",
         "result": "HOLDS",
-        "detail": "0 network-library imports across 67 analysis modules (excluded by charter: rest_collect.py; documented exception: gen_port_registry.py)"
+        "detail": "0 unexplained network-library imports across 69 analysis modules (recursive walk; excluded by charter: rest_collect.py; documented exception(s) applied: data/gen_port_registry.py -> urllib.request)"
       },
       {
         "id": "rest_collect_get_only",
@@ -27263,7 +27236,7 @@
         "id": "no_llm_runtime",
         "method": "AST import-walk over the analysis package (rest_collect.py included) + the collector entry module for LLM/GenAI SDK imports \u2014 the pipeline is deterministic and air-gapped, no model call at runtime",
         "result": "HOLDS",
-        "detail": "0 LLM/GenAI SDK imports across 69 modules (analysis package + collector entry)"
+        "detail": "0 LLM/GenAI SDK imports across 71 modules (analysis package + collector entry)"
       }
     ]
   },
@@ -31362,7 +31335,7 @@
         "hard_cutover_endpoints": 0,
         "dual_homed_pct": 100,
         "recommended_scenario": "parallel-run",
-        "rationale": "100% of switches are dual-homed \u2014 build beside and cut leg-by-leg (make-before-break) for minimal outage.",
+        "rationale": "100% of the 4 assessed switch(es) are dual-homed \u2014 build beside and cut leg-by-leg (make-before-break) for minimal outage.",
         "playbook": {
           "pre": "Build the new path beside the legacy one; confirm both legs of every dual-homed endpoint are up.",
           "validate": "Cut one leg, prove forwarding from a real endpoint to its gateway + a cross-VLAN service, then cut the second.",
@@ -31902,7 +31875,7 @@
         "axis": "Hardware lifecycle (EoL)",
         "severity": "Critical",
         "headline": "5 past end-of-support, 1 within 1yr (26% of 23 assessable)",
-        "detail": "Reference dates from the offline KB; bands are time-relative, computed as-of 2026-07-18 (they shift as time passes), and an LDoS absent from the KB is derived as end-of-sale + 5yr \u2014 re-verify on Cisco's EoX portal before acting."
+        "detail": "Reference dates from the offline KB; bands are time-relative, computed as-of 2026-07-28 (they shift as time passes), and an LDoS absent from the KB is derived as end-of-sale + 5yr \u2014 re-verify on Cisco's EoX portal before acting."
       },
       {
         "axis": "Asset risk register",
@@ -31971,6 +31944,7 @@
     "ssot": {
       "verified": true,
       "n_facts": 14,
+      "n_checked": 20,
       "n_violations": 0
     }
   },
@@ -33745,8 +33719,8 @@
           },
           {
             "axis": "Software risk",
-            "state": "ok",
-            "label": "no exposed advisory surface flagged"
+            "state": "na",
+            "label": "advisory surface not screened \u2014 no captured running-config (software train Current-era)"
           },
           {
             "axis": "Control plane",
@@ -33791,7 +33765,7 @@
         ],
         "n_risk": 0,
         "n_watch": 0,
-        "n_na": 6,
+        "n_na": 7,
         "compound": [],
         "risk_index": 0,
         "risk_band": "Low",
@@ -33829,8 +33803,8 @@
           },
           {
             "axis": "Software risk",
-            "state": "ok",
-            "label": "no exposed advisory surface flagged"
+            "state": "na",
+            "label": "advisory surface not screened \u2014 no captured running-config (software train Current-era)"
           },
           {
             "axis": "Control plane",
@@ -33875,7 +33849,7 @@
         ],
         "n_risk": 0,
         "n_watch": 0,
-        "n_na": 6,
+        "n_na": 7,
         "compound": [],
         "risk_index": 0,
         "risk_band": "Low",
@@ -33913,8 +33887,8 @@
           },
           {
             "axis": "Software risk",
-            "state": "ok",
-            "label": "no exposed advisory surface flagged"
+            "state": "na",
+            "label": "advisory surface not screened \u2014 no captured running-config (software train Current-era)"
           },
           {
             "axis": "Control plane",
@@ -33959,7 +33933,7 @@
         ],
         "n_risk": 0,
         "n_watch": 0,
-        "n_na": 6,
+        "n_na": 7,
         "compound": [],
         "risk_index": 0,
         "risk_band": "Low",
@@ -33997,8 +33971,8 @@
           },
           {
             "axis": "Software risk",
-            "state": "ok",
-            "label": "no exposed advisory surface flagged"
+            "state": "na",
+            "label": "advisory surface not screened \u2014 no captured running-config (software train Current-era)"
           },
           {
             "axis": "Control plane",
@@ -34043,7 +34017,7 @@
         ],
         "n_risk": 0,
         "n_watch": 0,
-        "n_na": 6,
+        "n_na": 7,
         "compound": [],
         "risk_index": 0,
         "risk_band": "Low",
@@ -34495,7 +34469,7 @@
         "domain": "Security & segmentation",
         "title": "Segmentation enforced at the L3 boundary",
         "verdict": "advisory",
-        "observed": "1 VRF(s) in use; 2 of 9 gateway SVIs carry an ACL.",
+        "observed": "1 VRF(s) carry a gateway SVI; 2 of 9 gateway SVIs carry an ACL.",
         "implication": "Partial enforcement leaves unpoliced inter-segment paths.",
         "recommendation": "Close the unpoliced SVIs (or fold them into a VRF) in the target design.",
         "reference": "Segmentation guidance \u2014 enforce inter-segment policy at the L3 boundary (VRF / gateway ACL)",
@@ -34788,7 +34762,7 @@
         "confidence": "Observed",
         "driver": "Supportability: the target fabric must not inherit end-of-support assets.",
         "evidence": {
-          "summary": "5 device(s) are past last-day-of-support (1 more approaching LDoS) -- unsupported hardware/software in forwarding roles cannot be safely relied on in the target design.",
+          "summary": "5 device(s) are past last-day-of-support (7 more approaching LDoS or past-EoS) -- unsupported hardware/software in forwarding roles cannot be safely relied on in the target design.",
           "count": 5,
           "devices": [
             "access10",
@@ -35031,52 +35005,6 @@
         "requirements_needed": []
       },
       {
-        "id": "dc-stp-determinism-edge-protection",
-        "title": "Engineer a deterministic STP root at distribution, run Rapid-STP, and protect the topology (PortFast/BPDU/Root/Loop Guard, UDLD)",
-        "domain": "dc-switching",
-        "priority": "High",
-        "status": "recommended",
-        "confidence": "Observed",
-        "driver": "Deterministic L2: rapid-PVST/MST, aligned roots, edge protection (BPDU-Guard), VTP off/transparent.",
-        "evidence": {
-          "summary": "33 endpoint-bearing access port(s) across 20 switch(es) have no BPDU-Guard (an unprotected L2 edge) -- L2 control is not deterministic and the edge is not protected.",
-          "count": 20,
-          "devices": [
-            "access1",
-            "access10",
-            "access11",
-            "access12",
-            "access13",
-            "access14",
-            "access15",
-            "access16",
-            "access17",
-            "access2",
-            "access3",
-            "access4"
-          ],
-          "fields": [
-            "protocol_health[STP].summary",
-            "protocol_health[VTP].summary",
-            "interfaces[host][port].stp_bpduguard"
-          ]
-        },
-        "principle": {
-          "id": "dc-stp-determinism-edge-protection",
-          "title": "Engineer a deterministic STP root at distribution, run Rapid-STP, and protect the topology (PortFast/BPDU/Root/Loop Guard, UDLD)",
-          "citation": "CCDE Session 16 (root at distribution, Rapid STP, BPDU/Root/Loop Guard, UDLD); engine STP parsing"
-        },
-        "recommended_action": "Hard-set primary/secondary root on distribution for every VLAN/MST instance aligned to the active gateway; run Rapid-PVST/RSTP (MST at scale); enable BPDU Guard globally for PortFast edge ports, Root Guard on non-root ports, Loop Guard + UDLD on fibre (aggressive only on dual-homed).",
-        "alternatives": "Routed access to remove STP from the edge entirely; MST for per-instance control at scale; UplinkFast/BackboneFast on legacy PVST.",
-        "tradeoffs": "Deterministic optimal L2 paths, fast convergence and loop safety vs the discipline of explicit priorities and a small risk of err-disabling a legitimately-connected switch port or, with UDLD aggressive on a single-homed link, isolating a device with no backup path.",
-        "axes": [
-          "availability",
-          "manageability",
-          "convergence"
-        ],
-        "requirements_needed": []
-      },
-      {
         "id": "mgmt-time-sync-logging-baseline",
         "title": "Synchronize time (hierarchical NTP), centralize severity-tuned logging, and keep a current baseline + documentation",
         "domain": "management",
@@ -35085,7 +35013,7 @@
         "confidence": "Observed",
         "driver": "Operational baseline: an unsynchronized clock silently corrupts log correlation, certificate/Kerberos validity, and the post-cutover audit trail -- worse than absent NTP because the 'ntp server' line implies time discipline that is not actually in effect.",
         "evidence": {
-          "summary": "1 device(s) have an UNSYNCHRONIZED clock (core1 (stratum 16)) -- NTP is not locked to a reference (stratum 16 / no sync peer), even where an 'ntp server' is configured. A wrong clock makes cross-device log correlation, certificate-validity and Kerberos/802.1X checks, and post-cutover forensic reconstruction unreliable; restore reachable, authenticated NTP from a trusted stratum and confirm 'show ntp status' reports the clock synchronized before baselining.  |  also: 17 device(s) lack authenticated time sync and/or centralised logging (no-ntp/no-logging) -- without NTP-disciplined, correlated timestamps the fleet cannot be reliably troubleshot or forensically reconstructed across devices.",
+          "summary": "1 device(s) have an UNSYNCHRONIZED clock (core1 (stratum 16)) -- NTP is not locked to a reference (the device reports itself unsynchronized, or is pinned at stratum 16; a stratum shown as 'not reported' was never parsed, not observed as 16), even where an 'ntp server' is configured. A wrong clock makes cross-device log correlation, certificate-validity and Kerberos/802.1X checks, and post-cutover forensic reconstruction unreliable; restore reachable, authenticated NTP from a trusted stratum and confirm 'show ntp status' reports the clock synchronized before baselining.  |  also: 17 device(s) lack authenticated time sync and/or centralised logging (no-ntp/no-logging) -- without NTP-disciplined, correlated timestamps the fleet cannot be reliably troubleshot or forensically reconstructed across devices.",
           "count": 18,
           "devices": [
             "core1",
@@ -35262,7 +35190,7 @@
         "confidence": "Observed",
         "driver": "IPv6 access-edge security: an unguarded dual-stack segment lets a rogue RA seize the default gateway (NDP is as spoofable as ARP); RA-Guard/DHCPv6-Guard is the L2-edge countermeasure.",
         "evidence": {
-          "summary": "17 dual-stack access switch(es) have IPv6 gateways (VLAN(s) 10) but NO RA-Guard on the host-facing edge -- a single rogue or fat-fingered Router Advertisement hijacks the default gateway for the whole segment (RFC 6104 -> MITM/DoS). 17 of them also have no DHCPv6-Guard (rogue-DHCPv6 -> address theft). Enable RA-Guard + DHCPv6-Guard on every host-facing access port (trust only the real router/server uplinks), then layer ND inspection / device-tracking and IPv6 Source Guard.",
+          "summary": "17 dual-stack access switch(es) have IPv6 gateways (VLAN(s) 10) but NO RA-Guard on the host-facing edge -- a single rogue or fat-fingered Router Advertisement hijacks the default gateway for the whole segment (RFC 6104 -> MITM/DoS). 17 of them (access1, access10, access11, access12, access13, access14, access15, access16) also have no DHCPv6-Guard (rogue-DHCPv6 -> address theft). Enable RA-Guard + DHCPv6-Guard on every host-facing access port (trust only the real router/server uplinks), then layer ND inspection / device-tracking and IPv6 Source Guard.",
           "count": 17,
           "devices": [
             "access1",
@@ -35281,6 +35209,7 @@
           "fields": [
             "ipv6_fhs.dualstack",
             "ipv6_fhs.ra_guard_present",
+            "ipv6_fhs.dhcp_guard_present",
             "ipv6_fhs.ipv6_svi_vlans",
             "interfaces[host][port].switchport_mode (access-edge gate)"
           ]
@@ -36429,15 +36358,15 @@
         "priority": "High",
         "status": "recommended",
         "confidence": "Observed",
-        "driver": "SD-WAN fabric reachability: a device the Manager reports unreachable has lost controller contact -- unmonitored, unmanageable, and probably isolated from the overlay.",
+        "driver": "SD-WAN fabric health: a device the Manager reports unreachable (lost controller contact -- unmonitored, isolated) OR reachable-but-status=error / state=red (present-but-broken) cannot be trusted in-service; reading reachability alone let a degraded-but-reachable edge read healthy.",
         "evidence": {
-          "summary": "1 SD-WAN device(s) are reported UNREACHABLE by the vManage Manager (e.g. core1 BR99-cedge). Reachability is the controller's own verdict on each WAN edge; unreachable means the Manager has lost management/control contact with the device -- it cannot be monitored, templated or pushed policy, and is likely isolated from the overlay. Confirm the device is powered and on-net, its control connections, and any out-of-band management path before the site is counted as in-service at cutover.",
+          "summary": "1 SD-WAN device(s) are flagged by the vManage Manager's own verdict -- UNREACHABLE, or reachable but status=error / state=red (present-but-broken) (e.g. core1 BR99-cedge (unreachable)). The Manager's reachability / status / state are its own health verdict on each WAN edge: unreachable means it has lost management/control contact (the edge cannot be monitored, templated or pushed policy and is likely isolated from the overlay); status=error / state=red means the edge answers but the controller reports it degraded. Confirm the device is powered and on-net, its control connections and OMP session, any out-of-band management path, and clear the controller-reported error before the site is counted as in-service at cutover.",
           "count": 1,
           "devices": [
             "core1"
           ],
           "fields": [
-            "sdwan.devices[].reachability (parse_sdwan_devices / vManage /dataservice/device)"
+            "sdwan.devices[].reachability / .status / .state (parse_sdwan_devices / vManage /dataservice/device)"
           ]
         },
         "principle": {
@@ -36711,6 +36640,52 @@
           "growth_horizon",
           "data_classification"
         ]
+      },
+      {
+        "id": "dc-stp-determinism-edge-protection",
+        "title": "Engineer a deterministic STP root at distribution, run Rapid-STP, and protect the topology (PortFast/BPDU/Root/Loop Guard, UDLD)",
+        "domain": "dc-switching",
+        "priority": "High",
+        "status": "recommended",
+        "confidence": "Coverage-gap",
+        "driver": "Deterministic L2: rapid-PVST/MST, aligned roots, edge protection (BPDU-Guard), VTP off/transparent.",
+        "evidence": {
+          "summary": "COVERAGE GAP: BPDU-Guard state was NOT CAPTURED for 33 endpoint-bearing access port(s) across 20 switch(es) (stp_bpduguard is populated only from 'show running-config interface', which this collection does not carry) -- their edge protection is UNASSESSED, not absent; collect the run-config before ruling on it.",
+          "count": 0,
+          "devices": [
+            "access1",
+            "access10",
+            "access11",
+            "access12",
+            "access13",
+            "access14",
+            "access15",
+            "access16",
+            "access17",
+            "access2",
+            "access3",
+            "access4"
+          ],
+          "fields": [
+            "protocol_health[STP].summary",
+            "protocol_health[VTP].summary",
+            "interfaces[host][port].stp_bpduguard"
+          ]
+        },
+        "principle": {
+          "id": "dc-stp-determinism-edge-protection",
+          "title": "Engineer a deterministic STP root at distribution, run Rapid-STP, and protect the topology (PortFast/BPDU/Root/Loop Guard, UDLD)",
+          "citation": "CCDE Session 16 (root at distribution, Rapid STP, BPDU/Root/Loop Guard, UDLD); engine STP parsing"
+        },
+        "recommended_action": "Hard-set primary/secondary root on distribution for every VLAN/MST instance aligned to the active gateway; run Rapid-PVST/RSTP (MST at scale); enable BPDU Guard globally for PortFast edge ports, Root Guard on non-root ports, Loop Guard + UDLD on fibre (aggressive only on dual-homed).",
+        "alternatives": "Routed access to remove STP from the edge entirely; MST for per-instance control at scale; UplinkFast/BackboneFast on legacy PVST.",
+        "tradeoffs": "Deterministic optimal L2 paths, fast convergence and loop safety vs the discipline of explicit priorities and a small risk of err-disabling a legitimately-connected switch port or, with UDLD aggressive on a single-homed link, isolating a device with no backup path.",
+        "axes": [
+          "availability",
+          "manageability",
+          "convergence"
+        ],
+        "requirements_needed": []
       },
       {
         "id": "dc-three-tier-vs-collapsed-core",
@@ -37222,7 +37197,7 @@
         "label": "Cost / affordability",
         "score": 1,
         "posture": "Pressure",
-        "evidence": "5 past-LDoS + 1 near-LDoS asset(s) imply refresh CapEx."
+        "evidence": "5 past-LDoS + 7 near-LDoS/past-EoS asset(s) imply refresh CapEx."
       }
     ],
     "requirements_model": {
@@ -37425,8 +37400,8 @@
         "aci": 4,
         "security": 17,
         "ipv6": 3,
-        "dc-switching": 7,
         "qos": 3,
+        "dc-switching": 7,
         "scenario-pattern": 5,
         "wan": 2,
         "evpn": 1,
@@ -39552,7 +39527,7 @@
           "id": "security-l2-access-edge-suite",
           "title": "Harden the L2 access edge: port-security, DHCP snooping, DAI, IP Source Guard, storm-control, 802.1X",
           "priority": "High",
-          "engine_actionable": false,
+          "engine_actionable": true,
           "recommended_action": "Standardize the access-edge bundle (port-security, DHCP snooping + IP Source Guard + DAI with trusted uplinks, storm-control, 802.1X with MAB/guest fallback); add RA Guard/DHCPv6 Guard for IPv6.",
           "citation": "CCDE Session 13/16 (L2 security suite, 802.1X/NAC); CCDE Session 15 (IPv6 RA/DHCPv6 Guard); engine CIS axis"
         },
@@ -40048,8 +40023,8 @@
         },
         {
           "area": "Hardware lifecycle disposition",
-          "current": "5 past-LDoS, 1 approaching-LDoS, 0 not-collected of 23 inventoried.",
-          "target": "Replace the 5 past-LDoS asset(s); plan refresh for the 1 approaching LDoS; carry ~18 supportable asset(s) forward; collect the 0 un-assessed device(s) before finalising -- do not design resilience on unseen gear.",
+          "current": "5 past-LDoS, 7 approaching-LDoS or past-EoS, 0 not-collected of 23 inventoried.",
+          "target": "Replace the 5 past-LDoS asset(s); plan refresh for the 7 approaching LDoS or past-EoS (the replacement BoM's refresh_soon line -- they are NOT in the carry-forward figure); carry ~11 fully-supported asset(s) forward; collect the 0 un-assessed device(s) before finalising -- do not design resilience on unseen gear.",
           "rationale": "The target fabric must not inherit end-of-support hardware; coverage gaps are unknowns, not health.",
           "confidence": "Recommended",
           "drivers": [

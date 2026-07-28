@@ -24,6 +24,22 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from cisco_toolkit.model import Verdict
 
+
+# --------------------------------------------------------------------------- defensive coercers
+# The house guards (ssot._as_dict / docmeta.as_dict / design_advisor._dict_rows). This module reads
+# `snap['acls']` / `snap['object_groups']` -- two of the most deeply NESTED snapshot sections, and both
+# arrive from an UNTRUSTED source (a `--no-collect` re-analysis file, a webapp upload, a foreign tool).
+# `x or {}` / `x or []` guards None/empty but keeps a TRUTHY non-dict/non-list, and the next
+# `.items()` / `.get()` / `for ... in` then raises -- aborting compute_filter_line_reachability, which
+# runs on EVERY snapshot the engine analyses.
+def _as_dict(v: Any) -> dict:
+    return v if isinstance(v, dict) else {}
+
+
+def _as_list(v: Any) -> list:
+    return v if isinstance(v, list) else []
+
+
 # --------------------------------------------------------------------------- proto dimension
 # A co-finite set over protocol tokens: ("only", {…}) = exactly these; ("allexcept", {…}) = all but these.
 PROTO_FULL: Tuple[str, frozenset] = ("allexcept", frozenset())
@@ -166,15 +182,20 @@ def _addr_prefixes(spec, ogs, host) -> Tuple[Optional[list], str]:
 
 
 def _group_prefixes(name, ogs, host, seen) -> Tuple[Optional[list], str]:
-    tbl = ogs or {}
-    og = tbl.get(name)
+    tbl = _as_dict(ogs)
+    try:
+        og = tbl.get(name)
+    except TypeError:                       # an UNHASHABLE group name (a dict/list leaf) can never
+        return None, "undefined"            # name a real object-group -> undefined, not a crash
     if og is None:
         return None, "undefined"
+    if not isinstance(og, dict):            # a truthy non-dict group body (str/int/list) is not a
+        return None, "undefined"            # readable definition -> abstain exactly like an absent one
     if name in seen:
         return None, "cyclic"
     seen = seen | {name}
     prefixes = []
-    for m in (og.get("members") or []):
+    for m in _as_list(og.get("members")):
         if not isinstance(m, dict):
             continue
         if m.get("group") is not None:
@@ -232,15 +253,33 @@ def _iv_empty(A) -> bool:
     return not A
 
 
+def _port_num(v):
+    """A port operand coerced to an int in [0, 65535], or None (= unevaluable) for anything else.
+
+    THE choke point for the port dimension: every branch of _port_intervals feeds `v`/`v2` straight into
+    integer arithmetic and then into `_iv_norm`'s `lo <= hi` / `_iv_inter`'s `max()/min()`. A parsed rule
+    read back from an UNTRUSTED snapshot can carry a str, a list or a float there (a foreign-tool export,
+    an older schema, a hand-trim), and the comparison raises
+    `TypeError: '<=' not supported between instances of 'str' and 'int'` -- aborting
+    compute_filter_line_reachability for the whole fleet over one malformed ACE.
+
+    Returning None routes that line to the SAME abstention an unknown port name already takes
+    (-> INDETERMINATE), never a narrower box: a line whose ports could not be read must never be used to
+    "prove" a later line dead. bool is rejected explicitly -- True would silently model port 1."""
+    if isinstance(v, bool) or not isinstance(v, int):
+        return None
+    return v if 0 <= v <= 65535 else None
+
+
 def _port_intervals(p) -> Optional[list]:
     """{op,val,val2?} -> [(lo,hi)] interval-set over [0,65535]; None for the whole space; [] when empty."""
     if p is None:
         return [(0, 65535)]
     if not isinstance(p, dict):
         return None
-    op, v, v2 = p.get("op"), p.get("val"), p.get("val2")
+    op, v, v2 = p.get("op"), _port_num(p.get("val")), _port_num(p.get("val2"))
     if v is None:
-        return None                                        # unknown port name -> unevaluable
+        return None                                        # unknown / unreadable port operand -> unevaluable
     if op == "eq":
         return _iv_norm([(v, v)])
     if op == "neq":
@@ -300,6 +339,11 @@ def _is_group_spec(spec) -> bool:
 
 def _rule_box(rule, ogs, host) -> Tuple[dict, str]:
     """Parsed rule -> (over-approximating box, status). Unevaluable dims fall back to FULL."""
+    # A non-dict ELEMENT in the rules list (a bare string / int / None from a hand-trimmed or
+    # foreign-tool snapshot) must degrade to the FULL, UNEVALUABLE box -- never a `.get` AttributeError,
+    # and never a narrow box, which would let the algebra "prove" a later line dead against a rule it
+    # could not actually read (a false BLOCKING_LINES verdict is worse than an abstention).
+    rule = _as_dict(rule)
     src_spec, dst_spec = rule.get("src"), rule.get("dst")
     src, st_s = _addr_prefixes(src_spec, ogs, host)
     dst, st_d = _addr_prefixes(dst_spec, ogs, host)
@@ -365,12 +409,13 @@ def _finding(idx, rule, reason, blocking_lines=None, different_action=False, det
 
 def analyze_acl(rules: List[dict], object_groups: Optional[dict] = None, host: Optional[str] = None) -> List[dict]:
     """One ACL's rules -> a list of findings (one per non-REACHABLE line). Pure; never raises."""
-    ogs = object_groups or {}
+    ogs = _as_dict(object_groups)
     meta = []
-    for r in (rules or []):
+    for r in _as_list(rules):
         box, st = _rule_box(r, ogs, host)
-        est = bool(r.get("established") or r.get("reflexive"))
-        meta.append((box, st, (r.get("action") or "").lower(), est, r))
+        rd = _as_dict(r)                 # a non-dict rule ELEMENT degrades to an unevaluable line
+        est = bool(rd.get("established") or rd.get("reflexive"))
+        meta.append((box, st, str(rd.get("action") or "").lower(), est, rd))
 
     findings: List[dict] = []
     for i, (box, st, action, est, r) in enumerate(meta):
@@ -433,12 +478,16 @@ def analyze_acl(rules: List[dict], object_groups: Optional[dict] = None, host: O
 
 def compute_filter_line_reachability(snap: Dict[str, Any]) -> Dict[str, Any]:
     """Run the shadow proof over every ACL in the snapshot -> {findings:[…], summary:{…}}."""
-    acls_by_host = (snap or {}).get("acls") or {}
-    ogs_by_host = (snap or {}).get("object_groups") or {}
+    # _as_dict at every hop, not `or {}`: acls / object_groups is a THREE-level nested section
+    # (host -> acl-name -> rules), and a truthy non-dict at ANY hop -- the whole section, one host's
+    # table, one group's body -- survives `or {}` and dies on the next `.items()` / `.get()`. This
+    # runs over every snapshot the engine analyses, so one malformed host aborted the whole run.
+    acls_by_host = _as_dict(_as_dict(snap).get("acls"))
+    ogs_by_host = _as_dict(_as_dict(snap).get("object_groups"))
     findings: List[dict] = []
     for host, acls in acls_by_host.items():
-        ogs = ogs_by_host.get(host) or {}
-        for name, rules in (acls or {}).items():
+        ogs = _as_dict(ogs_by_host.get(host))
+        for name, rules in _as_dict(acls).items():
             for f in analyze_acl(rules, ogs, host):
                 row = dict(f)
                 row.update(host=host, acl=name, source_command="show running-config",
@@ -532,8 +581,10 @@ def search_filters(rules: List[dict], headers: Dict[str, Any], action: str = "pe
     rather than "proven to deny nothing" — a formal proof of 'no' for a filter that in reality blocks
     everything but its permits. (An empty rule list therefore models an ACL that exists with no ACEs:
     the implicit deny still terminates it.)"""
-    ogs = object_groups or {}
-    action = (action or "permit").lower()
+    # the same guards analyze_acl carries -- search_filters is the second public entry into the
+    # same rule algebra and read the SAME untrusted snapshot sections without them.
+    ogs = _as_dict(object_groups)
+    action = str(action or "permit").lower()
     q_box, unmodelled = _headers_box(headers)
     if unmodelled:                                     # IPv6 query vs an IPv4-only algebra -> abstain
         return {"result": "INDETERMINATE",
@@ -542,11 +593,12 @@ def search_filters(rules: List[dict], headers: Dict[str, Any], action: str = "pe
                           "about" % ", ".join(sorted(set(unmodelled)))}
     q_remaining = [q_box]
     hits: List[dict] = []
-    for i, r in enumerate(rules or []):
+    for i, r in enumerate(_as_list(rules)):
         if not q_remaining:
             break
         box, st = _rule_box(r, ogs, host)
-        if r.get("established") or r.get("reflexive"):
+        r = _as_dict(r)                                     # a non-dict rule ELEMENT degrades to an
+        if r.get("established") or r.get("reflexive"):      # unevaluable line (see _rule_box), never a .get crash
             continue                                        # never matches a forward flow
         overlaps = [o for o in (_box_inter(b, box) for b in q_remaining) if not _box_empty(o)]
         if not overlaps:

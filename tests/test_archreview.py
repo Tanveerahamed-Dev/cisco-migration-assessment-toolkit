@@ -259,6 +259,48 @@ def test_l2_2_conforms_only_when_every_access_port_is_captured_and_guarded():
     assert _check(compute_architecture_review(_access_ports(100, 100, 99)), "L2-2")["verdict"] == "advisory"
 
 
+def test_l2_2_reads_the_producers_own_bpduguard_tokens():
+    """Cross-module SSOT audit 2026-07-28: L2-2 hand-rolled its own token set and it did not contain
+    the PRODUCER's own value. parse.py writes exactly "Enable"/"Disable" (and build.py promotes a
+    global `portfast bpduguard default` to "Enable"), but the old test was
+    `v not in ("no","disabled","off","false","-","--")` — "Disable" is not in that list, so an edge
+    port with BPDU Guard EXPLICITLY OFF counted as GUARDED, while design_advisor counted the same
+    port unguarded off the same field. Both consumers now share textutils.bpduguard_state."""
+    from cisco_toolkit.textutils import bpduguard_state
+    snap = _access_ports(10, 10, 10)
+    for i in (1, 2, 3):                      # the producer's literal token, not the test's "disabled"
+        snap["interfaces"]["acc1"][f"Gi1/0/{i}"]["stp_bpduguard"] = "Disable"
+    c = _check(compute_architecture_review(snap), "L2-2")
+    assert c["verdict"] == "advisory", c     # pre-fix: "conforms" — 3 disabled ports read as protected
+    assert "3 of the 10" in c["observed"] and "do NOT carry it" in c["observed"]
+
+    # and an UNRECOGNISED token is not evidence of protection either: it leaves the assessable set
+    # rather than being counted as guarded (absence of evidence is never health).
+    snap2 = _access_ports(10, 10, 10)
+    snap2["interfaces"]["acc1"]["Gi1/0/1"]["stp_bpduguard"] = "??"
+    assert bpduguard_state("??") is None
+    c2 = _check(compute_architecture_review(snap2), "L2-2")
+    assert c2["verdict"] == "not-assessable" and "no BPDU-Guard evidence" in c2["observed"]
+
+
+def test_bpduguard_state_is_the_one_token_owner_for_both_consumers():
+    """The two consumers must agree, port for port, on the producer's whole vocabulary."""
+    from cisco_toolkit import design_advisor
+    from cisco_toolkit.textutils import bpduguard_state
+    assert (bpduguard_state("Enable"), bpduguard_state("Disable"), bpduguard_state("")) == (True, False, None)
+    ports = {"Gi1/0/1": {"switchport_mode": "Access", "end_host_mac": "00:11:22:33:44:55",
+                         "stp_bpduguard": "Disable"},
+             "Gi1/0/2": {"switchport_mode": "Access", "end_host_mac": "00:11:22:33:44:66",
+                         "stp_bpduguard": "Enable"}}
+    snap = {"devices": {"acc1": {}}, "interfaces": {"acc1": ports}}
+    sig = design_advisor._signals(snap)
+    assert sig["bpdu_unguarded"] == 1 and sig["bpdu_not_assessed"] == 0
+    c = _check(compute_architecture_review(snap), "L2-2")
+    # archreview's assessable/guarded split must reconcile with design_advisor's verdict on the SAME
+    # two ports: 2 captured, exactly 1 guarded (pre-fix archreview said 2 guarded, 0 unguarded).
+    assert "1 of the 2 access port(s)" in c["observed"] and "(1 do)" in c["observed"]
+
+
 def test_res_3_not_assessable_when_only_some_devices_report_psu_inventory():
     """RES-3's not-assessable gate was FLEET-WIDE (`no device reported a count`), so ONE device
     reporting 2 supplies graded the whole fleet CONFORMS — 'no single feed/PSU fault takes a switch

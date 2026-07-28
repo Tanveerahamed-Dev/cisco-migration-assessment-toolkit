@@ -394,9 +394,19 @@ def add_excellence_front(doc, snap, *, extra_rows=(), heading="At a Glance"):
     s = ssot.summary(snap if isinstance(snap, dict) else {})
     if s.get("n_facts"):
         if s.get("verified"):
+            # `n_facts` and `n_checked` are NOT the same unit and must never share an "X of Y" frame:
+            # n_facts counts the canonical facts PUBLISHED (14), n_checked counts the reconcile CHECKS
+            # that RAN (20 on the [HISTORY-REDACTED] fleet — several facts carry more than one independent basis, and
+            # reconcile also verifies non-canonical siblings such as lifecycle_risk.summary.by_band).
+            # Rendered as "{n_checked} of {n_facts}" this shipped "✓ 20 of 14 headline figures
+            # self-verified" into all seven DOCX deliverables: a client-facing trust badge claiming more
+            # figures verified than exist. eval_harness._BADGE_COUNT_RE reads the number immediately
+            # before "headline figures self-verified", so that slot stays n_facts and the L1 rendered-
+            # citation guard keeps reconciling; the check count is disclosed in its own unit beside it.
             _kv(doc, "Single source of truth:",
-                f"✓ {s['n_checked']} of {s['n_facts']} headline figures self-verified against the "
-                "raw evidence — every number checked reconciles to one source.")
+                f"✓ {s['n_facts']} headline figures self-verified against the raw evidence "
+                f"({s['n_checked']} independent reconciliation check(s), none disagreed) — every "
+                "number checked reconciles to one source.")
         elif not s.get("n_checked"):
             # PUBLISHED but never RECONCILED. Distinct from both other states and it must say so: a
             # snapshot can publish every canonical block while carrying none of the raw arrays the
@@ -407,10 +417,13 @@ def add_excellence_front(doc, snap, *, extra_rows=(), heading="At a Glance"):
                 f"⚠ {s['n_facts']} headline figures published, but NONE could be reconciled against "
                 "raw evidence in this snapshot — they are unverified, not confirmed.")
         else:
+            # Same unit discipline as the verified branch: both numbers here are CHECKS (a violation is
+            # emitted per failed check, and one fact can carry several), so the label says checks —
+            # "reconciled headline figures" read them as facts and could imply more figures than exist.
             _kv(doc, "Single source of truth:",
-                f"⚠ {s['n_violations']} of {s['n_checked']} reconciled headline figures did not "
-                "agree; treat flagged numbers with caution (see the assessment-integrity "
-                "disclosure).")
+                f"⚠ {s['n_violations']} of {s['n_checked']} reconciliation check(s) over the "
+                f"{s['n_facts']} published headline figures did not agree; treat flagged numbers with "
+                "caution (see the assessment-integrity disclosure).")
     rows = list(_glance_rows(snap)) + list(extra_rows)
     add_table(doc, ["Question", "Answer"], rows, widths=[2.6, 4.1], fixed=False)
 

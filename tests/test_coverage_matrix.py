@@ -199,3 +199,48 @@ def test_host_keyed_observed_arch_axis_still_emits_per_real_device_rows():
     aci = [r for r in cm["rows"] if r["axis"] == "aci"]
     assert len(aci) == 1 and aci[0]["device"] == "core2" and aci[0]["state"] == "covered"
     assert sorted(r["device"] for r in cm["rows"] if r["axis"] == "fhrp_detail") == ["core1", "core2"]
+
+
+# --------------------------------------------------------------------------------------------
+# Capture-status severity order: ONE owner (capture_integrity.STATUS_ORDER). This module used to
+# carry its own hand-written tuple, and it had drifted twice -- it never learned `unreadable` (the
+# owner's WORST status, which therefore ranked as UNKNOWN = least severe) and it inverted `empty`
+# vs `unverified_prompt`. The capture row then quoted a lesser finding as the host's worst evidence:
+# a coverage-honesty artifact citing the wrong reason for the blind spot it reports.
+# --------------------------------------------------------------------------------------------
+
+def _capture_snap(statuses):
+    return {"devices": {"sw1": {}}, "collection_completeness": {"devices": []},
+            "capture_integrity": {"findings": [
+                {"host": "sw1", "command": "show " + s, "status": s, "reason": "because " + s}
+                for s in statuses]}}
+
+
+def test_capture_severity_order_is_the_owners_not_a_local_copy():
+    """Reconcile guard (Law 1): the ranking this module sorts by must BE capture_integrity's, in the
+    same order and covering the same status vocabulary -- not a parallel list that can rot."""
+    from cisco_toolkit import capture_integrity, coverage_matrix
+    owner = capture_integrity.STATUS_ORDER
+    assert coverage_matrix._CAPTURE_WORST == tuple(sorted(owner, key=owner.get))
+    assert set(coverage_matrix._CAPTURE_WORST) == set(owner), (
+        "coverage_matrix knows a different status vocabulary than capture_integrity: "
+        "%s vs %s" % (sorted(coverage_matrix._CAPTURE_WORST), sorted(owner)))
+
+
+@pytest.mark.parametrize("statuses", [
+    ["empty", "unreadable"],              # unreadable is the owner's worst; the stale copy cited 'empty'
+    ["unverified_prompt", "unreadable"],
+    ["error", "unreadable"],
+    ["empty", "unverified_prompt"],       # the copy also had these two the wrong way round
+])
+def test_capture_row_cites_the_status_the_owner_calls_worst(statuses):
+    """Behavioural lock: whichever finding capture_integrity sorts first IS the one the matrix quotes."""
+    from cisco_toolkit import capture_integrity
+    snap = _capture_snap(statuses)
+    owner_worst = capture_integrity._package(
+        [dict(f) for f in snap["capture_integrity"]["findings"]])["findings"][0]
+    row = [r for r in compute_coverage_matrix(snap)["rows"] if r["axis"] == "capture"][0]
+    assert row["state"] == "unverified"
+    assert owner_worst["reason"] in row["evidence"], (
+        "matrix cites %r but capture_integrity's worst finding is %r"
+        % (row["evidence"], owner_worst["status"]))

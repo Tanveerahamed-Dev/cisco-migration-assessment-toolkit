@@ -1,10 +1,11 @@
 """[review 2026-07-28 · analyze.py tranche] absence of evidence must never render as health.
 
-One test per finding (#12–#17, #51, #52). Every case plants the real shape of a MISSING capture and
-asserts the engine says "not assessed" — never `pass` / `ok` / "no impact". Each test fails on the
-pre-fix code; the docstrings record what it looked like then.
+One test per finding (#12–#17, #51, #52; second pass #AN-1..#AN-4). Every case plants the real shape of
+a MISSING capture and asserts the engine says "not assessed" — never `pass` / `ok` / "no impact". Each
+test fails on the pre-fix code; the docstrings record what it looked like then.
 """
 from cisco_toolkit import analyze
+from cisco_toolkit.analyze import compute_validation_plan
 from cisco_toolkit.model import InterfaceData
 
 
@@ -239,3 +240,179 @@ def test_etherchannel_advisory_covers_minlinks_failed_and_combined_flags():
     assert "NOT assessed" in by["M"]["confidence"]
     # the flag alphabet is ONE source of truth shared with the severity rater
     assert "M" in analyze._EC_BAD_FLAGS and "f" in analyze._EC_BAD_FLAGS
+
+
+# --------------------------------------------------------------------------- #AN-1
+def test_readiness_health_floor_abstains_for_an_unscored_switch():
+    """[#AN-1] Readiness check 10 ('Device health floor') tested only for the Critical and Poor bands.
+    A switch banded 'Insufficient Data' — compute_health_scores' collection-gap band, where absent
+    evidence yields no deductions and so a near-perfect raw score — is NEITHER, so it fell straight
+    through to `pass — all switches Fair or better` and a move-group made entirely of never-collected
+    switches reached READY. The sibling checks 5/6/7 already carry exactly this coverage guard."""
+    ifaces = {"gapbox": {"Gi0/1": InterfaceData(port="Gi0/1")}}
+    dep = analyze.build_dependency_map(ifaces, [], [])
+
+    def floor(health_scores):
+        out = analyze.compute_migration_readiness(
+            ifaces, [{"group": "G", "switches": ["gapbox"]}], health_scores, [], [], [], [], dep)
+        return {c["check"]: c for c in out[0]["checks"]}["Device health floor"], out[0]["readiness"]
+
+    gap, verdict = floor([{"switch": "gapbox", "score": 100, "band": "Insufficient Data",
+                           "data_quality": 0.25}])
+    assert gap["status"] == "warn"
+    assert "not assessable" in gap["note"] and "gapbox" in gap["note"]
+    assert "Fair or better" not in gap["note"]
+    assert verdict != "READY"                       # a group with no health evidence is not a ready group
+    # the same gap by the other route: no health-score row for the group's switch at all
+    norow, _ = floor([])
+    assert norow["status"] == "warn" and "not assessable" in norow["note"]
+    # ...and a genuinely SCORED fleet still passes the floor (the gate is not a blanket warn)
+    ok, ok_verdict = floor([{"switch": "gapbox", "score": 95, "band": "Excellent"}])
+    assert ok["status"] == "pass" and ok["note"] == "all switches Fair or better"
+    assert ok_verdict == "READY"
+    # ...and a real Critical still FAILS the gate, ahead of the abstention
+    bad, _ = floor([{"switch": "gapbox", "score": 10, "band": "Critical"}])
+    assert bad["status"] == "fail" and "Critical-health" in bad["note"]
+
+
+# --------------------------------------------------------------------------- #AN-2
+def test_dossier_software_risk_na_when_config_never_captured():
+    """[#AN-2] The dossier's Software-risk na-guard required BOTH layers missing
+    (`not config_assessable AND sw_version.startswith('(not')`). A device whose version was read from
+    'show version' but whose running-config was never captured therefore skipped it, matched no
+    risk/watch arm, and rendered `ok — no exposed advisory surface flagged`: an affirmative clean bill
+    for the http-server / SNMP-v2c / Smart-Install / telnet screen, which runs off that config ALONE
+    and which compute_software_risk itself reports as `config_assessable: False`, `surfaces: {}`. It
+    printed beside this same device's 'Security posture: na — no captured running-config'."""
+    sr = analyze.compute_software_risk(
+        run_configs={}, devices={"sw1": {"model": "WS-C3850", "sw_version": "17.3.1"}},
+        all_hosts=["sw1"])
+    assert sr["per_device"][0]["config_assessable"] is False        # the axis's own evidence verdict
+    assert sr["per_device"][0]["surfaces"] == {}
+    state = {e["axis"]: e for e in analyze.compute_device_dossiers(
+        software_risk=sr)["per_device"][0]["exposures"]}
+    assert state["Software risk"]["state"] == "na"
+    assert "not screened" in state["Software risk"]["label"]
+    assert "no exposed advisory surface" not in state["Software risk"]["label"]
+    # ...and a device whose config WAS screened clean still earns its 'ok' (no blanket mute)
+    sr2 = analyze.compute_software_risk(
+        run_configs={"sw2": "hostname sw2\nno ip http server\nno vstack\n"},
+        devices={"sw2": {"model": "WS-C3850", "sw_version": "17.3.1"}})
+    st2 = {e["axis"]: e for e in analyze.compute_device_dossiers(
+        software_risk=sr2)["per_device"][0]["exposures"]}
+    assert st2["Software risk"]["state"] == "ok"
+    # ...and a real train verdict still outranks the abstention even with no config
+    sr3 = analyze.compute_software_risk(
+        run_configs={}, devices={"old1": {"model": "WS-C3750", "sw_version": "12.2(55)SE"}})
+    st3 = {e["axis"]: e for e in analyze.compute_device_dossiers(
+        software_risk=sr3)["per_device"][0]["exposures"]}
+    assert st3["Software risk"]["state"] == "risk"
+
+
+# --------------------------------------------------------------------------- #AN-3
+def test_validation_plan_will_not_bake_an_unobserved_bundle_as_the_baseline():
+    """[#AN-3] The cutover-validation banner promises "'Expect' is the known-good result captured from
+    the pre-cutover state". The port-channel check honoured that only for a bundle protocol_health
+    reported DEGRADED (audit-5 NRFU #18); a host whose 'show etherchannel summary' was never captured
+    emits NO EtherChannel row at all, so it fell into the same else-arm as a verified-healthy bundle
+    and the plan asserted 'all members in (P)/bundled state' as the captured baseline. At the ATP that
+    certifies a member which was already suspended BEFORE the window as a healthy re-bundle."""
+    def _pc(port, nbr, nbr_port):
+        return InterfaceData(port=port, cdp_neighbor=nbr, neighbor_port=nbr_port,
+                             stp_fwd_vlans="10", port_channel="Po1")
+    ifaces = {"acc1": {"Gi1/0/24": _pc("Gi1/0/24", "distA", "Gi1/0/2")},
+              "distA": {"Gi1/0/2": _pc("Gi1/0/2", "acc1", "Gi1/0/24")}}
+    mg = [{"switches": ["acc1", "distA"]}]
+    devs = {"acc1": {"platform": "ios"}, "distA": {"platform": "ios"}}
+    # the fleet WAS asked for the bundle summary -- distA answered, acc1 did not.
+    ph = [{"switch": "distA", "protocol": "EtherChannel", "severity": "Info",
+           "summary": "1 bundle(s), 2 member(s)", "detail": ""}]
+    link = {it["device"]: it for it in compute_validation_plan(
+        ifaces, mg, {}, {}, devs, protocol_health=ph)["items"] if it["category"] == "Link"}
+    assert "all members in (P)" not in link["acc1"]["expect"]
+    assert "NOT OBSERVED" in link["acc1"]["check"]
+    assert "never captured" in link["acc1"]["expect"]
+    assert link["acc1"]["severity"] == "High"
+    # ...and the switch whose bundle WAS observed keeps its ordinary baseline (no cry-wolf)
+    assert "all members in (P)" in link["distA"]["expect"] and link["distA"]["severity"] == "Medium"
+    # ...and a caller that supplies no protocol_health at all has nothing to join on -> unchanged
+    legacy = {it["device"]: it for it in compute_validation_plan(
+        ifaces, mg, {}, {}, devs)["items"] if it["category"] == "Link"}
+    assert all("all members in (P)" in it["expect"] for it in legacy.values())
+
+
+# --------------------------------------------------------------------------- #AN-4
+def test_migration_scenario_dual_homed_pct_names_its_assessed_basis():
+    """[#AN-4] compute_wave_sequencing puts a never-collected switch in `homing_unknown` precisely so an
+    empty adjacency is not read as proof of single-homing (audit-5 #7). compute_migration_scenarios then
+    computed `mbb / (mbb + hard)` — a ratio over the ASSESSED subset — and printed it as "% of switches",
+    so a group of 8 with 5 uncollected members read '100% of switches are dual-homed' and was handed
+    PARALLEL-RUN, the lowest-safeguard scenario, on a population that was mostly unassessed."""
+    def isl(port, nbr, nbr_port):
+        return InterfaceData(port=port, cdp_neighbor=nbr, neighbor_port=nbr_port, endpoint_type="Switch")
+    # dual1/2/3 are a collected, fully-meshed (dual-homed) trio; nc1..nc5 were never collected.
+    ifaces = {"dual1": {"Gi0/1": isl("Gi0/1", "dual2", "Gi0/1"), "Gi0/2": isl("Gi0/2", "dual3", "Gi0/1")},
+              "dual2": {"Gi0/1": isl("Gi0/1", "dual1", "Gi0/1"), "Gi0/2": isl("Gi0/2", "dual3", "Gi0/2")},
+              "dual3": {"Gi0/1": isl("Gi0/1", "dual1", "Gi0/2"), "Gi0/2": isl("Gi0/2", "dual2", "Gi0/2")}}
+    switches = ["dual1", "dual2", "dual3", "nc1", "nc2", "nc3", "nc4", "nc5"]
+    ws = analyze.compute_wave_sequencing(ifaces, [{"group": "Group 1", "switches": switches}])
+    assert ws[0]["homing_unknown"] == ["nc1", "nc2", "nc3", "nc4", "nc5"]     # the real producer says so
+    mr = [{"group": "Group 1", "switches": switches, "endpoints": 100,
+           "readiness": "READY", "n_fail": 0}]
+    g = analyze.compute_migration_scenarios(mr, ws)["per_group"][0]
+    assert g["recommended_scenario"] != "parallel-run"        # make-before-break is not assumable here
+    assert "UNKNOWN homing" in g["rationale"] and "never collected" in g["rationale"]
+    assert "% of switches are dual-homed" not in g["rationale"]
+    # the ratio's real basis stays derivable from the record itself: its denominator is
+    # make_before_break + hard_cutover, and `switches` minus those two is the unassessed remainder.
+    assert g["switches"] - g["make_before_break"] - g["hard_cutover"] == 5
+    # ...and a FULLY-collected, mostly-dual-homed group still gets parallel-run, with a named basis
+    ws2 = [{"group": "Group 1", "make_before_break": ["a", "b", "c", "d"],
+            "hard_cutover": ["e"], "homing_unknown": [], "hard_cutover_endpoints": 2}]
+    mr2 = [{"group": "Group 1", "switches": list("abcde"), "endpoints": 50,
+            "readiness": "READY", "n_fail": 0}]
+    g2 = analyze.compute_migration_scenarios(mr2, ws2)["per_group"][0]
+    assert g2["recommended_scenario"] == "parallel-run" and g2["dual_homed_pct"] == 80
+    assert "assessed switch(es)" in g2["rationale"]
+    assert g2["switches"] - g2["make_before_break"] - g2["hard_cutover"] == 0
+
+
+# --------------------------------------------------------------------------- #AN-5
+def test_app_domain_of_uncollected_switches_is_not_nominated_as_the_pilot():
+    """[#AN-5] `_APP_BAND_RANK` ranks 'Insufficient Data' 5 — BETTER than Excellent (4) — so the
+    `min(bands, key=rank)` worst-band rollup could never select a collection gap, and a domain of 1
+    Excellent + 4 never-collected switches published `worst_band: Excellent`. `_CRIT_WEIGHTS['band']`
+    is then looked up by worst_band ALONE, so the author's deliberate `'Insufficient Data': 6` weight
+    (set between Fair 5 and Poor 11 — uncollected devices were MEANT to push a domain later) was dead
+    code. The 80%-unassessed domain therefore scored identically to a fully-verified peer and won
+    cutover order 1, 'Pilot — start here to fail-fast and learn': the earliest, least-safeguarded wave
+    handed to the domain we knew least about."""
+    def _hosts(prefix):
+        return [f"{prefix}-{i}" for i in range(1, 6)]
+    blind, seen = _hosts("MGM"), _hosts("SITE")          # both land in Support-tier domains
+    ifaces = {h: {"Gi0/1": InterfaceData(port="Gi0/1", switchport_mode="Access", vlan="10",
+                                         end_host_mac="aaaa.bbbb.%04d" % i)}
+              for i, h in enumerate(blind + seen)}
+    hs = ([{"switch": blind[0], "band": "Excellent", "score": 100}]
+          + [{"switch": h, "band": "Insufficient Data", "score": 100} for h in blind[1:]]
+          + [{"switch": h, "band": "Excellent", "score": 100} for h in seen])
+    ai = analyze.compute_application_intelligence(
+        ifaces, health_scores=hs, move_groups=[{"group": "Group 1", "switches": blind + seen}])
+    by = {d["id"]: d for d in ai["domains"]}
+    assert set(by) == {"mgmt", "general"}, by.keys()      # the two domains the fixture builds
+    gap, full = by["mgmt"], by["general"]
+    # the collection gap is disclosed as its own risk, naming the unassessed count
+    assert any("NO health evidence" in r["title"] for r in gap["risks"])
+    assert not any("NO health evidence" in r["title"] for r in full["risks"])
+    # ...and it costs the domain criticality, so it cannot outrank a fully-verified peer for the pilot
+    assert gap["criticality_score"] > full["criticality_score"]
+    pilot = ai["cutover_order"][0]
+    assert pilot["domain"] == full["domain"] and pilot["band"] == "Pilot"
+    assert gap["cutover"]["order"] > full["cutover"]["order"]
+    # the worst-band rollup describes the ASSESSED remainder and never reports the gap as a band
+    assert gap["health"]["worst_band"] == "Excellent"
+
+    # guard: a caller that supplies NO health scores at all has nothing to disclose -> no cry-wolf
+    none_scored = analyze.compute_application_intelligence(ifaces, health_scores=[])
+    assert not any("NO health evidence" in r["title"]
+                   for d in none_scored["domains"] for r in d["risks"])
