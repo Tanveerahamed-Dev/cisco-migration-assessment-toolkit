@@ -517,3 +517,120 @@ where it is inert), with the docstring blessing the inert branch.
 **Sequenced, not yet fixed.** `runbook.py` renders `migration_readiness` and a concurrent agent owns
 that file; changing the notes mid-flight risks it pinning the fabricated sentence in a new test. The
 fix lands once the concurrent passes complete, and both pinned snapshots need re-blessing with it.
+
+## What round 4 found
+
+**41 fixed, 23 refuted, and 20 tests proven vacuous by mutation.** The `tests/` passes were required
+to break the production code a test claims to pin and show the test stayed green — so every vacuity
+claim below is a measurement, not a reading.
+
+The most important number is a negative one: of the 20 hollow tests, **19 were hiding nothing**. The
+shipped code was correct in every case and only the guard was empty. The twentieth was R4-1 above.
+
+### The four safety guards that fell (slice C)
+
+| Guard | Mutation it survived |
+|---|---|
+| "The SSH send path has no config/write sink" — the read-only floor on the leg that touches customer switches | `conn.write_channel("hostname PWNED\n")` — **a production switch renamed from inside the collector**. `write_channel` is netmiko's raw-channel escape hatch, the primitive `send_config_set` is built on; the guard scanned for four method-name spellings and this is not one of them. Payload assembled at runtime, so the substring scan could not see it either. |
+| "`rest_collect` is GET-only bar one login POST" | a second real HTTP write. urllib resolves `Request(url, data=…)` with no `method=` to POST by itself, so a write that does not spell its verb as a literal kwarg was invisible. |
+| "The collector never persists the password" | a `session.json` holding the plaintext credential dropped beside the exports and simply not appended to the returned file list. |
+| "The webapp un-collection is announced, not silent" | deleting the announcement entirely — the branch only ran on boxes that do not have the problem. |
+
+### The master pattern
+
+Three of those four asserted a safety property by **matching source text**, or by **inspecting a
+value the code chooses to return** — rather than a structure the code cannot avoid producing. That is
+the pattern to hunt next anywhere in this repo. The fixes now walk the real artifact on disk as
+bytes, or resolve the property structurally from the AST, with a non-literal `method=<var>` failing
+LOUDLY as unprovable rather than passing. Two non-vacuity assertions are mandatory in the same run:
+the walk must find the known-good calls, and the denylist must fire on a planted violation.
+
+A fifth of the same family, from slice B: the emitted explorer's **CSP was asserted for presence
+only**. Rewriting the injected policy to `default-src * https:` / `connect-src https://evil.example`
+— a fully egress-capable air-gapped deliverable — left the test green, and no other test in the repo
+mentions CSP.
+
+### A systemic defect, not four coincidences
+
+Four independent surfaces published a verdict computed by **refining a seeded-optimistic default in a
+loop that an empty set never enters**:
+
+- `analyze.py` grading a move group **READY** (R4-1)
+- `cutover.build_plan` publishing **`verdict: "GO"`** with zero derived waves — the DOCX printed
+  "Cutover posture: GO" in green directly above its own line "No migration waves were derived from
+  this snapshot" (BE-2)
+- the SPA's **green** "Move-group readiness" tile reading `0✓ 0! 0✕` when nothing was classified
+  (FE-12)
+- round 3's segmentation asserting "a single global VRF — L3-unsegmented" from an absent block
+
+They were found by four different agents looking at four different layers, which is what makes it
+structural. `execution._derive_outcome` already documents and fixes this exact shape; the pattern is
+known in-repo and was simply not applied to its siblings.
+
+### The one that would have caused an outage
+
+`mop.py` §x.5 for a pure make-before-break wave decommissioned the legacy path **before** the §x.6
+go/no-go validation, while §x.7's rollback read "Because the legacy path was never torn down, this is
+non-disruptive" — and named no restore path at all, never referencing the §x.3 configuration backup
+that §x.3 itself declares mandatory "for the §x.7 rollback". The phase tags even ran
+PRE,PRE,DURING,DURING,DURING,POST,DURING,POST — a `[DURING]` step after a `[POST]` one.
+
+At 2am the engineer follows the numbered steps, tears down the legacy path, runs §4.6, hits a High
+failure, opens §4.7 — and is told to fail back onto a path he removed two steps ago, with no restore
+procedure on that branch. Reproduced on the sample fleet's real Group 2 (100% dual-homed).
+
+### Measured against real fleet data, not fixtures
+
+The `build.py` pass swept **253 real device captures** rather than reasoning:
+
+- the global BPDU-Guard promotion matched only the pre-IOS-XE-16 spelling, missing
+  `spanning-tree portfast **edge** bpduguard default`. Real collection: 109 classic, 25 edge-form.
+  Fleet-wide effect of the fix, measured: ports reading `stp_bpduguard='Enable'` **8797 → 10062**.
+  Worse than under-reporting — on a mixed box one explicit per-interface `bpduguard enable` flips the
+  seen-flag True, and every *other* access port is then counted as an OBSERVED unguarded gap that
+  does not exist.
+- `neighbor_switch_vtp_domain` was **this** switch's own domain. 367 of 367 populated rows (100%)
+  were self-copies, so the workbook comparison an engineer uses to find VTP mismatches across trunks
+  could only ever return "every trunk agrees".
+- `neighbor_switch_serial` was the neighbour's **hostname** — 581 rows — and `html.py`'s
+  `_REDACT_SERIAL_KEYS` then pseudonymised those hostnames into `SNxxxx` while deliberately keeping
+  hostnames everywhere else, making the shared deliverable inconsistent with itself.
+
+### Deliberately not fixed
+
+- **The 5-MAC cap** (`build.py`): ~1579 ports truncated, measured from the real per-port histogram
+  (the spike at exactly 5 against 43 at 4 is the cap's signature). Not fixed *because* the obvious
+  fix is worse: every consumer tokenizes the field naively, so a shared `(+N)` marker token appearing
+  on two hosts would make `detect_cross_device_dual_connections` set `dual_connection='Yes'` on both
+  — fabricating redundancy. The real fix changes `textutils._split_macs` or adds a model field.
+- **`/api/campaigns/{id}/trend` memory**: measured at ~3.8 MB per snapshot, so ~2 GB at 20 large
+  collections. Refuted as a vulnerability (the route is `_forbid_cross_site`-guarded and the input is
+  the operator's own campaign). Capping N in the route would trade a memory bug for a
+  coverage-honesty bug, so it needs a streaming rewrite in `html.py` instead.
+- **Undisclosed display caps in `runbook.py`** (§3, §6.2, §6.5, §6.6, §8.1, §10, §10.1). §6.2 is the
+  consequential one: §1's register states the full Critical/High cross-layer total while §6.2 renders
+  at most 8 blocks. The same class was fixed in `mop.py` §x.2, where a precondition gate depended on
+  it.
+
+### Fixing R4-1 required changing the test that blessed it
+
+`tests/test_readiness_phases.py::test_audit_checks_never_flip_verdict_when_data_absent` asserted
+`status == "pass"` for both checks with no evidence present. It was the only place in the repo
+stating the fabricated behaviour as intended, and the full suite went red on it the moment the fix
+landed — which is the correct signal, not an obstacle.
+
+The temptation is to delete the two assertions. That would have been wrong: the test's NAME is its
+real contract, and that contract still holds. Absence must not cry wolf — the verdict, `n_warn` and
+`n_fail` are all untouched by the fix, because an unassessable axis emits `info` and the verdict
+inspects only `fail`/`warn`. So the test now pins BOTH promises separately, because they are
+different and only one was ever in doubt:
+
+* **no cry wolf** — `readiness == "READY"`, `n_warn == 0`, `n_fail == 0` (unchanged, still asserted);
+* **no fabricated coverage** — the status is not `pass`, the note says NOT ASSESSABLE, and the two
+  specific sentences that were invented ("covers all group switches", "captured for all group
+  switches") are absent, matched whitespace-normalised so a re-wrap cannot silently un-pin them.
+
+It is strictly stronger than before and still discriminates: reverting the abstention in `analyze.py`
+turns it red. Whether a wholly unassessed axis should ALSO downgrade READY is a separate design
+decision, deliberately not taken here — and the docstring now says which assertions would change if
+it ever is.
