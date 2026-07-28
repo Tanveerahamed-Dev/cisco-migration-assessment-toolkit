@@ -64,3 +64,18 @@ falsifiable fact and cite where it is checkable (a file, a test, or a commit).
   `Range.Information(3)`) and patch the trailing `\t<page>` run — a live TOC field auto-updates on open instead. No
   LibreOffice/pandoc → docx→PDF via Word COM `ExportAsFixedFormat(path, 17)`. Evidence:
   `[HISTORY-REDACTED]_DC_Design/figgen/build/patch_toc.py` + `export_measure.py`.
+- The repo-wide review (2026-07-28, 98 findings) found ONE dominant class across every subsystem: an
+  **empty/absent input treated as a clean one**. Its shapes are stable — `if not flags: flags = ["ok"]`;
+  `.get(host, 1.0)` defaulting an unmeasured quality to perfect; a coverage guard keyed on a counter that reads 0
+  both when everything was collected and when the census is MISSING; `any(...)`/`all(...)` over an empty list going
+  vacuously the safe-looking way; a verifier gated on raw evidence that returns "no violations" having checked
+  nothing. Grep those shapes before trusting any "pass"/"ok"/"verified". Evidence:
+  `docs/review-findings-2026-07-28.md`; `cisco_toolkit/ssot.summary` (published 14 facts, reconciled 0, reported
+  `verified: True`) and `selfcheck.check_guards_nonvacuous` (15 skipped suites read GREEN) are the two cleanest cases.
+- A guard asserted only against its own SOURCE TEXT is not a guard. `verify-green.sh` — the Stop hook every other
+  test's meaning rests on — was pinned by two substring greps and never executed; running it immediately exposed a
+  change detector that missed any path git has to QUOTE. Execute the gate against a fixture whose outcome you chose,
+  and mutate it to prove the assertion can fail. Evidence: `tests/test_ci_gates.py::test_stop_hook_BLOCKS_on_a_red_suite`.
+- A DENYLIST pin cannot see a wildcard. The read-only analyst roster forbade four tool names, so `tools: *` — which
+  grants every tool including Edit/Write — passed every parametrized case. Pin the property with an ALLOWLIST.
+  Evidence: `tests/test_proposer_verifier_guard.py` (`READONLY_TOOLS`).
