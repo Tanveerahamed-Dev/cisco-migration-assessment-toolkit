@@ -463,3 +463,57 @@ CI matrix is named as one of them. Changing that makes every engine matrix job i
 That is an architecture decision (does the engine's gate own the web layer's safety suites?), not a
 review fix, so it stays open. The alternative — making `webapp-ci` a required context — is a
 branch-protection change, equally the owner's call.
+
+---
+
+# Round 4 — the tests themselves, and the surfaces with only one pass
+
+Round 3 closed the last files that had never had a deep pass. Round 4 attacks the remaining gap the
+ledger still showed: `tests/` (197 files, 49,786 lines) had been audited only MECHANICALLY — an AST
+scan for three unambiguous shapes. Seven passes: three partitions of `tests/` hunting the vacuity
+shapes a scanner cannot see, plus `webapp/frontend/`, `webapp/backend/`, and the mid-tier engine
+files (`build.py`, `html.py`, `archreview.py`, `runbook.py`, `mop.py`).
+
+The `tests/` passes were required to **mutate the production code a test claims to pin and prove the
+test stays green** — pattern-matching alone only produces suspicions.
+
+## R4-1 — a move group graded READY off evidence that was never collected
+
+**The worst finding of the whole review**, and it was found by auditing a test rather than the code.
+
+`cisco_toolkit/analyze.py:2170,2175` computes the two runbook audit checks as
+
+```python
+missing_topo = sorted(gset - topo_hosts) if topo_hosts else []
+missing_base = sorted(gset - baseline_hosts) if baseline_hosts else []
+```
+
+When the evidence set is **wholly empty** the difference is forced to `[]`, so "nothing is missing"
+and the check reports `pass` with an affirmative note. Reproduced directly against the production
+entry point with `all_interfaces={}`, `physical_health=[]` and no topology model:
+
+```
+PASS | Dependency mapping complete: topology/dependency map covers all group switches
+PASS | Baseline capture:            interface/physical counters captured for all group switches
+VERDICT: READY   n_warn: 0
+```
+
+Both sentences assert COVERAGE of evidence that does not exist, and the group is graded READY — the
+verdict a human uses to schedule a cutover. `snap['migration_readiness']` feeds the runbook, deck and
+design deliverables, and **both pinned snapshots already embed the fabricated notes**
+(`tests/golden/snapshot.json:3045-3053`, `webapp/sample_data/sample_fleet.snapshot.json:16993`).
+
+The same function's `Device health floor` check, twelve lines above at :2158, handles the identical
+no-evidence case correctly — `warn` + "device health floor not assessable". So the correct pattern
+was already present in the same function, applied to one check and not its siblings.
+
+**Why a scanner could never have found it.** The only test covering this behaviour
+(`tests/test_readiness_phases.py:82`) pins the fabrication as DESIRED: its docstring reads "the audit
+checks fall back to pass rather than crying wolf". Grep across `tests/`, `docs/` and `cisco_toolkit/`
+found no other guard and no ADR accepting the trade — the behaviour is asserted as correct in exactly
+one place, and that place is a test. This is shape 3 of the vacuity taxonomy (a guard exercised only
+where it is inert), with the docstring blessing the inert branch.
+
+**Sequenced, not yet fixed.** `runbook.py` renders `migration_readiness` and a concurrent agent owns
+that file; changing the notes mid-flight risks it pinning the fabricated sentence in a new test. The
+fix lands once the concurrent passes complete, and both pinned snapshots need re-blessing with it.
