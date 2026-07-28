@@ -3974,7 +3974,13 @@ _NOT_YET_AUTO_DETECTED = {
     "dc-igmp-snooping-and-app-delivery",            # same multicast evidence drives multicast-security-and-l2-edge
     "modularity-fault-domains-replicable-blocks",   # same flat-L2 evidence drives dc-restrict-vlan-span
     "security-aaa-routing-auth-antispoof",          # AAA drives mgmt-secure-protocols; routing-auth/uRPF not collected
-    "security-l2-access-edge-suite",                # no port-security / BPDU-guard / DHCP-snooping finding collected
+    # NB `security-l2-access-edge-suite` was demoted here on the ground "no port-security / BPDU-guard /
+    # DHCP-snooping finding collected". That ground went stale when the access-edge port-security detector
+    # landed: design_advisor._d_port_security_errdisable emits exactly this principle id from
+    # snap['port_security'] (parse_port_security_detail / 'show port-security interface'), and
+    # `_doctrine_catalog()` republishes this flag verbatim into design_blueprint.doctrine, which the HLD and
+    # the /ask surface read -- so the stale demotion under-claimed real coverage on a client-facing surface
+    # (review 2026-07-28 #79). Demote a principle here ONLY after confirming no advisor detector emits its id.
 }
 for _p in DOCTRINE:
     if _p.get("id") in _NOT_YET_AUTO_DETECTED and _p.get("engine_actionable"):

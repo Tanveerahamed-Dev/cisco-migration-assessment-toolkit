@@ -226,6 +226,59 @@ def test_l2_3_not_assessable_without_vlan_evidence():
     assert _check(compute_architecture_review(snap), "L2-3")["verdict"] == "not-assessable"
 
 
+def _access_ports(n_total, n_captured, n_guarded):
+    """`n_total` access ports on one switch: the first `n_captured` carry a BPDU-Guard field
+    (`n_guarded` of those enabled, the rest explicitly disabled); the remainder carry NO field."""
+    ports = {}
+    for i in range(1, n_total + 1):
+        d = {"switchport_mode": "Access", "vlan": "10"}
+        if i <= n_captured:
+            d["stp_bpduguard"] = "Yes" if i <= n_guarded else "disabled"
+        ports[f"Gi1/0/{i}"] = d
+    return {"devices": {"acc1": {}}, "interfaces": {"acc1": ports}}
+
+
+def test_l2_2_conforms_only_when_every_access_port_is_captured_and_guarded():
+    """L2-2's not-assessable gate counts ports whose BPDU-Guard state was CAPTURED, but the pass
+    threshold compared `guarded` against ALL access ports — so CONFORMS ('the edge is protected
+    against accidental switch insertion') was reached with half the fleet's edge unguarded or
+    unevidenced. The cited rule is BPDU Guard on EVERY edge port."""
+    # half the captured ports are positively UNGUARDED -> a deviation, never a pass
+    c = _check(compute_architecture_review(_access_ports(100, 100, 50)), "L2-2")
+    assert c["verdict"] == "advisory"
+    assert "50" in c["observed"] and "do NOT carry it" in c["observed"]
+    # every captured port is guarded but 40 ports carry NO evidence -> conforms-by-silence guard
+    c2 = _check(compute_architecture_review(_access_ports(100, 60, 60)), "L2-2")
+    assert c2["verdict"] == "not-assessable"
+    assert "no BPDU-Guard evidence" in c2["observed"]
+    assert "protected" not in c2["implication"]
+    # full capture, every port guarded -> the only shape that conforms
+    c3 = _check(compute_architecture_review(_access_ports(100, 100, 100)), "L2-2")
+    assert c3["verdict"] == "conforms" and "All 100" in c3["observed"]
+    # one unguarded port out of a fully-captured fleet still fails the EVERY-edge-port rule
+    assert _check(compute_architecture_review(_access_ports(100, 100, 99)), "L2-2")["verdict"] == "advisory"
+
+
+def test_res_3_not_assessable_when_only_some_devices_report_psu_inventory():
+    """RES-3's not-assessable gate was FLEET-WIDE (`no device reported a count`), so ONE device
+    reporting 2 supplies graded the whole fleet CONFORMS — 'no single feed/PSU fault takes a switch
+    down' asserted over 49 devices whose power inventory was never captured."""
+    devices = {"dist1": {"num_power_supplies": 2}}
+    devices.update({f"acc{i}": {"model": "WS-C2960X"} for i in range(1, 50)})
+    c = _check(compute_architecture_review({"devices": devices}), "RES-3")
+    assert c["verdict"] == "not-assessable"
+    assert "1 of 50" in c["observed"]
+    assert "No single feed" not in c["implication"]
+    # full coverage still conforms
+    every = {h: {"num_power_supplies": 2} for h in devices}
+    assert _check(compute_architecture_review({"devices": every}), "RES-3")["verdict"] == "conforms"
+    # a single-PSU device is still the deviation, and the partial coverage is disclosed with it
+    devices["acc1"] = {"num_power_supplies": 1}
+    c2 = _check(compute_architecture_review({"devices": devices}), "RES-3")
+    assert c2["verdict"] in ("deviation", "advisory")
+    assert "2 of 50" in c2["observed"] and "unassessed" in c2["observed"]
+
+
 def test_mixed_images_flagged_per_platform():
     ar = compute_architecture_review(_snap())
     lc2 = _check(ar, "LC-2")

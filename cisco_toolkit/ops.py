@@ -55,7 +55,12 @@ def _facts(snap: dict) -> dict:
     n_proto_high = sum(1 for r in ph2 if isinstance(r, dict) and r.get("severity") in ("High", "Critical"))
     l3f = _as_list(snap.get("l3_forwarding"))
     n_gw = len(l3f)
-    n_fhrp = sum(1 for r in l3f if isinstance(r, dict) and (str(r.get("fhrp", "none")) or "none") != "none")
+    # Real FHRP only, and the fallback must run BEFORE str(): `str(None)` is the truthy string
+    # "None", which never equals "none", so a present-but-null fhrp counted as FHRP-PROTECTED and
+    # 3.3 rendered "N of N gateway SVI(s) FHRP-protected" off gateways with no first-hop redundancy
+    # at all. Mirrors the engine's canonical gate `(fhrp or "none") != "none"` (analyze.py) exactly
+    # as crd.py:68 does — this was the outlier.
+    n_fhrp = sum(1 for r in l3f if isinstance(r, dict) and (r.get("fhrp", "none") or "none") != "none")
     return {"devices": devices, "keystones": keystones[:5], "si": si, "ph": ph,
             "gd": gd, "qa": qa, "sr": sr, "lc": lc, "sec": sec, "n_sec_fail": sec_fail,
             "routing_protos": routing_protos, "n_proto_high": n_proto_high, "n_gw": n_gw, "n_fhrp": n_fhrp}

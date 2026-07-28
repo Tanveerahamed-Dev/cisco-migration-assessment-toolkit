@@ -76,6 +76,33 @@ def test_ops_routing_adjacency_and_fhrp_day2_section(tmp_path):
     assert "0 of 2" in text                                 # FHRP coverage named: 0 of 2 gateways
 
 
+def test_null_fhrp_is_not_counted_as_first_hop_redundancy(tmp_path):
+    """`str(r.get("fhrp","none")) or "none"` applied str() BEFORE the fallback, so a present-but-null
+    `fhrp` became the truthy string "None" — which != "none" — and 3.3 credited the gateway as
+    FHRP-protected. A snapshot whose gateways carry `fhrp: null` must read 0 of N, the same answer
+    crd.py and design.py give off that snapshot, not N of N."""
+    from cisco_toolkit.ops import _facts
+
+    snap = {"script_version": "V3.23.0", "devices": {"r1": {}},
+            "l3_forwarding": [{"switch": "r1", "vlan": "10", "svi_ip": "10.0.10.1", "fhrp": None},
+                              {"switch": "r1", "vlan": "20", "svi_ip": "10.0.20.1", "fhrp": None},
+                              {"switch": "r1", "vlan": "30", "svi_ip": "10.0.30.1", "fhrp": "none"}]}
+    f = _facts(snap)
+    assert f["n_gw"] == 3
+    assert f["n_fhrp"] == 0, "a null fhrp is NOT first-hop redundancy"
+    # same answer as the sibling generators' canonical gate (one source of truth)
+    assert f["n_fhrp"] == sum(1 for r in snap["l3_forwarding"]
+                              if (r.get("fhrp", "none") or "none") != "none")
+    out = str(tmp_path / "ops.docx")
+    write_ops_handbook_docx(out, snap, "Null FHRP Fleet")
+    text = _all_text(Document(out))
+    assert "0 of 3 gateway SVI(s)" in text
+    assert "3 of 3 gateway SVI(s) FHRP-protected" not in text
+    # a REAL fhrp value is still credited
+    snap["l3_forwarding"][0]["fhrp"] = "HSRP active"
+    assert _facts(snap)["n_fhrp"] == 1
+
+
 def test_related_docs_exclude_self(tmp_path, golden_snap):
     out = tmp_path / "ops.docx"
     write_ops_handbook_docx(str(out), golden_snap, "x")

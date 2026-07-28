@@ -249,17 +249,31 @@ def _oob_evidence_for(switches, ifaces_all):
 
 
 def _write_bluf(doc, waves, readiness_by_group, seq_by_group, scen_by_group, val_by_wave,
-                snap, NAVY, RED, _label_run, table):
+                snap, NAVY, RED, _label_run, table, blockers_for=None):
     """Render the Bottom-Line-Up-Front executive summary (unnumbered H1 so the numbered sections are
-    untouched). Answer-first decision facts, all snapshot-grounded and coverage-honest."""
+    untouched). Answer-first decision facts, all snapshot-grounded and coverage-honest.
+
+    `blockers_for(switches) -> (remediation_items, punchlist_items)` is the SAME callable §1's
+    overview table and each wave's §x.2 use. It is required for the blocker row to cite the section
+    it cross-references: "blockers" names two different sets in this document — the readiness FAIL
+    checks (§x.1's 'Blocking / warning checks') and the Critical/High remediation + punch-list items
+    (§1's Blockers column and §x.2's 'Blockers to clear before this window'). The BLUF used to print
+    the first under the second's label while pointing the approver at §x.2, so the one-screen
+    decision view contradicted the section it sent them to. Both are reported now, each named."""
     n_waves = len(waves)
     gate = _worst_readiness(waves, readiness_by_group, seq_by_group, scen_by_group, val_by_wave)
     fleet_rec = _as_dict(snap.get("migration_scenarios")).get("fleet_recommendation")
     gating = _as_list(_as_dict(snap.get("executive_brief")).get("top_gating"))
-    n_blockers = sum(1 for _n, sw, _k, gn in waves
-                     for r in [_join_group_records(gn, sw, readiness_by_group, seq_by_group,
-                                                   scen_by_group, val_by_wave)[0]]
-                     for _ in range(int(r.get("n_fail", 0) or 0)))
+    n_fail_checks = sum(1 for _n, sw, _k, gn in waves
+                        for r in [_join_group_records(gn, sw, readiness_by_group, seq_by_group,
+                                                      scen_by_group, val_by_wave)[0]]
+                        for _ in range(int(r.get("n_fail", 0) or 0)))
+    # The §x.2 / §1 set, summed the same way §1's column is read (per wave), so the BLUF total and
+    # that column reconcile by addition. None -> the caller did not supply it; abstain rather than
+    # recompute a second answer to a question §1 already owns.
+    n_blockers = (sum(len(rem) + len(pl) for _n, sw, _k, _gn in waves
+                      for rem, pl in [blockers_for(sw)])
+                  if callable(blockers_for) else None)
 
     doc.add_heading("Executive Summary — Bottom Line Up Front (BLUF)", level=1)
     doc.add_paragraph(
@@ -281,7 +295,15 @@ def _write_bluf(doc, waves, readiness_by_group, seq_by_group, scen_by_group, val
           else "[NOT OBSERVED] — no per-wave readiness verdict was published; treat every wave as "
                "no-go until readiness is assessed.")),
         ("Open blockers gating the change",
-         f"{n_blockers} blocking check(s) attributed across the waves (see each wave's Blockers-to-clear subsection)."),
+         ((f"{n_blockers} Critical/High blocker(s) (remediation + punch-list) attributed across the "
+           "waves — the same set §1's Blockers column totals and each wave's Blockers-to-clear "
+           "subsection lists."
+           if n_blockers is not None else
+           "[NOT OBSERVED] — the per-wave blocker attribution was not available to this summary; "
+           "read each wave's Blockers-to-clear subsection directly.")
+          + f" Separately, {n_fail_checks} migration-readiness check(s) FAIL across the waves "
+            "(§x.1 'Blocking / warning checks') — a different count of a different thing; both "
+            "must be cleared or risk-accepted.")),
         ("Rollback in one line",
          "If any wave's post-cutover validation fails and cannot be corrected inside the window, "
          "re-apply that wave's captured pre-change config and re-home to the legacy path — every wave "
@@ -414,7 +436,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
     # one source of truth), the recommendation + top-gating are the engine's. A fact the snapshot did not
     # publish reads "[NOT OBSERVED]", never a fabricated value (coverage-honesty).
     _write_bluf(doc, waves, readiness_by_group, seq_by_group, scen_by_group, val_by_wave,
-                snap, NAVY, RED, _label_run, table)
+                snap, NAVY, RED, _label_run, table, blockers_for=_blockers_for)
     doc.add_page_break()
 
     # ---- document control (AS-style front matter; unnumbered so the wave sections are untouched) ----

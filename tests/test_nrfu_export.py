@@ -326,6 +326,33 @@ def test_hostile_newline_values_cannot_inject_executable_lines(tmp_path):
     assert "[REFUSED — not a read-only command] configure terminal" in body
 
 
+def test_wave_id_cannot_escape_the_output_directory(tmp_path):
+    """Same untrusted-snapshot class as the newline test above, on the PATH instead of the command
+    text: `_safe_name`'s whitelist rewrites every separator but KEEPS '.', so `_safe_name("..")`
+    returned '..' and `os.path.join(out_dir, "..")` resolved to the parent of --out — a crafted
+    wave_id (or host) wrote the pack outside the directory the operator named."""
+    from cisco_toolkit.nrfu_export import _safe_name
+
+    for hostile in ("..", ".", "...", "../..", r"..\..", "", "   ", "/", "___"):
+        got = _safe_name(hostile)
+        assert got == "unnamed" or (os.sep not in got and got not in (".", "..")), (hostile, got)
+    assert _safe_name("Group 1") == "Group_1"          # ordinary names are untouched
+    assert _safe_name("sw1.corp.example") == "sw1.corp.example"
+
+    out = tmp_path / "out"
+    out.mkdir()
+    snap = {"nrfu_commands": {"waves": [
+        {"wave_id": "..", "devices": [{"host": "..", "platform_dialect": "ios",
+         "cases": [{"id": "NRFU-W1-P1-001", "phase": 1, "scope": "per-site",
+                    "command": "show version", "expected": "x", "source_key": "y"}]}]}]}}
+    written = write_nrfu_pack(snap, str(out))
+    assert written
+    root = os.path.realpath(str(out))
+    for p in written:
+        assert os.path.realpath(p).startswith(root + os.sep), f"escaped --out: {p}"
+    assert os.listdir(str(tmp_path)) == ["out"], "a file landed beside --out"
+
+
 # --------------------------------------------------------------------------- sheet writer ---
 def test_nrfu_commands_sheet_writer(tmp_path):
     from openpyxl import Workbook

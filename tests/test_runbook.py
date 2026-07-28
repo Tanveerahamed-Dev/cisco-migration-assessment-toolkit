@@ -322,6 +322,38 @@ def test_runbook_no_fhrp_count_excludes_none_sentinel(tmp_path):
     assert "0 of 3 gateways have no FHRP peer" not in text
 
 
+def test_single_gateway_exposure_uses_the_risk_field_not_the_no_fhrp_count(tmp_path):
+    """§6.1 counted `fhrp == "none"` and labelled the total 'single-gateway exposure', but the
+    producer (excel.write_l3_forwarding_sheet) emits 'single-gateway' only when the VLAN has <=1
+    gateway and 'no-FHRP' otherwise — two conditions of very different severity. On a fleet with one
+    genuine single-gateway VLAN and seven dual-gateway no-FHRP VLANs the war room read 15 where
+    archreview RES-2 and design §2.4 read 1."""
+    snap = _snap()
+    l3f = [{"switch": "sw1", "vlan": "10", "svi_ip": "10.0.10.1", "fhrp": "", "risk": "single-gateway"}]
+    for v in range(20, 27):                       # 7 VLANs x 2 gateways, no FHRP protocol
+        for host in ("sw1", "sw2"):
+            l3f.append({"switch": host, "vlan": str(v), "svi_ip": f"10.0.{v}.1",
+                        "fhrp": "", "risk": "no-FHRP"})
+    snap["l3_forwarding"] = l3f
+    out = str(tmp_path / "rb_sgw.docx")
+    write_runbook_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    canonical = sum(1 for r in l3f if "single-gateway" in str(r.get("risk") or ""))
+    assert canonical == 1
+    assert "Of those, 1 carry the SINGLE-GATEWAY risk" in text
+    # the merged 15 must never be presented as the single-gateway exposure
+    assert "15 of 15 gateways have no FHRP peer in scope" in text     # the no-FHRP fact, correctly labelled
+    assert "single-gateway exposure" not in text.replace("SINGLE-GATEWAY", "")
+    # and with no risk classification at all the count ABSTAINS rather than reading 0 = clean
+    for r in snap["l3_forwarding"]:
+        r.pop("risk", None)
+    out2 = str(tmp_path / "rb_norisk.docx")
+    write_runbook_docx(out2, snap, "Unit Test Fleet")
+    text2 = _all_text(Document(out2))
+    assert "no L3-risk classification" in text2
+    assert "carry the SINGLE-GATEWAY risk" not in text2
+
+
 def test_runbook_drift_table_keeps_disambiguation_and_remediation_on_long_detail(tmp_path):
     """PR-#396 review: the §6.3 why/next-step cell was a single (detail+remediation)[:160] slice, so a
     long detail (the 270-char native-VLAN-1 row) evicted BOTH its own disambiguating tail and the

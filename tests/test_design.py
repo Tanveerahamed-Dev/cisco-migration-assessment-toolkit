@@ -205,6 +205,36 @@ def test_design_bom_aggregates_by_model(tmp_path):
     assert models == {"N9K-C93180YC", "C9300-48T", "WS-C2960X-48FPD-L"}
 
 
+def test_collected_vs_inventoried_is_reconciled_in_scope_inventory_and_bom(tmp_path):
+    """§1 'Devices in scope' reads the canonical INVENTORIED count while §3.1, §3.4 (BoM) and §3.5
+    all iterate snap['devices'] — the hosts that COLLECTED. On a 303/253 fleet the BoM totalled 253
+    chassis and went to procurement 50 short, with nothing in the document naming the gap. Both
+    counts must appear, and every table over the narrower population must declare which one it
+    covers (absence is never zero)."""
+    snap = _snap()
+    n_collected = len(snap["devices"])
+    snap["executive_brief"]["scale"] = {"n_devices": n_collected + 50, "n_vlans": 3}
+    out = str(tmp_path / "d_scope.docx")
+    write_design_doc_docx(out, snap, "Unit Test Fleet")
+    d = Document(out)
+    text = _all_text(d)
+    # §1 still reads the canonical inventoried count (SSOT) AND now names the enumerated population
+    assert str(n_collected + 50) in text
+    assert "50 inventoried device(s) did NOT collect" in text
+    # the BoM totals the collected population and says so where procurement will read it
+    bom = next(t for t in d.tables if t.rows[0].cells[0].text == "Model"
+               and t.rows[0].cells[1].text == "Qty")
+    assert sum(int(r.cells[1].text) for r in bom.rows[1:]) == n_collected
+    assert "DO NOT ORDER FROM THIS TABLE UNRECONCILED" in text
+    assert text.count("Scope reconciliation:") >= 3          # 3.1 inventory, 3.4 BoM, 3.5 software
+    assert f"out of {n_collected + 50} inventoried device(s) in scope" in text
+    # a fleet where every inventoried device collected carries no gap note (no cry-wolf)
+    snap["executive_brief"]["scale"] = {"n_devices": n_collected, "n_vlans": 3}
+    out2 = str(tmp_path / "d_full.docx")
+    write_design_doc_docx(out2, snap, "Unit Test Fleet")
+    assert "Scope reconciliation:" not in _all_text(Document(out2))
+
+
 def test_design_doc_renders_w37_traceability_matrix(tmp_path):
     """[W3-7] the generated As-Built .docx carries the §4.5 traceability matrix when recommended decisions exist --
     each traced to its CCDE principle id + published citation + the snapshot source fields."""

@@ -389,8 +389,32 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
     # of the truth. Mirror the engine's canonical `(fhrp or "none") == "none"` no-FHRP gate.
     n_no_fhrp = sum(1 for g in gw if (g.get("fhrp", "none") or "none") == "none")
     doc.add_paragraph(
-        f"{n_no_fhrp} of {len(gw)} gateways have no FHRP peer in scope — single-gateway exposure. "
+        f"{n_no_fhrp} of {len(gw)} gateways have no FHRP peer in scope (counted per gateway SVI "
+        "record — a VLAN served by two switches contributes two rows). "
         "Any VLAN whose gateway is off-scan is gated as Unknown in §12.")
+    # …and that total is NOT the single-gateway count. The producer (excel.write_l3_forwarding_sheet)
+    # emits TWO distinct risks: 'single-gateway' when the VLAN has <=1 gateway AT ALL, and 'no-FHRP'
+    # when it has two or more gateways but no FHRP protocol. Labelling the merged no-FHRP total
+    # "single-gateway exposure" reported the highest-severity availability exposure many times larger
+    # than archreview RES-2 and the design document's §2.4 — both of which read the risk field — while
+    # this runbook claims its numbers reconcile to the workbook. Read the same owner they read, and
+    # ABSTAIN when the register carries no risk classification (0 must never render as clean).
+    risked = [g for g in gw if str(g.get("risk") or "").strip()]
+    if risked:
+        n_single_gw = sum(1 for g in risked if "single-gateway" in str(g.get("risk")))
+        doc.add_paragraph(
+            f"Of those, {n_single_gw} carry the SINGLE-GATEWAY risk — the VLAN has no second gateway "
+            "in scope at all, the highest-severity availability exposure a VLAN can hold (the same "
+            "count the Architecture Review's RES-2 and the design document's §2.4 report from this "
+            "snapshot). The remainder have a redundant gateway but no FHRP protocol configured — a "
+            "different, lesser condition; do not merge the two.")
+    elif gw:
+        doc.add_paragraph(
+            "This snapshot's gateway register carries no L3-risk classification, so the "
+            "single-gateway subset of the gateways above cannot be counted from this evidence — "
+            "no-FHRP and single-gateway are distinct conditions and only the risk field separates "
+            "them. Re-run the assessment with the current engine before treating the count above as "
+            "a single-gateway exposure figure.")
 
     doc.add_heading("6.2 Material cross-layer findings", level=2)
     for f in sorted(cross_layer, key=lambda f: _SEV_ORDER.get(f.get("severity"), 9))[:8]:

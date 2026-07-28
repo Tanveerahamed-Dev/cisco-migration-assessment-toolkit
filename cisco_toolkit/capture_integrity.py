@@ -90,7 +90,7 @@ def inspect_capture(command: str, body: str) -> Dict[str, Any]:
     return {"status": "ok", "reason": "", "evidence": ""}
 
 
-_STATUS_ORDER = {"error": 0, "incomplete": 1, "empty": 2, "unverified_prompt": 3}
+_STATUS_ORDER = {"unreadable": 0, "error": 1, "incomplete": 2, "empty": 3, "unverified_prompt": 4}
 
 
 def _finding(host: str, command: str, r: Dict[str, Any]) -> dict:
@@ -107,6 +107,7 @@ def _package(findings: List[dict]) -> Dict[str, Any]:
         "n_error": sum(1 for f in findings if f["status"] == "error"),
         "n_empty": sum(1 for f in findings if f["status"] == "empty"),
         "n_unverified_prompt": sum(1 for f in findings if f["status"] == "unverified_prompt"),
+        "n_unreadable": sum(1 for f in findings if f["status"] == "unreadable"),
         "n_hosts_affected": len({f["host"] for f in findings}),
     }
     return {"findings": findings, "summary": summary}
@@ -149,8 +150,13 @@ def compute_capture_integrity_from_paths(
     {host: {command: FILE_PATH}} (all_cmd_to_files), streamed ONE body at a time so the
     whole fleet's raw output (hundreds of MB) is never held in memory at once.
 
-    A missing/unreadable file is SKIPPED (not-collected is Collection Completeness's
-    domain — no verdict is fabricated about a body never seen). `host_cmd_meta`
+    A file that is ABSENT is SKIPPED (not-collected is Collection Completeness's domain —
+    no verdict is fabricated about a body never seen). A file that EXISTS but cannot be
+    READ is a finding (`unreadable`), NOT a skip: completeness tiers by file PRESENCE (see
+    this module's opening docstring), so a locked / partially-written / permission-denied
+    capture — or a directory where a file was expected — used to score `complete` on that
+    axis AND produce zero findings here, after which `coverage_matrix` emitted `covered`
+    for a body no guard ever inspected. It fell between both guards. `host_cmd_meta`
     ({host: {command: "timing_fallback"}}, from the per-device sidecar) adds the
     weaker `unverified_prompt` finding for captures whose body LOOKS ok but whose
     prompt was never confirmed; a visibly-broken body keeps its stronger primary
@@ -163,8 +169,24 @@ def compute_capture_integrity_from_paths(
             try:
                 with open(path, "r", encoding="utf-8", errors="ignore") as f:
                     body = f.read()
-            except Exception:
-                continue                     # not collected/readable -> completeness's domain
+            except Exception as exc:
+                try:
+                    present = os.path.exists(path)
+                except Exception:            # a non-path-like value can't be a collected capture
+                    present = False
+                if not present:
+                    continue                 # never collected -> completeness's domain
+                # Present but unreadable: completeness already counted the file, so silence here
+                # would leave the capture certified by neither guard. Declare the blind spot.
+                findings.append(_finding(host, command, {
+                    "status": "unreadable",
+                    "reason": "capture file exists but could not be read (%s) — the body was never "
+                              "inspected, so nothing about its completeness is proven; collection "
+                              "completeness counts it PRESENT, so this is the only guard that can "
+                              "see it" % type(exc).__name__,
+                    "evidence": str(exc)[:120],
+                }))
+                continue
             r = inspect_capture(command, body)
             if r["status"] != "ok":
                 findings.append(_finding(host, command, r))

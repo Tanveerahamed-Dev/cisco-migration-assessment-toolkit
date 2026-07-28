@@ -77,6 +77,34 @@ def test_missing_file_is_skipped_not_claimed(tmp_path):
     assert out["findings"] == [] and out["summary"]["n_findings"] == 0
 
 
+def test_existing_but_unreadable_capture_is_a_finding_not_a_silent_skip(tmp_path):
+    """The gap between the two guards: `compute_collection_completeness` tiers by file PRESENCE
+    (this module's own opening docstring says so), so a capture that EXISTS but cannot be READ —
+    locked by the writer, permission denied, or a directory where a file was expected — scored
+    'complete' there while this guard's `continue` produced zero findings, and coverage_matrix then
+    emitted `covered` for a body no guard ever inspected. Only an ABSENT file is completeness's
+    domain."""
+    from cisco_toolkit.coverage_matrix import compute_coverage_matrix
+
+    good = _write(tmp_path, "SW1", "show version", OK_BODY)
+    unreadable = tmp_path / "SW1" / "show_running-config.txt"
+    unreadable.mkdir(parents=True)            # exists, open() cannot read it
+    out = compute_capture_integrity_from_paths(
+        {"SW1": {"show version": good, "show running-config": str(unreadable)}})
+    (f,) = out["findings"]
+    assert f["status"] == "unreadable" and f["command"] == "show running-config"
+    assert "could not be read" in f["reason"]
+    assert out["summary"]["n_unreadable"] == 1 and out["summary"]["n_hosts_affected"] == 1
+    # and the composed coverage verdict must abstain, not read 'covered'
+    row = next(r for r in compute_coverage_matrix(
+        {"devices": {"SW1": {}}, "capture_integrity": out})["rows"]
+        if r["device"] == "SW1" and r["axis"] == "capture")
+    assert row["state"] == "unverified" and row["is_abstention"] is True
+    # an ABSENT file stays completeness's domain — no fabricated verdict about a body never seen
+    assert compute_capture_integrity_from_paths(
+        {"SW1": {"show version": str(tmp_path / "SW1" / "gone.txt")}})["findings"] == []
+
+
 def test_timing_fallback_meta_yields_unverified_prompt(tmp_path):
     """An OK-looking body collected via the send_command_timing fallback is
     'unverified_prompt' — the prompt was never confirmed, so completeness is unproven."""

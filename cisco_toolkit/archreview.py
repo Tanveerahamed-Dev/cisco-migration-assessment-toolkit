@@ -324,7 +324,10 @@ def compute_architecture_review(snap: dict) -> dict:
 
     psu_known = {h: _as_int(_as_dict(d).get("num_power_supplies")) for h, d in devices.items()}
     psu_single = sorted(h for h, n in psu_known.items() if n == 1)
-    if not any(n > 0 for n in psu_known.values()):
+    # _as_int coerces a MISSING inventory to 0, so `n > 0` is the coverage test, not a PSU count.
+    n_psu_known = sum(1 for n in psu_known.values() if n > 0)
+    n_psu_unknown = len(psu_known) - n_psu_known
+    if n_psu_known == 0:
         add("RES-3", D2, "Redundant power supplies", "not-assessable",
             "Power-supply inventory was not captured for any device.", "—",
             "Include 'show environment power' / inventory output in collection.",
@@ -333,14 +336,28 @@ def compute_architecture_review(snap: dict) -> dict:
         worst = sorted(set(psu_single) & l3_hosts)
         add("RES-3", D2, "Redundant power supplies", "deviation" if worst else "advisory",
             f"{len(psu_single)} device(s) run on a single PSU: {_ev(psu_single)}"
-            + (f" — including L3 node(s) {_ev(worst, 6)}" if worst else "") + ".",
+            + (f" — including L3 node(s) {_ev(worst, 6)}" if worst else "")
+            + (f" (power inventory captured for {n_psu_known} of {len(psu_known)} device(s); the "
+               f"remaining {n_psu_unknown} are unassessed)" if n_psu_unknown else "") + ".",
             "A single supply turns a PSU/feed fault into a chassis outage; on a distribution node "
             "that is a multi-closet event.",
             "Fit second supplies (separate feeds) on the listed devices — distribution tier first.",
             "Cisco campus HA design — N+1 power on aggregation nodes", evidence=psu_single)
+    elif n_psu_unknown:
+        # conforms-by-silence guard (matches HIER-2 / L2-3): the not-assessable gate above is
+        # FLEET-WIDE (`no device reported a count`), so a single device reporting 2 supplies used to
+        # carry the whole fleet to CONFORMS and assert "no single feed/PSU fault takes a switch
+        # down" over devices whose power inventory was never captured. Partial coverage is a blind
+        # spot, never health.
+        add("RES-3", D2, "Redundant power supplies", "not-assessable",
+            f"Power-supply inventory was captured for only {n_psu_known} of {len(psu_known)} "
+            f"device(s) (all of them carry ≥2 supplies); the remaining {n_psu_unknown} report none, "
+            "so fleet power redundancy cannot be graded from this evidence.", "—",
+            "Include 'show environment power' / inventory output for every device, then re-review.",
+            "Cisco campus HA design — N+1 power on aggregation nodes")
     else:
         add("RES-3", D2, "Redundant power supplies", "conforms",
-            "Every device with captured power inventory carries ≥2 supplies.",
+            f"All {len(psu_known)} device(s) report captured power inventory and carry ≥2 supplies.",
             "No single feed/PSU fault takes a switch down.",
             "Keep dual feeds through the migration (verify per site during NRFU).",
             "Cisco campus HA design — N+1 power on aggregation nodes")
@@ -414,24 +431,46 @@ def compute_architecture_review(snap: dict) -> dict:
                 bpdu_data += 1
                 if v not in ("no", "disabled", "off", "false", "-", "--"):
                     guarded += 1
+    # Two DIFFERENT denominators are in play: `bpdu_data` = access ports whose BPDU-Guard state was
+    # actually captured (the assessable set), `n_access_ports` = every access port. The old
+    # `guarded * 2 < n_access_ports` advisory test graded CONFORMS — asserting "the edge is
+    # protected" — as soon as guarded ports passed HALF of ALL access ports, so ports with NO
+    # evidence (and even ports positively observed UNGUARDED) were carried into a pass. The cited
+    # rule is PortFast + BPDU Guard on EVERY edge port, so conformance needs full capture AND no
+    # unguarded port; anything less abstains or deviates (matching HIER-2 / L2-3).
+    n_unguarded = bpdu_data - guarded
+    n_uncaptured = n_access_ports - bpdu_data
     if n_access_ports == 0 or bpdu_data == 0:
         add("L2-2", D3, "Edge protection (BPDU Guard) on access ports", "not-assessable",
             "BPDU Guard state was not captured for the access ports.", "—",
             "Include 'show spanning-tree interface detail' (or run-config) in collection.",
             "Cisco campus design — PortFast + BPDU Guard on every edge port")
-    elif guarded * 2 < n_access_ports:
+    elif n_unguarded:
         add("L2-2", D3, "Edge protection (BPDU Guard) on access ports", "advisory",
-            f"{guarded} of {n_access_ports} access port(s) carry BPDU Guard.",
+            f"{n_unguarded} of the {bpdu_data} access port(s) whose BPDU-Guard state was captured "
+            f"do NOT carry it ({guarded} do)"
+            + (f"; a further {n_uncaptured} of {n_access_ports} access port(s) carry no BPDU-Guard "
+               "evidence at all" if n_uncaptured else f" — all {n_access_ports} access port(s) captured") + ".",
             "An unguarded edge port lets a plugged-in switch (or a looped wall jack) join and "
             "reshape the spanning tree — the classic cause of campus-wide L2 meltdowns.",
             "Enable PortFast + BPDU Guard as the access-port default in the target configuration "
             "standard (the remediation plan carries the snippets).",
             "Cisco campus design — PortFast + BPDU Guard on every edge port")
+    elif n_uncaptured:
+        # conforms-by-silence guard: every CAPTURED port is guarded, but the rest were never
+        # evidenced — "the edge is protected" would be asserted off silence.
+        add("L2-2", D3, "Edge protection (BPDU Guard) on access ports", "not-assessable",
+            f"All {bpdu_data} access port(s) with a captured BPDU-Guard state carry it, but "
+            f"{n_uncaptured} of {n_access_ports} access port(s) carry no BPDU-Guard evidence — edge "
+            "protection cannot be graded from this evidence (the rule is EVERY edge port).", "—",
+            "Include 'show spanning-tree interface detail' (or run-config) for every access port, "
+            "then re-review.",
+            "Cisco campus design — PortFast + BPDU Guard on every edge port")
     else:
         add("L2-2", D3, "Edge protection (BPDU Guard) on access ports", "conforms",
-            f"{guarded} of {n_access_ports} access port(s) carry BPDU Guard.",
+            f"All {n_access_ports} access port(s) carry BPDU Guard (state captured on every one).",
             "The edge is protected against accidental switch insertion.",
-            "Keep the standard; close the remaining gap ports during the migration touch.",
+            "Keep the standard through the migration touch.",
             "Cisco campus design — PortFast + BPDU Guard on every edge port")
 
     v1_access, v1_native = [], []

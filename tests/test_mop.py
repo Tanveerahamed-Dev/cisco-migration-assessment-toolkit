@@ -4,6 +4,7 @@ one-section-per-wave structure, the change-overview reconciliation, the reuse of
 plan as the post-cutover checks, the blocker surfacing, and the fail-soft path."""
 import json
 import os
+import re
 import sys
 
 import pytest
@@ -547,6 +548,32 @@ def test_mop_bluf_present_and_carries_wave_and_gate(tmp_path):
                   if "Bottom Line Up Front" in t or "Bottom-Line-Up-Front" in t)
     co_i = next(i for i, t in enumerate(paras) if t == "1. Change Overview")
     assert bluf_i < co_i, (bluf_i, co_i)
+
+
+def test_bluf_blocker_count_matches_the_section_it_cross_references(tmp_path):
+    """One label, two numbers: the BLUF's 'Open blockers gating the change' counted migration-
+    readiness FAIL checks while §1's Blockers column and each wave's §x.2 'Blockers to clear' are
+    built from remediation_plan + Critical/High punch-list — and the BLUF pointed the approver at
+    §x.2, the section that contradicted it. The discriminating fixture has 2 blockers and 1 failed
+    readiness check, so a regression to the old source renders 1 where §1 totals 2."""
+    out = str(tmp_path / "m_blockers.docx")
+    write_mop_docx(out, _snap(), "Unit Test Fleet")
+    d = Document(out)
+    # the BLUF row (structural: the row itself, not a substring anywhere in the document)
+    row = next(r for t in d.tables for r in t.rows
+               if r.cells[0].text.strip().startswith("Open blockers"))
+    detail = row.cells[1].text
+    n_bluf = int(re.match(r"\s*(\d+)\s+Critical/High blocker", detail).group(1))
+    # §1's overview table, the other renderer of the same set
+    ov = next(t for t in d.tables if "Blockers" in [c.text.strip() for c in t.rows[0].cells])
+    col = [c.text.strip() for c in ov.rows[0].cells].index("Blockers")
+    n_overview = sum(int(r.cells[col].text) for r in ov.rows[1:])
+    assert n_bluf == n_overview == 2, (detail, n_overview)
+    # the readiness-FAIL count is still reported — under its OWN label, never as "blockers"
+    assert "1 migration-readiness check(s) FAIL" in detail
+    assert n_bluf != 1, "the fixture must discriminate the two sets"
+    # and the cross-reference now points at a section that agrees with it
+    assert "Blockers-to-clear subsection" in detail or "Blockers-to-clear" in detail
 
 
 def test_mop_bluf_window_estimate_is_coverage_honest(tmp_path):

@@ -212,6 +212,19 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     _sc = eb.get("scale"); _scale = _sc if isinstance(_sc, dict) else {}
     n_dev = _scale.get("n_devices") or len(devices)
     n_vlan = _scale.get("n_vlans") or len(vlans)
+    # §1 reads the canonical INVENTORIED count, but every per-device enumeration below (§1 tier rows,
+    # §3.1 inventory, §3.4 Bill of Materials, §3.5 software plan) iterates snap['devices'] — the hosts
+    # that actually COLLECTED. On a 303-inventoried / 253-collected fleet the BoM totalled 253 chassis
+    # and went to procurement 50 short, with nothing in the document naming the gap. The two counts are
+    # different facts with different owners; render both and say which population each table covers
+    # (ops.py already does this on its title page). Never silently substitute one for the other.
+    n_enum = len(devices)                                   # what the enumerations below iterate
+    _n_uncollected = int(_as_num(n_dev, n_enum)) - n_enum    # fail-soft: a malformed scale -> 0 gap
+    _scope_note = (
+        f"Scope reconciliation: this table enumerates the {n_enum} device(s) that returned collected "
+        f"evidence, out of {n_dev} inventoried device(s) in scope (§1). The other {_n_uncollected} "
+        "did not collect — their contribution here is [NOT OBSERVED], not zero."
+    ) if _n_uncollected > 0 else ""
     vrfs, n_acl_svis, n_svis = _segmentation_facts(snap)
 
     # ---- title page ----
@@ -279,7 +292,10 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
             "questions the design still needs answered.")
         mr.italic = True; mr.font.color.rgb = GREY
     table(["Design attribute", "As-built value"], [
-        ("Devices in scope", n_dev),
+        ("Devices in scope (inventoried)", n_dev),
+        ("…with collected evidence (the population §3.1 / §3.4 / §3.5 enumerate)",
+         f"{n_enum}" + (f" — {_n_uncollected} inventoried device(s) did NOT collect"
+                        if _n_uncollected > 0 else "")),
         ("L3 nodes (own an SVI or a routing adjacency)", len(l3_hosts)),
         ("L2-only access nodes", len(l2_hosts)),
         ("VLANs in use", n_vlan),
@@ -453,6 +469,8 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                          d.get("sw_version") or "—", role, lc.get("band") or "—", ports))
     table(["Hostname", "Model", "Serial", "SW version", "Role", "EoL band", "Active/Total ports"],
           inv_rows, widths=[1.3, 1.3, 1.2, 0.9, 1.1, 0.9, 0.9])
+    if _scope_note:
+        _label_run(doc.add_paragraph(), "Coverage:", _scope_note, GREY)
 
     doc.add_heading("3.2 Addressing & VLAN plan", level=2)
     # vlan -> subnet from subnet_intelligence served_subnets; vlan -> gateway/fhrp from l3_forwarding
@@ -520,6 +538,12 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     bom_rows = sorted(((m, v["count"], v["band"]) for m, v in by_model.items()),
                       key=lambda r: (-r[1], r[0]))
     table(["Model", "Qty", "Worst EoL band"], bom_rows, widths=[3.0, 1.0, 2.0])
+    if _scope_note:
+        # This list is handed to procurement: an unreconciled gap is an under-order, not a footnote.
+        _label_run(doc.add_paragraph(), "Coverage — DO NOT ORDER FROM THIS TABLE UNRECONCILED:",
+                   _scope_note + f" The quantities above total {sum(r[1] for r in bom_rows)} chassis "
+                   f"and are therefore a FLOOR: resolve the {_n_uncollected} uncollected device(s) "
+                   "before this becomes an order.", GREY)
 
     doc.add_heading("3.5 Software plan & recommendations", level=2)
     doc.add_paragraph(
@@ -546,6 +570,11 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         sw_rows.append((m, images, status, by_model[m]["band"]))
     table(["Model", "Images observed", "Status", "Worst EoL band"],
           sw_rows[:30], widths=[1.7, 2.2, 1.8, 1.0])
+    if _scope_note:
+        _label_run(doc.add_paragraph(), "Coverage:",
+                   _scope_note + " A 'Consistent' verdict therefore describes the collected "
+                   "devices only — an uncollected device can still be running a different image.",
+                   GREY)
     recs = []
     for m, cand in mixed[:8]:
         recs.append(f"{m}: consolidate to one image. The most widely deployed ({cand}) is the "

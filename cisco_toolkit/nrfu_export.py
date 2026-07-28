@@ -311,7 +311,17 @@ def compute_nrfu_commands(snap: Optional[dict] = None) -> dict:
 
 
 def _safe_name(s) -> str:
-    return re.sub(r"[^A-Za-z0-9._-]+", "_", str(s)).strip("_") or "unnamed"
+    """One path COMPONENT from untrusted snapshot text. The whitelist rewrites every separator
+    (`/`, `\\`, `:`) to `_`, but it KEEPS `.` — and `.`/`..` are themselves path components, so
+    `_safe_name("..")` returned `".."` and `os.path.join(out_dir, "..")` resolved to the PARENT of
+    `--out`: a crafted `wave_id` wrote the command pack outside the directory the operator named.
+    write_nrfu_pack already treats snap['nrfu_commands'] as possibly tampered (it refuses non-read-only
+    command text); the path components need the same treatment. An all-dot name is never a real wave
+    or host, so it degrades to the same 'unnamed' sentinel an empty name already used."""
+    n = re.sub(r"[^A-Za-z0-9._-]+", "_", str(s)).strip("_")
+    if not n or set(n) <= {"."}:          # "", ".", "..", "..." -> traversal / self-reference
+        return "unnamed"
+    return n
 
 
 def write_nrfu_pack(snap: Optional[dict] = None, out_dir: str = ".") -> List[str]:

@@ -469,6 +469,12 @@ def _arch_fire_snap():
                                   "drop_pkts": 1840521, "output_pkts": 24817400, "police_drop_pkts": 0}]},
         "fhrp_detail": {"core1": [{"ifname": "Vlan10", "group": "10", "state": "Active", "preempt": True, "track": []}]},
         "fhrp": [{"vid": 10, "issues": ["split-brain"], "members": [{"host": "a"}, {"host": "b"}]}],
+        # Access-edge port-security: a secured port err-disabled by a violation -> _d_port_security_errdisable
+        # (principle security-l2-access-edge-suite). This axis IS in _ARCH_COVERAGE_REGISTRY ("port_security",
+        # ssh channel) but was missing from this "every architecture axis" fixture, so the emit-invariant below
+        # could not see the detector -- which is why design_kb._NOT_YET_AUTO_DETECTED kept demoting a principle
+        # the advisor has emitted since the detector landed (review 2026-07-28 #79).
+        "port_security": {"a1": {"Gi0/10": {"port_status": "Secure-shutdown", "last_src": "0011.2233.4455"}}},
     }
 
 
