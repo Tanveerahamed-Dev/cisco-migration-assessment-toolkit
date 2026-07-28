@@ -25,6 +25,20 @@ def _write_vault(root):
     (root / "client-secret.md").write_text("---\ntitle: SiteA Cutover Runbook\ntags: client engagement\n---\n"
                                            "Raw client-adjacent note — must never be digested.\n", encoding="utf-8")
     (root / "empty.md").write_text("# Heading only\n", encoding="utf-8")
+    # The client marker written where a note WITHOUT frontmatter can carry it: inline tags. This is
+    # the common vault shape, and the frontmatter-only check digested it -- then signed the result
+    # `sanitized: true`, so a client identifier crossed the ADR-0001 two-store boundary carrying an
+    # attestation that it could not have.
+    (root / "no-frontmatter-client.md").write_text(
+        "# Northwind Bank core cutover\n\n#client #engagement/northwind\n\n"
+        "Wave 2 moves the Northwind distribution pair; the cluster-id groups redundant RRs.\n",
+        encoding="utf-8")
+    # Frontmatter that OPENS but never closes: the parser sees no metadata, so any marker inside it
+    # is invisible. Absence of a readable marker is not absence of a marker.
+    (root / "broken-frontmatter.md").write_text(
+        "---\ntitle: Northwind Site B\ntags: client engagement\n"
+        "# Northwind Site B\n\nThe ABR summarises type-3 LSAs across the area boundary.\n",
+        encoding="utf-8")
 
 
 # --- producer: digest, not pages -------------------------------------------------------------------
@@ -39,6 +53,27 @@ def test_vault_source_distills_digest_drops_client_and_empty(tmp_path):
     assert all(e["detail"].strip() for e in entries)           # heading-only note dropped (no body)
     # digest, not full page: every distilled detail is capped
     assert all(len(e["detail"]) <= 600 for e in entries)
+
+
+def test_a_client_marker_outside_frontmatter_still_drops_the_note(tmp_path):
+    """The client gate read YAML frontmatter only, so a note without frontmatter — the common vault
+    shape — was digested and then SIGNED `sanitized: true`, carrying a client identifier across the
+    ADR-0001 two-store boundary with an attestation it could not have earned. The marker is the same
+    authored one (`#client`), written where such a note can carry it.
+
+    Both traps here are marker-visibility, not content: a note that opens `---` and never closes it
+    parses to no metadata, so any tag inside is invisible to the parser. Absence of a READABLE
+    marker is not absence of a marker."""
+    _write_vault(tmp_path)
+    entries = VD.vault_source(str(tmp_path))
+    titles = " | ".join(e["title"] for e in entries)
+    details = " | ".join(e["detail"] for e in entries)
+    assert "Northwind" not in titles and "Northwind" not in details, (
+        f"a client-marked note crossed the two-store boundary: {titles}")
+    # Calibration — the gate must drop on an authored MARKER, never on ordinary networking prose.
+    # 'client' and 'private' are everyday words here (dhcp-client, private-vlan); a gate that ate
+    # those would train its operator to bypass it.
+    assert "OSPF LSA Types" in titles, "the unmarked, frontmatter-less note must still be digested"
 
 
 def test_produce_digest_sanitizes_and_signs_with_leakproof_id(tmp_path):

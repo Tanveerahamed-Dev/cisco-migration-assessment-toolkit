@@ -2265,3 +2265,230 @@ def test_parse_vpc_multiword_consistency_and_reason():
           "1 Po1 up success success 1,10,20-23\n")
     v2 = parse_vpc(t2)["vpcs"][0]
     assert v2["consistency"] == "success" and v2["vlans"] == "1,10,20-23"    # healthy row unaffected
+
+
+# =========================================================================== #
+# 2026-07-28 whole-repo review, parse.py tranche (findings 25/33/34/35/36/37/83/84).
+# Every case below FAILS on the pre-fix parser; each is real IOS/IOS-XE/NX-OS
+# or ISE-REST output, and each defect rendered a fault as a clean result.
+# =========================================================================== #
+
+def test_parse_ip_routes_two_token_protocol_codes(cp):
+    """[review #25] IOS prints a TWO-TOKEN code for every sub-typed protocol ('O IA', 'O E2', 'O N1',
+    'D EX', 'i L1'/'i L2'). The single-token regex matched none of them, so each route was dropped from
+    the RIB *and* its next-hop was grafted onto the PREVIOUS prefix as a phantom ECMP sibling carrying the
+    wrong source -- every OSPF inter-area/external, EIGRP external and IS-IS route silently absent while
+    the table read complete."""
+    out = textwrap.dedent("""\
+        Gateway of last resort is 10.0.0.1 to network 0.0.0.0
+
+              10.0.0.0/8 is variably subnetted, 6 subnets, 3 masks
+        O        10.1.1.0/24 [110/2] via 10.0.0.1, 00:12:31, GigabitEthernet0/0
+        O IA     10.2.2.0/24 [110/11] via 10.0.0.1, 00:11:02, GigabitEthernet0/0
+        O E2     10.3.3.0/24 [110/20] via 10.0.0.5, 00:09:44, GigabitEthernet0/1
+        O N1     10.9.9.0/24 [110/22] via 10.0.0.5, 00:09:44, GigabitEthernet0/1
+        D EX     10.4.4.0/24 [170/3072] via 10.0.0.9, 00:05:12, GigabitEthernet0/2
+        i L1     10.5.5.0/24 [115/20] via 10.0.0.13, 00:03:00, GigabitEthernet0/3
+        i L2     10.6.6.0/24 [115/30] via 10.0.0.13, 00:03:00, GigabitEthernet0/3
+    """)
+    routes = parse.parse_ip_routes(out)
+    assert set(routes) == {"10.1.1.0/24", "10.2.2.0/24", "10.3.3.0/24", "10.9.9.0/24",
+                           "10.4.4.0/24", "10.5.5.0/24", "10.6.6.0/24"}, set(routes)
+    # no phantom ECMP siblings grafted onto the single-token route above them
+    assert len(routes["10.1.1.0/24"]["entries"]) == 1
+    src = {p: routes[p]["entries"][0]["source"] for p in routes}
+    assert src["10.2.2.0/24"] == "ospf-interarea"
+    assert src["10.3.3.0/24"] == "ospf-ext2"
+    assert src["10.9.9.0/24"] == "ospf-nssa1"
+    assert src["10.4.4.0/24"] == "eigrp-external"
+    assert src["10.5.5.0/24"] == "isis" and src["10.6.6.0/24"] == "isis"
+    nh = {p: routes[p]["entries"][0]["next_hop"] for p in routes}
+    assert nh["10.4.4.0/24"] == "10.0.0.9" and nh["10.5.5.0/24"] == "10.0.0.13"
+    # the 'Codes:' legend must NOT mint routes now that a lowercase primary code is accepted
+    legend = textwrap.dedent("""\
+        Codes: L - local, C - connected, S - static, R - RIP, M - mobile, B - BGP
+               D - EIGRP, EX - EIGRP external, O - OSPF, IA - OSPF inter area
+               i - IS-IS, su - IS-IS summary, L1 - IS-IS level-1, L2 - IS-IS level-2
+               o - ODR, P - periodic downloaded static route, H - NHRP, l - LISP
+              172.16.0.0/16 is subnetted, 1 subnets
+    """)
+    assert parse.parse_ip_routes(legend) == {}
+
+
+def test_parse_run_config_negated_bpduguard_and_portfast_read_disabled(cp):
+    """[review #33] 'no spanning-tree bpduguard enable' is how an operator opts an access port OUT of a
+    global 'spanning-tree portfast bpduguard default'. Without a `no `-prefix guard it matched the
+    'enable' substring and a deliberately-UNPROTECTED edge port read as hardened."""
+    out = textwrap.dedent("""\
+        spanning-tree portfast bpduguard default
+        !
+        interface GigabitEthernet1/0/5
+         description ACCESS-EDGE
+         no spanning-tree bpduguard enable
+         no spanning-tree portfast
+         no spanning-tree guard root
+        !
+        interface GigabitEthernet1/0/6
+         spanning-tree bpduguard enable
+         spanning-tree portfast
+         spanning-tree guard root
+        !
+    """)
+    res = parse.parse_run_config_interfaces(out)
+    assert res["Gi1/0/5"]["bpduguard"] == "Disable"      # was 'Enable' -- unprotected read as hardened
+    assert res["Gi1/0/5"]["portfast"] == "Disable"
+    assert res["Gi1/0/5"]["rootguard"] == "Disable"
+    assert res["Gi1/0/6"]["bpduguard"] == "Enable"       # positive form unaffected
+    assert res["Gi1/0/6"]["portfast"] == "Enable"
+    assert res["Gi1/0/6"]["rootguard"] == "Enable"
+
+
+def test_parse_interface_counters_line_protocol_down_never_reads_up(cp):
+    """[review #34] '<if> is up, line protocol is down' is a dead link with a live carrier. Capturing only
+    the LINK word recorded oper='up' -- byte-identical to a healthy port -- and on a ROUTER there is no
+    'show interface status' to override it, so a dead WAN link read up."""
+    out = textwrap.dedent("""\
+        GigabitEthernet0/0/1 is up, line protocol is down (notconnect)
+          MTU 1500 bytes, BW 1000000 Kbit/sec, DLY 10 usec
+             0 input errors, 0 CRC, 0 frame, 0 overrun, 0 ignored
+        GigabitEthernet0/0/2 is up, line protocol is up (connected)
+          MTU 1500 bytes
+             0 input errors, 0 CRC, 0 frame, 0 overrun, 0 ignored
+        GigabitEthernet0/0/3 is administratively down, line protocol is down (disabled)
+          MTU 1500 bytes
+             0 input errors, 0 CRC, 0 frame, 0 overrun, 0 ignored
+    """)
+    res = parse.parse_show_interface_counters(out)
+    dead = res["Gi0/0/1"]
+    assert dead["line_protocol"] == "down"
+    assert not str(dead["oper"]).lower().startswith("up"), dead["oper"]   # excel.py's own up-test
+    assert "down" in str(dead["oper"]).lower()
+    assert res["Gi0/0/2"]["oper"] == "up" and res["Gi0/0/2"]["line_protocol"] == "up"
+    assert res["Gi0/0/3"]["oper"] == "administratively down"              # admin-down label preserved
+
+
+def test_parse_auth_sessions_authz_failure_is_distinguishable(cp):
+    """[review #35] 'Authz Success' and 'Authz Failed' both collapsed to 'Authz' because the bare token
+    came FIRST in the alternation. excel.py writes that verbatim into the 802.1X Status column and no
+    other field carries the distinction, so a FAILED authorization was unrecoverable downstream."""
+    out = textwrap.dedent("""\
+        Interface    MAC Address     Method   Domain   Status         Session ID
+        Gi1/0/2      000f.23c4.a401  mab      DATA     Authz Success  0A3462B1000000102983C05C
+        Gi1/0/3      0014.bf5d.d26d  dot1x    DATA     Authz Failed   0A3462B10000000D24F80B58
+        Gi1/0/4      0010.1122.3344  dot1x    DATA     Running        0A3462B10000000E24F80B59
+        Gi1/0/5      0010.1122.3355  mab      DATA     Unauthorized   0A3462B10000000F24F80B5A
+    """)
+    res = parse.parse_auth_sessions(out)
+    assert res["Gi1/0/2"]["status"] == "Authz Success"
+    assert res["Gi1/0/3"]["status"] == "Authz Failed"
+    assert res["Gi1/0/2"]["status"] != res["Gi1/0/3"]["status"]      # the whole point
+    assert res["Gi1/0/4"]["status"] == "Running"
+    assert res["Gi1/0/5"]["status"] == "Unauthorized"
+    assert res["Gi1/0/3"]["method"] == "dot1x" and res["Gi1/0/2"]["mac"] == "000f.23c4.a401"
+
+
+def test_parse_show_environment_bad_and_unknown_status_never_read_ok(cp):
+    """[review #36] Three ways a failed/unreadable environment sensor read healthy: the PS-FAN branch
+    omitted 'bad' (its PS-status sibling one line up has it), an unrecognised status word was dropped from
+    the list ENTIRELY so a surviving healthy PSU's OK became the chassis verdict, and 'Fantray : Faulty'
+    missed the `\\bfault\\b` gate because of the trailing 'y'."""
+    failed = textwrap.dedent("""\
+        PS1  PWR-C49E-300AC-R  AC 300W   good  good  n.a.
+        PS2  PWR-C49E-300AC-R  AC 300W   bad   bad   n.a.
+        Fantray : Faulty
+    """)
+    r = parse.parse_show_environment(failed)
+    assert r["fan_status"] == "Critical/Failed", r          # was 'OK' (bad PS-fan + Faulty tray dropped)
+    assert "FAIL" in r["ps_status"] and r["num_ps"] == "2"
+
+    unknown = textwrap.dedent("""\
+        PS1  PWR-C49E-300AC-R  AC 300W   good         good         n.a.
+        PS2  PWR-C49E-300AC-R  AC 300W   err-disable  err-disable  n.a.
+    """)
+    u = parse.parse_show_environment(unknown)
+    assert u["ps_status"] != "OK", u                        # a surviving OK is not the chassis verdict
+    assert u["fan_status"] != "OK", u
+    assert u["num_ps"] == "2"
+
+    healthy = textwrap.dedent("""\
+        PS1  PWR-C49E-300AC-R  AC 300W   good  good  n.a.
+        PS2  PWR-C49E-300AC-R  AC 300W   good  good  n.a.
+        Fantray : Good
+    """)
+    h = parse.parse_show_environment(healthy)
+    assert h["fan_status"] == "OK" and h["ps_status"] == "OK"    # no cry-wolf on a healthy chassis
+
+
+def test_parse_ise_error_envelope_is_never_a_deployment_node(cp):
+    """[review #37] _ise_rows treated ANY single-key dict as a wrapped node, so an ISE ERROR envelope
+    became a phantom, empty-hostname node. build_ise then saw a truthy node list, SKIPPED its ERS
+    fallback, and all three ISE detectors (which gate on >=2 nodes) went silent -- an ISE never
+    successfully read rendered as an observed healthy single-node standalone."""
+    import json as _json
+    ers_err = _json.dumps({"ERSResponse": {
+        "operation": "GET-all-node",
+        "messages": [{"title": "Unauthorized", "type": "ERROR",
+                      "code": "Application resource validation exception"}],
+        "link": {"rel": "related", "href": "https://ise.example.com/ers/config/node"}}})
+    openapi_err = _json.dumps({"error": {"message": "The request could not be completed", "code": 401}})
+    assert parse.parse_ise_nodes(ers_err) == []
+    assert parse.parse_ise_nodes(openapi_err) == []
+    # ...while a genuine single-key-WRAPPED ERS node detail still parses (the shape the branch exists for)
+    ok = _json.dumps({"ers-node-data": {"name": "ise-pan-01", "primaryPapNode": True,
+                                        "nodeServiceTypes": "Session,Profiler", "inDeployment": True}})
+    nodes = parse.parse_ise_nodes(ok)
+    assert len(nodes) == 1 and nodes[0]["hostname"] == "ise-pan-01" and nodes[0]["is_pan"] is True
+
+
+def test_parse_ptp_clock_tolerates_none(cp):
+    """[review #83] `low = output.lower()` ran BEFORE the function's own `if not output` guard, so
+    parse_ptp_clock(None) raised AttributeError -- breaking the module-wide 'tolerant; never raises'
+    contract every sibling honours via `(output or "")`."""
+    assert parse.parse_ptp_clock(None) == {}
+    assert parse.parse_ptp_clock("") == {}
+    assert parse.parse_ptp_clock("garbage line\n%% nonsense\n") == {}
+    real = textwrap.dedent("""\
+        PTP Device Type: Boundary clock
+        PTP Device Profile: Default Profile
+        Clock Identity: 0x00:22:33:FF:FE:44:55:66
+        Number of PTP ports: 4
+        Domain Number: 0
+    """)
+    assert parse.parse_ptp_clock(real)["device_type"] == "Boundary clock"
+
+
+def test_bgp_summary_grid_ipv6_run_is_length_bounded_no_redos(cp):
+    """[review #84] The SHARED neighbour-grid parser (parse_evpn_summary / parse_bgp_vpnv4_summary /
+    parse_bgp_ipv6_summary) still carried the unbounded `[0-9A-Fa-f:]*:[0-9A-Fa-f:]+` alternation --
+    two adjacent unbounded quantifiers overlapping on ':' -- that parse_bgp_summary documents as fixed by
+    bounding the run to 45 chars. Device output is untrusted and can be megabytes. Same class in
+    parse_nve_peers and parse_bfd_neighbors."""
+    import time
+    poison = ("f:" * 10000) + "!"        # 20001 chars of hex/colon that CANNOT complete the match
+    cases = (
+        (parse.parse_evpn_summary, poison + "\n"),
+        (parse.parse_bgp_vpnv4_summary, poison + "\n"),
+        (parse.parse_nve_peers, "nve1 " + poison + "\n"),
+        (parse.parse_bfd_neighbors,
+         "OurAddr NeighAddr LD/RD RH/RS Holdown(mult) State Int\n" + poison + " 1/1 1(RH) 600(3) Up Gi0/0\n"),
+    )
+    for fn, text in cases:
+        t0 = time.perf_counter()
+        fn(text)
+        dt = time.perf_counter() - t0
+        assert dt < 2.0, f"{fn.__name__} took {dt:.2f}s on {len(text)} chars (quadratic backtracking)"
+
+    # ...and real IPv6 peers -- including a leading '::', a %zone-id and a full 39-char address -- still parse
+    grid = textwrap.dedent("""\
+        Neighbor        V    AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd
+        10.0.0.2        4 65002    1000    1001       50    0    0 10w2d          120
+        2001:db8::1     4 65004     500     501       50    0    0 01:02:03         45
+        ::1             4 65005     100     101       50    0    0 00:10:00       Idle
+        2001:0db8:0000:0000:0000:ff00:0042:8329 4 65007 10 11 50 0 0 00:01:00 3
+    """)
+    by = {r["neighbor"]: r for r in parse.parse_evpn_summary(grid)}
+    assert set(by) == {"10.0.0.2", "2001:db8::1", "::1", "2001:0db8:0000:0000:0000:ff00:0042:8329"}
+    assert by["::1"]["state"] == "Idle"                      # a DOWN v6 peer is not dropped
+    assert by["2001:db8::1"]["prefixes"] == 45
+    nve = "nve1  2001:db8::5  Down  DP  00:10:00\n"
+    assert parse.parse_nve_peers(nve)[0]["peer_ip"] == "2001:db8::5"

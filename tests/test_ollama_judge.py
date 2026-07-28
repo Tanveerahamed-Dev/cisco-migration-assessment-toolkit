@@ -98,12 +98,49 @@ def test_run_baseline_wrong_reason_is_unlocalized():
     assert res["localized_tnr"] == 0.0 and res["unlocalized_rejection_rate"] == 1.0
 
 
-def test_run_baseline_is_total_on_judge_error():
-    # a judge that raises must not crash the run — that defect just counts as not-caught (APPROVE)
+def test_run_baseline_refuses_to_measure_a_judge_that_never_answered():
+    """A judge that RAISED is signal_absent, not an APPROVE (2026-07-28, finding #77).
+
+    The prior contract here was "a judge error just counts as not-caught": the exception became the
+    string ``"(judge error: …)"``, which :func:`parse_verdict` reads as ordinary free text and defaults
+    to APPROVE. With the model not pulled, ``_listening`` still returns True and every /api/chat 404s —
+    so ``approves_clean`` (the specificity control that unlocks a numeric ``judge_tnr``) was satisfied
+    with ZERO successful calls and a 0.0 TNR was recorded over a panel nobody judged. The run must
+    degrade the same way Ollama-down degrades, and it must never raise.
+    """
     def boom(prompt):
-        raise RuntimeError("model exploded")
+        raise RuntimeError("model 'qwen3:4b' not found, try pulling it first")
     res = J.run_baseline(ids=["D-11"], listening=lambda h: True, chat=boom)
-    assert res["ok"] is True and res["localized_tnr"] == 0.0
+    assert res["ok"] is False
+    assert "clean control" in res["reason"] and "not found" in res["reason"]
+    assert "localized_tnr" not in res and "approves_clean" not in res   # nothing is measured
+
+
+def test_run_baseline_refuses_when_a_panel_call_fails_midway():
+    """The clean control answering does not license scoring a PARTIAL panel: one unjudged defect and
+    the TNR denominator is a fiction, so the whole run is signal_absent."""
+    calls = {"n": 0}
+
+    def flaky(prompt):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "VERDICT: APPROVE\nDEFECT_CLASS: NONE"        # clean control answers
+        raise TimeoutError("read timed out")                     # then the model dies
+    res = J.run_baseline(ids=["D-03", "D-11"], listening=lambda h: True, chat=flaky)
+    assert res["ok"] is False and "D-03" in res["reason"] and "incomplete" in res["reason"]
+
+
+def test_append_baseline_cli_records_nothing_when_the_judge_errors(tmp_path, monkeypatch):
+    """End-to-end of the same defect through the recording path: a listening-but-not-answering Ollama
+    (model never pulled) must append NO scorecard row — the docstring's signal_absent promise."""
+    from cisco_toolkit import scorecard as S
+    sc = str(tmp_path / "sc.jsonl")
+    monkeypatch.setenv("SCORECARD_FILE", sc)
+    monkeypatch.setattr(J, "_listening", lambda *a, **kw: True)   # socket accepts...
+    monkeypatch.setattr(J, "_chat", lambda *a, **kw: (_ for _ in ()).throw(
+        OSError("HTTP Error 404: Not Found")))                    # ...but every call 404s
+    assert J.main(["qwen3:4b", "--append-baseline"]) == 0
+    assert S.read_rows(sc) == []
 
 
 def test_run_baseline_reports_specificity_via_clean_control():

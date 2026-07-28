@@ -277,7 +277,22 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
                 if v is not None: mx = max(mx, len(str(v)))
             ws.column_dimensions[get_column_letter(col)].width = min(max(mx + 2, 12), 60)
 
-    oi, ni = _as_dict(old.get("interfaces")), _as_dict(new.get("interfaces"))
+    def _ifmap(s):
+        """`interfaces` coerced at BOTH levels -- the same read compute_snapshot_delta already routes through
+        _as_dict. Re-deriving it here with raw len()/.get() crashed the whole workbook on a trimmed /
+        foreign-tool / older-schema snapshot (`interfaces: {"sw1": 5}` -> TypeError at the totals, and the
+        string variant `{"sw1": "abc"}` counted 3 phantom interfaces before dying in the sheet loops) -- i.e.
+        no diff workbook and no Pre-Change Validation Certificate, at the cutover gate."""
+        return {h: {p: _as_dict(d) for p, d in _as_dict(v).items()}
+                for h, v in _as_dict(s.get("interfaces")).items()}
+
+    def _dnum(a, b):
+        """b - a when both really are numbers. The canonical counts come from the snapshot, so a malformed
+        one can carry a string there and a raw subtraction would abort the workbook."""
+        ok = all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in (a, b))
+        return round(b - a, 1) if ok else ""
+
+    oi, ni = _ifmap(old), _ifmap(new)
     od, nd = _as_dict(old.get("devices")), _as_dict(new.get("devices"))
     delta = compute_snapshot_delta(old, new)   # NEW-V3.23.106: migration-validation analysis
     rd0 = delta.get("reachability") or {}      # W2 reachability what-if (disclose the bounded sample, never silent)
@@ -286,14 +301,23 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
     # Summary (leads with the cutover-validation VERDICT)
     ws = sheet("Summary", ["Metric", "Old", "New", "Delta"])
     added_sw = sorted(set(nd) - set(od)); removed_sw = sorted(set(od) - set(nd))
-    o_if = sum(len(v) for v in oi.values()); n_if = sum(len(v) for v in ni.values())
+    # SSOT (Law 1): the fleet size and the interface totals are the delta's -- `_scn()` = the canonical
+    # executive_brief.scale.n_devices, with len() only as the pre-brief fallback, and the _as_dict-guarded
+    # interface count. compute_snapshot_delta (just above) already ran on these SAME two inputs and is what
+    # the webapp /api/compare publishes, so a second raw len() here made ONE call render TWO fleet sizes --
+    # the AssessHub compare view and the CLI diff workbook disagreeing at the cutover gate.
+    o_sw, n_sw = delta["switches"]["old"], delta["switches"]["new"]
+    o_if, n_if = delta["interfaces"]["old"], delta["interfaces"]["new"]
     _VERDICT_FILL = {"CLEAN": "C6EFCE", "REVIEW": "FFEB9C", "REGRESSED": "FFC7CE"}
     metrics = [
         ("CUTOVER VERDICT", "", delta["verdict"], delta["verdict_note"]),
-        ("Switches", len(od), len(nd), len(nd) - len(od)),
-        ("Switches added", "", "", ", ".join(added_sw) or "0"),
-        ("Switches removed", "", "", ", ".join(removed_sw) or "0"),
-        ("Interfaces (total)", o_if, n_if, n_if - o_if),
+        ("Switches", o_sw, n_sw, _dnum(o_sw, n_sw)),
+        # ...added/removed enumerate the COLLECTED devices, which is a narrower set than the canonical
+        # count above whenever the estate holds devices that were inventoried but not collected. Labelled,
+        # so the two rows cannot be read as one contradictory fact.
+        ("Switches added (collected)", "", "", ", ".join(added_sw) or "0"),
+        ("Switches removed (collected)", "", "", ", ".join(removed_sw) or "0"),
+        ("Interfaces (total)", o_if, n_if, _dnum(o_if, n_if)),
         ("Health bands regressed", "", delta["health"]["n_regressed"],
          ", ".join(r["switch"] for r in delta["health"]["regressed"]) or "0"),
         ("Health bands improved", "", delta["health"]["n_improved"], delta["health"]["n_improved"]),
@@ -559,7 +583,8 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
 # per collection (avg health, band mix, punch-list size + Critical/High count, NOT-READY groups, past-EoS),
 # computes the first->last trajectory per metric + an overall IMPROVING/MIXED/REGRESSING verdict, and reuses
 # compute_snapshot_delta for the per-step findings burndown (opened vs resolved). Pure read of N snapshot
-# dicts; tolerant of older snapshots that lack a metric (it is simply omitted from the trajectory).
+# dicts; tolerant of older snapshots that lack a metric -- it is omitted from the trajectory, never scored as
+# a zero, and if it was comparable at ONE end of the campaign only, its loss is disclosed in the verdict note.
 # -----------------------------------------------------------------------------
 def _trend_point(snap: dict) -> dict:
     """Headline metrics for one snapshot in the campaign timeline."""
@@ -567,17 +592,25 @@ def _trend_point(snap: dict) -> dict:
     # expected list-of-dicts) would iterate its KEYS (str), and `str.get` raises AttributeError -> the whole
     # trend workbook aborts (CLI --trend is unwrapped). Coerce to a list of dicts up front; a non-dict row
     # can't reach the `.get` calls below.
+    # COVERAGE HONESTY: `have_*` records whether the section was actually PRESENT (a usable list), so an
+    # absent one abstains with "" instead of tallying to a hard 0. A partial upload, an older schema, or a
+    # failed analysis phase otherwise scored identically to a clean fleet -- and, being a fall in every
+    # counter, read as a campaign IMPROVING to a green "CAMPAIGN VERDICT". avg_health and past_ldos in this
+    # same dict already abstained; the idiom was simply applied to 2 of the 6 metrics.
     _hs = snap.get("health_scores")
-    hs = [r for r in _hs if isinstance(r, dict)] if isinstance(_hs, list) else []
+    have_hs = isinstance(_hs, list)
+    hs = [r for r in _hs if isinstance(r, dict)] if have_hs else []
     scores = [r.get("score") for r in hs if isinstance(r.get("score"), (int, float))]
     bands: Dict[str, int] = {}
     for r in hs:
         bands[str(r.get("band", ""))] = bands.get(str(r.get("band", "")), 0) + 1
     _pl = snap.get("punchlist")
-    pl = [f for f in _pl if isinstance(f, dict)] if isinstance(_pl, list) else []   # same list-of-dicts guard as health_scores
+    have_pl = isinstance(_pl, list)
+    pl = [f for f in _pl if isinstance(f, dict)] if have_pl else []   # same list-of-dicts guard as health_scores
     readiness = {"READY": 0, "CAUTION": 0, "NOT READY": 0}
     _mr = snap.get("migration_readiness")
-    for r in (_mr if isinstance(_mr, list) else []):
+    have_mr = isinstance(_mr, list)
+    for r in (_mr if have_mr else []):
         if isinstance(r, dict) and r.get("readiness") in readiness:
             readiness[r["readiness"]] += 1
     # isinstance-guard (not `or {}`): a TRUTHY non-dict section/subsection (a list/str/int in a malformed
@@ -601,10 +634,13 @@ def _trend_point(snap: dict) -> dict:
         # SSOT: prefer the engine's canonical scale / posture; the local len()/band-tally is a fallback only.
         "n_switches": _scale.get("n_devices") if _scale.get("n_devices") is not None else len(_d(snap.get("devices"))),
         "avg_health": avg if avg is not None else "",
-        "n_critical": _posture.get("n_critical") if _posture.get("n_critical") is not None else bands.get("Critical", 0),
-        "n_punchlist": len(pl),
-        "n_crit_high": sum(1 for f in pl if f.get("severity") in ("Critical", "High")),
-        "n_not_ready": readiness["NOT READY"],
+        # Each falls back to its raw tally ONLY when that section was collected; otherwise "" (abstain),
+        # exactly like avg_health/past_ldos below. "Not observed" must never render as an observed zero.
+        "n_critical": _posture.get("n_critical") if _posture.get("n_critical") is not None else (
+            bands.get("Critical", 0) if have_hs else ""),
+        "n_punchlist": len(pl) if have_pl else "",
+        "n_crit_high": sum(1 for f in pl if f.get("severity") in ("Critical", "High")) if have_pl else "",
+        "n_not_ready": readiness["NOT READY"] if have_mr else "",
         # "Past end-of-support" = Past-LDoS (no TAC / no fixes) — the migration-critical count the
         # brief/deck/explorer/workbook all headline. NOT Past-EoS (end-of-SALE, still supported): reading
         # n_past_eos here showed 0 while 152 boxes were past support (the EoS/LDoS silent-drop class).
@@ -643,9 +679,19 @@ def compute_campaign_trend(snapshots: List[dict]) -> dict:
     verdict, note = "INSUFFICIENT", "Need at least two collections to show a trend."
     if len(timeline) >= 2:
         first, last = timeline[0], timeline[-1]
+        # Metrics whose EVIDENCE was collected in one endpoint of the campaign and not the other. Dropping
+        # them from the trajectory is right (they are not comparable) but doing it SILENTLY is the same
+        # survivorship trap as a device dropping out: the surviving metrics then set a verdict over a
+        # narrower estate than the reader assumes. Disclosed below, and (like a dark device) a clean
+        # IMPROVING/FLAT is downgraded. Metrics absent from BOTH ends were never part of this campaign's
+        # evidence, so they are simply omitted, exactly as before.
+        lost: List[str] = []
         for metric, key, good_down in _TREND_METRICS:
             a, b = first.get(key), last.get(key)
-            if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
+            ok_a, ok_b = isinstance(a, (int, float)), isinstance(b, (int, float))
+            if not ok_a or not ok_b:
+                if ok_a != ok_b:
+                    lost.append(metric)
                 continue
             delta = b - a
             direction = "flat" if delta == 0 else (
@@ -687,14 +733,23 @@ def compute_campaign_trend(snapshots: List[dict]) -> dict:
                 verdict = "MIXED"
             if n_gone and verdict in ("IMPROVING", "FLAT"):
                 verdict = "MIXED"                         # devices went dark -> not a clean improvement
+            if lost and verdict in ("IMPROVING", "FLAT"):
+                verdict = "MIXED"                         # lost evidence -> not a clean improvement either
         hr = next((r for r in trajectory if r["metric"].startswith("Avg health")), None)
         cr = next((r for r in trajectory if r["metric"].startswith("Critical/High")), None)
-        note = (f"Across {len(timeline)} collections: {better} metric(s) improving, {worse} worsening. "
-                + (f"Avg health {hr['first']}→{hr['last']}. " if hr else "")
-                + (f"Critical/High findings {cr['first']}→{cr['last']}. " if cr else "")
-                + (f"{n_gone} device(s) went DARK (present then absent) -- the health trajectory may be "
-                   "survivorship-biased; confirm these are planned decommissions, not failures." if n_gone else "")
-                ).strip()
+        parts = [f"Across {len(timeline)} collections: {better} metric(s) improving, {worse} worsening."]
+        if hr:
+            parts.append(f"Avg health {hr['first']}→{hr['last']}.")
+        if cr:
+            parts.append(f"Critical/High findings {cr['first']}→{cr['last']}.")
+        if n_gone:
+            parts.append(f"{n_gone} device(s) went DARK (present then absent) -- the health trajectory may "
+                         "be survivorship-biased; confirm these are planned decommissions, not failures.")
+        if lost:
+            parts.append(f"NOT COMPARABLE: {len(lost)} metric(s) lost their evidence between the first and "
+                         f"last collection ({', '.join(lost)}) -- excluded from the verdict, and NOT a "
+                         "statement that they are clean.")
+        note = " ".join(parts).strip()
 
     return {"timeline": timeline, "steps": steps, "trajectory": trajectory,
             "verdict": verdict, "verdict_note": note}

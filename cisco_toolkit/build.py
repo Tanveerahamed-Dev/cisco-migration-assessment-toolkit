@@ -517,12 +517,22 @@ def build_pim(cmd_to_file: Dict[str, str]) -> dict:
     }
 
 
+# A running-config line (stripped, lower-cased) that ENDS the interface block build_ipv6_fhs is walking:
+# the `!` stanza separator, `end`, or the header of another top-level stanza. The three `... policy <NAME>`
+# forms are listed explicitly because they are the GLOBAL first-hop-security policy DEFINITIONS, whose
+# headers are prefix-identical to the per-interface attach commands.
+_FHS_BLOCK_END_RE = (r"^(?:!|end$|vlan configuration\b|ipv6 (?:nd raguard|dhcp guard|snooping) policy\b"
+                     r"|router\s|line\s|control-plane\b|vrf definition\b|class-map\s|policy-map\s)")
+
+
 def build_ipv6_fhs(cmd_to_file: Dict[str, str]) -> dict:
     """IPv6 first-hop-security posture for THIS device, fusing the dedicated FHS show-commands
     ('show ipv6 nd raguard policy', 'show ipv6 dhcp guard policy') with the already-collected
     'show running-config' (the most reliable, platform-agnostic evidence of dual-stack + per-interface
-    attachment). {} when the device shows no IPv6 at all -> a pure-IPv4 device contributes nothing and the
-    detector never cries wolf over it. Fail-soft via _safe_parse."""
+    attachment). Only an ATTACHMENT counts: the global `ipv6 nd raguard policy <NAME>` / `ipv6 dhcp guard
+    policy <NAME>` stanzas merely DEFINE a policy and protect nothing until attached to an interface or a
+    `vlan configuration` block. {} when the device shows no IPv6 at all -> a pure-IPv4 device contributes
+    nothing and the detector never cries wolf over it. Fail-soft via _safe_parse."""
     rag = _safe_parse(parse_ipv6_raguard_policy,
                       _load_cmd_output(cmd_to_file, "show ipv6 nd raguard policy")) or []
     dhg = _safe_parse(parse_ipv6_dhcp_guard_policy,
@@ -532,29 +542,52 @@ def build_ipv6_fhs(cmd_to_file: Dict[str, str]) -> dict:
     ipv6_svi_vlans: List[int] = []
     ra_if: Set[str] = set()
     dhg_if: Set[str] = set()
+    ra_vlan_cfg = False
+    dhg_vlan_cfg = False
     cur_if = ""
+    cur_scope = ""          # "iface" | "vlan" (vlan-configuration mode) | "" (global / another stanza)
     cur_is_svi = False
     cur_has_v6 = False
     for raw in run.splitlines():
         m = re.match(r"^\s*interface\s+(\S+)", raw, re.IGNORECASE)
         if m:
             cur_if = normalize_ifname(m.group(1))
+            cur_scope = "iface"
             cur_is_svi = bool(re.match(r"^(Vlan|Vl)\d+$", m.group(1), re.IGNORECASE))
             cur_has_v6 = False
             continue
-        if not cur_if:
-            continue
         low = raw.strip().lower()
-        if low.startswith("ipv6 address ") and "autoconfig" not in low:
-            if cur_is_svi and not cur_has_v6:
-                mvid = re.match(r"^(?:Vlan|Vl)(\d+)$", cur_if, re.IGNORECASE)
-                if mvid:
-                    ipv6_svi_vlans.append(int(mvid.group(1)))
-                cur_has_v6 = True
-        if re.match(r"^ipv6 nd raguard\b", low):
-            ra_if.add(cur_if)
-        if re.match(r"^ipv6 dhcp guard\b", low):
-            dhg_if.add(cur_if)
+        if not low:
+            continue
+        # END of the interface block. `cur_if` was previously never cleared, so every later GLOBAL line was
+        # credited to whatever interface happened to be seen last -- and `ipv6 nd raguard policy <NAME>` /
+        # `ipv6 dhcp guard policy <NAME>` are the global policy-DEFINITION stanza HEADERS, which match the
+        # attach patterns below. A box that DEFINES both policies and attaches NEITHER therefore reported
+        # first-hop security in place on a real interface while being wide open to rogue RA / rogue DHCPv6
+        # (absence rendered as health). Matched on the STRIPPED line, so an indentation-stripped capture
+        # behaves identically to a normal one; `!` is the universal IOS/NX-OS stanza separator.
+        if re.match(_FHS_BLOCK_END_RE, low):
+            cur_if = ""
+            cur_scope = "vlan" if low.startswith("vlan configuration") else ""
+            continue
+        if cur_scope == "iface":
+            if low.startswith("ipv6 address ") and "autoconfig" not in low:
+                if cur_is_svi and not cur_has_v6:
+                    mvid = re.match(r"^(?:Vlan|Vl)(\d+)$", cur_if, re.IGNORECASE)
+                    if mvid:
+                        ipv6_svi_vlans.append(int(mvid.group(1)))
+                    cur_has_v6 = True
+            if re.match(r"^ipv6 nd raguard\b", low):
+                ra_if.add(cur_if)
+            if re.match(r"^ipv6 dhcp guard\b", low):
+                dhg_if.add(cur_if)
+        elif cur_scope == "vlan":
+            # `vlan configuration <ids>` + `ipv6 dhcp guard attach-policy X` is a real VLAN-wide attachment:
+            # it protects, but it names no interface -- credit PRESENCE, never a fabricated iface list.
+            if re.match(r"^ipv6 nd raguard\b", low):
+                ra_vlan_cfg = True
+            if re.match(r"^ipv6 dhcp guard\b", low):
+                dhg_vlan_cfg = True
 
     for pol in rag:
         for t in pol.get("targets", []):
@@ -570,8 +603,8 @@ def build_ipv6_fhs(cmd_to_file: Dict[str, str]) -> dict:
     ra_vlan_attached = any(t.get("type") == "VLAN" for p in rag for t in p.get("targets", []))
     dhg_vlan_attached = any(t.get("type") == "VLAN" for p in dhg for t in p.get("targets", []))
 
-    ra_present = bool(ra_if) or ra_vlan_attached
-    dhg_present = bool(dhg_if) or dhg_vlan_attached
+    ra_present = bool(ra_if) or ra_vlan_attached or ra_vlan_cfg
+    dhg_present = bool(dhg_if) or dhg_vlan_attached or dhg_vlan_cfg
     dualstack = bool(ipv6_svi_vlans)
 
     if not dualstack and not ra_present and not dhg_present and not ra_policy_names and not dhg_policy_names:
@@ -1033,7 +1066,12 @@ def detect_cross_device_dual_connections(all_interfaces: Dict[str, Dict[str, Int
                 mac_locations.setdefault(mac, []).append((hostname, p))
     for mac, locs in mac_locations.items():
         unique = list({(h,p) for h,p in locs})
-        if len(unique) > 1:
+        # CROSS-DEVICE means two DIFFERENT hostnames. Keying on (hostname, port) alone flagged a MAC seen
+        # twice on ONE switch -- and step 7 of build_interfaces MANUFACTURES exactly that duplicate, copying
+        # end_host_mac between a port-channel and each of its physical members. A single-homed endpoint
+        # behind one switch's LAG then reported dual_connection='Yes': a redundancy claim with no second
+        # home, which HIDES the single point of failure during move-group planning.
+        if len({h for h, _ in unique}) > 1:
             for hostname, p in unique:
                 if p in all_interfaces.get(hostname, {}):
                     all_interfaces[hostname][p].dual_connection = "Yes"

@@ -3,8 +3,13 @@ Lay out / update the Atlas stick (ADR-0004 P2/P3).
 
 Copies the built one-folder bundle to <Dest>\Atlas. Re-running is the UPDATE flow: everything is
 replaced wholesale EXCEPT the top-level data\ (the stick's only writable dir, where client
-evidence lives) via robocopy /MIR with an ABSOLUTE /XD pin. A bare '/XD data' would also exclude
-_internal\cisco_toolkit\data (the KB packs) from the copy and silently degrade the app.
+evidence lives) via robocopy /MIR with ABSOLUTE /XD pins on BOTH sides. A bare '/XD data' would
+also exclude _internal\cisco_toolkit\data (the KB packs) from the copy and silently degrade the
+app; an absolute pin on the DESTINATION alone protects the stick from /MIR's purge but cannot
+match a SOURCE dist\Atlas\data\ - and that folder exists the moment anyone launches the bundle in
+place on the build box, at which point /MIR mirrored the dev box's store OVER the field evidence
+and purged data\backups\ with it. Measured, not theorised: the stick's store read back as the dev
+box's and its backups were gone, under a "data\ preserved" success line.
 
   powershell -File portable\make_stick.ps1 -Dest E:\
   powershell -File portable\make_stick.ps1 -Dest D:\somewhere -Source C:\other\dist\Atlas
@@ -32,20 +37,31 @@ if (-not (Test-Path $Dest)) {
 $target = Join-Path $Dest "Atlas"
 $updating = Test-Path $target
 $dataDir = Join-Path $target "data"
+$srcDataDir = Join-Path $Source "data"
+
+# The source pin is the load-bearing half whenever it exists: without it /MIR treats the build
+# box's own store as the authority for data\ and overwrites the stick's client evidence. Say so
+# rather than fixing it silently - a data\ under dist\Atlas means someone ran the bundle in place,
+# which is worth knowing on the build box even though the copy is now safe.
+if (Test-Path $srcDataDir) {
+  Write-Host "[warn] $srcDataDir exists - the bundle was launched in place on this machine."
+  Write-Host "       It is EXCLUDED from the copy: the stick's data\ is the client evidence and"
+  Write-Host "       must never be replaced by this box's store. Delete it to keep the build clean."
+}
 
 # /R and /W are NOT optional here. Robocopy's DEFAULTS are /R:1000000 /W:30 - a million retries,
 # 30s apart (~347 days). Paired with the quiet switches below that is a SILENT multi-hour hang with
 # no output at all, which is what happened on 2026-07-21: Atlas.exe had auto-opened the browser
 # FROM the stick, so Chrome (and its child processes) held DLLs under _internal open, robocopy hit
 # ERROR 32 on one file and sat retrying for ~5 hours. Fail fast and say which file instead.
-robocopy $Source $target /MIR /XD $dataDir /R:2 /W:5 /NFL /NDL /NJH /NJS /NP | Out-Null
+robocopy $Source $target /MIR /XD $dataDir $srcDataDir /R:2 /W:5 /NFL /NDL /NJH /NJS /NP | Out-Null
 $rc = $LASTEXITCODE
 if ($rc -ge 8) {
   Write-Host "[fail] robocopy could not copy every file (exit $rc)."
   Write-Host "       Most likely a file on the stick is IN USE. Close Atlas AND the browser tab"
   Write-Host "       it opened (the browser inherits the stick as its working directory and pins"
   Write-Host "       files under _internal), then re-run this script."
-  Write-Host "       To see exactly which file: robocopy `"$Source`" `"$target`" /MIR /XD `"$dataDir`" /R:1 /W:1 /NP"
+  Write-Host "       To see exactly which file: robocopy `"$Source`" `"$target`" /MIR /XD `"$dataDir`" `"$srcDataDir`" /R:1 /W:1 /NP"
   exit 1
 }
 

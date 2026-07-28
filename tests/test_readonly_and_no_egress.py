@@ -6,10 +6,20 @@ but until now no test PROVED either, so a silent regression (a future write comm
 requests` in a deliverable) would have shipped green. These guards close that.
 
 Doctrine grounded (verified, not assumed): the only non-`show` strings on the SSH wire are the two terminal
-setup commands (COLLECT_PARSE_V3_23_0.py:810); the SSH collector has a protocol-level read-only floor
-(send_command cannot configure); rest_collect is GET-only except a single login POST; and no analysis ->
+setup commands (`COLLECT_PARSE_V3_23_0.TERMINAL_SETUP_CMDS`); the SSH collector has a protocol-level read-only
+floor (send_command cannot configure); rest_collect is GET-only except a single login POST; and no analysis ->
 deliverable module imports a network library. These tests re-derive the allow-list from the ACTUAL registries
 (not a hardcoded verb list) and walk imports at ANY nesting depth (lazy imports too).
+
+The wire sentence above used to be PROSE ONLY. It was also FALSE while this suite was green: the registries
+are shared with the offline (`--no-collect`) reader, which keys controller exports by their REST endpoint path
+(`api/…`, `ers/…`, `dataservice/…`) or APIC `moquery -c …`, and `collect()` sent the union of both Cisco
+registries to every device — so 17 non-`show` strings were typed at the exec prompt of live gear (whole-repo
+review 2026-07-28 #9). `test_ssh_wire_carries_only_show_plus_the_terminal_setup_commands` now DRIVES the real
+`connect_device` + `collect()` with a recording fake and asserts over what is actually SENT, so the claim can
+never again be truer in the docstring than in the code. Note the deliberate scope split: the registry walk
+(`test_command_registries_are_read_only`) covers BOTH channels and so accepts the REST GET grammar; the wire
+test covers the SSH channel only and accepts `show` + the two setup commands.
 
 roadmap D3: the read-only grammar + banned-import lists + AST import-walk are FACTORED into
 cisco_toolkit/attestation.py (the shipped 'Trust & Sovereignty' panel) and imported here, so
@@ -62,6 +72,60 @@ def test_command_registries_are_read_only():
     # sanity: the union actually contains the known read verbs (the test isn't vacuously passing on an empty set)
     allcmds = {c for cmds in regs.values() for c in cmds}
     assert len(allcmds) >= 100 and any(c.startswith("show ") for c in allcmds)
+
+
+class _RecordingDev:
+    """A netmiko stand-in that records every string typed at the (fake) exec prompt."""
+
+    def __init__(self):
+        self.sent = []
+
+    def send_command(self, cmd, read_timeout=None):
+        self.sent.append(cmd)
+        return f"output for {cmd}\nline2\nline3\n"
+
+    def send_command_timing(self, cmd, read_timeout=None):   # pragma: no cover - pattern read never fails here
+        self.sent.append(cmd)
+        return ""
+
+    def disconnect(self):
+        pass
+
+
+def test_ssh_wire_carries_only_show_plus_the_terminal_setup_commands(tmp_path, monkeypatch):
+    """The header's wire sentence, DERIVED from what the collector actually sends rather than asserted in
+    prose: drive the real `connect_device` (session setup) + `collect()` (the command sweep) with a recording
+    fake and take the union of everything typed at the prompt. Every string must be a `show` read except
+    exactly the two `TERMINAL_SETUP_CMDS` — no controller-REST endpoint path (`api/`, `ers/`, `dataservice/`),
+    no APIC `moquery`, nothing a device CLI would answer with a DNS lookup and a Telnet attempt.
+
+    Both platform orderings are driven, because `collect()` sends the UNION of COMMANDS_NXOS + COMMANDS_IOS to
+    every device — the mechanism that put the other channel's strings on the wire in the first place.
+    """
+    dev = _RecordingDev()
+    monkeypatch.setattr(C, "ConnectHandler", lambda **kw: dev)
+    conn, _ = C.connect_device("10.0.0.1", "SW1", "u", "p", "ios")
+    assert conn is dev
+    for i, plat in enumerate(("ios", "nxos")):
+        C.collect("SW1", plat, dev, str(tmp_path / f"SW{i}"))
+
+    setup = list(C.TERMINAL_SETUP_CMDS)
+    assert setup, "the terminal-setup allowance must name real commands (an empty tuple proves nothing)"
+    off_grammar = sorted({c for c in dev.sent
+                          if not c.strip().startswith("show ") and c not in setup})
+    assert not off_grammar, (
+        "non-`show` string(s) typed at a device exec prompt — the SSH channel takes device CLI reads only; "
+        f"controller-REST endpoints belong to cisco_toolkit.rest_collect: {off_grammar}")
+    # not vacuous: the sweep really ran, and the two setup commands really were the wire's only exception
+    assert sum(1 for c in dev.sent if c.startswith("show ")) >= 90
+    assert sorted({c for c in dev.sent if not c.startswith("show ")}) == sorted(setup)
+    # ... and the withheld strings must SURVIVE in the registries: the offline `--no-collect` reader keys a
+    # controller export by exactly these names, so deleting them (instead of filtering the wire) would blind it.
+    union = {c for cmds in _registries().values() for c in cmds}
+    for controller_cmd in ("moquery -c fabricNode", "api/v1/deployment/node", "ers/config/node",
+                           "dataservice/device", "api/fmc_platform/v1/info/serverversion"):
+        assert controller_cmd in union, f"{controller_cmd!r} left the registries — offline re-analysis goes blind"
+        assert not C.is_ssh_wire_command(controller_cmd)
 
 
 def test_ssh_send_path_has_no_config_or_write_sink():

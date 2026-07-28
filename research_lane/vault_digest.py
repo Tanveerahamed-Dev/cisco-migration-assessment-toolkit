@@ -28,6 +28,11 @@ from research_lane.sanitize import sanitize_advisories
 _FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
 # Frontmatter keys / tag substrings that mark a note as client-adjacent -> DROP it whole (never digest it).
 _CLIENT_FLAGS = ("client", "private", "confidential", "engagement", "customer")
+# The SAME authored marker, written as an INLINE tag (``#client``, ``#engagement/site-a``) — which is
+# where a note that carries no frontmatter puts it, and that is the common shape. Requires a word
+# character straight after the ``#``, so a markdown heading (``# Title``: hash, then a space) is not a
+# tag, and the leading lookbehind keeps ``##Sub`` from reading as one either.
+_INLINE_TAG_RE = re.compile(r"(?<![\w#])#([A-Za-z][\w/-]*)")
 
 
 def _slug(s: str) -> str:
@@ -59,10 +64,29 @@ def _first_paragraph(body: str, *, max_chars: int) -> str:
     return first[:max_chars]
 
 
-def _is_client_adjacent(meta: Dict[str, str]) -> bool:
-    """True if the note's frontmatter marks it client-adjacent (a flag key set truthy, or a client marker in
-    ``tags``/``type``). Conservative: when in doubt about a note being generic, it is dropped, not digested."""
-    blob = (str(meta.get("tags", "")) + " " + str(meta.get("type", ""))).lower()
+def _is_client_adjacent(meta: Dict[str, str], text: str = "") -> bool:
+    """True if the note carries an explicit client-adjacent MARKER: a flag key set truthy or a client marker
+    in ``tags``/``type``, the same marker written as an INLINE tag (``#client``) anywhere in the note, or a
+    frontmatter block that OPENS and cannot be parsed.
+
+    This reads only the frontmatter before, which is not where a note without frontmatter keeps its tags: one
+    tagged ``#client #confidential`` in its body was digested and then signed ``sanitized: true`` with zero
+    redactions, so the client's name crossed the two-store boundary (ADR-0001) under an attestation.
+
+    The scope is stated exactly, because the previous wording ("when in doubt about a note being generic, it is
+    dropped") claimed more than the code does and the claim is the load-bearing part here. This drops on an
+    authored MARKER, never on content: a note carrying no marker at all is NOT dropped, it goes on to the
+    Rule-3 scrub, which is the real boundary. Deliberately not the filename or the prose either — this is a
+    NETWORKING vault, where "client" and "private" are ordinary words (dhcp-client, private-vlan), and a gate
+    that eats those teaches its operator to bypass it, which costs more than the gap it closes.
+
+    Unparseable frontmatter IS dropped, and that one IS a when-in-doubt: a note that opens ``---`` and never
+    closes it has markers the parser cannot see, so "no flags found" says nothing about whether there are any.
+    """
+    if (text or "").startswith("---") and not _FM_RE.match(text):
+        return True
+    blob = (str(meta.get("tags", "")) + " " + str(meta.get("type", "")) + " "
+            + " ".join(_INLINE_TAG_RE.findall(text or ""))).lower()
     if any(f in blob for f in _CLIENT_FLAGS):
         return True
     return any(str(meta.get(f, "")).strip().lower() in ("true", "yes", "1") for f in _CLIENT_FLAGS)
@@ -73,7 +97,7 @@ def distill_note(path: str, text: str, *, max_chars: int = 600) -> Optional[Dict
     usable body). A digest entry is ``{title, detail, notes, source}`` — title + a **capped** summary + tags,
     never the full raw note. The ``id`` is deliberately NOT set here; it is assigned post-sanitize."""
     meta, body = _parse_frontmatter(text)
-    if _is_client_adjacent(meta):
+    if _is_client_adjacent(meta, text):
         return None
     title = meta.get("title") or ""
     if not title:

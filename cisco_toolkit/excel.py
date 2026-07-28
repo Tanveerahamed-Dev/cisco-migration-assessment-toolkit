@@ -34,6 +34,12 @@ from cisco_toolkit.textutils import (
 
 logger = logging.getLogger(__name__)
 
+#: Excel's hard per-cell character limit. openpyxl enforces it by SILENTLY slicing
+#: (`check_string`: `value = value[:32767]`) -- no exception, no warning -- so an oversized cell is
+#: amputated inside a workbook that still reports success. `_xls_sanitize` bounds + DISCLOSES instead.
+_XLSX_MAX_CELL = 32767
+_XLSX_TRUNC_NOTE = " … [TRUNCATED: {n:,} chars exceeded Excel's {cap:,}-char cell limit — see the source capture]"
+
 
 def _xls_sanitize(value):
     """Strip the characters openpyxl rejects from a string; pass non-strings through unchanged. Covers BOTH the C0
@@ -52,27 +58,63 @@ def _xls_sanitize(value):
     HYPERLINK/WEBSERVICE/formula construction), so a leading-'=' string is forced back to inert text with
     Excel's text-prefix apostrophe. ('+', '-', '@' are stored by openpyxl as ordinary strings -- NOT live
     formulas in the .xlsx -- and are legitimate leading chars in delta ('+3 added'), placeholder ('-') and
-    negative cells, so they are deliberately left unprefixed to avoid corrupting real content on re-read.)"""
+    negative cells, so they are deliberately left unprefixed to avoid corrupting real content on re-read.)
+
+    The '=' test skips LEADING WHITESPACE (review #63): xml_safe deliberately KEEPS tab (0x09), LF (0x0A)
+    and CR (0x0D) because they are XML-legal, so a device description of "\\t=cmd|'/c calc'!A1" slipped
+    both this guard and openpyxl's own startswith('=') formula detection -- and on the routine
+    xlsx->CSV re-export the field lands as a leading-tab formula, which Excel / LibreOffice strip-then-
+    evaluate. Testing the first NON-BLANK char closes that bypass; it stays idempotent (a value that
+    already carries the apostrophe no longer begins with '=').
+
+    Scope note: this stays a pure XML + formula sanitizer because runbook.py reuses it to clean the
+    whole snapshot tree for the DOCX. Excel's per-cell length cap belongs to the workbook write path
+    only and lives in `_xls_cell_value`."""
     v = xml_safe(value)
-    if isinstance(v, str) and v.startswith("="):
+    if isinstance(v, str) and v.lstrip(" \t\r\n").startswith("="):
         v = "'" + v
     return v
 
 
+def _xls_cell_value(value):
+    """`_xls_sanitize` plus Excel's hard 32,767-char per-cell cap (review #87), applied at the workbook
+    WRITE chokepoints only.
+
+    openpyxl's `check_string` enforces the limit with a silent `value = value[:32767]` -- no exception
+    and no warning -- so an oversized join was amputated mid-content in a workbook that still reported
+    success. The worst instance is the remediation plan's `"\\n".join(commands)`: the actual
+    configuration an engineer is meant to review and apply. Where this module already bounds a join it
+    DISCLOSES the cut (the subnet-reachability '(+N)' pattern), so the cap does the same in-cell rather
+    than letting openpyxl truncate invisibly. Idempotent: a value that has already been capped is
+    exactly at the limit and passes through untouched."""
+    v = _xls_sanitize(value)
+    if isinstance(v, str) and len(v) > _XLSX_MAX_CELL:
+        note = _XLSX_TRUNC_NOTE.format(n=len(v), cap=_XLSX_MAX_CELL)
+        logger.warning("cell value of %d chars exceeds Excel's %d-char limit - truncated WITH a "
+                       "disclosure marker (openpyxl would have cut it silently)", len(v), _XLSX_MAX_CELL)
+        v = v[:_XLSX_MAX_CELL - len(note)] + note
+    return v
+
+
 def _harden_ws(ws):
-    """Wrap one worksheet's cell()/append() so every written string value is sanitized (no IllegalCharacterError)."""
+    """Wrap one worksheet's cell()/append() so every written string value is sanitized (no IllegalCharacterError).
+    Idempotent: a sheet already wrapped (by harden_workbook's create_sheet hook, or by an earlier _new_sheet)
+    is left alone rather than double-wrapped."""
+    if getattr(ws, "_cisco_hardened", False):
+        return
+    ws._cisco_hardened = True
     _orig_cell, _orig_append = ws.cell, ws.append
 
     def _cell(*args, **kwargs):
         if "value" in kwargs:
-            kwargs["value"] = _xls_sanitize(kwargs["value"])
+            kwargs["value"] = _xls_cell_value(kwargs["value"])
         elif len(args) >= 3:
-            args = (args[0], args[1], _xls_sanitize(args[2])) + args[3:]
+            args = (args[0], args[1], _xls_cell_value(args[2])) + args[3:]
         return _orig_cell(*args, **kwargs)
 
     def _append(iterable):
         if isinstance(iterable, (list, tuple)):
-            iterable = [_xls_sanitize(v) for v in iterable]
+            iterable = [_xls_cell_value(v) for v in iterable]
         return _orig_append(iterable)
 
     ws.cell, ws.append = _cell, _append
@@ -97,7 +139,7 @@ def _install_cell_value_guard():
     if getattr(prop, "fset", None) is None:                       # defensive: nothing to wrap
         return
     Cell.value = property(prop.fget,
-                          lambda self, v: prop.fset(self, _xls_sanitize(v)),
+                          lambda self, v: prop.fset(self, _xls_cell_value(v)),
                           getattr(prop, "fdel", None))
     _CELL_VALUE_GUARDED = True
 
@@ -121,6 +163,34 @@ def harden_workbook(wb):
 
     wb.create_sheet = _create
     return wb
+
+
+def _new_sheet(wb, name: str):
+    """The ONE way this module creates a sheet. Two structural guarantees every `write_*` needs and
+    could previously lose silently:
+
+    1. NAME COLLISION (review #86). `wb.create_sheet(NAME)` on a workbook that ALREADY has a sheet
+       called NAME does not raise or warn -- openpyxl renames the new one to 'NAME1'. The workbook is
+       built on a CUSTOMER-SUPPLIED template, so a tab the customer already named e.g. 'Executive
+       Summary' kept the canonical name while the engine's freshly computed sheet landed beside it as
+       'Executive Summary1' (and write_executive_summary_sheet then moved that one to position 0).
+       It also made every writer non-idempotent on a second invocation. ~20 writers carried a
+       hand-rolled `if NAME in wb.sheetnames: del wb[NAME]`; ~28 did not. Doing it HERE fixes the
+       whole class instead of a named subset, and cannot drift again.
+
+    2. SANITIZATION (review #63). Every `write_*` is a PUBLIC entry point taking a caller-built
+       workbook, but the control-char / formula-injection guard lived only in `harden_workbook()`,
+       which no writer called or asserted -- a caller that skipped it lost both protections with no
+       signal. Creating the sheet through here installs the Cell.value setter guard (process-wide,
+       idempotent) and wraps the new sheet's cell()/append(), so a writer is safe on its own.
+       `harden_workbook()` is still the right call for the TEMPLATE's pre-existing sheets."""
+    _install_cell_value_guard()
+    if name in wb.sheetnames:
+        del wb[name]
+    ws = wb.create_sheet(name)
+    _harden_ws(ws)
+    return ws
+
 
 _CENSUS_HDR_FILL = WORKBOOK_NAVY_HEX
 
@@ -266,8 +336,7 @@ def write_device_inventory_sheet(wb, all_device_physical: List[DevicePhysical]) 
 
     if INVENTORY_SHEET_NAME in wb.sheetnames:
         del wb[INVENTORY_SHEET_NAME]
-    ws = wb.create_sheet(INVENTORY_SHEET_NAME)
-
+    ws = _new_sheet(wb, INVENTORY_SHEET_NAME)
     HDR_FONT  = Font(name="Calibri", bold=True, color="FFFFFF", size=10)
     HDR_FILL  = PatternFill("solid", fgColor=WORKBOOK_NAVY_HEX)
     HDR_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -336,8 +405,7 @@ def write_svi_gateway_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceDat
 
     if SVI_SHEET_NAME in wb.sheetnames:
         del wb[SVI_SHEET_NAME]
-    ws = wb.create_sheet(SVI_SHEET_NAME)
-
+    ws = _new_sheet(wb, SVI_SHEET_NAME)
     HDR_FONT  = Font(name="Calibri", bold=True, color="FFFFFF", size=10)
     HDR_FILL  = PatternFill("solid", fgColor=WORKBOOK_NAVY_HEX)
     HDR_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -401,8 +469,7 @@ def write_stp_detail_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData
 
     if STP_SHEET_NAME in wb.sheetnames:
         del wb[STP_SHEET_NAME]
-    ws = wb.create_sheet(STP_SHEET_NAME)
-
+    ws = _new_sheet(wb, STP_SHEET_NAME)
     HDR_FONT  = Font(name="Calibri", bold=True, color="FFFFFF", size=10)
     HDR_FILL  = PatternFill("solid", fgColor=WORKBOOK_NAVY_HEX)
     HDR_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -470,7 +537,7 @@ def write_vlan_census_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceDat
             "Gateway Switch(es)", "Gateway IP", "Subnet", "FHRP"]
     if VLAN_CENSUS_SHEET_NAME in wb.sheetnames:
         del wb[VLAN_CENSUS_SHEET_NAME]
-    ws = wb.create_sheet(VLAN_CENSUS_SHEET_NAME)
+    ws = _new_sheet(wb, VLAN_CENSUS_SHEET_NAME)
     _census_header(ws, cols)
 
     agg: Dict[int, Dict[str, object]] = {}
@@ -515,7 +582,7 @@ def write_endpoint_census_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfac
             "Endpoint Type", "Location", "CDP/LLDP Neighbor"]
     if ENDPOINT_CENSUS_SHEET_NAME in wb.sheetnames:
         del wb[ENDPOINT_CENSUS_SHEET_NAME]
-    ws = wb.create_sheet(ENDPOINT_CENSUS_SHEET_NAME)
+    ws = _new_sheet(wb, ENDPOINT_CENSUS_SHEET_NAME)
     _census_header(ws, cols)
 
     rows: List[Tuple[str, InterfaceData]] = []
@@ -570,7 +637,7 @@ def write_move_group_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData
             "# Endpoint MACs (per-switch sum)", "Gateways", "Redundant (STP-blocked) Paths", "Notes"]
     if MOVEGROUP_SHEET_NAME in wb.sheetnames:
         del wb[MOVEGROUP_SHEET_NAME]
-    ws = wb.create_sheet(MOVEGROUP_SHEET_NAME)
+    ws = _new_sheet(wb, MOVEGROUP_SHEET_NAME)
     _census_header(ws, cols)
 
     groups = compute_move_groups(all_interfaces)
@@ -612,7 +679,7 @@ def write_topology_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]
             "Link Speed", "Confirmation"]
     if TOPOLOGY_SHEET_NAME in wb.sheetnames:
         del wb[TOPOLOGY_SHEET_NAME]
-    ws = wb.create_sheet(TOPOLOGY_SHEET_NAME)
+    ws = _new_sheet(wb, TOPOLOGY_SHEET_NAME)
     _census_header(ws, cols)
 
     DAT_FONT = Font(name="Calibri", size=10)
@@ -637,7 +704,7 @@ def write_findings_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]
     cols = ["Severity", "Category", "Scope", "Finding"]
     if FINDINGS_SHEET_NAME in wb.sheetnames:
         del wb[FINDINGS_SHEET_NAME]
-    ws = wb.create_sheet(FINDINGS_SHEET_NAME)
+    ws = _new_sheet(wb, FINDINGS_SHEET_NAME)
     _census_header(ws, cols)
     findings = compute_findings(all_interfaces)
     DAT_FONT = Font(name="Calibri", size=10)
@@ -668,10 +735,18 @@ def compute_capacity(all_device_physical: List[DevicePhysical]) -> List[dict]:
     'Capacity' sheet AND the explorer's capacity card). One record per device, sorted by hostname:
     {hostname, model, total_ports, active_ports, free_ports, port_util, poe_capacity_w, poe_drawn_w,
      poe_remaining_w, poe_util, flags}. Numeric fields are "" when unknown (so the sheet renders blanks
-     exactly as before); flags is a list of "Port-bound (>=90%)" / "PoE-bound (>=80%)"."""
+     exactly as before); flags is a list of "Port-bound (>=90%)" / "PoE-bound (>=80%)".
+
+    For active_ports, "" means NOT OBSERVED and only that (review #55). An OBSERVED zero is a fact and
+    renders as 0: the old `active or ""` collapsed it into the same blank the docstring reserves for
+    unknown, while still emitting a computed 0.0% utilisation and free_ports == total_ports for that
+    same row -- two contradictory coverage claims in one row of the sheet consolidation decisions are
+    made on. The None-vs-0 distinction the line below draws is now kept all the way to the record.
+    (total_ports is NOT the same case and is left alone: model.DevicePhysical declares it `int = 0`
+    with no None state, so 0 there IS the not-observed marker, not an observed zero.)"""
     out: List[dict] = []
     for dp in sorted(all_device_physical, key=lambda d: d.hostname.lower()):
-        total = dp.total_ports or 0
+        total = dp.total_ports or 0                           # 0 = no port inventory parsed (the field has no None)
         active = dp.active_ports                              # None = active-port count NOT observed (distinct from 0)
         # honesty: a device whose active-port count was not observed must NOT read 0% utilization — it would
         # then rank first as "most consolidation headroom". Leave util/free blank when active_ports is unknown.
@@ -689,7 +764,8 @@ def compute_capacity(all_device_physical: List[DevicePhysical]) -> List[dict]:
         if putil != "" and putil >= 85: flags.append("Port-bound (>=85%)")   # match design_advisor._PORT_UTIL_HOT=85 so workbook + design narrative agree (DET-capacity-04)
         if poe_util != "" and poe_util >= 80: flags.append("PoE-bound (>=80%)")
         out.append({"hostname": dp.hostname, "model": dp.model,
-                    "total_ports": total or "", "active_ports": active or "", "free_ports": free,
+                    "total_ports": total or "",
+                    "active_ports": "" if active is None else active, "free_ports": free,
                     "port_util": putil, "poe_capacity_w": dp.power_capacity_w,
                     "poe_drawn_w": dp.power_drawn_w, "poe_remaining_w": rem,
                     "poe_util": poe_util, "flags": flags})
@@ -705,7 +781,7 @@ def write_capacity_sheet(wb, all_device_physical: List[DevicePhysical]) -> None:
             "PoE Util %", "Flag"]
     if CAPACITY_SHEET_NAME in wb.sheetnames:
         del wb[CAPACITY_SHEET_NAME]
-    ws = wb.create_sheet(CAPACITY_SHEET_NAME)
+    ws = _new_sheet(wb, CAPACITY_SHEET_NAME)
     _census_header(ws, cols)
     DAT_FONT = Font(name="Calibri", size=10)
     DAT_L = Alignment(horizontal="left", vertical="center")
@@ -737,7 +813,7 @@ def write_endpoint_intelligence_sheet(wb, identity: list) -> None:
             "Class (inferred)", "Confidence", "Evidence"]
     if ENDPOINT_INTEL_SHEET_NAME in wb.sheetnames:
         del wb[ENDPOINT_INTEL_SHEET_NAME]
-    ws = wb.create_sheet(ENDPOINT_INTEL_SHEET_NAME)
+    ws = _new_sheet(wb, ENDPOINT_INTEL_SHEET_NAME)
     _census_header(ws, cols)
     DAT_FONT = Font(name="Calibri", size=10)
     DAT_L = Alignment(horizontal="left", vertical="center")
@@ -769,7 +845,7 @@ def write_endpoint_dependencies_sheet(wb, dependencies: dict) -> None:
     renders the precomputed compute_endpoint_dependencies dict (one source of truth)."""
     if ENDPOINT_DEPS_SHEET_NAME in wb.sheetnames:
         del wb[ENDPOINT_DEPS_SHEET_NAME]
-    ws = wb.create_sheet(ENDPOINT_DEPS_SHEET_NAME)
+    ws = _new_sheet(wb, ENDPOINT_DEPS_SHEET_NAME)
     cols = ["Section", "Vendor / detail", "Class", "Endpoints", "Switches", "VLANs", "Note"]
     _census_header(ws, cols)
     DAT = Font(name="Calibri", size=10)
@@ -819,7 +895,7 @@ def write_subnet_reachability_sheet(wb, subnet_intelligence: dict) -> None:
     BGP-received is populated only when the new 'show ip bgp' collection is present."""
     if SUBNET_REACH_SHEET_NAME in wb.sheetnames:
         del wb[SUBNET_REACH_SHEET_NAME]
-    ws = wb.create_sheet(SUBNET_REACH_SHEET_NAME)
+    ws = _new_sheet(wb, SUBNET_REACH_SHEET_NAME)
     cols = ["Switch", "Role", "Destination subnets (terminates)", "# Dest", "Reachable (#)",
             "Reachable sources", "Default next-hop", "L2: subnets via gateway", "BGP recv (#)"]
     _census_header(ws, cols)
@@ -853,7 +929,7 @@ def write_migration_scenarios_sheet(wb, scenarios: dict) -> None:
     fleet-level recommendation in row 1. NEW-V3.23.98: renders compute_migration_scenarios."""
     if MIGRATION_SCENARIO_SHEET_NAME in wb.sheetnames:
         del wb[MIGRATION_SCENARIO_SHEET_NAME]
-    ws = wb.create_sheet(MIGRATION_SCENARIO_SHEET_NAME)
+    ws = _new_sheet(wb, MIGRATION_SCENARIO_SHEET_NAME)
     sc = scenarios or {}
     fleet = sc.get("fleet_recommendation", "")
     if fleet:
@@ -896,7 +972,7 @@ def write_application_intelligence_sheet(wb, ai: dict) -> None:
     cross-domain (IGMP querier continuity / RFC 4541) risk block. NEW-V3.23.112."""
     if APPLICATION_INTEL_SHEET_NAME in wb.sheetnames:
         del wb[APPLICATION_INTEL_SHEET_NAME]
-    ws = wb.create_sheet(APPLICATION_INTEL_SHEET_NAME)
+    ws = _new_sheet(wb, APPLICATION_INTEL_SHEET_NAME)
     a = ai or {}
     s = a.get("summary") or {}
     summ = (f"{s.get('n_domains', 0)} domain(s)  ·  {s.get('n_on_air_critical', 0)} on-air-critical  ·  "
@@ -1017,6 +1093,37 @@ def _mermaid_id(name: str, idmap: Dict[str, str]) -> str:
         idmap[name] = f"n{len(idmap)}"
     return idmap[name]
 
+
+#: Whitespace that must never survive into a one-line diagram statement: a raw newline in a
+#: device-advertised name INJECTS statements into both the .mmd and the .dot.
+_DIAG_WS_RE = re.compile(r"[\r\n\t\v\f]+")
+
+
+def _mermaid_text(value) -> str:
+    """Escape a device-advertised string for a Mermaid QUOTED label (review #64).
+
+    `analyze.compute_topology_links` keeps the RAW advertised CDP/LLDP name for any off-scan
+    neighbour, so a_host / b_host / b_port are fully DEVICE-CONTROLLED, and these files are written
+    with a plain `open()/write()` -- neither `_xls_sanitize` nor `xml_safe` runs on them. A double
+    quote closes the label early, `[`/`]` close the node-shape bracket, `|` closes an edge label, and
+    a newline injects whole statements -- all while the writer logs `[OK]`. Mermaid's escape for these
+    is the HTML-style numeric entity, which renders as the original character."""
+    s = _DIAG_WS_RE.sub(" ", str("" if value is None else value))
+    # ';' (Mermaid's statement separator) is escaped FIRST — every entity below ENDS in ';', so doing it
+    # last would re-escape the ones just inserted ('#quot;' -> '#quot#59;').
+    for ch, ent in ((";", "#59;"), ('"', "#quot;"), ("[", "#91;"), ("]", "#93;"),
+                    ("{", "#123;"), ("}", "#125;"), ("|", "#124;")):
+        s = s.replace(ch, ent)
+    return s
+
+
+def _dot_text(value) -> str:
+    """Escape a device-advertised string for a Graphviz DOUBLE-QUOTED string (review #64). Same
+    untrusted source as _mermaid_text; DOT's escape is the backslash (escape the backslash FIRST, or
+    a trailing one would escape the closing quote)."""
+    s = _DIAG_WS_RE.sub(" ", str("" if value is None else value))
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
 def write_topology_diagram(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                            out_dir: str, basename: str = "topology") -> List[str]:
     """Emit the inter-switch link map as Mermaid (.mmd) and Graphviz (.dot) files.
@@ -1030,10 +1137,10 @@ def write_topology_diagram(all_interfaces: Dict[str, Dict[str, InterfaceData]],
     idmap: Dict[str, str] = {}
     mm = ["graph LR"]
     for n in sorted(nodes):
-        mm.append(f'    {_mermaid_id(n, idmap)}["{n}"]')
+        mm.append(f'    {_mermaid_id(n, idmap)}["{_mermaid_text(n)}"]')
     for L in links:
         a, b = _mermaid_id(str(L["a_host"]), idmap), _mermaid_id(str(L["b_host"]), idmap)
-        lbl = f'{L["a_port"]} - {L.get("b_port") or "?"}'
+        lbl = f'{_mermaid_text(L["a_port"])} - {_mermaid_text(L.get("b_port") or "?")}'
         edge = "-.-" if str(L["confirmation"]).startswith("One end") else "---"
         mm.append(f'    {a} {edge}|"{lbl}"| {b}')
     mm_path = os.path.join(out_dir, basename + ".mmd")
@@ -1043,8 +1150,8 @@ def write_topology_diagram(all_interfaces: Dict[str, Dict[str, InterfaceData]],
     dot = ["graph topology {", "    rankdir=LR;", "    node [shape=box, fontsize=10];"]
     for L in links:
         style = ' style="dashed"' if str(L["confirmation"]).startswith("One end") else ""
-        lbl = f'{L["a_port"]}\\n{L.get("b_port") or "?"}'
-        dot.append(f'    "{L["a_host"]}" -- "{L["b_host"]}" [label="{lbl}"{style}];')
+        lbl = f'{_dot_text(L["a_port"])}\\n{_dot_text(L.get("b_port") or "?")}'
+        dot.append(f'    "{_dot_text(L["a_host"])}" -- "{_dot_text(L["b_host"])}" [label="{lbl}"{style}];')
     dot.append("}")
     dot_path = os.path.join(out_dir, basename + ".dot")
     with open(dot_path, "w", encoding="utf-8") as f:
@@ -1069,7 +1176,7 @@ _CL_FILL = {"Critical": "FF5775", "High": "F4CCCC", "Medium": "FCE5CD", "Low": "
 def write_cross_layer_sheet(wb, findings: List[dict]) -> None:
     """Write the 'Cross-Layer Analysis' sheet from compute_cross_layer_correlations()."""
 
-    ws = wb.create_sheet(CROSS_LAYER_SHEET_NAME)
+    ws = _new_sheet(wb, CROSS_LAYER_SHEET_NAME)
     headers = ["CL", "Severity", "Layers", "Finding", "Detail", "Recommendation"]
     for col, h in enumerate(headers, 1):
         c = ws.cell(1, col, h)
@@ -1096,7 +1203,7 @@ PROTOCOL_HEALTH_SHEET_NAME = "Protocol Health"
 def write_protocol_health_sheet(wb, records: List[dict]) -> None:
     """Write the 'Protocol Health' sheet from compute_protocol_health()."""
 
-    ws = wb.create_sheet(PROTOCOL_HEALTH_SHEET_NAME)
+    ws = _new_sheet(wb, PROTOCOL_HEALTH_SHEET_NAME)
     headers = ["Switch", "Protocol", "Summary", "Detail", "Health"]
     for col, h in enumerate(headers, 1):
         c = ws.cell(1, col, h)
@@ -1125,7 +1232,7 @@ def write_protocol_intelligence_sheet(wb, records: List[dict]) -> None:
     """Write the 'Protocol Intelligence' sheet from compute_protocol_intelligence(): each abnormal
     protocol state turned into meaning + likely cause + remediation (the observed state is a fact;
     the cause is Inferred per Cisco doctrine)."""
-    ws = wb.create_sheet(PROTOCOL_INTELLIGENCE_SHEET_NAME)
+    ws = _new_sheet(wb, PROTOCOL_INTELLIGENCE_SHEET_NAME)
     headers = ["Switch", "Protocol", "State", "Severity", "Meaning",
                "Likely cause (Inferred)", "Remediation"]
     for col, h in enumerate(headers, 1):
@@ -1156,7 +1263,7 @@ SERVICE_MAP_SHEET_NAME = "Service Map"   # NEW-V3.23.101
 def write_service_map_sheet(wb, sm: dict) -> None:
     """Write the 'Service Map' sheet from compute_service_map(): L4 services referenced in ACLs
     (design intent -- Inferred, not active traffic) + fleet multicast activity."""
-    ws = wb.create_sheet(SERVICE_MAP_SHEET_NAME)
+    ws = _new_sheet(wb, SERVICE_MAP_SHEET_NAME)
     headers = ["Port", "Proto", "Service", "Category", "Broadcast/AV", "ACL refs", "Switches", "Evidence"]
     for col, h in enumerate(headers, 1):
         c = ws.cell(1, col, h)
@@ -1198,7 +1305,7 @@ def write_multicast_intelligence_sheet(wb, mi: dict) -> None:
     IGMP querier coverage, the PTP timing tree (ST 2059), and the per-group media census (with L2 MAC)."""
     if MULTICAST_INTEL_SHEET_NAME in wb.sheetnames:
         del wb[MULTICAST_INTEL_SHEET_NAME]
-    ws = wb.create_sheet(MULTICAST_INTEL_SHEET_NAME)
+    ws = _new_sheet(wb, MULTICAST_INTEL_SHEET_NAME)
     m = mi or {}
     s = m.get("summary") or {}
     HDR = Font(bold=True, color="FFFFFF", size=10); HFILL = PatternFill("solid", fgColor="434343")
@@ -1290,7 +1397,7 @@ def write_coverage_schema_sheet(wb, census: dict) -> None:
     blind spot (the real cause of a 'filler'-feeling output is an uncollected tier, not a code
     bug)."""
     c = census if isinstance(census, dict) else {}
-    ws = wb.create_sheet(COVERAGE_SCHEMA_SHEET_NAME)
+    ws = _new_sheet(wb, COVERAGE_SCHEMA_SHEET_NAME)
     summ = c.get("summary") or {}
     # Row 1: a STATIC coverage-honesty caveat. The live roll-up counts deliberately do NOT live here —
     # a header cell that carries data-dependent counts would churn the frozen sheet-schema golden on
@@ -1346,7 +1453,7 @@ def write_collection_completeness_sheet(wb, cc: dict, parse_yield: Optional[dict
     real content but whose parser produced 0 entities (collected-but-unparsed evidence; a
     possible platform-variant format gap, NEVER a device verdict). Appended BELOW the existing
     layout so the frozen sheet-schema header row is untouched."""
-    ws = wb.create_sheet(COLLECTION_COMPLETENESS_SHEET_NAME)
+    ws = _new_sheet(wb, COLLECTION_COMPLETENESS_SHEET_NAME)
     s = (cc or {}).get("summary") or {}
     ws.cell(1, 1, "Inventory").font = Font(bold=True)
     ws.cell(1, 2, s.get("inventory", 0))
@@ -1431,7 +1538,7 @@ _READY_FILL = {"READY": "36E08A", "CAUTION": "FFE566", "NOT READY": "FF5775"}
 _STATUS_FILL = {"pass": "36E08A", "warn": "FFE566", "fail": "FF5775"}
 
 def write_health_scores_sheet(wb, records: List[dict]) -> None:
-    ws = wb.create_sheet(HEALTH_SCORES_SHEET_NAME)
+    ws = _new_sheet(wb, HEALTH_SCORES_SHEET_NAME)
     headers = ["Switch", "Score", "Band", "Criticality", "Data Quality", "Top Deductions"]
     for col, h in enumerate(headers, 1):
         c = ws.cell(1, col, h)
@@ -1477,7 +1584,7 @@ def write_health_scores_sheet(wb, records: List[dict]) -> None:
 
 def write_score_sensitivity_sheet(wb, records: List[dict]) -> None:
     """Write the 'Score Sensitivity' sheet from compute_score_sensitivity()."""
-    ws = wb.create_sheet(SCORE_SENSITIVITY_SHEET_NAME)
+    ws = _new_sheet(wb, SCORE_SENSITIVITY_SHEET_NAME)
     headers = ["Perturbation", "Switches Changing Band", "Detail"]
     for col, h in enumerate(headers, 1):
         c = ws.cell(1, col, h)
@@ -1503,7 +1610,7 @@ def write_calibration_sheet(wb, report: dict) -> None:
     """Write the 'Score Calibration' sheet from compute_calibration_report() -- a
     fleet-level key/value diagnostic (band distribution, score spread, discrimination,
     and a quantile re-banding suggestion when the bands don't discriminate)."""
-    ws = wb.create_sheet(SCORE_CALIBRATION_SHEET_NAME)
+    ws = _new_sheet(wb, SCORE_CALIBRATION_SHEET_NAME)
     for col, h in enumerate(["Metric", "Value"], 1):
         c = ws.cell(1, col, h)
         c.font = Font(bold=True, color="FFFFFF")
@@ -1542,7 +1649,7 @@ NAT_INVENTORY_SHEET_NAME = "NAT Inventory"   # NEW-V3.23.50
 def write_nat_sheet(wb, all_nat: dict) -> None:
     """Write the 'NAT Inventory' sheet from {host: parse_nat()} -- every static / dynamic NAT rule,
     pool, and inside/outside interface role, so the migration can recreate them on the new platform."""
-    ws = wb.create_sheet(NAT_INVENTORY_SHEET_NAME)
+    ws = _new_sheet(wb, NAT_INVENTORY_SHEET_NAME)
     for col, h in enumerate(["Switch", "Type", "Detail"], 1):
         c = ws.cell(1, col, h); c.font = Font(bold=True, color="FFFFFF")
         c.fill = PatternFill("solid", fgColor="434343"); c.alignment = Alignment(horizontal="center")
@@ -1578,7 +1685,7 @@ def write_security_sheet(wb, all_security: dict) -> None:
     """Write the 'Config Compliance' sheet from {host: parse_security()} -- one row per CIS-aligned
     config-hardening check (pass / fail / na) with severity + remediation, so the migration can
     remediate (or consciously carry) config technical debt. Secret values were redacted by the parser."""
-    ws = wb.create_sheet(CONFIG_COMPLIANCE_SHEET_NAME)
+    ws = _new_sheet(wb, CONFIG_COMPLIANCE_SHEET_NAME)
     for col, h in enumerate(["Switch", "Severity", "Status", "Check", "Finding", "CIS / Remediation"], 1):
         c = ws.cell(1, col, h); c.font = Font(bold=True, color="FFFFFF")
         c.fill = PatternFill("solid", fgColor="434343"); c.alignment = Alignment(horizontal="center")
@@ -1617,7 +1724,7 @@ def write_detector_schema_sheet(wb, detector_schema: dict) -> None:
     makes 'not-observed != healthy' a first-class property (never empty for an evidence-gated detector)."""
     ds = detector_schema if isinstance(detector_schema, dict) else {}
     detectors = ds.get("detectors") or []
-    ws = wb.create_sheet(DETECTOR_SCHEMA_SHEET_NAME)
+    ws = _new_sheet(wb, DETECTOR_SCHEMA_SHEET_NAME)
     # Row 1: disclose that this DESCRIBES detection (never re-runs it) up top, so the sheet cannot be
     # misread as a per-device result table.
     note = (ds.get("summary") or {}).get("note") or \
@@ -1661,7 +1768,7 @@ def write_framework_coverage_sheet(wb, framework_coverage: dict) -> None:
     A 'proof of compliance' matrix over existing checks -- NOT a full framework audit."""
     fc = framework_coverage if isinstance(framework_coverage, dict) else {}
     frameworks = fc.get("frameworks") or {}
-    ws = wb.create_sheet(FRAMEWORK_COVERAGE_SHEET_NAME)
+    ws = _new_sheet(wb, FRAMEWORK_COVERAGE_SHEET_NAME)
     # Row 1: the coverage-honesty caveat, disclosed up top so a reader sees the scope before any pass/fail.
     note = fc.get("note") or "Config-evidenced mapping — NOT a full framework audit."
     scope = fc.get("scope") or ""
@@ -1713,7 +1820,7 @@ def write_config_hygiene_sheet(wb, all_hygiene: dict) -> None:
     (a referenced-but-undefined ACL/route-map/object-group/prefix-list silently does nothing: a real
     migration-breaker) and unused structures (defined-but-never-referenced cruft), so each can be fixed
     or dropped before cutover."""
-    ws = wb.create_sheet(CONFIG_HYGIENE_SHEET_NAME)
+    ws = _new_sheet(wb, CONFIG_HYGIENE_SHEET_NAME)
     for col, h in enumerate(["Switch", "Issue", "Kind", "Name", "Where / note"], 1):
         c = ws.cell(1, col, h); c.font = Font(bold=True, color="FFFFFF")
         c.fill = PatternFill("solid", fgColor="434343"); c.alignment = Alignment(horizontal="center")
@@ -1754,7 +1861,7 @@ def write_stp_roots_sheet(wb, all_stp_roots: dict, all_interfaces: dict) -> None
     f = stp_root_findings(all_stp_roots, all_interfaces)
     acc = {(x["vlan"], x["host"]) for x in f["accidental"]}
     mis = {x["vlan"]: x["gateways"] for x in f["misaligned"]}
-    ws = wb.create_sheet(STP_ROOTS_SHEET_NAME)
+    ws = _new_sheet(wb, STP_ROOTS_SHEET_NAME)
     for col, h in enumerate(["VLAN", "Root switch", "Root priority", "Accidental root?",
                              "VLAN gateway(s)", "Aligned?"], 1):
         c = ws.cell(1, col, h); c.font = Font(bold=True, color="FFFFFF")
@@ -1793,7 +1900,7 @@ def write_punchlist_sheet(wb, punchlist: list) -> None:
     per-wave roll-up of every actionable finding (cross-layer SPOFs, security, config hygiene,
     L1/L3, protocol, STP, device health) with remediation -- the executive 'fix-this-first, in
     this order' one-pager. Rows are colour-banded by severity (Critical -> Low)."""
-    ws = wb.create_sheet(PUNCHLIST_SHEET_NAME)
+    ws = _new_sheet(wb, PUNCHLIST_SHEET_NAME)
     headers = ["#", "Severity", "Category", "Device(s)", "Wave", "Issue", "Detail", "Remediation"]
     for col, h in enumerate(headers, 1):
         c = ws.cell(1, col, h); c.font = Font(bold=True, color="FFFFFF")
@@ -1827,7 +1934,7 @@ def write_remediation_plan_sheet(wb, rp: dict) -> None:
     snippets generated FOR REVIEW from the structured findings. Row 1 carries the review banner."""
     if REMEDIATION_PLAN_SHEET_NAME in wb.sheetnames:
         del wb[REMEDIATION_PLAN_SHEET_NAME]
-    ws = wb.create_sheet(REMEDIATION_PLAN_SHEET_NAME)
+    ws = _new_sheet(wb, REMEDIATION_PLAN_SHEET_NAME)
     p = rp or {}
     items = p.get("items") or []
     s = p.get("summary") or {}
@@ -1872,7 +1979,7 @@ def write_validation_plan_sheet(wb, vp: dict) -> None:
     carries the how-to-use banner."""
     if VALIDATION_PLAN_SHEET_NAME in wb.sheetnames:
         del wb[VALIDATION_PLAN_SHEET_NAME]
-    ws = wb.create_sheet(VALIDATION_PLAN_SHEET_NAME)
+    ws = _new_sheet(wb, VALIDATION_PLAN_SHEET_NAME)
     p = vp or {}
     items = p.get("items") or []
     s = p.get("summary") or {}
@@ -1923,7 +2030,7 @@ def write_nrfu_commands_sheet(wb, nc: dict) -> None:
     sheet's layout (that sheet is the post-cutover spot-check list; this is the certification pack)."""
     if NRFU_COMMANDS_SHEET_NAME in wb.sheetnames:
         del wb[NRFU_COMMANDS_SHEET_NAME]
-    ws = wb.create_sheet(NRFU_COMMANDS_SHEET_NAME)
+    ws = _new_sheet(wb, NRFU_COMMANDS_SHEET_NAME)
     p = nc or {}
     s = p.get("summary") or {}
     b = ws.cell(1, 1, "✓ " + (p.get("banner") or "Four-phase NRFU certification pack: confirm each "
@@ -1980,7 +2087,7 @@ def write_golden_drift_sheet(wb, gd: dict) -> None:
     directives. Row 1 states which baseline was used."""
     if GOLDEN_DRIFT_SHEET_NAME in wb.sheetnames:
         del wb[GOLDEN_DRIFT_SHEET_NAME]
-    ws = wb.create_sheet(GOLDEN_DRIFT_SHEET_NAME)
+    ws = _new_sheet(wb, GOLDEN_DRIFT_SHEET_NAME)
     p = gd or {}
     pdev = p.get("per_device") or []
     s = p.get("summary") or {}
@@ -2029,7 +2136,7 @@ def write_feature_compliance_sheet(wb, fc: dict) -> None:
     a feature with no baseline directives is simply absent (never a fabricated 'compliant')."""
     if FEATURE_COMPLIANCE_SHEET_NAME in wb.sheetnames:
         del wb[FEATURE_COMPLIANCE_SHEET_NAME]
-    ws = wb.create_sheet(FEATURE_COMPLIANCE_SHEET_NAME)
+    ws = _new_sheet(wb, FEATURE_COMPLIANCE_SHEET_NAME)
     p = fc or {}
     feats = p.get("features") or []
     s = p.get("summary") or {}
@@ -2070,7 +2177,7 @@ def write_acl_shadow_sheet(wb, alr: dict) -> None:
     the dangerous case). Coverage-honest: INDETERMINATE (unevaluable) lines are listed, never called dead."""
     if ACL_SHADOW_SHEET_NAME in wb.sheetnames:
         del wb[ACL_SHADOW_SHEET_NAME]
-    ws = wb.create_sheet(ACL_SHADOW_SHEET_NAME)
+    ws = _new_sheet(wb, ACL_SHADOW_SHEET_NAME)
     p = alr or {}
     rows = p.get("findings") or []
     s = p.get("summary") or {}
@@ -2117,7 +2224,7 @@ def write_external_reconcile_sheet(wb, recon: dict) -> None:
     confirmed match or miss). A fully-reconciling device emits no row."""
     if EXTERNAL_RECONCILE_SHEET_NAME in wb.sheetnames:
         del wb[EXTERNAL_RECONCILE_SHEET_NAME]
-    ws = wb.create_sheet(EXTERNAL_RECONCILE_SHEET_NAME)
+    ws = _new_sheet(wb, EXTERNAL_RECONCILE_SHEET_NAME)
     p = recon or {}
     rows = p.get("rows") or []
     s = p.get("summary") or {}
@@ -2162,7 +2269,7 @@ def write_capture_integrity_sheet(wb, ci: dict) -> None:
     A clean capture emits no row."""
     if CAPTURE_INTEGRITY_SHEET_NAME in wb.sheetnames:
         del wb[CAPTURE_INTEGRITY_SHEET_NAME]
-    ws = wb.create_sheet(CAPTURE_INTEGRITY_SHEET_NAME)
+    ws = _new_sheet(wb, CAPTURE_INTEGRITY_SHEET_NAME)
     p = ci or {}
     rows = p.get("findings") or []
     s = p.get("summary") or {}
@@ -2207,7 +2314,7 @@ def write_attestation_sheet(wb, attestation: dict) -> None:
     absence of evidence is never rendered as a pass."""
     if ATTESTATION_SHEET_NAME in wb.sheetnames:
         del wb[ATTESTATION_SHEET_NAME]
-    ws = wb.create_sheet(ATTESTATION_SHEET_NAME)
+    ws = _new_sheet(wb, ATTESTATION_SHEET_NAME)
     p = attestation if isinstance(attestation, dict) else {}
     claims = p.get("claims") or []
     n_holds = sum(1 for c in claims if c.get("result") == "HOLDS")
@@ -2255,7 +2362,7 @@ def write_whatif_sheet(wb, scenarios: list) -> None:
     blocked (definitive) vs lost_path (was reached, now unprovable, coverage-honest) vs preserved."""
     if WHATIF_SHEET_NAME in wb.sheetnames:
         del wb[WHATIF_SHEET_NAME]
-    ws = wb.create_sheet(WHATIF_SHEET_NAME)
+    ws = _new_sheet(wb, WHATIF_SHEET_NAME)
     rows = scenarios or []
     b = ws.cell(1, 1, "Failure-injection what-if — remove a node/site in memory and re-run the FIB. 'lost path' "
                       "= a flow that was reached and is now unprovable (never fabricated as a definite block).")
@@ -2295,7 +2402,7 @@ def write_path_intents_sheet(wb, pa: dict) -> None:
     verdict (pass / fail / not_observed). Coverage-honest: a lower-bound trace abstains, never a fake verdict."""
     if PATH_INTENTS_SHEET_NAME in wb.sheetnames:
         del wb[PATH_INTENTS_SHEET_NAME]
-    ws = wb.create_sheet(PATH_INTENTS_SHEET_NAME)
+    ws = _new_sheet(wb, PATH_INTENTS_SHEET_NAME)
     p = pa or {}
     rows = p.get("results") or []
     s = p.get("summary") or {}
@@ -2342,7 +2449,7 @@ def write_syslog_intelligence_sheet(wb, si: dict) -> None:
     'show logging' was not collected are declared, never scored."""
     if SYSLOG_SHEET_NAME in wb.sheetnames:
         del wb[SYSLOG_SHEET_NAME]
-    ws = wb.create_sheet(SYSLOG_SHEET_NAME)
+    ws = _new_sheet(wb, SYSLOG_SHEET_NAME)
     p = si or {}
     dets = p.get("detections") or []
     pdev = p.get("per_device") or []
@@ -2424,7 +2531,7 @@ def write_qos_audit_sheet(wb, qa: dict) -> None:
     capture are declared not assessable, never scored."""
     if QOS_AUDIT_SHEET_NAME in wb.sheetnames:
         del wb[QOS_AUDIT_SHEET_NAME]
-    ws = wb.create_sheet(QOS_AUDIT_SHEET_NAME)
+    ws = _new_sheet(wb, QOS_AUDIT_SHEET_NAME)
     p = qa or {}
     finds = p.get("findings") or []
     pdev = p.get("per_device") or []
@@ -2503,7 +2610,7 @@ def write_software_risk_sheet(wb, sr: dict) -> None:
     lifecycle bands. Screening, not a vulnerability scan -- the banner says so."""
     if SOFTWARE_RISK_SHEET_NAME in wb.sheetnames:
         del wb[SOFTWARE_RISK_SHEET_NAME]
-    ws = wb.create_sheet(SOFTWARE_RISK_SHEET_NAME)
+    ws = _new_sheet(wb, SOFTWARE_RISK_SHEET_NAME)
     p = sr or {}
     finds = p.get("findings") or []
     pdev = p.get("per_device") or []
@@ -2589,7 +2696,7 @@ def write_platform_health_sheet(wb, ph: dict) -> None:
     states the single-sample honesty rule; not-collected devices are declared."""
     if PLATFORM_HEALTH_SHEET_NAME in wb.sheetnames:
         del wb[PLATFORM_HEALTH_SHEET_NAME]
-    ws = wb.create_sheet(PLATFORM_HEALTH_SHEET_NAME)
+    ws = _new_sheet(wb, PLATFORM_HEALTH_SHEET_NAME)
     p = ph or {}
     finds = p.get("findings") or []
     pdev = p.get("per_device") or []
@@ -2671,7 +2778,7 @@ def write_device_risk_sheet(wb, dd: dict) -> None:
     (riskiest first) -- the sheet preserves that order so row 5 IS the scariest box."""
     if DEVICE_RISK_SHEET_NAME in wb.sheetnames:
         del wb[DEVICE_RISK_SHEET_NAME]
-    ws = wb.create_sheet(DEVICE_RISK_SHEET_NAME)
+    ws = _new_sheet(wb, DEVICE_RISK_SHEET_NAME)
     d0 = dd or {}
     pdev = d0.get("per_device") or []
     s = d0.get("summary") or {}
@@ -2757,7 +2864,7 @@ def write_lifecycle_risk_sheet(wb, lr: dict) -> None:
     a platform rollup. Row 1 is a static (date-free) title so the golden sheet schema stays stable."""
     if LIFECYCLE_RISK_SHEET_NAME in wb.sheetnames:
         del wb[LIFECYCLE_RISK_SHEET_NAME]
-    ws = wb.create_sheet(LIFECYCLE_RISK_SHEET_NAME)
+    ws = _new_sheet(wb, LIFECYCLE_RISK_SHEET_NAME)
     L = lr or {}
     s = L.get("summary") or {}
     ws.cell(1, 1, "Hardware lifecycle (EoL / End-of-Support) — replacement urgency").font = Font(bold=True, size=11)
@@ -2820,7 +2927,7 @@ def write_architecture_review_sheet(wb, ar: dict) -> None:
     Row 1 is a static (date-free) title so the golden sheet schema stays stable."""
     if ARCHREVIEW_SHEET_NAME in wb.sheetnames:
         del wb[ARCHREVIEW_SHEET_NAME]
-    ws = wb.create_sheet(ARCHREVIEW_SHEET_NAME)
+    ws = _new_sheet(wb, ARCHREVIEW_SHEET_NAME)
     A = ar or {}
     # A CRASHED/absent review (the assembly's _unavailable sentinel, or a bare {} with no summary) must NOT
     # render as a clean 'grade N/A · 0 conform · 0 not assessable' scorecard -- that reads as 'reviewed, all
@@ -2914,7 +3021,7 @@ def write_segmentation_sheet(wb, seg: dict) -> None:
     isolation, and the findings. Row 1 is a static title."""
     if SEGMENTATION_SHEET_NAME in wb.sheetnames:
         del wb[SEGMENTATION_SHEET_NAME]
-    ws = wb.create_sheet(SEGMENTATION_SHEET_NAME)
+    ws = _new_sheet(wb, SEGMENTATION_SHEET_NAME)
     g = seg or {}
     s = g.get("summary") or {}
     ga = g.get("gateway_acl") or {}
@@ -2984,7 +3091,7 @@ def write_protocol_boundaries_sheet(wb, all_routing_neighbors: dict, all_redistr
     """Write the 'Protocol Boundaries' sheet: per device, the routing protocols it runs, its redistribution
     edges (from -> into, + route-map), and a MUTUAL-redistribution risk flag -- so a migration can recreate
     every protocol-to-protocol boundary. One row per device that runs a dynamic protocol or redistributes."""
-    ws = wb.create_sheet(PROTOCOL_BOUNDARIES_SHEET_NAME)
+    ws = _new_sheet(wb, PROTOCOL_BOUNDARIES_SHEET_NAME)
     for col, h in enumerate(["Switch", "Protocols", "Redistribution (from -> into)", "Route-map(s)", "Mutual"], 1):
         c = ws.cell(1, col, h); c.font = Font(bold=True, color="FFFFFF")
         c.fill = PatternFill("solid", fgColor="434343"); c.alignment = Alignment(horizontal="center")
@@ -3071,7 +3178,7 @@ def write_addressing_conflicts_sheet(wb, all_interfaces: Dict[str, Dict[str, Int
     the classic silent outage when two domains merge or a move-group cuts over. Surfaces the reachability
     explorer's addressing-integrity finding in the workbook."""
     c = compute_addressing_conflicts(all_interfaces)
-    ws = wb.create_sheet(ADDRESSING_CONFLICTS_SHEET_NAME)
+    ws = _new_sheet(wb, ADDRESSING_CONFLICTS_SHEET_NAME)
     for col, h in enumerate(["Type", "Address / Subnet", "VRF", "Configured on"], 1):
         cell = ws.cell(1, col, h); cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="434343"); cell.alignment = Alignment(horizontal="center")
@@ -3152,7 +3259,7 @@ def write_fhrp_consistency_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfa
     """Write the 'FHRP Consistency' sheet: VLANs whose >=2 gateways have MISconfigured first-hop redundancy
     (fake redundancy that fails silently at failover). Surfaces the explorer's FHRP-consistency finding."""
     rows = compute_fhrp_consistency(all_interfaces)
-    ws = wb.create_sheet(FHRP_CONSISTENCY_SHEET_NAME)
+    ws = _new_sheet(wb, FHRP_CONSISTENCY_SHEET_NAME)
     for col, h in enumerate(["VLAN", "Issue", "Gateways"], 1):
         cell = ws.cell(1, col, h); cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="434343"); cell.alignment = Alignment(horizontal="center")
@@ -3222,7 +3329,7 @@ def write_trunk_native_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceDa
     (untagged) VLAN -- a silent L2 leak / VLAN-hopping exposure. Surfaces the explorer's trunk-consistency
     native-VLAN finding (allowed-VLAN asymmetry stays explorer-only for now)."""
     rows = compute_trunk_native_mismatches(all_interfaces)
-    ws = wb.create_sheet(TRUNK_NATIVE_SHEET_NAME)
+    ws = _new_sheet(wb, TRUNK_NATIVE_SHEET_NAME)
     for col, h in enumerate(["End A", "Native A", "End B", "Native B"], 1):
         cell = ws.cell(1, col, h); cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="434343"); cell.alignment = Alignment(horizontal="center")
@@ -3305,7 +3412,7 @@ def write_link_phy_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]
     or speed -- the classic 'link is up but slow/flaky' (late collisions, CRC errors). Surfaces the explorer's
     link L1 finding."""
     rows = compute_duplex_speed_mismatches(all_interfaces)
-    ws = wb.create_sheet(LINK_PHY_SHEET_NAME)
+    ws = _new_sheet(wb, LINK_PHY_SHEET_NAME)
     for col, h in enumerate(["Link", "Issue", "End A", "End B"], 1):
         cell = ws.cell(1, col, h); cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="434343"); cell.alignment = Alignment(horizontal="center")
@@ -3331,7 +3438,7 @@ def write_link_phy_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]
 
 
 def write_migration_readiness_sheet(wb, readiness: List[dict]) -> None:
-    ws = wb.create_sheet(MIGRATION_READINESS_SHEET_NAME)
+    ws = _new_sheet(wb, MIGRATION_READINESS_SHEET_NAME)
     headers = ["Group / Check", "Status", "Phase", "Detail"]
     for col, h in enumerate(headers, 1):
         c = ws.cell(1, col, h)
@@ -3379,7 +3486,7 @@ def write_interface_health_sheet(wb, all_cmd_to_files: Dict[str, Dict[str, str]]
             "Last Input", "Last Output", "Flag"]
     if INTERFACE_HEALTH_SHEET_NAME in wb.sheetnames:
         del wb[INTERFACE_HEALTH_SHEET_NAME]
-    ws = wb.create_sheet(INTERFACE_HEALTH_SHEET_NAME)
+    ws = _new_sheet(wb, INTERFACE_HEALTH_SHEET_NAME)
     _census_header(ws, cols)
     DAT_FONT = Font(name="Calibri", size=10)
     DAT_L = Alignment(horizontal="left", vertical="center")
@@ -3433,7 +3540,7 @@ def write_security_posture_sheet(wb, all_cmd_to_files: Dict[str, Dict[str, str]]
             "PS Action", "802.1X Method", "802.1X Status", "Auth MAC", "DHCP-Snoop Bindings"]
     if SECURITY_SHEET_NAME in wb.sheetnames:
         del wb[SECURITY_SHEET_NAME]
-    ws = wb.create_sheet(SECURITY_SHEET_NAME)
+    ws = _new_sheet(wb, SECURITY_SHEET_NAME)
     _census_header(ws, cols)
     DAT_FONT = Font(name="Calibri", size=10)
     DAT_L = Alignment(horizontal="left", vertical="center")
@@ -3470,7 +3577,7 @@ def write_routing_adjacency_sheet(wb, all_cmd_to_files: Dict[str, Dict[str, str]
     cols = ["Hostname", "Protocol", "Neighbor", "State / PfxRcd", "Interface / AS"]
     if ROUTING_SHEET_NAME in wb.sheetnames:
         del wb[ROUTING_SHEET_NAME]
-    ws = wb.create_sheet(ROUTING_SHEET_NAME)
+    ws = _new_sheet(wb, ROUTING_SHEET_NAME)
     _census_header(ws, cols)
     DAT_FONT = Font(name="Calibri", size=10)
     DAT_L = Alignment(horizontal="left", vertical="center")
@@ -3504,7 +3611,7 @@ def write_causality_chains_sheet(wb, chains: list) -> None:
             "Impact (blast radius)", "Mitigation"]
     if CAUSALITY_SHEET_NAME in wb.sheetnames:
         del wb[CAUSALITY_SHEET_NAME]
-    ws = wb.create_sheet(CAUSALITY_SHEET_NAME)
+    ws = _new_sheet(wb, CAUSALITY_SHEET_NAME)
     _census_header(ws, cols)
     chains = chains or []
     DAT_FONT = Font(name="Calibri", size=10)
@@ -3531,7 +3638,7 @@ def write_failure_impact_sheet(wb, rows: list) -> None:
             "Hard Partitions", "Backup-Covered", "FHRP-Covered", "Per-VLAN Detail"]
     if FAILURE_SHEET_NAME in wb.sheetnames:
         del wb[FAILURE_SHEET_NAME]
-    ws = wb.create_sheet(FAILURE_SHEET_NAME)
+    ws = _new_sheet(wb, FAILURE_SHEET_NAME)
     _census_header(ws, cols)
     rows = rows or []
     DAT_FONT = Font(name="Calibri", size=10)
@@ -3561,7 +3668,7 @@ def write_link_centrality_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfac
     cols = ["Rank", "Link", "Betweenness", "Bridge / SPOF", "Switch-Pairs Severed", "Assessment"]
     if LINK_CENTRALITY_SHEET_NAME in wb.sheetnames:
         del wb[LINK_CENTRALITY_SHEET_NAME]
-    ws = wb.create_sheet(LINK_CENTRALITY_SHEET_NAME)
+    ws = _new_sheet(wb, LINK_CENTRALITY_SHEET_NAME)
     _census_header(ws, cols)
     rows = compute_link_centrality(all_interfaces)
     DAT_FONT = Font(name="Calibri", size=10)
@@ -3606,7 +3713,7 @@ def write_cabling_schedule_sheet(wb, cable_map: dict) -> None:
     cols = ["Switch A", "Port A", "Switch B", "Port B", "Speed", "Type", "LAG Members", "Op-Status", "Seen"]
     if CABLING_SCHEDULE_SHEET_NAME in wb.sheetnames:
         del wb[CABLING_SCHEDULE_SHEET_NAME]
-    ws = wb.create_sheet(CABLING_SCHEDULE_SHEET_NAME)
+    ws = _new_sheet(wb, CABLING_SCHEDULE_SHEET_NAME)
     _census_header(ws, cols)
     cables = (cable_map or {}).get("cables") or []
     DAT_FONT = Font(name="Calibri", size=10)
@@ -3652,7 +3759,7 @@ def write_wave_sequencing_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfac
     cols = ["Group", "Cutover Plan", "Hard Cutover (window)", "Make-Before-Break", "Endpoints at Risk"]
     if WAVE_SEQUENCING_SHEET_NAME in wb.sheetnames:
         del wb[WAVE_SEQUENCING_SHEET_NAME]
-    ws = wb.create_sheet(WAVE_SEQUENCING_SHEET_NAME)
+    ws = _new_sheet(wb, WAVE_SEQUENCING_SHEET_NAME)
     _census_header(ws, cols)
     rows = compute_wave_sequencing(all_interfaces, move_groups)
     DAT_FONT = Font(name="Calibri", size=10)
@@ -3693,7 +3800,7 @@ def write_vlan_cutover_sheet(wb, vlan_cutover: List[dict]) -> None:
     cols = ["VLAN", "Name", "STP Root", "Root Default-Election", "FHRP",
             "Gateway SVIs", "Endpoint MACs (per-port sum)", "Endpoint Mix", "App Domain", "Criticality",
             "Dependencies", "Wave", "Scenario", "Readiness", "Cutover Window", "Rollback Owner"]
-    ws = wb.create_sheet(VLAN_CUTOVER_SHEET_NAME)
+    ws = _new_sheet(wb, VLAN_CUTOVER_SHEET_NAME)
     _census_header(ws, cols)
     DAT_FONT = Font(name="Calibri", size=10)
     DAT_L = Alignment(horizontal="left", vertical="top", wrap_text=True)
@@ -3753,7 +3860,7 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
     the punch-list severity / category breakdown, and per-group migration readiness -- so a reader knows
     where to start without opening all 30+ detail tabs. This is the workbook twin of the explorer's Risk
     cockpit: pure presentation of already-computed data; every detail tab remains the source of record."""
-    ws = wb.create_sheet(EXEC_SUMMARY_SHEET_NAME)
+    ws = _new_sheet(wb, EXEC_SUMMARY_SHEET_NAME)
     TITLE = Font(name="Calibri", bold=True, size=15, color=DOC_NAVY_HEX)
     SUB   = Font(name="Calibri", bold=True, size=11, color=DOC_NAVY_HEX)
     KEY   = Font(name="Calibri", bold=True, size=10)
@@ -4010,7 +4117,20 @@ def write_physical_health_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfac
                 flags.append("error-rate-high")
                 if sev != "High": sev = "Medium"
             if not flags:
-                flags = ["ok"]
+                # `show interfaces` is NOT an essential command and _load_cmd_output is an exact-match
+                # lookup, so `counters` is routinely {} for a whole device -- and even when it parsed, a
+                # port present in `show interface status` can be absent from it. The error-rate check
+                # above then cannot fire, and the row used to print blank error counters plus the word
+                # "ok", byte-identical to a genuinely clean port, while Collection Completeness still
+                # tiered the device "complete". That is this file's own stated rule (see
+                # write_coverage_schema_sheet) broken: absence of evidence is never health. Only an
+                # operationally UP port is marked -- on a down port the error-rate check is inapplicable
+                # rather than unevaluated, so its "ok" is not a claim about unseen counters.
+                if oper_up and not cnt:
+                    flags = [f"{HEALTH_NOT_OBSERVED} - no 'show interfaces' counters for this port; "
+                             f"L1 error rate NOT assessed"]
+                else:
+                    flags = ["ok"]
 
             records.append({"switch": host, "port": port, "status": status or "",
                             "speed": speed or "unknown", "duplex": duplex or "unknown",
@@ -4020,7 +4140,7 @@ def write_physical_health_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfac
                             "risk": "; ".join(flags), "severity": sev})
 
     # ---- write the sheet ----
-    ws = wb.create_sheet(PHYSICAL_HEALTH_SHEET_NAME)
+    ws = _new_sheet(wb, PHYSICAL_HEALTH_SHEET_NAME)
     hdr_font = Font(bold=True, color="FFFFFF")
     hdr_fill = PatternFill("solid", fgColor="434343")
     for col, h in enumerate(headers, 1):
@@ -4040,9 +4160,14 @@ def write_physical_health_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfac
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
 
-    n_flagged = sum(1 for x in records if x["risk"] != "ok")
+    # A blind spot is neither "ok" nor a finding — count it as its own third thing, or the log turns
+    # every unassessed port into a flagged one (and hides how much of L1 was never seen).
+    n_blind = sum(1 for x in records if str(x["risk"]).startswith(HEALTH_NOT_OBSERVED))
+    n_flagged = sum(1 for x in records
+                    if x["risk"] != "ok" and not str(x["risk"]).startswith(HEALTH_NOT_OBSERVED))
     logger.info(f"  [OK] '{PHYSICAL_HEALTH_SHEET_NAME}' sheet: {len(records)} physical port(s), "
-                f"{n_flagged} flagged")
+                f"{n_flagged} flagged"
+                + (f", {n_blind} NOT assessed (no interface counters collected)" if n_blind else ""))
     return records
 
 
@@ -4054,7 +4179,7 @@ def write_flow_trace_sheet(wb, flow: dict) -> None:
     """Write the 'Flow Trace' sheet from a trace_full_flow() result."""
 
     s = flow["summary"]
-    ws = wb.create_sheet(FLOW_TRACE_SHEET_NAME)
+    ws = _new_sheet(wb, FLOW_TRACE_SHEET_NAME)
     bold = Font(bold=True)
 
     ws.cell(1, 1, f"Flow Trace  {s['src_ip']}  ->  {s['dst_ip']}").font = Font(bold=True, size=13)
@@ -4104,7 +4229,7 @@ def write_flow_paths_sheet(wb, flow_paths: dict) -> None:
     and risk. From compute_flow_paths(). Pure presentation; the explorer remains the interactive view."""
     fp = flow_paths or {}
     flows = fp.get("flows") or []
-    ws = wb.create_sheet(FLOW_PATHS_SHEET_NAME)
+    ws = _new_sheet(wb, FLOW_PATHS_SHEET_NAME)
     bold = Font(bold=True)
     ws.cell(1, 1, "Representative Flow Paths").font = Font(bold=True, size=14, color=DOC_NAVY_HEX)
     s0 = fp.get("summary") or {}
@@ -4173,8 +4298,12 @@ def _parse_track(output: str) -> dict:
     return {"objects": objs, "up": up, "down": down}
 
 def _track_summary(tr: dict) -> str:
-    if not tr or not tr["objects"]:
+    if not tr:
         return ""
+    if not tr["objects"]:
+        # 'show track' collected and empty (no tracked objects configured) is a FACT; 'show track'
+        # never collected is a blind spot. Both used to render the same blank cell. (review #18)
+        return "" if tr.get("observed") else HEALTH_NOT_OBSERVED
     head = f"{len(tr['objects'])} obj"
     if tr["down"]:
         head += f" ({tr['down']} DOWN)"
@@ -4197,14 +4326,18 @@ def write_l3_forwarding_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceD
     track_by_host: Dict[str, dict] = {}
     for host in all_interfaces:
         out = _load_cmd_output(all_cmd_to_files.get(host, {}), "show track")
-        track_by_host[host] = _parse_track(out) if out else {"objects": [], "up": 0, "down": 0}
+        # `observed` keeps "collected, no tracked objects" apart from "never collected" — without it the
+        # tracked-object-down check silently cannot fire and the row still reads a bare 'ok'. (review #18)
+        tr = _parse_track(out) if out else {"objects": [], "up": 0, "down": 0}
+        tr["observed"] = bool(out)
+        track_by_host[host] = tr
 
     headers = ["Switch", "VLAN", "SVI IP", "FHRP", "Role", "Virtual IP", "Routing Source",
                "Next Hop", "Primary Subnet", "Backup / Secondary", "Tracking", "L3 Risk"]
 
     records: List[dict] = []
     for host in sorted(all_interfaces):
-        tr = track_by_host.get(host, {"objects": [], "up": 0, "down": 0})
+        tr = track_by_host.get(host, {"objects": [], "up": 0, "down": 0, "observed": False})
         tsum = _track_summary(tr)
         for port, d in sorted(all_interfaces[host].items(),
                               key=lambda kv: int(re.match(r"^Vlan(\d+)$", kv[0], re.IGNORECASE).group(1))
@@ -4231,7 +4364,12 @@ def write_l3_forwarding_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceD
                 if sev == "Info":
                     sev = "Low"
             if not flags:
-                flags = ["ok"]
+                # `show track` is not essential either: without it the tracked-object-down check above
+                # could never fire, so a bare 'ok' here asserted a clean tracking state that was never
+                # looked at. Gateway redundancy and FHRP WERE assessed, so the marker names the one
+                # axis that was not. (review #18, same class as Physical Risk)
+                flags = ["ok"] if tr.get("observed") else [
+                    f"{HEALTH_NOT_OBSERVED} - no 'show track' evidence; object tracking NOT assessed"]
 
             records.append({"switch": host, "vlan": vid, "svi_ip": d.svi_ip or "",
                             "fhrp": proto or "none", "role": role or "", "vip": vip or "",
@@ -4240,7 +4378,7 @@ def write_l3_forwarding_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceD
                             "secondary": d.subnet_secondary_routes or "",
                             "tracking": tsum, "risk": "; ".join(flags), "severity": sev})
 
-    ws = wb.create_sheet(L3_FORWARDING_SHEET_NAME)
+    ws = _new_sheet(wb, L3_FORWARDING_SHEET_NAME)
     hdr_font = Font(bold=True, color="FFFFFF")
     hdr_fill = PatternFill("solid", fgColor="434343")
     for col, h in enumerate(headers, 1):
@@ -4260,9 +4398,12 @@ def write_l3_forwarding_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceD
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
 
-    n_flagged = sum(1 for x in records if x["risk"] != "ok")
+    n_blind = sum(1 for x in records if str(x["risk"]).startswith(HEALTH_NOT_OBSERVED))
+    n_flagged = sum(1 for x in records
+                    if x["risk"] != "ok" and not str(x["risk"]).startswith(HEALTH_NOT_OBSERVED))
     logger.info(f"  [OK] '{L3_FORWARDING_SHEET_NAME}' sheet: {len(records)} gateway SVI(s), "
-                f"{n_flagged} flagged")
+                f"{n_flagged} flagged"
+                + (f", {n_blind} with tracking NOT assessed (no 'show track')" if n_blind else ""))
     return records
 
 
@@ -4273,8 +4414,20 @@ def write_l3_forwarding_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceD
 # logic is byte-exact. Uses find_header_row/ensure_headers/sortkey (above) + the
 # template header map.
 # =============================================================================
+#: Template columns the ENGINEER owns, not the device: the engine never collects them, so a blank in
+#: this run means "the engine has nothing to say", not "this run observed nothing" — their pre-existing
+#: value is the engineer's annotation and must survive a re-run. EVERY OTHER column is device-derived:
+#: it is a claim about what this collection SAW, so a blank there must clear the cell rather than leave
+#: the previous run's value standing beside a freshly-overwritten Status. (review #88)
+_HUMAN_OWNED_COLS = frozenset({"system_owner", "endpoint_location"})
+
+
 def append_interface_rows(ws, header_row: int, col_map: Dict[str,int],
                           hostname: str, interfaces: Dict[str, InterfaceData]):
+    # This writer takes a bare worksheet (no workbook), so it cannot go through _new_sheet; it writes
+    # device text via DIRECT `cell.value = ...`, which only the Cell.value setter guard covers. Install
+    # it here so the protection does not depend on the caller having called harden_workbook. (review #63)
+    _install_cell_value_guard()
     required_cols = [col_map["hostname"], col_map["port"], col_map["status"]]
 
     def row_is_writable(r):
@@ -4320,15 +4473,27 @@ def append_interface_rows(ws, header_row: int, col_map: Dict[str,int],
             if field not in col_map: return
             cell = ws.cell(row=row, column=col_map[field])
             if isinstance(cell, MergedCell): return
-            cell.value = val if val else (cell.value or None)
+            if val:
+                cell.value = val
+            elif field in _HUMAN_OWNED_COLS:
+                cell.value = cell.value or None      # engineer's annotation — the engine never observes it
+            else:
+                # Device-derived and NOT observed this run. Keeping the old value produced rows whose
+                # Hostname/Port/Status were fresh (those three are overwritten unconditionally) while
+                # VLAN / native VLAN / BPDU-guard were the PREVIOUS run's, rendered identically — and
+                # this function is explicitly designed to match pre-existing rows, so re-running against
+                # a filled template is the NORMAL path, not an edge case. (review #88)
+                cell.value = None
 
         def w_po(field, val):
             if field not in col_map: return
             cell = ws.cell(row=row, column=col_map[field])
             if isinstance(cell, MergedCell): return
+            # port_channel is device-derived: an unobserved value clears, exactly like w(). The
+            # trunk-status-word branch is kept for the template shape it documents.
             existing = str(cell.value or "").strip().lower()
             if existing in _TRUNK_STATUS_WORDS: cell.value = val if val else None
-            else: cell.value = val if val else (cell.value or None)
+            else: cell.value = val if val else None
 
         w("switchport_mode",      d.switchport_mode)
         w("vlan",                 d.vlan)

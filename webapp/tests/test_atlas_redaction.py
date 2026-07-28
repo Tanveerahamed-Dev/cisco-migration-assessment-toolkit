@@ -142,12 +142,18 @@ def test_source_captures_are_untouched_unless_explicitly_asked(monkeypatch, tmp_
 
 
 def test_redact_collection_is_opt_in_and_passed_through(monkeypatch, tmp_path):
-    """It rewrites the RAW captures in place, so it must never ride along by default."""
+    """It rewrites the RAW captures in place, so it must never ride along by default.
+
+    NB this asserts only that the FLAG travelled, and says so by reading the key that names
+    itself the flag. The old version asserted `report["redacted_collection"] is True` after
+    passing `redact_collection=True` — it pinned the echo of its own input, which is why the
+    scrub could stop happening without a single test noticing (see the outcome tests below)."""
     rec = {}
     monkeypatch.setattr(ing.subprocess, "run", _fake_engine(rec))
     report = ing.run_redaction_folder(str(_collection(tmp_path)), str(tmp_path / "out"),
                                       redact_collection=True)
-    assert "--redact-collection" in rec["cmd"] and report["redacted_collection"] is True
+    assert "--redact-collection" in rec["cmd"]
+    assert report["redacted_collection_requested"] is True
 
 
 # ── the failure that must never be silent ───────────────────────────────────────
@@ -1183,3 +1189,325 @@ def test_the_unsafe_marker_name_has_one_owner():
         literals = _re.findall(r'"DO-NOT-SEND-NOT-REDACTED\.txt"', src)
         assert len(literals) <= (1 if mod is ing else 0), (
             f"{Path(mod.__file__).name} restates the marker filename; use ingest.UNSAFE_MARKER")
+
+
+# ── the raw-capture scrub must be reported from its OUTCOME, never from the flag ─
+# `--redact-collection` is the control that takes the enable secrets, SNMP communities and PSKs
+# off the stick. It is the one redaction step that is NOT a `_run_phase`: no ledger row, so
+# `_REDACTION_PHASES` cannot see it, and its failure line matches neither `_ENGINE_GAP_RE` nor the
+# `[SKIP] Phase` scrape. The engine's own log line is the only evidence there is.
+def _scrub_engine(rec: dict, *, stdout="engine ok", stderr=""):
+    """A successful engine run whose output carries whatever the Phase-40 scrub said about itself."""
+    def run(cmd, cwd=None, **kw):
+        rec["cmd"] = list(cmd)
+        out = Path(cmd[cmd.index("--output") + 1])
+        Path(str(out)[: -len(".xlsx")] + ".snapshot.json").write_text(
+            json.dumps(REDACTED_SNAP), encoding="utf-8")
+        out.write_bytes(b"xlsx")
+        return types.SimpleNamespace(returncode=0, stdout=stdout, stderr=stderr)
+    return run
+
+
+# The two shapes the engine really emits (COLLECT_PARSE_V3_23_0.py:3273-3278). One capture file
+# exists in the fixture collection, so "1 of 1" is full coverage and "0 of 0" is none.
+_SCRUB_OK = ("INFO - [OK] redact-collection: scrubbed secret values in 1 of 1 raw capture file(s) "
+             "under C:\\job\\fleet (in place, idempotent; IPs/hostnames kept)")
+_SCRUB_FAILED = ("WARNING -   redact-collection failed (non-fatal; raw dir unchanged): "
+                 "PermissionError(13, 'Access is denied')")
+_SCRUB_NONE_READ = ("INFO - [OK] redact-collection: scrubbed secret values in 0 of 0 raw capture "
+                    "file(s) under C:\\job\\fleet (in place, idempotent; IPs/hostnames kept)")
+
+
+@pytest.mark.parametrize("engine_says, verified, phrase", [
+    (_SCRUB_OK, True, "1 of 1"),
+    (_SCRUB_FAILED, False, "FAILED"),
+    ("", False, "COULD NOT VERIFY"),
+    (_SCRUB_NONE_READ, False, "INCOMPLETE"),
+])
+def test_the_scrub_is_reported_from_what_happened_not_from_the_flag(
+        monkeypatch, tmp_path, engine_says, verified, phrase):
+    """`redacted_collection` used to be `bool(redact_collection)` — the argument echoed back. It
+    was therefore True for a run whose scrub raised, and for one that never reached the phase at
+    all: exit 0 told a field engineer the secrets were gone from the captures on the stick.
+
+    The last case is the quietest one and the reason the counts are compared rather than trusted:
+    `redact_collection_dir` skips a capture it cannot open and carries on, so it reports success
+    over a folder it never read."""
+    rec = {}
+    monkeypatch.setattr(ing.subprocess, "run", _scrub_engine(rec, stderr=engine_says))
+    report = ing.run_redaction_folder(str(_collection(tmp_path)), str(tmp_path / "out"),
+                                      redact_collection=True)
+    assert report["redacted_collection_requested"] is True, "the flag did travel"
+    assert report["redacted_collection"] is verified
+    assert phrase in report["redacted_collection_detail"]
+
+
+def test_the_scrub_verdict_survives_a_long_run(monkeypatch, tmp_path):
+    """Phase 40 is followed by the perf sidecar and the closing banner, so its line is routinely
+    pushed out of the 12-line tail. Read the FULL output or the verdict silently becomes
+    'could not verify' on every real run — a check that always fires is one nobody reads."""
+    rec = {}
+    noise = "\n".join(f"INFO - [OK] phase {i} done" for i in range(40))
+    monkeypatch.setattr(ing.subprocess, "run",
+                        _scrub_engine(rec, stderr=_SCRUB_OK + "\n" + noise))
+    report = ing.run_redaction_folder(str(_collection(tmp_path)), str(tmp_path / "out"),
+                                      redact_collection=True)
+    assert report["redacted_collection"] is True
+    assert _SCRUB_OK not in report["engine_log_tail"], "precondition: the line IS out of the tail"
+
+
+def test_the_scrub_verdict_does_not_leak_the_collection_path(monkeypatch, tmp_path):
+    """The engine's own line names the collection directory. The detail string is reported, so it
+    carries counts extracted from that line, never the line itself (WEBAP-01)."""
+    rec = {}
+    monkeypatch.setattr(ing.subprocess, "run", _scrub_engine(rec, stderr=_SCRUB_OK))
+    report = ing.run_redaction_folder(str(_collection(tmp_path)), str(tmp_path / "out"),
+                                      redact_collection=True)
+    assert "C:\\job\\fleet" not in report["redacted_collection_detail"]
+
+
+def test_no_scrub_verdict_is_invented_when_it_was_not_asked_for(monkeypatch, tmp_path):
+    """"Not requested" is not an outcome, and must not read as a failed one."""
+    rec = {}
+    monkeypatch.setattr(ing.subprocess, "run", _scrub_engine(rec))
+    report = ing.run_redaction_folder(str(_collection(tmp_path)), str(tmp_path / "out"))
+    assert report["redacted_collection_requested"] is False
+    assert report["redacted_collection"] is False
+    assert report["redacted_collection_detail"] == ""
+
+
+# ── a certification must be over THIS run's evidence ────────────────────────────
+def test_an_earlier_runs_snapshot_does_not_certify_this_one(monkeypatch, tmp_path):
+    """`--reuse-out` renders into a folder that already holds a set, so the previous job's
+    `.snapshot.json` sits under this run's name. The guard tested only `is_file()`, so a run whose
+    engine wrote no snapshot at all was verified against the EARLIER run's clean one and reported
+    as a certified, share-safe set."""
+    out = tmp_path / "share"
+    out.mkdir()
+    (out / "Assessment_redacted.snapshot.json").write_text(json.dumps(REDACTED_SNAP),
+                                                           encoding="utf-8")
+
+    def engine_writes_no_snapshot(cmd, cwd=None, **kw):
+        Path(cmd[cmd.index("--output") + 1]).write_bytes(b"xlsx")
+        return types.SimpleNamespace(returncode=0, stdout="engine ok", stderr="")
+
+    monkeypatch.setattr(ing.subprocess, "run", engine_writes_no_snapshot)
+    with pytest.raises(ing.EngineRunError) as e:
+        ing.run_redaction_folder(str(_collection(tmp_path)), str(out), reuse_out=True)
+    assert "EARLIER run" in str(e.value) and "Do NOT send" in str(e.value)
+    assert (out / ing.UNSAFE_MARKER).is_file()
+
+
+def test_an_earlier_runs_phase_ledger_is_not_this_runs_evidence(monkeypatch, tmp_path):
+    """Same shape one level down, and the quieter half of it. This run leaves NO ledger and says
+    nothing on stderr — so the only thing standing between it and a share-safe verdict is the
+    `ok: true` ledger the previous job left in the folder. Reading that one certifies the previous
+    job. Absence of a ledger is tolerated (its write is fail-soft in the engine, so it proves
+    nothing either way); a ledger belonging to somebody else's run is not the same thing, and must
+    refuse."""
+    out = tmp_path / "share"
+    out.mkdir()
+    (out / "Assessment_redacted.phase_timings.json").write_text(json.dumps(
+        {"phases": [{"phase": p, "seconds": 0.1, "ok": True} for p in ing._REDACTION_PHASES]}),
+        encoding="utf-8")
+
+    def engine_writes_no_ledger(cmd, cwd=None, **kw):
+        out_x = Path(cmd[cmd.index("--output") + 1])
+        Path(str(out_x)[: -len(".xlsx")] + ".snapshot.json").write_text(
+            json.dumps(REDACTED_SNAP), encoding="utf-8")
+        out_x.write_bytes(b"xlsx")
+        return types.SimpleNamespace(returncode=0, stdout="engine ok", stderr="")
+
+    monkeypatch.setattr(ing.subprocess, "run", engine_writes_no_ledger)
+    with pytest.raises(ing.EngineRunError) as e:
+        ing.run_redaction_folder(str(_collection(tmp_path)), str(out), reuse_out=True)
+    assert "COULD NOT BE VERIFIED" in str(e.value) and "EARLIER run" in str(e.value)
+    assert (out / ing.UNSAFE_MARKER).is_file()
+
+
+def test_an_absent_phase_ledger_is_still_tolerated(monkeypatch, tmp_path):
+    """Calibration for the case above: the engine's ledger write is fail-soft, so a run that
+    simply did not leave one must still pass on the stderr arm alone. Turning that into a refusal
+    would fire on ordinary runs, and an alarm that always fires is one nobody reads."""
+    monkeypatch.setattr(ing.subprocess, "run", _fake_engine({}))
+    ing.run_redaction_folder(str(_collection(tmp_path)), str(tmp_path / "out"))   # must not raise
+
+
+def test_a_ledger_this_run_did_write_is_still_read(monkeypatch, tmp_path):
+    """Non-vacuity: the attribution check must not disable the ledger arm on a normal re-run."""
+    out = tmp_path / "share"
+    out.mkdir()
+    (out / "Assessment_redacted.phase_timings.json").write_text("{}", encoding="utf-8")
+    os.utime(out / "Assessment_redacted.phase_timings.json", (0, 0))
+    phase = ing._REDACTION_PHASES[1]
+
+    def engine_writes_a_failed_ledger(cmd, cwd=None, **kw):
+        out_x = Path(cmd[cmd.index("--output") + 1])
+        stem = str(out_x)[: -len(".xlsx")]
+        Path(stem + ".snapshot.json").write_text(json.dumps(REDACTED_SNAP), encoding="utf-8")
+        Path(stem + ".phase_timings.json").write_text(json.dumps(
+            {"phases": [{"phase": p, "seconds": 0.1, "ok": p != phase}
+                        for p in ing._REDACTION_PHASES]}), encoding="utf-8")
+        out_x.write_bytes(b"xlsx")
+        return types.SimpleNamespace(returncode=0, stdout="engine ok", stderr="")
+
+    monkeypatch.setattr(ing.subprocess, "run", engine_writes_a_failed_ledger)
+    with pytest.raises(ing.EngineRunError, match="REDACTION PHASE FAILED"):
+        ing.run_redaction_folder(str(_collection(tmp_path)), str(out), reuse_out=True)
+
+
+# ── every failure exit leaves the on-disk warning, not just the redaction check ──
+def _boom(kind):
+    """An engine that leaves half a *_redacted* set behind and then fails in one of three ways."""
+    def run(cmd, cwd=None, **kw):
+        out_x = Path(cmd[cmd.index("--output") + 1])
+        out_x.write_bytes(b"xlsx")                                    # partial deliverable
+        (out_x.parent / "Assessment_redacted_design.docx").write_bytes(b"docx")
+        if kind == "timeout":
+            raise ing.subprocess.TimeoutExpired(cmd, ing.REDACT_TIMEOUT_S)
+        if kind == "exit":
+            return types.SimpleNamespace(returncode=2, stdout="", stderr="engine died")
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")   # no snapshot written
+    return run
+
+
+@pytest.mark.parametrize("kind", ["timeout", "exit", "no_snapshot"])
+def test_every_failure_exit_leaves_the_do_not_send_marker(monkeypatch, tmp_path, kind):
+    """Only the redaction-check failure wrote the marker. The other three exits leave the same
+    half-written `*_redacted*` files — names that ASSERT the property the run never certified —
+    with nothing on disk saying so, and stderr scrolls away."""
+    monkeypatch.setattr(ing.subprocess, "run", _boom(kind))
+    out = tmp_path / "share"
+    with pytest.raises(ing.EngineRunError):
+        ing.run_redaction_folder(str(_collection(tmp_path)), str(out))
+    assert (out / "Assessment_redacted.xlsx").is_file(), "precondition: files were left behind"
+    marker = out / ing.UNSAFE_MARKER
+    assert marker.is_file(), f"{kind} exit left *_redacted* files with no warning"
+    assert "NOT safe to share" in marker.read_text(encoding="ascii")
+
+
+# ── the reuse refusal covers everything an engine run writes, not just documents ─
+@pytest.mark.parametrize("leftover", ["Assessment_redacted.snapshot.json",
+                                      "Assessment_redacted.run_manifest.json",
+                                      "Assessment_redacted.phase_timings.json"])
+def test_reuse_refusal_covers_the_engines_own_sidecars(monkeypatch, tmp_path, leftover):
+    """The refusal checked `cli_artifacts` only — the ten documents. The snapshot is the fullest
+    record of another engagement there is (the whole assessment, hostnames kept by design), and
+    nothing else notices it: it is not a family document, so `_family_state` never names it, and a
+    run that does not rewrite it does not list it in `files` either. It just travels."""
+    out = tmp_path / "share"
+    out.mkdir()
+    (out / leftover).write_text('{"devices": {"other-client-core1": {}}}', encoding="utf-8")
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine({}))
+    with pytest.raises(ing.IngestError) as e:
+        ing.run_redaction_folder(str(_collection(tmp_path)), str(out))
+    assert leftover in str(e.value) and "--reuse-out" in str(e.value)
+
+
+def test_an_unrelated_json_beside_the_set_is_not_a_reason_to_refuse(monkeypatch, tmp_path):
+    """Calibration: only names the ENGINE owns count. Refusing over the engineer's own files
+    would make the escape hatch the habit, which is the opposite of the point."""
+    out = tmp_path / "share"
+    out.mkdir()
+    (out / "my-notes.json").write_text("{}", encoding="utf-8")
+    (out / "Assessment_redacted.snapshot.json.bak").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(ing.subprocess, "run", _family_engine({}))
+    ing.run_redaction_folder(str(_collection(tmp_path)), str(out))      # must not raise
+
+
+# ── the engine log tail must not disclose the caller's filesystem ───────────────
+@pytest.mark.parametrize("channel", ["redact", "ingest"])
+def test_the_log_tail_does_not_disclose_the_callers_path(monkeypatch, tmp_path, channel):
+    """The tail reaches a (possibly remote, unauthenticated) uploader through the API 500 detail
+    and the success report, and travels in the folder the engineer sends. It scrubbed only the
+    private workdir — but the engine is pointed at `--collection-dir`, which is the CALLER's
+    absolute path, so one breadcrumb naming it disclosed the server's layout and the engagement's
+    own folder name."""
+    src = tmp_path / "Acme-Bank-Merger" / "fleet"
+    (src / "core1").mkdir(parents=True)
+    (src / "core1" / "show_version.txt").write_text("Cisco IOS XE Software", encoding="utf-8")
+
+    def chatty(cmd, cwd=None, **kw):
+        root = cmd[cmd.index("--collection-dir") + 1]
+        out_x = Path(cmd[cmd.index("--output") + 1])
+        Path(str(out_x)[: -len(".xlsx")] + ".snapshot.json").write_text(
+            json.dumps(REDACTED_SNAP), encoding="utf-8")
+        out_x.write_bytes(b"xlsx")
+        return types.SimpleNamespace(returncode=0, stdout=f"INFO - reading {root}", stderr="")
+
+    monkeypatch.setattr(ing.subprocess, "run", chatty)
+    if channel == "redact":
+        tail = ing.run_redaction_folder(str(src), str(tmp_path / "out"))["engine_log_tail"]
+    else:
+        tail = ing.run_collection_folder(str(src))[1]["engine_log_tail"]
+    assert "Acme-Bank-Merger" not in tail, tail
+    assert str(src) not in tail and "<path>" in tail
+
+
+# ── hostile archive: a name can be a DEVICE, not a file ─────────────────────────
+def _zip_of(*names: str) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("core1/show_version.txt", "Cisco IOS XE Software")
+        for n in names:
+            zf.writestr(n, "enable secret 5 $1$abc$realsecret\n" * 40)
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("name", ["core1/NUL", "core1/nul.txt", "core1/COM1", "core1/PRN",
+                                  "NUL/show_version.txt", "core1/show_run.txt.",
+                                  "core1/show_run.txt "])
+def test_reserved_device_names_and_trailing_dots_are_refused(tmp_path, name):
+    """`_safe_extract` validated traversal but not what the name IS on this platform. `core1/NUL`
+    resolves inside `dest` and passes the containment check, then `open()` succeeds and writes to
+    the NULL DEVICE: the bytes vanish, no error is raised, and the entry was counted as a captured
+    file. `COM1`-`COM9` send the archive's bytes out a serial port. A trailing dot or space is
+    stripped by Windows, so the entry lands on top of a different capture of that name."""
+    dest = tmp_path / "extracted"
+    dest.mkdir()
+    with pytest.raises(ing.IngestError) as e:
+        ing._safe_extract(_zip_of(name), dest)
+    assert "refused" in str(e.value)
+    assert not (dest / "core1" / "show_run.txt").exists(), "nothing may land under the stripped name"
+
+
+@pytest.mark.parametrize("name", ["../evil.txt", "core1/../../evil.txt"])
+def test_traversal_still_reports_traversal(tmp_path, name):
+    """The name guard must not steal the diagnosis from the containment check. `..` has a trailing
+    dot, so an unguarded trailing-dot rule fires first and refuses the entry for the wrong reason —
+    still a refusal, but the API contract and the operator both read 'traversal' here."""
+    dest = tmp_path / "extracted"
+    dest.mkdir()
+    with pytest.raises(ing.IngestError, match="traversal"):
+        ing._safe_extract(_zip_of(name), dest)
+
+
+def test_ordinary_capture_names_still_extract(tmp_path):
+    """Calibration: the guard must not fire on the names a real collection actually uses —
+    including ones that merely CONTAIN a reserved word."""
+    dest = tmp_path / "extracted"
+    dest.mkdir()
+    n = ing._safe_extract(_zip_of("core1/show_console.txt", "aux-sw1/show_version.txt",
+                                  "core1/show_run.auxiliary.txt"), dest)
+    assert n == 4
+    assert (dest / "aux-sw1" / "show_version.txt").is_file()
+
+
+def test_files_written_is_what_landed_not_the_entry_count(tmp_path):
+    """The count was `len(infos)` — the number of entries the archive CLAIMED, never checked
+    against the disk. It reaches the uploader as `n_archive_files`.
+
+    No hostile archive needed: a ZIP built on a case-sensitive filesystem can legally hold both
+    `SHOW_VERSION.TXT` and `show_version.txt`, and on Windows the second lands on top of the
+    first. Two entries, one file — and the count said two."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("core1/SHOW_VERSION.TXT", "Cisco IOS XE Software")
+        zf.writestr("core1/show_version.txt", "Cisco IOS XE Software, different capture")
+    dest = tmp_path / "extracted"
+    dest.mkdir()
+    n = ing._safe_extract(buf.getvalue(), dest)
+    on_disk = len([p for p in dest.rglob("*") if p.is_file()])
+    assert n == on_disk, f"reported {n} file(s) written, {on_disk} are there"
+    if os.name == "nt":
+        assert on_disk == 1, "precondition: the two entries collided on this filesystem"

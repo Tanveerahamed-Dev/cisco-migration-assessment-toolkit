@@ -717,6 +717,44 @@ COMMANDS_FORTINET = [
 ]
 COMMANDS_ALL = list(dict.fromkeys(COMMANDS_NXOS + COMMANDS_IOS))
 
+# =============================================================================
+# SSH-WIRE ELIGIBILITY  (whole-repo review 2026-07-28, finding #9)
+# =============================================================================
+# The COMMANDS_* registries serve TWO channels. The live SSH collector types them at a device exec
+# prompt; the OFFLINE (--no-collect) reader uses the SAME strings as capture-FILENAME keys -- and
+# cisco_toolkit.rest_collect writes a controller export under its REST ENDPOINT PATH as the "command"
+# (`api/…` FMC, `ers/…` ISE, `dataservice/…` vManage), with the APIC managed-object query keyed as
+# `moquery -c …`. Those 17 strings are not device CLI, yet collect() sent the UNION of both Cisco
+# registries to EVERY device, so all 17 were typed at the exec prompt of live production gear. On IOS
+# with `ip domain-lookup` on (the default) an unknown first word is treated as a HOSTNAME to resolve:
+# each one costs a DNS lookup plus a Telnet attempt FROM the production switch and stalls that VTY for
+# the resolver timeout. COMMANDS_ARISTA/JUNIPER/CLOUD/FORTINET are already kept off the live lists for
+# exactly this reason (see the comment above them); these were not. cisco_toolkit.attestation's shared
+# read-only grammar already classifies `api/`|`ers/`|`dataservice/` as controller-REST GET paths, i.e.
+# a different channel from the SSH read verbs.
+#
+# The rule is a POSITIVE grammar, not a denylist of the 17: only the CLI `show` read grammar goes on
+# the wire, so a registry entry added later for some new controller/cloud channel is excluded BY
+# DEFAULT instead of having to be remembered. The strings STAY in the registries -- deleting them would
+# blind the offline re-analysis that reads a controller export collected by
+# `python -m cisco_toolkit.rest_collect`. (A future APIC-over-SSH channel would be its own platform +
+# registry with its own driver, not a moquery smuggled into every switch's command list.)
+TERMINAL_SETUP_CMDS = ("terminal length 0", "terminal width 511")   # the ONLY non-`show` wire strings
+_SSH_WIRE_CMD = re.compile(r"^show\s+\S")
+
+
+def is_ssh_wire_command(cmd) -> bool:
+    """True when `cmd` is a device-CLI read this collector may type at an SSH exec prompt."""
+    return bool(_SSH_WIRE_CMD.match(str(cmd).strip()))
+
+
+def ssh_wire_commands(cmds) -> List[str]:
+    """`cmds` filtered to those that may go on the SSH wire (order preserved). The complement is
+    OFFLINE-only: controller-REST endpoint paths / controller-native queries that a device CLI cannot
+    execute and must never be typed at one."""
+    return [c for c in cmds if is_ssh_wire_command(c)]
+
+
 # Interface regex constants moved to cisco_toolkit.textutils (PHASE 2.7 step 1);
 # imported near the top of this file.
 
@@ -836,8 +874,30 @@ def debug_scan_headers(ws, max_rows=120, max_cols=80):
 # =============================================================================
 # PLATFORM AUTODETECT
 # =============================================================================
+def _close_detect_session(guesser) -> None:
+    """Close the SSH session SSHDetect opened, fail-soft (review 2026-07-28 #89).
+
+    ``SSHDetect.__init__`` CONNECTS (it builds a ConnectHandler and does a channel read), and
+    ``autodetect()`` disconnects on each of its own return paths -- but not when it RAISES, which is
+    the ordinary outcome of a slow/odd device: a read timeout mid-probe. The bare ``except`` below
+    then returned 'ios' and dropped the last reference to an ESTABLISHED session, leaking a VTY line
+    on production gear until the device's exec-timeout reaps it. On the default `platform: auto` path
+    that is one leaked line per device, per run, before the real collection even opens its own.
+    netmiko's ``disconnect()`` is idempotent and swallows its own errors, so calling it on the
+    already-closed success path is safe. (If the CONSTRUCTOR raised there is no object to close --
+    netmiko's own ConnectHandler cleans up on a failed establish.)"""
+    conn = getattr(guesser, "connection", None)
+    if conn is None:
+        return
+    try:
+        conn.disconnect()
+    except Exception as e:                                             # noqa: BLE001
+        logger.debug(f"autodetect session close failed (ignored): {e}")
+
+
 def autodetect_platform(ip: str, username: str, password: str) -> str:
     if SSHDetect is None: return "ios"
+    guesser = None
     try:
         guesser = SSHDetect(device_type="autodetect", host=ip,
                             username=username, password=password)
@@ -847,6 +907,8 @@ def autodetect_platform(ip: str, username: str, password: str) -> str:
     except Exception as e:
         logger.debug(f"autodetect_platform({ip}) failed; defaulting to ios: {e}")  # NEW-V3.23.1
         return "ios"
+    finally:
+        _close_detect_session(guesser)
 
 def detect_platform_from_files(dev_dir: str) -> str:
     nxos_markers = ["show_interface_brief.txt","show_interface_switchport.txt",
@@ -915,9 +977,35 @@ def connect_device(ip, hostname, username, password, platform):
                 timeout=120, conn_timeout=30, auth_timeout=30,
                 global_delay_factor=3, fast_cli=False,
             )
-            for cmd in ("terminal length 0", "terminal width 511"):
-                try: dev.send_command(cmd, read_timeout=30)
-                except Exception: pass
+            # Session setup. A FAILURE here is not cosmetic (review 2026-07-28 #11): it was swallowed
+            # by a bare `except Exception: pass` with no log and no record, yet it changes what every
+            # later capture MEANS. Under a TACACS+ command-authorization policy that denies `terminal *`
+            # -- exactly the narrow read-only account this repo's own security doctrine recommends --
+            # paging stays on and the width stays at 80, so captures come back pager-truncated and
+            # line-wrapped, and the fixed-column parsers (extract_fixed_cols & friends) return
+            # plausible-but-wrong values from the wrapped text. Log it loudly and hand the record to
+            # collect(), which persists it into the _capture_meta.json sidecar so an offline
+            # re-analysis can distrust the run instead of reading clean-looking text as clean state.
+            setup_failures: Dict[str, str] = {}
+            for cmd in TERMINAL_SETUP_CMDS:
+                try:
+                    dev.send_command(cmd, read_timeout=30)
+                except Exception as e:                                 # noqa: BLE001
+                    setup_failures[cmd] = f"{type(e).__name__}: {e}"
+            if setup_failures:
+                logger.warning(
+                    f"  [TERMINAL-SETUP] {hostname}: {len(setup_failures)} of {len(TERMINAL_SETUP_CMDS)} "
+                    f"session-setup command(s) FAILED "
+                    f"({'; '.join(f'{c!r} -> {r}' for c, r in setup_failures.items())}). Paging and/or the "
+                    f"80-column wrap may still be ON (a command-authorization policy denying 'terminal *' "
+                    f"does exactly this), so this device's captures can be truncated or wrapped and the "
+                    f"fixed-column parsers can yield plausible-but-wrong values -- treat every capture from "
+                    f"{hostname} as unproven, not as observed state.")
+            try:
+                setattr(dev, TERMINAL_SETUP_ATTR, setup_failures)
+            except Exception as e:                                     # noqa: BLE001
+                logger.warning(f"  [TERMINAL-SETUP] could not record the setup result on the "
+                               f"{hostname} connection ({e}); the sidecar will not carry it")
             logger.info(f"[OK] Connected to {hostname}")
             return dev, resolved
         except Exception as e:
@@ -938,11 +1026,18 @@ _SLOW_CMDS = {"show running-config", "show cdp neighbors detail",
               "show interface trunk", "show interfaces trunk",
               "show interfaces", "show interface"}  # NEW-V15 (full counter dumps)
 
-# Plan A / Tier-2 #6: per-thread flag for the LAST send_cmd call — True when it fell back
-# to send_command_timing (prompt never confirmed => the capture's completeness is unproven).
-# collect() reads it after each command and persists the set as the _capture_meta.json
-# sidecar, so an offline re-analysis can still flag those captures `unverified_prompt`.
+# Plan A / Tier-2 #6: per-thread flags for the LAST send_cmd call.
+#   .fallback — True when the read fell back to send_command_timing (prompt never confirmed =>
+#               the capture's completeness is unproven).
+#   .failed   — True when BOTH transports raised, i.e. NOTHING was read from the device
+#               (review 2026-07-28 #10); "" is then a transport failure, not an answer.
+# collect() reads both after each command and persists them as the _capture_meta.json sidecar,
+# so an offline re-analysis can flag those captures `unverified_prompt` / not-collected.
 _SEND_TRANSPORT = threading.local()
+
+# connect_device stashes {terminal-setup command: reason} here on the live connection object so
+# collect() can persist it; see the [TERMINAL-SETUP] block in connect_device (review #11).
+TERMINAL_SETUP_ATTR = "_assess_terminal_setup_failures"
 
 def send_cmd(dev, cmd: str) -> str:
     # FIX (C2): prefer pattern-based send_command() (waits for the device prompt)
@@ -952,16 +1047,34 @@ def send_cmd(dev, cmd: str) -> str:
     # so behaviour is no worse than before on edge cases.
     timeout = 300 if any(s in cmd for s in _SLOW_CMDS) else 120
     _SEND_TRANSPORT.fallback = False
+    _SEND_TRANSPORT.failed = False
     try:
         return dev.send_command(cmd, read_timeout=timeout) or ""
     except Exception as e:
         logger.warning(f"Command '{cmd}' pattern-read failed ({e}); retrying timing-based")
+        # Review 2026-07-28 #90: a read timeout does NOT stop the device -- the rest of THIS
+        # execution is still arriving on the channel. Re-sending immediately made
+        # send_command_timing return that tail PREPENDED to the second execution's output: one
+        # capture spliced from two executions (and when the tail belonged to a `show running-config`,
+        # config text landing in an unrelated command's file, parsed as that command's evidence).
+        # Drain the channel first so the retry reads only what it asked for; the discarded bytes are
+        # LOGGED, never silently folded into a capture.
+        try:
+            residue = dev.clear_buffer() or ""
+            if residue:
+                logger.warning(f"  [wire] discarded {len(residue)} byte(s) of unread output pending on "
+                               f"the channel before re-sending '{cmd}' — they belong to the timed-out "
+                               f"execution, not to this capture")
+        except Exception as e3:                                        # noqa: BLE001
+            logger.warning(f"  [wire] could not drain the channel before re-sending '{cmd}' ({e3}); "
+                           f"the timing-based capture may splice the timed-out execution's output")
         try:
             out = dev.send_command_timing(cmd, read_timeout=timeout) or ""
             _SEND_TRANSPORT.fallback = True     # only a SUCCESSFUL timing read is an unverified capture
             return out
         except Exception as e2:
             logger.warning(f"Command failed '{cmd}': {e2}")
+            _SEND_TRANSPORT.failed = True       # BOTH transports failed: "" is no answer at all
             return ""
 
 def collect(hostname: str, platform: str, dev, out_dir: str,
@@ -988,14 +1101,42 @@ def collect(hostname: str, platform: str, dev, out_dir: str,
         extra_cmds.extend(["show logging", "show tech-support"])
 
     cmds = list(dict.fromkeys(cmds + extra_cmds))
+    # Review 2026-07-28 #9: the registries are ALSO the offline capture-filename keys, so they carry
+    # controller-REST endpoint paths / controller-native queries. Those must never be typed at a device
+    # exec prompt (see the SSH-WIRE ELIGIBILITY block above). Filter here, at the one place that talks
+    # to the wire — the registries stay whole for --no-collect.
+    wire_cmds = ssh_wire_commands(cmds)
+    withheld = [c for c in cmds if not is_ssh_wire_command(c)]
+    if withheld:
+        logger.info(f"  [wire] {len(withheld)} non-CLI registry string(s) withheld from the SSH session "
+                    f"on {hostname} (controller-REST / controller-native; collected read-only by "
+                    f"cisco_toolkit.rest_collect and read back offline): {', '.join(withheld)}")
+    cmds = wire_cmds
     paths: Dict[str, str] = {}
     command_index: List[dict] = []
     fallback_cmds: Dict[str, str] = {}   # Tier-2 #6: prompt-unverified captures this device
+    # Review #11: a denied/failed `terminal length 0` / `terminal width 511` changes what EVERY capture
+    # below means (paging on / 80-col wrap -> truncated + wrapped text through fixed-column parsers).
+    # connect_device already logged it loudly; persist it so an offline re-analysis can distrust the run.
+    for _tcmd, _twhy in (getattr(dev, TERMINAL_SETUP_ATTR, None) or {}).items():
+        fallback_cmds[_tcmd] = "terminal_setup_failed"
+        logger.warning(f"  [capture-meta] {hostname}: recording terminal_setup_failed for {_tcmd!r} "
+                       f"({_twhy}) — captures from this device are unproven, not observed state")
     started = datetime.now().isoformat()
 
     for cmd in cmds:
         logger.info(f"  Executing: {cmd}")
         out = send_cmd(dev, cmd)
+        if getattr(_SEND_TRANSPORT, "failed", False):
+            # Review 2026-07-28 #10: BOTH transports raised — nothing was read from the device. Writing
+            # "" here produced a capture FILE with paths[cmd] set, and cmd_capture_state ranks `empty`
+            # ABOVE `error`, so a device whose SSH session had died read as one that positively reported
+            # nothing to report. Record the failure and omit the path: the command is then `missing` — a
+            # blind spot — which is the truth. ("Not observed" must never become "healthy".)
+            fallback_cmds[cmd] = "send_failed"
+            logger.warning(f"  [capture] '{cmd}' produced NO capture on {hostname} (both transports "
+                           f"failed) — recorded as send_failed and reported NOT COLLECTED, never empty")
+            continue
         if getattr(_SEND_TRANSPORT, "fallback", False):
             fallback_cmds[cmd] = "timing_fallback"
         fn  = cmd.replace(" ","_").replace("|","_").replace("^","").replace("/","_") + ".txt"
@@ -1035,16 +1176,20 @@ def collect(hostname: str, platform: str, dev, out_dir: str,
         write_json_file(os.path.join(out_dir, "device_info.json"), device_info)
         write_json_file(os.path.join(out_dir, "command_index.json"), {"commands": command_index})
 
-    # Tier-2 #6: persist which captures were prompt-unverified (send_command_timing
-    # fallback) so offline re-analysis can flag them `unverified_prompt`. Written only
-    # when non-empty; the offline loader keys captures by KNOWN command names, so this
+    # Tier-2 #6 (+ review 2026-07-28 #10/#11): persist what is KNOWN to be wrong with this
+    # device's collection — `timing_fallback` (prompt-unverified capture, offline-flagged
+    # `unverified_prompt`), `send_failed` (both transports failed, no capture written at all),
+    # `terminal_setup_failed` (paging/width setup denied, so every capture is unproven). Written
+    # only when non-empty; the offline loader keys captures by KNOWN command names, so this
     # sidecar can never be read as a capture. Fail-soft: a sidecar write error never
     # loses the collection.
     if fallback_cmds:
         try:
             write_json_file(os.path.join(out_dir, CAPTURE_META_FILENAME), fallback_cmds)
-            logger.info(f"  [capture-meta] {len(fallback_cmds)} prompt-unverified capture(s) "
-                        f"recorded in {CAPTURE_META_FILENAME}")
+            _by_reason = {r: sum(1 for v in fallback_cmds.values() if v == r)
+                          for r in sorted(set(fallback_cmds.values()))}
+            logger.info(f"  [capture-meta] {len(fallback_cmds)} collection defect(s) recorded in "
+                        f"{CAPTURE_META_FILENAME}: {_by_reason}")
         except Exception as e:
             logger.warning(f"  capture-meta write failed (non-fatal): {e}")
 

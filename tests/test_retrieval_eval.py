@@ -23,6 +23,7 @@ What must hold (the §6/§7 mechanics, pinned):
 * ``run_eval`` REFUSES on a missing/invalid P2-1 fixture — the harness never builds its own set.
 """
 import json
+import os
 import pathlib
 import subprocess
 
@@ -219,13 +220,50 @@ def test_pool_unjudged_targets_only_judged_strata_and_unjudged_docs(tmp_path):
                     "N-01": ["d.py"]}}
     judged = {"S-01": {"a.py": 3}}
     assert pool_unjudged(runs, judged, rows) == [("M-01", "c.py"), ("S-01", "b.py")]
-    n = append_pooled_qrels({("S-01", "b.py"): 2}, root=str(tmp_path), model="m", date="2026-07-11")
+    n = append_pooled_qrels({("S-01", "b.py"): 2}, root=str(tmp_path), model="m", date="2026-07-11",
+                            corpus_config="digest:absent")
     assert n == 1
     again = append_pooled_qrels({("S-01", "b.py"): 2}, root=str(tmp_path), model="m",
-                                date="2026-07-11")
+                                date="2026-07-11", corpus_config="digest:absent")
     assert again == 0                                # idempotent: an existing judgment is kept
     pooled = load_pooled_qrels(str(tmp_path / "docs" / "quality" / "d10-pooled-qrels.jsonl"))
     assert pooled == {"S-01": {"b.py": 2}}
+
+
+# --- DEC-006 A2 is mechanical, not prose (finding #76) -----------------------------------------
+
+def test_pooled_qrels_never_cross_corpus_configs(tmp_path):
+    """`append_pooled_qrels` always wrote `judge`/`date` provenance and the loader read qid/doc/grade
+    only — so grades minted WITH the vault digest present became the qrels a later digest-ABSENT run
+    scored itself against, which A2 forbids and the results record could not show."""
+    from cisco_toolkit.retrieval_eval import DIGEST_ABSENT_CONFIG, corpus_config_id
+    assert corpus_config_id(None) == corpus_config_id({"present": False}) == DIGEST_ABSENT_CONFIG
+    present = corpus_config_id({"present": True, "entry_count": 4,
+                                "files": [{"file": "digest-1.jsonl", "entries": 4,
+                                           "file_sha256": "a" * 64, "verdict": "verify_feed OK"}]})
+    assert present.startswith("digest:") and present != DIGEST_ABSENT_CONFIG
+    # a REFUSED digest contributes no corpus text, so it must not change the identity either
+    assert corpus_config_id({"present": False, "files": [{"file": "d.jsonl", "entries": 0,
+                                                          "verdict": "REFUSED: bad signature"}]}) \
+        == DIGEST_ABSENT_CONFIG
+
+    path = tmp_path / "docs" / "quality" / "d10-pooled-qrels.jsonl"
+    append_pooled_qrels({("S-01", "a.py"): 3}, root=str(tmp_path), model="m", date="2026-07-01",
+                        corpus_config=present)
+    append_pooled_qrels({("S-01", "b.py"): 2}, root=str(tmp_path), model="m", date="2026-07-28",
+                        corpus_config=DIGEST_ABSENT_CONFIG)
+    path.write_text(path.read_text("utf-8")
+                    + json.dumps({"qid": "S-01", "doc": "legacy.py", "grade": 3}) + "\n",
+                    encoding="utf-8")
+    stats = {}
+    got = load_pooled_qrels(str(path), corpus_config=DIGEST_ABSENT_CONFIG, stats=stats)
+    assert got == {"S-01": {"b.py": 2}}, "a digest-era grade scored a digest-absent run"
+    assert stats["loaded"] == 1 and stats["excluded_other_config"] == 1
+    assert stats["excluded_unknown_config"] == 1 and present in stats["excluded_configs"]
+    assert stats["judges"] == ["m"]                  # the provenance is surfaced, not discarded
+    # ...and the same (qid, doc) may be re-judged under a different config without being deduped away
+    assert append_pooled_qrels({("S-01", "a.py"): 1}, root=str(tmp_path), model="m",
+                               date="2026-07-28", corpus_config=DIGEST_ABSENT_CONFIG) == 1
 
 
 # --- BM25 lane + reference scoring (the [eval] extra) ------------------------------------------------
@@ -360,9 +398,29 @@ def test_run_eval_end_to_end_complete_and_partial(tmp_path):
     results = run_eval(str(root), out_dir=str(out), graph_ranker=_fake_graph_ranker,
                        judge_invoke=judge, today="2026-07-11")
     assert results["judge_gate"]["status"] == "passed"
-    assert results["run_status"] in ("COMPLETE", "INVALID")   # INVALID only if holes stay open
-    assert results["hole@10"]["valid"] is True                # pool judging closed every hole
+    # FIRST run: the systems retrieved a doc no annotator had graded, so the §7 validity bar fails
+    # and the pre-registered verdict is withheld. The run still DOES the §7 remedy (it pools and
+    # judges the gap) — the honest reading of "else INVALID, re-pool".
+    assert results["run_status"] == "INVALID"
+    assert results["hole@10"]["valid"] is False and results["hole@10"][CONFIG_A] > 0
+    assert results["hole@10"]["residual_after_this_run_pooled"][CONFIG_A] == 0.0
+    assert results["pooled_rows_appended"] >= 1
+    assert results["verdicts"]["bm25_earns_place"]["verdict"] == "UNDECIDED"
+    assert "re-pool per §7" in render_markdown(results)
+
+    # SECOND run: the same protocol now scores against grades it did NOT mint -> the bar is cleared
+    # on evidence, and only now may the pre-registered criterion issue.
+    results = run_eval(str(root), out_dir=str(out), graph_ranker=_fake_graph_ranker,
+                       judge_invoke=judge, today="2026-07-11")
+    assert results["hole@10"]["valid"] is True
+    assert results["pooled_rows_appended"] == 0                # nothing new to pool
     assert results["run_status"] == "COMPLETE"
+    assert results["corpus_config"] == "digest:absent"         # DEC-006 A2 identity is recorded
+    assert results["pooled_qrels_provenance"]["loaded"] >= 1
+    pooled_rows = [json.loads(ln) for ln in
+                   (root / "docs" / "quality" / "d10-pooled-qrels.jsonl").read_text("utf-8").splitlines()
+                   if ln.strip()]
+    assert pooled_rows and all(r["corpus_config"] == "digest:absent" for r in pooled_rows)
     ident = results["strata"]["identifier"]
     assert ident["n"] == 1 and ident[CONFIG_A]["mrr@5"] == pytest.approx(1.0)
     assert set(results["strata"]) == {"identifier", "semantic", "multi_hop", "negative"}
@@ -405,6 +463,52 @@ def test_invoke_judge_helper_missing_is_signal_absent(tmp_path):
     from cisco_toolkit import retrieval_eval as RE
     res = RE.invoke_judge_helper([{"pid": "1", "query": "q"}], root=str(tmp_path))
     assert res["ok"] is False and "judge helper missing" in res["reason"]
+
+
+def test_judge_payload_is_never_written_inside_the_repo(tmp_path, monkeypatch):
+    """Finding #67: the pairs payload carries full corpus excerpts INCLUDING vault-digest text. It
+    used to be written to the fixed path docs/quality/.d10-judge-pairs.tmp.json — a git-TRACKED
+    directory, matched by no .gitignore rule, cleaned only by a `finally` a hard kill never reaches
+    (inside a 6h timeout window), and same-named for every concurrent run."""
+    from cisco_toolkit import retrieval_eval as RE
+    root = tmp_path / "repo"
+    (root / "docs" / "quality").mkdir(parents=True)
+    (root / RE.JUDGE_HELPER).write_text("", encoding="utf-8")
+    seen = {}
+
+    class _Ok:
+        returncode = 0
+        stdout = '{"ok": true, "grades": []}'
+        stderr = ""
+
+    def fake_run(cmd, **kw):
+        seen["path"] = cmd[cmd.index("--pairs") + 1]
+        seen["text"] = open(seen["path"], encoding="utf-8").read()
+        seen["existed_during_run"] = os.path.exists(seen["path"])
+        return _Ok()
+
+    monkeypatch.setattr(RE.subprocess, "run", fake_run)
+    secret = "VAULT DIGEST entry: client note"
+    RE.invoke_judge_helper([{"pid": "q1|digest:x", "excerpt": secret}], root=str(root))
+
+    assert seen["existed_during_run"] and secret in seen["text"]      # the helper really got it
+    payload = pathlib.Path(seen["path"]).resolve()
+    assert root.resolve() not in payload.parents, f"payload written inside the repo: {payload}"
+    assert not payload.exists()                                      # removed after the run
+    assert not (root / "docs" / "quality" / ".d10-judge-pairs.tmp.json").exists()
+    assert ".d10-judge-pairs.tmp.json" not in os.listdir(root / "docs" / "quality")
+    # unique per run: two concurrent runs cannot overwrite each other's pairs
+    first = seen["path"]
+    RE.invoke_judge_helper([{"pid": "q2|d", "excerpt": "other"}], root=str(root))
+    assert seen["path"] != first
+
+
+def test_gitignore_backstops_a_legacy_judge_payload_leftover():
+    """A build that predates the move can still have left the payload in docs/quality/; the ignore
+    rule is the backstop that keeps `git add -A` from committing vault-derived text (ADR-0001)."""
+    rules = [ln.strip() for ln in (ROOT / ".gitignore").read_text("utf-8").splitlines()
+             if ln.strip() and not ln.startswith("#")]
+    assert "docs/quality/.d10-judge-pairs.tmp.json" in rules
 
 
 def test_tracked_files_raises_on_git_failure(monkeypatch, tmp_path):

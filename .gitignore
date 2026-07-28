@@ -81,6 +81,13 @@ docs/vault-digest/digest-*.jsonl
 # (Human decision 2026-07-10, resolving the #319/#321 duplicate-design split.)
 docs/quality/query_log.jsonl
 
+# D10 retrieval-eval judge payload. The pairs file carries full corpus excerpts — INCLUDING
+# vault-digest text — so it must never reach the pushable repo (two-store rule, ADR-0001).
+# retrieval_eval.invoke_judge_helper now writes it to the system temp dir instead; this rule is the
+# backstop for a leftover from a build that predates that (a hard kill skipped the cleanup `finally`).
+docs/quality/.d10-judge-pairs.tmp.json
+docs/quality/.d10-judge-pairs*.json
+
 # Atlas portable build outputs (ADR-0004 P2) — the bundle is built, never committed
 portable/build/
 portable/dist/

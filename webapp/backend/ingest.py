@@ -69,10 +69,46 @@ class EngineRunError(RuntimeError):
     """The engine pipeline failed or timed out over an extracted collection."""
 
 
-def _safe_extract(raw: bytes, dest: Path) -> int:
-    """Extract the archive under ``dest``, refusing traversal/absolute entries and bomb-sized content.
+#: Windows reserved DEVICE names. ``open()`` on one of these SUCCEEDS and writes to the device
+#: rather than to a file: bytes sent to ``NUL`` vanish without an error, ``COM1``-``COM9`` go out a
+#: serial port, ``CON``/``PRN``/``AUX`` reach the console and the printer. The reservation is per
+#: path COMPONENT and ignores the extension, so ``core1/NUL`` and ``core1/nul.txt`` are both the
+#: null device — and both pass a containment check, because the path really does resolve inside
+#: ``dest``. Checked on every OS, not only Windows: a ZIP extracted on a Linux server is carried to
+#: a Windows field laptop, where the same names become devices again.
+_WIN_RESERVED = frozenset(["con", "prn", "aux", "nul"]
+                          + [f"com{i}" for i in range(1, 10)]
+                          + [f"lpt{i}" for i in range(1, 10)])
 
-    Returns the number of files written."""
+
+def _unsafe_component(part: str) -> str:
+    """Why this path component cannot be written as an ordinary file, or "" if it is fine."""
+    if part in (".", ".."):
+        # Not filenames but navigation, and `..` trips the trailing-dot rule below. The containment
+        # check owns these: it resolves the whole path and reports TRAVERSAL, which is both the
+        # right diagnosis and the one the API contract is pinned on.
+        return ""
+    if part.rstrip(". ") != part:
+        # Windows silently strips trailing dots and spaces when opening, so `show_run.txt.` lands
+        # as `show_run.txt` — a second entry overwriting a capture of that name, with the count
+        # below still reporting both as written.
+        return ("ends in a dot or space, which Windows silently strips (it would land on top of "
+                "another entry)")
+    if part.split(".")[0].strip().lower() in _WIN_RESERVED:
+        return "is a reserved device name - writing it would go to the device, not to a file"
+    return ""
+
+
+def _safe_extract(raw: bytes, dest: Path) -> int:
+    """Extract the archive under ``dest``, refusing traversal/absolute entries, names that are not
+    files on this platform, and bomb-sized content.
+
+    Returns the number of files actually on disk afterwards — not the entry count. Those differ
+    for reasons that have nothing to do with a hostile archive: two entries whose names collide
+    on this filesystem (``SHOW_VERSION.TXT`` and ``show_version.txt``, both legal in a ZIP built
+    on Linux) leave ONE file, and the count is reported to the uploader as
+    ``n_archive_files``. ``dest`` is a freshly created directory in both callers, so a walk of it
+    is exactly what this extraction wrote."""
     try:
         zf = zipfile.ZipFile(io.BytesIO(raw))
     except zipfile.BadZipFile as e:
@@ -89,6 +125,10 @@ def _safe_extract(raw: bytes, dest: Path) -> int:
     dest_resolved = dest.resolve()
     for info in infos:
         name = info.filename.replace("\\", "/")
+        for part in name.split("/"):
+            why = _unsafe_component(part) if part else ""
+            if why:
+                raise IngestError(f"Archive entry {info.filename!r} {why} - refused.")
         target = (dest / name).resolve()
         if not str(target).startswith(str(dest_resolved) + os.sep):
             raise IngestError(f"Archive entry {info.filename!r} escapes the extraction directory "
@@ -100,9 +140,18 @@ def _safe_extract(raw: bytes, dest: Path) -> int:
         # Per-entry failures are user-fixable archive problems, not server faults: encrypted
         # entries (RuntimeError), unsupported compression like Deflate64 (NotImplementedError),
         # CRC mismatch on a truncated file (BadZipFile), names invalid on this OS (OSError).
+        # NB the check below sits OUTSIDE this handler on purpose: IngestError IS a ValueError,
+        # so raising it here would be caught and re-wrapped as an extraction failure.
         except (OSError, RuntimeError, NotImplementedError, ValueError, zipfile.BadZipFile) as e:
             raise IngestError(f"Cannot extract archive entry {info.filename!r}: {e}") from e
-    return len(infos)
+        # A write that reports success but leaves nothing behind is the failure the name guard
+        # above exists to prevent. Refusing LOUDLY here is the defence in depth for that class -
+        # the count below would only under-report it, which is exactly the kind of quiet the rest
+        # of this module is organised against. Cheap - one stat per entry.
+        if not target.is_file():
+            raise IngestError(f"Archive entry {info.filename!r} reported as written but is not on "
+                              f"disk afterwards - refused.")
+    return sum(len(filenames) for _dirpath, _dirnames, filenames in os.walk(dest))
 
 
 def _find_collection_root(dest: Path) -> Tuple[Path, List[str]]:
@@ -427,10 +476,16 @@ def _written_by_this_run(p: Path, engine_names: frozenset,
 
 
 def _prior_set_in(out: Path, stem: str) -> List[str]:
-    """Canonical deliverable filenames already sitting in ``out`` before this run starts."""
-    from cisco_toolkit.docmeta import cli_artifacts
+    """Canonical engine output already sitting in ``out`` before this run starts.
 
-    return [f for _k, _n, f in cli_artifacts(stem) if (out / f).is_file()]
+    The engine's own sidecars count, not only the family documents. ``.snapshot.json`` is the
+    fullest record of another engagement that exists — the entire assessment, and redaction keeps
+    hostnames — while ``.run_manifest.json`` / ``.phase_timings.json`` describe THAT run, not this
+    one. Checking only ``cli_artifacts`` let all three ride inside a delivery unlisted: they are
+    not family documents, so ``_family_state`` never names them either, and a run that does not
+    rewrite one leaves the other job's copy under this job's name. ``_engine_filenames`` already
+    owns the closed set of names an engine run writes, so ask it rather than restate the list."""
+    return sorted(f for f in _engine_filenames(stem) if (out / f).is_file())
 
 
 def _refuse_reused_out_dir(out: Path, stem: str) -> None:
@@ -534,6 +589,24 @@ def _family_state(stem: str, out: Path, produced: set) -> List[Dict[str, str]]:
         gaps.append({"key": key, "name": name, "filename": filename,
                      "state": state, "detail": detail})
     return gaps
+
+
+def _scrub_paths(text: str, workdir: Path, *others: Path) -> str:
+    """Strip absolute paths out of engine output before this module reports it.
+
+    Both channels surface the tail: to a (possibly remote, unauthenticated) uploader through the
+    API 500 detail AND the success report (WEBAP-01), and to whoever receives the folder the field
+    engineer zips. Scrubbing only the private workdir was not enough — the engine is pointed at
+    ``--collection-dir``, which is the CALLER's absolute path, so one breadcrumb naming it
+    (``... 'D:\\Acme-Bank-Merger\\collection\\core1\\show_run.txt'``) disclosed the server's
+    filesystem layout and the engagement's own folder name. ``_engine_gap_lines`` already scrubbed
+    three roots; this sibling scrubbed one. The workdir keeps its distinct ``<workdir>`` label
+    because it is the one path whose mention is expected (the engine runs there and writes there),
+    and it is replaced FIRST so a path nested under it is scrubbed by prefix."""
+    text = (text or "").replace(str(workdir), "<workdir>")
+    for p in others:
+        text = text.replace(str(p), "<path>")
+    return text
 
 
 def _engine_gap_lines(engine_output: str, scrub: Tuple[Path, ...], limit: int = 8) -> List[str]:
@@ -718,7 +791,10 @@ def _phase_ok(value: Any) -> bool:
     return value is not None and bool(value)
 
 
-def _assert_redaction_phases_ran(out_xlsx: Path, engine_output: str) -> None:
+def _assert_redaction_phases_ran(out_xlsx: Path, engine_output: str,
+                                 engine_names: frozenset = frozenset(),
+                                 pre_existing: Optional[Dict[str, Tuple[float, int]]] = None
+                                 ) -> None:
     """Refuse unless BOTH redaction phases are positively confirmed to have run and succeeded.
 
     Two independent signals, because either alone can go missing: the phase-ledger sidecar and the
@@ -733,10 +809,25 @@ def _assert_redaction_phases_ran(out_xlsx: Path, engine_output: str) -> None:
     caller always passes ``--redact``, so a missing row is genuinely anomalous, never routine.
 
     The sidecar being ABSENT is the one tolerated case: its write is fail-soft in the engine, so
-    absence proves nothing either way and the stderr arm carries the run alone."""
+    absence proves nothing either way and the stderr arm carries the run alone.
+
+    A sidecar left by an EARLIER run is not evidence, and — unlike an absent one — it REFUSES.
+    ``--reuse-out`` renders into a folder that already holds one, so on every reuse run the
+    previous job's ledger sits under this run's name, and an ``ok: true`` ledger from a run that
+    DID redact would otherwise certify a run whose redaction phase failed soft. Absence is
+    tolerated because there is genuinely no evidence either way; a stale ledger is different, and
+    is the anomalous case rather than the routine one: the engine reached this check only by
+    exiting 0, and it writes the sidecar after the redaction phases, so a normal reuse run
+    rewrites it. ``engine_names``/``pre_existing`` are the caller's pre-run census; with neither
+    supplied (the direct-call contract tests use that form) every file reads as this run's, which
+    is the pre-existing behaviour."""
     failed, unverified = [], []
     timings = Path(str(out_xlsx)[: -len(".xlsx")] + ".phase_timings.json")
-    if timings.is_file():
+    if timings.is_file() and not _written_by_this_run(timings, engine_names, pre_existing or {}):
+        unverified.append("the phase ledger in the output folder is unchanged from before this run "
+                          "started, so it belongs to an EARLIER run and this run left none of its "
+                          "own")
+    elif timings.is_file():
         rows: Optional[List[dict]] = None
         try:
             rows = _phase_rows(json.loads(timings.read_text(encoding="utf-8", errors="replace")))
@@ -799,6 +890,65 @@ def _assert_scrubbed(snap_path: Path) -> int:
             f"{snap_path.name}: {shown}. The output is NOT safe to share; nothing was deleted, "
             f"so inspect it before sending anything.")
     return len(leaks)
+
+
+#: The engine's own record of the opt-in raw-capture scrub (Phase 40,
+#: ``COLLECT_PARSE_V3_23_0.py:3271-3278``). Unlike every other redaction step it is NOT a
+#: ``_run_phase``: it leaves no row in the phase ledger, so ``_REDACTION_PHASES`` cannot see it,
+#: and its failure line matches neither ``_ENGINE_GAP_RE`` nor the ``[SKIP] Phase`` scrape. These
+#: two lines are the only evidence that exists for whether it ran.
+_SCRUB_OK_RE = re.compile(r"redact-collection: scrubbed secret values in (\d+) of (\d+) "
+                          r"raw capture file", re.I)
+_SCRUB_FAIL_RE = re.compile(r"redact-collection failed", re.I)
+
+
+def _count_txt_captures(root: Path) -> int:
+    """How many ``.txt`` captures the raw-capture scrub SHOULD have scanned under ``root``.
+
+    Matches ``redact_collection_dir``'s own selector exactly (``fn.endswith(".txt")``, case
+    sensitive, recursive from the collection root the engine was pointed at), because the whole
+    value of the number is comparing like with like."""
+    n = 0
+    for _dirpath, _dirnames, filenames in os.walk(root):
+        n += sum(1 for f in filenames if f.endswith(".txt"))
+    return n
+
+
+def _collection_scrub_outcome(engine_output: str, present: int) -> Tuple[bool, str]:
+    """``(verified, detail)`` for the opt-in raw-capture secret scrub — what HAPPENED, never the
+    flag that was passed in.
+
+    This was reported straight off the argument (``bool(redact_collection)``), which is the one
+    thing that cannot be wrong: it echoed the request back as though it were the result. The
+    difference between the two is the enable secrets, SNMP communities and pre-shared keys still
+    sitting in the raw captures on the stick, under an exit code of 0.
+
+    Three ways the scrub can fall short, and none of them is loud on its own:
+    ``redact_collection_dir`` skips a capture it cannot read and carries on (``logger.debug``);
+    the whole phase is wrapped in a log-and-continue ``except``; and the phase runs after the
+    manifest seal, so nothing downstream depends on it. So the counts are read back and compared
+    with what is actually in the folder — ``scanned`` covers only the files it could open, and a
+    shortfall means captures were left untouched.
+
+    The FULL engine output is searched, not the 12-line tail: Phase 40 is followed by the perf
+    sidecar and the closing banner, so its line is routinely pushed out of the tail. The counts are
+    extracted rather than the line copied — the engine's line names the collection directory, and
+    this string is reported (WEBAP-01)."""
+    if _SCRUB_FAIL_RE.search(engine_output or ""):
+        return False, ("the engine reported that the raw-capture scrub FAILED - the captures are "
+                       "unchanged and still hold secret values")
+    m = _SCRUB_OK_RE.search(engine_output or "")
+    if not m:
+        return False, ("COULD NOT VERIFY - the engine's output carries no record of the "
+                       "raw-capture scrub, so there is no evidence it ran; treat the captures as "
+                       "still holding secret values")
+    changed, scanned = int(m.group(1)), int(m.group(2))
+    if scanned < present:
+        return False, (f"INCOMPLETE - the engine scrubbed {changed} of the {scanned} capture "
+                       f"file(s) it could read, but {present} .txt capture(s) are in the folder: "
+                       f"{present - scanned} were not readable and were left untouched")
+    return True, (f"scrubbed secret values in {changed} of {scanned} raw capture file(s), in "
+                  f"place (IPs and hostnames kept by design)")
 
 
 def run_redaction_folder(path: Any, out_dir: Any, redact_collection: bool = False,
@@ -924,21 +1074,39 @@ def run_redaction_folder(path: Any, out_dir: Any, redact_collection: bool = Fals
             proc = subprocess.run(cmd, cwd=str(workdir), capture_output=True,
                                   encoding="utf-8", errors="replace",
                                   stdin=subprocess.DEVNULL, timeout=REDACT_TIMEOUT_S)
+        # Every exit below this point can leave *_redacted* files in `out`: the engine writes the
+        # workbook and the documents as it goes, and nothing is deleted on failure (destroying
+        # evidence is the worse failure). Those filenames ASSERT the property the run did not get
+        # to certify, and stderr scrolls away - so each failure exit leaves the on-disk marker
+        # too, exactly as the redaction-check failure below already did.
         except subprocess.TimeoutExpired as e:
+            _mark_output_unsafe(out, "the engine run TIMED OUT before any check could be made")
             raise EngineRunError(
                 f"Redaction run timed out after {REDACT_TIMEOUT_S}s ({len(device_dirs)} devices). "
                 f"Partial output may exist in {out} - treat it as UNREDACTED.") from e
         duration = round(time.monotonic() - t0, 1)
-        log_tail = "\n".join(((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
-                             .splitlines()[-12:]).replace(str(workdir), "<workdir>")
+        engine_output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        log_tail = _scrub_paths("\n".join(engine_output.strip().splitlines()[-12:]),
+                                workdir, out, source)
         if proc.returncode != 0:
+            _mark_output_unsafe(out, f"the engine exited with code {proc.returncode}")
             raise EngineRunError(f"Engine exited with code {proc.returncode}. Log tail:\n{log_tail}")
 
         snap_path = Path(str(out_xlsx)[: -len(".xlsx")] + ".snapshot.json")
         if not snap_path.is_file():
+            _mark_output_unsafe(out, "the engine wrote no snapshot, so nothing could be verified")
             raise EngineRunError(f"Engine completed but wrote no snapshot. Log tail:\n{log_tail}")
+        if not _written_by_this_run(snap_path, engine_names, pre_existing):
+            # Under --reuse-out an EARLIER run's snapshot sits under this run's name. Verifying
+            # that one certifies the previous job and says nothing about this one - the check
+            # would pass over a run that produced no snapshot at all.
+            _mark_output_unsafe(out, "the snapshot under this run's name was left by an EARLIER run")
+            raise EngineRunError(
+                f"Engine wrote no snapshot of its own - {snap_path.name} is unchanged from before "
+                f"this run started, so it belongs to an EARLIER run and there is nothing from THIS "
+                f"run to verify. Do NOT send anything from this folder. Log tail:\n{log_tail}")
         try:
-            _assert_redaction_phases_ran(out_xlsx, (proc.stdout or "") + (proc.stderr or ""))
+            _assert_redaction_phases_ran(out_xlsx, engine_output, engine_names, pre_existing)
             _assert_scrubbed(snap_path)
         except EngineRunError:
             _mark_output_unsafe(out, "a redaction check FAILED")
@@ -955,8 +1123,14 @@ def run_redaction_folder(path: Any, out_dir: Any, redact_collection: bool = Fals
         # files are UNREDACTED, which is both false and the fastest way to make the real alarm
         # unbelievable. The set stays usable; the gap is disclosed here, on the console and on disk.
         missing = _family_state(out_xlsx.stem, out, set(written))
-        gap_lines = _engine_gap_lines((proc.stdout or "") + "\n" + (proc.stderr or ""),
-                                      (workdir, out, source))
+        gap_lines = _engine_gap_lines(engine_output, (workdir, out, source))
+        # What the raw-capture scrub actually DID, read back from the engine's own record and
+        # compared against the captures that are really there. Only computed when it was asked
+        # for: the folder walk is pointless otherwise, and "not requested" is not an outcome.
+        scrub_ok, scrub_detail = (False, "")
+        if redact_collection:
+            scrub_ok, scrub_detail = _collection_scrub_outcome(engine_output,
+                                                               _count_txt_captures(root))
         marker = None
         if missing:
             marker = _mark_output_incomplete(out, missing, gap_lines)
@@ -977,7 +1151,15 @@ def run_redaction_folder(path: Any, out_dir: Any, redact_collection: bool = Fals
             "skipped_dirs": skipped,
             "devices_json": provenance,
             "n_source_files": n_files,
-            "redacted_collection": bool(redact_collection),
+            # Three keys, because one bool could not tell the three states apart and the old one
+            # silently conflated two of them. `..._requested` is the FLAG (what was asked for);
+            # `redacted_collection` is the OUTCOME (positively confirmed by the engine's own
+            # record, so False also covers "asked for, could not be confirmed"); `..._detail` is
+            # the sentence with the counts. Reporting the flag as the outcome told a field
+            # engineer the secrets were off the stick when the scrub may never have run.
+            "redacted_collection_requested": bool(redact_collection),
+            "redacted_collection": scrub_ok,
+            "redacted_collection_detail": scrub_detail,
             "engine_seconds": duration,
             "engine_log_tail": log_tail,
         }
@@ -1033,8 +1215,10 @@ def _assess_tree(tree: Path, n_files: int, workdir: Path) -> Tuple[Dict[str, Any
     # WEBAP-01: this tail is surfaced to the (possibly remote, unauthenticated) uploader via the API 500
     # detail AND the success report. Strip the server-side working-directory absolute path so an engine
     # breadcrumb cannot disclose the server's filesystem layout. The engine runs with cwd=workdir and writes
-    # its outputs under it, so paths in its output are workdir-rooted.
-    log_tail = log_tail.replace(str(workdir), "<workdir>")
+    # its outputs under it, so paths in its output are workdir-rooted -- EXCEPT --collection-dir. For the
+    # ZIP channel that is under workdir and the one replacement covered it; for run_collection_folder it is
+    # the caller's own absolute path, which is how the engagement folder name leaked into the tail.
+    log_tail = _scrub_paths(log_tail, workdir, tree)
     if proc.returncode != 0:
         raise EngineRunError(f"Engine exited with code {proc.returncode}. Log tail:\n{log_tail}")
 

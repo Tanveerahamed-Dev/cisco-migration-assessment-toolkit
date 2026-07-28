@@ -50,9 +50,22 @@ def produce_feed(raw_advisories: List[Dict[str, Any]], *, forbidden: Tuple[str, 
 
 
 def run(raw_advisories: List[Dict[str, Any]], out_dir: str = os.path.join("docs", "intel"), *,
-        forbidden: Tuple[str, ...] = (), generated: str = "", redact_ips: bool = True) -> Tuple[str, List[str]]:
+        forbidden: Tuple[str, ...] = (), generated: str = "", redact_ips: bool = True,
+        allow_empty: bool = False) -> Tuple[str, List[str]]:
     """Produce a feed from already-fetched advisories and write it under ``out_dir``. Returns ``(path,
-    redactions)``. The fetch is the caller's choice (fixture vs live), keeping this write step egress-free."""
+    redactions)``. The fetch is the caller's choice (fixture vs live), keeping this write step egress-free.
+
+    **An EMPTY feed is refused by default** (2026-07-28): a signed, ``sanitized: true`` feed carrying zero
+    advisories is indistinguishable, to the air-gapped consumer, from a fetch that verified there was
+    nothing to report — so a source that silently failed publishes a valid-and-current attestation over no
+    data at all. The source layer now raises on unreachability (``sources.SourceUnavailable``); this is the
+    second, publish-side gate. Pass ``allow_empty=True`` to record a genuinely-empty sweep deliberately."""
+    if not raw_advisories and not allow_empty:
+        raise ValueError(
+            "refusing to publish a SIGNED feed with zero advisories: to the consumer that is a positive "
+            "attestation that the source was read and had nothing, which a failed fetch cannot claim. "
+            "Fix/retry the source, or pass allow_empty=True (CLI: --allow-empty) if the sweep really was "
+            "empty.")
     feed, redactions = produce_feed(raw_advisories, forbidden=forbidden, generated=generated,
                                     redact_ips=redact_ips)
     os.makedirs(out_dir, exist_ok=True)
@@ -79,6 +92,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     out_dir = _opt("--out", os.path.join("docs", "intel"))
     generated = _opt("--generated", "")
     forbidden = tuple(t for t in _opt("--forbidden", "").split(",") if t)
+    allow_empty = "--allow-empty" in argv
+    fetch_stats: Dict[str, Any] = {}
 
     source = _opt("--source")
     if source == "cisa-kev":
@@ -103,7 +118,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             from cisco_toolkit.intel_feed import load_feeds
             cves = sorted({a["id"] for a in load_feeds().get("advisories", []) if a.get("id")})
         print(f"[research-lane] LIVE egress: Cisco PSIRT openVuln — fixed versions for {len(cves)} CVE(s)")
-        raw = cisco_psirt_source(cves, client_id=cid, client_secret=csec)
+        from research_lane.sources import SourceUnavailable
+        try:
+            raw = cisco_psirt_source(cves, client_id=cid, client_secret=csec, stats=fetch_stats)
+        except SourceUnavailable as ex:                     # reached-and-empty != could-not-reach
+            print(f"[research-lane] REFUSED — {ex}")
+            print(f"[research-lane] nothing was written (fetch stats: {fetch_stats})")
+            return 3
     elif "--live" in argv:
         url = _opt("--url")
         if not url:
@@ -115,13 +136,21 @@ def main(argv: Optional[List[str]] = None) -> int:
         fx = _opt("--fixture")
         if not fx:
             print("usage: python -m research_lane.producer --fixture <advisories.json> [--generated DATE] "
-                  "[--forbidden A,B] [--out docs/intel]   |   --source cisa-kev [--limit N]   |   "
-                  "--live --url <url>")
+                  "[--forbidden A,B] [--out docs/intel] [--allow-empty]   |   --source cisa-kev "
+                  "[--limit N]   |   --source cisco-psirt [--cve-file F]   |   --live --url <url>")
             return 2
         raw = fixture_source(fx)
 
-    path, redactions = run(raw, out_dir=out_dir, forbidden=forbidden, generated=generated)
-    print(f"[research-lane] wrote {path} ({len(raw)} advisory(ies); {len(redactions)} redaction(s) applied)")
+    try:
+        path, redactions = run(raw, out_dir=out_dir, forbidden=forbidden, generated=generated,
+                               allow_empty=allow_empty)
+    except ValueError as ex:                                # the empty-feed publish gate
+        print(f"[research-lane] REFUSED — {ex}")
+        return 3
+    skipped = (f"; {fetch_stats['no_advisory']} CVE(s) had no Cisco advisory"
+               if fetch_stats.get("no_advisory") else "")
+    print(f"[research-lane] wrote {path} ({len(raw)} advisory(ies); {len(redactions)} redaction(s) "
+          f"applied{skipped})")
     return 0
 
 

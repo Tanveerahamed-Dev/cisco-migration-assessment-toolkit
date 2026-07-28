@@ -7,8 +7,18 @@ failure blast-radius, topology chokepoints, architecture coverage, move-group re
 single-node what-if failure injection, the L2 failover twin (STP re-election + FHRP
 takeover, actuated with a target) and its target-free readiness rollup, and fleet /
 per-device health. It mirrors analysis the explorer / webapp already compute; it never
-SSHes, never writes, never hits the network. Input is a snapshot file the engine already
-produced.
+SSHes, never writes, and makes no OUTBOUND connection of any kind. Input is a snapshot
+file the engine already produced.
+
+**Transports (read this before using anything but the default).** `--transport stdio`
+(the default) is a pipe to the parent client: no socket, nothing to reach. `sse` and
+`streamable-http` make the server LISTEN, and every tool above answers over that socket
+with no authentication whatsoever -- hostnames, management IPs (search_devices), punch-list
+findings and blast radius. There is no token, no allowlist and no per-tool gate; the only
+control is the bind address, so this module PINS it to loopback itself (LISTEN_HOST) rather
+than inheriting the `mcp` package's default, and refuses a non-loopback `FASTMCP_HOST`.
+"Offline / no egress" describes the analysis, never the listener: on a shared host any
+local user or process can read the whole assessment.
 
 Design: the data layer (the module-level functions below) is PURE and stdlib-only -- it
 imports no `mcp`, so it is fully unit-testable without the optional dependency. The MCP
@@ -24,10 +34,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from typing import Any, Dict, List, Optional
 
 from . import failover, whatif
+from .attestation import loopback_only
+
+# The socket transports serve the ENTIRE snapshot unauthenticated, so the bind address is
+# this module's pin, not the `mcp` package's default. Loopback only; there is no flag to
+# widen it (a wider bind would need an auth story this server does not have).
+LISTEN_HOST = "127.0.0.1"
+LISTEN_PORT = 8000
+SOCKET_TRANSPORTS = ("sse", "streamable-http")
 
 # The tools this server registers, in a stable order. Kept module-level so the test can
 # assert the wired surface without importing `mcp`.
@@ -370,12 +389,20 @@ _PURE = {
 
 # --- MCP wiring (lazy `mcp` import) ----------------------------------------------------
 
-def build_server(snap: Dict[str, Any], name: str = "cisco-assessment"):
+def build_server(snap: Dict[str, Any], name: str = "cisco-assessment",
+                 host: str = LISTEN_HOST, port: int = LISTEN_PORT):
     """Build a FastMCP server whose tools are bound to `snap`. Imports `mcp` lazily so the
-    base package never depends on it. Returns the FastMCP instance (call .run() to serve)."""
+    base package never depends on it. Returns the FastMCP instance (call .run() to serve).
+
+    `host`/`port` are passed EXPLICITLY (they matter only for the socket transports). The
+    installed `mcp` already defaults to 127.0.0.1 and its init kwargs outrank `FASTMCP_*`
+    env vars -- but that is the dependency's promise across `mcp>=1.28,<2`, not ours, and
+    the payload here is a whole assessment served without authentication. Pinning it here
+    makes the loopback bind this module's own guarantee, so a dependency default that
+    changes back to 0.0.0.0 (as older FastMCP shipped) cannot expose the snapshot."""
     from mcp.server.fastmcp import FastMCP  # optional dependency, resolved only here
 
-    server = FastMCP(name)
+    server = FastMCP(name, host=host, port=port)
     P = _PURE
 
     @server.tool()
@@ -456,11 +483,16 @@ def build_server(snap: Dict[str, Any], name: str = "cisco-assessment"):
 def main(argv: Optional[List[str]] = None) -> None:
     ap = argparse.ArgumentParser(
         prog="cisco-mcp-server",
-        description="Read-only MCP server over a produced cisco-assess snapshot.json (offline, no egress).")
+        description="Read-only MCP server over a produced cisco-assess snapshot.json. The ANALYSIS is "
+                    "offline (no SSH, no outbound call); the default stdio transport opens no socket. "
+                    "The sse / streamable-http transports LISTEN and serve the whole snapshot "
+                    f"UNAUTHENTICATED -- they are pinned to {LISTEN_HOST} and are not 'no egress'.")
     ap.add_argument("snapshot", help="path to a snapshot.json produced by cisco-assess")
     ap.add_argument("--name", default="cisco-assessment", help="server name advertised to the MCP client")
-    ap.add_argument("--transport", default="stdio", choices=["stdio", "sse", "streamable-http"],
-                    help="MCP transport (default: stdio)")
+    ap.add_argument("--transport", default="stdio", choices=["stdio", *SOCKET_TRANSPORTS],
+                    help=f"MCP transport (default: stdio -- a pipe, no socket). sse / streamable-http "
+                         f"open an UNAUTHENTICATED listener on {LISTEN_HOST}:{LISTEN_PORT} serving "
+                         f"hostnames, management IPs and findings to anything local that connects")
     args = ap.parse_args(argv)
 
     try:
@@ -468,6 +500,18 @@ def main(argv: Optional[List[str]] = None) -> None:
     except ImportError:
         sys.exit("the MCP server needs the optional 'mcp' extra:\n"
                  "  pip install cisco-migration-assessment-toolkit[mcp]")
+
+    if args.transport in SOCKET_TRANSPORTS:
+        env_host = os.environ.get("FASTMCP_HOST")
+        if env_host:
+            try:                                   # the loopback rule is shared with the Ollama carve-out
+                loopback_only(env_host, env_var="FASTMCP_HOST")
+            except ValueError as ex:
+                sys.exit(f"refusing to serve the snapshot off-host: {ex}\nThis server has NO "
+                         f"authentication, so it binds {LISTEN_HOST} only.")
+        print(f"[cisco-mcp-server] {args.transport} listener on {LISTEN_HOST}:{LISTEN_PORT} -- "
+              f"UNAUTHENTICATED: every tool (hostnames, mgmt IPs, findings, blast radius) answers any "
+              f"local caller. Use --transport stdio unless you need the socket.", file=sys.stderr)
 
     snap = load_snapshot(args.snapshot)
     server = build_server(snap, name=args.name)

@@ -355,3 +355,64 @@ def test_each_tool_call_returns_its_pure_function_output(rich):
     for name, args, expected in cases:
         got = _reassemble(asyncio.run(server.call_tool(name, args)), expected)
         assert got == expected, f"tool {name!r} returned {got!r} != its pure output {expected!r}"
+
+
+# --- the socket transports are a listener, not "no egress" (finding #56) ---------------
+# `--transport sse|streamable-http` serves the ENTIRE snapshot -- hostnames, mgmt IPs via
+# search_devices, punch-list findings, blast radius -- with no authentication, while the
+# module docstring said "never hits the network" and the CLI help said "offline, no egress".
+# The bind address is the only control there is, so it must be THIS module's pin (the
+# installed mcp defaults to loopback, but that is the dependency's promise, not ours).
+
+def test_build_server_pins_the_listener_host_itself(monkeypatch):
+    pytest.importorskip("mcp")
+    import mcp.server.fastmcp as F
+    seen = {}
+
+    class _FakeFastMCP:
+        def __init__(self, name=None, **kw):
+            seen.update({"name": name}, **kw)
+
+        def tool(self, *a, **k):
+            return lambda fn: fn
+
+    monkeypatch.setattr(F, "FastMCP", _FakeFastMCP)
+    M.build_server({}, name="probe")
+    assert seen.get("host") == M.LISTEN_HOST == "127.0.0.1", (
+        "build_server must pass the bind host explicitly -- inheriting the mcp package's "
+        f"default leaves an unauthenticated snapshot server one dependency default away "
+        f"from 0.0.0.0 (got {seen!r})")
+    assert seen.get("port") == M.LISTEN_PORT
+
+
+def test_cli_help_stops_claiming_no_egress_for_socket_transports(capsys):
+    with pytest.raises(SystemExit):
+        M.main(["--help"])
+    text = capsys.readouterr().out
+    assert "UNAUTHENTICATED" in text                     # the exposure is stated, not implied
+    assert "offline, no egress)" not in text             # the old unqualified claim is gone
+    assert M.LISTEN_HOST in text                         # ...and the bind is disclosed
+    assert "UNAUTHENTICATED" in M.__doc__ or "no authentication" in M.__doc__
+
+
+def test_socket_transport_refuses_a_non_loopback_fastmcp_host(monkeypatch, tmp_path):
+    """A FASTMCP_HOST pointing off-host states an intent this server must never honour: it has
+    no auth, so it says so and exits instead of silently binding loopback anyway.
+
+    `build_server` is faked for the WHOLE test on purpose: without the guard this path reaches
+    `server.run(transport='sse')`, which really does start a listener (that is the finding).
+    """
+    pytest.importorskip("mcp")
+    snap = tmp_path / "s.json"
+    snap.write_text("{}", encoding="utf-8")
+    calls = {}
+    monkeypatch.setattr(M, "build_server", lambda s, name=None: type(
+        "S", (), {"run": lambda self, transport=None: calls.setdefault("transport", transport)})())
+    monkeypatch.setenv("FASTMCP_HOST", "0.0.0.0")
+    with pytest.raises(SystemExit) as ex:
+        M.main([str(snap), "--transport", "sse"])
+    assert "refusing to serve the snapshot off-host" in str(ex.value)
+    assert calls == {}                                  # never reached the listener
+    monkeypatch.setenv("FASTMCP_HOST", "127.0.0.1")     # a loopback value is accepted (no exit here)
+    M.main([str(snap), "--transport", "sse"])
+    assert calls["transport"] == "sse"

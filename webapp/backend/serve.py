@@ -284,7 +284,8 @@ def run_redaction(src: str, out: str, redact_collection: bool = False,
     print(f"{APP_TITLE}: redacting {src}\n  -> {out}\n"
           f"  Rendering the full document family; this can take several minutes.")
     if redact_collection:
-        print("  --redact-collection: the RAW captures will also be scrubbed IN PLACE.")
+        print("  --redact-collection: the RAW captures will ALSO be scrubbed in place; the result "
+              "is reported below.")
     try:
         report = ingest_mod.run_redaction_folder(src, out, redact_collection=redact_collection,
                                                  reuse_out=reuse_out)
@@ -320,6 +321,18 @@ def run_redaction(src: str, out: str, redact_collection: bool = False,
     # redaction phases actually ran. Claiming more than that ("every IP/MAC/serial ... verified")
     # certified roughly three times what the code inspects — and hostnames are kept BY DESIGN, so
     # a "fully anonymous" mental model is exactly the wrong one to leave the engineer with.
+    # The raw-capture scrub is the ONE control that removes cleartext secrets (enable secrets, SNMP
+    # communities, PSKs) from the captures on the stick, and it is fail-soft: redact_collection_dir
+    # skips any capture it cannot read or rewrite and continues. Its verdict is therefore reported
+    # from what HAPPENED, and it has to be printed -- an engineer who asked for the scrub and reads
+    # only a success banner will believe the secrets are gone.
+    if report.get("redacted_collection_requested"):
+        verdict = "SCRUBBED" if report.get("redacted_collection") else "*** NOT VERIFIED ***"
+        print(f"\n  Raw captures (--redact-collection): {verdict}\n"
+              f"    {report.get('redacted_collection_detail', 'no detail reported')}")
+        if not report.get("redacted_collection"):
+            print("    The RAW captures may still hold secrets in cleartext. Do not hand the\n"
+                  "    collection folder over until you have confirmed the scrub yourself.")
     print("  Checked: the engine's redaction phases ran, and no private (RFC 1918) address\n"
           "  survives in the redacted snapshot.\n"
           "  NOT checked: MACs, serials, public/IPv6 addresses, or the workbook's own cells.\n"
