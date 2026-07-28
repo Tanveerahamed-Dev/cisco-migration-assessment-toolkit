@@ -5,12 +5,20 @@ name: webapp-ci
 # strict) + production-built. Both jobs are fully offline — no SSH, no live network. Path-filtered so
 # it only runs when the webapp (or the engine it imports) actually changes.
 
+# The path filter must cover everything the backend suite's RESULT depends on, not just the code it
+# imports: a bump in requirements.txt / requirements-dev.txt / pyproject.toml, or a change to
+# pytest.ini, can break these jobs while touching no file under webapp/ or cisco_toolkit/ — and
+# because none of these three jobs is a required branch-protection context, a filtered-out run is
+# indistinguishable from a green one at the merge button.
+# (Spelled out twice on purpose — the GitHub Actions workflow parser does not support YAML
+# anchors/aliases, so the two lists must be kept identical by hand; tests/test_hooks_automation.py
+# asserts they still match.)
 on:
   push:
     branches: [main]
-    paths: ["webapp/**", "cisco_toolkit/**", "COLLECT_PARSE_V3_23_0.py", ".github/workflows/webapp-ci.yml"]
+    paths: ["webapp/**", "cisco_toolkit/**", "COLLECT_PARSE_V3_23_0.py", "requirements.txt", "requirements-dev.txt", "pyproject.toml", "pytest.ini", ".github/workflows/webapp-ci.yml"]
   pull_request:
-    paths: ["webapp/**", "cisco_toolkit/**", "COLLECT_PARSE_V3_23_0.py", ".github/workflows/webapp-ci.yml"]
+    paths: ["webapp/**", "cisco_toolkit/**", "COLLECT_PARSE_V3_23_0.py", "requirements.txt", "requirements-dev.txt", "pyproject.toml", "pytest.ini", ".github/workflows/webapp-ci.yml"]
   workflow_dispatch:
 
 permissions:

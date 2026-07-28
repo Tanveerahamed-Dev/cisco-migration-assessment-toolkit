@@ -12,8 +12,12 @@ cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" || exit 0
 [ -f graphify-out/graph.json ] || exit 0
 
 # Only spend time if graphify-extracted CODE actually changed (not docs/config).
+# The trailing `"?` matters (same defect verify-green.sh carried): git QUOTES a porcelain path
+# containing a space or a non-ASCII byte, so `?? "my probe.py"` ends in a quote, not in .py — the
+# refresh silently stopped applying to exactly those files and the graph went stale for them
+# with no signal at all. Reproduced 2026-07-28 against a throwaway repo.
 changed=$(git status --porcelain 2>/dev/null \
-  | grep -Ei '\.(py|js|ts|tsx|jsx|mjs|cjs|go|rs|java|rb|c|h|cpp|hpp|cc|cs|kt|swift|php|scala|lua|html)$' \
+  | grep -Ei '\.(py|js|ts|tsx|jsx|mjs|cjs|go|rs|java|rb|c|h|cpp|hpp|cc|cs|kt|swift|php|scala|lua|html)"?$' \
   || true)
 [ -z "$changed" ] && exit 0
 

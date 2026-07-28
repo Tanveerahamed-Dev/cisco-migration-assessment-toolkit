@@ -31,6 +31,11 @@ jobs:
       name: pypi
       url: https://pypi.org/p/cisco-migration-assessment-toolkit
     permissions:
+      # A job-level `permissions:` block REPLACES the workflow-level one outright — every scope not
+      # listed here is set to `none`. Listing only id-token therefore dropped `contents: read`, which
+      # actions/checkout needs for its token-authenticated clone, so the publish job could fail at
+      # step one and never reach the build. Both scopes must be spelled out here.
+      contents: read           # actions/checkout
       id-token: write          # OIDC token for PyPI trusted publishing (no stored secret/API token)
     steps:
       - uses: actions/checkout@v4
