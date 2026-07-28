@@ -431,3 +431,206 @@ def test_append_interface_rows_never_presents_a_previous_runs_value_as_current(t
     assert row[3:7] == [None, None, None, None], row            # NOT last run's VLAN / native / BPDU / desc
     assert row[7:] == ["Facilities", "RACK-B12"], row           # the engineer's annotations survive
     wb.save(str(tmp_path / "iface.xlsx"))
+
+
+# =============================================================================
+# Round-2 deep pass (XL2). The first review of this 4,300-line file was capped at 8 candidates, so
+# several of its fixes landed on ONE of the exits that emit the same claim. These pin the residue.
+# =============================================================================
+
+def test_switch_inventory_keeps_an_observed_zero_apart_from_never_observed(tmp_path):
+    """[XL2-1, review #55 second exit] `active_ports` is `int | None`: None = the up/down state was never
+    observed, 0 = an OBSERVED fact (every port down). The Capacity sheet was fixed to keep them apart;
+    the Switch Inventory sheet's blanket `if val == 0: val = ""` still collapsed both into one blank, so
+    the SAME workbook rendered the same field two contradictory ways. The blanket rule stays right for
+    the int fields that have no None state (# Modules / Total Ports / # Power Supplies): 0 there IS the
+    not-observed marker."""
+    from cisco_toolkit.excel import (INVENTORY_SHEET_NAME, write_capacity_sheet,
+                                     write_device_inventory_sheet)
+    from cisco_toolkit.model import DevicePhysical
+
+    dps = [DevicePhysical(hostname="OBSERVED-ZERO", total_ports=48, active_ports=0),
+           DevicePhysical(hostname="NOT-OBSERVED", total_ports=48, active_ports=None)]
+    wb = harden_workbook(Workbook())
+    write_device_inventory_sheet(wb, dps)
+    write_capacity_sheet(wb, dps)                      # the sheet whose rendering it must agree with
+    p = tmp_path / "inv.xlsx"
+    wb.save(str(p))
+    ws = load_workbook(str(p))[INVENTORY_SHEET_NAME]
+    hdr = [c.value for c in ws[1]]
+    col = hdr.index("Active Ports") + 1
+    rows = {ws.cell(r, 1).value: ws.cell(r, col).value for r in (2, 3)}
+    assert rows["OBSERVED-ZERO"] == 0, rows            # a fact, not a blank
+    assert rows["NOT-OBSERVED"] is None, rows          # the not-observed blank stays a blank
+    # and the two sheets of one workbook now say the same thing about the same field
+    cap = load_workbook(str(p))["Capacity"]
+    ccol = [c.value for c in cap[1]].index("Active Ports") + 1
+    capv = {cap.cell(r, 1).value: cap.cell(r, ccol).value for r in (2, 3)}
+    assert capv["OBSERVED-ZERO"] == rows["OBSERVED-ZERO"] and capv["NOT-OBSERVED"] == rows["NOT-OBSERVED"]
+    # the fields whose 0 really IS the not-observed marker keep the blanket blank
+    assert ws.cell(2, hdr.index("# Modules") + 1).value is None
+
+
+def test_sheet_collision_guard_folds_case_like_openpyxl_and_excel(tmp_path):
+    """[XL2-2, review #86 residue] The delete-if-exists guard matched EXACT case, but openpyxl's own dedupe
+    (`utils.avoid_duplicate_name`) folds case and so does Excel -- a workbook cannot hold both 'Findings'
+    and 'FINDINGS'. So a customer template tab named 'FINDINGS' slipped the guard, openpyxl renamed the
+    ENGINE's sheet to 'Findings1' anyway, and #86 reopened on exactly the input it was written for (a
+    customer-supplied template, where tab casing is arbitrary)."""
+    from cisco_toolkit.excel import (EXEC_SUMMARY_SHEET_NAME, FINDINGS_SHEET_NAME,
+                                     write_executive_summary_sheet, write_findings_sheet)
+
+    for tab in ("FINDINGS", "findings", "FiNdInGs"):
+        wb = harden_workbook(Workbook())
+        wb.active.title = tab
+        wb[tab]["A1"] = "CUSTOMER STALE TAB"
+        write_findings_sheet(wb, {})
+        assert wb.sheetnames == [FINDINGS_SHEET_NAME], (tab, wb.sheetnames)
+        assert wb[FINDINGS_SHEET_NAME]["A1"].value == "Severity"      # the ENGINE's header, not the tab
+
+    # the worst instance: the exec summary then move_sheet()s the MIS-NAMED duplicate to position 0 while
+    # the customer's stale tab keeps the canonical name.
+    wb2 = harden_workbook(Workbook())
+    wb2.active.title = "executive summary"
+    wb2["executive summary"]["A1"] = "CUSTOMER STALE TAB"
+    write_executive_summary_sheet(wb2, [], [], [], [])
+    assert wb2.sheetnames == [EXEC_SUMMARY_SHEET_NAME], wb2.sheetnames
+    p = tmp_path / "case.xlsx"
+    wb2.save(str(p))
+    assert "STALE" not in str(load_workbook(str(p))[EXEC_SUMMARY_SHEET_NAME]["A1"].value)
+
+
+def test_link_duplex_speed_discloses_what_it_could_not_compare(tmp_path):
+    """[XL2-3, audit-5 #6 second exit] 'Link Duplex-Speed' and 'Trunk Native-VLAN' compare the TWO ENDS of
+    a CDP/LLDP link, so both can only see links whose far end was also collected. The coverage disclosure
+    was added to the native-VLAN sheet and not to its twin, which kept printing a bare
+    'clean / No duplex/speed mismatches on inter-switch links'. On an access-only collection -- every
+    uplink landing on an uncollected core -- that is a definitive fleet-wide all-clear over ZERO
+    comparisons."""
+    from cisco_toolkit.excel import write_link_phy_sheet, write_trunk_native_sheet
+
+    def up(port, nbr, nbr_port, **kw):
+        return _iface(port, cdp_neighbor=nbr, neighbor_port=nbr_port, endpoint_type="Switch",
+                      switchport_mode="Trunk", **kw)
+
+    # two observed uplinks, both to an UNCOLLECTED core -> nothing is comparable
+    blind = {"ACC-1": {"Gi1/0/49": up("Gi1/0/49", "CORE-1", "Gi1/1", duplex="full", speed="1000")},
+             "ACC-2": {"Gi1/0/49": up("Gi1/0/49", "CORE-1", "Gi1/2", duplex="half", speed="1000")}}
+    wb = harden_workbook(Workbook())
+    write_link_phy_sheet(wb, blind)
+    write_trunk_native_sheet(wb, blind)
+    p = tmp_path / "blind.xlsx"
+    wb.save(str(p))
+    got = load_workbook(str(p))["Link Duplex-Speed"].cell(2, 2).value
+    assert "0 inter-switch link(s) with both ends collected were compared" in got, got
+    assert "2 of 2 observed link(s) had an uncollected far end" in got, got
+    assert "not a fleet-wide guarantee" in got, got
+    # the twin still says the same thing about the same population (one owner, no drift)
+    twin = load_workbook(str(p))["Trunk Native-VLAN"].cell(2, 2).value
+    assert "0 inter-switch link(s) with both ends collected were compared" in twin, twin
+
+    # a REAL mismatch (both ends collected): the rows are there AND the coverage line still follows --
+    # a reader looking at findings most needs to know what the check could not see.
+    seen = {"A": {"Gi1/1": up("Gi1/1", "B", "Gi1/1", duplex="full", speed="1000")},
+            "B": {"Gi1/1": up("Gi1/1", "A", "Gi1/1", duplex="half", speed="1000")}}
+    wb2 = harden_workbook(Workbook())
+    write_link_phy_sheet(wb2, seen)
+    p2 = tmp_path / "seen.xlsx"
+    wb2.save(str(p2))
+    ws = load_workbook(str(p2))["Link Duplex-Speed"]
+    assert ws.cell(2, 2).value == "duplex", [ws.cell(2, c).value for c in range(1, 5)]
+    assert ws.cell(3, 1).value == "coverage"
+    assert "1 inter-switch link(s) with both ends collected were compared" in ws.cell(3, 2).value
+
+
+def test_stp_roots_never_claims_aligned_for_a_vlan_it_could_not_compare(tmp_path):
+    """[XL2-4] `stp_root_findings` ABSTAINS twice: on an MST record (both checks are PVST/RPVST-only) and
+    on a VLAN with no collected gateway SVI (it cannot be 'misaligned' with nothing). The sheet read those
+    abstentions as an empty findings list and printed the CLEAN value -- 'Aligned? = yes' and
+    'Accidental root? = no'. On an access-only collection that is a fabricated 'aligned' on every row
+    (observed exactly so in a shipped deliverable). Absence of evidence is never health."""
+    from cisco_toolkit.excel import HEALTH_NOT_OBSERVED, STP_ROOTS_SHEET_NAME, write_stp_roots_sheet
+
+    roots = {"SW-A": {"10": {"is_root": True, "root_priority": 32778},      # no gateway collected anywhere
+                      "20": {"is_root": True, "root_priority": 4096},       # root IS the gateway -> aligned
+                      "30": {"is_root": True, "root_priority": 8192}},      # gateway elsewhere -> misaligned
+             "SW-B": {"0": {"is_root": True, "root_priority": 32768, "is_mst": True}}}
+    ifaces = {"SW-A": {"Vlan20": _iface("Vlan20", svi_ip="10.0.20.1 255.255.255.0")},
+              "SW-C": {"Vlan30": _iface("Vlan30", svi_ip="10.0.30.1 255.255.255.0")}}
+    wb = harden_workbook(Workbook())
+    write_stp_roots_sheet(wb, roots, ifaces)
+    p = tmp_path / "stp.xlsx"
+    wb.save(str(p))
+    ws = load_workbook(str(p))[STP_ROOTS_SHEET_NAME]
+    got = {str(ws.cell(r, 1).value): [ws.cell(r, c).value for c in range(1, 7)]
+           for r in range(2, ws.max_row + 1)}
+    # VLAN 10: nothing to compare against -> abstain, never "yes"
+    assert got["10"][5] == HEALTH_NOT_OBSERVED, got["10"]
+    assert "no gateway SVI collected" in got["10"][4], got["10"]
+    # MST instance: analyze evaluated NEITHER verdict -> both columns abstain
+    assert got["0"][3] == HEALTH_NOT_OBSERVED and got["0"][5] == HEALTH_NOT_OBSERVED, got["0"]
+    # the two genuinely-evaluated cases are unchanged (this is not just asserting NOT OBSERVED everywhere)
+    assert got["20"][5] == "yes" and got["20"][4] == "SW-A", got["20"]
+    assert got["30"][5] == "no - root != gateway" and got["30"][4] == "SW-C", got["30"]
+    # and an MST abstention is never painted with the colour of a real result
+    mst_row = [r for r in range(2, ws.max_row + 1) if str(ws.cell(r, 1).value) == "0"][0]
+    assert str(ws.cell(mst_row, 6).fill.fgColor.rgb).endswith("EFEFEF"), ws.cell(mst_row, 6).fill.fgColor.rgb
+
+
+def test_subnet_reachability_discloses_the_served_subnet_cut(tmp_path):
+    """[XL2-5] The 'L2: subnets via gateway' join sliced `served_subnets[:8]` with NO disclosure, while the
+    destination-subnet join two lines above used the '(+N)' pattern -- the same pattern this module's
+    32,767-char cell guard cites as the house rule, naming THIS sheet. For an access switch that column is
+    the whole answer to 'which subnets do my endpoints live in': a silent cut is a coverage lie."""
+    from cisco_toolkit.excel import SUBNET_REACH_SHEET_NAME, write_subnet_reachability_sheet
+
+    def dev(host, n):
+        return {"host": host, "is_l3": False, "destination_subnets": [], "destination_count": 0,
+                "reachable_count": 0, "reachable_sources": {}, "default_next_hop": "",
+                "bgp_received_count": 0,
+                "served_subnets": [{"subnet": "192.168.%d.0/24" % i, "gateway": "CORE-%d" % i}
+                                   for i in range(n)]}
+
+    wb = harden_workbook(Workbook())
+    write_subnet_reachability_sheet(wb, {"per_device": [dev("ACC-1", 20), dev("ACC-2", 8)]})
+    p = tmp_path / "subnet.xlsx"
+    wb.save(str(p))
+    ws = load_workbook(str(p))[SUBNET_REACH_SHEET_NAME]
+    cut = ws.cell(2, 8).value
+    assert cut.endswith(" (+12)"), cut                 # 20 given, 8 shown, the other 12 DISCLOSED
+    assert cut.count(";") == 7, cut                    # still 8 rendered entries
+    exact8 = ws.cell(3, 8).value                       # exactly 8 -> nothing was cut -> no marker
+    assert "(+" not in exact8 and exact8.count(";") == 7, exact8
+
+
+def test_capacity_warn_fill_only_colours_the_axis_that_is_bound(tmp_path):
+    """[XL2-6] A colour is a claim. `if flags and col in (6, 10)` amber-filled BOTH utilisation cells
+    whenever EITHER flag fired, so a PoE-bound switch at 8% port utilisation read 'port-bound' -- and a
+    switch whose active_ports was never observed got the amber over the BLANK cell that exists precisely
+    to withhold that claim (review #55)."""
+    from cisco_toolkit.excel import CAPACITY_SHEET_NAME, write_capacity_sheet
+    from cisco_toolkit.model import DevicePhysical
+
+    def dp(host, total, active, cap, drawn):
+        d = DevicePhysical(hostname=host)
+        d.model, d.total_ports, d.active_ports = "C9300-48P", total, active
+        d.power_capacity_w, d.power_drawn_w = cap, drawn
+        return d
+
+    wb = harden_workbook(Workbook())
+    write_capacity_sheet(wb, [dp("POE-ONLY", 48, 4, "740", "700"),        # 8% ports, 95% PoE
+                              dp("PORTS-UNKNOWN", 48, None, "740", "700"),
+                              dp("PORT-ONLY", 48, 46, "740", "100")])     # 96% ports, 14% PoE
+    p = tmp_path / "cap.xlsx"
+    wb.save(str(p))
+    ws = load_workbook(str(p))[CAPACITY_SHEET_NAME]
+
+    def amber(cell):
+        return str(cell.fill.fgColor.rgb).endswith("FCE5CD")
+
+    seen = {ws.cell(r, 1).value: (amber(ws.cell(r, 6)), amber(ws.cell(r, 10)), ws.cell(r, 6).value)
+            for r in range(2, 5)}
+    assert seen["POE-ONLY"] [:2] == (False, True), seen["POE-ONLY"]
+    assert seen["PORT-ONLY"][:2] == (True, False), seen["PORT-ONLY"]
+    # not-observed port utilisation: blank cell, and NO colour claiming anything about it
+    assert seen["PORTS-UNKNOWN"] == (False, True, None), seen["PORTS-UNKNOWN"]

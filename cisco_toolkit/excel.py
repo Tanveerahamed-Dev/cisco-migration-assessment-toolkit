@@ -197,6 +197,14 @@ def _new_sheet(wb, name: str):
        hand-rolled `if NAME in wb.sheetnames: del wb[NAME]`; ~28 did not. Doing it HERE fixes the
        whole class instead of a named subset, and cannot drift again.
 
+       The match must be CASE-INSENSITIVE. openpyxl's own dedupe (`utils.avoid_duplicate_name`) folds
+       case, and so does Excel -- a workbook cannot hold both 'Findings' and 'FINDINGS'. An exact-case
+       `name in wb.sheetnames` therefore missed a customer tab named 'FINDINGS' / 'executive summary',
+       openpyxl renamed the engine's sheet to 'Findings1' anyway, and the whole defect reopened on the
+       one input it is written for (a customer-supplied template, where tab casing is arbitrary). The
+       Executive Summary is the worst instance again: it then move_sheet()s the MIS-NAMED duplicate to
+       position 0 while the customer's stale tab keeps the canonical name.
+
     2. SANITIZATION (review #63). Every `write_*` is a PUBLIC entry point taking a caller-built
        workbook, but the control-char / formula-injection guard lived only in `harden_workbook()`,
        which no writer called or asserted -- a caller that skipped it lost both protections with no
@@ -204,8 +212,8 @@ def _new_sheet(wb, name: str):
        idempotent) and wraps the new sheet's cell()/append(), so a writer is safe on its own.
        `harden_workbook()` is still the right call for the TEMPLATE's pre-existing sheets."""
     _install_cell_value_guard()
-    if name in wb.sheetnames:
-        del wb[name]
+    for existing in [s for s in wb.sheetnames if s.lower() == (name or "").lower()]:
+        del wb[existing]
     ws = wb.create_sheet(name)
     _harden_ws(ws)
     return ws
@@ -372,7 +380,16 @@ def write_device_inventory_sheet(wb, all_device_physical: List[DevicePhysical]) 
     for row, dp in enumerate(all_device_physical, 2):
         for col, (_, field) in enumerate(INVENTORY_COLUMNS, 1):
             val = getattr(dp, field, "")
-            if val == 0: val = ""
+            # `val == 0 -> ""` is right for the int fields model.DevicePhysical declares `int = 0` with no
+            # None state (num_power_supplies / num_modules / total_ports): 0 there IS the not-observed
+            # marker. `active_ports` is the ONE exception -- it is `int | None`, where None means the
+            # up/down state was never observed and 0 is an OBSERVED fact (every port down). Blanking both
+            # made this sheet contradict the Capacity sheet of the SAME workbook, which renders the pair as
+            # 0 vs blank (review #55, fixed there only). Same defect class, a second exit.
+            if field == "active_ports":
+                val = "" if val is None else val
+            elif val == 0:
+                val = ""
             c = ws.cell(row=row, column=col, value=val)
             c.font = DAT_FONT
             c.alignment = DAT_C if field in _NUM else DAT_L
@@ -809,13 +826,19 @@ def write_capacity_sheet(wb, all_device_physical: List[DevicePhysical]) -> None:
     r = 2
     for rec in compute_capacity(all_device_physical):
         flags = rec["flags"]
+        # A colour is a claim, so shade the cell the flag is ABOUT -- not both. `if flags and col in (6, 10)`
+        # amber-filled Port Util % for a device flagged only PoE-bound, including when that cell is BLANK
+        # because active_ports was never observed: an amber "port-bound" claim over an unobserved value, in
+        # the same row whose blank exists precisely to withhold that claim (review #55).
+        _hot = {6: any(f.startswith("Port-bound") for f in flags),
+                10: any(f.startswith("PoE-bound") for f in flags)}
         vals = [rec["hostname"], rec["model"], rec["total_ports"], rec["active_ports"], rec["free_ports"],
                 rec["port_util"], rec["poe_capacity_w"], rec["poe_drawn_w"], rec["poe_remaining_w"],
                 rec["poe_util"], "; ".join(flags)]
         for col, v in enumerate(vals, 1):
             c = ws.cell(row=r, column=col, value=v); c.font = DAT_FONT
             c.alignment = DAT_C if 3 <= col <= 10 else DAT_L
-            if flags and col in (6, 10): c.fill = warn_fill
+            if _hot.get(col) and v != "": c.fill = warn_fill
         r += 1
     _census_autofit(ws, len(cols), r - 1)
     logger.info(f"  [OK] '{CAPACITY_SHEET_NAME}' sheet: {len(all_device_physical)} device(s)")
@@ -938,7 +961,14 @@ def write_subnet_reachability_sheet(wb, subnet_intelligence: dict) -> None:
     for rec in _sec_rows(subnet_intelligence.get("per_device")):
         dest = rec.get("destination_subnets", [])
         srcs = ", ".join(f"{k}:{v}" for k, v in (rec.get("reachable_sources") or {}).items())
-        served = "; ".join(f"{s.get('subnet')} (gw {s.get('gateway')})" for s in rec.get("served_subnets", [])[:8])
+        # DISCLOSE the cut, exactly as the destination-subnet join two lines below does. This column is an
+        # access switch's whole answer to "which subnets do my endpoints live in" -- a migration-scoping
+        # fact -- and it was silently amputated at 8 while the row's own '# Dest' cell and column C both
+        # carried honest totals. A silent truncation is a coverage lie, not a display nicety; this module's
+        # cell-cap guard cites THIS sheet's '(+N)' pattern as the house rule (see _xls_cell_value).
+        _served = _sec_rows(rec.get("served_subnets"))
+        served = "; ".join(f"{s.get('subnet')} (gw {s.get('gateway')})" for s in _served[:8]) \
+            + (f" (+{len(_served) - 8})" if len(_served) > 8 else "")
         vals = [rec.get("host"), "L3" if rec.get("is_l3") else "L2",
                 ", ".join(dest[:12]) + (f" (+{len(dest) - 12})" if len(dest) > 12 else ""),
                 rec.get("destination_count", 0), rec.get("reachable_count", 0), srcs,
@@ -1888,11 +1918,29 @@ def write_stp_roots_sheet(wb, all_stp_roots: dict, all_interfaces: dict) -> None
     """Write the 'STP Root Bridges' sheet: per VLAN, which switch is the spanning-tree root, its
     bridge priority, whether that root is ACCIDENTAL (default priority -> elected on a MAC tiebreak,
     not by design) and whether it ALIGNS with the VLAN's L3 gateway (root != gateway -> the path to
-    the default gateway hairpins through the root). Migration-relevant L2 design hygiene."""
+    the default gateway hairpins through the root). Migration-relevant L2 design hygiene.
+
+    Both verdict columns are TRI-STATE. `stp_root_findings` abstains in two cases -- an MST record (both
+    checks are PVST/RPVST-only, it `continue`s) and a VLAN for which NO gateway SVI was collected (it
+    cannot be in `misaligned`, because there is nothing to be misaligned WITH). Reading those abstentions
+    as an empty findings list rendered 'Accidental root? = no' and 'Aligned? = yes': the clean value, for
+    an axis nothing was ever compared on. On an access-only collection -- where every gateway SVI sits on
+    an uncollected core -- that is a fabricated fleet-wide 'aligned' down the whole sheet (seen exactly so
+    in a shipped deliverable). Absence of evidence is never health, so those rows carry
+    HEALTH_NOT_OBSERVED instead."""
     from cisco_toolkit.analyze import stp_root_findings
     f = stp_root_findings(all_stp_roots, all_interfaces)
     acc = {(x["vlan"], x["host"]) for x in f["accidental"]}
     mis = {x["vlan"]: x["gateways"] for x in f["misaligned"]}
+    # Which VLANs the gateway join could see AT ALL -- keyed exactly as stp_root_findings' own `gw_of`
+    # (leading-zero-tolerant SVI id + a non-empty svi_ip), so "no gateway observed" here means precisely
+    # "the analyze-side join had nothing to compare", not a second opinion about it.
+    gw_seen: Dict[str, set] = {}
+    for _h, _ifaces in (all_interfaces or {}).items():
+        for _port, _d in (_ifaces or {}).items():
+            _m = re.match(r"^Vlan0*(\d+)$", _port or "", re.IGNORECASE)
+            if _m and (getattr(_d, "svi_ip", "") or "").strip():
+                gw_seen.setdefault(_m.group(1), set()).add(_h)
     ws = _new_sheet(wb, STP_ROOTS_SHEET_NAME)
     for col, h in enumerate(["VLAN", "Root switch", "Root priority", "Accidental root?",
                              "VLAN gateway(s)", "Aligned?"], 1):
@@ -1902,18 +1950,36 @@ def write_stp_roots_sheet(wb, all_stp_roots: dict, all_interfaces: dict) -> None
     for host in sorted(all_stp_roots or {}):
         for vlan, r in (all_stp_roots[host] or {}).items():
             if r.get("is_root"):
-                root_of.setdefault(vlan, (host, r.get("root_priority")))
+                root_of.setdefault(vlan, (host, r.get("root_priority"), bool(r.get("is_mst"))))
     warn = PatternFill("solid", fgColor="FCE5CD")
+    blind = PatternFill("solid", fgColor="EFEFEF")   # neutral grey — the established not-observed shade
     r = 2; nrows = 0
     for vlan in sorted(root_of, key=lambda v: int(v)):
-        host, prio = root_of[vlan]
+        host, prio, is_mst = root_of[vlan]
         is_acc = (vlan, host) in acc
         gws = mis.get(vlan)
+        seen = gw_seen.get(vlan)
         ws.cell(r, 1, vlan); ws.cell(r, 2, host)
         ws.cell(r, 3, prio if prio is not None else "")
-        ws.cell(r, 4, "yes (default priority)" if is_acc else "no")
-        ws.cell(r, 5, ", ".join(gws) if gws else "(root hosts gateway / none collected)")
-        ws.cell(r, 6, "no - root != gateway" if gws else "yes")
+        if is_mst:
+            # analyze skips MST outright: the 32768+vlan test would cry wolf on an INSTANCE number and the
+            # gateway join is keyed on real VLAN ids, so neither verdict was evaluated for this row.
+            ws.cell(r, 4, HEALTH_NOT_OBSERVED)
+            ws.cell(r, 5, "(MST instance — root/gateway join is PVST/RPVST-only)")
+            ws.cell(r, 6, HEALTH_NOT_OBSERVED)
+        else:
+            ws.cell(r, 4, "yes (default priority)" if is_acc else "no")
+            if gws:
+                ws.cell(r, 5, ", ".join(gws)); ws.cell(r, 6, "no - root != gateway")
+            elif seen:
+                ws.cell(r, 5, ", ".join(sorted(seen))); ws.cell(r, 6, "yes")
+            else:
+                ws.cell(r, 5, "(no gateway SVI collected for this VLAN)")
+                ws.cell(r, 6, HEALTH_NOT_OBSERVED)
+        if is_mst or (not is_acc and not gws and not seen):
+            ws.cell(r, 6).fill = blind
+            if is_mst:
+                ws.cell(r, 4).fill = blind
         if is_acc or gws:
             for col in range(1, 7):
                 ws.cell(r, col).fill = warn
@@ -3358,6 +3424,27 @@ def compute_trunk_native_coverage(all_interfaces: Dict[str, Dict[str, InterfaceD
     return {"links_observed": observed, "links_compared": compared}
 
 
+def _link_pair_coverage_note(all_interfaces: Dict[str, Dict[str, InterfaceData]],
+                             what: str = "trunk") -> str:
+    """The ONE owner of the two-ended link checks' coverage disclosure. Every check that compares the two
+    ENDS of a CDP/LLDP link (native VLAN, duplex/speed) can only see links whose far end was also
+    collected -- `_trunk_link_ends` yields `b is None` otherwise and the check skips the link. Stating that
+    population is what keeps "no mismatch found" from reading as a fleet-wide guarantee.
+
+    It lives here, shared, because the disclosure was written for the native-VLAN sheet only (audit-5 #6)
+    while 'Link Duplex-Speed' -- the same population, the same both-ends gate, the next writer down --
+    still printed a bare "clean". On an access-only collection that is a definitive-sounding all-clear
+    over ZERO comparisons. `what` names the thing whose far end is missing so each sheet reads naturally;
+    the native-VLAN wording is unchanged."""
+    cov = compute_trunk_native_coverage(all_interfaces)
+    gap = cov["links_observed"] - cov["links_compared"]
+    return (f"{cov['links_compared']} inter-switch link(s) with both ends collected were compared"
+            + (f"; {gap} of {cov['links_observed']} observed link(s) had an uncollected far end and were "
+               f"NOT compared" if gap else "")
+            + f". Uncollected devices, and any {what} whose far end was not collected, are NOT assessed "
+              "-- this is not a fleet-wide guarantee.")
+
+
 TRUNK_NATIVE_SHEET_NAME = "Trunk Native-VLAN"
 
 def write_trunk_native_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> None:
@@ -3388,13 +3475,7 @@ def write_trunk_native_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceDa
     # The disclosure is emitted in BOTH branches: listing mismatches while staying silent about how many links
     # could not be compared conceals the same blind spot as the clean case -- worse, in fact, since a reader
     # looking at real findings most needs to know what the check could not see.
-    cov = compute_trunk_native_coverage(all_interfaces)
-    _gap = cov["links_observed"] - cov["links_compared"]
-    _coverage = (f"{cov['links_compared']} inter-switch link(s) with both ends collected were compared"
-                 + (f"; {_gap} of {cov['links_observed']} observed link(s) had an uncollected far end and were "
-                    f"NOT compared" if _gap else "")
-                 + ". Uncollected devices, and any trunk whose far end was not collected, are NOT assessed "
-                   "-- this is not a fleet-wide guarantee.")
+    _coverage = _link_pair_coverage_note(all_interfaces, "trunk")
     if r == 2:
         ws.cell(2, 1, "no mismatch")
         ws.cell(2, 2, f"No native-VLAN mismatch found. {_coverage}")
@@ -3421,14 +3502,13 @@ def compute_duplex_speed_mismatches(all_interfaces: Dict[str, Dict[str, Interfac
     """Duplex / speed mismatches on inter-switch links (mirrors the explorer's linkPhyConsistency): the two
     ends report a different OPERATIONAL duplex (one full, the other half -- the classic 'up but slow/flaky')
     or speed. 'auto-...' that hasn't resolved is skipped. Reuses analyze.compute_topology_links. Returns
-    [{a_host,a_port,b_host,b_port, duplex:(ad,bd)|None, speed:(asp,bsp)|None}] (speeds in Mbps)."""
-    from cisco_toolkit.analyze import compute_topology_links, _canon_host, _canon_host_map
-    cmap = _canon_host_map(all_interfaces)
+    [{a_host,a_port,b_host,b_port, duplex:(ad,bd)|None, speed:(asp,bsp)|None}] (speeds in Mbps).
+
+    Walks `_trunk_link_ends` (the same generator the native-VLAN check and its coverage banner use) rather
+    than re-deriving the identical pairing inline, so the population this reports on and the population the
+    sheet's coverage note describes provably cannot drift apart."""
     out: List[dict] = []
-    for L in compute_topology_links(all_interfaces):
-        a = all_interfaces.get(str(L["a_host"]), {}).get(str(L["a_port"]))
-        bh = cmap.get(_canon_host(str(L["b_host"])))
-        b = all_interfaces.get(bh, {}).get(str(L["b_port"])) if bh else None
+    for L, a, b, bh in _trunk_link_ends(all_interfaces):
         if a is None or b is None:
             continue
         ad, bd = _norm_duplex(getattr(a, "duplex", "")), _norm_duplex(getattr(b, "duplex", ""))
@@ -3465,8 +3545,19 @@ def write_link_phy_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]
         else:
             ws.cell(r, 3, f"speed {_spd(d['speed'][0])}"); ws.cell(r, 4, f"speed {_spd(d['speed'][1])}")
         r += 1
+    # coverage-honest, exactly as the 'Trunk Native-VLAN' twin: this check compares the TWO ENDS of a link,
+    # so it can only see links whose far end was also collected (compute_duplex_speed_mismatches skips the
+    # rest). The bare "clean" printed a definitive fleet-wide all-clear over a population that, on an
+    # access-only collection, is EMPTY -- every uplink lands on an uncollected core. Emitted in BOTH
+    # branches for the same reason the native-VLAN sheet gives: a reader looking at real findings most
+    # needs to know what the check could not see.
+    _coverage = _link_pair_coverage_note(all_interfaces, "link")
     if r == 2:
-        ws.cell(2, 1, "clean"); ws.cell(2, 2, "No duplex/speed mismatches on inter-switch links")
+        ws.cell(2, 1, "no mismatch")
+        ws.cell(2, 2, f"No duplex/speed mismatch found on inter-switch links. {_coverage}")
+    else:
+        ws.cell(r, 1, "coverage")
+        ws.cell(r, 2, _coverage)
     for i, w in enumerate([46, 12, 18, 18], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
