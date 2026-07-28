@@ -231,3 +231,68 @@ def test_producer_cli_refuses_when_the_source_is_unreachable(monkeypatch, tmp_pa
     assert "REFUSED" in capsys.readouterr().out
     assert not out_dir.exists()                               # no signed feed on disk
     _ = urllib.error                                          # (imported to pin the failure shape)
+
+
+# --- Rule-3: the identifier SHAPES a client name is actually written in ------------------------
+# The operator configures the CLIENT's name; what is written in a note/advisory is the DEVICE's or
+# the site's. Each case below leaked a live client identifier into a feed still signed
+# `sanitized: true` with an EMPTY redaction list — i.e. the proof-of-scrub said nothing was found.
+
+def test_multi_word_token_catches_its_hostname_spellings():
+    """`--forbidden "Acme Bank"` must catch ACME-BANK-CORE-01 / ACME_BANK_CORE / acme-bank.example.com
+    / AcmeBankCore01. Before separator-tolerant matching every one of these survived verbatim."""
+    for text in ("ACME-BANK-CORE-01 lost its uplink",
+                 "ACME_BANK_CORE_01 lost its uplink",
+                 "AcmeBankCore01 lost its uplink",
+                 "https://acme-bank.example.com/portal",
+                 "see docs/engagements/acme.bank/hld.md"):
+        out, red = SAN.sanitize_text(text, forbidden=("Acme Bank",))
+        assert "acme" not in out.lower(), f"client name survived: {out!r}"
+        assert red == ["Acme Bank"]                           # and the scrub is PROVABLE
+
+
+def test_whitespace_padded_cli_token_is_not_silently_inert():
+    """`--forbidden Acme, SiteA` — a space after the comma — split to (\"Acme\", \" SiteA\"). The
+    padded token demanded a literal leading space, so it matched nothing while the feed was still
+    signed sanitized. Both the CLI split and the sanitizer strip now."""
+    out, red = SAN.sanitize_text("SiteA-CORE-01 is down", forbidden=("Acme", " SiteA"))
+    assert "SiteA" not in out and red == [" SiteA"]
+
+
+def test_cli_forbidden_list_strips_each_token(tmp_path, monkeypatch):
+    """End-to-end through the real CLI: the signed feed on disk must not carry the site code."""
+    fx = tmp_path / "adv.json"
+    fx.write_text('[{"id": "CVE-1", "title": "SiteA-CORE-01 outage", "summary": "at Site A"}]',
+                  encoding="utf-8")
+    out_dir = tmp_path / "intel"
+    assert P.main(["--fixture", str(fx), "--out", str(out_dir), "--generated", "2026-07-28",
+                   "--forbidden", "Acme, SiteA"]) == 0
+    body = (out_dir / "feed-2026-07-28.jsonl").read_text(encoding="utf-8")
+    assert "SiteA" not in body, f"site code crossed into the signed feed: {body}"
+
+
+def test_all_separator_token_does_not_redact_everything():
+    """A degenerate token ("-", " ") compiles to an empty pattern, which matches at EVERY position:
+    the guard against turning the whole advisory into [redacted] markers."""
+    for tok in ("-", " ", "", "__"):
+        out, red = SAN.sanitize_text("nothing here should change", forbidden=(tok,))
+        assert out == "nothing here should change" and red == []
+
+
+def test_ipv6_management_addresses_are_redacted_but_macs_and_times_are_not():
+    """`redact_ips` covered IPv4 only, so a management IPv6 crossed intact. Every hit is validated by
+    :mod:`ipaddress`, which is what keeps a MAC (6 groups, no ::) and a timestamp out of it."""
+    out, red = SAN.sanitize_text("mgmt 2001:0db8:85a3:0000:0000:8a2e:0370:7334 and fd00::5")
+    assert "2001" not in out and "fd00" not in out and out.count("[ip]") == 2
+    assert len(red) == 2
+    kept = "endpoint 00:1a:2b:3c:4d:5e flapped at 10:30:00 on Gi0/1"
+    assert SAN.sanitize_text(kept) == (kept, [])
+
+
+def test_chassis_serial_is_redacted_but_bug_ids_and_pids_are_not():
+    """A serial resolves to a support contract, i.e. to the CUSTOMER. It crossed a signed digest
+    intact. The pattern is narrow (3 letters + 4 DIGITS + 4) so vendor identifiers survive."""
+    out, red = SAN.sanitize_text("chassis serial FDO2145A1BC on the core")
+    assert "FDO2145A1BC" not in out and "[serial]" in out and red == ["FDO2145A1BC"]
+    kept = "CSCvk12345 affects C9300-48U running IOS 17.9 (CVE-2018-0171)"
+    assert SAN.sanitize_text(kept) == (kept, [])

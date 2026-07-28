@@ -23,10 +23,16 @@ import glob
 import hashlib
 import json
 import os
+import re
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+from cisco_toolkit.textutils import forbidden_token_pattern as _forbidden_token_pattern
 
 INTEL_DIR = os.path.join("docs", "intel")
 _MANIFEST_KIND = "intel-feed-manifest"
+# A token that is empty or all separators compiles to None. It must then match NOTHING — compiling
+# "" instead would match at every position and refuse every feed.
+_NEVER_MATCHES = re.compile(r"(?!)")
 
 
 def _sha256_of(entry_lines: List[str]) -> str:
@@ -69,8 +75,14 @@ def verify_feed(text: str, *, forbidden: Tuple[str, ...] = ()) -> Dict[str, Any]
     if _sha256_of(entry_lines) != manifest.get("sha256"):
         return {"ok": False, "reason": "content hash mismatch — tamper/corruption, refused",
                 "manifest": manifest, "entries": []}
-    blob = " ".join(entry_lines).lower()
-    hit = next((t for t in forbidden if t and t.lower() in blob), None)
+    # The CONSUMING half of the Rule-3 gate. This was a literal `t.lower() in blob`, which shared
+    # the producing side's exact blind spots: an operator-supplied "Acme Bank" never matched the
+    # device spelling ACME-BANK-CORE-01, and a whitespace-padded token from `--forbidden "A, B"` was
+    # inert. Two gates, one blind spot, so the second could not catch what the first had missed.
+    # Both now go through the one owner (cisco_toolkit.textutils.forbidden_token_pattern).
+    blob = " ".join(entry_lines)
+    hit = next((t for t in forbidden
+                if t and (_forbidden_token_pattern(t) or _NEVER_MATCHES).search(blob)), None)
     if hit:
         return {"ok": False, "reason": f"forbidden identifier '{hit}' present despite sanitized flag — refused",
                 "manifest": manifest, "entries": []}

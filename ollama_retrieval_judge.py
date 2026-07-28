@@ -43,6 +43,26 @@ OLLAMA_HOST = _loopback_only(os.environ.get("OLLAMA_HOST", "127.0.0.1:11434"))
 DEFAULT_MODEL = os.environ.get("OLLAMA_JUDGE_MODEL", "qwen3:4b")
 
 
+def _no_redirect_opener():
+    """A urllib opener that REFUSES redirects — the second half of the loopback pin.
+
+    ``loopback_only`` pins the FIRST hop only; ``urlopen`` then follows a 301/302/303. This judge
+    posts the largest and most sensitive payload of the three (corpus excerpts, incl. vault-digest
+    text), so a bounce off loopback matters most here. Measured with a faked transport before this
+    existed: the second hop opened ``ollama.corp.example``. See :mod:`ollama_judge` for the note."""
+    import urllib.error
+    import urllib.request
+
+    class _Refuse(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            raise urllib.error.URLError(
+                f"refusing an HTTP {code} redirect from the local Ollama endpoint to {newurl!r}: "
+                f"following it would leave loopback (no-egress doctrine; ADR-0001 Amendment 1 "
+                f"covers ON-HOST compute only).")
+
+    return urllib.request.build_opener(_Refuse)
+
+
 def _listening(hostport: str = OLLAMA_HOST, *, timeout: float = 0.4) -> bool:
     """Fast TCP probe — degrade in <0.5s when no local Ollama is up (the ollama_judge idiom)."""
     try:
@@ -70,7 +90,7 @@ def _chat(model: str, prompt: str, *, timeout: int = 600) -> str:
         f"http://{OLLAMA_HOST}/api/chat",
         data=json.dumps(body).encode("utf-8"),
         headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:   # noqa: S310 (localhost, opt-in)
+    with _no_redirect_opener().open(req, timeout=timeout) as r:  # noqa: S310 (localhost, opt-in)
         obj = json.load(r)
     return str((obj.get("message") or {}).get("content", "") or "")
 

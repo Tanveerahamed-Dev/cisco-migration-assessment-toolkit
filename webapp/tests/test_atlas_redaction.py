@@ -1511,3 +1511,62 @@ def test_files_written_is_what_landed_not_the_entry_count(tmp_path):
     assert n == on_disk, f"reported {n} file(s) written, {on_disk} are there"
     if os.name == "nt":
         assert on_disk == 1, "precondition: the two entries collided on this filesystem"
+
+
+def test_a_rewrite_inside_one_coarse_mtime_tick_is_not_reported_stale(monkeypatch, tmp_path):
+    """Re-running the same collection into the same folder rewrites every document with the SAME
+    bytes. `_written_by_this_run` decided "did this run write it?" by comparing (mtime, size)
+    inequality against a pre-run stat, and an identical rewrite moves neither — measured directly
+    on this platform, an immediate same-size rewrite shifts st_mtime by 0.0. The document WAS
+    rewritten and the check said it was not, so it was reported
+
+        stale - "left by an EARLIER run into this folder ... check which job it belongs to"
+
+    i.e. a freshly-redacted set told the engineer it might belong to ANOTHER CLIENT. A false
+    cross-job alarm on good output is the failure `_written_by_this_run`'s own docstring says this
+    codebase already paid for once, and it is how a real alarm gets trained away.
+
+    The tick is SIMULATED rather than raced: the engine wrapper stamps a fixed mtime after writing,
+    so the collision happens every run instead of only when the machine is fast enough. Racing it
+    produced a test that passed with the fix reverted — i.e. pinned nothing.
+    """
+    _TICK = 1_700_000_000.0          # one fixed "coarse tick" both runs land in
+
+    def _engine_in_one_tick(**kw):
+        inner = _family_engine({}, **kw)
+
+        def run(cmd, cwd=None, **kwargs):
+            out_dir = Path(cmd[cmd.index("--output") + 1]).parent
+            before = {f.name: (f.stat().st_mtime, f.stat().st_size)
+                      for f in out_dir.iterdir() if f.is_file()}
+            res = inner(cmd, cwd=cwd, **kwargs)
+            # Stamp ONLY what the engine actually wrote — a file it skipped must keep the mtime it
+            # had, or the harness would fake a write and the omit case below could not fail.
+            for f in out_dir.iterdir():
+                if not f.is_file():
+                    continue
+                st = f.stat()
+                if before.get(f.name) != (st.st_mtime, st.st_size):
+                    os.utime(f, (_TICK, _TICK))          # the FS hands both runs the same stamp
+            return res
+        return run
+
+    src = str(_collection(tmp_path))
+    out = tmp_path / "share"
+    monkeypatch.setattr(ing, "_assert_scrubbed", lambda p: 0)
+
+    monkeypatch.setattr(ing.subprocess, "run", _engine_in_one_tick())
+    first = ing.run_redaction_folder(src, str(out))
+    assert first["missing"] == [], f"run 1 should deliver the whole family, got {first['missing']}"
+
+    monkeypatch.setattr(ing.subprocess, "run", _engine_in_one_tick())
+    second = ing.run_redaction_folder(src, str(out), reuse_out=True)
+    assert second["missing"] == [], (
+        "a rewritten document was reported as another job's leftover: "
+        + repr([(g["state"], g["file"]) for g in second["missing"]]))
+
+    # ...and a genuinely un-rewritten document is STILL stale, so this did not disable the check.
+    monkeypatch.setattr(ing.subprocess, "run", _engine_in_one_tick(omit=("mop",)))
+    third = ing.run_redaction_folder(src, str(out), reuse_out=True)
+    assert [g["state"] for g in third["missing"]] == ["stale"], \
+        f"a genuinely un-rewritten document must still be stale, got {third['missing']}"

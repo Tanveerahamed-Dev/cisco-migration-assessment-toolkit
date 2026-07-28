@@ -286,3 +286,35 @@ def _split_macs(s: str) -> List[str]:
     # NEW-V3.23.21 (PHASE 2.7 step 11): pure MAC-list splitter, shared by the VLAN
     # census (excel) + compute_move_groups / build_network_model (analyze).
     return [t for t in re.split(r"[,\s;]+", s or "") if t]
+
+
+#: Separators a client or site name is re-spelt with once it becomes an identifier.
+FORBIDDEN_TOKEN_SEPARATORS = r"[\s._\-]"
+
+
+def forbidden_token_pattern(tok: str):
+    """Compile ONE forbidden identifier token into the pattern catching its spellings, or None.
+
+    The SINGLE owner of this matching rule (SSOT Law 1). It has two consumers on opposite sides of
+    the same gate, and they used to disagree: `research_lane.sanitize` REDACTS with it on the
+    producing side, and `cisco_toolkit.intel_feed.verify_feed` REFUSES with it on the consuming
+    side. Both previously did a literal match, so both were blind to the same two shapes — which
+    meant the consumer-side gate could not catch what the producer-side gate had missed, and a feed
+    signed ``sanitized: true`` with an EMPTY redaction list passed straight through.
+
+    * **Whitespace-padded token.** ``--forbidden "Acme, SiteA"`` — a space after the comma, the way
+      anyone types a list — splits to ``("Acme", " SiteA")``, and a literal match on ``" SiteA"``
+      demands a leading space, so ``SiteA-CORE-01`` never matches. ``Acme`` having worked makes the
+      run look correct. Tokens are stripped.
+    * **Multi-word token.** The operator knows the CLIENT's name ("Acme Bank"); what is written in
+      a note is the DEVICE's — ``ACME-BANK-CORE-01``, ``acme_bank_core``, ``acme-bank.example.com``,
+      ``AcmeBankCore01``. Word runs are joined by ``[\\s._-]*`` so the separator an identifier
+      happens to use, or no separator at all, cannot smuggle the name through.
+
+    Returns None for a token that is empty or all separators: an empty pattern matches at every
+    position and would otherwise replace the entire text with ``[redacted]``.
+    """
+    parts = [re.escape(p) for p in re.split(FORBIDDEN_TOKEN_SEPARATORS + "+", (tok or "").strip()) if p]
+    if not parts:
+        return None
+    return re.compile((FORBIDDEN_TOKEN_SEPARATORS + "*").join(parts), re.IGNORECASE)

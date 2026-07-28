@@ -78,11 +78,54 @@ CLAIM_IDS = ("read_only_command_surface", "no_egress_import_graph",
 # controller-REST GET paths (api/ FMC, ers/ ISE, dataservice/ vManage). A write verb
 # (config/set/execute/reload/request/aws ec2 authorize-/create-/delete-, a POST-only REST
 # path, ...) matches none of these.
+#
+# NECESSARY BUT NOT SUFFICIENT — always go through is_read_only_command() below. This regex
+# constrains only the FIRST WORD, and `.match()` anchors at the start, so on its own it accepts
+# `show running-config | redirect bootflash:x` (NX-OS WRITES that file), `show run | tftp://host/x`
+# (ships the config off the box) and `show version ; reload`. A read verb with a write tacked onto
+# it is precisely the string this claim exists to reject.
 READ_ONLY_CMD = re.compile(
     r"^(show|display|get|dir|ping|moquery)\b"          # SSH/CLI read verbs (incl. ACI moquery over SSH)
     r"|^aws ec2 describe-"                              # AWS read-only describe (never authorize/create/delete)
     r"|^(api/|ers/|dataservice/)",                     # controller-REST GET paths (FMC / ISE / vManage)
 )
+
+# Anything that can chain, redirect, substitute or line-break a second command out of a read verb.
+# netmiko writes the string to the channel verbatim, so an embedded newline is a second command
+# typed at the exec prompt.
+_CLI_CHAIN = re.compile(r"[\r\n;&`$><\\]")
+# A pipe is legal on IOS/NX-OS only as an OUTPUT FILTER. redirect/tee/append and any URL sink write
+# or egress, so the stage list is a closed allowlist, not a denylist.
+_PIPE_FILTER_OK = re.compile(
+    r"^(section|include|exclude|begin|grep|egrep|count|json|xml|no-more|last|head|diff|sort|uniq|in)\b")
+_REST_PREFIXES = ("api/", "ers/", "dataservice/")
+
+
+def is_read_only_command(cmd, *, extra_verbs: tuple = ()) -> bool:
+    """True when the WHOLE string is read-only — the check this module's claim is built on.
+
+    Deliberately re-derived here rather than imported from the collector: attestation is the
+    verifier, and a verifier that borrows the proposer's own gate can only ever agree with it
+    (proposer != verifier). The two implementations are independent by design, so a weakening of
+    one is caught by the other.
+
+    `extra_verbs` widens ONLY the verb list, never the whole-string safety below — it exists so a
+    surface with a legitimately broader read vocabulary (the NRFU service phase also issues
+    `traceroute`) composes with this owner instead of copying the grammar and drifting from it.
+    """
+    s = str(cmd).strip()
+    ok_verb = bool(READ_ONLY_CMD.match(s))
+    if not ok_verb and extra_verbs:
+        ok_verb = bool(re.match(r"^(%s)\b" % "|".join(re.escape(v) for v in extra_verbs), s))
+    if not ok_verb:
+        return False
+    if s.startswith(_REST_PREFIXES):
+        # A REST path is handed to an HTTP client, not a shell: `?` and `&` are legitimate query
+        # syntax there. Only a header-injection break matters.
+        return not re.search(r"[\r\n]", s)
+    if _CLI_CHAIN.search(s):
+        return False
+    return all(_PIPE_FILTER_OK.match(seg.strip()) for seg in s.split("|")[1:])
 
 # Direct network-egress libraries: none of these may be imported (at ANY nesting depth) by
 # the offline analysis -> deliverable pipeline. Shared with the doctrine test.
@@ -172,9 +215,11 @@ def _claim(cid, method, result, detail):
 
 # ------------------------------------------------------------------ claims ---
 def _claim_read_only(collector_module):
-    method = ("re-derive over every COMMANDS_* registry of the collector: each command must "
-              "match the read-only grammar (show/display/get/dir/ping/moquery | aws ec2 "
-              "describe- | api|ers|dataservice REST GET paths)")
+    method = ("re-derive over every COMMANDS_* registry of the collector: the WHOLE of each command "
+              "must be read-only — a read verb (show/display/get/dir/ping/moquery | aws ec2 "
+              "describe- | api|ers|dataservice REST GET paths) AND no way to chain, redirect or "
+              "substitute a second command out of it (no CR/LF ; & ` $ > < \\, and every pipe stage "
+              "an output filter, never redirect/tee/append or a URL sink)")
     cid = "read_only_command_surface"
     try:
         mod = importlib.import_module(collector_module)
@@ -189,7 +234,7 @@ def _claim_read_only(collector_module):
                       "an empty surface proves nothing (refusing a vacuous pass)")
     offenders = {}
     for rname, cmds in regs.items():
-        bad = [str(c) for c in cmds if not READ_ONLY_CMD.match(str(c).strip())]
+        bad = [str(c) for c in cmds if not is_read_only_command(c)]
         if bad:
             offenders[rname] = bad
     if offenders:

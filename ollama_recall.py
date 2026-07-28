@@ -31,6 +31,26 @@ OLLAMA_HOST = _loopback_only(os.environ.get("OLLAMA_HOST", "127.0.0.1:11434"))
 OLLAMA_EMBED_MODEL = os.environ.get("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 
 
+def _no_redirect_opener():
+    """A urllib opener that REFUSES redirects — the second half of the loopback pin.
+
+    ``loopback_only`` pins the FIRST hop only; ``urlopen`` then follows a 301/302/303, so a process
+    answering on 127.0.0.1:11434 that is not Ollama could bounce this call to a remote host and have
+    its body accepted as the embedding. Measured with a faked transport before this existed: the
+    second hop opened ``ollama.corp.example``. See :mod:`ollama_judge` for the full note."""
+    import urllib.error
+    import urllib.request
+
+    class _Refuse(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            raise urllib.error.URLError(
+                f"refusing an HTTP {code} redirect from the local Ollama endpoint to {newurl!r}: "
+                f"following it would leave loopback (no-egress doctrine; ADR-0001 Amendment 1 "
+                f"covers ON-HOST compute only).")
+
+    return urllib.request.build_opener(_Refuse)
+
+
 def _listening(hostport: str, *, timeout: float = 0.4) -> bool:
     """Fast TCP probe — is a local Ollama actually up? Lets us degrade in <0.5s when it isn't."""
     try:
@@ -59,7 +79,7 @@ def _embed(text: str, *, timeout: int = 8) -> List[float]:
         f"http://{OLLAMA_HOST}/api/embeddings",
         data=json.dumps({"model": OLLAMA_EMBED_MODEL, "prompt": text}).encode("utf-8"),
         headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 (localhost, opt-in)
+    with _no_redirect_opener().open(req, timeout=timeout) as r:  # noqa: S310 (localhost, opt-in)
         return json.load(r).get("embedding") or []
 
 

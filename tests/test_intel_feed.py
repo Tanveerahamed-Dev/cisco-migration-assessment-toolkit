@@ -121,3 +121,33 @@ def test_main_verifies_feeds_and_matches_the_fleet(tmp_path, capsys):
     snap.write_text(json.dumps({"devices": {"r1": {"platform": "ios-xe"}}}), encoding="utf-8")
     assert IF.main(["--dir", str(d), str(snap)]) == 0                            # read-only, no egress
     assert "Intel feed" in capsys.readouterr().out
+
+
+def test_forbidden_identifier_is_caught_in_its_device_spelling():
+    """The consuming half of the Rule-3 gate must not share the producing half's blind spots.
+
+    An operator configures the CLIENT's name ("Acme Bank") — that is what they know. What is
+    actually written in a note is the DEVICE's name, ACME-BANK-CORE-01. Under the old literal
+    `t.lower() in blob` this gate saw neither that, nor a whitespace-padded token from the natural
+    `--forbidden "Acme Bank, SiteA"` spelling. Since research_lane's sanitizer had the SAME blind
+    spot, the defense-in-depth check could never catch what the scrub had missed: the feed arrived
+    attested `sanitized: true` with an empty redaction list and was consumed whole.
+    """
+    feed = IF.build_feed(
+        [{"title": "uplink flap", "detail": "ACME-BANK-CORE-01 lost its uplink", "source": "note"}],
+        sanitized=True)
+    # sanity: the feed is otherwise well-formed, so a refusal below is the identifier check firing
+    # and not a manifest/hash problem.
+    assert IF.verify_feed(feed, forbidden=("Nonmatching Corp",))["ok"] is True
+    for tok in ("Acme Bank",          # multi-word: the client name, hyphenated on the device
+                " Acme Bank ",        # whitespace-padded, as `--forbidden "A, B"` produces
+                "Acme_Bank",          # a different separator than the text uses
+                "acme bank"):         # case-insensitive
+        r = IF.verify_feed(feed, forbidden=(tok,))
+        assert r["ok"] is False, f"forbidden token {tok!r} did not refuse the feed"
+        assert r["entries"] == [], "a refused feed must never be partially consumed"
+    # A degenerate token compiles to None and must match NOTHING — compiling "" instead would match
+    # at every position and refuse every feed that was ever offered.
+    for degenerate in ("", "   ", "-", " . "):
+        assert IF.verify_feed(feed, forbidden=(degenerate,))["ok"] is True, \
+            f"degenerate token {degenerate!r} refused a clean feed"

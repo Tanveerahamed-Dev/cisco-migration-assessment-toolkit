@@ -78,9 +78,10 @@ Run this as ONE line (nothing else needs to be on the stick):
   Atlas.exe --redact-folder <collection folder> --out <D:\share>
 
 Atlas builds the inputs the engine needs, renders the whole document
-family, and checks the result before reporting success - if anything is
-still unredacted it FAILS and says so rather than handing you a file
-that looks safe. Expect several minutes for a large fleet.
+family, and checks the result before reporting success. That check is
+NARROWER than it sounds: it covers two things, not every field of every
+file. Read WHAT REDACTION DOES NOT REMOVE below before you send
+anything. Expect several minutes for a large fleet.
 
 The seven Word documents each carry a Document Control table, just after
 the cover page, whose Status row marks them a generated draft that has

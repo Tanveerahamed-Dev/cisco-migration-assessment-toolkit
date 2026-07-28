@@ -274,3 +274,78 @@ def test_think_flag_is_plumbed_to_run_baseline(monkeypatch):
     monkeypatch.setattr(J, "run_baseline", fake_rb)
     assert J.main(["fake", "--think"]) == 0
     assert seen == {"model": "fake", "think": True}
+
+
+# ── the loopback pin: no redirect may take an Ollama call off-host ──────────────────────────────
+# cisco_toolkit.attestation.loopback_only validates the FIRST hop only. urlopen follows a 301/302/303
+# through the default HTTPRedirectHandler, so anything answering on 127.0.0.1:11434 that is not
+# Ollama (a local AI-gateway / LiteLLM shim on the standard port) could reply
+# `Location: http://ollama.corp.example/...` and urllib would open THAT host and hand its body back
+# as the model's answer — egress, and an off-host party dictating a scorecard measurement. Driven
+# through a faked transport: no socket is ever created, and the assertion is on the hosts urllib
+# WOULD have opened. Reverting the _no_redirect_opener() call sites fails this with
+# `2 hop(s) opened: ['127.0.0.1', 'ollama.corp.example']`.
+import email.message
+import http.client
+import io
+
+import pytest
+
+_REAL_CONN = http.client.HTTPConnection
+
+
+class _FakeResp(io.BytesIO):
+    def __init__(self, status, headers, body=b""):
+        super().__init__(body)
+        self.status = self.code = status
+        self.reason, self.url, self.will_close = "fake", "", False
+        self.headers = self.msg = email.message.Message()
+        for k, v in headers.items():
+            self.headers[k] = v
+
+    def info(self):
+        return self.headers
+
+    def geturl(self):
+        return self.url
+
+
+def _redirecting_transport(opened, target):
+    """An HTTPConnection whose first response is a 302 to `target` — connect() is a no-op, so no
+    socket is opened and nothing here can touch a real network."""
+
+    class _Conn(_REAL_CONN):
+        def connect(self):
+            pass
+
+        def request(self, method, url, body=None, headers=None, **kw):
+            opened.append(self.host)
+            self._n = len(opened)
+
+        def getresponse(self):
+            if self._n == 1:
+                return _FakeResp(302, {"Location": target, "Content-Length": "0"})
+            return _FakeResp(200, {"Content-Type": "application/json"},
+                             b'{"message": {"content": "{}"}, "embedding": [1.0]}')
+
+        def close(self):
+            pass
+
+    return _Conn
+
+
+@pytest.mark.parametrize("module_name, call", [
+    ("ollama_judge", lambda m: m._chat("qwen3:4b", "prompt", timeout=1)),
+    ("ollama_recall", lambda m: m._embed("prompt", timeout=1)),
+    ("ollama_retrieval_judge", lambda m: m._chat("qwen3:4b", "prompt", timeout=1)),
+])
+def test_ollama_helpers_refuse_a_redirect_off_loopback(module_name, call, monkeypatch):
+    mod = __import__(module_name)
+    assert mod.OLLAMA_HOST.startswith(("127.", "localhost", "[::1]"))   # first hop is pinned
+    opened = []
+    monkeypatch.setattr(http.client, "HTTPConnection",
+                        _redirecting_transport(opened, "http://ollama.corp.example:11434/api/chat"))
+    with pytest.raises(Exception) as ex:
+        call(mod)
+    assert "redirect" in str(ex.value).lower(), f"{module_name} did not name the refusal: {ex.value}"
+    assert opened == ["127.0.0.1"], f"{len(opened)} hop(s) opened: {opened}"

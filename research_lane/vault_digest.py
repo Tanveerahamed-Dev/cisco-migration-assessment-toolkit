@@ -186,7 +186,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
     subdir = _opt("--subdir", "")
     generated = _opt("--generated", "")
-    forbidden = tuple(t for t in _opt("--forbidden", "").split(",") if t)
+    # .strip() per token — see research_lane.producer.main: `--forbidden Acme, SiteA` left the
+    # second token as " SiteA", which matched nothing while the digest was still signed sanitized.
+    forbidden = tuple(t for t in (s.strip() for s in _opt("--forbidden", "").split(",")) if t)
     max_chars = int(_opt("--max-chars", "600") or "600")
     out_dir = _opt("--out", os.path.join("docs", "vault-digest"))
 

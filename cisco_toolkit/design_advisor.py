@@ -250,6 +250,15 @@ def _signals(snap):
     # (one source of truth) instead of conflating it with the larger no-FHRP count (multi-domain audit #5).
     sig["single_gw"] = len({r.get("vlan") for r in _dict_rows(snap.get("l3_forwarding"))
                             if "single-gateway" in str(r.get("risk") or "") and _scalar(r.get("vlan"))})
+    # ... and the SWITCHES those lone gateways sit on. _d_fhrp fires on EITHER population but only ever
+    # carried `no_fhrp_devices`, so a fleet whose gateway gap is entirely single-gateway SPOFs (the
+    # sample-fleet shape) published a CRITICAL decision with an EMPTY evidence.devices -- the explorer
+    # spotlight (POS[evidence.devices[0]]) silently no-ops and the design-driven NRFU item names no device
+    # to verify. Same defect class as the "#7 device attribution" recovery below; the host IS already on the
+    # row this signal reads (l3_forwarding[].switch, already in the decision's cited fields).
+    sig["single_gw_devices"] = sorted({r.get("switch") for r in _dict_rows(snap.get("l3_forwarding"))
+                                       if "single-gateway" in str(r.get("risk") or "")
+                                       and r.get("switch") and _scalar(r.get("switch"))})[:12]
     broken_fhrp = _broken_fhrp_vlans(snap)
     sig["fhrp_broken"] = len(broken_fhrp)
     sig["fhrp_broken_vids"] = sorted({g.get("vid") for g in broken_fhrp if _scalar(g.get("vid"))})[:12]
@@ -286,15 +295,23 @@ def _signals(snap):
         for _p in _dict_rows(_as_dict(_o).get("nve_peers")):
             if str(_p.get("state", "")).lower() not in ("up", ""):
                 sig["nve_peers_down"].append(f"{_h} {_p.get('peer_ip', '?')}")
+    # NB the `_st and` guard on every session-state test below (and on the LDP / OSPFv3 / MLAG ones further
+    # down): an ABSENT or empty state is NOT-OBSERVED, never an observed "not Established / not Up". The
+    # nve_peers arm above has always excluded "" -- these siblings did not, so one row missing its state
+    # field (a foreign / webapp-uploaded snapshot, or parse_mpls_ldp_neighbors, whose documented shape is
+    # state:"" when no 'State:' line was seen) published a HIGH "overlay control plane is dark" decision from
+    # evidence that was never collected. Three spellings of one predicate, two of them reading absence as broken.
     sig["evpn_down"] = []
     for _h, _o in (_ov.items() if isinstance(_ov, dict) else []):
         for _n in _dict_rows(_as_dict(_o).get("evpn_neighbors")):
-            if str(_n.get("state", "")).lower() != "established":
+            _st = str(_n.get("state", "")).strip()
+            if _st and _st.lower() != "established":
                 sig["evpn_down"].append(f"{_h} {_n.get('neighbor', '?')}")
     sig["nve_vni_down"] = []
     for _h, _o in (_ov.items() if isinstance(_ov, dict) else []):
         for _v in _dict_rows(_as_dict(_o).get("nve_vni")):
-            if str(_v.get("state", "")).lower() != "up":
+            _st = str(_v.get("state", "")).strip()
+            if _st and _st.lower() != "up":
                 sig["nve_vni_down"].append(f"{_h} VNI {_v.get('vni', '?')}")
     # Control-plane policing (CoPP): a class actively DROPPING punted control-plane traffic. A single CUMULATIVE
     # lifetime counter cannot distinguish a real flood from the NX-OS default strict profile's NORMAL steady
@@ -331,7 +348,8 @@ def _signals(snap):
             if _st and _st.lower() != "oper":
                 _ldp_down.append(f"{_mh} {_as_dict(_n).get('peer', '?')}")
         for _n in _as_list(_mf.get("vpnv4_neighbors")):
-            if str(_as_dict(_n).get("state", "")) != "Established":
+            _st = str(_as_dict(_n).get("state", "")).strip()      # `_st and`: absent state = not observed
+            if _st and _st != "Established":
                 _vpnv4_down.append(f"{_mh} {_as_dict(_n).get('neighbor', '?')}")
         for _v in _as_list(_mf.get("l2vpn_vcs")):
             if str(_as_dict(_v).get("status", "")).upper() == "DOWN":
@@ -455,7 +473,8 @@ def _signals(snap):
             if _st and _st not in _OSPFV3_HEALTHY:
                 _ospfv3_stuck.append(f"{_vh} {_as_dict(_n).get('neighbor_id', '?')} ({_st})")
         for _n in _as_list(_vf.get("bgp_ipv6_neighbors")):
-            if str(_as_dict(_n).get("state", "")) != "Established":
+            _st = str(_as_dict(_n).get("state", "")).strip()      # `_st and`: absent state = not observed
+            if _st and _st != "Established":
                 _bgp6_down.append(f"{_vh} {_as_dict(_n).get('neighbor', '?')}")
     sig["ipv6_ospfv3_stuck"] = _ospfv3_stuck
     sig["ipv6_bgp_down"] = _bgp6_down
@@ -1063,6 +1082,21 @@ def _signals(snap):
     sig["eol"] = sum(1 for d in life if str(d.get("band", "")).strip().lower() == "past-ldos")
     sig["near"] = sum(1 for d in life if _is_refresh_band(d.get("band")))
     sig["lifecycle_assessed"] = len(life)
+    # The FOURTH lifecycle disposition, and the one the three-way split silently swallowed:
+    # compute_lifecycle_risk emits band "Unknown" ("Unknown model -- verify on Cisco's EoL portal") for every
+    # device whose model it could NOT match against the EoL data. `retain = assessed - eol - near` therefore
+    # counted an UNDETERMINED support status as a fully-supported asset and the target state told the customer
+    # to "carry ~N fully-supported asset(s) forward" -- absence rendered as health, in the procurement line,
+    # in the same sentence that preaches "coverage gaps are unknowns, not health". Count the SUPPORTED band
+    # positively (band == "Active") instead of by subtraction, and make the residue an explicit
+    # not-determined bucket so eol + near + supported + undetermined == lifecycle_assessed exactly.
+    sig["lifecycle_supported"] = sum(1 for d in life
+                                     if str(d.get("band", "")).strip().lower() == "active")
+    sig["lifecycle_unknown"] = max(0, len(life) - sig["eol"] - sig["near"] - sig["lifecycle_supported"])
+    sig["lifecycle_unknown_hosts"] = sorted(
+        str(d.get("host")) for d in life
+        if str(d.get("band", "")).strip().lower() not in ("active", "past-ldos")
+        and not _is_refresh_band(d.get("band")) and d.get("host") and _scalar(d.get("host")))[:12]
     sig["eol_devices"] = [d.get("host") for d in life
                           if str(d.get("band", "")).strip().lower() == "past-ldos"][:12]
 
@@ -1110,6 +1144,14 @@ def _signals(snap):
     sig["oncrit_exposed"] = _as_int(seg_sum.get("n_oncrit_exposed"))
     sig["gw_acl_cov"] = _as_float(seg_sum.get("gateway_acl_coverage"))   # fail-soft: a str/inf coverage -> 0.0, not a 500
     sig["n_gateways"] = _as_int(seg_sum.get("n_gateways"))
+    # ... and whether either figure was actually REPORTED. The fail-soft 0.0 / 0 above are crash guards, but
+    # _d_oncrit_seg rendered them verbatim as observed evidence -- "gateway-ACL coverage is 0% across 0
+    # gateway(s)" -- so an absent/unparseable field became the WORST possible measured value (no gateway
+    # anywhere has an ACL) on a snapshot that measured nothing. Exactly the substituted-`stratum 16` shape,
+    # and self-contradictory besides (0 gateways beside N exposed domains that each list gateways). Report
+    # what was seen, or say it was not reported; never a substituted number.
+    sig["gw_acl_cov_known"] = _as_float(seg_sum.get("gateway_acl_coverage"), None) is not None
+    sig["n_gateways_known"] = _as_int(seg_sum.get("n_gateways"), None) is not None
     sig["oncrit_domains"] = [d.get("domain") for d in _dict_rows(seg.get("domains"))
                              if d.get("tier") == "On-air critical" and not d.get("isolated")
                              and _as_int(d.get("gateways")) > 0][:6]
@@ -1590,9 +1632,12 @@ def _d_fhrp(snap, sig):
         "fhrp-first-hop-gateway-redundancy",
         f"{no_fhrp + single} gateway VLAN(s) lack full first-hop redundancy: " + "; ".join(parts) + ".",
         no_fhrp + single, ["availability", "convergence"],
-        ["fhrp[].issues", "l3_forwarding[].fhrp", "failure_impact[].fhrp"],
+        ["fhrp[].issues", "l3_forwarding[].fhrp", "l3_forwarding[].risk (single-gateway)",
+         "l3_forwarding[].switch", "failure_impact[].fhrp"],
         priority="Critical", driver="Gateway resilience: a VLAN must survive loss of its distribution switch.",
-        devices=sig["no_fhrp_devices"])
+        # BOTH populations' hosts: the decision fires on either, so citing only the no-FHRP hosts published a
+        # Critical decision with an EMPTY device list on a single-gateway-only fleet.
+        devices=list(dict.fromkeys(list(sig["no_fhrp_devices"]) + list(sig.get("single_gw_devices") or []))))
 
 
 def _d_fhrp_state(snap, sig):
@@ -3163,11 +3208,17 @@ def _d_oncrit_seg(snap, sig):
     if sig["oncrit_exposed"] <= 0:
         return None
     names = ", ".join(sig["oncrit_domains"][:3]) or "named on-air-critical domain(s)"
+    # Never substitute a number for one that was not reported (the `stratum 16` rule): the fail-soft 0.0 / 0
+    # coercions are crash guards, not observations, and "0% across 0 gateway(s)" is the worst possible
+    # measured value -- an alarming, specific claim from a snapshot that measured nothing.
+    acl = (f"gateway-ACL coverage is {sig['gw_acl_cov']:.0f}%" if sig.get("gw_acl_cov_known")
+           else "gateway-ACL coverage was NOT REPORTED by the segmentation axis (not observed as 0%)")
+    gws = f" across {sig['n_gateways']} gateway(s)" if sig.get("n_gateways_known") else ""
     return _decision(
         "security-isolate-oncritical-application-tier",
         f"{sig['oncrit_exposed']} on-air-critical broadcast domain(s) ({names}) are L3-reachable (not "
-        f"isolated) and gateway-ACL coverage is {sig['gw_acl_cov']:.0f}% across {sig['n_gateways']} "
-        f"gateway(s) -- a compromise or misconfiguration anywhere on the flat L3 can reach the on-air media fabric.",
+        f"isolated) and {acl}{gws} -- a compromise or misconfiguration anywhere on the flat L3 can reach "
+        f"the on-air media fabric.",
         sig["oncrit_exposed"], ["security", "modularity", "availability"],
         ["segmentation.summary.n_oncrit_exposed", "segmentation.gateway_acl.coverage_pct",
          "segmentation.domains[].tier"],
@@ -3959,10 +4010,20 @@ def _segmentation_plan(snap, req, census=None):
     vrfs = _as_list(seg.get("vrfs"))
     n_vlans = _vlan_count(snap) if census is None else census
     dc = _as_list(req.get("data_classification")) if req else []
+    # The VRF posture is TRI-state, and this sentence is published verbatim as HLD 5.2 "Target segmentation
+    # -- Observed:". `len(vrfs) > 1` else "a single global VRF -- L3-unsegmented" read an ABSENT segmentation
+    # block as the positive assertion that the estate runs one flat global VRF -- the same defect review
+    # 2026-07-28 #39 fixed in `sig['single_vrf']` and the scorecard, on the one surface the fix missed (the
+    # scorecard correctly says "not-collected VRF" while this said "L3-unsegmented" off the same snapshot).
+    # compute_segmentation lists at least the "(global)" bucket once ANY gateway SVI is observed, so an empty
+    # list means the VRF axis observed nothing. Route the wording through the ONE owner, _vrf_phrase.
     plan = {
         "observed": (f"{n_vlans} VLAN(s) across "
-                     + (f"{len(vrfs)} VRFs -- partially segmented." if len(vrfs) > 1
-                        else "a single global VRF -- L3-unsegmented.")),
+                     + _vrf_phrase({"single_vrf": bool(vrfs) and len(vrfs) <= 1, "vrf_observed": bool(vrfs)},
+                                   "a single global VRF -- L3-unsegmented.",
+                                   f"{len(vrfs)} VRFs -- partially segmented.",
+                                   "a VRF posture the segmentation axis did NOT observe -- L3 segmentation "
+                                   "is UNASSESSED here, not 'unsegmented'.")),
         "principle": "security-defense-in-depth-segmentation",
     }
     if dc:
@@ -4224,7 +4285,12 @@ def _wave_plan(snap, cap=_WAVE_CAP):
         else:
             small.append((gi, sw))
     packed, cur, cur_n = [], [], 0                                   # bin-pack independent small groups
-    for gi, sw in sorted(small, key=lambda t: (-len(t[1]), t[1][0])):
+    # _skey on the tie-breaker, not the bare leaf: `sw` is _skey-sorted above, but this second sort compares
+    # sw[0] ACROSS groups, so two equal-size groups whose first switch names are of different types
+    # ("switches": [10, 20] vs ["a", "b"] -- the shape _skey was written for) raised
+    # `TypeError: '<' not supported between 'str' and 'int'`, aborting the whole blueprint (a 500 on the
+    # unwrapped /design + /architecture_coverage endpoints). Strings still order exactly as before.
+    for gi, sw in sorted(small, key=lambda t: (-len(t[1]), _skey(t[1][0]))):
         if cur and cur_n + len(sw) > cap:
             packed.append(cur); cur, cur_n = [], 0
         cur.append((gi, sw)); cur_n += len(sw)
@@ -4385,21 +4451,32 @@ def compute_target_state(snap, requirements=None, sig=None):
                                     "stp-root-fhrp-active-colocation"]))
 
     # 4. Hardware lifecycle disposition -- strong evidence
-    if sig["eol"] or sig["near"] or sig["not_collected"]:
-        # The three dispositions must PARTITION the lifecycle-assessed fleet, or procurement orders to one
+    if sig["eol"] or sig["near"] or sig["not_collected"] or sig.get("lifecycle_unknown"):
+        # The dispositions must PARTITION the lifecycle-assessed fleet, or procurement orders to one
         # number while the migration plan assumes another (#50). replace = past-LDoS, refresh = the
         # _is_refresh_band class (near-LDoS + past-EoS -- exactly _replacement_bom.refresh_soon), retain = the
-        # remainder. Derive the remainder from the SAME census as the bands (lifecycle_risk.per_device), not
-        # from collection_completeness -- mixing the two censuses is what let a device be in two buckets.
-        retain = max(0, sig["lifecycle_assessed"] - sig["eol"] - sig["near"])
+        # OBSERVED-supported band. Derive them from the SAME census as the bands (lifecycle_risk.per_device),
+        # not from collection_completeness -- mixing the two censuses is what let a device be in two buckets.
+        # `retain` is now counted POSITIVELY (band == Active), not as the subtraction remainder: the remainder
+        # also contains compute_lifecycle_risk's band "Unknown" (model not matched on Cisco's EoL data), and
+        # calling an UNDETERMINED support status a "fully-supported asset to carry forward" is absence
+        # rendered as health -- the exact thing the rationale line below forbids. It is now its own bucket.
+        # (retain == lifecycle_assessed - eol - near whenever nothing is undetermined, so a fleet with a fully
+        # determined lifecycle census renders exactly as before -- the disclosure only appears when it is real.)
+        retain, undet = sig["lifecycle_supported"], sig.get("lifecycle_unknown", 0)
+        undet_cur = (f" {undet} of the {sig['lifecycle_assessed']} lifecycle-assessed asset(s) carry an "
+                     f"UNDETERMINED band." if undet else "")
+        undet_tgt = (f" {undet} asset(s) have an UNDETERMINED lifecycle band (the model did not match Cisco's "
+                     f"EoL data) -- they are NOT counted as supportable: resolve each model on the EoL portal "
+                     f"before the carry-forward list is final." if undet else "")
         dims.append(_ts_dim(
             "Hardware lifecycle disposition",
             f"{sig['eol']} past-LDoS, {sig['near']} approaching-LDoS or past-EoS, {sig['not_collected']} "
-            f"not-collected of {sig['inventory']} inventoried.",
+            f"not-collected of {sig['inventory']} inventoried." + undet_cur,
             f"Replace the {sig['eol']} past-LDoS asset(s); plan refresh for the {sig['near']} approaching LDoS "
             f"or past-EoS (the replacement BoM's refresh_soon line -- they are NOT in the carry-forward "
             f"figure); carry ~{retain} fully-supported asset(s) forward; collect the {sig['not_collected']} "
-            f"un-assessed device(s) before finalising -- do not design resilience on unseen gear.",
+            f"un-assessed device(s) before finalising -- do not design resilience on unseen gear.{undet_tgt}",
             "The target fabric must not inherit end-of-support hardware; coverage gaps are unknowns, not health.",
             "Recommended", drivers=["lifecycle-eol-out-of-critical-roles", "fhrp-not-observed-is-not-healthy"]))
 

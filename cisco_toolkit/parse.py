@@ -600,7 +600,14 @@ def parse_storm_control(output: str) -> list:
 # 'show policy-map interface' RUNTIME statistics regexes (egress queue/policer drops). Validated against
 # Cisco's genieparser golden corpus + IOS-XE/NX-OS QoS guides. The drops line is identical for bandwidth and
 # priority (LLQ) classes on modern IOS-XE; priority/policer context is tracked by the line-driven state machine.
-_PM_IFACE_RE   = re.compile(r"^([A-Za-z][\w./-]*\d[\w./-]*)\s*$")
+# The obvious spelling `[\w./-]*\d[\w./-]*` puts a `\d` BETWEEN two unbounded runs of a class that
+# already CONTAINS `\d`, so a long digit run that cannot complete the match backtracks QUADRATICALLY
+# (measured: 4k chars 0.29s, 8k 1.16s, 16k 4.42s -- each doubling quadruples it). Same ReDoS class as
+# the three unbounded IPv6 runs fixed elsewhere in this module, and `show policy-map interface` is one
+# of the largest captures the engine ingests. One linear run plus an explicit digit test is EXACTLY
+# equivalent (\d is a subset of \w, hence of the class, and the first char is already a letter) and O(n).
+_PM_IFACE_RE   = re.compile(r"^([A-Za-z][\w./-]*)\s*$")
+_PM_IFACE_DIGIT_RE = re.compile(r"\d")
 _PM_SVCPOL_RE  = re.compile(r"^Service-policy\s+(?:\((?P<kind>[^)]*)\)\s+)?(?P<dir>input|output)\s*:\s*(?P<name>\S+)",
                             re.IGNORECASE)
 _PM_CLASS_RE   = re.compile(r"^Class-map(?:\s+\((?P<kind>[^)]*)\))?\s*:\s*(?P<name>\S+)", re.IGNORECASE)
@@ -644,7 +651,8 @@ def parse_policymap_drops(output: str) -> list:
         if not s:
             continue
         mi = _PM_IFACE_RE.match(s)
-        if mi and not s.lower().startswith(("class-map", "service-policy", "police", "queueing",
+        if mi and _PM_IFACE_DIGIT_RE.search(mi.group(1)) \
+                and not s.lower().startswith(("class-map", "service-policy", "police", "queueing",
                                             "queue", "match", "priority", "bandwidth", "exceeded",
                                             "conformed", "violated")):
             _flush(); cur = None; in_police = False; nx_queuing = False
@@ -3599,8 +3607,15 @@ def parse_vtp_status(output: str) -> str:
     for line in output.splitlines():
         m = re.search(r"(?:vtp\s+domain\s+name|domain name)\s*:?\s*(.+)$", line.strip(), re.IGNORECASE)
         if m:
-            val = m.group(1).strip()
-            if val and val.lower() not in ("not configured", "none", "null"):
+            # A switch with NO VTP domain prints the label with an EMPTY value ('VTP Domain Name    :').
+            # `\s*:?\s*(.+)` cannot match that with the colon consumed as a separator, so the engine
+            # BACKTRACKS the optional `:?` out and captures the colon ITSELF -- every VTP-less switch
+            # reported its VTP domain as ':'. That is a phantom domain: the workbook's VTP Domain column
+            # (and the current/neighbour VTP fields the domain-mismatch review reads) then showed a
+            # configured VTP domain on a factory-default / VTP-transparent switch. Drop any leftover
+            # separator and require the value to carry at least one real word character.
+            val = m.group(1).strip().lstrip(":").strip()
+            if val and re.search(r"\w", val) and val.lower() not in ("not configured", "none", "null"):
                 return val
     return ""
 
@@ -4061,7 +4076,20 @@ def parse_show_environment_power(output: str) -> Dict[str, object]:
         # PS status rows: lines starting with slot number or PS label
         if re.match(r"^\s*\d[AB]?\s+\S", line) or re.match(r"^\s*[Pp][Ss]\d?\s", line):
             if "ok" in low:                               ps_list.append("OK")
-            elif "fail" in low:                           ps_list.append("FAIL")
+            # 'fail' is NOT the only broken-supply word Cisco prints, and a row matching NONE of these
+            # branches was dropped ENTIRELY -- contributing neither a status NOR a PSU to num_ps. So a
+            # chassis with one 'Ok' and one 'Faulty' supply reported num_ps=1 / ps_status='OK': a dead
+            # PSU rendered as a healthy single-corded box, and design_advisor's lost-redundancy signal
+            # (num_ps > 1 AND 'fail' in ps_status) could never fire. IOS/IOS-XE print 'Faulty' (whose
+            # 'fault' stem does NOT contain 'fail') and 'No Input Power'; NX-OS prints 'Shutdown'. Same
+            # broken-state vocabulary the sibling parse_show_environment already applies to its own
+            # Power-Supply table. Word-anchored so a PID/serial that merely CONTAINS the letters
+            # (e.g. a serial ending 'FAULT1') can never flag a supply. Deliberately NOT a catch-all
+            # 'anything unrecognised -> UNKNOWN': the same '<digit> <token>' row shape also matches the
+            # NX-OS per-MODULE power-allocation table ('1  N9K-C9372PX  345  28.75 ... Powered-Up'),
+            # so a blanket branch would count line cards as power supplies (a redundancy cry-wolf).
+            elif "fail" in low or re.search(r"\b(?:fault\w*|shut\s?down|no input power)\b", low):
+                ps_list.append("FAIL")
             elif "absent" in low or "not present" in low: ps_list.append("ABSENT")
     if r["total_capacity_w"] and r["total_drawn_w"] and not r["total_remaining_w"]:
         try:
@@ -4180,6 +4208,13 @@ def parse_show_environment(output: str) -> Dict[str, str]:
     def _worst(states: List[str]) -> str:
         if "Critical" in states or "Failed" in states: return "Critical/Failed"
         if "Warning"  in states: return "Warning"
+        # 'Absent' outranks 'OK' for the same reason 'Unknown' does. The NX-OS fan-table branch above
+        # APPENDS 'Absent' for a not-fitted tray, but _worst had no branch for it, so it silently ranked
+        # below 'OK': a chassis reporting 'Fan1 ok / Fan2 absent' returned fan_status 'OK' and the missing
+        # tray (a cooling + redundancy loss) was invisible to every consumer -- the same
+        # absence-reads-as-health class review #36 closed for the PSU/fantray columns, left open one
+        # ranking function away.
+        if "Absent"   in states: return "Absent"
         # 'Unknown' outranks 'OK': a sensor whose status word this parser does not recognise is NOT
         # evidence of health, and letting a healthy sibling's OK stand as the chassis verdict is exactly
         # the absence-reads-as-health class the doctrine forbids (review #36).

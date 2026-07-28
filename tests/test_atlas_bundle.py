@@ -75,3 +75,37 @@ def test_dist_dest_matches_the_entry_modules_frozen_probe(monkeypatch, tmp_path)
     monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
     monkeypatch.delenv("ASSESSHUB_DIST", raising=False)
     assert serve._resolve_dist(None) == tmp_path / atlas_bundle.DIST_DEST
+
+
+# ── the build's --version smoke step must actually prove what it claims ─────────────────────────
+
+def test_version_gap_rejects_a_bundle_that_lost_pyproject():
+    """`pyproject.toml` is bundled so serve._release_version reports the BUILD's version instead of
+    (possibly stale) installed-dist metadata — test_datas_cover_every_selftest_guarded_asset pins
+    that it is listed. Nothing proved it LANDED: missing_data_sources only checks the source exists
+    on the build box, and --selftest never looks at it. The smoke step that claims to prove it
+    asserted only `"Atlas" in stdout`, which the degraded output satisfies."""
+    from portable.build_atlas import version_gap
+
+    good = "Atlas - release 3.31.0 (checkout) - engine schema 41"
+    assert version_gap(good, "3.31.0 (checkout)") == ""
+    # what a frozen bundle prints when pyproject.toml is not inside it — the old check PASSED this
+    degraded = "Atlas - release unpackaged - engine schema 41"
+    assert "Atlas" in degraded                                  # i.e. the old predicate was happy
+    assert version_gap(degraded, "3.31.0 (checkout)"), "a bundle reporting no release must FAIL"
+    # and a stale pip-metadata fallback, the case the docstring names
+    assert version_gap("Atlas - release 3.26.0 - engine schema 41", "3.31.0 (checkout)")
+    assert version_gap("", "3.31.0 (checkout)")
+
+
+def test_expected_release_reads_the_checkout_through_the_apps_own_owner():
+    """One source of truth for the version: the build asks serve._release_version, the same function
+    the running app answers --version with, rather than re-parsing pyproject itself."""
+    import sys as _sys
+
+    if str(ROOT) not in _sys.path:
+        _sys.path.insert(0, str(ROOT))
+    from portable.build_atlas import expected_release
+    from webapp.backend.serve import _release_version
+
+    assert expected_release() == _release_version() != ""

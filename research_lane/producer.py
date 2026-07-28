@@ -91,7 +91,10 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     out_dir = _opt("--out", os.path.join("docs", "intel"))
     generated = _opt("--generated", "")
-    forbidden = tuple(t for t in _opt("--forbidden", "").split(",") if t)
+    # .strip() per token: `--forbidden Acme, SiteA` is how a list gets typed, and an unstripped
+    # " SiteA" demanded a literal leading space and matched nothing. sanitize._token_pattern strips
+    # too; doing it here as well keeps the tuple the operator can see equal to the one that runs.
+    forbidden = tuple(t for t in (s.strip() for s in _opt("--forbidden", "").split(",")) if t)
     allow_empty = "--allow-empty" in argv
     fetch_stats: Dict[str, Any] = {}
 

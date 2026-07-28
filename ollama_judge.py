@@ -53,6 +53,33 @@ OLLAMA_HOST = _loopback_only(os.environ.get("OLLAMA_HOST", "127.0.0.1:11434"))
 DEFAULT_MODEL = os.environ.get("OLLAMA_JUDGE_MODEL", "qwen3:4b")   # 8b swaps on a 16GB CPU host; 4b fits
 
 
+def _no_redirect_opener():
+    """A urllib opener that REFUSES redirects — the second half of the loopback pin.
+
+    :func:`cisco_toolkit.attestation.loopback_only` pins the FIRST hop only. ``urlopen`` follows a
+    301/302/303 through the default ``HTTPRedirectHandler``, so anything answering on
+    127.0.0.1:11434 that is not Ollama — a local LiteLLM/AI-gateway shim on the standard port is the
+    realistic one — could reply ``Location: http://ollama.corp.example/…`` and urllib would open a
+    connection to that host and hand its body back as the model's answer. Measured, not theorised:
+    with a faked transport, all three helpers opened ``ollama.corp.example`` on the second hop and
+    returned the remote body as a verdict. That is egress the no-egress doctrine forbids, and here it
+    also lets an off-host party dictate a scorecard measurement.
+
+    A refusal, not a re-validation of the new URL: a local Ollama has no reason to redirect, so any
+    redirect is already the anomaly."""
+    import urllib.error
+    import urllib.request
+
+    class _Refuse(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            raise urllib.error.URLError(
+                f"refusing an HTTP {code} redirect from the local Ollama endpoint to {newurl!r}: "
+                f"the ADR-0001 Amendment 1 carve-out covers ON-HOST compute only, and following a "
+                f"redirect would leave loopback (no-egress doctrine).")
+
+    return urllib.request.build_opener(_Refuse)
+
+
 def _listening(hostport: str = OLLAMA_HOST, *, timeout: float = 0.4) -> bool:
     """Fast TCP probe — is a local Ollama actually up? Degrade in < 0.5s when it isn't."""
     try:
@@ -207,7 +234,7 @@ def _chat(model: str, prompt: str, *, timeout: int = 420, fmt: Optional[Dict[str
         f"http://{OLLAMA_HOST}/api/chat",
         data=json.dumps(body).encode("utf-8"),
         headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:     # noqa: S310 (localhost, opt-in)
+    with _no_redirect_opener().open(req, timeout=timeout) as r:  # noqa: S310 (localhost, opt-in)
         obj = json.load(r)
     return str((obj.get("message") or {}).get("content", "") or "")
 

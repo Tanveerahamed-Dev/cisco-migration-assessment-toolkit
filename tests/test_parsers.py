@@ -2492,3 +2492,112 @@ def test_bgp_summary_grid_ipv6_run_is_length_bounded_no_redos(cp):
     assert by["2001:db8::1"]["prefixes"] == 45
     nve = "nve1  2001:db8::5  Down  DP  00:10:00\n"
     assert parse.parse_nve_peers(nve)[0]["peer_ip"] == "2001:db8::5"
+
+
+# ---- 2026-07-28 deep pass: environment / VTP / policy-map ------------------- #
+def test_parse_show_environment_power_broken_psu_is_never_dropped(cp):
+    """[P2] parse_show_environment_power recognised only 'ok' / 'fail' / 'absent'. IOS-XE prints
+    'Faulty' (whose 'fault' stem does NOT contain 'fail') and 'No Input Power'; NX-OS prints
+    'Shutdown'. Such a row matched NO branch and was dropped ENTIRELY -- so it contributed neither a
+    status nor a PSU to num_ps, and a chassis with one Ok + one broken supply reported num_ps=1 /
+    ps_status='OK'. A dead PSU rendered as a healthy single-corded box, and design_advisor's
+    lost-redundancy signal (num_ps > 1 AND 'fail' in ps_status) could never fire."""
+    tmpl = textwrap.dedent("""\
+        Power                              Actual        Total
+        Supply    Model                    Output     Capacity    Status
+                                         (Watts )     (Watts )
+        -------  -------------------  ===========  ===========  --------
+        1        N9K-PAC-650W               113 W        650 W    Ok
+        2        N9K-PAC-650W                 0 W        650 W    {}
+
+        Total Power Capacity                             1300.00 W
+        Total Power Available                             537.00 W
+    """)
+    for bad in ("Faulty", "Shutdown", "No Input Power", "Fail"):
+        r = parse.parse_show_environment_power(tmpl.format(bad))
+        assert r["num_ps"] == 2, (bad, r)                       # the broken supply is still a PSU
+        assert r["ps_status_list"] == ["OK", "FAIL"], (bad, r)  # ...and it is not silently 'OK'
+
+    # a genuinely healthy pair must stay clean (no cry-wolf), and the budget fields are untouched
+    ok = parse.parse_show_environment_power(tmpl.format("Ok"))
+    assert ok["num_ps"] == 2 and ok["ps_status_list"] == ["OK", "OK"]
+    assert ok["total_capacity_w"] == "1300.00" and ok["total_remaining_w"] == "537.00"
+
+    # a PID / serial that merely CONTAINS the letters must not flag a supply (word-anchored)
+    serial = "1A  PWR-C1-715WAC  DCB2137FAULT1  OK  Good  Good  715\n"
+    assert parse.parse_show_environment_power(serial)["ps_status_list"] == ["OK"]
+
+
+def test_parse_show_environment_absent_fan_tray_never_reads_ok(cp):
+    """[P2] The NX-OS fan-table branch APPENDS 'Absent' for a not-fitted tray, but _worst() had no
+    branch for it, so it ranked BELOW 'OK': a chassis reporting 'Chassis-1 ok / Chassis-2 absent'
+    returned fan_status 'OK' and the missing tray -- a cooling and redundancy loss -- was invisible to
+    every consumer (runbook's environmental-exceptions table filters on not-in ok/normal/good)."""
+    out = textwrap.dedent("""\
+        Fan:
+        ---------------------------------------------------
+        Fan             Model                Hw         Status
+        ---------------------------------------------------
+        Chassis-1       N6K-C6001-FAN-B      --         ok
+        Chassis-2       N6K-C6001-FAN-B      --         absent
+        PS-1            N55-PAC-1100W-B      --         ok
+    """)
+    assert parse.parse_show_environment(out)["fan_status"] == "Absent"
+
+    # a failed tray still outranks an absent one, and an all-ok chassis still reads OK (no cry-wolf)
+    failed = out.replace("--         absent", "--         failure")
+    assert parse.parse_show_environment(failed)["fan_status"] == "Critical/Failed"
+    healthy = out.replace("--         absent", "--         ok")
+    assert parse.parse_show_environment(healthy)["fan_status"] == "OK"
+
+
+def test_parse_vtp_status_empty_domain_is_not_a_phantom_domain(cp):
+    """[P2] A switch with NO VTP domain prints the label with an EMPTY value. `\\s*:?\\s*(.+)$` cannot
+    match that with the colon consumed as a separator, so the engine backtracked the optional `:?` out
+    and captured the COLON itself -- every VTP-less switch reported its VTP domain as ':', a phantom
+    'VTP is configured' in the workbook's VTP Domain / neighbour-VTP columns."""
+    out = textwrap.dedent("""\
+        VTP Version capable             : 1 to 3
+        VTP version running             : 1
+        VTP Domain Name                 :
+        VTP Pruning Mode                : Disabled
+        VTP Operating Mode              : Transparent
+    """)
+    assert parse.parse_vtp_status(out) == ""
+    # a real domain (and one printed without a colon separator) still parses
+    assert parse.parse_vtp_status("VTP Domain Name                 : CAMPUS\n") == "CAMPUS"
+    assert parse.parse_vtp_status("VTP Domain Name   CAMPUS\n") == "CAMPUS"
+    assert parse.parse_vtp_status("VTP Domain Name                 : NULL\n") == ""
+
+
+def test_parse_policymap_drops_interface_header_is_linear_not_redos(cp):
+    """[P2] _PM_IFACE_RE was `^([A-Za-z][\\w./-]*\\d[\\w./-]*)\\s*$` -- a `\\d` between two unbounded runs
+    of a class that already CONTAINS `\\d`, so a long digit run that cannot complete the match backtracked
+    O(n^2) (16k chars took ~4.4s; each doubling quadrupled it). `show policy-map interface` is one of the
+    largest captures the engine ingests. The linear form must still recognise every interface header."""
+    import time
+    poison = "a" + "1" * 40000 + "!"
+    t0 = time.perf_counter()
+    parse.parse_policymap_drops(poison + "\n")
+    dt = time.perf_counter() - t0
+    assert dt < 1.0, f"took {dt:.2f}s on {len(poison)} chars (quadratic backtracking)"
+
+    pm = textwrap.dedent("""\
+        GigabitEthernet0/1
+          Service-policy output: QOS-OUT
+            Class-map: VOICE (match-any)
+              Queueing
+              (queue depth/total drops/no-buffer drops) 0/17/0
+              (pkts output/bytes output) 100/1000
+        Port-channel10
+          Service-policy output: QOS-OUT
+            Class-map: DATA (match-any)
+              (queue depth/total drops/no-buffer drops) 0/5/0
+    """)
+    rows = {r["interface"]: r for r in parse.parse_policymap_drops(pm)}
+    assert set(rows) == {"Gi0/1", "Po10"}, rows
+    assert rows["Gi0/1"]["drop_pkts"] == 17 and rows["Po10"]["drop_pkts"] == 5
+    # a bare word with no digit is still NOT an interface header (unchanged discrimination)
+    assert parse.parse_policymap_drops("Queueing\n  Service-policy output: P\n"
+                                       "    Class-map: C (match-any)\n"
+                                       "      (queue depth/total drops/no-buffer drops) 0/1/0\n") == []

@@ -206,3 +206,32 @@ def test_the_guide_does_not_promise_the_whole_folder_is_safe():
     assert "unredacted" in flat, (
         "the guide must say the STALE case can be UNREDACTED, not only that it may name "
         "another client")
+
+
+def test_the_guide_does_not_promise_total_redaction_verification():
+    """The REDACTION section's opening paragraph is where the engineer forms their mental model,
+    BEFORE they run anything — so an over-broad verification claim there outranks the accurate
+    paragraph fifteen lines further down.
+
+    It used to read "if anything is still unredacted it FAILS and says so rather than handing you a
+    file that looks safe". The code checks exactly two things (serve.run_redaction, and it prints
+    them): that the engine's redaction phases RAN, and that no private RFC 1918 address survives in
+    the SNAPSHOT. MACs, serials, public/IPv6 addresses and the workbook's own cells are not
+    inspected, and hostnames are kept BY DESIGN. serve.py already carries this lesson in a comment
+    ("certified roughly three times what the code inspects") — it had been applied to the console
+    output but not to the one document the engineer has on site.
+
+    Whitespace-NORMALISED, per this file's own hard-wrap lesson: a negative assertion on raw text
+    silently stops matching when the banned sentence comes back wrapped one word differently."""
+    flat = " ".join(GUIDE.read_text(encoding="ascii").split()).lower()
+    assert "still unredacted it fails" not in flat, (
+        "README-FIELD claims the redaction check catches anything unredacted. It checks two things: "
+        "that the engine's redaction phases ran, and that no private address survives in the "
+        "snapshot. Scope the claim or the engineer sends a set believing it was fully verified.")
+    assert "narrower" in flat, (
+        "the guide must say up front that the verification is narrower than it sounds - that "
+        "sentence is what sends the engineer to the WHAT REDACTION DOES NOT REMOVE section")
+    # ...and the section it points at must still carry the two facts that make it worth reading.
+    assert "kept on purpose" in flat, "the guide lost the hostnames-are-kept disclosure"
+    assert "does not certify every field of every file" in flat, (
+        "the guide lost the scope of what Atlas actually verifies")

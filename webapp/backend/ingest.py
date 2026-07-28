@@ -1067,12 +1067,36 @@ def run_redaction_folder(path: Any, out_dir: Any, redact_collection: bool = Fals
         # folder. Membership alone (the original test) reported every re-rendered document as
         # pre-existing: a second run into the same --out printed "Wrote 0 file(s)" and would now
         # read as a set missing all 10 deliverables.
+        # ...but (mtime, size) alone cannot see a BYTE-IDENTICAL rewrite inside one coarse mtime
+        # tick, and re-running the same collection produces exactly that: the same MOP, same bytes,
+        # same size, written within the same tick. Measured on this platform: an immediate
+        # same-size rewrite moves st_mtime by 0.0 every time. The document was rewritten and the
+        # check said it was not, so a correct run reported the whole family as
+        # "left by an EARLIER run ... check which job it belongs to" — a false cross-job alarm on
+        # good output, which is the failure mode _written_by_this_run's own docstring says this
+        # codebase has already paid for once.
+        #
+        # Fixed by making the pre-run state DISTINGUISHABLE instead of hoping the clock ticks:
+        # every family file the engine owns (and is about to overwrite) is stamped a sentinel mtime
+        # a day back, so any rewrite moves it by ~86400s — far outside any tick, and detected by
+        # the same inequality test, so a clock that jumps BACKWARDS is still caught. A file the
+        # engine does not rewrite keeps the sentinel and is still correctly reported stale.
+        # Only engine-owned names are stamped: the engineer's own notes beside the set are never
+        # touched. If the run dies before the engine writes, those files read a day old on disk —
+        # cosmetic, on files this run was about to overwrite anyway.
         pre_existing: Dict[str, Tuple[float, int]] = {}
+        sentinel = time.time() - 86400.0
         for p in out.iterdir():
             try:
-                if p.is_file():
-                    st = p.stat()
-                    pre_existing[p.name] = (st.st_mtime, st.st_size)
+                if not p.is_file():
+                    continue
+                if p.name in engine_names:
+                    try:
+                        os.utime(p, (sentinel, sentinel))
+                    except OSError:
+                        pass          # read-only stick / FS without utime: fall back to raw stat
+                st = p.stat()
+                pre_existing[p.name] = (st.st_mtime, st.st_size)
             except OSError:
                 continue
 

@@ -2622,3 +2622,151 @@ def test_scorecard_coverage_caps_all_absence_inferred_axes():
     for axis in ("convergence", "security", "cost", "scalability", "modularity", "simplicity"):
         assert clean[axis] != blind[axis], f"{axis} reads identical blind vs clean"   # score and/or evidence differ
         assert blind[axis][0] <= 2 and "NOT collected" in blind[axis][1]              # capped + discloses the gap
+
+
+# ---------------------------------------------------------------- deep pass 2026-07-28 (review round 2)
+def test_segmentation_plan_absent_axis_is_unassessed_not_single_global_vrf():
+    """[#39 sibling] `target_state.segmentation_plan.observed` is published VERBATIM as HLD 5.2
+    "Target segmentation -- Observed:". It read an ABSENT segmentation block as the positive assertion
+    "a single global VRF -- L3-unsegmented" -- the same defect #39 fixed in sig['single_vrf'] and the
+    scorecard, on the one surface the fix missed (the scorecard says "not-collected VRF" while this said
+    "L3-unsegmented" off the SAME snapshot). Tri-state: single / multiple / not-observed."""
+    from cisco_toolkit.design_advisor import _segmentation_plan, _scorecard, _signals
+    snap = {"l3_forwarding": [{"switch": "sw1", "vlan": 10, "svi_ip": "10.0.10.1/24"},
+                              {"switch": "sw1", "vlan": 20, "svi_ip": "10.0.20.1/24"}]}   # NO segmentation key
+    obs = _segmentation_plan(snap, {})["observed"]
+    assert "single global VRF" not in obs and "L3-unsegmented" not in obs, obs
+    assert "did NOT observe" in obs and "UNASSESSED" in obs, obs
+    # ... and it agrees with the scorecard, which reads the same tri-state off the same snapshot
+    scal = [a for a in _scorecard(snap, _signals(snap)) if a["axis"] == "scalability"][0]
+    assert "not-collected VRF" in scal["evidence"]
+    # refutation: a REAL single-VRF observation still says so, and a multi-VRF estate is unchanged
+    assert "a single global VRF -- L3-unsegmented." in _segmentation_plan(
+        {"segmentation": {"vrfs": [{"vrf": "(global)"}]}}, {})["observed"]
+    assert "2 VRFs -- partially segmented." in _segmentation_plan(
+        {"segmentation": {"vrfs": [{"vrf": "a"}, {"vrf": "b"}]}}, {})["observed"]
+
+
+def test_lifecycle_undetermined_band_is_not_carried_forward_as_supported():
+    """[#50 sibling] compute_lifecycle_risk emits band 'Unknown' ("Unknown model -- verify on Cisco's EoL
+    portal") for every device whose model it could NOT match. The target state derived the carry-forward
+    figure by SUBTRACTION (assessed - eol - near), so an UNDETERMINED support status was rendered as a
+    "fully-supported asset(s) forward" -- absence as health, in the procurement line, in the same dimension
+    whose rationale says coverage gaps are unknowns not health. retain must be counted POSITIVELY and the
+    undetermined residue disclosed; the four buckets must partition the lifecycle census exactly."""
+    from cisco_toolkit.design_advisor import compute_target_state, _signals
+    snap = {"lifecycle_risk": {"per_device": [
+        {"host": "a", "band": "Past-LDoS", "model": "WS-C4948E"},
+        {"host": "b", "band": "Unknown", "model": "(unknown)"},
+        {"host": "c", "band": "Unknown", "model": "(unknown)"},
+        {"host": "d", "band": "Unknown", "model": "(unknown)"},
+        {"host": "e", "band": "Active", "model": "C9300"}]}}
+    sig = _signals(snap)
+    assert sig["lifecycle_supported"] == 1 and sig["lifecycle_unknown"] == 3
+    assert sig["eol"] + sig["near"] + sig["lifecycle_supported"] + sig["lifecycle_unknown"] \
+        == sig["lifecycle_assessed"]                                     # the buckets PARTITION the census
+    assert sorted(sig["lifecycle_unknown_hosts"]) == ["b", "c", "d"]
+    dim = [d for d in compute_target_state(snap)["dimensions"]
+           if d["area"].startswith("Hardware")][0]
+    assert "carry ~1 fully-supported" in dim["target"], dim["target"]     # NOT ~4
+    assert "UNDETERMINED lifecycle band" in dim["target"] and "UNDETERMINED band" in dim["current"]
+    # refutation: a fully-determined census renders exactly as before -- no undetermined disclosure at all
+    det = {"lifecycle_risk": {"per_device": [{"host": "a", "band": "Past-LDoS"},
+                                             {"host": "b", "band": "Near-LDoS"},
+                                             {"host": "c", "band": "Active"}]}}
+    dim2 = [d for d in compute_target_state(det)["dimensions"] if d["area"].startswith("Hardware")][0]
+    assert "carry ~1 fully-supported" in dim2["target"] and "UNDETERMINED" not in dim2["target"]
+    assert "UNDETERMINED" not in dim2["current"]
+
+
+def test_fhrp_decision_names_the_single_gateway_switches():
+    """A fleet whose gateway gap is entirely single-gateway SPOFs (no no-FHRP VLANs -- the shipped
+    sample-fleet shape) published a CRITICAL fhrp decision with an EMPTY evidence.devices: the explorer
+    spotlight (POS[evidence.devices[0]]) silently no-ops and the design-driven NRFU item names no device to
+    verify. The host is on the very row the signal reads (l3_forwarding[].switch)."""
+    from cisco_toolkit.design_advisor import (_d_fhrp, _signals, compute_design_nrfu,
+                                              compute_design_blueprint)
+    snap = {"l3_forwarding": [{"switch": "dist1", "vlan": 10, "risk": "single-gateway SVI"},
+                              {"switch": "dist2", "vlan": 20, "risk": "single-gateway SVI"}]}
+    sig = _signals(snap)
+    assert sig["no_fhrp"] == 0 and sig["single_gw"] == 2                  # single-gateway ONLY
+    d = _d_fhrp(snap, sig)
+    assert d["priority"] == "Critical" and d["evidence"]["devices"] == ["dist1", "dist2"]
+    assert "l3_forwarding[].switch" in d["evidence"]["fields"]            # the claim cites what it read
+    item = [i for i in compute_design_nrfu(compute_design_blueprint(snap))["items"]
+            if i["decision_id"] == "fhrp-first-hop-gateway-redundancy"][0]
+    assert item["devices"] == ["dist1", "dist2"]
+    # refutation: the no-FHRP hosts are still carried when THAT population is the one that fired
+    snap2 = {"fhrp": [{"vid": 10, "issues": ["2 gateways but no FHRP"],
+                       "members": [{"host": "distA"}, {"host": "distB"}]}]}
+    assert _d_fhrp(snap2, _signals(snap2))["evidence"]["devices"] == ["distA", "distB"]
+
+
+def test_oncrit_segmentation_never_substitutes_an_unreported_acl_coverage():
+    """[stratum-16 shape] the fail-soft 0.0 / 0 coercions on segmentation.summary.gateway_acl_coverage /
+    n_gateways are CRASH guards, not observations -- but the decision rendered them verbatim as
+    "gateway-ACL coverage is 0% across 0 gateway(s)", i.e. the WORST possible measured value (no gateway
+    anywhere has an ACL), from a snapshot that measured neither. It also contradicted its own sentence
+    (0 gateways beside 2 exposed domains that each list gateways)."""
+    from cisco_toolkit.design_advisor import _d_oncrit_seg, _signals
+    doms = [{"domain": "Media", "tier": "On-air critical", "isolated": False, "gateways": 3},
+            {"domain": "Studio", "tier": "On-air critical", "isolated": False, "gateways": 2}]
+    bare = {"segmentation": {"summary": {"n_oncrit_exposed": 2}, "domains": doms}}
+    s = _d_oncrit_seg(bare, _signals(bare))["evidence"]["summary"]
+    assert "coverage is 0%" not in s and "0 gateway(s)" not in s, s
+    assert "NOT REPORTED" in s and "not observed as 0%" in s, s
+    # refutation A: a REAL measured 0% still reads as an observed 0% (this is not a blanket suppression)
+    real0 = {"segmentation": {"summary": {"n_oncrit_exposed": 2, "gateway_acl_coverage": 0.0,
+                                          "n_gateways": 40}, "domains": doms}}
+    s0 = _d_oncrit_seg(real0, _signals(real0))["evidence"]["summary"]
+    assert "coverage is 0% across 40 gateway(s)" in s0, s0
+    # refutation B: a normal measured coverage is unchanged
+    ok = {"segmentation": {"summary": {"n_oncrit_exposed": 1, "gateway_acl_coverage": 55.0,
+                                       "n_gateways": 20}, "domains": doms[:1]}}
+    assert "coverage is 55% across 20 gateway(s)" in _d_oncrit_seg(ok, _signals(ok))["evidence"]["summary"]
+
+
+def test_absent_session_state_is_not_an_observed_down_session():
+    """[#38 shape, four arms] EVPN / NVE-VNI / VPNv4 / IPv6-BGP compared `state != "Established"|"up"` with
+    NO empty guard, while their immediate siblings (nve_peers, LDP, OSPFv3) DO exclude "" -- three spellings
+    of one predicate in one function, two of them reading a MISSING state as an observed down session and
+    publishing a High "the overlay control plane is dark" decision from evidence never collected.
+    (parse_mpls_ldp_neighbors' documented shape is literally state:"" when no 'State:' line was seen.)"""
+    from cisco_toolkit.design_advisor import _signals, compute_design_blueprint
+    absent = {"overlay": {"c1": {"evpn_neighbors": [{"neighbor": "10.0.0.1"}],
+                                 "nve_vni": [{"vni": 50000}],
+                                 "nve_peers": [{"peer_ip": "10.0.0.2"}]}},
+              "mpls": {"c1": {"vpnv4_neighbors": [{"neighbor": "10.0.0.3"}],
+                              "ldp_neighbors": [{"peer": "10.0.0.4", "state": ""}]}},
+              "ipv6_routing": {"c1": {"bgp_ipv6_neighbors": [{"neighbor": "2001:db8::1"}],
+                                      "ospfv3_neighbors": [{"neighbor_id": "1.1.1.1"}]}}}
+    sig = _signals(absent)
+    for k in ("evpn_down", "nve_vni_down", "nve_peers_down", "mpls_vpnv4_down", "mpls_ldp_down",
+              "ipv6_bgp_down", "ipv6_ospfv3_stuck"):
+        assert sig[k] == [], f"{k} fired on an ABSENT state: {sig[k]}"
+    fired = {d["id"] for d in compute_design_blueprint(absent)["decisions"]}
+    for pid in ("vxlan-evpn-control-plane-down", "vxlan-nve-vni-down", "mpls-l3vpn-vpnv4-down",
+                "ipv6-routing-adjacency-down"):
+        assert pid not in fired, pid
+    # refutation: an OBSERVED broken state still fires every arm
+    bad = {"overlay": {"c1": {"evpn_neighbors": [{"neighbor": "10.0.0.1", "state": "Idle"}],
+                              "nve_vni": [{"vni": 50000, "state": "Down"}]}},
+           "mpls": {"c1": {"vpnv4_neighbors": [{"neighbor": "10.0.0.3", "state": "Idle"}]}},
+           "ipv6_routing": {"c1": {"bgp_ipv6_neighbors": [{"neighbor": "2001:db8::1", "state": "Active"}]}}}
+    sb = _signals(bad)
+    assert sb["evpn_down"] and sb["nve_vni_down"] and sb["mpls_vpnv4_down"] and sb["ipv6_bgp_down"]
+
+
+def test_wave_plan_survives_mixed_type_switch_names():
+    """[audit-7 leaf-poison class] the bin-pack tie-breaker sorted on the BARE first switch name across
+    groups, so two equal-size groups whose names are of different types ("switches": [10, 20] vs ["a","b"]
+    -- the exact shape _skey's docstring names) raised TypeError: '<' not supported between 'str' and 'int',
+    aborting the whole blueprint (a 500 on the unwrapped /design + /architecture_coverage)."""
+    from cisco_toolkit.design_advisor import _wave_plan, compute_design_blueprint
+    wp = _wave_plan({"move_groups": [{"switches": [10, 20]}, {"switches": ["a", "b"]}]})
+    assert wp["n_move_groups"] == 2 and sum(w["n_switches"] for w in wp["waves"]) == 4
+    assert compute_design_blueprint({"move_groups": [{"switches": [10, 20]},
+                                                     {"switches": ["a", "b"]}]})["target_state"]["wave_plan"]
+    # refutation: an all-string estate keeps its exact previous ordering (largest first, then name)
+    wp2 = _wave_plan({"move_groups": [{"switches": ["b1", "b2"]}, {"switches": ["a1"]}]})
+    assert wp2["waves"][0]["switches"] == ["b1", "b2", "a1"]

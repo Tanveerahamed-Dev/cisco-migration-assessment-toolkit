@@ -6488,7 +6488,7 @@
   "claims": [
    {
     "id": "read_only_command_surface",
-    "method": "re-derive over every COMMANDS_* registry of the collector: each command must match the read-only grammar (show/display/get/dir/ping/moquery | aws ec2 describe- | api|ers|dataservice REST GET paths)",
+    "method": "re-derive over every COMMANDS_* registry of the collector: the WHOLE of each command must be read-only \u2014 a read verb (show/display/get/dir/ping/moquery | aws ec2 describe- | api|ers|dataservice REST GET paths) AND no way to chain, redirect or substitute a second command out of it (no CR/LF ; & ` $ > < \\, and every pipe stage an output filter, never redirect/tee/append or a URL sink)",
     "result": "HOLDS",
     "detail": "all 285 registry commands across 7 COMMANDS_* registries match the read-only grammar"
    },
