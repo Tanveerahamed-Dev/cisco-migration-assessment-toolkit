@@ -510,6 +510,18 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
     if gating:
         for g in gating[:6]:
             doc.add_paragraph(g, style="List Bullet")
+        # Disclose the cap (same class as §x.2's blocker lists). This section is a PRECONDITION for
+        # the whole change -- "complete these once, before the first wave ... cutting over before
+        # they are resolved or risk-accepted carries the documented risk" -- so a silent 6-of-9 list
+        # makes an engineer who cleared everything printed here believe the fleet-wide gate is met.
+        # The engine publishes the full ordered set; the deck already says "5 of 9 shown" for the
+        # same list, so a silent MOP was also the set-wide outlier.
+        if len(gating) > 6:
+            doc.add_paragraph(
+                f"…and {len(gating) - 6} further fleet-wide gating item(s) NOT listed above "
+                f"({len(gating)} in total) — this prerequisite covers all of them, not only the 6 "
+                "shown. Work the full set from the workbook's Executive Summary before the first "
+                "wave.")
     steps([
         "Confirm the assessment workbook, runbook and this MOP are the agreed change record, and that "
         "the change ticket <CHG-NUMBER> references them.",
@@ -717,8 +729,14 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
             "collected evidence reads “[NOT OBSERVED]”, never assumed satisfied.")
         chk_rows = [
             ("Out-of-band / console access to every device in scope", "Evidence",
+             # The bare "…" marked THAT something was dropped but never WHAT: this row is the
+             # evidence gate for "OOB / console access to EVERY device in scope", so the engineer
+             # must know the gate covers 35 management ports, not the 6 printed. Name the remainder
+             # and the total (the house disclosure pattern), never an anonymous ellipsis.
              (f"observed management-port(s): {'; '.join(oob_ev[:6])}"
-              + (" …" if len(oob_ev) > 6 else "") + " — confirm each is reachable before the window")
+              + (f" …and {len(oob_ev) - 6} further management-port(s) not listed here "
+                 f"({len(oob_ev)} observed in total)" if len(oob_ev) > 6 else "")
+              + " — confirm each is reachable before the window")
              if oob_ev else
              "[NOT OBSERVED] — no management-port evidence for this wave's devices; confirm OOB "
              "reachability out-of-band before the window (do NOT assume it)."),
@@ -864,16 +882,37 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                 doc.add_paragraph(
                     "Staged endpoint-port configuration, derived from the evidence (mode/VLAN/"
                     "description only — review, complete and peer-review before any use):")
-                for h in sorted(stub_by_host)[:2]:
+                # BOTH caps here are display caps and BOTH must disclose. §x.5 tells the engineer to
+                # "apply the staged target configuration ... per the §x.4 port mapping", so a wave of
+                # 40 stub-bearing devices that silently stages 2 of them (6 of up to 95 ports each)
+                # reads as the wave's COMPLETE staged configuration — the same defect class as §x.2's
+                # blocker list. The port-map table above discloses ITS cap; these two did not.
+                _stub_hosts = sorted(stub_by_host)
+                _shown_hosts = _stub_hosts[:2]
+                for h in _shown_hosts:
+                    _ports = stub_by_host[h]
                     lines = [f"! {h} — staged endpoint-port config (evidence-derived)"]
-                    for pname, v, desc in stub_by_host[h][:6]:
+                    for pname, v, desc in _ports[:6]:
                         lines.append(f"interface <target port for {pname}>")
                         if desc != "—":
                             lines.append(f" description {desc}")
                         lines += [" switchport mode access", f" switchport access vlan {v}", "!"]
+                    if len(_ports) > 6:
+                        lines.append(
+                            f"! …and {len(_ports) - 6} further endpoint port(s) on {h} NOT staged "
+                            f"above ({len(_ports)} in total) — derive them the same way from the "
+                            "port mapping above / the workbook's interface sheets.")
                     cp = doc.add_paragraph()
                     cr = cp.add_run("\n".join(lines))
                     cr.font.name = "Consolas"; cr.font.size = Pt(9)
+                if len(_stub_hosts) > len(_shown_hosts):
+                    doc.add_paragraph(
+                        f"…and {len(_stub_hosts) - len(_shown_hosts)} further device(s) in this wave "
+                        f"carry endpoint ports needing the same staged configuration "
+                        f"({len(_stub_hosts)} in total); only the first {len(_shown_hosts)} are "
+                        "stubbed above. These stubs are a WORKED EXAMPLE of the conversion, NOT this "
+                        "wave's complete staged configuration — build the remainder the same way "
+                        "from the port mapping above before the window.")
         else:
             doc.add_paragraph("No endpoint or uplink port evidence for this wave's devices in the "
                               "snapshot — build the mapping from a fresh interface collection before "

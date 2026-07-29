@@ -113,11 +113,45 @@ def _port_gbps(port: str, speed: str):
     return None
 
 
-def _ev(hosts, cap: int = 12) -> str:
-    """Render an evidence host/item list, capped (cry-wolf doctrine: aggregate, don't enumerate)."""
+def _ev(hosts, cap: int = 12, total=None) -> str:
+    """Render an evidence host/item list, capped (cry-wolf doctrine: aggregate, don't enumerate).
+
+    `total` is the TRUE population size for the case where `hosts` is ITSELF already a sample: a
+    check's stored `evidence` is capped at `_EVIDENCE_CAP` by `add()`, so a "+N more" computed off
+    the stored list understates the scope by everything the first cut dropped -- on the [HISTORY-REDACTED] fleet
+    L2-3 carries 230 evidence hosts, and the §3 scorecard rendered "5 shown +15 more" for it.
+    Shown + hidden must reconcile to the real total, so the caller passes the check's
+    `evidence_total` (absent when nothing was dropped, hence the None default)."""
     items = sorted({str(h) for h in hosts if h is not None})
-    head = ", ".join(items[:cap])
-    return head + (f" +{len(items) - cap} more" if len(items) > cap else "") if items else "—"
+    if not items:
+        return "—"
+    shown = items[:cap]
+    n_total = max(_as_int(total), len(items)) if total else len(items)
+    hidden = n_total - len(shown)
+    return ", ".join(shown) + (f" +{hidden} more" if hidden > 0 else "")
+
+
+#: How many evidence hosts a check RETAINS (the snapshot section is consumed by the explorer + the
+#: webapp, so an unbounded fleet-wide list is not free). The cut is disclosed via `evidence_total`.
+_EVIDENCE_CAP = 20
+
+
+def _clip(text, width: int) -> str:
+    """Cut a free-text field to a display width WITHOUT manufacturing a token: trim back to the last
+    word boundary and mark the cut with '…'.
+
+    A raw ``str(...)[:60]`` on a device-derived string ends mid-word, and the reader has no way to
+    tell a clipped title from a complete one (the same failure the Findings-Delta devices column had:
+    a hostname's front half read as a hostname). Measured on the [HISTORY-REDACTED] fleet: 1 of 3 rendered
+    High/Critical drift titles is 69 chars and was cut mid-word."""
+    s = str(text if text is not None else "")
+    if len(s) <= width:
+        return s
+    cut = s[:width]
+    sp = cut.rfind(" ")
+    if sp >= width // 2:                    # only honour a boundary that keeps most of the text
+        cut = cut[:sp]
+    return cut.rstrip(" ,;:-") + "…"
 
 
 # =============================================================================
@@ -202,10 +236,20 @@ def compute_architecture_review(snap: dict) -> dict:
 
     def add(cid, domain, title, verdict, observed, implication, recommendation, reference,
             evidence=()):
-        checks.append({"id": cid, "domain": domain, "title": title, "verdict": verdict,
-                       "observed": observed, "implication": implication,
-                       "recommendation": recommendation, "reference": reference,
-                       "evidence": sorted({str(h) for h in evidence if h is not None})[:20]})
+        # The evidence cut is DISCLOSED, never silent: every renderer of `evidence` shows a
+        # "+N more" tail, and computing that N from the already-capped list is a lie about scope
+        # ([HISTORY-REDACTED] fleet: 8 of 25 checks exceed the cap -- L2-3 at 230 hosts rendered as "+15 more",
+        # LC-1 152, HIER-1 116, SEC-1 74, HIER-2 67, L2-1 42, RES-1 21, L2-5 21).
+        # `evidence_total` is emitted ONLY when something was actually dropped -- an unconditional
+        # key would restate `len(evidence)` on every check for no reader.
+        _ev_all = sorted({str(h) for h in evidence if h is not None})
+        rec = {"id": cid, "domain": domain, "title": title, "verdict": verdict,
+               "observed": observed, "implication": implication,
+               "recommendation": recommendation, "reference": reference,
+               "evidence": _ev_all[:_EVIDENCE_CAP]}
+        if len(_ev_all) > _EVIDENCE_CAP:
+            rec["evidence_total"] = len(_ev_all)
+        checks.append(rec)
 
     # ---------------- D1 · Hierarchy & modularity ----------------
     D1 = "Hierarchy & modularity"
@@ -384,14 +428,30 @@ def compute_architecture_review(snap: dict) -> dict:
             "Re-run the assessment with the current engine.",
             "Availability analysis — single-device blast radius")
     elif keystones:
+        # This names 5 of len(keystones) — 193 on the [HISTORY-REDACTED] fleet, 19 on the sample — and without the
+        # tail sentence it reads as the complete keystone set, i.e. "the fleet has five keystones".
+        # A migration that hardens those five leaves the rest unhardened and sequences waves off the
+        # wrong blast-radius population. The band is read off the DESCENDING tail so it can never
+        # overstate a hidden row ("at least the 5th value" would).
+        _tail = keystones[5:]
+        _more = ""
+        if _tail:
+            _hi = _as_int(_tail[0].get("stranded"))
+            _lo = _as_int(_tail[-1].get("stranded"))
+            _more = (f"; and {len(_tail)} further device(s) strand "
+                     + (f"{_lo}-{_hi}" if _lo != _hi else f"{_lo}") + " endpoint(s) each")
         add("RES-4", D2, "No keystone single point of failure", "advisory",
             "Losing " + "; ".join(f"{r.get('host')} strands {_as_int(r.get('stranded'))} endpoint(s)"
-                                  for r in keystones[:5]) + ".",
+                                  for r in keystones[:5]) + _more + ".",
             "Endpoint dependency is concentrated — these devices ARE the availability budget.",
             "Verify each keystone's redundancy (uplinks, power, supervisor) and sequence them with "
             "the most conservative cutover plan (their waves carry the widest blast radius).",
             "Availability analysis — single-device blast radius",
-            evidence=[r.get("host") for r in keystones[:8]])
+            # Pass the FULL keystone list: pre-cutting at 8 here happens BEFORE add()'s own 20-item
+            # evidence cap, so `evidence_total` never fired for this check and its "+N more" marker
+            # reconciled against 8 instead of the real population. Let the disclosed cap do the
+            # bounding.
+            evidence=[r.get("host") for r in keystones])
     elif len(fi_measured) < len(fi):
         # partial coverage is a blind spot, never health — the same rule RES-3 applies to PSU inventory
         add("RES-4", D2, "No keystone single point of failure", "not-assessable",
@@ -425,7 +485,13 @@ def compute_architecture_review(snap: dict) -> dict:
     elif access_roots:
         add("L2-1", D3, "Deterministic STP root at the distribution tier", "deviation",
             "Access switch(es) hold the STP root: "
-            + "; ".join(f"{h} roots {roots_by_host[h]} VLAN(s)" for h in access_roots[:6]) + ".",
+            # This sentence is the check's whole statement of SCOPE — how many closets the design
+            # must re-pin. Naming 6 of len(access_roots) (42 on the [HISTORY-REDACTED] fleet, 17 on the sample) sizes
+            # an LLD task list and a per-wave STP risk off a display cap.
+            + "; ".join(f"{h} roots {roots_by_host[h]} VLAN(s)" for h in access_roots[:6])
+            + (f"; and {len(access_roots) - 6} further access switch(es) rooting "
+               f"{sum(roots_by_host[h] for h in access_roots[6:])} VLAN(s) between them"
+               if len(access_roots) > 6 else "") + ".",
             "A root on an access closet means the L2 tree converges around the smallest box in the "
             "fabric — default (un-pinned) priorities usually caused it, and any new switch can "
             "silently steal the root.",
@@ -807,8 +873,13 @@ def compute_architecture_review(snap: dict) -> dict:
             "Capacity planning — keep ~10% port headroom per closet")
     elif tight:
         add("CAP-2", D5, "Port-capacity headroom for growth", "advisory",
+            # The BoM sizes replacement hardware off this list, so the count past the 90% line must
+            # not be the display cap: 6 named of len(tight) (16 on the sample fleet) means ten full
+            # closets get no spare-port allowance.
             "; ".join(f"{r.get('hostname')} at {r.get('port_util')}% port utilisation"
-                      for r in tight[:6]) + ".",
+                      for r in tight[:6])
+            + (f"; and {len(tight) - 6} further closet(s) above the 90% line"
+               if len(tight) > 6 else "") + ".",
             "A full closet forces ad-hoc daisy-chaining (see HIER-2) the day a port is needed.",
             "Size replacement hardware with ≥10% spare ports per listed closet.",
             "Capacity planning — keep ~10% port headroom per closet",
@@ -842,7 +913,7 @@ def compute_architecture_review(snap: dict) -> dict:
     elif d_hi:
         add("OPS-1", D6, "No operational drift / false health", "deviation",
             f"{len(d_hi)} High/Critical drift finding(s) (of {len(drift)} total): "
-            + "; ".join(str(d.get("title") or d.get("detail") or "?")[:60] for d in d_hi[:3]) + ".",
+            + "; ".join(_clip(d.get("title") or d.get("detail") or "?", 60) for d in d_hi[:3]) + ".",
             "Drift findings are the traps a green control plane hides — they surface on the first "
             "change, which is exactly what a migration is.",
             "Close the High/Critical drift items before their carrying waves (punch-list owners).",
@@ -1131,9 +1202,15 @@ def compute_architecture_review(snap: dict) -> dict:
 
     actions = sorted((c for c in checks if c["verdict"] in ("critical", "deviation", "advisory")),
                      key=lambda c: (V_RANK[c["verdict"]], -len(c["evidence"]), c["id"]))
-    top_actions = [{"rank": i + 1, "id": c["id"], "domain": c["domain"], "verdict": c["verdict"],
-                    "action": c["recommendation"], "evidence": c["evidence"]}
-                   for i, c in enumerate(actions[:10])]
+    top_actions = []
+    for i, c in enumerate(actions[:10]):
+        a = {"rank": i + 1, "id": c["id"], "domain": c["domain"], "verdict": c["verdict"],
+             "action": c["recommendation"], "evidence": c["evidence"]}
+        if c.get("evidence_total"):        # carry the true scope with the sampled list (see `add`)
+            a["evidence_total"] = c["evidence_total"]
+        top_actions.append(a)
+    # NB the queue is the top 10 of `len(actions)`; §1.1 discloses that ratio, recomputed there from
+    # `checks` rather than published as a new summary key (the key would restate a derivable count).
 
     if score_pct is None:
         statement = ("The snapshot carries too little evidence to grade the architecture — every "
@@ -1144,7 +1221,12 @@ def compute_architecture_review(snap: dict) -> dict:
                      f"{n_by['conforms']} of {len(assessable)} assessable checks conform to leading "
                      f"practice; {n_by['critical']} critical and {n_by['deviation']} material "
                      f"deviation(s) require remediation"
-                     + (f", concentrated in: {', '.join(worst_doms[:4])}" if worst_doms else "")
+                     + (f", concentrated in: {', '.join(worst_doms[:4])}"
+                        # "concentrated in: A, B, C, D" over 7 affected domains ([HISTORY-REDACTED] fleet) inverts
+                        # the finding -- the deviations are FLEET-WIDE, not concentrated.
+                        + (f" and {len(worst_doms) - 4} further domain(s)"
+                           if len(worst_doms) > 4 else "")
+                        if worst_doms else "")
                      + f". {n_by['not-assessable']} check(s) were not assessable from this snapshot "
                        "and are listed in the review scope.")
 
@@ -1261,13 +1343,24 @@ def write_archreview_docx(output_path: str, snap_dict: dict, label: str) -> None
           widths=[3.2, 2.0, 1.6])
     top = _as_list(ar.get("top_actions"))
     if top:
+        # The queue is the top 10 of every actionable check; unqualified, a 10-row table titled
+        # "Priority remediation queue" reads as the WHOLE remediation scope ([HISTORY-REDACTED] fleet: 19 actionable
+        # checks, sample fleet: 14). Recomputed from `checks`, so an older snapshot discloses too.
+        n_actionable = sum(1 for c in _as_list(ar.get("checks"))
+                           if isinstance(c, dict)
+                           and c.get("verdict") in ("critical", "deviation", "advisory"))
         doc.add_heading("1.1 Priority remediation queue", level=2)
         doc.add_paragraph(
             "Ordered by verdict severity then blast radius — the order a senior engineer would work "
-            "them. Items overlapping the migration punch-list keep their punch-list owners.")
+            "them. Items overlapping the migration punch-list keep their punch-list owners."
+            + (f" Showing the top {len(top)} of {n_actionable} check(s) requiring remediation; the "
+               f"remaining {n_actionable - len(top)} carry the same verdicts and are listed in the "
+               "§3 scorecard and §4 findings."
+               if n_actionable > len(top) else ""))
         table(["#", "Check", "Severity", "Action", "Evidence"],
               [(a.get("rank"), a.get("id"), VERDICT_LABEL.get(a.get("verdict"), ""),
-                str(a.get("action") or "")[:220], _ev(_as_list(a.get("evidence")), 4))
+                _clip(a.get("action"), 220),
+                _ev(_as_list(a.get("evidence")), 4, a.get("evidence_total")))
                for a in top if isinstance(a, dict)],
               widths=[0.4, 0.7, 1.2, 3.3, 1.4])
 
@@ -1286,8 +1379,8 @@ def write_archreview_docx(output_path: str, snap_dict: dict, label: str) -> None
     if na:
         doc.add_heading("2.1 Checks not assessable from this snapshot", level=2)
         table(["Check", "Why not assessable", "How to close the gap"],
-              [(f"{c.get('id')} — {c.get('title')}", str(c.get("observed") or "")[:160],
-                str(c.get("recommendation") or "")[:160]) for c in na],
+              [(f"{c.get('id')} — {c.get('title')}", _clip(c.get("observed"), 160),
+                _clip(c.get("recommendation"), 160)) for c in na],
               widths=[2.2, 2.5, 2.2])
     doc.add_heading("2.2 Outside the reach of an offline snapshot", level=2)
     doc.add_paragraph(
@@ -1302,7 +1395,7 @@ def write_archreview_docx(output_path: str, snap_dict: dict, label: str) -> None
     table(["Check", "Domain", "Verdict", "Evidence"],
           [(f"{c.get('id')} — {c.get('title')}", c.get("domain"),
             VERDICT_LABEL.get(c.get("verdict"), str(c.get("verdict"))),
-            _ev(_as_list(c.get("evidence")), 5))
+            _ev(_as_list(c.get("evidence")), 5, c.get("evidence_total")))
            for c in _as_list(ar.get("checks")) if isinstance(c, dict)],
           widths=[2.6, 1.7, 1.3, 1.5])
 

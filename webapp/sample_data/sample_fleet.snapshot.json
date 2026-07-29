@@ -1,7 +1,7 @@
 {
   "schema": "collect_parse_snapshot/1",
   "script_version": "V3.23.0",
-  "generated_at": "2026-07-28T20:39:02.793018",
+  "generated_at": "2026-07-28T23:21:33.482944",
   "devices": {
     "core1": {
       "hostname": "core1",
@@ -2917,7 +2917,7 @@
       }
     }
   },
-  "collected_at": "2026-07-28T20:38:59.385936",
+  "collected_at": "2026-07-28T23:21:18.077390",
   "physical_health": [
     {
       "switch": "access1",
@@ -27144,7 +27144,7 @@
   },
   "attestation": {
     "schema": "attestation/1",
-    "generated_at": "2026-07-28T17:39:02.485427+00:00",
+    "generated_at": "2026-07-28T20:21:31.768745+00:00",
     "claims": [
       {
         "id": "read_only_command_surface",
@@ -34145,17 +34145,28 @@
         "domain": "Resiliency & availability",
         "title": "No keystone single point of failure",
         "verdict": "advisory",
-        "observed": "Losing core1 strands 45 endpoint(s); access1 strands 42 endpoint(s); core2 strands 42 endpoint(s); access13 strands 39 endpoint(s); access14 strands 39 endpoint(s).",
+        "observed": "Losing core1 strands 45 endpoint(s); access1 strands 42 endpoint(s); core2 strands 42 endpoint(s); access13 strands 39 endpoint(s); access14 strands 39 endpoint(s); and 14 further device(s) strand 30-39 endpoint(s) each.",
         "implication": "Endpoint dependency is concentrated \u2014 these devices ARE the availability budget.",
         "recommendation": "Verify each keystone's redundancy (uplinks, power, supervisor) and sequence them with the most conservative cutover plan (their waves carry the widest blast radius).",
         "reference": "Availability analysis \u2014 single-device blast radius",
         "evidence": [
           "access1",
+          "access10",
+          "access11",
+          "access12",
           "access13",
           "access14",
           "access15",
           "access16",
           "access17",
+          "access2",
+          "access3",
+          "access4",
+          "access5",
+          "access6",
+          "access7",
+          "access8",
+          "access9",
           "core1",
           "core2"
         ]
@@ -34165,7 +34176,7 @@
         "domain": "Layer-2 design",
         "title": "Deterministic STP root at the distribution tier",
         "verdict": "deviation",
-        "observed": "Access switch(es) hold the STP root: access1 roots 1 VLAN(s); access10 roots 1 VLAN(s); access11 roots 1 VLAN(s); access12 roots 1 VLAN(s); access13 roots 1 VLAN(s); access14 roots 1 VLAN(s).",
+        "observed": "Access switch(es) hold the STP root: access1 roots 1 VLAN(s); access10 roots 1 VLAN(s); access11 roots 1 VLAN(s); access12 roots 1 VLAN(s); access13 roots 1 VLAN(s); access14 roots 1 VLAN(s); and 11 further access switch(es) rooting 11 VLAN(s) between them.",
         "implication": "A root on an access closet means the L2 tree converges around the smallest box in the fabric \u2014 default (un-pinned) priorities usually caused it, and any new switch can silently steal the root.",
         "recommendation": "Pin root primary/secondary priorities on the distribution pair for every VLAN.",
         "reference": "Cisco campus design \u2014 pin the STP root (priority) at the distribution layer",
@@ -34314,7 +34325,7 @@
         "domain": "Capacity & oversubscription",
         "title": "Port-capacity headroom for growth",
         "verdict": "advisory",
-        "observed": "access1 at 100.0% port utilisation; access10 at 100.0% port utilisation; access11 at 100.0% port utilisation; access12 at 100.0% port utilisation; access2 at 100.0% port utilisation; access3 at 100.0% port utilisation.",
+        "observed": "access1 at 100.0% port utilisation; access10 at 100.0% port utilisation; access11 at 100.0% port utilisation; access12 at 100.0% port utilisation; access2 at 100.0% port utilisation; access3 at 100.0% port utilisation; and 10 further closet(s) above the 90% line.",
         "implication": "A full closet forces ad-hoc daisy-chaining (see HIER-2) the day a port is needed.",
         "recommendation": "Size replacement hardware with \u226510% spare ports per listed closet.",
         "reference": "Capacity planning \u2014 keep ~10% port headroom per closet",
@@ -34537,6 +34548,34 @@
       },
       {
         "rank": 6,
+        "id": "RES-4",
+        "domain": "Resiliency & availability",
+        "verdict": "advisory",
+        "action": "Verify each keystone's redundancy (uplinks, power, supervisor) and sequence them with the most conservative cutover plan (their waves carry the widest blast radius).",
+        "evidence": [
+          "access1",
+          "access10",
+          "access11",
+          "access12",
+          "access13",
+          "access14",
+          "access15",
+          "access16",
+          "access17",
+          "access2",
+          "access3",
+          "access4",
+          "access5",
+          "access6",
+          "access7",
+          "access8",
+          "access9",
+          "core1",
+          "core2"
+        ]
+      },
+      {
+        "rank": 7,
         "id": "L2-3",
         "domain": "Layer-2 design",
         "verdict": "advisory",
@@ -34563,7 +34602,7 @@
         ]
       },
       {
-        "rank": 7,
+        "rank": 8,
         "id": "CAP-2",
         "domain": "Capacity & oversubscription",
         "verdict": "advisory",
@@ -34585,23 +34624,6 @@
           "dist2",
           "podacc1",
           "podacc2"
-        ]
-      },
-      {
-        "rank": 8,
-        "id": "RES-4",
-        "domain": "Resiliency & availability",
-        "verdict": "advisory",
-        "action": "Verify each keystone's redundancy (uplinks, power, supervisor) and sequence them with the most conservative cutover plan (their waves carry the widest blast radius).",
-        "evidence": [
-          "access1",
-          "access13",
-          "access14",
-          "access15",
-          "access16",
-          "access17",
-          "core1",
-          "core2"
         ]
       },
       {

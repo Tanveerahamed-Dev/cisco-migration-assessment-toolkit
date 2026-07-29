@@ -36,6 +36,21 @@ logger = logging.getLogger(__name__)
 _LC_BAND_RANK = {"Past-LDoS": 0, "Past-EoS": 1, "Near-LDoS": 2, "Active": 3, "Unknown": 4}
 
 
+def _capped_join(items, cap: int, sep: str = ", ") -> str:
+    """Join at most `cap` items and DISCLOSE the remainder with the house `(+N more)` marker.
+
+    The family rule (stated in `excel.py :: _xls_cell_value`, applied in `html.py`'s device-list column
+    and `mop.py` §x.2): a display cap must name what it dropped, so what is SHOWN plus what is HIDDEN
+    reconciles to the total the reader is given elsewhere in the same document. A silently shortened
+    list in an HLD/LLD becomes a design that omits what was cut — §2.1 printed a Count of 187 beside
+    30 device names, and §3.3 promised 'the build facts a re-implementation must reproduce' while
+    dropping a 34-uplink switch's last 20 uplinks without a mark."""
+    vals = [str(x) for x in items]
+    if len(vals) <= cap:
+        return sep.join(vals)
+    return sep.join(vals[:cap]) + f" (+{len(vals) - cap} more)"
+
+
 def _bom_rows(disposition: str, seq) -> list:
     """§5.1 replacement-BoM rows from a (model, qty) pair list. `bom.get(k, [])` substitutes only when
     the key is ABSENT, so a null / scalar value -- or a row that is not a 2-element pair -- raised on the
@@ -314,18 +329,29 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         "Devices are tiered by their L3 participation recovered from the configuration: a node that owns "
         "a gateway SVI or forms a routing adjacency is treated as a core/distribution (L3) node; the "
         "remainder are L2 access nodes. This is an evidence-based tiering, not an assumption from naming.")
+    # The Count column states the true tier size, so the Devices cell must disclose its own cut or the
+    # row contradicts itself: on the 303-device fleet this printed "Access (L2-only) | 187 | <30 names>"
+    # and a reader building the access-tier work list from the cell was short 157 switches.
     table(["Tier", "Count", "Devices"], [
-        ("Core / Distribution (L3)", len(l3_hosts), ", ".join(sorted(l3_hosts)[:30]) or "—"),
-        ("Access (L2-only)", len(l2_hosts), ", ".join(sorted(l2_hosts)[:30]) or "—"),
+        ("Core / Distribution (L3)", len(l3_hosts), _capped_join(sorted(l3_hosts), 30) or "—"),
+        ("Access (L2-only)", len(l2_hosts), _capped_join(sorted(l2_hosts), 30) or "—"),
     ], widths=[2.2, 0.8, 4.0])
     # keystone devices (concentrated dependency) from failure_impact
-    keystones = sorted((r for r in failure_impact if isinstance(r, dict) and _as_num(r.get("stranded")) > 0),
-                       key=lambda r: -_as_num(r.get("stranded")))[:5]
+    keystones_all = [r for r in failure_impact if isinstance(r, dict) and _as_num(r.get("stranded")) > 0]
+    keystones = sorted(keystones_all, key=lambda r: -_as_num(r.get("stranded")))[:5]
     if keystones:
+        # Say "the N largest of M", not just the names: §2.4's "Keystone devices (strand endpoints if
+        # lost)" row states M (193 on the [HISTORY-REDACTED] fleet) — an unqualified 5-device sentence reading "protect
+        # and sequence these first" is a headline the reader cannot reconcile with that row, and a
+        # migration sequenced off it protects 5 of 193.
         _label_run(doc.add_paragraph(), "Concentrated dependency:",
                    "the fabric leans on " + ", ".join(
                        f"{r.get('host')} ({r.get('stranded')} endpoints)" for r in keystones) +
-                   " — protect and sequence these first.")
+                   (f" — the {len(keystones)} largest of {len(keystones_all)} device(s) that strand "
+                    "endpoints if lost (§2.4 carries the full count); protect and sequence these "
+                    "first, then work the rest from the workbook's failure-impact evidence."
+                    if len(keystones_all) > len(keystones) else
+                    " — protect and sequence these first."))
 
     doc.add_heading("2.2 Layer-2 domain", level=2)
     root_count: Counter = Counter()
@@ -387,8 +413,9 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         ("…lacking FHRP (missing / inconsistent)", n_fhrp_issue),
         ("Single-gateway VLANs (no FHRP peer)", n_single_gw),
         ("vPC / MLAG peerings", len([h for h, v in vpc.items() if v])),
-        ("Keystone devices (strand endpoints if lost)", len([r for r in failure_impact
-                                                             if isinstance(r, dict) and _as_num(r.get("stranded")) > 0])),
+        # ONE derivation, shared with §2.1's concentrated-dependency sentence (which now says "the 5
+        # largest of THIS number") — a recount here is a drift seam between two lines of one document.
+        ("Keystone devices (strand endpoints if lost)", len(keystones_all)),
     ], widths=[4.6, 2.2])
 
     doc.add_heading("2.5 Multicast & timing design", level=2)
@@ -415,6 +442,15 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                   [(g.get("group"), g.get("name") or "—", g.get("category") or "—")
                    for g in (_as_dict(x) for x in groups[:15])],   # per-element: a scalar row -> {} not g.get() crash
                   widths=[1.6, 2.2, 1.8])
+            # The paragraph directly above states the FULL classified-group count (73 on the [HISTORY-REDACTED] fleet);
+            # this table showed 15 of them with no mark, so the design "must preserve querier coverage"
+            # for a group list the reader has no way to know is 20% of the real one.
+            if len(groups) > 15:
+                doc.add_paragraph(
+                    f"…and {len(groups) - 15} further classified group(s) NOT listed above "
+                    f"({len(groups)} in total, the count stated in the paragraph above) — the "
+                    "migration design must preserve delivery for all of them; the full classification "
+                    "is in the workbook.")
     else:
         doc.add_paragraph("No multicast/PTP activity was classified in the collected output "
                           "(either not a media fabric, or the relevant show commands were not captured).")
@@ -452,11 +488,21 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                 "where the observed configuration departs from that intent.")
             # _as_list: a truthy non-list 'findings' crashes the [:12] slice; _as_dict per element: a
             # scalar finding row crashes f.get(...).
+            _qfind = _as_list(qa.get("findings"))
             qrows = [(f.get("host"), f.get("label"), f.get("severity"))
-                     for f in (_as_dict(x) for x in _as_list(qa.get("findings"))[:12])]
+                     for f in (_as_dict(x) for x in _qfind[:12])]
             if qrows:
                 table(["Device", "Departure from leading practice", "Severity"],
                       qrows, widths=[1.6, 4.0, 1.0])
+                # The sentence above promises "the table below lists where the observed configuration
+                # departs from that intent" — a completeness claim. 18 findings against a 12-row cap
+                # meant six devices' QoS departures were absent from a document whose reader treats
+                # absence as conformance.
+                if len(_qfind) > 12:
+                    doc.add_paragraph(
+                        f"…and {len(_qfind) - 12} further QoS departure(s) NOT listed above "
+                        f"({len(_qfind)} in total) — the table is capped for length, not because the "
+                        "remaining devices conform; the full audit is in the workbook.")
             else:
                 doc.add_paragraph("No departures: the configured posture is consistent on every "
                                   "assessable device.")
@@ -524,10 +570,14 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         if not (svis or uplinks or pos):
             continue
         doc.add_heading(h, level=3)
+        # These two lines ARE the build sheet ("the build facts a re-implementation must reproduce"),
+        # so an undisclosed cut here is a switch rebuilt without gateways / uplinks nobody knew were
+        # missing. Four devices in the rendered window of the 303-device fleet carry 15-18 trunk
+        # uplinks against the 14 cap; the fleet also holds three switches above the 12-SVI cap.
         if svis:
-            _label_run(doc.add_paragraph(), "Gateway SVIs:", "; ".join(sorted(svis)[:12]))
+            _label_run(doc.add_paragraph(), "Gateway SVIs:", _capped_join(sorted(svis), 12, "; "))
         if uplinks:
-            _label_run(doc.add_paragraph(), "Trunk uplinks:", ", ".join(sorted(uplinks)[:14]))
+            _label_run(doc.add_paragraph(), "Trunk uplinks:", _capped_join(sorted(uplinks), 14))
         if pos:
             _label_run(doc.add_paragraph(), "Port-channels:", ", ".join(sorted(set(pos))))
         shown += 1
@@ -589,10 +639,20 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         recs.append(f"{m}: consolidate to one image. The most widely deployed ({cand}) is the "
                     "standardization candidate; validate it against Cisco's published recommended "
                     "release for the platform before adoption.")
+    if len(mixed) > 8:
+        # 11 mixed-image models on the [HISTORY-REDACTED] fleet against an 8-bullet cap: three models got no
+        # standardization recommendation at all in the section titled "recommendations".
+        recs.append(f"…and {len(mixed) - 8} further model(s) running MIXED images and not itemised "
+                    f"above ({len(mixed)} in total) — the table above carries each one's observed "
+                    "images and standardization candidate; every mixed model needs the same "
+                    "consolidation decision.")
     eol_models = sorted(m for m, v in by_model.items() if v["band"] in ("Past-EoS", "Past-LDoS"))
     if eol_models:
+        # `(+N more)`, not a bare cut: this sentence is a replacement scope statement, and §3.4's BoM
+        # note already warns the quantities are a FLOOR. 10 past-EoS/LDoS models, 8 shown.
         recs.append("Hardware past end-of-support gets replacement, not an image upgrade: "
-                    + ", ".join(eol_models[:8])
+                    + _capped_join(eol_models, 8)
+                    + (f" — {len(eol_models)} model(s) in total" if len(eol_models) > 8 else "")
                     + ". Plan these as new-platform builds in the target design (§4).")
     if recs:
         for r_ in recs:
@@ -644,6 +704,17 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                 _label_run(doc.add_paragraph(), "Evidence:", _as_dict(d.get("evidence")).get("summary"))
                 _label_run(doc.add_paragraph(), "CCDE principle:",
                            _as_dict(d.get("principle")).get("citation"), GREY)
+            # The §4.2 TABLE above lists every recommended decision, but the detail blocks — the
+            # recommended pattern, the alternatives weighed and the trade-offs, which appear NOWHERE
+            # else in this document — stop at 10. 30 recommended decisions on the [HISTORY-REDACTED] fleet meant 20
+            # design decisions reached the customer as a one-line table row with no pattern to build.
+            if len(rec) > 10:
+                doc.add_paragraph(
+                    f"…and {len(rec) - 10} further recommended decision(s) listed in the table above "
+                    f"but NOT detailed here ({len(rec)} in total) — the detail blocks are capped at "
+                    "10 for length; the recommended pattern, alternatives and trade-offs for the "
+                    "remainder are in the design blueprint and the explorer's Design mode. The "
+                    "approval covers all of them, not only the 10 detailed.")
         else:
             doc.add_paragraph("No evidence-grounded target-state changes — the as-built design carries no "
                               "flagged gaps to redesign.")
@@ -718,6 +789,16 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                                 + ("" if len(_devs) <= 4 else f" +{len(_devs) - 4}")))
             table(["Severity", "Category", "Design recommendation", "Devices"],
                   pl_rows, widths=[0.9, 1.3, 3.0, 1.6])
+            # This IS §4 when the snapshot carries no design blueprint (the state of tests/golden's
+            # 37-item punch-list): the whole target-state section is these rows, so a silent 12-row
+            # cut is a target design that inherits every gap it did not print. "Full evidence … in the
+            # runbook" points at where the DETAIL lives; it never said the list itself was short.
+            if len(punchlist) > 12:
+                doc.add_paragraph(
+                    f"…and {len(punchlist) - 12} further punch-list item(s) NOT listed above "
+                    f"({len(punchlist)} in total) — the table shows the 12 highest-severity items "
+                    "only. The target design must take a position on the full set; work it from the "
+                    "Migration Punch-List workbook sheet.")
         else:
             doc.add_paragraph("No punch-list items — the as-built design carries no flagged gaps to redesign.")
 
@@ -864,7 +945,15 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                   sorted(vend.items(), key=lambda r: -r[1])[:8], widths=[3.2, 1.0])
             top_c = [(k, v) for k, v in sorted(cls.items(), key=lambda r: -r[1]) if k != "Unknown"][:8]
             if top_c:
-                table(["Device class", "Endpoints"], top_c, widths=[3.2, 1.0])
+                # "Top …", like the vendor table above it: the paragraph states n_known_cls (13 on the
+                # [HISTORY-REDACTED] fleet) and this table showed 8 under a bare "Device class" header, so the
+                # access-edge port-profile design read as complete at 8 of 13 classes.
+                table(["Top device class", "Endpoints"], top_c, widths=[3.2, 1.0])
+                if n_known_cls > len(top_c):
+                    doc.add_paragraph(
+                        f"…and {n_known_cls - len(top_c)} further identified device class(es) not "
+                        f"shown ({n_known_cls} in total, the count stated above) — the access-edge "
+                        "design must accommodate every class, not only the largest by endpoint count.")
 
     # ---- closing acceptance gate (AS-style back matter) ----
     # Deliverable Excellence (DE-01): shared glossary before the sign-off gate.

@@ -4023,7 +4023,12 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
         tg = eb.get("top_gating") or []
         if tg:
             ws.cell(r, 1, "Address first").font = KEY
-            c = ws.cell(r, 2, " · ".join(tg[:6])); c.font = DAT; c.alignment = WRAP; r += 1
+            # DISCLOSE the cut (the subnet-reachability '(+N)' house pattern): these are the
+            # brief's GATING items, and a reader who plans around the 6 shown is short the rest
+            # ([HISTORY-REDACTED] fleet: 9). The axis table below lists one row per axis, not per gating item,
+            # so nothing else on this sheet carries the missing three.
+            c = ws.cell(r, 2, " · ".join(tg[:6]) + (f" (+{len(tg) - 6})" if len(tg) > 6 else ""))
+            c.font = DAT; c.alignment = WRAP; r += 1
         _hdr(["Axis", "Severity", "Headline"])
         SEVFILL = {"Critical": "F4CCCC", "High": "FCE4D6", "Medium": "FFF2CC", "Low": "D9EAD3", "Info": "EFEFEF"}
         for a in eb["axes"]:
@@ -4089,13 +4094,27 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
     _sub(f"Migration punch-list — {len(pl)} item(s)")
     _kv("Critical / High", f"{sev['Critical']} / {sev['High']}")
     _kv("Medium / Low", f"{sev['Medium']} / {sev['Low']}")
+    # ranked, cut at 5 and the remainder COUNTED: "Top categories" names the ranking but not the
+    # population, so five entries read as the punch-list's whole category set ([HISTORY-REDACTED] fleet: 17
+    # categories, the 12 hidden ones carrying 176 of the 1,805 items).
     top_cats = sorted(cats.items(), key=lambda t: -t[1])[:5]
-    _kv("Top categories", ", ".join(f"{k} ({v})" for k, v in top_cats) or "—")
+    _cat_txt = ", ".join(f"{k} ({v})" for k, v in top_cats)
+    if _cat_txt and len(cats) > len(top_cats):
+        _cat_txt += f" (+{len(cats) - len(top_cats)} more categor{'ies' if len(cats) - len(top_cats) > 1 else 'y'})"
+    _kv("Top categories", _cat_txt or "—")
     r += 1
 
     # --- keystone devices (the few the fleet actually depends on; works when scores saturate) ---
     fi = failure_impact or []                          # NEW-V3.23.91: precomputed once in main
-    _sub("Keystone devices — fix-first (by migration blast radius)")
+    # A 10-row table headed "fix-first" reads as the keystone population; on the [HISTORY-REDACTED] fleet 193 of the
+    # 303 simulated devices strand at least one endpoint. Name the ratio so the reader sizes the
+    # problem, not the table. (Rows with NO stranded figure are unmeasured, never counted as zero.)
+    _n_keystone = sum(1 for rec in fi
+                      if isinstance(rec, dict) and isinstance(rec.get("stranded"), (int, float))
+                      and rec["stranded"] > 0)
+    _sub("Keystone devices — fix-first (by migration blast radius)"
+         + (f" — top 10 of {_n_keystone} device(s) that strand ≥1 endpoint"
+            if _n_keystone > 10 else ""))
     _hdr(["Rank", "Device", "Severity", "Endpoints stranded", "VLANs impacted"])
     for i, rec in enumerate(fi[:10], 1):
         ws.cell(r, 1, i).font = DAT

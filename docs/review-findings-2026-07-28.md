@@ -764,3 +764,89 @@ hooks dead until round 2), and the fact that nothing asserted the hook scripts `
 actually exist. A renamed script exits 127, and Claude Code blocks a Stop hook only on exit 2, so the
 repo's load-bearing gate would silently cease to exist while every hook test stayed green.
 Per-hook coverage: round 2 measured 4 of 9; round 5 leaves it at **10 of 10**.
+
+---
+
+# Round 6 — closing the truncation class
+
+Silent truncation was found four separate times across earlier rounds (`excel.py`'s served subnets,
+`html.py`'s Findings-Delta column, `mop.py`'s blocker list, plus seven measured-and-deferred in
+`runbook.py`). Four instances is not a run of bad luck; it is a class. This round swept **all 139
+`[:N]` sites across the 13 deliverable writers**, with one rule that separated real findings from
+theoretical ones: **measure whether the cap is actually hit on real producer artifacts before
+fixing anything.**
+
+**139 sites classified. 55 fixed. 23 refuted as unreachable on measured data. The rest already
+disclosed or benign.**
+
+Measured against `tests/golden/snapshot.json`, `webapp/sample_data/sample_fleet.snapshot.json` and
+the 303-device production snapshot in the repo root — the latter used for **measurement only**, never
+as a test input, since it is untracked client data.
+
+## The recurring shape
+
+Nearly every fixed site had the same structure: **the document prints its full population in the
+paragraph above the table, then renders a capped list.** The document contradicts itself, and a
+reader resolves the contradiction toward the visible rows.
+
+| Where | Stated | Rendered |
+|---|---:|---:|
+| `runbook` §6.2 cross-layer findings | 407 Critical/High (§1 register) | 8 blocks |
+| `engagement` §5.1 RAID risks | 216 Critical + 916 High (§1 conditions) | 8 rows |
+| `crd` §2 known issues | — (no total stated at all) | 8 of 1,805 |
+| `design` §2.1 access tier | 187 (the row's own Count column) | 30 names |
+| `runbook` §10.1 device risk register | 250 Severe of 303 | 15 rows |
+| `deck` slide 8 design decisions | 30 recommended (the headline above) | 5 rows |
+| `ops` §3.1 alerting baseline | 452 detections | 12 rows |
+
+## The three that would have changed what an engineer did
+
+1. **`mop.py` §x.4 staged 2 devices of 40, and 6 ports of 95.** The blocks are monospaced and read as
+   paste-ready config; §x.5 says "apply the staged target configuration per the §x.4 port mapping".
+   The other 38 devices are discovered mid-cutover — on a hard-cutover wave, with the legacy side
+   already down.
+2. **The OOB precondition named 6 consoles of 35 observed**, behind a bare `…` that marked *that*
+   something was dropped but never what or how many. OOB is the rollback path.
+3. **`archreview`'s evidence disclosure was itself wrong.** `add()` stored `sorted(evidence)[:20]`,
+   and *both* renderers then computed their "+N more" from the already-truncated list — so the
+   scorecard said a check affected `5 + 15 = 20` devices when it affected **230**. A disclosure that
+   lies is worse than none, because it reads as honest.
+
+## A display cap that became a compliance verdict
+
+The only finding of this round that is not a rendering defect, and the one worth the sweep on its
+own. `analyze.py` stores `per_device[].missing = missing[:30]` — a snapshot-size bound — while
+`n_missing` keeps the true count. Every RENDERER re-caps at display time and shows `n_missing`
+beside it, so the pair is self-describing.
+
+But `feature_compliance.py` consumes that field as **DATA**: it groups the visible directives by
+feature and grades a feature `compliant` when its group is empty. A feature whose missing directives
+all fell past the producer's cut was therefore graded compliant **on no evidence at all**.
+
+In majority mode the producer builds `baseline = sorted(...)`, so `missing` is alphabetically
+ordered and the survivors are the alphabetically-FIRST 30 — the loss is **systematic**, and a
+late-sorting feature (`spanning-tree`, `snmp`, `vlan`) is dropped on *every* device over the cap.
+Reproduced exactly:
+
+```
+TRUE (uncapped)        spanning-tree -> drift      n_drifting {'aaa': 1, 'spanning-tree': 1}
+STORED (missing[:30])  spanning-tree -> compliant  n_drifting {'aaa': 1, 'spanning-tree': 0}
+```
+
+A device missing all five of its spanning-tree baseline directives, graded compliant on spanning-tree.
+Fixed at the consumer (a truncated device's unrepresented features are `not-assessable`, never
+`compliant`), because the cap itself is legitimate — the defect is grading from a bounded field.
+Measured on real data: 57 of 212 rows carry `len(missing) < n_missing`, worst 47 true vs 30 stored.
+
+**The cap is in one module and the false verdict in another.** No single-file review connects those,
+which is exactly why a class sweep found what five rounds of per-file passes did not.
+
+## What was deliberately not fixed
+
+23 sites are consequential in shape but **unreachable on every measured fleet**, and are recorded as
+measured non-issues rather than patched with dead disclosure code — e.g. the software-standardization
+table collapses 303 devices to 14 distinct platform/train/band triples against a cap of 30, and the
+longest remediation command list across 819 real items is 6 against a cap of 8. Two are worth
+revisiting if the fleet mix changes: `design.py` §3.5 renders 28 of 28 models against a cap of 30 (two
+more platform types reaches it), and `runbook.py` §6.6's IGMP-querier gap list has no total in its
+sentence but is empty on every snapshot measured.

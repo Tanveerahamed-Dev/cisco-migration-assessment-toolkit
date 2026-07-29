@@ -307,7 +307,12 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
             text(s, 2.35, y - 0.04, W - 3.1, 0.7,
                  [[(_clean(str(d.get("host", ""))), 14, _INK, True),
                    (f"   {crs}", 11, _MUTED, False)],
-                  [(_clean(str(d.get("verdict") or "")[:160]), 11, _MUTED, False)]], space=1)
+                  # _ellip, not a bare [:160]: this is the exact class _ellip exists for (see its
+                  # docstring) — the [HISTORY-REDACTED]-fleet verdicts run 186-217 chars and the bare cut ended
+                  # "…high-severity operational events in the device's own logs; removal strand",
+                  # silently dropping "s 286 endpoint(s) across 3 VLAN(s)." with no cue that the
+                  # engineer's verdict had been cut, let alone that its quantified impact was gone.
+                  [(_clean(_ellip(str(d.get("verdict") or ""), 160)), 11, _MUTED, False)]], space=1)
             y += 0.78
         if len(dd) > len(dd_top):
             text(s, 2.35, y, W - 3.1, 0.3,
@@ -319,13 +324,24 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     header(s, "Concentrated dependency", "The switches the fleet depends on")
     fi = sorted(_R(snap.get("failure_impact")),
                 key=lambda r: -_as_num(r.get("stranded")))
-    keystones = [r for r in fi if _as_num(r.get("stranded")) > 0][:5]
+    _ks_all = [r for r in fi if _as_num(r.get("stranded")) > 0]
+    keystones = _ks_all[:5]
     # off-scan-gateway records carry no usable blast radius (audit-3 #7); count them so an INDETERMINATE estate
     # is not mistaken for a well-distributed one (audit-4 #8 false-health).
     n_indet = sum(1 for r in fi if _as_num(r.get("off_scan_gw_vlans")) > 0)
+    # Truncation disclosure: the top-5 cap was the last silent one on this deck (slides 2, 3, 3b, 6
+    # and 7 all breadcrumb their overflow). "Sequence and protect these first" reads as the COMPLETE
+    # keystone set, and on the real fleet 193 switches strand endpoints with the top ten TIED at the
+    # same 2348 — so five unmarked rows hide five more switches of identical blast radius. The cue
+    # lives in this intro line (the slide-7 pattern): the rows below run to y≈7.2, leaving no room
+    # for a footnote inside the 7.5in slide.
+    _ks_more = len(_ks_all) - len(keystones)
     text(s, 0.7, 1.95, W - 1.4, 0.5,
          [("Ranked by migration blast radius — the collateral endpoints stranded if the switch drops "
-           "during its move. Sequence and protect these first.", 13, _MUTED, False)])
+           "during its move. Sequence and protect these first."
+           + (f" Top {len(keystones)} of {len(_ks_all)} switch(es) that strand endpoints shown — full "
+              "ranking in the workbook's Failure-Impact sheet." if _ks_more else ""),
+           13, _MUTED, False)])
     y = 2.8
     if keystones:
         for r in keystones:
@@ -473,21 +489,38 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
                 f"critical · {bsum.get('n_needs_requirement', 0)} need a requirement — each traced to a "
                 "design principle and the trade-off axes it serves.", 13, _MUTED, False)]])
         sc = [a for a in _L(bp.get("tradeoff_scorecard")) if isinstance(a, dict)]
-        weak = [a for a in sc if isinstance(a.get("score"), int) and a.get("score") <= 1][:5]
+        _weak_all = [a for a in sc if isinstance(a.get("score"), int) and a.get("score") <= 1]
+        weak = _weak_all[:5]   # 5 chips at 2.1in pitch is what the 13.33in slide holds
         if weak:
-            text(s, 0.7, 2.5, W - 1.4, 0.3, [("WEAKEST TRADE-OFF AXES (0–1 / 4)", 12, _HIGH, True)])
+            # A label promising "the weakest axes" must not silently drop one (the [HISTORY-REDACTED] fleet scores 6
+            # axes at 0-1/4 and the 6th chip had nowhere to go). Disclose in the label itself.
+            text(s, 0.7, 2.5, W - 1.4, 0.3,
+                 [(("WEAKEST TRADE-OFF AXES (0–1 / 4)"
+                    + (f" — {len(weak)} OF {len(_weak_all)} SHOWN, FULL SCORECARD IN THE HLD"
+                       if len(_weak_all) > len(weak) else "")), 12, _HIGH, True)])
             x = 0.7
             for a in weak:
                 chip(s, x, 2.9, _clean(f"{a.get('axis', '')} {a.get('score')}/4"), _CRIT, w=2.0, h=0.32, size=10)
                 x += 2.1
         y = 3.65
-        for d in bp_rec[:5]:
+        # Truncation disclosure. The headline directly above states the FULL population ("39 design
+        # decision(s) · 30 recommended"), so a bare 5-row list under it read as the register itself —
+        # the exact "full count stated elsewhere in the same document" shape. Rows run 0.78in from
+        # 3.65, so a 5th row ends at ~7.47 and leaves no room for a footnote: when there IS an
+        # overflow, reserve the last row for the cue (slide 6's computed-layout rule, applied here).
+        _rec_shown = bp_rec[:5] if len(bp_rec) <= 5 else bp_rec[:4]
+        for d in _rec_shown:
             sev = d.get("priority", "Info")
             chip(s, 0.7, y, sev, _SEV_COLOR.get(sev, _MUTED), w=1.0, h=0.34, size=10)
             text(s, 1.85, y - 0.04, W - 2.6, 0.7,
                  [[(_clean(d.get("title", "")), 14, _INK, True)],
                   [(_clean(_ellip(_D(d.get("evidence")).get("summary") or "", 120)), 11, _MUTED, False)]], space=1)
             y += 0.78
+        if len(bp_rec) > len(_rec_shown):
+            text(s, 0.7, y, W - 1.4, 0.3,
+                 [(f"+ {len(bp_rec) - len(_rec_shown)} more recommended decision(s) of "
+                   f"{len(bp_rec)} not shown — the full register is in the design blueprint (HLD/LLD).",
+                   11, _MUTED, False, True)])
 
     # ---------------------------------------------------------------- 7. Where to start (dark)
     s = slide(dark=True)

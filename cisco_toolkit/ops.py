@@ -61,9 +61,31 @@ def _facts(snap: dict) -> dict:
     # at all. Mirrors the engine's canonical gate `(fhrp or "none") != "none"` (analyze.py) exactly
     # as crd.py:68 does — this was the outlier.
     n_fhrp = sum(1 for r in l3f if isinstance(r, dict) and (r.get("fhrp", "none") or "none") != "none")
-    return {"devices": devices, "keystones": keystones[:5], "si": si, "ph": ph,
+    # n_keystones carries the PRE-cap total so §2.1 can disclose what the [:5] dropped: on the
+    # 303-device production snapshot 193 devices strand endpoints and the handbook showed five.
+    return {"devices": devices, "keystones": keystones[:5], "n_keystones": len(keystones), "si": si, "ph": ph,
             "gd": gd, "qa": qa, "sr": sr, "lc": lc, "sec": sec, "n_sec_fail": sec_fail,
             "routing_protos": routing_protos, "n_proto_high": n_proto_high, "n_gw": n_gw, "n_fhrp": n_fhrp}
+
+
+def _disclose(doc, total, shown, noun, where="", note=""):
+    """Display-cap disclosure — the family house rule (`excel._xls_cell_value` states it; mop.py §x.2
+    and html.py's Findings-Delta column were fixed to it; runbook.py carries the twin of this helper).
+
+    An undisclosed cap is the silent-truncation class: a NOC reader takes the rendered rows for the
+    whole population, and this handbook prints the FULL totals in the paragraph above nearly every
+    table (§3.1's detection count, §3.2's band counts, §5's train bands). Shown + hidden reconcile to
+    the real total. Emits nothing when nothing was dropped; returns the hidden count.
+    (The natural home is docmeta alongside add_table; kept local so this module stays self-contained.)"""
+    try:
+        hidden = max(0, int(total) - int(shown))
+    except (TypeError, ValueError):        # fail-soft, like every other read in this module
+        return 0
+    if hidden:
+        doc.add_paragraph(f"…and {hidden} further {noun} not shown ({shown} of {total} rendered)"
+                          + (f" — see the workbook's '{where}' sheet." if where else ".")
+                          + (f" {note}" if note else ""))
+    return hidden
 
 
 def _hosts_from(rows, key="host", cap=6):
@@ -112,6 +134,12 @@ def _known_issues(ev: dict) -> tuple:
                     a["sev"] = sev
             top = sorted(by_label.items(), key=lambda kv: (-kv[1]["count"], kv[0]))[:6]
             sigs = "; ".join(f"{lbl} (×{a['count']} on {a['devs']} device(s), {a['sev']})" for lbl, a in top)
+            # …and DISCLOSE the classes the top-6 dropped. Without the marker the register read as the
+            # complete set of signature classes firing on this fleet (production snapshot: 12 classes,
+            # 6 shown), and §3.1's alert list is built from exactly this register.
+            if len(by_label) > len(top):
+                sigs += (f"; (+{len(by_label) - len(top)} further signature class(es) not listed — "
+                         "see the Syslog Intelligence sheet)")
             issues.append((
                 "Syslog Intelligence",
                 f"Recurring log signatures already fired on this fleet: {sigs}.",
@@ -364,6 +392,10 @@ def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> No
               [[k.get("host"), k.get("severity", "—"), k.get("stranded", 0),
                 k.get("vlans_impacted", 0)]
                for k in ev["keystones"]], widths=[2.0, 1.2, 2.0, 1.6])
+        _disclose(doc, ev.get("n_keystones", len(ev["keystones"])), len(ev["keystones"]),
+                  "device(s) whose loss strands endpoints", "Failure Impact",
+                  "'The fleet's keystones' is the ranked top of that list, not its whole length — "
+                  "change control applies to every device on it.")
 
     # ===== 3. Monitoring & alerting baseline =====
     doc.add_heading("3. Monitoring & Alerting Baseline", level=1)
@@ -376,12 +408,15 @@ def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> No
                 f"{si_sum.get('n_collected', 0)} device(s) and raised "
                 f"{si_sum.get('n_detections', 0)} detection(s). Alert on these signature classes "
                 "FIRST — they have already occurred on this network:")
+            _dets = [d for d in _as_list(ev["si"].get("detections")) if isinstance(d, dict)]
             det_rows = [[d.get("host"), d.get("label"), d.get("severity"), d.get("count", 0)]
-                        for d in _as_list(ev["si"].get("detections"))[:12]
-                        if isinstance(d, dict)]
+                        for d in _dets[:12]]
             if det_rows:
                 table(["Device", "Signature (already seen here)", "Severity", "Count"],
                       det_rows, widths=[1.5, 3.0, 0.9, 0.7])
+                _disclose(doc, len(_dets), 12, "detection(s)", "Syslog Intelligence",
+                          "The paragraph above states the full detection count; build the alert list "
+                          "from the sheet, not from the rows rendered here.")
             else:
                 doc.add_paragraph("No detections in the assessed window — start from the standard "
                                   "set: MAC flaps, err-disable, link flaps, environmental alarms, "
@@ -405,14 +440,18 @@ def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> No
             f"Capacity sample at collection time ({btxt}). These figures are the NORMAL for this "
             "fleet — alert when a device departs its own baseline, not just on absolute thresholds. "
             "The sample is a single point in time: re-sample on the §8 cadence.")
+        _ph_dev = [d for d in _as_list(ev["ph"].get("per_device"))
+                   if isinstance(d, dict) and d.get("collected")]
         prow = [[d.get("host"), d.get("cpu_5min") if d.get("cpu_5min") is not None else "—",
                  d.get("mem_free_pct") if d.get("mem_free_pct") is not None else "—",
                  d.get("band")]
-                for d in _as_list(ev["ph"].get("per_device"))
-                if isinstance(d, dict) and d.get("collected")][:30]
+                for d in _ph_dev][:30]
         if prow:
             table(["Device", "CPU 5-min % (baseline)", "Memory free % (baseline)", "Band"],
                   prow, widths=[1.9, 1.7, 1.7, 1.2])
+            _disclose(doc, len(_ph_dev), 30, "sampled device(s)", "Platform Health",
+                      "This table is the per-device baseline the NOC alerts against — a device "
+                      "missing from it HAS a sampled baseline in the sheet; it is not un-baselined.")
     else:
         absent("CPU/memory capacity output",
                "re-run the collection to capture the control-plane baseline.")
@@ -486,13 +525,18 @@ def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> No
             "sheet). Governance: validate every running release with the Cisco PSIRT Software "
             "Checker on the §8 cadence, close the exposed surfaces, and plan upgrades for every "
             "Replace/Upgrade and Verify-EoL train against Cisco's published notices.")
-        worst = [d for d in _as_list(ev["sr"].get("per_device"))
-                 if isinstance(d, dict)
-                 and d.get("train_band") in ("Replace/Upgrade", "Verify EoL")][:12]
+        _worst_all = [d for d in _as_list(ev["sr"].get("per_device"))
+                      if isinstance(d, dict)
+                      and d.get("train_band") in ("Replace/Upgrade", "Verify EoL")]
+        worst = _worst_all[:12]
         if worst:
             table(["Device", "Version", "Train", "Band"],
                   [[d.get("host"), d.get("sw_version"), d.get("train"), d.get("train_band")]
                    for d in worst], widths=[1.7, 1.5, 1.8, 1.6])
+            _disclose(doc, len(_worst_all), 12, "device(s) on a Replace/Upgrade or Verify-EoL train",
+                      "Software Risk",
+                      "The train bands quoted in the paragraph above count the full population — size "
+                      "the upgrade programme from those, not from this table.")
     else:
         absent("the software-risk screening", "re-run the assessment with a current engine.")
     lc_sum = _as_dict(ev["lc"].get("summary"))

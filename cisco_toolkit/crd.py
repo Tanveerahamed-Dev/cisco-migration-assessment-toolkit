@@ -314,6 +314,17 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
         table(["Severity", "Category", "Issue"],
               [(i.get("severity"), i.get("category") or "—", i.get("title") or "—")
                for i in ev["punch"][:8]], widths=[0.9, 1.4, 4.3])
+        # Disclose the cut, and say so in the sentence that assigns the work. "Take a position on"
+        # is the CRD's whole function: the workshop writes requirements against the issues printed
+        # here, and §2 states no punch-list total anywhere else, so 8 severity-ranked rows out of
+        # 1,805 (the [HISTORY-REDACTED] fleet; 216 Critical + 916 High) read as the complete known-issue set and the
+        # requirements register silently inherits the other 1,797 as unaddressed.
+        if len(ev["punch"]) > 8:
+            doc.add_paragraph(
+                f"…and {len(ev['punch']) - 8} further punch-list item(s) NOT listed above "
+                f"({len(ev['punch'])} in total) — the table shows the 8 highest-severity items only. "
+                "The requirements must take a position on the full set (carry forward, remediate, or "
+                "explicitly risk-accept); work it from the Migration Punch-List workbook sheet.")
 
     # requirements-classification legend (BCP 14 / RFC 2119 + RFC 8174) — establishes the normative-keyword
     # convention before the first requirement table (N1/N8)

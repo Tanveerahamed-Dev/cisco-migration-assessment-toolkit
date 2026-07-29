@@ -280,6 +280,15 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
                           "the workbook and runbook):")
         for g in gating[:6]:
             doc.add_paragraph(str(g), style="List Bullet")
+        # `executive_brief.top_gating` is EVERY Critical/High axis headline, not a pre-ranked top-N
+        # (analyze.py: `[a["headline"] for a in axes if a["severity"] in ("Critical", "High")]`), so a
+        # 6-bullet cap drops gating axes from the section that carries the engagement VERDICT — 9 on
+        # the [HISTORY-REDACTED] fleet. "Full detail in the workbook" points at depth, never at missing axes.
+        if len(gating) > 6:
+            doc.add_paragraph(
+                f"…and {len(gating) - 6} further gating headline(s) NOT listed above "
+                f"({len(gating)} Critical/High axes in total) — the verdict above accounts for all "
+                "of them; read the remaining axes in the executive brief.", style="List Bullet")
 
     # ===== 2. Engagement phase tracker =====
     doc.add_heading("2. Engagement Phase Tracker", level=1)
@@ -527,11 +536,17 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
 
     doc.add_heading("5.1 Risks", level=2)
     risks = []
-    for i in f["punch"][:8]:
-        if i.get("severity") in ("Critical", "High"):
-            risks.append((i.get("severity"), i.get("title") or "—",
-                          "punch-list: " + (i.get("category") or "—"),
-                          "Remediate before the owning wave's T-14 checkpoint"))
+    # Filter FIRST, then cap — and keep the true Critical/High total, because §1 already told the
+    # reader what it is ("N Critical punch-list item(s) must be closed…", "N High … before the
+    # go/no-go gate"). Slicing the punch-list to 8 and filtering afterwards made this log render 8
+    # rows against §1's 216 Critical + 916 High on the [HISTORY-REDACTED] fleet, with nothing saying the RAID log was
+    # short: a reviewer who closes every row printed here believes the risk register is clear.
+    # (`f["punch"]` is severity-sorted, so ch[:8] is the same 8 rows the old slice produced.)
+    _ch = [i for i in f["punch"] if i.get("severity") in ("Critical", "High")]
+    for i in _ch[:8]:
+        risks.append((i.get("severity"), i.get("title") or "—",
+                      "punch-list: " + (i.get("category") or "—"),
+                      "Remediate before the owning wave's T-14 checkpoint"))
     if _as_int(f["lc"].get("n_past_ldos")):
         risks.append(("High", f"{f['lc']['n_past_ldos']} device(s) past last-day-of-support (LDoS) "
                               "in the migration path", "lifecycle risk",
@@ -548,6 +563,12 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
     table(["Severity", "Risk", "Evidence", "Mitigation  (owner: <name>)"],
           [("RSK-%03d · %s" % (i, r[0]), r[1], r[2], r[3]) for i, r in enumerate(risks, 1)],
           widths=[1.1, 2.4, 1.2, 2.3])
+    if len(_ch) > 8:
+        doc.add_paragraph(
+            f"…and {len(_ch) - 8} further Critical/High punch-list finding(s) NOT seeded above "
+            f"({len(_ch)} in total — the same population §1's conditions count). The RAID log seeds "
+            "the 8 highest-severity findings only; the engagement must carry the full set, worked "
+            "from the workbook's Punch List sheet. Closing every row above does not clear the risk.")
 
     doc.add_heading("5.2 Assumptions (confirm in the workshop)", level=2)
     table(["ID", "Assumption", "If wrong"], [
@@ -568,6 +589,16 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
                 "collection completeness",
                 "Re-collect; missing: " + (_missing_text(d) or "—"))
                for i, d in enumerate(f["blind"][:8], 1)], widths=[0.7, 2.4, 1.3, 2.6])
+        # §2's phase tracker states the FULL blind-spot count ("Evidence collected; 50 device(s) with
+        # blind spots" on the [HISTORY-REDACTED] fleet) and §1 makes every verdict on them provisional. Eight ISS rows
+        # with no marker is the same document contradicting itself, and the re-collection work order
+        # built from this table covers 8 of 50 devices.
+        if len(f["blind"]) > 8:
+            doc.add_paragraph(
+                f"…and {len(f['blind']) - 8} further device(s) with collection blind spots NOT listed "
+                f"above ({len(f['blind'])} in total — the count §2's phase tracker states). Every "
+                "verdict on those devices is provisional too; the re-collection covers all of them, "
+                "not only the 8 seeded here.")
     elif not f["coll_present"]:
         doc.add_paragraph("Collection-completeness evidence is absent from this snapshot — "
                           "collection state is UNKNOWN. Treat closing that gap as the first open "

@@ -6389,7 +6389,8 @@
   "summary": {
    "n_features": 0,
    "n_rows": 0,
-   "n_drift_rows": 0
+   "n_drift_rows": 0,
+   "n_unassessable_rows": 0
   }
  },
  "acl_line_reachability": {
