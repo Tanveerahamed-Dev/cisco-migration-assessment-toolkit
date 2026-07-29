@@ -850,3 +850,73 @@ longest remediation command list across 819 real items is 6 against a cap of 8. 
 revisiting if the fleet mix changes: `design.py` §3.5 renders 28 of 28 models against a cap of 30 (two
 more platform types reaches it), and `runbook.py` §6.6's IGMP-querier gap list has no total in its
 sentence but is empty on every snapshot measured.
+
+---
+
+# Round 7 — the denominator was wrong
+
+The coverage ledger reports `.claude/` + `.github/` as **14 files / 1,185 lines**. That census was
+`git ls-files`, **code only** — it excluded every `.md`. So a whole class of file was never in the
+denominator the review measured "covered" against, and round 5's own coverage note had already said
+so without anyone acting on it: it listed `.claude/commands/*.md` (~800 lines, including
+`architect-plan.md` at **502**) among the files it did not examine.
+
+Measured properly, the tracked repo is:
+
+| bucket | files | lines | in the ledger? |
+|---|---:|---:|---|
+| code (`.py/.ts/.tsx/.html/.sh/.ps1`) | 387 | 147,467 | **yes** — this was the whole census |
+| prose / instructions (`.md/.txt`) | 127 | 22,170 | no |
+| config (`.json/.yml/.toml/…`) | 29 | 68,800 | no (dominated by lockfiles) |
+| data / assets | 22 | 4,714 | no |
+| *excluded:* `.design-sync/` | 43 | 1,651 | excluded, verified |
+| **total tracked** | **608** | **244,802** | |
+
+The important split inside that prose is between text that **executes** and text that **describes**:
+
+| prose | files | lines | reviewed |
+|---|---:|---:|---|
+| `.claude/commands/` — becomes an agent's directive | 14 | 788 | **round 7** |
+| `.claude/agents/` — charters | 8 | 194 | round 5 |
+| `.claude/` other (incl. the unwired hooks) | 7 | 130 | **round 7** |
+| `CLAUDE.md` — governing doc | 1 | 114 | read every round |
+| `portable/README-FIELD.txt` — field guide | 2 | 282 | round 3 + ratchet test |
+| `docs/` + ADRs + research — describes, does not execute | 95 | ~20,660 | citation sweep below |
+
+`.claude/commands/` matters because those files ARE instructions: when a user types `/audit`, the
+file's text becomes the operating directive for an agent holding Bash that can reach production gear.
+Round 5 found exactly this defect one directory over — `config-security-auditor.md` was declared
+"Read-only" while its own Grounding said "Run an assessment", which SSHes to live gear.
+
+## The docs citation sweep — and a detector that had to be fixed first
+
+`docs/` describes rather than executes, so it is not code. But this review has caught documentation
+**outrunning the code** at least five times (three rotted `file:line` citations in COLLECT_PARSE, a
+drifted logging constant, README-FIELD promising total redaction verification, and this register's own
+two-round-stale ledger). That class IS in scope. The mechanical form — verify every citation resolves
+— is far higher-signal than reading prose.
+
+**The first run of that sweep reported 1,241 unresolved citations. It was wrong**, and the way it was
+wrong is worth keeping: it checked each path only as written and under `docs/`, so every bare
+filename mentioned in prose (`attestation.py`, `excel.py`, `fib.py` — all real, under
+`cisco_toolkit/`) counted as missing, and a regex mis-parse turned `//www.cisco.com/...` URLs into
+paths. An unvalidated detector produced an alarming number that meant nothing — the same failure the
+round-4 mutation audit was built to catch, committed here by the reviewer.
+
+Rebuilt with a basename fallback and **three controls asserted in the same run** (a real path
+resolves, a real bare filename resolves, a fabricated path is rejected). Result: **34** unresolved
+backticked citations across 80 files, every one triaged:
+
+- **roadmaps proposing modules that were never built** — `orchestration-best-roadmap.md` cites
+  `evidence.py`, `heartbeat.py`, `zonematrix.py`, `specs.py`, `golden.py`; likewise
+  `next-best-improvements`, `MASTER_PLAN`, `best-possible-plan`. A proposal naming an unbuilt file is
+  correct, not stale.
+- **untracked runtime artifacts** — `graphify-out/graph.json` and `.claude/settings.local.json` exist
+  on disk; ADR 0006 cites `docs/engagement-state.json` as the runtime location the gate ledger
+  *resolves to*, which is absent only because no engagement is bound.
+- **activation-pending** — `holdout-contract.md` §3 defines the seal as "a **committed**
+  `docs/quality/holdout_manifest.json`", which does not exist. Checked before flagging: §2 scopes the
+  whole document "from activation onward" and line 142 pins the floor at `N ≥ 50 REAL` against
+  `holdout.py :: ACTIVATION_FLOOR`. Pre-activation absence is the specified state. **REFUTED.**
+
+**Zero defects across 80 documentation files** — from a detector that was proven to fire.
