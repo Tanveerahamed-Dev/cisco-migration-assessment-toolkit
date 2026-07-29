@@ -200,16 +200,16 @@ only**. The coverage ledger below is what made that measurable, and it is why ro
 
 ## Coverage ledger (`git ls-files`, code only)
 
-| Area | Files | Lines | Round 1 | Round 2 | Round 3 | Round 4 |
-|---|---:|---:|---|---|---|---|
-| `tests/` + `webapp/tests/` | 209 | 53,221 | pattern-audit | **exhaustive AST scan** (205 files / 2,772 test fns) | — | **3-partition MUTATION audit — 20 tests proven vacuous by breaking the code they claim to pin** |
-| `cisco_toolkit/` | 71 | 63,398 | per-file | deep re-pass on `analyze.py`; **`blast_radius_explorer.html` (10,500 lines) reviewed for the first time** | **deep pass on the 4 remaining large files** (`parse`, `design_advisor`, `excel`, `design_kb`) | mid-tier files: `build`+`html` (swept over **253 real device captures**), `archreview`+`runbook`+`mop`; `analyze.py` R4-1 |
-| `webapp/frontend/` | 46 | 7,876 | **never reviewed** | api + pages, components | — | **second pass** — 5 fixed, 6 refuted |
-| `webapp/backend/` | 16 | 5,907 | per-file | `graph.py` (via the frontend findings) | `ingest.py` (via the Atlas boundary) | **`app.py` deep pass** (largest, never deep-passed) + `cutover.py` |
-| `.claude/` + `.github/` | 14 | 1,185 | **never reviewed** | hooks + workflows | — | — |
-| root, `portable/`, `research_lane/` | 19 | 6,092 | per-file | — | **the three trust boundaries** + `COLLECT_PARSE` | — |
-| *excluded:* `.design-sync/` | 21 | 1,023 | design tooling, outside the build (verified — see below) | — | mechanical guard added (`test_design_sync_no_client_data.py`) | that guard was itself proven VACUOUS and fixed (VB-3) |
-| **total** | **396** | **138,702** | | | | |
+| Area | Files | Lines | Round 1 | Round 2 | Round 3 | Round 4 | Rounds 5–6 |
+|---|---:|---:|---|---|---|---|---|
+| `tests/` + `webapp/tests/` | 209 | 53,221 | pattern-audit | **exhaustive AST scan** (205 files / 2,772 test fns) | — | **3-partition MUTATION audit — 20 tests proven vacuous by breaking the code they claim to pin** | 5 new suites pinning the r5/r6 fixes |
+| `cisco_toolkit/` | 71 | 63,398 | per-file | deep re-pass on `analyze.py`; **`blast_radius_explorer.html` (10,500 lines) reviewed for the first time** | **deep pass on the 4 remaining large files** (`parse`, `design_advisor`, `excel`, `design_kb`) | mid-tier files: `build`+`html` (swept over **253 real device captures**), `archreview`+`runbook`+`mop`; `analyze.py` R4-1 | **class sweeps**: empty-set verdicts (r5) + all 139 truncation sites across 13 writers (r6); `feature_compliance` false grade |
+| `webapp/frontend/` | 46 | 7,876 | **never reviewed** | api + pages, components | — | **second pass** — 5 fixed, 6 refuted | — |
+| `webapp/backend/` | 16 | 5,907 | per-file | `graph.py` (via the frontend findings) | `ingest.py` (via the Atlas boundary) | **`app.py` deep pass** (largest, never deep-passed) + `cutover.py` | the 3 docx writers audited for display caps (r6) |
+| `.claude/` + `.github/` | 14 | 1,185 | **never reviewed** | hooks + workflows | — | — | **dedicated automation pass (r5)** — the 2 hooks executed by NO test, the gate proved fail-open, per-hook coverage 4/9 → 10/10 |
+| root, `portable/`, `research_lane/` | 19 | 6,092 | per-file | — | **the three trust boundaries** + `COLLECT_PARSE` | — | — |
+| *excluded:* `.design-sync/` | 21 | 1,023 | design tooling, outside the build (verified — see below) | — | mechanical guard added (`test_design_sync_no_client_data.py`) | that guard was itself proven VACUOUS and fixed (VB-3) | its own guard proven vacuous and fixed (VB-3) |
+| **total** | **396** | **138,702** | | | | | |
 
 **Round 5 closed the last row.** `.claude/`+`.github/` — the only area still at one pass — got a
 dedicated automation pass, and it was the right one to revisit: round 2 had found three completely
