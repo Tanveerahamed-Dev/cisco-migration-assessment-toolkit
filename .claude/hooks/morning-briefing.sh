@@ -20,7 +20,12 @@ export ASNE_COMMITS_7D="$(git log --since='7 days ago' --oneline 2>/dev/null | w
 export ASNE_TODAY="$(date +%Y-%m-%d 2>/dev/null || echo '')"
 export ASNE_BRIEF_MODE="${1:-}"   # "--session" -> emit SessionStart JSON; else raw markdown
 
-"$PY" - <<'PYEOF' 2>/dev/null || true
+# The assembler's output is CAPTURED rather than streamed, so an interpreter that never ran
+# can be told apart from a clean repo. Measured 2026-07-29: with $PY broken, this block wrote
+# 0 bytes to stdout, 0 to stderr and exited 0 — byte-identical to a healthy silent day, in
+# BOTH raw and --session mode. "Absence rendered as health" is the one failure a briefing
+# must never have. Still exit 0 (fail-open, a hook must never wedge a turn) — loud, not fatal.
+BRIEF_OUT=$("$PY" - <<'PYEOF' 2>/dev/null
 import glob, json, os, re, sys, time
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # cp1252 console -> never crash on print
@@ -223,4 +228,19 @@ if os.environ.get("ASNE_BRIEF_MODE") == "--session":
 else:
     print(brief)
 PYEOF
+) || true
+
+if [ -n "$BRIEF_OUT" ]; then
+  printf '%s\n' "$BRIEF_OUT"
+else
+  # DEGRADED: the assembler produced nothing. Say so on both streams, in the caller's format.
+  _MSG="Morning briefing UNAVAILABLE - the assembler produced no output (python missing, or it raised before printing). NOTHING was measured: this is a degraded run, NOT a clean repo. Re-run: bash .claude/hooks/morning-briefing.sh"
+  echo "[morning-briefing] $_MSG" >&2
+  if [ "${ASNE_BRIEF_MODE:-}" = "--session" ]; then
+    "$PY" -c 'import json,sys; print(json.dumps({"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":sys.argv[1]}}))' "$_MSG" 2>/dev/null \
+      || printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"Morning briefing UNAVAILABLE - assembler produced no output. Nothing was measured; this is a degraded run, not a clean repo."}}'
+  else
+    printf '# Morning briefing - UNAVAILABLE\n\n%s\n' "$_MSG"
+  fi
+fi
 exit 0

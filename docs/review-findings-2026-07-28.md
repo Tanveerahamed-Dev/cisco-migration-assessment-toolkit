@@ -920,3 +920,86 @@ backticked citations across 80 files, every one triaged:
   `holdout.py :: ACTIVATION_FLOOR`. Pre-activation absence is the specified state. **REFUTED.**
 
 **Zero defects across 80 documentation files** — from a detector that was proven to fire.
+
+## What round 7 found in the surface that was never in the denominator
+
+Two passes over the 1,418 lines no round had read. **11 fixed, 6 refuted.** The instruction layer
+turned out to hold the most serious defect in the whole review.
+
+### The worst finding of the review — measured, not inferred
+
+`.claude/launch.json`'s explorer config ran `python -m http.server 8765` over the **repo root**.
+Python's bind default is *every interface*. Verified independently with `netstat` against the exact
+argv shape:
+
+```
+OLD (no --bind)          -> 0.0.0.0:8913
+NEW (--bind 127.0.0.1)   -> 127.0.0.1:8914
+```
+
+The document root is the checkout, which holds `Migration_Assessment_AUTOFILLED_*.snapshot.json` —
+real client evidence — plus every generated deliverable. Anyone starting the explorer preview
+published all of it, unauthenticated, to any host that could route to the machine. The other two
+launch configs already pinned `127.0.0.1`, so this was an outlier rather than a house style.
+
+### The vault guard: 29 unblocked write paths
+
+`vault_guard_bash.py` enforces ADR-0001 (repo sessions never write the personal vault). Driving 82
+candidate strings through the real classifier: **46 blocked before, 71 after**. What passed:
+
+- every **UNC** spelling of the vault root, including the admin-share and `\\?\UNC\…` forms
+- **dot traversal** — a path reaching the vault through a sibling directory, which contains no
+  literal prefix and so matched nothing
+- **15 missing verbs**, most consequentially **`git`**: `git -C <vault> reset --hard` / `clean -fdx`
+  / `checkout -- .` discards uncommitted work in the one store a repo session may never write. Also
+  `curl -o` and `wget -O` (a write **and** egress in one command), and `find <vault> -delete`, which
+  the token boundary could never match because it deliberately excludes a leading dash.
+
+Its own docstring was wrong in **both** directions: it declared cd-then-relative and env-var forms as
+evasions (measured: both BLOCK) while never mentioning the four residuals that genuinely exist. The
+8.3 short-name bypass it implied was refuted outright — `dir /x` shows both path components are under
+9 characters and have no short alias.
+
+**The best moment of the round was a self-refutation.** The first fix broadened the pattern too far
+and immediately **blocked the agent's own next command** — a `mkdir` in a temp directory whose name
+merely ended the same way. Caught by being blocked, narrowed to require a drive spelling, and pinned
+with a non-regression test that passes against the OLD guard too. A guard that cries wolf gets
+switched off, and the real control dies with it.
+
+*(This register entry had to be committed via a file rather than a shell string, because the
+strengthened guard correctly fires on prose that names the path beside a write verb — including a
+sentence saying a write must never happen. Recall over precision, working as designed.)*
+
+### Three unattended-execution defects, all "nobody is watching"
+
+- `morning-briefing.sh` with a broken interpreter emitted **0 bytes on stdout, 0 on stderr, exit 0** —
+  byte-identical to a healthy morning with nothing to report. The instrument whose job is to say what
+  is wrong said nothing, and silence reads as all-clear. Now 257 bytes of UNAVAILABLE, still exit 0.
+- `nightly-run.sh`'s guard against an empty briefing was **unreachable dead code**:
+  `morning-briefing.sh || echo "(produced nothing)"` can never fire on a script that always exits 0.
+  So the nightly shipped a prompt announcing a briefing payload with nothing under it, and the model —
+  unattended — wrote a confident briefing from an empty payload.
+- An armed nightly run that actually **failed exited 0**, so the Task Scheduler registration the
+  script's own header instructs would record every broken pass as `0x0` forever.
+
+### The command layer repeated round 5's defect one level up
+
+`/audit` declared itself read-only while its `argument-hint` offered a bare `device` and never named
+`--no-collect` — the **only** command of 14 whose hint invited a live target. `/audit sw-core-01`
+gives the agent the explicit instruction its charter requires, and a bare `cisco-assess` SSHes to
+production while the user reads "Read-only — propose, don't remediate". Its sibling `/assess` carries
+that guardrail twice; `/audit` had it zero times.
+
+Also: `architect-plan.md` recorded its QA row with **no provenance pair**, and
+`scorecard.check_independence` only refuses when both names are present *and equal* — so naming
+neither passes unrefused, landing a provenance-blind row while the user believes proposer≠verifier
+was discharged. And `/council` promised "no external fetch" while routing its Security lens to an
+agent chartered to WebSearch PSIRT.
+
+### Refuted, and worth keeping
+
+`architect-plan.md` cites `~7.0k nodes` against today's 10,823 — but it is cited **to its registered
+owner** and sits under a block pre-labelled "stale the moment it is written — reconcile, never trust".
+That is exactly what Law 1 asks of a cache; editing it would swap one dated cache for another.
+
+Full suite green: PYTEST_EXIT=0, 0 FAILED, 0 ERROR, 625s.
