@@ -3,7 +3,8 @@
 The class this pins: an asset EXISTS but silently sits outside the gate — webapp/tests
 lived outside the default suite + Stop hook for months, and the ~2700-line entry module
 sat outside the coverage measurement. "Suite green" is only meaningful if what should be
-gated actually is; these tests fail the moment a gate un-wires."""
+gated actually is; these tests fail the moment a gate un-wires.
+"""
 import configparser
 import os
 
@@ -50,6 +51,27 @@ def test_coverage_measures_the_entry_module():
     assert "--cov=cisco_toolkit" in ci
     assert "--cov=COLLECT_PARSE_V3_23_0" not in ci, \
         "the module-name/path --cov forms are broken on this stack — use source_pkgs"
+
+
+def test_distribution_confidentiality_audit_stays_in_ci_and_release():
+    """Both publishable artifacts must be inspected before installation or upload.
+
+    A directory argument keeps the command portable under PowerShell, which does not expand the
+    POSIX-style wildcard that previously passed the literal path ``dist/*.whl`` to Python.
+    """
+    ci = _read(".github", "workflows", "ci.yml")
+    assert "python -m build --outdir dist" in ci
+    assert "python tools/audit_wheel.py dist" in ci
+    assert "audit_wheel.py dist/*" not in ci
+    assert "pip install dist/*.whl" not in ci
+    assert ci.index("python tools/audit_wheel.py dist") < ci.index("Install the audited wheel")
+
+    publish = _read(".github", "workflows", "publish.yml")
+    assert "python tools/audit_wheel.py dist" in publish
+    assert "audit_wheel.py dist/*" not in publish
+    assert publish.index("python tools/audit_wheel.py dist") < publish.index(
+        "pypa/gh-action-pypi-publish"
+    )
 
 
 def test_stop_hook_runs_the_default_suite():
