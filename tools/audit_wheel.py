@@ -6,6 +6,8 @@ configuration change can silently widen what setuptools includes. This guard ins
 that would actually be installed or published; source-tree ignore rules alone are not sufficient.
 
 Despite the historical filename, the command audits both wheels and ``.tar.gz`` source distributions.
+A directory argument is expanded in Python rather than by the calling shell, so the same command works
+under PowerShell and POSIX shells. A directory must contain exactly one wheel and one source archive.
 """
 from __future__ import annotations
 
@@ -220,8 +222,40 @@ def audit_artifact(artifact: Path) -> list[str]:
     return [f"unsupported distribution artifact: {artifact}"]
 
 
-def audit_many(artifacts: Iterable[Path]) -> int:
-    failed = False
+def discover_artifacts(inputs: Iterable[Path]) -> tuple[list[Path], list[str]]:
+    """Expand artifact files/directories without relying on shell wildcard expansion.
+
+    A directory is treated as a clean build output and must contain exactly one wheel and one source
+    archive. This rejects stale multi-version output rather than auditing one file and publishing all.
+    """
+    artifacts: list[Path] = []
+    errors: list[str] = []
+    for item in inputs:
+        if not item.is_dir():
+            artifacts.append(item)
+            continue
+
+        wheels = sorted(item.glob("*.whl"))
+        sdists = sorted(item.glob("*.tar.gz"))
+        if len(wheels) != 1:
+            errors.append(
+                f"expected exactly one wheel in directory {item}, found {[p.name for p in wheels]!r}"
+            )
+        if len(sdists) != 1:
+            errors.append(
+                f"expected exactly one source distribution in directory {item}, "
+                f"found {[p.name for p in sdists]!r}"
+            )
+        artifacts.extend(wheels)
+        artifacts.extend(sdists)
+    return artifacts, errors
+
+
+def audit_many(inputs: Iterable[Path]) -> int:
+    artifacts, discovery_errors = discover_artifacts(inputs)
+    failed = bool(discovery_errors)
+    for error in discovery_errors:
+        print(f"[FAIL] {error}", file=sys.stderr)
     for artifact in artifacts:
         errors = audit_artifact(artifact)
         if errors:
@@ -236,7 +270,12 @@ def audit_many(artifacts: Iterable[Path]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("artifacts", nargs="+", type=Path, help="wheel/sdist file(s) to inspect")
+    parser.add_argument(
+        "artifacts",
+        nargs="+",
+        type=Path,
+        help="wheel/sdist file(s), or a directory containing exactly one of each",
+    )
     args = parser.parse_args(argv)
     return audit_many(args.artifacts)
 
