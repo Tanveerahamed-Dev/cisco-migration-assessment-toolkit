@@ -17,7 +17,8 @@ _REQUIRED = {
     "cisco_toolkit/blast_radius_explorer.html": b"<!doctype html>\n",
     "cisco_toolkit/data/oui_registry.tsv.gz": b"synthetic-oui-pack",
     "cisco_toolkit/data/port_registry.tsv.gz": b"synthetic-port-pack",
-    "tests/fixtures/show_running-config.txt": b"synthetic fixture only\n",
+    "tests/fixtures/show_version.txt": b"synthetic fixture only\n",
+    "tests/fixtures/device_info.json": b'{"synthetic": true}\n',
 }
 
 
@@ -27,8 +28,11 @@ def _add(archive: tarfile.TarFile, name: str, content: bytes) -> None:
     archive.addfile(info, io.BytesIO(content))
 
 
-def _sdist(tmp_path: Path, extra: dict[str, bytes] | None = None,
-           omit: set[str] | None = None) -> Path:
+def _sdist(
+    tmp_path: Path,
+    extra: dict[str, bytes] | None = None,
+    omit: set[str] | None = None,
+) -> Path:
     path = tmp_path / f"{_ROOT}.tar.gz"
     members = dict(_REQUIRED)
     members.update(extra or {})
@@ -41,7 +45,7 @@ def _sdist(tmp_path: Path, extra: dict[str, bytes] | None = None,
 
 
 def test_expected_source_distribution_is_accepted(tmp_path: Path) -> None:
-    # A synthetic capture under tests/ is explicitly reviewable; the same name elsewhere is not.
+    # Synthetic captures/sidecars under tests/ are reviewable; the same names elsewhere are not.
     assert audit_sdist(_sdist(tmp_path)) == []
 
 
@@ -49,7 +53,17 @@ def test_expected_source_distribution_is_accepted(tmp_path: Path) -> None:
     "member",
     (
         "client_evidence/ACME/show_running-config.txt",
-        "customer-output/CORE-1/show_running-config.txt",
+        "customer-output/CORE-1/show_version.txt",
+        "customer-output/APIC/moquery_-c_faultInst.txt",
+        "customer-output/ISE/api_v1_deployment_node.txt",
+        "customer-output/FMC/api_fmc_config_v1_devices_devicerecords.txt",
+        "customer-output/ISE/ers_config_node.txt",
+        "customer-output/SDWAN/dataservice_device.txt",
+        "customer-output/AWS/aws_ec2_describe-security-groups.txt",
+        "customer-output/FORTIGATE/get_system_ha_status.txt",
+        "customer-output/CORE-1/device_info.json",
+        "customer-output/CORE-1/command_index.json",
+        "customer-output/CORE-1/_capture_meta.json",
         "webapp/data/assesshub.db-wal",
         "exports/customer.snapshot.json",
         "deliverables/Migration_Assessment.xlsx",
