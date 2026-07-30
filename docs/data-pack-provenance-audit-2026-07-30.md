@@ -39,8 +39,8 @@ Two engineering gaps remain:
    time, source digest, row count, generator revision, or overlay revision.
 2. In online mode, the generator catches any IANA download or parse failure and continues with only
    the curated overlay. It then writes that partial result to the canonical output path and returns
-   success. A transient network or schema failure can therefore replace a full 12k-row registry with a
-   much smaller pack without a failing command.
+   success. A transient network or schema failure can therefore replace the full IANA-derived registry
+   with a much smaller overlay-only pack without a failing command.
 
 **Required follow-up:** make online regeneration fail closed before touching the existing pack; reserve
 partial overlay generation for the explicit `--offline` option. Add a deterministic provenance manifest
@@ -113,10 +113,10 @@ This branch adds `tools/audit_wheel.py` (the filename is retained, but it audits
 
 - the wheel is restricted to the runtime package/module roots plus one `.dist-info` directory;
 - required OUI, port, explorer, and entry-module assets must be present;
-- raw collection directories, sensitive command captures, snapshots, SQLite state, Office
-  deliverables, and logs are rejected;
+- raw collection directories, every registered command-capture family, collection metadata sidecars,
+  snapshots, SQLite state, Office deliverables, and logs are rejected;
 - the source distribution receives the same confidentiality checks, while allowing explicitly
-  reviewable synthetic captures under `tests/`; and
+  reviewable synthetic captures and sidecars under `tests/`; and
 - CI installs the exact audited wheel, while the release workflow audits both the wheel and sdist
   before a PyPI upload step can run.
 
@@ -124,7 +124,7 @@ This branch adds `tools/audit_wheel.py` (the filename is retained, but it audits
 
 | Priority | Action | Status in this branch |
 |---|---|---|
-| P0 | Prevent raw client evidence and AssessHub DB state from being committed | Implemented + regression tested |
+| P0 | Prevent raw client evidence and AssessHub DB state from being committed | Implemented + regression tested against every registered capture filename |
 | P0 | Audit wheel and sdist contents before install/publish | Implemented + regression tested |
 | P0 | Resolve OUI-pack licensing/attribution before public PyPI release | **Open release gate** |
 | P1 | Add source URL/date/SHA-256/row-count manifests for OUI and port packs | Open |
@@ -132,9 +132,11 @@ This branch adds `tools/audit_wheel.py` (the filename is retained, but it audits
 | P1 | Replace lifecycle source labels with exact Cisco bulletin references | Open |
 | P1 | Time-bound the UI wording for lifecycle `active` rows | Open |
 
-## Non-findings
+## Non-findings and limits
 
-No evidence was found that the bundled OUI, port, or lifecycle packs contain client-derived network
-captures. Their risk is provenance, reproducibility, and release licensing—not customer-data leakage.
-The artifact guards added here ensure that future packaging changes cannot silently add raw customer
-material alongside them.
+The reviewed generators do not read collection directories or AssessHub databases, and no client-derived
+network captures were identified in the bundled OUI, port, or lifecycle packs. Because the compressed
+packs lack generation manifests, however, their exact source snapshots cannot be independently
+reconstructed from repository metadata. Their identified risk is provenance, reproducibility, and
+release licensing—not an observed customer-data leak. The artifact guards added here prevent future
+packaging changes from silently adding raw customer material alongside them.
