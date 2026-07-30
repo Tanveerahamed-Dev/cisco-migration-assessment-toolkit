@@ -21,6 +21,12 @@ _REQUIRED = {
 }
 
 
+def _add(archive: tarfile.TarFile, name: str, content: bytes) -> None:
+    info = tarfile.TarInfo(name)
+    info.size = len(content)
+    archive.addfile(info, io.BytesIO(content))
+
+
 def _sdist(tmp_path: Path, extra: dict[str, bytes] | None = None,
            omit: set[str] | None = None) -> Path:
     path = tmp_path / f"{_ROOT}.tar.gz"
@@ -30,9 +36,7 @@ def _sdist(tmp_path: Path, extra: dict[str, bytes] | None = None,
         members.pop(name, None)
     with tarfile.open(path, "w:gz") as archive:
         for relative, content in members.items():
-            info = tarfile.TarInfo(f"{_ROOT}/{relative}")
-            info.size = len(content)
-            archive.addfile(info, io.BytesIO(content))
+            _add(archive, f"{_ROOT}/{relative}", content)
     return path
 
 
@@ -64,6 +68,10 @@ def test_required_source_inputs_cannot_silently_disappear(tmp_path: Path) -> Non
 
 
 def test_source_distribution_must_have_one_root(tmp_path: Path) -> None:
-    path = _sdist(tmp_path)
-    with tarfile.open(path, "a:gz") as _archive:  # pragma: no cover - tarfile forbids append-compressed
-        pass
+    path = tmp_path / "multi-root.tar.gz"
+    with tarfile.open(path, "w:gz") as archive:
+        for relative, content in _REQUIRED.items():
+            _add(archive, f"{_ROOT}/{relative}", content)
+        _add(archive, "unexpected-second-root/README.md", b"not allowed\n")
+    errors = audit_sdist(path)
+    assert any("expected one source-distribution root" in error for error in errors)
