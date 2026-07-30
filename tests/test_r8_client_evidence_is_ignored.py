@@ -70,7 +70,9 @@ def _ignored_paths(paths: Iterable[str]) -> set[str]:
         f"git check-ignore --stdin failed: rc={proc.returncode}; "
         f"stdout={proc.stdout!r}; stderr={proc.stderr!r}"
     )
-    return set(proc.stdout.splitlines())
+    # Git for Windows emits native backslashes for batch results even when stdin used POSIX paths.
+    # The ignore decision is path-separator agnostic; normalize before comparing with requested paths.
+    return {path.replace("\\", "/") for path in proc.stdout.splitlines()}
 
 
 def _registered_capture_filenames() -> tuple[str, ...]:
