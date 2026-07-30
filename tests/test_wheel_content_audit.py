@@ -22,8 +22,12 @@ _REQUIRED = {
 }
 
 
-def _wheel(tmp_path: Path, extra: dict[str, str] | None = None,
-           omit: set[str] | None = None, name: str = "toolkit-3.31.0-py3-none-any.whl") -> Path:
+def _wheel(
+    tmp_path: Path,
+    extra: dict[str, str] | None = None,
+    omit: set[str] | None = None,
+    name: str = "toolkit-3.31.0-py3-none-any.whl",
+) -> Path:
     path = tmp_path / name
     members = dict(_REQUIRED)
     members.update(extra or {})
@@ -45,6 +49,17 @@ def test_expected_runtime_wheel_is_accepted(tmp_path: Path) -> None:
         "cisco_toolkit/client_evidence/ACME/show_running-config.txt",
         "webapp/data/assesshub.db",
         "migration_collection_20260730/CORE-1/show_version.txt",
+        "cisco_toolkit/data/show_version.txt",
+        "cisco_toolkit/data/moquery_-c_faultInst.txt",
+        "cisco_toolkit/data/api_v1_deployment_node.txt",
+        "cisco_toolkit/data/api_fmc_config_v1_devices_devicerecords.txt",
+        "cisco_toolkit/data/ers_config_node.txt",
+        "cisco_toolkit/data/dataservice_device.txt",
+        "cisco_toolkit/data/aws_ec2_describe-security-groups.txt",
+        "cisco_toolkit/data/get_system_ha_status.txt",
+        "cisco_toolkit/data/device_info.json",
+        "cisco_toolkit/data/command_index.json",
+        "cisco_toolkit/data/_capture_meta.json",
         "cisco_toolkit/data/customer.snapshot.json",
         "cisco_toolkit/data/migration_runbook.docx",
         "notes.txt",
@@ -101,3 +116,11 @@ def test_artifact_directory_requires_one_wheel_and_one_sdist(tmp_path: Path) -> 
     artifacts, errors = discover_artifacts([tmp_path])
     assert artifacts == [first, second, tmp_path / "toolkit-3.31.0.tar.gz"]
     assert any("exactly one wheel" in error for error in errors)
+
+
+def test_artifact_directory_rejects_unexpected_entries(tmp_path: Path) -> None:
+    _wheel(tmp_path)
+    (tmp_path / "toolkit-3.31.0.tar.gz").write_bytes(b"synthetic archive placeholder")
+    (tmp_path / "unreviewed.zip").write_bytes(b"not part of the audited release pair")
+    _, errors = discover_artifacts([tmp_path])
+    assert any("unexpected entries" in error and "unreviewed.zip" in error for error in errors)
