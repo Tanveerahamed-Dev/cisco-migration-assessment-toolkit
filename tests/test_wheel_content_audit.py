@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.audit_wheel import audit_wheel
+from tools.audit_wheel import audit_wheel, discover_artifacts
 
 
 _REQUIRED = {
@@ -23,15 +23,15 @@ _REQUIRED = {
 
 
 def _wheel(tmp_path: Path, extra: dict[str, str] | None = None,
-           omit: set[str] | None = None) -> Path:
-    path = tmp_path / "toolkit-3.31.0-py3-none-any.whl"
+           omit: set[str] | None = None, name: str = "toolkit-3.31.0-py3-none-any.whl") -> Path:
+    path = tmp_path / name
     members = dict(_REQUIRED)
     members.update(extra or {})
-    for name in omit or set():
-        members.pop(name, None)
+    for member in omit or set():
+        members.pop(member, None)
     with zipfile.ZipFile(path, "w") as archive:
-        for name, content in members.items():
-            archive.writestr(name, content)
+        for member, content in members.items():
+            archive.writestr(member, content)
     return path
 
 
@@ -79,3 +79,25 @@ def test_exactly_one_distribution_metadata_directory_is_required(tmp_path: Path)
         )
     )
     assert any("exactly one .dist-info" in error for error in errors)
+
+
+def test_artifact_directory_is_discovered_without_shell_globbing(tmp_path: Path) -> None:
+    wheel = _wheel(tmp_path)
+    sdist = tmp_path / "toolkit-3.31.0.tar.gz"
+    sdist.write_bytes(b"synthetic archive placeholder")
+    artifacts, errors = discover_artifacts([tmp_path])
+    assert errors == []
+    assert artifacts == [wheel, sdist]
+
+
+def test_artifact_directory_requires_one_wheel_and_one_sdist(tmp_path: Path) -> None:
+    first = _wheel(tmp_path)
+    artifacts, errors = discover_artifacts([tmp_path])
+    assert artifacts == [first]
+    assert any("exactly one source distribution" in error for error in errors)
+
+    second = _wheel(tmp_path, name="toolkit-3.31.1-py3-none-any.whl")
+    (tmp_path / "toolkit-3.31.0.tar.gz").write_bytes(b"synthetic archive placeholder")
+    artifacts, errors = discover_artifacts([tmp_path])
+    assert artifacts == [first, second, tmp_path / "toolkit-3.31.0.tar.gz"]
+    assert any("exactly one wheel" in error for error in errors)
