@@ -49,6 +49,14 @@ _FORBIDDEN_SEGMENTS = frozenset(
     }
 )
 
+_COLLECTION_SIDECAR_BASENAMES = frozenset(
+    {
+        "device_info.json",
+        "command_index.json",
+        "_capture_meta.json",
+    }
+)
+
 _FORBIDDEN_BASENAMES = frozenset(
     {
         "devices.json",
@@ -56,18 +64,21 @@ _FORBIDDEN_BASENAMES = frozenset(
         "engagement-state.json",
         "query_log.jsonl",
     }
-)
+) | _COLLECTION_SIDECAR_BASENAMES
 
+# Every current command registry family, not only running-config and credential-bearing captures.
+# Inventory, ARP, MAC, neighbor, platform, and log output are client evidence as well. The ignore
+# regression statically enumerates the command lists, so a future prefix requires an intentional
+# update here and in .gitignore rather than silently passing through.
 _CAPTURE_FILENAME_GLOBS = (
-    "show_running-config*.txt",
-    "show_run*.txt",
-    "show_startup-config*.txt",
-    "show_configuration*.txt",
-    "show_tech-support*.txt",
-    "show_crypto*.txt",
-    "show_snmp*.txt",
-    "show_tacacs*.txt",
-    "show_radius*.txt",
+    "show_*.txt",
+    "moquery_-c_*.txt",
+    "api_v1_*.txt",
+    "api_fmc_*.txt",
+    "ers_config_*.txt",
+    "dataservice_*.txt",
+    "aws_ec2_describe-security-groups.txt",
+    "get_system_ha_status.txt",
 )
 
 _FORBIDDEN_FILENAME_GLOBS = _CAPTURE_FILENAME_GLOBS + (
@@ -109,11 +120,15 @@ def _member_policy_errors(name: str, *, synthetic_tests_allowed: bool = False) -
         errors.append(f"client-evidence directory packaged: {name}")
 
     matches_capture = any(fnmatch.fnmatchcase(base, pattern) for pattern in _CAPTURE_FILENAME_GLOBS)
-    is_reviewable_test_capture = synthetic_tests_allowed and lowered_parts[0] == "tests" and matches_capture
+    is_reviewable_test_artifact = (
+        synthetic_tests_allowed
+        and lowered_parts[0] == "tests"
+        and (matches_capture or base in _COLLECTION_SIDECAR_BASENAMES)
+    )
     matches_forbidden = base in _FORBIDDEN_BASENAMES or any(
         fnmatch.fnmatchcase(base, pattern) for pattern in _FORBIDDEN_FILENAME_GLOBS
     )
-    if matches_forbidden and not is_reviewable_test_capture:
+    if matches_forbidden and not is_reviewable_test_artifact:
         errors.append(f"sensitive/generated file packaged: {name}")
     return errors
 
@@ -226,7 +241,8 @@ def discover_artifacts(inputs: Iterable[Path]) -> tuple[list[Path], list[str]]:
     """Expand artifact files/directories without relying on shell wildcard expansion.
 
     A directory is treated as a clean build output and must contain exactly one wheel and one source
-    archive. This rejects stale multi-version output rather than auditing one file and publishing all.
+    archive. This rejects stale multi-version or unexpected output rather than auditing a subset and
+    publishing every file in the directory.
     """
     artifacts: list[Path] = []
     errors: list[str] = []
@@ -237,6 +253,8 @@ def discover_artifacts(inputs: Iterable[Path]) -> tuple[list[Path], list[str]]:
 
         wheels = sorted(item.glob("*.whl"))
         sdists = sorted(item.glob("*.tar.gz"))
+        expected = set(wheels + sdists)
+        unexpected = sorted(path.name for path in item.iterdir() if path not in expected)
         if len(wheels) != 1:
             errors.append(
                 f"expected exactly one wheel in directory {item}, found {[p.name for p in wheels]!r}"
@@ -246,6 +264,8 @@ def discover_artifacts(inputs: Iterable[Path]) -> tuple[list[Path], list[str]]:
                 f"expected exactly one source distribution in directory {item}, "
                 f"found {[p.name for p in sdists]!r}"
             )
+        if unexpected:
+            errors.append(f"unexpected entries in distribution directory {item}: {unexpected!r}")
         artifacts.extend(wheels)
         artifacts.extend(sdists)
     return artifacts, errors
