@@ -40,6 +40,51 @@ topology.dot
 # Real device inventory with SSH credentials — NEVER commit
 devices.json
 
+# Client evidence / operator state — raw captures can contain cleartext credentials and keys.
+# The default migration_collection_* root is covered above. These rules also cover common
+# --collection-dir names, high-risk command filenames beneath an arbitrary root, and AssessHub's
+# client snapshot database (including SQLite WAL/SHM sidecars).
+/collection/
+/collections/
+/collection_*/
+/collections_*/
+/client_data/
+/client-data/
+/client_evidence/
+/client-evidence/
+/evidence/
+/captures/
+/raw_collection/
+/raw-collection/
+/raw_evidence/
+/raw-evidence/
+show_running-config*.txt
+show_run*.txt
+show_startup-config*.txt
+show_configuration*.txt
+show_tech-support*.txt
+show_crypto*.txt
+show_snmp*.txt
+show_tacacs*.txt
+show_radius*.txt
+/webapp/data/*.db
+/webapp/data/*.db-*
+/webapp/data/*.sqlite
+/webapp/data/*.sqlite-*
+/webapp/data/*.sqlite3
+/webapp/data/*.sqlite3-*
+
+# Synthetic command captures under tests are reviewable source fixtures, not client evidence.
+!tests/**/show_running-config*.txt
+!tests/**/show_run*.txt
+!tests/**/show_startup-config*.txt
+!tests/**/show_configuration*.txt
+!tests/**/show_tech-support*.txt
+!tests/**/show_crypto*.txt
+!tests/**/show_snmp*.txt
+!tests/**/show_tacacs*.txt
+!tests/**/show_radius*.txt
+
 # Claude Code local settings
 .claude/settings.local.json
 
