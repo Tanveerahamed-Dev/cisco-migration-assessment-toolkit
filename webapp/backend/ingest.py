@@ -327,6 +327,24 @@ def _preflight_zip(zf: zipfile.ZipFile) -> List[Tuple[zipfile.ZipInfo, Tuple[str
     return prepared
 
 
+def iobase_upload_file(stream: BinaryIO) -> BinaryIO:
+    """Return ``stream`` carrying the full IO probe interface, unwrapping a py3.10 spool.
+
+    py3.10's ``tempfile.SpooledTemporaryFile`` does not implement ``seekable()``/``readable()``/
+    ``writable()`` -- they arrived in 3.11 (bpo-35112) -- and downstream consumers legitimately
+    probe them: ``zipfile.ZipFile`` does (zipfile.py:744; AttributeError measured on the first
+    py3.10 CI leg ever to run this path, five tests at once), and the ingest route promises its
+    zip runner a stream that answers them (the runner is replaceable, so the unwrap inside
+    ``_safe_extract`` alone cannot honour that contract). The spool's underlying ``._file``
+    (BytesIO before rollover, a real temp file after) carries the full interface, so unwrap it
+    rather than teaching every consumer about spools. On 3.11+ ``hasattr`` succeeds and this is
+    the identity function -- which is why no other leg ever saw the gap.
+    """
+    if not hasattr(stream, "seekable") and hasattr(stream, "_file"):
+        return stream._file
+    return stream
+
+
 def _safe_extract(source: bytes | bytearray | BinaryIO, dest: Path) -> int:
     """Extract a preflighted archive under ``dest`` without aliasing or special-file semantics."""
     if _source_size(source) > MAX_ARCHIVE_BYTES:
@@ -337,16 +355,9 @@ def _safe_extract(source: bytes | bytearray | BinaryIO, dest: Path) -> int:
     if isinstance(source, (bytes, bytearray)):
         archive_source = io.BytesIO(source)
     else:
-        archive_source = source
-        # py3.10: tempfile.SpooledTemporaryFile does not implement the full IO interface --
-        # seekable()/readable()/writable() arrived in 3.11 (bpo-35112) -- and zipfile.ZipFile
-        # probes .seekable() (zipfile.py:744; AttributeError measured on the first py3.10 CI leg
-        # ever to run this path, five tests at once). The spool's underlying ._file (BytesIO
-        # before rollover, a real temp file after) carries the full interface, so unwrap it
-        # rather than teaching zipfile about spools. On 3.11+ hasattr succeeds and this is a
-        # no-op, which is why every other leg never saw it.
-        if not hasattr(archive_source, "seekable") and hasattr(archive_source, "_file"):
-            archive_source = archive_source._file
+        # Direct callers may still hand us a raw py3.10 spool; the route normalizes at its own
+        # boundary, and iobase_upload_file's docstring owns the why.
+        archive_source = iobase_upload_file(source)
         archive_source.seek(0)
     try:
         zf = zipfile.ZipFile(archive_source)

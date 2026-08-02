@@ -304,3 +304,38 @@ def test_collection_zip_accepts_a_py310_style_spool_without_seekable(tmp_path):
     assert not hasattr(spool, "seekable"), "the simulation must reproduce the 3.10 gap"
     with pytest.raises(ingest.IngestError, match="Not a valid ZIP archive"):
         ingest.run_collection_zip(spool)
+
+
+def test_iobase_upload_file_unwraps_exactly_the_py310_spool_shape():
+    """`iobase_upload_file` is the single owner of the py3.10-spool unwrap (the routes and
+    `_safe_extract` all call it): a stream missing the IO probe methods is unwrapped to its
+    underlying `_file` — the SAME object, no copy, position preserved — and any stream already
+    carrying the probes passes through untouched (the 3.11+ identity direction, which is why
+    only the py3.10 leg ever saw the gap)."""
+    import io
+
+    from backend import ingest
+
+    class _Py310Spool:
+        def __init__(self, data: bytes) -> None:
+            self._file = io.BytesIO(data)
+
+        def read(self, *a):
+            return self._file.read(*a)
+
+        def seek(self, *a):
+            return self._file.seek(*a)
+
+    spool = _Py310Spool(b"PKpayload")
+    spool.seek(2)  # the unwrap must not disturb the caller's position
+    unwrapped = ingest.iobase_upload_file(spool)
+    assert unwrapped is spool._file, "must unwrap to the SAME underlying object, not a copy"
+    assert unwrapped.seekable() and unwrapped.readable()
+    assert unwrapped.tell() == 2
+
+    # the identity direction: a stream that already answers the probes is returned unchanged
+    modern = io.BytesIO(b"PKpayload")
+    assert ingest.iobase_upload_file(modern) is modern
+
+    # non-vacuity of the simulation itself: without the unwrap, the probe really is missing
+    assert not hasattr(spool, "seekable")

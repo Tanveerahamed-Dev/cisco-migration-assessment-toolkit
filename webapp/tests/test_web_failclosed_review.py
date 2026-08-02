@@ -856,6 +856,81 @@ def test_ingest_route_passes_upload_spool_not_bytes_to_zip_runner(tmp_path, monk
     assert response.json()["ingest"]["verification"] == verification
 
 
+def test_ingest_route_runner_contract_holds_for_a_py310_shaped_spool(tmp_path, monkeypatch):
+    """The route's contract to its zip runner is a stream carrying the full IO probe interface.
+
+    py3.10's ``tempfile.SpooledTemporaryFile`` lacks ``seekable()``/``readable()``/``writable()``
+    (they arrived in 3.11 — bpo-35112), so the raw spool starlette hands the route breaks that
+    contract there: the sibling test above passed on every leg whose spool HAD the probes, and
+    the real py3.10 leg failed inside the runner (AttributeError — cycle 5's only red CI job).
+    Reproduced on every interpreter by patching the REAL producer — ``starlette.formparsers``
+    builds its spool from the patched name — with a wrapper exposing exactly the 3.10 surface:
+    everything delegated, the three probes AttributeError, ``_file`` underneath. The route must
+    normalize at its boundary (``ingest.iobase_upload_file``) so any runner still gets the full
+    interface; the unwrap inside ``_safe_extract`` cannot help here because the runner is the
+    thing being replaced."""
+    import tempfile as _tempfile
+
+    import starlette.formparsers as _formparsers
+
+    class _Py310SpooledTemporaryFile:
+        _blocked = frozenset({"seekable", "readable", "writable"})
+
+        def __init__(self, *args, **kwargs):
+            self._real = _tempfile.SpooledTemporaryFile(*args, **kwargs)
+
+        @property
+        def _file(self):
+            return self._real._file
+
+        def __getattr__(self, name):
+            if name in type(self)._blocked:
+                raise AttributeError(name)
+            return getattr(self._real, name)
+
+    built: list = []
+
+    def _spool_factory(*args, **kwargs):
+        spool = _Py310SpooledTemporaryFile(*args, **kwargs)
+        built.append(spool)
+        return spool
+
+    monkeypatch.setattr(_formparsers, "SpooledTemporaryFile", _spool_factory)
+    monkeypatch.delenv("ASSESSHUB_TOKEN", raising=False)
+    seen: dict[str, object] = {}
+
+    def fake_runner(stream):
+        seen["probes"] = (stream.seekable(), stream.readable())
+        seen["prefix"] = stream.read(2)
+        snap = _verified_snapshot()
+        snap["interfaces"] = [{"switch": "sw1", "port": "Gi1"}]
+        return snap, {
+            "n_archive_files": 1,
+            "n_device_dirs": 1,
+            "devices": ["sw1"],
+            "skipped_dirs": [],
+            "devices_json": "synthesized",
+            "engine_seconds": 0.01,
+            "engine_log_tail": "",
+            "verification": summary.snapshot_verification(snap),
+        }
+
+    monkeypatch.setattr(ingest, "run_collection_zip", fake_runner)
+    app = app_module.create_app(db_path=str(tmp_path / "spool310.db"))
+    with TestClient(app, base_url="http://localhost") as client:
+        campaign = client.post("/api/campaigns", json={"name": "spool310"}).json()
+        response = client.post(
+            f"/api/campaigns/{campaign['id']}/ingest",
+            files={"file": ("fleet.zip", b"PKstreamed", "application/zip")},
+        )
+    assert response.status_code == 201, response.text
+    # NON-VACUITY of the simulation: starlette really built its spool through the patched name,
+    # and what it built really lacks the probes — otherwise this test is the sibling above.
+    assert built, "starlette.formparsers no longer builds SpooledTemporaryFile by that name"
+    assert all(not hasattr(s, "seekable") for s in built)
+    assert seen == {"probes": (True, True), "prefix": b"PK"}
+
+
 def test_snapshot_route_does_not_call_uploadfile_read(tmp_path, monkeypatch):
     from starlette.datastructures import UploadFile
 

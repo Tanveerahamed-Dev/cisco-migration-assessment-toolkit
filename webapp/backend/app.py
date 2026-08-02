@@ -1222,8 +1222,12 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
             raise HTTPException(404, "Campaign not found")
         # Multipart middleware acquired this slot before accepting the first body byte. UploadFile
         # is already a bounded spool; parse from that seekable file without a second chunks+join copy.
+        # iobase_upload_file: every stream leaving the route layer carries the full IO probe
+        # interface (py3.10's spool does not -- the owner's docstring has the why).
         with _request_generation_slot(request):
-            snap = await run_in_threadpool(_parse_snapshot_stream, file.file)
+            snap = await run_in_threadpool(
+                _parse_snapshot_stream, ingest.iobase_upload_file(file.file)
+            )
             _stamp_snapshot_origin(snap, summary.DIRECT_UPLOAD_ORIGIN)
             lbl = _bounded_label(label, file.filename or "", "snapshot")
             derived = await run_in_threadpool(summary.summarize, snap)
@@ -1238,12 +1242,15 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
             raise HTTPException(404, "Campaign not found")
         # The body is a disk-backed UploadFile spool for realistic archives. Pass that stream
         # directly to ZipFile; no raw-bytes duplicate is ever materialised in this process.
+        # iobase_upload_file: the runner's contract is a stream with the full IO probe interface,
+        # and the runner is replaceable -- so the route normalizes, not just _safe_extract.
         with _request_generation_slot(request):
             try:
-                await run_in_threadpool(_bounded_upload_size, file.file, "Archive")
+                stream = ingest.iobase_upload_file(file.file)
+                await run_in_threadpool(_bounded_upload_size, stream, "Archive")
                 # The engine run blocks for seconds-to-minutes; off the event loop so the rest of the
                 # API (including a live war-room console) stays responsive.
-                snap, report = await run_in_threadpool(ingest.run_collection_zip, file.file)
+                snap, report = await run_in_threadpool(ingest.run_collection_zip, stream)
             except ingest.IngestError as e:
                 raise HTTPException(400, str(e)) from e
             except ingest.EngineRunError as e:

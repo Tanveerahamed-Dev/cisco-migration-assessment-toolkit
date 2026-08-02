@@ -4425,3 +4425,45 @@ en route: a Stop-hook pytest raced the still-running background suite and flagge
 across seven files this cycle never touched; all 132 tests in those files pass serially, exit 0.
 Two pytest runs must not share this repo concurrently — the losers are exactly the tests that
 touch shared surfaces (stick layout copies, CLI subprocesses, freshness reads).
+
+### 13.8 CI cycle 5 verdict — one test from green, and the miss was the named-subset shape again
+
+**Cycle 5 (`1bbeb7a`) was the best run in the branch's history:** windows py3.12 **green for the
+first time ever** (the custody fix was causal), py3.11/py3.13/py3.14 green (the nesting pair and
+the owner-rule suffix rewrite held on the real interpreters), mypy/Coverage/Ruff/Dependency
+audit/Distribution contract green, webapp-ci and Master reference and Static reference contract
+all green. **One red job in the entire matrix: py3.10, one test** —
+`test_ingest_route_passes_upload_spool_not_bytes_to_zip_runner`,
+`AttributeError: 'SpooledTemporaryFile' object has no attribute 'seekable'`.
+
+**Why my cycle-5 fix missed it — the named-subset shape, instance five.** The spool shim sat
+inside `_safe_extract`, i.e. inside ONE consumer. This test monkeypatches the runner, so the
+shim never runs — and the test is RIGHT: the route's contract is "any runner receives a stream
+carrying the full IO probe interface", and py3.10's raw spool breaks it at the boundary. I had
+shimmed a member of the class ("code that probes the upload spool") instead of normalizing where
+the class begins. The four cycle-5 spool tests went green because they exercised the real
+runner; the one that replaces it measured the contract itself.
+
+**Fix at the boundary, one owner.** `ingest.iobase_upload_file` now owns the unwrap
+(`ingest.py`, full why in its docstring); `_safe_extract` calls it for direct callers, and BOTH
+routes normalize `file.file` through it before anything downstream — the archive route before
+`_bounded_upload_size` + the runner, the snapshot route before `_parse_snapshot_stream`
+(`json.load` never probes, but the rule is structural: every stream leaving the route layer
+carries the interface, no named subset of routes).
+
+**Proof, test-first.** New route test reproduces CI's exact failure on ANY interpreter by
+patching the REAL producer — `starlette.formparsers` builds its spool `from tempfile import
+SpooledTemporaryFile`, so a patched factory returning a wrapper with exactly the 3.10 surface
+(everything delegated, the three probes AttributeError, `_file` underneath) flows through the
+genuine multipart parse into the route. Watched FAIL with `AttributeError: seekable` pre-fix,
+green post-fix; the factory is instrumented so the test asserts starlette really built through
+the patched name and what it built really lacked the probes (otherwise it silently degrades
+into its sibling). Plus a unit test on the owner: unwraps to the SAME underlying object
+(identity, position preserved), passes a modern stream through untouched (the 3.11+ identity
+direction), and the simulation's own gap is asserted. Focused files green; **full suite
+`exit 0` (parallel). Ruff `exit 0`.**
+
+> Fifth instance of the shape, and this one refines it: the earlier four were guards scoped to
+> a LIST of names; this one was a guard scoped to one CALL SITE of a replaceable collaborator.
+> Same defect one level up — the fix is owned by the boundary where the promise is made, not by
+> whichever consumer happened to crash first.
