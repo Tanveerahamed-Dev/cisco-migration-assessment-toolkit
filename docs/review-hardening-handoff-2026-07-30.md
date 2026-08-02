@@ -4496,9 +4496,12 @@ dependency audit, distribution contract, SPA reproduction and reference contract
 every supported interpreter and both platforms, at `213f5a3`. It does NOT mean release-ready.
 Still open, unchanged in kind:
 
-* **Human gates (§12.10):** master-reference deploy (Phase E, outward-facing), the history
-  rewrite / force-push decision (§2 — history still carries the original private material), and
-  the PR #506 draft flip.
+* **Human gates (§12.10):** master-reference deploy (Phase E, outward-facing) and the history
+  rewrite / force-push decision (§2 — history still carries the original private material).
+  ~~The PR #506 draft flip~~ — DONE 2026-08-02 at the user's direction: body refreshed (stale
+  `e969606` verification and "SPA reproduction unproven" claims corrected), marked ready, all
+  15 required pull_request-event checks pass; the PR now waits only on the required human
+  review, which the author's account cannot supply.
 * **Carried questions:** the EoL registry `evidence_method` claim (§12.12 item 2); the `..json`
   name-shape semantics on 3.14 (§13.7); react-router v7 (two moderates below gate threshold,
   deferred). The §13.7 matrix-dependency note stands: the <=3.13 legs are the only guard against
