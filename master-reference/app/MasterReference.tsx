@@ -233,6 +233,22 @@ const decisions: Decision[] = [
     tags: ["ieee", "iana", "registry", "reproducible"],
   },
   {
+    id: "scoped-port-authority",
+    category: "Data authority",
+    title: "Port authority is scoped, not global",
+    outcome:
+      "The service-port pack keeps its whole-pack authority flag false while the official IANA component carries its own verified source and freshness claims.",
+    reason:
+      "The pack deliberately mixes official IANA assignments with curated service hints; a single global flag either overclaims the hints or discards the official rows.",
+    tradeoff:
+      "Consumers read component and per-record authority fields instead of one convenient boolean.",
+    enforcement:
+      "authority_scope=iana-service-assignments-only, per-record assignment/semantics authority and overlay status, self-tests that require integrity plus the official component's proof rather than universal authority.",
+    evidence: "cisco_toolkit/data/gen_port_registry.py · cisco_toolkit/registry_integrity.py",
+    personas: ["reviewer", "maintainer"],
+    tags: ["iana", "authority", "scoped"],
+  },
+  {
     id: "eol-abstention",
     category: "Data authority",
     title: "Lifecycle coverage is narrow enough to prove",
@@ -333,11 +349,11 @@ const decisions: Decision[] = [
     category: "Privacy",
     title: "Repository privacy is a release invariant",
     outcome:
-      "Client evidence, likely identifiers, unsafe links, and unapproved binary payloads block the repository check.",
+      "Client evidence, likely identifiers, unsafe links, and unapproved binary payloads block the check across the Git index and working tree.",
     reason:
       "Ignore rules hide files from Git; they do not prove that tracked or packaged bytes are safe.",
     tradeoff:
-      "Exact public corpora and visual assets need manifest-bound exceptions.",
+      "The gate proves current content, not file names or Git history; commits predating sanitization carry their own explicit decision. Exact public corpora and visual assets need manifest-bound exceptions.",
     enforcement:
       "Stable-file scanning, aggregate bounds, strict JSON/UTF-8, exact public-source manifest, CI gate.",
     evidence: ".github/scripts/verify_repository_privacy.py · tests/test_repository_privacy.py",
@@ -543,19 +559,19 @@ const verification = [
     layer: "Web fail-closed",
     proves: "Uploads, provenance, and redaction cannot self-certify",
     mechanism: "Boundary tests + independent artifact verifier",
-    status: "Final integration refresh",
+    status: "Integrated matrix green",
   },
   {
     layer: "Distribution",
     proves: "The built archives contain exactly the allowed, functioning bytes",
-    mechanism: "Inventory + RECORD + clean install + self-test",
-    status: "Final immutable proof queued",
+    mechanism: "Inventory + RECORD + clean install + self-test + source binding",
+    status: "Source-bound · 115 of 129 members",
   },
   {
     layer: "Whole repository",
     proves: "The integrated checkout satisfies quality, type, security, and coverage gates",
     mechanism: "Pytest + Ruff + mypy + frontend + audit + package checks",
-    status: "Final matrix queued",
+    status: "Matrix green · commit 213f5a3",
   },
 ];
 
@@ -701,7 +717,7 @@ export function MasterReference() {
         </nav>
         <a className="header-status" href="#verification">
           <span className="status-dot" aria-hidden="true" />
-          Evidence refresh
+          Evidence state
         </a>
       </header>
 
@@ -709,7 +725,7 @@ export function MasterReference() {
         <div className="hero-grid" aria-hidden="true" />
         <div className="hero-copy">
           <p className="eyebrow">
-            Repository decision system <span>·</span> 30 July 2026
+            Repository decision system <span>·</span> 2 August 2026
           </p>
           <h1>
             From raw evidence
@@ -746,7 +762,7 @@ export function MasterReference() {
           <div className="signal-header">
             <span>System signal</span>
             <span className="live-label">
-              <i aria-hidden="true" /> review state
+              <i aria-hidden="true" /> verified state
             </span>
           </div>
           <div className="signal-orbit">
@@ -1114,8 +1130,9 @@ export function MasterReference() {
             <h2>A green label must say what it proves.</h2>
           </div>
           <p>
-            Focused evidence is retained while the final integrated matrix and
-            immutable archive proof are refreshed against the frozen tree.
+            Focused evidence is retained, and the integrated matrix and
+            archive-level proof have completed against the recorded source
+            state.
           </p>
         </div>
         <table className="verification-table">

@@ -18,6 +18,12 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "webapp.backend.serve", "--no-browser", "--port", "8471"],
       "port": 8471
+    },
+    {
+      "name": "master-reference",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "master-reference", "run", "dev"],
+      "port": 3000
     }
   ]
 }

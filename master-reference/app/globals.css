@@ -1666,7 +1666,7 @@ svg {
 
   .header-status::after {
     font-size: 9px;
-    content: "Review";
+    content: "Verified";
   }
 
   .hero {
