@@ -2185,3 +2185,29 @@ def test_the_wheel_must_carry_the_license_and_top_level_it_declares(
         )
         == []
     )
+
+
+def test_dynamic_is_accepted_as_a_backend_field_but_only_for_computable_values():
+    """`Dynamic` is emitted by the BUILD BACKEND, never declared in pyproject, so it can never appear
+    in the contract derived from pyproject — yet it is standard and correct in a wheel.
+
+    Core metadata spec (PEP 643, Metadata 2.2; `License-File` is 2.4): "In any context other than a
+    source distribution, `Dynamic` is for information only, and indicates that the field value was
+    calculated at wheel build time." setuptools 83.0.0 emits `Dynamic: license-file` for a 2.4 wheel
+    whose License-File it collected — and 83.0.0 is the version THIS MODULE PINS via its Generator
+    check, so rejecting the header made the verifier refuse its own pinned backend's output. Found by
+    building for real: every other check passed and this alone failed the release gate.
+
+    The name is allowed; the VALUE is still constrained. `Dynamic: Requires-Dist` is legal metadata but
+    would mean the dependency set was decided at build time, which is exactly what this verifier
+    exists to refuse — so widening the header allowlist alone would have been the lazy fix.
+    """
+    from cisco_toolkit.distribution_verify import _BACKEND_COMPUTABLE_FIELDS
+
+    assert "license-file" in _BACKEND_COMPUTABLE_FIELDS, (
+        "setuptools computes License-File; refusing it breaks the pinned backend's own output")
+    # NON-VACUITY: the set must be a narrow allowlist, not a blanket pass. A backend must never be
+    # the one deciding these.
+    for must_not in ("requires-dist", "name", "version", "requires-python", "provides-extra"):
+        assert must_not not in _BACKEND_COMPUTABLE_FIELDS, (
+            f"{must_not!r} became backend-computable; that field is declared, not calculated")

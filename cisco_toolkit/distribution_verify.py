@@ -435,6 +435,14 @@ def _stable_source_authority_proof(proof: dict) -> dict:
 # Divergence measured before this change (structural forms; 8 inputs the repo gate FLAGGED and this
 # module MISSED): brand+'_dc_design', short+'_core01', initials+'_switch01', initials+'_vlan_plan',
 # bid+'_bid', user+'_home', '_'+user.
+#: Core-metadata fields a build backend may legitimately compute at wheel-build time, and therefore
+#: the only values `Dynamic:` may name in a wheel this project ships. Deliberately NOT "anything the
+#: spec permits": `Dynamic: Requires-Dist` is legal metadata but would mean the dependency set was
+#: decided during the build rather than declared in pyproject, which this verifier exists to refuse.
+#: `license-file` is here because setuptools collects the license documents itself (PEP 639 /
+#: Metadata 2.4). Add to this set only with the same question answered: may the BACKEND decide it?
+_BACKEND_COMPUTABLE_FIELDS = frozenset({"license-file"})
+
 _LB = r"(?<![A-Za-z0-9])"
 _RB = r"(?![A-Za-z0-9])"
 
@@ -1524,7 +1532,26 @@ def _metadata_signature(
             f"{label} Metadata-Version differs: {metadata_versions!r} != ['2.4']"
         )
     expected_headers: dict[str, list[str]] = contract["headers"]
-    expected_names = set(expected_headers) | {"Metadata-Version"}
+    # `Dynamic` is emitted by the BUILD BACKEND, not declared in pyproject, so it can never appear in
+    # the contract derived from it -- yet it is standard and correct here. Core metadata spec: "In any
+    # context other than a source distribution, `Dynamic` is for information only, and indicates that
+    # the field value was calculated at wheel build time" (PEP 643, Metadata 2.2; `License-File` is
+    # 2.4). setuptools 83.0.0 emits `Dynamic: license-file` for a 2.4 wheel whose License-File it
+    # computed -- and 83.0.0 is the version THIS MODULE PINS via the Generator check, so rejecting it
+    # made the verifier refuse its own pinned backend's output. Found by building for real: every
+    # other check passed and this alone failed the release gate.
+    #
+    # Allowed as a NAME, still constrained by VALUE: each entry must name a field the backend may
+    # legitimately compute, so this cannot become a hole through which arbitrary metadata rides in.
+    # Widening `expected_names` alone would have been the lazy fix and would have accepted
+    # `Dynamic: Requires-Dist`, which would mean the dependency set was decided at build time.
+    expected_names = set(expected_headers) | {"Metadata-Version", "Dynamic"}
+    dynamic_declared = [v.strip().lower() for v in values.get("Dynamic", [])]
+    illegal_dynamic = sorted(set(dynamic_declared) - _BACKEND_COMPUTABLE_FIELDS)
+    if illegal_dynamic:
+        errors.append(
+            f"{label} declares Dynamic for field(s) the backend must not compute: {illegal_dynamic}"
+        )
     unexpected = sorted(set(values) - expected_names)
     missing = sorted(set(expected_headers) - set(values))
     if unexpected:
