@@ -4617,3 +4617,25 @@ recorded before this section refer to the superseded history; the commit-map tra
 > only looks private; public-record data inside evidence corpora is the standing example. (2) A
 > verifier that can wedge silently is not a verifier; progress output is not cosmetic, it is
 > what makes "still running" distinguishable from "dead".
+
+### 13.12 MERGED — PR #507 is main (user-directed, 2026-08-02)
+
+The rewritten history's first full CI came back **green across all three workflows** (run on
+`d159e51`), so the merge proceeded at the user's direction, in their chosen order:
+
+1. **Protection contexts fixed FIRST** (the user's pick over a bare bypass): the stale required
+   context "Package build + install" — a job renamed long ago that nothing emits, wedging every
+   merge exactly as the protection-rename trap predicts — replaced by its real successors,
+   `Distribution contract` + `Dependency audit`. Main's protection now requires 11 contexts,
+   every one of them a job the current CI actually runs, all green on the head. Force-push
+   stays blocked; the 1-review requirement stays.
+2. **`gh pr merge 507 --admin --merge`**, named and authorized by the user — the bypass covered
+   ONLY the review gate (self-approval being impossible for the PR author's account).
+
+**Merge commit `1b5514ca`; origin main verified at it; local main repointed.** The review
+branch (`d159e51`) is fully contained in main. What main now is: the sanitized candidate tree,
+repository-wide green matrix, source-bound archives, finalized master reference — on the
+marker-free history.
+
+Remaining open, unchanged: the Codex-side master-reference deploy tail (§13.10), the carried
+questions (§13.9), and the GitHub-side purge of pre-rewrite `refs/pull/*` objects (§13.11).
