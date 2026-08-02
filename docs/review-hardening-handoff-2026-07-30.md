@@ -4512,3 +4512,39 @@ Still open, unchanged in kind:
 > along the way decomposed into a real defect, a version-bound test, or an environment fact —
 > zero were flaky reruns. On this branch "rerun and hope" would have converged on nothing;
 > per-job forensics converged in six.
+
+### 13.10 Phase E — master reference finalized and verified; deploy mechanism decided
+
+User authorized the deployment 2026-08-02. Every §5.7 step this environment can execute is done
+and the source state is pushed (`f984e9a`):
+
+* **Provisional statuses replaced with final evidence:** web fail-closed "Integrated matrix
+  green"; distribution "Source-bound · 115 of 129 members" (source binding named in the
+  mechanism); whole repository "Matrix green · commit 213f5a3"; hero dated 2 August 2026;
+  header/signal labels final.
+* **§5.7 step 2 done:** new decision card D07 "Port authority is scoped, not global" documents
+  the §5.2 resolution; every field name it publishes was grounded first
+  (`gen_port_registry.py:517` `authority_scope`, `analyze.py:2485` per-record authority keys).
+* **§7.1's published-overclaim carry CLOSED:** the privacy-guard card now states the gate's
+  honest scope (index + working tree; names and history excluded; history carries its own
+  decision).
+* **A sixth two-copies instance, found only by the browser:** the mobile breakpoint hides the
+  header-status text (`font-size: 0`) and substitutes a CSS pseudo-label — which still said
+  "Review" (`globals.css:1669`). The rendered-HTML contract test asserts DOM text and is
+  structurally blind to pseudo-content; driving the real 375px breakpoint in the browser pane
+  exposed it. Now "Verified", and a sweep shows it was the only text-bearing `content:` rule.
+* **Gates after the edits:** npm test 3/3 (typecheck + production build + rendered contract),
+  oxlint 0, npm audit 0 vulnerabilities. **Browser QA:** console clean, every network request
+  localhost, decision-card and pipeline-tab interactions verified, mobile 375px single-column
+  with zero horizontal overflow, reduced-motion rules present.
+
+**Deploy mechanism (user's pick): the documented Codex Sites path.** `create_site` is Codex
+tooling and does not exist in this session, so the remaining §5.7 tail runs in a Codex session,
+in this order, against the pushed state `f984e9a`:
+
+1. `create_site` ONCE; persist the opaque `project_id` into `master-reference/.openai/hosting.json`
+   (currently `{"d1": null, "r2": null}` — §4.5's call-it-exactly-once rule stands);
+2. save a Sites version from that exact commit; deploy the saved version PRIVATELY;
+3. poll to terminal success; inspect production (§5.7's QA list);
+4. update `metadataBase`/Open Graph with the actual production URL; save/deploy the final
+   version; commit the hosting.json + metadata change through the privacy gate.
