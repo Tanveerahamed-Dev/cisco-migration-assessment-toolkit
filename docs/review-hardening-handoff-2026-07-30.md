@@ -4274,3 +4274,43 @@ Running tally of the review's sharpest lesson, now **six** instances: verify_arc
 the SPA reproduction step, the dependency audit, the wheel-context self-test, the ubuntu test matrix,
 and the linux Stop-hook path — **every one a gate or suite that had never actually executed, and every
 first execution found something real.**
+
+### 13.5 CI cycle 3 — the fixed gates started WORKING, and what they caught was real
+
+Cycle 2's fixes did their job, and the proof is what happened next: both "fixed" jobs went red again —
+**for new reasons, because the gates finally executed their real checks.**
+
+**The wheel self-test PASSED 9/9** — `[ ok ] oui-kb … retained official sources NOT present in this
+install form` — and then the very next line of the same CI step failed: an inline python one-liner in
+`ci.yml` carrying a FOURTH copy of the usability conjunction, whose own comment said "keep in step
+with COLLECT_PARSE and serve.py; there are four consumers". The hand-sync instruction is the defect:
+when `pack_is_usable` learnt the cannot-check-here distinction, the three Python consumers followed
+and the YAML copy — invisible to a grep for Python callers — kept failing a healthy wheel on the very
+facts its own error dump printed (`integrity_verified: True, build_provenance_verified: True,
+official_sources_available: False`). Now routed through the owner. **A duplicated predicate in a
+workflow file is still a duplicated predicate.**
+
+**The dependency audit ran for the first time and found a real CVE:** paramiko 4.0.0,
+PYSEC-2026-2858 (SHA-1 permitted in rsakey.py). Verified against primary sources: the fix ships only
+in paramiko 5.0.0, and netmiko — the SSH engine — caps `paramiko<5.0` in its LATEST release (4.7.0),
+so the fixed version is unresolvable without abandoning netmiko. Severity supports waiting
+(AV:A/AC:H/I:L). Handled as a NAMED suppression, `--ignore-vuln PYSEC-2026-2858`, with the
+re-evaluation trigger written into the workflow: the moment netmiko's cap admits paramiko>=5, delete
+the flag and bump. Every other advisory remains fatal.
+
+**My local `npm audit --offline → 0 vulnerabilities` was worthless** — offline cannot fetch
+advisories; the ledger's own caveat said so and I under-weighted it. Online: 6 findings across three
+roots. Fixed by pinned bumps, no `--force`: vite 6.0.7→6.4.3 (esbuild dev-server advisory), postcss
+via `npm audit fix`, react-router-dom 6.28.0→6.30.4 (XSS via open redirects, GHSA-2w69-qvjg-hvjx).
+Two MODERATE advisories remain on react-router 6.x whose only fix is the breaking v7 migration —
+below the CI gate's `--audit-level=high` threshold, and with low real exposure here (no SSR; loopback
+field posture); recorded as a deliberate deferral with the v7 migration as the follow-up.
+
+The dependency bumps changed the bundle: all four content-hashed assets renamed, dist rebuilt and
+re-tracked, byte-determinism re-proven across consecutive builds, index.html still 0 CRLF. Verified
+locally: full suite exit 0, ruff exit 0, vitest 200/200, npm audit (high) exit 0.
+
+The linux-only cluster (4 redact_collection corpus tests + the Stop-hook fail-open) remains open as
+recorded in 13.4 — cycle 3's matrix will re-measure it in isolation. Locally proven meanwhile: both
+capture rules AGREE on every CI-failing name on Windows, so that cluster is filesystem-behaviour
+dependent, not rule-text dependent.

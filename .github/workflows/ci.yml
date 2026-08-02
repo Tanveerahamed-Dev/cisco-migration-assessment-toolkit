@@ -123,10 +123,19 @@ jobs:
       # Uninstalling the project leaves exactly the dependency set in the environment, fully audited
       # under undiluted --strict: no skips, no not-found, and a real CVE in any dependency still
       # fails the job. The project's own code is what every other job tests.
+      # --ignore-vuln PYSEC-2026-2858 is a NAMED, dated suppression with no admissible fix, not a
+      # loosening — every other advisory remains fatal. The gate's first successful execution
+      # (2026-08-02, after the uninstall fix below) found paramiko 4.0.0 flagged for permitting
+      # SHA-1 in rsakey.py. Verified against primary sources the same day: the fix exists only in
+      # paramiko 5.0.0, and netmiko — the SSH engine this tool is built on — caps `paramiko<5.0`
+      # in its LATEST release (4.7.0), so the fixed version is unresolvable without abandoning
+      # netmiko. Severity supports waiting: CVSS AV:A/AC:H/I:L — adjacent network, high attack
+      # complexity, low integrity impact. RE-EVALUATE whenever netmiko releases: the moment its cap
+      # admits paramiko>=5, delete this flag and bump instead.
       - name: Audit installed Python dependencies
         run: |
           python -m pip uninstall --yes cisco-migration-assessment-toolkit
-          python -m pip_audit --strict
+          python -m pip_audit --strict --ignore-vuln PYSEC-2026-2858
       - name: Install locked frontend dependencies
         working-directory: webapp/frontend
         run: npm ci
@@ -271,14 +280,17 @@ jobs:
         run: |
           cisco-assess --help
           assesshub --selftest
-          # SCOPED authority, not the whole-pack flag. `authoritative` is correctly False for a
-          # deliberately mixed pack (portdb carries a curated overlay + multicast semantics
-          # alongside the official IANA rows), so asserting it fails a HEALTHY registry. Gate on
-          # the two component fields instead, each falling back to `authoritative` when the pack
-          # does not publish it (ouidb omits official_source_authoritative entirely).
-          # Keep in step with COLLECT_PARSE_V3_23_0.py and webapp/backend/serve.py — `grep -rn
-          # registry_health` lists every consumer; there are four.
-          python -c "import sys; from cisco_toolkit import ouidb, portdb; ok = lambda h: (lambda w: bool(h.get('integrity_verified', w)) and bool(h.get('official_source_authoritative', w)))(h.get('authoritative')); bad = [(n, h) for n, h in (('oui', ouidb.registry_health()), ('port', portdb.registry_health())) if not ok(h)]; sys.exit('registry pack unusable: %r' % (bad,)) if bad else None"
+          # Routed through registry_integrity.pack_is_usable — the ONE owner of this question.
+          # This line used to carry its own inline conjunction with a comment saying "keep in step
+          # with COLLECT_PARSE and serve.py; there are four consumers" — the hand-sync instruction
+          # that guarantees drift, and it drifted: when the owner learnt to distinguish
+          # CANNOT-CHECK-HERE (wheel installs ship without reference-data/official-sources/**) from
+          # CHECKED-AND-FAILED, the three Python consumers followed and THIS copy, living in YAML
+          # where a grep for Python callers never looked, kept failing a healthy wheel — the
+          # selftest above printed PASS 9/9 and this very next line exited 1 on the same facts
+          # (proven on run 30744547871). A duplicated predicate in a workflow file is still a
+          # duplicated predicate. Degraded installs are disclosed, not silently passed.
+          python -c "import sys; from cisco_toolkit import ouidb, portdb, registry_integrity as R; pairs = (('oui', ouidb.registry_health()), ('port', portdb.registry_health())); bad = [(n, h) for n, h in pairs if not R.pack_is_usable(h)]; [print(f'{n}: usable on bytes + build provenance; retained official sources not present in this install form (repo/sdist only)') for n, h in pairs if h.get('official_sources_available') is False and not bad]; sys.exit('registry pack unusable: %r' % (bad,)) if bad else None"
       - name: Final immutable-source proof before preserving archives
         run: >-
           python .github/scripts/verify_checkout_immutable.py
