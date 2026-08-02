@@ -11,7 +11,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 # webapp/backend/engine.py -> webapp/backend -> webapp -> <repo root that contains cisco_toolkit>
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -53,21 +53,91 @@ def render_explorer_html(snapshot: Dict[str, Any], label: str) -> str:
             pass
 
 
-def _with_schema_compat(result: Dict[str, Any], snaps: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Attach the pair/series schema-compatibility verdict to a diff/trend result (P3-E2, webapp surface).
-    The CLI REFUSES a cross-schema diff; an interactive endpoint instead WARNS -- it surfaces the verdict
-    (schema_compat.status: ok | unverifiable | mismatch) so the UI never presents a diff across an engine
-    schema change as if it were a real network change. Additive + non-breaking."""
+def _schema_compat(snaps: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Compute the webapp's non-overridable pair/series schema verdict once."""
+    status, message = schema_compat_status(list(snaps or []))
+    return {"status": status, "message": message, "override": False}
+
+
+def _with_schema_compat(result: Dict[str, Any], schema: Dict[str, Any]) -> Dict[str, Any]:
+    """Surface the exact compatibility verdict already consumed by the decision computation."""
     if isinstance(result, dict):
-        status, message = schema_compat_status(list(snaps or []))
-        result["schema_compat"] = {"status": status, "message": message}
+        result["schema_compat"] = {
+            "status": schema["status"],
+            "message": schema["message"],
+        }
     return result
 
 
-def campaign_trend(snapshots: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Trajectory across a series (oldest-first) — thin pass-through to the engine."""
-    return _with_schema_compat(compute_campaign_trend(snapshots), list(snapshots or []))
+#: The wording `compute_campaign_trend` uses for a metric it could not compare. The web campaign view
+#: renders `verdict_note` as its only prose, so this phrase is what a reader sees; the structural
+#: `not_comparable` key is its machine-readable twin.
+_NOT_COMPARABLE_PHRASE = "NOT COMPARABLE"
 
 
-def snapshot_delta(old: Dict[str, Any], new: Dict[str, Any]) -> Dict[str, Any]:
-    return _with_schema_compat(compute_snapshot_delta(old, new), [old, new])
+def _carry_not_comparable(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Guarantee the campaign trend's NOT-COMPARABLE coverage disclosure survives to the web exit.
+
+    The workbook writer prints `verdict_note` and the web campaign view prints `verdict_note`, so
+    today both carry it — but only because the engine happens to put the sentence in the prose. This
+    adapter is the web's ONLY route to the trend, and it used to pass the dict through unexamined:
+    an engine that stopped publishing the disclosure, or a `not_comparable` list the prose failed to
+    mention, would have rendered a verdict with NO coverage caveat and nothing would have noticed.
+
+    So it FAILS CLOSED, in both directions:
+
+    * `not_comparable` missing or malformed -> normalised to empty lists with
+      ``disclosure_available: False``, and the note SAYS the coverage disclosure is unavailable
+      (absence of the caveat must not read as "every metric was comparable");
+    * `not_comparable` populated but the prose does not carry the phrase -> the sentence is restated
+      in `verdict_note`, because that is the string the UI renders.
+
+    A fully-comparable campaign is untouched — no caveat is invented where there is nothing to
+    disclose.
+    """
+    if not isinstance(result, dict):
+        return result
+    nc = result.get("not_comparable")
+    lost = nc.get("lost") if isinstance(nc, dict) else None
+    never = nc.get("never_measured") if isinstance(nc, dict) else None
+    ok = isinstance(lost, list) and isinstance(never, list)
+    note = str(result.get("verdict_note") or "")
+    if not ok:
+        result["not_comparable"] = {"lost": [], "never_measured": [], "disclosure_available": False}
+        result["verdict_note"] = (
+            f"{_NOT_COMPARABLE_PHRASE}: this trend carries no metric-comparability record, so which "
+            "metrics were measured at both ends of the campaign is UNKNOWN — the trajectory below "
+            "is not a statement that every metric was comparable. " + note
+        ).strip()
+        return result
+    result["not_comparable"] = {"lost": list(lost), "never_measured": list(never),
+                                "disclosure_available": True}
+    if (lost or never) and _NOT_COMPARABLE_PHRASE not in note:
+        names = ", ".join(str(m) for m in list(lost) + list(never))
+        result["verdict_note"] = (
+            f"{_NOT_COMPARABLE_PHRASE}: {len(lost) + len(never)} metric(s) ({names}) are absent from "
+            "the trajectory because their evidence is missing at one or both ends of this campaign — "
+            "NOT because there is nothing to report. " + note
+        ).strip()
+    return result
+
+
+def campaign_trend(
+        snapshots: List[Dict[str, Any]], *,
+        source_bindings: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
+    """Trajectory across a series (oldest-first) — thin pass-through to the engine, plus the
+    fail-closed coverage-disclosure carry in `_carry_not_comparable`."""
+    snaps = list(snapshots or [])
+    schema = _schema_compat(snaps)
+    result = compute_campaign_trend(
+        snaps, source_bindings=source_bindings, schema_status=schema)
+    return _with_schema_compat(_carry_not_comparable(result), schema)
+
+
+def snapshot_delta(
+        old: Dict[str, Any], new: Dict[str, Any], *,
+        source_binding: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    schema = _schema_compat([old, new])
+    result = compute_snapshot_delta(
+        old, new, source_binding=source_binding, schema_status=schema)
+    return _with_schema_compat(result, schema)

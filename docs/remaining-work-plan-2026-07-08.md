@@ -24,7 +24,7 @@ Five commits on `chore/scorecard-first-real-rows`, all pushed: `c5c1f1d` (ADR 00
   (qwen3:4b) **0.2** (weak — a supplement). Every LLM `APPROVE` is PROVISIONAL by construction.
 - **Calibration: 0 REAL** (7 fault-injected surrogates; D11 tuning floor legitimately unmet — pre-cutover).
 - **Freeze mechanism built:** `precert.compute_readiness_freeze` (schema `precert-readiness/1`), shadow-validated
-  → [HISTORY-REDACTED] fleet predicts NOT READY, coverage-honest, `prediction_hash sha256:ea6f2048…`.
+  → Meridian reference fleet predicts NOT READY, coverage-honest, `prediction_hash sha256:ea6f2048…`.
 - **Deliverables phantom-health-clean** (text + binary), fleet 303/253/50 scoped honestly throughout.
 
 ## 2. The full remaining map (three workstreams + strategy)
@@ -45,7 +45,7 @@ Five commits on `chore/scorecard-first-real-rows`, all pushed: `c5c1f1d` (ADR 00
 | **C. Autonomy nerves** — *v4 final* | | | |
 | Clock (D13) — scheduler + `claude -p` nightly | TNR-gate ∧ calibration separation ∧ ROI | gated | rails built (`clock.py`); **do not arm** (see §3) |
 | Remediation / self-healing (`/remediate`) | a baseline⋈current drift to act on | mine | propose-only; exercise when drift is real |
-| Recall / vault-digest (D10) | Ollama + a signed sanitized digest | gated | degrade-gracefully; not installed *(gate satisfied 2026-07-10 — Ollama installed + first digest produced; see ADR 0001 Am. 1 status update / ssot.md row)* |
+| Recall / vault-digest (D10) | Ollama + a sanitized, SHA-256 hash-sealed digest (unauthenticated) | gated | degrade-gracefully; not installed *(gate satisfied 2026-07-10 — Ollama installed + first digest produced; see ADR 0001 Am. 1 status update / ssot.md row)* |
 | **Strategy** — *best-possible-plan §4* | | | |
 | Keep axis allocation (validation 60 / career 25 / autonomy 10 / commercial 5) | — | you | keep; autonomy/commercial are downstream of proof |
 | Publish the negative result (open the TNR + coverage-honesty harness) | after Act 3 | you | the durable moat incumbents can't copy |
@@ -137,9 +137,9 @@ defects — repaired same-day — and one strategic gap only you can close. No A
   Hardening targets (18 / 29 / 59, independently sourced classes only) are registered in
   `docs/quality/README.md` — gated hardening, not scheduled work.
 - **DECISION NEEDED (yours) — Act 1 has no diverse path.** The critical path is single-homed on a real
-  cutover window with no dated fallback; the schema already defines `shadow-PIR`, [HISTORY-REDACTED]'s MOP/NRFU
+  cutover window with no dated fallback; the schema already defines `shadow-PIR`, Reference's MOP/NRFU
   execution will produce real outcomes harvestable at zero fabrication cost, and a lab-gear window is a
   real (non-fabricated) outcome too. **Trigger: if no REAL row exists by 2026-08-05, explicitly decide**
-  (a) whether [HISTORY-REDACTED] execution outcomes are harvested as `shadow-PIR` rows, and (b) whether a lab cutover
+  (a) whether Reference execution outcomes are harvested as `shadow-PIR` rows, and (b) whether a lab cutover
   counts as `REAL` for the D11 floor or joins the surrogate classes. Until then the answer stays "wait" —
   this addendum adds a date to the waiting, not work.

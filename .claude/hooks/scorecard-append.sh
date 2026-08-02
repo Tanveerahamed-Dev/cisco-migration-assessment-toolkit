@@ -15,7 +15,18 @@
 set -u
 cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" 2>/dev/null || exit 0
 
-PY=$(command -v python || command -v python3 || echo python)
+# Resolve an interpreter that RUNS. `command -v python` succeeds for the Microsoft Store
+# App-Execution-Alias stub, which exits 9009 — here that surfaced as this hook warning "exited 49,
+# the QA scorecard is NOT being recorded" on every healthy stop: a real message about an unreal
+# fault. Fail-open behaviour is unchanged; it is just no longer reached while a working interpreter
+# exists.
+PY=""
+for _c in python python3; do _p=$(command -v "$_c" 2>/dev/null) || continue
+  if "$_p" -c "import sys" >/dev/null 2>&1; then PY="$_p"; break; fi; done
+if [ -z "$PY" ] && command -v py >/dev/null 2>&1; then
+  for _v in -3.12 -3; do _p=$(py "$_v" -c "import sys; print(sys.executable)" 2>/dev/null) || continue
+    if [ -n "$_p" ] && [ -x "$_p" ]; then PY="$_p"; break; fi; done; fi
+[ -z "$PY" ] && PY=python
 
 # The SubagentStop payload (transcript_path, session_id, ...) arrives on stdin. Hand it to the
 # parser, which reads the subagent's final message and appends iff it is a QA verdict. Bounded so a

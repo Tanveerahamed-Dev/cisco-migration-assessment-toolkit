@@ -30,7 +30,7 @@ Fix-once in the shared `cisco_toolkit/docmeta.py`, wired into all 7 DOCX writers
   JSON + Excel) so no golden re-bless was needed.
 - Also fixed a **latent `ssot.reconcile` crash** on a truthy non-dict `design_blueprint` (the
   `x or {}` idiom doesn't guard a non-dict) — surfaced by wiring the first `ssot.summary` caller.
-- **Verified on the real [HISTORY-REDACTED] snapshot**: the register renders true canonical facts (253/303 collected,
+- **Verified on the real Meridian reference snapshot**: the register renders true canonical facts (253/303 collected,
   152 past-LDoS, 202 VLANs, 5127 endpoints, 39 decisions) + "14 figures self-verified".
 
 ## P1 — Client-facing depth

@@ -279,13 +279,13 @@ Optional:
   --collection-dir DIR  --workers N  --debug-arp
 """
 
-import os, sys, json, re, logging, warnings, argparse, time  # CHANGED-V3.23.1: +time (connect backoff)
+import hashlib, io, os, sys, json, re, logging, warnings, argparse, time  # io: immutable input-byte bindings
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-# 'from dataclasses import dataclass, field' moved to cisco_toolkit.analyze with
-# ScoringConfig (PHASE 2.7 step 10) - the monolith's last dataclass user.
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable, Dict, List, NamedTuple, Optional   # Callable/NamedTuple/Optional: the Tier-2 #8 axis registry
+from pathlib import Path
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
 # 'from openpyxl.cell.cell import MergedCell' dropped (step 26): its only user,
 # append_interface_rows, moved to cisco_toolkit.excel.
@@ -362,6 +362,7 @@ from cisco_toolkit.nrfu_export import compute_nrfu_commands   # NEW: four-phase 
 # build); only _CISCO_ERRORS stays (platform detection reuses it). Plan A / Tier-1 #3
 # adds the zero-parse yield ledger (reset at run start, published as snap['parse_yield']).
 from cisco_toolkit.cmdio import _CISCO_ERRORS, parse_yield_report, reset_parse_ledger
+from cisco_toolkit import input_custody as raw_input_custody
 # NEW-V3.23.30 (PHASE 2.7 step 20): the Excel layer's shared sheet/header helpers; imported
 # back so the write_* sheet builders + main()'s template-fill keep working unchanged.
 from cisco_toolkit.excel import (
@@ -428,7 +429,8 @@ from cisco_toolkit.excel import (
 )
 from cisco_toolkit.feature_compliance import compute_feature_compliance   # roadmap I2 (per-feature ConfigCompliance)
 from cisco_toolkit.aclcheck import compute_filter_line_reachability       # roadmap G1 (offline ACL shadow proof)
-from cisco_toolkit.external_import import read_inventory_file, reconcile_external   # roadmap B (external SoT reconcile)
+from cisco_toolkit.external_import import (normalize_rows, read_inventory_csv,
+                                           reconcile_external)   # roadmap B (external SoT reconcile)
 # roadmap K1 guard, widened Tier-2 #6: the entry feeds the STREAMING path API (all captures);
 # the in-memory dict API (compute_capture_integrity) remains the module's direct-use surface.
 from cisco_toolkit.capture_integrity import (compute_capture_integrity_from_paths,
@@ -472,6 +474,8 @@ from cisco_toolkit.html import (snapshot_state, sparsify_interfaces, write_html_
                                 redact_collected_inplace, redact_workbook_cells,   # campaign trend; audit-3 #8 workbook redact
                                 redact_collection_dir)                             # Plan A Tier-1 #5 (raw-capture secret scrub)
 from cisco_toolkit.context import AnalysisContext                    # Plan A #15 (typed pipeline carrier / strangler)
+from cisco_toolkit.docmeta import (artifact_candidate_paths, artifact_kind,
+                                   validate_artifact)
 from cisco_toolkit.coverage_matrix import compute_coverage_matrix   # Plan A #5 (coverage-as-a-first-class-row SSOT)
 from cisco_toolkit.detector_schema import compute_detector_schema   # J1 (per-detector descriptors; not-observed != healthy)
 from cisco_toolkit.runbook import write_runbook_docx                 # NEW-V3.23.93 (DOCX runbook deliverable)
@@ -960,10 +964,9 @@ def detect_platform_from_files(dev_dir: str) -> str:
                     "show_running-config___section_interface.txt"]
     def has_real(fname):
         p = os.path.join(dev_dir, fname)
-        if not os.path.isfile(p): return False
         try:
-            with open(p, "r", encoding="utf-8", errors="ignore") as f:
-                c = f.read(512).strip()
+            c = raw_input_custody.read_text(
+                p, encoding="utf-8", errors="ignore")[:512].strip()
             # V14.12: a command that errored on the wrong platform is NOT a valid marker.
             low = c[:200].lower()
             if any(pat in low for pat in _CISCO_ERRORS): return False
@@ -1351,17 +1354,22 @@ def collect(hostname: str, platform: str, dev, out_dir: str,
 # =============================================================================
 # DEVICES LOADER
 # =============================================================================
-def load_devices(devices_file: str, allow_prompt: bool = True) -> List[dict]:
+def load_devices(devices_file: str, allow_prompt: bool = True,
+                 *, _bound_bytes: Optional[bytes] = None) -> List[dict]:
     # FIX-V3.23.177: allow_prompt gates ONLY the interactive getpass fallback (chain step 4).
     # main() passes allow_prompt=not args.no_collect: an offline re-analysis never opens SSH,
     # so blocking the whole pipeline on a TTY password prompt for credentials that are never
     # used hung real runs (password-less devices.json + TTY stdin, perf harness 2026-07-02).
     # The non-blocking env chain (steps 1-3) always runs; default True keeps every other
     # caller -- and live collection -- on the full V3.23.1 behaviour.
-    if not os.path.isfile(devices_file):
-        raise FileNotFoundError(f"Devices file not found: {devices_file}")
-    with open(devices_file, "r", encoding="utf-8-sig") as f:
-        raw = f.read().strip()
+    if _bound_bytes is None:
+        if not os.path.isfile(devices_file):
+            raise FileNotFoundError(f"Devices file not found: {devices_file}")
+        _bound_bytes = _read_stable_bytes(devices_file)
+    try:
+        raw = _bound_bytes.decode("utf-8-sig").strip()
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"Could not parse {devices_file} as valid UTF-8 JSON.") from exc
     if not raw: raise ValueError(f"Devices file is empty: {devices_file}")
     data = None
     try:
@@ -1378,6 +1386,7 @@ def load_devices(devices_file: str, allow_prompt: bool = True) -> List[dict]:
     if data is None:
         decoder = json.JSONDecoder()
         idx, items = 0, []
+        malformed = False
         while idx < len(raw):
             mv = re.search(r"[^\s,]", raw[idx:])
             if not mv: break
@@ -1386,8 +1395,12 @@ def load_devices(devices_file: str, allow_prompt: bool = True) -> List[dict]:
                 obj, end_idx = decoder.raw_decode(raw, idx)
                 items.append(obj); idx = end_idx
             except json.JSONDecodeError:
+                malformed = True
                 break
-        if items: data = items
+        # Accept the legacy stream-of-JSON-objects form only when the *entire* file parses. A valid
+        # first object followed by a truncated/malformed suffix must never silently discard the tail.
+        if items and not malformed and not re.search(r"[^\s,]", raw[idx:]):
+            data = items
     if data is None:
         raise ValueError(f"Could not parse {devices_file} as valid JSON.")
     plat_map = {
@@ -1546,16 +1559,338 @@ def write_json_file(path: str, data: dict, compact: bool = False) -> None:
         _dump(f)
 
 
-def file_sha256(path: str) -> str:
+def _stat_fingerprint(st) -> Tuple[int, int, int, int]:
+    """Fields that reveal replacement or mutation while one file handle is being consumed."""
+    return (int(st.st_dev), int(st.st_ino), int(st.st_size),
+            int(st.st_mtime_ns))
+
+
+def _read_stable_bytes(path: str) -> bytes:
+    """Read one immutable byte view or reject a file that changed during the read.
+
+    Parsing and provenance must share this returned object.  Reopening a caller-controlled path to
+    hash it after parsing creates a classic TOCTOU claim: the report can attest bytes it never used.
+    """
+    p = os.path.abspath(str(path))
+    path_before = os.stat(p)
+    with open(p, "rb") as fh:
+        handle_before = os.fstat(fh.fileno())
+        if _stat_fingerprint(path_before) != _stat_fingerprint(handle_before):
+            raise RuntimeError(f"{os.path.basename(p)} changed before it could be read")
+        data = fh.read()
+        handle_after = os.fstat(fh.fileno())
+    path_after = os.stat(p)
+    expected = _stat_fingerprint(handle_before)
+    if _stat_fingerprint(handle_after) != expected or \
+            _stat_fingerprint(path_after) != expected or len(data) != handle_before.st_size:
+        raise RuntimeError(f"{os.path.basename(p)} changed while it was being read")
+    return data
+
+
+def _stable_file_digest(path: str) -> Tuple[int, str]:
+    """Return ``(size, sha256)`` from one stable handle, rejecting concurrent mutation."""
     import hashlib
+    p = os.path.abspath(str(path))
+    path_before = os.stat(p)
     h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
+    total = 0
+    with open(p, "rb") as fh:
+        handle_before = os.fstat(fh.fileno())
+        if _stat_fingerprint(path_before) != _stat_fingerprint(handle_before):
+            raise RuntimeError(f"{os.path.basename(p)} changed before it could be hashed")
+        for chunk in iter(lambda: fh.read(65536), b""):
+            total += len(chunk)
             h.update(chunk)
-    return h.hexdigest()
+        handle_after = os.fstat(fh.fileno())
+    path_after = os.stat(p)
+    expected = _stat_fingerprint(handle_before)
+    if _stat_fingerprint(handle_after) != expected or \
+            _stat_fingerprint(path_after) != expected or total != handle_before.st_size:
+        raise RuntimeError(f"{os.path.basename(p)} changed while it was being hashed")
+    return total, h.hexdigest()
 
 
-def build_run_manifest(out_xlsx: str, snap_dict: dict) -> dict:
+def file_sha256(path: str) -> str:
+    return _stable_file_digest(path)[1]
+
+
+def _record_from_bytes(data: bytes, *, role: str, name: str) -> dict:
+    import hashlib
+    return {
+        "role": str(role or ""),
+        "name": str(name or ""),
+        "size": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
+
+
+def _bind_input(path: str, *, role: str,
+                logical_name: str = "") -> Tuple[bytes, dict, dict]:
+    """Capture one exact input byte string plus public record and private recheck binding."""
+    p = os.path.abspath(str(path))
+    data = _read_stable_bytes(p)
+    record = _record_from_bytes(
+        data, role=role, name=logical_name or os.path.basename(p))
+    binding = {
+        "path": p,
+        "role": record["role"],
+        "name": record["name"],
+        "size": record["size"],
+        "sha256": record["sha256"],
+    }
+    return data, record, binding
+
+
+def _input_binding_errors(bindings: List[dict]) -> List[str]:
+    """Recheck caller-owned paths before publication; return bounded, content-free errors."""
+    errors = []
+    for binding in bindings or []:
+        name = str(binding.get("name") or binding.get("role") or "input")
+        try:
+            size, digest = _stable_file_digest(str(binding["path"]))
+            if size != binding.get("size") or digest != binding.get("sha256"):
+                errors.append(f"{name}: bytes changed after parsing")
+        except (KeyError, OSError, RuntimeError) as exc:
+            errors.append(f"{name}: unavailable or unstable ({type(exc).__name__})")
+    return errors
+
+
+def _require_current_bindings(bindings: List[dict], label: str = "input") -> None:
+    errors = _input_binding_errors(bindings)
+    if errors:
+        raise ValueError(f"{label} mutation detected: {'; '.join(errors[:8])}")
+
+
+_RUN_CUSTODY: Dict[str, Any] = {}
+_ACTIVE_INTEGRITY_SNAPSHOT: Optional[dict] = None
+_PHASE_FAILED = object()
+_INCOMPLETE_MARKER_MAX_BYTES = 64 * 1024
+
+
+@dataclass(frozen=True)
+class FinalizationResult:
+    """Machine result for the mandatory producer boundary."""
+    complete: bool
+    exit_code: int
+    run_id: str
+    manifest_path: str
+    incomplete_marker_path: str
+    failed_mandatory: Tuple[str, ...]
+    manifest_sealed: bool
+    marker_written: bool
+
+
+def _file_record(path: str, *, role: str = "", logical_name: str = "") -> dict:
+    """A path-independent input/evidence digest record safe to seal and move between hosts."""
+    _data, record, _binding = _bind_input(
+        path, role=role, logical_name=logical_name)
+    return record
+
+
+def _start_run_custody(out_xlsx: str, input_records: Optional[List[dict]] = None,
+                       input_bindings: Optional[List[dict]] = None) -> None:
+    """Reset the in-process producer registry and snapshot the finite pre-existing output set."""
+    import uuid
+    global _RUN_CUSTODY, _ACTIVE_INTEGRITY_SNAPSHOT
+    raw_input_custody.reset()
+    base = os.path.splitext(os.path.abspath(out_xlsx))[0]
+    existing = {}
+    for path in artifact_candidate_paths(base):
+        try:
+            if os.path.isfile(path):
+                size, digest = _stable_file_digest(path)
+                existing[os.path.abspath(path)] = {
+                    "name": os.path.basename(path),
+                    "size": size,
+                    "sha256": digest,
+                }
+        except (OSError, RuntimeError):
+            continue
+    _RUN_CUSTODY = {
+        "run_id": str(uuid.uuid4()),
+        "base": base,
+        "artifacts": {},
+        "preexisting": existing,
+        "inputs": list(input_records or []),
+        "input_bindings": list(input_bindings or []),
+        "evidence": {},
+        "mandatory_failures": {},
+        "redaction": {"requested": False, "status": "not_requested"},
+    }
+    _ACTIVE_INTEGRITY_SNAPSHOT = None
+
+
+def _record_phase_failure(label: str, detail: str = "") -> None:
+    """Make a late failure immediately visible in the canonical snapshot integrity channel."""
+    global _ACTIVE_INTEGRITY_SNAPSHOT
+    if not isinstance(_ACTIVE_INTEGRITY_SNAPSHOT, dict):
+        return
+    integrity = _ACTIVE_INTEGRITY_SNAPSHOT.setdefault("assessment_integrity", {})
+    failed = integrity.setdefault("failed_phases", [])
+    name = str(label)
+    if name not in failed:
+        failed.append(name)
+    if detail:
+        errors = integrity.setdefault("phase_errors", {})
+        # Error type/message only; caller-controlled input contents and credentials are never copied.
+        errors[name] = str(detail)[:500]
+
+
+def _record_mandatory_failure(label: str, detail: str = "") -> None:
+    """Record a producer-boundary failure even before the snapshot object exists."""
+    name = str(label)
+    bounded = str(detail or "mandatory finalization step failed")[:500]
+    _RUN_CUSTODY.setdefault("mandatory_failures", {})[name] = bounded
+    _record_phase_failure(name, bounded)
+
+
+def _sync_mandatory_failures(snap_dict: dict) -> None:
+    """Copy failures captured before snapshot assembly into its canonical integrity channel."""
+    global _ACTIVE_INTEGRITY_SNAPSHOT
+    _ACTIVE_INTEGRITY_SNAPSHOT = snap_dict
+    for name, detail in (_RUN_CUSTODY.get("mandatory_failures") or {}).items():
+        _record_phase_failure(name, detail)
+
+
+def _write_incomplete_marker(path: str, manifest_path: str,
+                             manifest_sealed: bool) -> None:
+    """Atomically publish a bounded, content-free receipt that can never be read as success."""
+    evidence = (_RUN_CUSTODY.get("evidence") or {}).get("analysis_input") or {}
+    payload = {
+        "schema": 1,
+        "status": "incomplete",
+        "run_id": _RUN_CUSTODY.get("run_id"),
+        "generated_at": _RUN_CUSTODY.get("generated_at"),
+        "output": {
+            "stem": os.path.basename(_RUN_CUSTODY.get("base") or ""),
+            "manifest": os.path.basename(manifest_path),
+            "manifest_sealed": bool(manifest_sealed),
+        },
+        "failed_mandatory": [
+            {"step": name, "detail": detail}
+            for name, detail in (_RUN_CUSTODY.get("mandatory_failures") or {}).items()
+        ],
+        "inputs": [
+            {k: row.get(k) for k in ("role", "name", "size", "sha256")}
+            for row in (_RUN_CUSTODY.get("inputs") or [])
+        ],
+        "raw_evidence": {
+            k: evidence.get(k) for k in ("root_name", "n_files", "root_sha256")
+        },
+    }
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) > _INCOMPLETE_MARKER_MAX_BYTES:
+        raise ValueError("incomplete marker exceeded its 64 KiB safety bound")
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    _write_json_atomic(path, lambda fh: fh.write(encoded))
+
+
+def _sync_failed_phases(snap_dict: dict) -> List[str]:
+    """Reconcile the timings ledger into ``assessment_integrity`` at any pipeline boundary."""
+    failed = list(dict.fromkeys(
+        str(p.get("phase")) for p in _PHASE_TIMINGS if not p.get("ok", True)))
+    already = ((snap_dict.get("assessment_integrity") or {}).get("failed_phases") or [])
+    failed = list(dict.fromkeys([*already, *failed]))
+    if failed:
+        snap_dict.setdefault("assessment_integrity", {})["failed_phases"] = failed
+    return failed
+
+
+def _register_artifact(path: str, *, kind: str = "", source: str = "") -> dict:
+    """Validate and register bytes produced by this run; stale/external files never enter custody."""
+    p = os.path.abspath(str(path))
+    if not _RUN_CUSTODY or os.path.splitext(p)[0] == "":
+        raise RuntimeError("artifact registry was not initialized")
+    k = kind or artifact_kind(p)
+    ok, reason = validate_artifact(p, k)
+    if not ok:
+        raise ValueError(f"{os.path.basename(p)} failed structural validation: {reason}")
+    size, digest = _stable_file_digest(p)
+    record = {
+        "path": p,
+        "name": os.path.basename(p),
+        "kind": k,
+        "source": str(source or ""),
+        "size": size,
+        "sha256": digest,
+        "validation": reason,
+    }
+    _RUN_CUSTODY.setdefault("artifacts", {})[p] = record
+    return record
+
+
+def _evidence_records(all_cmd_to_files: Dict[str, Dict[str, str]], root_dir: str,
+                      *, _bindings_out: Optional[List[dict]] = None) -> dict:
+    """Hash the exact raw files analysis consumed, including capture-integrity sidecars."""
+    root = os.path.abspath(root_dir)
+    by_path: Dict[str, dict] = {}
+    for host, mapping in sorted((all_cmd_to_files or {}).items()):
+        for command, raw_path in sorted((mapping or {}).items()):
+            p = os.path.abspath(raw_path)
+            rec = by_path.setdefault(p, {"hosts": set(), "commands": set()})
+            rec["hosts"].add(str(host))
+            rec["commands"].add(str(command))
+        # Capture-integrity reads this sidecar independently of the command map.
+        paths = list((mapping or {}).values())
+        device_dir = os.path.dirname(os.path.abspath(paths[0])) if paths else \
+            os.path.join(root, safe_fs_name(str(host)))
+        sidecar = os.path.join(device_dir, CAPTURE_META_FILENAME)
+        if os.path.isfile(sidecar):
+            rec = by_path.setdefault(sidecar, {"hosts": set(), "commands": set()})
+            rec["hosts"].add(str(host))
+            rec["commands"].add("<capture-metadata>")
+    rows = []
+    for p, refs in sorted(by_path.items()):
+        try:
+            real = os.path.realpath(p)
+            if os.path.commonpath((root, real)) != os.path.commonpath((root, root)):
+                raise ValueError("evidence file resolves outside collection root")
+            rel = os.path.relpath(p, root).replace("\\", "/")
+            if rel == ".." or rel.startswith("../"):
+                raise ValueError("evidence file escapes collection root")
+            size, digest = _stable_file_digest(p)
+            rows.append({
+                "path": rel,
+                "size": size,
+                "sha256": digest,
+                "hosts": sorted(refs["hosts"]),
+                "commands": sorted(refs["commands"]),
+            })
+            if _bindings_out is not None:
+                _bindings_out.append({
+                    "path": p, "name": rel, "size": size, "sha256": digest,
+                })
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise RuntimeError(f"cannot seal raw evidence {os.path.basename(p)}: {exc}") from exc
+    import hashlib
+    root_digest = hashlib.sha256(json.dumps(
+        rows, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    return {"root_name": os.path.basename(root), "n_files": len(rows),
+            "root_sha256": root_digest, "files": rows}
+
+
+def _excluded_stale_outputs() -> List[dict]:
+    """Known output candidates present on disk but never registered by this run."""
+    registered = set((_RUN_CUSTODY.get("artifacts") or {}).keys())
+    manifest_path = _RUN_CUSTODY.get("base", "") + ".run_manifest.json"
+    rows = []
+    for path in artifact_candidate_paths(_RUN_CUSTODY.get("base", "")):
+        p = os.path.abspath(path)
+        if p in registered or p == os.path.abspath(manifest_path) or not os.path.isfile(p):
+            continue
+        before = (_RUN_CUSTODY.get("preexisting") or {}).get(p)
+        rows.append({
+            "name": os.path.basename(p),
+            "reason": "pre-existing or unregistered output; excluded from this run's seal",
+            "existed_before_run": bool(before),
+        })
+    return rows
+
+
+def build_run_manifest(out_xlsx: str, snap_dict: dict,
+                       artifact_registry: Optional[Dict[str, dict]] = None,
+                       custody: Optional[dict] = None) -> dict:
     """roadmap D2 + J4: a sealed, deterministic chain-of-custody manifest for one assessment run — a
     hash-chained ledger of the pipeline stages PLUS a per-artifact sha256 of every produced deliverable
     PLUS the coverage-honest abstention ledger, sealed by ``chain_root`` (no Git dependency). Pure
@@ -1574,7 +1909,6 @@ def build_run_manifest(out_xlsx: str, snap_dict: dict) -> dict:
     cross-run record of human gate decisions is the gate-state ledger
     (``docs/engagement-state.json``), which is append-only ACROSS runs by design.
     """
-    import glob as _glob
     from cisco_toolkit import gate_state as _gate_state, manifest as _manifest, ssot as _ssot
     try:
         from cisco_toolkit import __version__ as _schema_version
@@ -1582,19 +1916,42 @@ def build_run_manifest(out_xlsx: str, snap_dict: dict) -> dict:
         _schema_version = "unknown"
     base = os.path.splitext(os.path.abspath(out_xlsx))[0]
     out_dir = os.path.dirname(base) or "."
-    base_name = os.path.basename(base)
-    artifacts = {}
-    for path in sorted(_glob.glob(os.path.join(out_dir, base_name + "*"))):
-        # Skip .tmp: a write killed uncatchably (TerminateProcess / power loss) leaves the atomic
-        # writer's temp behind, and a CONCURRENT run's temp is visible for the duration of its write.
-        # Either would otherwise be sealed as a delivered artifact -- publishing, under the seal,
-        # bytes the pipeline deliberately never published.
-        if os.path.isfile(path) and not path.endswith((".run_manifest.json", ".tmp")):
-            try:
-                with open(path, "rb") as _fh:
-                    artifacts[os.path.basename(path)] = _manifest.artifact_sha256(_fh.read())
-            except OSError:
-                continue
+    state = custody if custody is not None else (
+        _RUN_CUSTODY if _RUN_CUSTODY.get("base") == base else {})
+    registry = artifact_registry
+    if registry is None and state.get("base") == base:
+        registry = state.get("artifacts") or {}
+    # Library callers must still name the workbook explicitly, but no fallback ever scans siblings.
+    if registry is None:
+        registry = {}
+        if os.path.isfile(out_xlsx):
+            ok, reason = validate_artifact(out_xlsx, "xlsx")
+            if not ok:
+                raise ValueError(f"workbook cannot be sealed: {reason}")
+            p = os.path.abspath(out_xlsx)
+            size, digest = _stable_file_digest(p)
+            registry[p] = {"path": p, "name": os.path.basename(p), "kind": "xlsx",
+                           "source": "explicit workbook", "size": size,
+                           "sha256": digest, "validation": reason}
+    artifacts: Dict[str, dict] = {}
+    for path, original in sorted(registry.items()):
+        p = os.path.abspath(path)
+        if os.path.dirname(p) != os.path.abspath(out_dir):
+            raise ValueError(f"registered artifact is outside output directory: {os.path.basename(p)}")
+        ok, reason = validate_artifact(p, original.get("kind") or artifact_kind(p))
+        if not ok:
+            raise ValueError(f"registered artifact became invalid before sealing: "
+                             f"{os.path.basename(p)} ({reason})")
+        current_size, current_sha = _stable_file_digest(p)
+        if current_sha != original.get("sha256") or current_size != original.get("size"):
+            raise ValueError(f"registered artifact changed after production: {os.path.basename(p)}")
+        artifacts[os.path.basename(p)] = {
+            "sha256": current_sha,
+            "size": current_size,
+            "kind": original.get("kind") or artifact_kind(p),
+            "source": original.get("source") or "",
+            "validation": reason,
+        }
     cc = (snap_dict.get("collection_completeness") or {}).get("summary") or {}
     steps = [
         {"stage": "collect", "inventory": cc.get("inventory"), "collected": cc.get("complete")},
@@ -1622,8 +1979,31 @@ def build_run_manifest(out_xlsx: str, snap_dict: dict) -> dict:
     ]
     ledger = {subj: _ssot.abstention_reason(snap_dict, subj) for subj in
               ("fhrp", "vpc", "golden_drift", "feature_compliance", "acl_line_reachability", "framework_coverage")}
-    meta = {"schema_version": _schema_version, "generated_at": datetime.now().isoformat(),
-            "collected_at": snap_dict.get("collected_at"), "abstention_ledger": ledger}
+    input_rows = list(state.get("inputs") or [])
+    devices_hash = next((r.get("sha256") for r in input_rows
+                         if r.get("role") == "devices_file"), None)
+    meta = {
+        "schema_version": _schema_version,
+        "generated_at": state.get("generated_at") or snap_dict.get("generated_at"),
+        "collected_at": snap_dict.get("collected_at"),
+        "run_id": state.get("run_id"),
+        "devices_file_sha256": devices_hash,
+        "inputs": input_rows,
+        "raw_evidence": state.get("evidence") or {},
+        "redaction": state.get("redaction") or {},
+        "data_authorities": snap_dict.get("data_authorities") or {},
+        "assessment_integrity": snap_dict.get("assessment_integrity") or {},
+        "producer_finalization": {
+            "mandatory_prerequisites": (
+                "failed" if state.get("mandatory_failures") else "complete"),
+            "failed_mandatory": sorted((state.get("mandatory_failures") or {}).keys()),
+            "manifest_self_verification": "required-after-write",
+        },
+        "abstention_ledger": ledger,
+        "excluded_stale_outputs": _excluded_stale_outputs() if state is _RUN_CUSTODY else
+                                  list(state.get("excluded_stale_outputs") or []),
+        "artifact_registry": {"mode": "exact-current-run", "n_artifacts": len(artifacts)},
+    }
     return _manifest.build_manifest(meta, artifacts, steps)
 
 
@@ -1779,10 +2159,293 @@ def _run_phase(label, fn, *args, _default=None, **kwargs):
         _ok = False
         logger.error(f"  [SKIP] Phase '{label}' failed: {e!r}; "
                      f"continuing so the workbook still saves.")
+        _record_phase_failure(str(label), f"{type(e).__name__}: {e}")
         return _default
     finally:
         _PHASE_TIMINGS.append({"phase": str(label),
                                "seconds": round(time.perf_counter() - _t0, 4), "ok": _ok})
+
+
+def _emit_artifact(label: str, path: str, kind: str, fn, *args,
+                   _paths: Optional[List[str]] = None, **kwargs) -> bool:
+    """Run one writer and admit its output only after structural validation.
+
+    A writer exception, a missing file, a partial ZIP, or malformed JSON/HTML all become the same
+    machine-readable failed phase. The bytes remain on disk for recovery/forensics but are excluded
+    from the manifest rather than being certified as a deliverable.
+    """
+    expected = [os.path.abspath(str(p)) for p in (_paths or [path])]
+
+    def _signature(p: str):
+        try:
+            st = os.stat(p)
+            return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+        except OSError:
+            return None
+
+    before = {p: _signature(p) for p in expected}
+    result = _run_phase(label, fn, *args, _default=_PHASE_FAILED, **kwargs)
+    if result is _PHASE_FAILED:
+        return False
+    paths = result if isinstance(result, (list, tuple)) and result else [path]
+    try:
+        for produced in paths:
+            produced = os.path.abspath(str(produced))
+            # A successful return is not proof that this invocation published anything. Refuse a
+            # pre-existing file whose identity, length and nanosecond timestamp are all untouched.
+            if produced in before and before[produced] is not None and \
+                    _signature(produced) == before[produced]:
+                raise ValueError(
+                    f"{os.path.basename(produced)} was unchanged by the writer invocation")
+            _register_artifact(produced, kind=kind or artifact_kind(produced),
+                               source=label)
+    except Exception as exc:
+        _record_phase_failure(label, f"{type(exc).__name__}: {exc}")
+        logger.error("  [INTEGRITY] Phase '%s' returned but its output is not sealable: %s",
+                     label, exc)
+        return False
+    return True
+
+
+def _write_integrity_disclosure_sheet(wb, snap_dict: dict) -> None:
+    """Publish machine integrity failures in the workbook without creating clean-run churn."""
+    title = "Assessment Integrity"
+    if title in wb.sheetnames:
+        del wb[title]
+    integrity = snap_dict.get("assessment_integrity") or {}
+    authorities = snap_dict.get("data_authorities") or {}
+    failed = list(integrity.get("failed_phases") or [])
+    # `not health.get("authoritative", True)` read the port pack's HONEST mixed-pack false as a
+    # broken registry, so this sheet was created -- at index 0, the FIRST thing the client opens --
+    # on every clean run, announcing "FAIL-CLOSED - do not interpret absent/empty sections as
+    # healthy" over a pack whose bytes, schema and IANA source chain had all verified. This
+    # function's own docstring promises no clean-run churn. Same predicate as every other
+    # consumer now; see registry_integrity.pack_is_usable for why one owner exists.
+    from cisco_toolkit import registry_integrity as _reg_integrity
+    bad_authorities = [
+        name for name, health in authorities.items()
+        if not _reg_integrity.pack_is_usable(health)]
+    if not integrity and not bad_authorities:
+        return
+    ws = wb.create_sheet(title, 0)
+    ws.append(["Assessment integrity", "FAIL-CLOSED — do not interpret absent/empty sections as healthy"])
+    ws.append(["Failed phase / authority", "Detail"])
+    errors = integrity.get("phase_errors") or {}
+    for name in failed:
+        ws.append([name, errors.get(name) or "phase failed; see run log"])
+    for name in bad_authorities:
+        health = authorities[name]
+        ws.append([f"{name} data authority",
+                   health.get("error") or health.get("status") or "not authoritative"])
+    ws.freeze_panes = "A3"
+    ws.column_dimensions["A"].width = 38
+    ws.column_dimensions["B"].width = 100
+
+
+def _catalog(raw: Any, wrappers: tuple, label: str) -> List[dict]:
+    """Extract and minimally validate a supplied JSON catalog."""
+    value = raw
+    if isinstance(value, dict):
+        value = next((value.get(k) for k in wrappers if k in value), None)
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{label} must contain a non-empty list")
+    if any(not isinstance(row, dict) for row in value):
+        raise ValueError(f"{label} entries must all be JSON objects")
+    return value
+
+
+def _preflight_optional_inputs(args) -> dict:
+    """Load every explicitly supplied optional input once and fail closed on invalid content."""
+    loaded: Dict[str, Any] = {"records": [], "bindings": []}
+
+    def _bytes(role: str, path: str) -> bytes:
+        if not os.path.isfile(path):
+            raise ValueError(f"--{role.replace('_', '-')}: file not found")
+        try:
+            data, record, binding = _bind_input(path, role=role)
+        except (OSError, RuntimeError) as exc:
+            raise ValueError(
+                f"--{role.replace('_', '-')}: unreadable or changed while reading "
+                f"({type(exc).__name__})") from exc
+        loaded["records"].append(record)
+        loaded["bindings"].append(binding)
+        return data
+
+    def _json(role: str, path: str) -> Any:
+        try:
+            return json.loads(_bytes(role, path).decode("utf-8-sig"))
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise ValueError(f"--{role.replace('_', '-')}: invalid JSON ({exc})") from exc
+
+    if args.requirements:
+        raw = _json("requirements", args.requirements)
+        if not isinstance(raw, dict):
+            raise ValueError("--requirements must be a JSON object")
+        # Match design_advisor.load_requirements exactly, but normalize the already-bound object
+        # instead of reopening a mutable path for a second, unaudited read.
+        from cisco_toolkit import design_advisor as design_mod
+        req_raw = raw["requirements"] if isinstance(raw.get("requirements"), dict) else raw
+        reg = {
+            key: req_raw[key] for key in design_mod.REQUIREMENTS_KEYS
+            if req_raw.get(key) not in (None, "", [], {})
+        }
+        if "vlan_zones" in reg:
+            normalized = design_mod._norm_vlan_zones(reg["vlan_zones"])
+            if normalized:
+                reg["vlan_zones"] = normalized
+            else:
+                reg.pop("vlan_zones", None)
+        if "fabric_operating_model" in reg:
+            normalized = design_mod._norm_fabric_model(reg["fabric_operating_model"])
+            if normalized:
+                reg["fabric_operating_model"] = normalized
+            else:
+                reg.pop("fabric_operating_model", None)
+        loaded["requirements"] = reg
+        if not loaded["requirements"]:
+            raise ValueError("--requirements was supplied but contains no recognized, usable requirement")
+
+    if args.golden_config:
+        try:
+            lines = _bytes("golden_config", args.golden_config).decode(
+                "utf-8-sig").splitlines()
+        except (OSError, UnicodeError) as exc:
+            raise ValueError(f"--golden-config: unreadable ({exc})") from exc
+        if not any(line.strip() and not line.lstrip().startswith("#") for line in lines):
+            raise ValueError("--golden-config was supplied but contains no baseline directives")
+        loaded["golden_config"] = lines
+
+    if args.import_inventory:
+        data = _bytes("import_inventory", args.import_inventory)
+        try:
+            if str(args.import_inventory).lower().endswith((".xlsx", ".xlsm")):
+                inventory_wb = load_workbook(
+                    io.BytesIO(data), read_only=True, data_only=True)
+                try:
+                    grid = list(inventory_wb[inventory_wb.sheetnames[0]].iter_rows(
+                        values_only=True)) if inventory_wb.sheetnames else []
+                finally:
+                    inventory_wb.close()
+                header = [str(cell or "").strip() for cell in grid[0]] if grid else []
+                rows = normalize_rows(
+                    [dict(zip(header, row)) for row in grid[1:]]) if header else []
+            else:
+                rows = read_inventory_csv(data.decode("utf-8-sig"))
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise ValueError(f"--import-inventory: unreadable ({exc})") from exc
+        if not rows:
+            raise ValueError("--import-inventory was supplied but contains no valid host rows")
+        loaded["import_inventory"] = rows
+
+    if args.scenario:
+        rows = _catalog(_json("scenario", args.scenario), ("scenarios",), "--scenario")
+        for i, row in enumerate(rows):
+            failures = row.get("failures")
+            if not isinstance(failures, list) or not failures:
+                raise ValueError(f"--scenario entry {i} has no non-empty failures list")
+        loaded["scenario"] = rows
+
+    if args.path_intents:
+        rows = _catalog(_json("path_intents", args.path_intents),
+                        ("assertions", "intents"), "--path-intents")
+        ids = []
+        for i, row in enumerate(rows):
+            missing = [k for k in ("id", "src", "dst", "expect") if not row.get(k)]
+            if missing:
+                raise ValueError(f"--path-intents entry {i} is missing {', '.join(missing)}")
+            expect = str(row["expect"]).strip()
+            if expect.upper() not in ("REACHES", "ISOLATED") and not \
+                    expect.lower().replace(" ", "").startswith("status=="):
+                raise ValueError(f"--path-intents entry {i} has unsupported expect value")
+            ids.append(str(row["id"]))
+        if len(set(ids)) != len(ids):
+            raise ValueError("--path-intents IDs must be unique")
+        loaded["path_intents"] = rows
+
+    if args.assert_pack:
+        raw = _json("assert_pack", args.assert_pack)
+        if isinstance(raw, list):
+            pack = {"assertions": raw}
+        elif isinstance(raw, dict):
+            pack = raw
+        else:
+            raise ValueError("--assert-pack must be a JSON object or assertion list")
+
+        ordinary = pack.get("assertions", [])
+        if isinstance(ordinary, dict):
+            ordinary = [ordinary]
+        if not isinstance(ordinary, list):
+            raise ValueError("--assert-pack assertions must be a list or object")
+        object_rows = pack.get("for_each", [])
+        if isinstance(object_rows, dict):
+            object_rows = [object_rows]
+        if not isinstance(object_rows, list):
+            raise ValueError("--assert-pack for_each must be a list or object")
+        if not ordinary and not object_rows:
+            raise ValueError("--assert-pack must contain at least one assertion")
+
+        ids = []
+        field_ops = {"required", "prohibited", "min", "max", "eq", "neq", "regex", "in"}
+
+        def _validate_object_assertion(row: dict, label: str) -> None:
+            path = row.get("for_each") or row.get("collection")
+            if isinstance(path, dict):
+                path = path.get("subject") or path.get("collection")
+            if not isinstance(path, str) or not path.strip():
+                raise ValueError(f"{label} requires a non-empty for_each/collection path")
+            rules = row.get("field_rules", [])
+            if not isinstance(rules, list):
+                raise ValueError(f"{label} field_rules must be a list")
+            for j, rule in enumerate(rules):
+                if not isinstance(rule, dict):
+                    raise ValueError(f"{label} field_rules entry {j} must be an object")
+                if not isinstance(rule.get("field"), str) or not rule["field"].strip():
+                    raise ValueError(f"{label} field_rules entry {j} requires a field")
+                if str(rule.get("op") or "").strip() not in field_ops:
+                    raise ValueError(f"{label} field_rules entry {j} has an unsupported op")
+            unique_by = row.get("unique_by")
+            if unique_by is not None and (
+                    not isinstance(unique_by, str) or not unique_by.strip()):
+                raise ValueError(f"{label} unique_by must be a non-empty field name")
+            if not rules and not unique_by:
+                raise ValueError(f"{label} requires field_rules and/or unique_by")
+
+        for i, row in enumerate(ordinary):
+            label = f"--assert-pack assertions entry {i}"
+            if not isinstance(row, dict):
+                raise ValueError(f"{label} must be an object")
+            if not row.get("id"):
+                raise ValueError(f"{label} requires a non-empty id")
+            if row.get("for_each") or row.get("collection"):
+                _validate_object_assertion(row, label)
+            else:
+                if not row.get("subject"):
+                    raise ValueError(f"{label} requires a non-empty subject")
+                groups = [row.get(name) for name in ("all_of", "any_of") if row.get(name)]
+                if not groups:
+                    raise ValueError(f"{label} has no all_of/any_of rules")
+                if any(not isinstance(group, list) or
+                       any(not isinstance(rule, dict) for rule in group)
+                       for group in groups):
+                    raise ValueError(f"{label} all_of/any_of rules must be lists of objects")
+            ids.append(str(row["id"]))
+        for i, row in enumerate(object_rows):
+            label = f"--assert-pack for_each entry {i}"
+            if not isinstance(row, dict):
+                raise ValueError(f"{label} must be an object")
+            if not row.get("id"):
+                raise ValueError(f"{label} requires a non-empty id")
+            _validate_object_assertion(row, label)
+            ids.append(str(row["id"]))
+        if len(set(ids)) != len(ids):
+            raise ValueError("--assert-pack IDs must be unique")
+        # Preserve the complete grammar. In particular, top-level ``for_each`` entries and
+        # per-object constraints must reach assertions.evaluate_pack unchanged.
+        loaded["assert_pack"] = pack
+
+    if bool(args.flow_src) != bool(args.flow_dst):
+        raise ValueError("--flow-src and --flow-dst must be supplied together")
+    return loaded
 
 
 # =============================================================================
@@ -2055,6 +2718,11 @@ def main():
     # record, which is a worse failure than the missing one this change fixes. Placed before the
     # --compare/--trend early returns so every path that can reach build_run_manifest starts clean.
     gate_reset_verdicts()
+    del _PHASE_TIMINGS[:]
+    try:
+        _validated_inputs = _preflight_optional_inputs(args)
+    except ValueError as exc:
+        ap.error(str(exc))
 
     if args.debug_arp:
         logger.setLevel(logging.DEBUG)
@@ -2069,39 +2737,53 @@ def main():
     if args.compare:
         old_p, new_p = args.compare
         try:                                              # NEW-V3.23.1: clean message, not a raw traceback
-            with open(old_p, encoding="utf-8") as f: old_snap = json.load(f)
-            with open(new_p, encoding="utf-8") as f: new_snap = json.load(f)
+            old_bytes, old_record, old_binding = _bind_input(
+                old_p, role="compare_before")
+            new_bytes, new_record, new_binding = _bind_input(
+                new_p, role="compare_after")
+            old_snap = json.loads(old_bytes.decode("utf-8"))
+            new_snap = json.loads(new_bytes.decode("utf-8"))
         except FileNotFoundError as e:
             ap.error(f"--compare: snapshot file not found: {e.filename}")
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        except (OSError, RuntimeError, json.JSONDecodeError, UnicodeDecodeError) as e:
             ap.error(f"--compare: could not parse snapshot JSON ({e})")
         # P3-E2: refuse to diff across a schema/script_version change unless explicitly allowed -- a
         # cross-schema diff can misreport a schema difference as a real change (never emit it silently).
         _sc_status, _sc_msg = schema_compat_status([old_snap, new_snap], labels=[old_p, new_p])
+        _sc_binding = {
+            "status": _sc_status,
+            "message": _sc_msg,
+            "override": bool(args.allow_schema_mismatch),
+        }
+        _source_binding = {
+            "before": old_record["sha256"],
+            "after": new_record["sha256"],
+        }
         if _sc_status == "mismatch" and not args.allow_schema_mismatch:
             ap.error(f"--compare: {_sc_msg}. Re-run with --allow-schema-mismatch to diff across schema "
                      f"versions anyway (both versions are recorded in the certificate provenance).")
         if _sc_status in ("mismatch", "unverifiable"):
             logger.warning(f"  [schema] {_sc_msg}"
                            + (" -- proceeding under --allow-schema-mismatch" if _sc_status == "mismatch" else ""))
+        try:
+            _require_current_bindings(
+                [old_binding, new_binding, *(_validated_inputs.get("bindings") or [])],
+                "--compare input")
+        except ValueError as exc:
+            ap.error(str(exc))
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         diff_out = args.output or f"Migration_Diff_{stamp}.xlsx"
         os.makedirs(os.path.dirname(os.path.abspath(diff_out)) or ".", exist_ok=True)  # FIX-V3.23.103: same missing-output-dir guard
         # roadmap C1: the Pre-Change Validation Certificate — the fib differential packaged as the PPDIOO
         # gate artifact (<output>.precert.json + a 'Pre-Change Certificate' sheet). An optional
         # --path-intents catalog is re-validated across the pair and folded into the certificate.
-        _intents = None
-        if args.path_intents:
-            try:
-                with open(args.path_intents, encoding="utf-8") as _pf:
-                    _intents = json.load(_pf)
-            except Exception as e:
-                _intents = None
-                logger.warning(f"  --path-intents not read ({e}); certificate proceeds without intents.")
-            else:
-                _intents = _intents if isinstance(_intents, list) else (_intents.get("assertions") or _intents.get("intents") or [])
-        cert = compute_precert(old_snap, new_snap, path_intents=_intents)
-        write_diff_workbook(old_snap, new_snap, diff_out, precert=cert)
+        _intents = _validated_inputs.get("path_intents")
+        cert = compute_precert(
+            old_snap, new_snap, path_intents=_intents,
+            source_hashes=_source_binding, schema_status=_sc_binding)
+        write_diff_workbook(
+            old_snap, new_snap, diff_out, precert=cert,
+            source_binding=_source_binding, schema_status=_sc_binding)
         precert_path = os.path.splitext(os.path.abspath(diff_out))[0] + ".precert.json"
         write_json_file(precert_path, cert)
         logger.info(f"[OK] Saved diff workbook: {os.path.abspath(diff_out)}")
@@ -2112,27 +2794,44 @@ def main():
     if args.trend:
         if len(args.trend) < 2:
             ap.error("--trend: need at least two snapshot JSON files (oldest first).")
-        snaps = []
+        snaps, trend_records, trend_bindings = [], [], []
         try:                                              # clean message, not a raw traceback
-            for p in args.trend:
-                with open(p, encoding="utf-8") as f:
-                    snaps.append(json.load(f))
+            for index, p in enumerate(args.trend):
+                data, record, binding = _bind_input(
+                    p, role=f"trend_snapshot_{index + 1}")
+                snaps.append(json.loads(data.decode("utf-8")))
+                trend_records.append(record)
+                trend_bindings.append(binding)
         except FileNotFoundError as e:
             ap.error(f"--trend: snapshot file not found: {e.filename}")
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        except (OSError, RuntimeError, json.JSONDecodeError, UnicodeDecodeError) as e:
             ap.error(f"--trend: could not parse snapshot JSON ({e})")
         # P3-E2: same schema/script_version gate for the campaign series (an engine upgrade mid-campaign
         # would otherwise trend across incompatible schemas silently).
         _sc_status, _sc_msg = schema_compat_status(snaps, labels=list(args.trend))
+        _sc_binding = {
+            "status": _sc_status,
+            "message": _sc_msg,
+            "override": bool(args.allow_schema_mismatch),
+        }
+        _source_bindings = [record["sha256"] for record in trend_records]
         if _sc_status == "mismatch" and not args.allow_schema_mismatch:
             ap.error(f"--trend: {_sc_msg}. Re-run with --allow-schema-mismatch to trend across schema versions.")
         if _sc_status in ("mismatch", "unverifiable"):
             logger.warning(f"  [schema] {_sc_msg}"
                            + (" -- proceeding under --allow-schema-mismatch" if _sc_status == "mismatch" else ""))
+        try:
+            _require_current_bindings(
+                [*trend_bindings, *(_validated_inputs.get("bindings") or [])],
+                "--trend input")
+        except ValueError as exc:
+            ap.error(str(exc))
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         trend_out = args.output or f"Migration_Trend_{stamp}.xlsx"
         os.makedirs(os.path.dirname(os.path.abspath(trend_out)) or ".", exist_ok=True)
-        write_campaign_workbook(snaps, trend_out)
+        write_campaign_workbook(
+            snaps, trend_out, source_bindings=_source_bindings,
+            schema_status=_sc_binding)
         logger.info(f"[OK] Saved campaign trend workbook: {os.path.abspath(trend_out)}")
         return
 
@@ -2142,7 +2841,13 @@ def main():
     if not os.path.exists(args.template):
         raise FileNotFoundError(f"Template not found: {args.template}")
 
-    devices = load_devices(args.devices_file, allow_prompt=not args.no_collect)  # FIX-V3.23.177: --no-collect must never block on a TTY password prompt
+    devices_bytes, devices_record, devices_binding = _bind_input(
+        args.devices_file, role="devices_file")
+    template_bytes, template_record, template_binding = _bind_input(
+        args.template, role="template")
+    devices = load_devices(
+        args.devices_file, allow_prompt=not args.no_collect,
+        _bound_bytes=devices_bytes)  # --no-collect must never block on a TTY password prompt
     stamp   = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_xlsx = args.output or DEFAULT_OUTPUT_FILE.format(stamp)
 
@@ -2154,8 +2859,14 @@ def main():
     # wb.save() with FileNotFoundError AFTER all the heavy compute, wasting the whole run.
     # One guard here covers every output. No behaviour change when the directory exists.
     os.makedirs(os.path.dirname(os.path.abspath(out_xlsx)) or ".", exist_ok=True)
+    _input_records = list(_validated_inputs.get("records") or [])
+    _input_records.extend([devices_record, template_record])
+    _input_bindings = list(_validated_inputs.get("bindings") or [])
+    _input_bindings.extend([devices_binding, template_binding])
+    _start_run_custody(out_xlsx, _input_records, _input_bindings)
+    _RUN_CUSTODY["generated_at"] = datetime.now().isoformat()
 
-    wb = load_workbook(args.template)
+    wb = load_workbook(io.BytesIO(template_bytes))
     from cisco_toolkit.excel import harden_workbook
     harden_workbook(wb)   # every sheet sanitizes control chars -> one device-text field can't abort the workbook
     ws = wb.active
@@ -2190,6 +2901,11 @@ def main():
     })
 
     root_dir = args.collection_dir or COLLECTION_DIR.format(stamp)
+    if args.no_collect:
+        if not args.collection_dir:
+            ap.error("--no-collect requires --collection-dir; refusing an empty synthetic evidence set")
+        if not os.path.isdir(root_dir):
+            ap.error("--collection-dir does not exist; refusing to create an empty evidence source")
     os.makedirs(root_dir, exist_ok=True)
     logger.info(f"[OK] Collection directory: {root_dir}")
 
@@ -2260,7 +2976,6 @@ def main():
     # Fresh zero-parse ledger per run (webapp ingest reuses this pipeline in-process, so
     # the ledger must never carry a previous run's events into this snapshot).
     reset_parse_ledger()
-    del _PHASE_TIMINGS[:]        # fresh perf ledger per run, same reasoning (Tier-2 #11)
     workers = max(1, min(args.workers, len(devices)))
     logger.info(f"\n[Phase 1] Collecting {len(devices)} device(s) with {workers} parallel worker(s) ...")
     all_cmd_to_files: Dict[str, Dict[str,str]] = {}
@@ -2291,6 +3006,33 @@ def main():
                    f"-- --redact protects the DELIVERABLES only; once analysis is final, scrub the "
                    f"raw captures in place with --redact-collection (kept, never auto-deleted -- "
                    f"it is the --compare/--trend source).")
+
+    # Bind the evidence BEFORE the first parser (global ARP below).  Finalization re-hashes the
+    # same finite path set and refuses success if any byte changed while analysis was in flight.
+    try:
+        raw_bindings: List[dict] = []
+        _RUN_CUSTODY["evidence"]["analysis_input"] = _evidence_records(
+            all_cmd_to_files, root_dir, _bindings_out=raw_bindings)
+        _RUN_CUSTODY["raw_evidence_bindings"] = raw_bindings
+        raw_input_custody.bind_files(raw_bindings)
+        rebound_meta = []
+        for hostname, platform, cmd_to_file in all_devices_meta:
+            paths = list((cmd_to_file or {}).values())
+            detected = platform
+            if paths:
+                device_dir = os.path.dirname(os.path.abspath(paths[0]))
+                detected = detect_platform_from_files(device_dir)
+            if detected != platform:
+                logger.info(
+                    "  [%s] Platform corrected '%s' -> '%s' from custodied output",
+                    hostname, platform, detected)
+            rebound_meta.append((hostname, detected, cmd_to_file))
+        all_devices_meta = rebound_meta
+    except Exception as exc:
+        _record_mandatory_failure(
+            "Raw evidence custody",
+            f"pre-analysis binding failed ({type(exc).__name__}: {exc})")
+        logger.error("  [CUSTODY] Could not bind raw evidence before analysis: %s", exc)
 
     # Phase 2: Global ARP
     logger.info("\n[Phase 2] Building global ARP table ...")
@@ -2710,12 +3452,9 @@ def main():
     # can join it; its workbook sheet is still written at the original phase slot below.
     _golden_lines = None
     if args.golden_config:
-        try:
-            with open(args.golden_config, encoding="utf-8") as f:
-                _golden_lines = f.read().splitlines()
-            logger.info(f"[Phase 30d] Golden-config baseline: {len(_golden_lines)} line(s) from {args.golden_config}")
-        except OSError as e:
-            logger.warning(f"  --golden-config not read ({e}); falling back to the auto-derived majority baseline.")
+        _golden_lines = _validated_inputs["golden_config"]
+        logger.info(f"[Phase 30d] Golden-config baseline: {len(_golden_lines)} line(s) "
+                    f"from {args.golden_config}")
     golden_drift = _run_phase("Golden-config drift", compute_golden_drift,
                               all_run_configs, _golden_lines, _default={})
     # roadmap I2: decompose the golden-config drift per policy FEATURE (aaa/ntp/snmp/...). Pure projection of golden_drift.
@@ -2792,7 +3531,7 @@ def main():
     # roadmap B: opt-in external source-of-truth reconcile (--import-inventory FILE). Off by default -> golden-safe.
     external_reconcile = None
     if args.import_inventory:
-        _declared = read_inventory_file(args.import_inventory)
+        _declared = _validated_inputs["import_inventory"]
         external_reconcile = reconcile_external(
             {"lifecycle_risk": lifecycle_risk, "health_scores": health_scores,
              "collection_completeness": collection_completeness}, _declared)
@@ -2819,25 +3558,13 @@ def main():
     # roadmap G4: opt-in failure-injection what-if (--scenario FILE). Golden-safe (off by default).
     whatif_result = None
     if args.scenario:
-        try:
-            with open(args.scenario, encoding="utf-8") as _sf:
-                _scen = json.load(_sf)
-        except Exception as e:
-            _scen = []
-            logger.warning(f"  --scenario not read ({e}); skipping what-if.")
-        _scen = _scen if isinstance(_scen, list) else (_scen.get("scenarios") or [])
+        _scen = _validated_inputs["scenario"]
         whatif_result = run_scenarios({"routes": all_routes}, _scen)
         _run_phase("Failure What-If sheet", write_whatif_sheet, wb, whatif_result)
     # roadmap G3: opt-in named path/segmentation intents (--path-intents FILE). Golden-safe.
     path_intents = None
     if args.path_intents:
-        try:
-            with open(args.path_intents, encoding="utf-8") as _pf:
-                _intents = json.load(_pf)
-        except Exception as e:
-            _intents = []
-            logger.warning(f"  --path-intents not read ({e}); skipping.")
-        _intents = _intents if isinstance(_intents, list) else (_intents.get("assertions") or _intents.get("intents") or [])
+        _intents = _validated_inputs["path_intents"]
         path_intents = evaluate_path_assertions({"routes": all_routes}, _intents)
         _run_phase("Path Assertions sheet", write_path_intents_sheet, wb, path_intents)
 
@@ -2997,17 +3724,10 @@ def main():
 
     if getattr(args, "redact", False):    # final --redact net: scrub IP/MAC/secrets from computed + raw-config
         _run_phase("redact workbook cells", redact_workbook_cells, wb)   # sheets the dataclass pass can't reach
-    wb.save(out_xlsx)
-    logger.info(f"\n[OK] Saved: {out_xlsx}")
-    logger.info(f"[OK] Log:   {LOG_FILE}")
 
     # Phase 21: Topology diagram files + state snapshot (NEW-V15). abspath() guarantees a
     # directory component so the diagram dir and snapshot path are always well-formed.
     diagram_dir = os.path.dirname(os.path.abspath(out_xlsx)) or "."
-    try:
-        write_topology_diagram(all_interfaces, diagram_dir)
-    except Exception as e:
-        logger.warning(f"  Topology diagram write failed: {e}")
     snap_path = os.path.splitext(os.path.abspath(out_xlsx))[0] + ".snapshot.json"
     snap_dict = snapshot_state(all_interfaces, all_device_physical)  # CHANGED-V3.17: capture for reuse (JSON + HTML)
     snap_dict["collected_at"] = collected_at                         # provenance: evidence collection instant (vs generated_at = regen time)
@@ -3039,7 +3759,7 @@ def main():
     snap_dict["config_hygiene"] = all_config_hygiene                # NEW-V3.23.61 (undefined refs / unused structures: {host:{undefined,unused,summary}})
     snap_dict["stp_roots"] = all_stp_roots                          # NEW-V3.23.62 (per-VLAN STP root bridge: {host:{vlan:{root_priority,root_address,is_root}}})
     snap_dict["vpc"] = all_vpc                                       # NEW-V3.23.125 (vPC / MLAG status: {host:{domain_id,role,peer_status,vpcs}}) -> confirms MLAG peers in the flow simulator
-    snap_dict["fhrp_detail"] = all_fhrp_detail                       # full HSRP election/preempt/tracking detail -> _d_fhrp_resilience (first non-[HISTORY-REDACTED] coverage)
+    snap_dict["fhrp_detail"] = all_fhrp_detail                       # full HSRP election/preempt/tracking detail -> _d_fhrp_resilience (first non-Meridian coverage)
     snap_dict["overlay"] = all_overlay                               # VXLAN-EVPN overlay (NVE peers) -> _d_nve_peer_health (engine's own target fabric, was blind)
     snap_dict["copp"] = all_copp                                     # CoPP drop counters -> _d_copp_drops (control-plane policing health)
     snap_dict["mpls"] = all_mpls                                     # SP/MPLS service-plane (LDP/VPNv4/L2VPN) -> _d_mpls_ldp_health/_d_mpls_l3vpn_health/_d_mpls_l2vpn_health
@@ -3117,6 +3837,8 @@ def main():
     snap_dict["segmentation"] = segmentation                         # NEW-V3.23.118 (L3 isolation posture; reused from Phase 30d-bis2)
     snap_dict["vlan_cutover"] = vlan_cutover                         # MASTER_PLAN §4.3 (per-VLAN cutover matrix; reused from Phase 30d-bis3)
     snap_dict["executive_brief"] = executive_brief                   # NEW-V3.23.120 (cross-axis migration brief; reused from Phase 30e)
+    global _ACTIVE_INTEGRITY_SNAPSHOT
+    _ACTIVE_INTEGRITY_SNAPSHOT = snap_dict
     # Single source of truth: publish the canonical VLAN count (the same `vlan_inventory` derivation the
     # design / CRD deliverables read) into the brief's scale block, so every consumer — workbook, explorer,
     # webapp — reads ONE value instead of re-counting VLANs in JS/TS (which drifts: explorer ~176 vs 172).
@@ -3151,13 +3873,56 @@ def main():
     # shape every consumer indexes, so disclose ALONGSIDE instead: _run_phase already records ok=False
     # per phase, so publish that list and let consumers tell a crash from a clean result.
     # Golden-neutral by construction: a clean run has no failed phase, so the key is never written.
-    _failed_phases = list(dict.fromkeys(p["phase"] for p in _PHASE_TIMINGS if not p.get("ok", True)))
+    _failed_phases = _sync_failed_phases(snap_dict)
     if _failed_phases:
         logger.warning(f"  [INTEGRITY] {len(_failed_phases)} analysis phase(s) FAILED and fell back to an "
                        f"empty result that is indistinguishable from a clean one; stamping "
                        f"assessment_integrity.failed_phases so consumers do not read them as healthy: "
                        f"{_failed_phases}")
         snap_dict.setdefault("assessment_integrity", {})["failed_phases"] = _failed_phases
+
+    # Data-authority health is a first-class input to the assessment, not an installation detail.
+    # Byte integrity and source authority are distinct: OUI/port packs must chain to retained,
+    # hash-pinned primary inputs, while every represented EoL scope must cite an exact Cisco
+    # bulletin. Surface all three before deliverables and seal the honest state into run metadata.
+    try:
+        from cisco_toolkit import eoldb as _eoldb, ouidb as _ouidb, portdb as _portdb
+        _authorities = {}
+        for _name, _module, _axis in (
+                ("oui", _ouidb, "OUI registry authority"),
+                ("ports", _portdb, "Port registry authority"),
+                ("eol", _eoldb, "EoL knowledge-base authority")):
+            _health = _module.registry_health()
+            if _health.get("path"):
+                _health["path"] = os.path.basename(str(_health["path"]))
+            _authorities[_name] = _health
+            # SCOPED AUTHORITY (handoff 5.2). `authoritative` is a WHOLE-PACK claim. The port pack
+            # is deliberately mixed -- official IANA assignments plus explicitly non-authoritative
+            # curated hints and bounded multicast scopes -- so its whole-pack flag is correctly
+            # False, and gating on it failed the "Port registry authority" phase for a pack whose
+            # bytes, schema and IANA source chain had all verified. A pack is USABLE when it is
+            # intact AND its official component is source-proven; it does not need universal
+            # authority over every curated row.
+            #
+            # Both component fields fall back to `authoritative` when absent, so packs that do make
+            # a whole-pack claim (OUI carries no official_source_authoritative) are evaluated
+            # exactly as before. Freshness is subsumed by official_source_authoritative, which
+            # registry_integrity only sets when the retained source bytes verify AND satisfy the
+            # 180-day max-age / future-skew bounds.
+            _whole = _health.get("authoritative")
+            _pack_ok = (
+                bool(_health.get("integrity_verified", _whole))
+                and bool(_health.get("official_source_authoritative", _whole))
+            )
+            if not _pack_ok:
+                _record_phase_failure(
+                    _axis, str(_health.get("error") or "authoritative data pack unavailable"))
+        snap_dict["data_authorities"] = _authorities
+    except Exception as e:
+        snap_dict["data_authorities"] = {
+            "status": "unavailable", "authoritative": False,
+            "error": f"{type(e).__name__}: {e}"}
+        _record_phase_failure("Data authority health", f"{type(e).__name__}: {e}")
     snap_dict["device_dossiers"] = device_dossiers                   # NEW-V3.23.172 (per-asset compound-risk register; reused from the Phase 30d synthesis)
     # NEW-V3.23.160: the senior-engineer design review. V3.23.161: REUSES the object computed in
     # Phase 30f for the workbook sheet (one source of truth — sheet, snapshot and DOCX agree),
@@ -3168,6 +3933,7 @@ def main():
         snap_dict["flow_trace"] = flow_trace
     if args.redact:                                                  # NEW-V3.23.41
         snap_dict = redact_snapshot(snap_dict)
+        _ACTIVE_INTEGRITY_SNAPSHOT = snap_dict
         logger.info("  [redact] snapshot IPs / MACs / serials pseudonymized (--redact)")
     # NEW: the canonical CCDE-grounded target-state DESIGN BLUEPRINT (the senior-network-design-engineer
     # layer). Computed LAST, from the fully-assembled (and, under --redact, already-redacted) snap_dict, so
@@ -3175,8 +3941,7 @@ def main():
     # folds the date-relative lifecycle/EoL evidence, so it is excluded from the frozen golden like
     # executive_brief / device_dossiers; the SSOT publish is locked by tests/test_pipeline_inprocess.py.
     try:
-        from cisco_toolkit.design_advisor import load_requirements
-        _req = load_requirements(getattr(args, "requirements", "") or "")
+        _req = _validated_inputs.get("requirements") or {}
         if _req:
             snap_dict["requirements_register"] = _req                 # stored so the blueprint stays reproducible from the snapshot alone
             logger.info(f"  [design] requirements register supplied ({', '.join(sorted(_req))}) -> blueprint right-sized")
@@ -3198,6 +3963,7 @@ def main():
         snap_dict["coverage_matrix"] = compute_coverage_matrix(snap_dict)
     except Exception as e:                                            # fail-soft: never break the snapshot write
         logger.warning(f"  design_blueprint compute failed (non-fatal): {e}")
+        _record_phase_failure("Design blueprint", f"{type(e).__name__}: {e}")
     # SSOT self-check (the field-data safety net): the suite only proves SSOT-consistency on its own
     # fixtures, never on a real customer snapshot. Reconcile the published canonical facts against
     # their raw-evidence derivation NOW, on the fully-assembled snap_dict, and ONLY on drift disclose
@@ -3217,6 +3983,7 @@ def main():
             snap_dict.setdefault("assessment_integrity", {}).update(_ssot_drift)
     except Exception as e:                                            # fail-soft: a self-check must never break the write
         logger.warning(f"  SSOT self-check skipped (non-fatal): {e}")
+        _record_phase_failure("SSOT self-check", f"{type(e).__name__}: {e}")
     # J3 + J2: coverage-schema census + fact-lineage — the coverage-honesty doctrine made QUERYABLE.
     # Both are computed HERE, from the fully-assembled snap_dict (so the census sees every section and
     # the lineage reads the final canonical blocks), reusing the SSOT contract (abstention_reason /
@@ -3231,63 +3998,57 @@ def main():
         # fact_lineage) are themselves absent from the map it computed, so re-census once so the
         # published census is complete + self-consistent with the JSON it ships in (one source of truth).
         snap_dict["schema_census"] = _ssot2.compute_schema_census(snap_dict)
-        # Coverage Schema sheet: the workbook twin of the census. The workbook was saved above (the
-        # census needs the fully-assembled snap_dict, which exists only now), so add this last sheet
-        # and re-save. It carries only section names/states/counts/notes — no IP/MAC/serial — so it is
-        # share-safe under --redact without a further scrub. Fail-soft: never break the snapshot write.
+        # Coverage Schema sheet: the workbook twin of the census. It is added only after the
+        # fully-assembled snap_dict exists; the finalizer publishes the workbook after all late
+        # integrity state is synchronized. It carries only section names/states/counts/notes —
+        # no IP/MAC/serial — so it is share-safe under --redact without a further scrub.
         write_coverage_schema_sheet(wb, snap_dict["schema_census"])
-        wb.save(out_xlsx)
     except Exception as e:                                            # fail-soft: census/lineage must never break the write
         logger.warning(f"  schema-census / fact-lineage skipped (non-fatal): {e}")
+        _record_phase_failure("Schema census / fact lineage", f"{type(e).__name__}: {e}")
     # roadmap A1/H2: opt-in state-assertion check-pack (--assert-pack FILE), evaluated over the FULL snapshot
     # (coverage-honest: a subject that was not collected -> [NOT OBSERVED], excluded from the pass/fail denominator).
     if args.assert_pack:
-        try:
-            with open(args.assert_pack, encoding="utf-8") as _af:
-                _pack = json.load(_af)
-            snap_dict["state_assertions"] = evaluate_pack(snap_dict, _pack if isinstance(_pack, dict) else {"assertions": _pack})
-        except Exception as e:
-            logger.warning(f"  --assert-pack not evaluated ({e}); skipping.")
-    try:
-        write_json_file(snap_path, sparsify_interfaces(snap_dict), compact=True)   # Tier3#14 minified + #14-Phase2 sparse interfaces on disk
-        logger.info(f"[OK] Snapshot: {snap_path}  (use --compare OLD NEW for pre/post diff)")
-    except Exception as e:
-        logger.warning(f"  Snapshot write failed: {e}")
+        _assertions = _run_phase("State assertion pack", evaluate_pack, snap_dict,
+                                 _validated_inputs["assert_pack"], _default=_PHASE_FAILED)
+        if _assertions is not _PHASE_FAILED:
+            snap_dict["state_assertions"] = _assertions
+
+    # Topology is now emitted only after the canonical integrity/data-authority state exists. The
+    # writer returns the exact two files; those paths, not a directory scan, enter the run registry.
+    _emit_artifact(
+        "Topology diagrams", os.path.join(diagram_dir, "topology.mmd"), "",
+        write_topology_diagram, all_interfaces, diagram_dir,
+        _paths=[os.path.join(diagram_dir, "topology.mmd"),
+                os.path.join(diagram_dir, "topology.dot")])
 
     # Phase 22: HTML Explorer (self-contained) - NEW-V3.17. Embeds the same snap_dict the
-    # snapshot.json carries directly into a copy of blast_radius_explorer.html, so one run
-    # yields both the workbook and a ready-to-open, air-gapped topology explorer. The JSON
-    # write (above) and this HTML write are the last emits, so any future per-version
-    # enrichment of snap_dict lands in both outputs.
+    # finalizer later writes to snapshot.json into a copy of blast_radius_explorer.html, so one
+    # run yields both the workbook and a ready-to-open, air-gapped topology explorer.
     if not args.no_html:
         html_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_explorer.html"
         label = os.path.splitext(os.path.basename(out_xlsx))[0]
-        try:
-            write_html_explorer(html_out, snap_dict, label)
-        except Exception as e:
-            logger.warning(f"  HTML Explorer write failed: {e}")
+        _emit_artifact("HTML Explorer", html_out, "html",
+                       write_html_explorer, html_out, snap_dict, label)
 
     # Phase 31: Assessment & Migration Runbook (DOCX) - NEW-V3.23.93. The narrative sign-off twin of
     # the workbook, built from the SAME snap_dict (one source of truth -> every number agrees), to the
     # cisco-network-assessment 12-section, evidence-disciplined standard. Optional (python-docx); a
-    # missing library is a warning, never a crash (the workbook / explorer / JSON already saved).
+    # missing library is a recorded failed phase, never an unreported crash.
     if not args.no_docx:
         docx_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_runbook.docx"
         label = os.path.splitext(os.path.basename(out_xlsx))[0]
-        try:
-            write_runbook_docx(docx_out, snap_dict, label, flow_paths=flow_paths)
-        except Exception as e:
-            logger.warning(f"  Runbook (DOCX) write failed: {e}")
+        _emit_artifact("Runbook DOCX", docx_out, "docx",
+                       write_runbook_docx, docx_out, snap_dict, label,
+                       flow_paths=flow_paths)
 
     # NEW-V3.23.144: Executive presentation deck (PPTX) - the stakeholder twin of the workbook, rendered
     # from the same snapshot. Optional python-pptx; a missing library is a warning, never a crash.
     if not args.no_pptx:
         pptx_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_executive_deck.pptx"
         label = os.path.splitext(os.path.basename(out_xlsx))[0]
-        try:
-            write_executive_deck_pptx(pptx_out, snap_dict, label)
-        except Exception as e:
-            logger.warning(f"  Executive deck (PPTX) write failed: {e}")
+        _emit_artifact("Executive deck PPTX", pptx_out, "pptx",
+                       write_executive_deck_pptx, pptx_out, snap_dict, label)
 
     # Phase 33: As-Built Network Design Document (HLD/LLD, DOCX) - NEW-V3.23.148. The Design-phase twin
     # of the workbook: reconstructs the current (as-built) design + target-state recommendations from the
@@ -3309,17 +4070,15 @@ def main():
         if design_gate:
             design_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_design.docx"
             label = os.path.splitext(os.path.basename(out_xlsx))[0]
-            try:
-                write_design_doc_docx(design_out, snap_dict, label)
-            except Exception as e:
-                logger.warning(f"  Design document (DOCX) write failed: {e}")
+            _emit_artifact("Design document DOCX", design_out, "docx",
+                           write_design_doc_docx, design_out, snap_dict, label)
 
     # Phase 34: per-wave Method of Procedure (MOP, DOCX) - NEW-V3.23.149. The Implement-phase cutover
     # template, one section per migration wave, reusing the validation plan as the post-cutover checks.
     # Optional python-docx; a missing library is a warning, never a crash.
     # P0-3/DEC-003: the MOP follows an APPROVED LLD + a captured current-state baseline (PPDIOO
     # gate; mop-change-author charter). Same refusal/override/brownfield semantics as the design
-    # gate above — the refusal skips ONLY this deliverable; the workbook/snapshot already saved.
+    # gate above — the refusal skips ONLY this deliverable and is sealed into the current run.
     if not args.no_mop:
         mop_gate = gate_enforce("mop", override_reason=args.override_gate,
                                 root=args.gate_root, engagement=args.engagement)
@@ -3327,10 +4086,8 @@ def main():
         if mop_gate:
             mop_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_mop.docx"
             label = os.path.splitext(os.path.basename(out_xlsx))[0]
-            try:
-                write_mop_docx(mop_out, snap_dict, label)
-            except Exception as e:
-                logger.warning(f"  MOP (DOCX) write failed: {e}")
+            _emit_artifact("MOP DOCX", mop_out, "docx",
+                           write_mop_docx, mop_out, snap_dict, label)
 
     # Phase 35: Customer Requirements Document (CRD, DOCX) - NEW-V3.23.156. The Plan-phase
     # requirements-capture instrument: evidence-primed current-environment summary + REQ-ID capture
@@ -3338,10 +4095,8 @@ def main():
     if not args.no_crd:
         crd_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_crd.docx"
         label = os.path.splitext(os.path.basename(out_xlsx))[0]
-        try:
-            write_crd_docx(crd_out, snap_dict, label)
-        except Exception as e:
-            logger.warning(f"  CRD (DOCX) write failed: {e}")
+        _emit_artifact("CRD DOCX", crd_out, "docx",
+                       write_crd_docx, crd_out, snap_dict, label)
 
     # Phase 36: Engagement Workflow & Plan of Record (DOCX) - NEW-V3.23.157. The engagement-management
     # layer over the whole document set: evidence-led verdict, phase tracker with gates, next-action
@@ -3350,10 +4105,8 @@ def main():
     if not args.no_engagement:
         eng_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_engagement.docx"
         label = os.path.splitext(os.path.basename(out_xlsx))[0]
-        try:
-            write_engagement_docx(eng_out, snap_dict, label)
-        except Exception as e:
-            logger.warning(f"  Engagement workflow (DOCX) write failed: {e}")
+        _emit_artifact("Engagement workflow DOCX", eng_out, "docx",
+                       write_engagement_docx, eng_out, snap_dict, label)
 
     # Phase 37: Architecture Review & Conformance Report (DOCX) - NEW-V3.23.160. The senior-engineer
     # design review: 8-domain leading-practice conformance scorecard + availability analysis rendered
@@ -3362,10 +4115,8 @@ def main():
     if not args.no_archreview:
         ar_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_archreview.docx"
         label = os.path.splitext(os.path.basename(out_xlsx))[0]
-        try:
-            write_archreview_docx(ar_out, snap_dict, label)
-        except Exception as e:
-            logger.warning(f"  Architecture review (DOCX) write failed: {e}")
+        _emit_artifact("Architecture review DOCX", ar_out, "docx",
+                       write_archreview_docx, ar_out, snap_dict, label)
 
     # Phase 38: Operations Handbook (DOCX) - NEW-V3.23.168. The PPDIOO Operate-phase deliverable:
     # the Day-2 handbook whose monitoring/capacity baselines, drift standard and software-governance
@@ -3375,10 +4126,8 @@ def main():
     if not args.no_opshandbook:
         oh_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_ops_handbook.docx"
         label = os.path.splitext(os.path.basename(out_xlsx))[0]
-        try:
-            write_ops_handbook_docx(oh_out, snap_dict, label)
-        except Exception as e:
-            logger.warning(f"  Operations handbook (DOCX) write failed: {e}")
+        _emit_artifact("Operations handbook DOCX", oh_out, "docx",
+                       write_ops_handbook_docx, oh_out, snap_dict, label)
 
     # Pipeline stage 5 (Plan-A #15 strangler): the leaf finalize phases. Reuse the ONE analyze-stage
     # carrier (_actx, unconditionally built above) instead of a second fresh AnalysisContext -- the
@@ -3390,7 +4139,14 @@ def main():
     _actx.all_devices_meta = all_devices_meta
     _actx.workers = workers
     _actx.snap_dict = snap_dict
-    _stage_finalize(_actx)
+    _actx.snap_path = snap_path
+    _actx.all_cmd_to_files = all_cmd_to_files
+    _actx.wb = wb
+    finalization = _stage_finalize(_actx)
+    if not finalization.complete:
+        # Mandatory production/custody failure is a broken run, never a successful gate refusal.
+        # Keep code 2 for the governance-only refusal below; code 1 means artifacts are incomplete.
+        return finalization.exit_code
 
     # Exit disposition. A gate refusal is a CORRECT run that withheld a document, so the default
     # stays 0 -- every wrapper here reads non-zero as "the run failed" (webapp/backend/ingest.py
@@ -3419,156 +4175,400 @@ def main():
     return 0
 
 
-def _stage_finalize(ctx: "AnalysisContext") -> None:
-    """Pipeline stage 5 (Plan-A #15 strangler): the leaf finalize phases -- run-manifest
-    chain-of-custody (39), opt-in raw-capture scrub (40), perf-timings sidecar (41), closing gate
-    summary (42 -- LAST, so a withheld deliverable is the final thing the operator sees). A true LEAF:
-    nothing downstream reads its outputs, which is why it is the safest first extraction. Reads the
-    context's out_xlsx / snap_dict / root_dir / args / all_devices_meta / workers + the module-global
-    _PHASE_TIMINGS. The body was byte-identical to the inline block it replaced until the gate-audit
-    change, which reworked the manifest write's error arm and appended the closing gate summary."""
+def _stage_finalize(ctx: "AnalysisContext") -> FinalizationResult:
+    """Finalize one run in custody order: evidence -> redaction -> artifacts -> timings -> seal.
+
+    Only paths registered by a writer invocation in this run can be sealed. Existing same-stem files
+    are preserved but explicitly excluded. Mandatory failures return a structured non-zero result
+    and publish an atomic same-stem ``.incomplete.json`` marker; only a fully self-verified seal may
+    clear an older marker and emit the completion receipt.
+    """
+    global _ACTIVE_INTEGRITY_SNAPSHOT
     out_xlsx, snap_dict, root_dir, args = ctx.out_xlsx, ctx.snap_dict, ctx.root_dir, ctx.args
     all_devices_meta, workers = ctx.all_devices_meta, ctx.workers
+    base = os.path.splitext(os.path.abspath(out_xlsx))[0]
+    if _RUN_CUSTODY.get("base") != base or _RUN_CUSTODY.get("finalized"):
+        _start_run_custody(out_xlsx)
+        _RUN_CUSTODY["generated_at"] = datetime.now().isoformat()
+    _ACTIVE_INTEGRITY_SNAPSHOT = snap_dict
+    _sync_mandatory_failures(snap_dict)
 
-    # Phase 39: sealed run-manifest chain-of-custody (roadmap D2 + J4). The offline, deterministic answer to a
-    # GAIT-style audit trail: a hash-chained ledger of the pipeline stages + per-artifact sha256 + the
-    # coverage-honest abstention ledger, sealed by chain_root. LAST emit so it hashes every produced artifact.
-    # Observed, never re-derived: the closing gate summary below MUST NOT claim the seal from the
-    # manifest file merely EXISTING. write_json_file leaves the PREVIOUS manifest intact when it
-    # fails, so a re-run to the same --output whose seal failed leaves an earlier run's manifest on
-    # disk -- and an os.path.isfile() check then reported "Sealed" while pointing the operator at a
-    # manifest that can carry the OPPOSITE verdict. Reproduced end-to-end: an approved run followed
-    # by a revoked run whose manifest write failed ended on "Sealed in the run manifest's 'gate'
-    # step" three lines below "manifest write FAILED", with proceed=true still on disk for both
-    # deliverables this run withheld. This is the repo's "existence != delivery" class.
-    _manifest_sealed = False
+    input_errors = _input_binding_errors(_RUN_CUSTODY.get("input_bindings") or [])
+    if input_errors:
+        _record_mandatory_failure("Input custody", "; ".join(input_errors[:8]))
+        logger.error("  [CUSTODY] Parsed input changed before publication: %s",
+                     "; ".join(input_errors[:8]))
+
+    raw_read_failures = raw_input_custody.failures()
+    if raw_read_failures:
+        detail = "parser read outside the pre-analysis binding; " + "; ".join(
+            f"{row['name']}: {row['reason']}" for row in raw_read_failures[:8])
+        _record_mandatory_failure("Raw evidence custody", detail)
+        logger.error(
+            "  [CUSTODY] One or more parsers encountered raw bytes outside the "
+            "pre-analysis binding: %s", detail)
+
+    all_cmd_to_files = getattr(ctx, "all_cmd_to_files", {}) or {}
+    before_redaction = None
     try:
-        _run_manifest = build_run_manifest(out_xlsx, snap_dict)
-        _manifest_path = os.path.splitext(os.path.abspath(out_xlsx))[0] + ".run_manifest.json"
-        write_json_file(_manifest_path, _run_manifest)
-        _manifest_sealed = True
-        logger.info(f"[OK] Run manifest (chain-of-custody): {_manifest_path}  "
-                    f"(chain_root {str(_run_manifest.get('chain_root', ''))[:12]}…, "
-                    f"{len(_run_manifest.get('artifacts') or [])} artifact(s))")
-    except Exception as e:
-        # A lost manifest is normally cosmetic; when this run reached a gate verdict it is evidence,
-        # so escalate rather than warn. What it is NOT is the only record: a refusal over missing
-        # approvals appends a durable `refuse` row to the gate ledger (gate_state's audit array),
-        # which is the cross-run owner the manifest only caches. Saying "the only durable record is
-        # now lost" while that row sits in the ledger this same run wrote is a false alarm -- it
-        # would send an auditor hunting for evidence that is exactly where it should be.
-        from cisco_toolkit import gate_state as _gs
-        _v = _gs.verdicts()
-        if _v:
-            _in_ledger = [v for v in _v if v.get("recorded")]
-            _only_here = [v for v in _v if not v.get("recorded")]
-            _where = ("; the gate ledger still holds the durable row(s) for %s"
-                      % ", ".join(v["generator"] for v in _in_ledger) if _in_ledger else "")
-            _lost = ("; NOTHING durable was recorded for %s -- the [GATE] log lines above are the "
-                     "only trace" % ", ".join(v["generator"] for v in _only_here)) if _only_here else ""
-            logger.error(f"  Run manifest write FAILED and this run has gate verdicts "
-                         f"{[v['verdict'] for v in _v]} -- the tamper-evident per-run seal of them "
-                         f"is lost{_where}{_lost} (non-fatal to the run): {e}")
-        else:
-            logger.warning(f"  Run manifest write failed (non-fatal): {e}")
-
-    # Phase 40: opt-in raw-capture secret scrub (Plan A / Tier-1 #5). Deliberately the VERY
-    # last step: every deliverable above was built from the ORIGINAL captures, and the sealed
-    # manifest is already written. Secret VALUES only — the dir stays analyzable/--compare-able.
-    if getattr(args, "redact_collection", False):
-        try:
-            _scanned, _changed = redact_collection_dir(root_dir)
-            logger.info(f"[OK] redact-collection: scrubbed secret values in {_changed} of "
-                        f"{_scanned} raw capture file(s) under {root_dir} (in place, idempotent; "
-                        f"IPs/hostnames kept)")
-        except Exception as e:
-            logger.warning(f"  redact-collection failed (non-fatal; raw dir unchanged): {e}")
-
-    # Phase 41: perf sidecar (Plan A / Tier-2 #11 — the measure-first harness). A SEPARATE
-    # .phase_timings.json next to the workbook, chronological, golden-neutral (never a
-    # snapshot key; written after the manifest seal like the Phase-40 scrub). Sweep runner:
-    # `python tests/perf_scale.py 100 300 600 1000`.
-    try:
-        _pt_path = os.path.splitext(os.path.abspath(out_xlsx))[0] + ".phase_timings.json"
-        _pt = {"n_devices": len(all_devices_meta), "workers": workers,
-               "total_seconds": round(sum(p["seconds"] for p in _PHASE_TIMINGS), 3),
-               "phases": list(_PHASE_TIMINGS)}
-        write_json_file(_pt_path, _pt)
-        _slowest = max(_PHASE_TIMINGS, key=lambda p: p["seconds"], default={"phase": "-", "seconds": 0})
-        logger.info(f"[OK] Phase timings: {_pt_path}  ({len(_PHASE_TIMINGS)} timed phase(s), "
-                    f"slowest: {_slowest['phase']} {_slowest['seconds']}s)")
-    except Exception as e:
-        logger.warning(f"  phase-timings write failed (non-fatal): {e}")
-
-    # Phase 42: closing gate summary. Every phase above ends in "[OK] ..." whether or not a gate
-    # refused, so a run that produced NEITHER the design nor the MOP still signed off with five
-    # consecutive [OK] lines -- "not observed" reading as healthy, on the last thing the operator
-    # sees. The per-verdict ERROR is emitted thousands of lines earlier (a 303-device run prints
-    # ~4,000). Restate the refusals LAST, at ERROR, naming the deliverables that were withheld.
-    # Silent when nothing was refused: a summary that always prints is one nobody reads.
-    try:
-        from cisco_toolkit import gate_state as _gs
-        _refused = [v for v in _gs.verdicts() if v.get("proceed") is False]
-        if _refused:
-            # THIS run's seal outcome, threaded from the write itself -- never os.path.isfile(). A
-            # stale manifest from an earlier run to the same --output satisfies an existence check
-            # while carrying the OPPOSITE verdict, which made the operator's LAST line contradict
-            # the failure logged three lines above it. See the comment at the manifest write.
-            _sealed = _manifest_sealed
-            _stale = (not _sealed) and os.path.isfile(
-                os.path.splitext(os.path.abspath(out_xlsx))[0] + ".run_manifest.json")
-            # Remediation is per-STATUS, not one-size-fits-all, and not collapsed to the WORST
-            # status either: a run can withhold the design over a missing approval (fixable by
-            # `approve`) and the MOP over an unreadable ledger (fixable only by repairing the file).
-            # Advice that names one and not the other is unactionable for whichever it dropped, on
-            # the last line the operator reads.
-            _fix_for = {
-                "pending": "record the approval ('python -m cisco_toolkit.gate_state approve "
-                           "<gate>') or re-run with --override-gate \"<reason>\" (audited)",
-                "bad_root": "fix --gate-root -- it does not point at an existing directory, so no "
-                            "ledger was located (NOT overridable: an override is consent to skip a "
-                            "KNOWN gate)",
-                "unreadable": "repair or remove the gate ledger -- it exists but could not be "
-                              "parsed, and it is deliberately never rewritten so the corruption "
-                              "stays as evidence (NOT overridable)",
-                "ownership_mismatch": "this ledger governs a DIFFERENT engagement -- point "
-                                      "--gate-root at the right one, or correct --engagement (NOT "
-                                      "overridable: no gate for this engagement was located)",
-                "ownership_unbound": "bind the ledger to this engagement once ('python -m "
-                                     "cisco_toolkit.gate_state bind <ID>') so the declaration can "
-                                     "be verified (NOT overridable)",
-            }
-            _statuses = sorted({str(v.get("verdict")) for v in _refused})
-            _how = " ".join(f"[{s}] {_fix_for.get(s, 'no remediation is known for this status.')}."
-                            for s in _statuses)
-            if _sealed:
-                _seal_note = "Sealed in the run manifest's 'gate' step."
-            elif _stale:
-                # The dangerous case: a file IS there, so an operator who checks will find one.
-                _seal_note = ("NOT SEALED -- THIS run's manifest write failed. A manifest from an "
-                              "EARLIER run is still on disk at that path and does NOT describe this "
-                              "run; do not read it as this run's record.")
+        before_redaction = _evidence_records(all_cmd_to_files, root_dir)
+        bound = (_RUN_CUSTODY.get("evidence") or {}).get("analysis_input")
+        if bound is None:
+            if all_cmd_to_files:
+                _record_mandatory_failure(
+                    "Raw evidence custody",
+                    "raw evidence was not bound before parsing; exact consumed bytes are unprovable")
             else:
-                _seal_note = ("NOT SEALED -- the run manifest was not written, so these log lines "
-                              "and the gate ledger's audit rows are the only record.")
-            # Name where the durable record actually is, per deliverable: `recorded` is observed at
-            # the moment of the write, so this cannot claim a ledger row that was never appended.
-            _rec = [v["generator"] for v in _refused if v.get("recorded")]
-            _unrec = [v["generator"] for v in _refused if not v.get("recorded")]
-            _durable = (("Durable ledger row(s) written for %s. " % ", ".join(_rec)) if _rec else "")
-            if _unrec:
-                _durable += ("NO durable ledger row for %s (see the [GATE REFUSED] line(s) above "
-                             "for why). " % ", ".join(_unrec))
-            logger.error("[GATE] %d deliverable(s) WITHHELD by the PPDIOO document gates: %s -- %s %s%s",
-                         len(_refused),
+                # Direct library finalization with no raw paths consumed has an exact empty binding.
+                _RUN_CUSTODY["evidence"]["analysis_input"] = before_redaction
+        elif before_redaction != bound:
+            _record_mandatory_failure(
+                "Raw evidence custody",
+                "raw evidence changed after the pre-analysis byte binding")
+        _RUN_CUSTODY["evidence"]["before_redaction"] = before_redaction
+    except Exception as exc:
+        _record_mandatory_failure(
+            "Raw evidence custody", f"{type(exc).__name__}: {exc}")
+        logger.error("  Raw evidence custody failed: %s", exc)
+
+    if getattr(args, "redact_collection", False):
+        _RUN_CUSTODY["redaction"] = {"requested": True, "status": "failed"}
+        redaction = _run_phase("Raw capture redaction", redact_collection_dir,
+                               root_dir, _default=_PHASE_FAILED)
+        if redaction is _PHASE_FAILED:
+            detail = (((snap_dict.get("assessment_integrity") or {}).get(
+                "phase_errors") or {}).get("Raw capture redaction")
+                or "requested raw-capture redaction failed")
+            _record_mandatory_failure("Raw capture redaction", detail)
+        else:
+            scanned, changed = redaction
+            _RUN_CUSTODY["redaction"].update(
+                status="producer_completed", scanned=scanned, changed=changed)
+            logger.info("[OK] redact-collection: scrubbed secret values in %s of %s raw "
+                        "capture file(s) under %s", changed, scanned, root_dir)
+            # The producer's own account of what it DECLINED to scrub (structured serialisations,
+            # binaries, files over the capture ceiling, a rewrite that failed). Without it the
+            # "scrubbed X of Y" line above is a count over an unstated denominator, and the reader
+            # takes it for the whole folder.
+            _producer_uncovered = list(getattr(redaction, "uncovered", ()) or ())
+            if _producer_uncovered:
+                _RUN_CUSTODY["redaction"]["producer_uncovered"] = [
+                    {"file": rel, "reason": why} for rel, why in _producer_uncovered]
+                logger.warning(
+                    "  redact-collection NOT COVERED: %s file(s) under %s were not scrubbed: %s%s",
+                    len(_producer_uncovered), root_dir,
+                    "; ".join(f"{rel} ({why})" for rel, why in _producer_uncovered[:6]),
+                    ", ..." if len(_producer_uncovered) > 6 else "")
+            try:
+                from webapp.backend import redaction_verify as _redaction_verify
+                collection_proof = _redaction_verify.verify_collection_secret_scrub(
+                    Path(root_dir)
+                )
+                if collection_proof["files"] != scanned:
+                    raise ValueError(
+                        "producer/verifier raw-capture file counts disagree "
+                        f"({scanned} vs {collection_proof['files']})"
+                    )
+                # COVERAGE HONESTY, the CLI half. `verify_collection_secret_scrub` returns every file
+                # its grammar could not read under `uncovered`; the Atlas/AssessHub exit prints it
+                # (ingest.run_redaction_folder -> serve.run_redaction), and this -- the engine's
+                # PRIMARY entrypoint -- dropped it, so `cisco-assess --redact-collection` reported
+                # "verified N file(s)" over a folder in which N others were never looked at. A
+                # verified count beside an unstated exclusion list reads as "the folder is clean".
+                _uncovered = [row for row in (collection_proof.get("uncovered") or [])
+                              if isinstance(row, dict)]
+                _RUN_CUSTODY["redaction"].update(
+                    status="verified",
+                    verifier_files=collection_proof["files"],
+                    verifier_sha256=collection_proof["sha256"],
+                    verifier_uncovered=_uncovered,
+                )
+                if _uncovered:
+                    logger.warning(
+                        "  redact-collection NOT COVERED by the independent verifier: %s file(s) "
+                        "under %s were neither scrubbed nor scanned (%s%s) — the capture grammar "
+                        "does not read them, so this is NOT a statement that they are free of "
+                        "secrets",
+                        len(_uncovered), root_dir,
+                        "; ".join(f"{row.get('file')} ({row.get('reason')})"
+                                  for row in _uncovered[:6]),
+                        ", ..." if len(_uncovered) > 6 else "")
+                else:
+                    logger.info("[OK] redact-collection: independently verified %s raw capture "
+                                "file(s); no file was outside the verifier's grammar",
+                                collection_proof["files"])
+            except Exception as exc:
+                _record_mandatory_failure(
+                    "Raw capture redaction verification",
+                    f"{type(exc).__name__}: {exc}",
+                )
+                logger.error(
+                    "  Raw capture redaction verification FAILED: %s", exc
+                )
+    try:
+        after_redaction = _evidence_records(all_cmd_to_files, root_dir)
+        _RUN_CUSTODY["evidence"]["after_redaction"] = after_redaction
+        if not getattr(args, "redact_collection", False) and \
+                before_redaction is not None and after_redaction != before_redaction:
+            _record_mandatory_failure(
+                "Post-redaction evidence custody",
+                "raw evidence changed during finalization without redaction being requested")
+    except Exception as exc:
+        _record_mandatory_failure(
+            "Post-redaction evidence custody", f"{type(exc).__name__}: {exc}")
+        logger.error("  Post-redaction evidence custody failed: %s", exc)
+
+    _sync_mandatory_failures(snap_dict)
+    _sync_failed_phases(snap_dict)
+    wb = getattr(ctx, "wb", None)
+    if wb is None:
+        _record_mandatory_failure(
+            "Assessment workbook", "workbook object was absent at finalization")
+    else:
+        def _save_workbook():
+            _write_integrity_disclosure_sheet(wb, snap_dict)
+            wb.save(out_xlsx)
+
+        workbook_ok = _emit_artifact(
+            "Assessment workbook", out_xlsx, "xlsx", _save_workbook)
+        if not workbook_ok:
+            detail = (((snap_dict.get("assessment_integrity") or {}).get(
+                "phase_errors") or {}).get("Assessment workbook")
+                or "workbook writer or structural validation failed")
+            _record_mandatory_failure("Assessment workbook", detail)
+        logger.info("[OK] Log:   %s", LOG_FILE)
+
+    # Timings are finalized and registered before the manifest. A rerun can no longer hash the
+    # previous timings file and then overwrite it after sealing.
+    timings_path = base + ".phase_timings.json"
+    timings = {
+        "n_devices": len(all_devices_meta),
+        "workers": workers,
+        "total_seconds": round(sum(p["seconds"] for p in _PHASE_TIMINGS), 3),
+        "phases": list(_PHASE_TIMINGS),
+    }
+    if _emit_artifact("Phase timings", timings_path, "phase-timings",
+                      write_json_file, timings_path, timings):
+        slowest = max(_PHASE_TIMINGS, key=lambda p: p["seconds"],
+                      default={"phase": "-", "seconds": 0})
+        logger.info("[OK] Phase timings: %s (%s timed phase(s), slowest: %s %ss)",
+                    timings_path, len(_PHASE_TIMINGS), slowest["phase"], slowest["seconds"])
+    # DELIBERATELY FAIL-SOFT. An escalation to `_record_mandatory_failure` was added here on
+    # 2026-07-31 and REVERTED the same day after an independent review measured the cost: two real
+    # `--redact` runs, identical inputs, differing only in that an ordinary Windows file lock (an AV
+    # scanner or an open viewer) held the PREVIOUS ledger. Control exited 0 `[COMPLETE]`; the
+    # treatment exited 1 `[INCOMPLETE]` having produced all 14 deliverables byte-identically.
+    # `webapp/backend/ingest.py` maps a non-zero engine exit to `_mark_output_unsafe` + a
+    # do-not-send verdict, so a locked stale sidecar would have told a field engineer that a
+    # correctly redacted deliverable set must be treated as UNREDACTED.
+    #
+    # The escalation was justified by a coupling that does not exist on any reachable path: the
+    # consumer's absent-ledger refusal sits ~28 lines AFTER ingest already raises on `returncode
+    # != 0`, so no field engineer can ever observe it. It bought a live false-alarm to harden a
+    # branch that is dead. A sidecar ledger does not belong in the same mandatory tier as the
+    # workbook, snapshot and manifest, and the escalation was not even gated on `--redact`.
+
+    _sync_mandatory_failures(snap_dict)
+    _sync_failed_phases(snap_dict)
+    snap_path = getattr(ctx, "snap_path", "") or base + ".snapshot.json"
+    snapshot_ok = _emit_artifact(
+        "Assessment snapshot", snap_path, "snapshot",
+        write_json_file, snap_path, sparsify_interfaces(snap_dict), compact=True)
+    if snapshot_ok:
+        logger.info("[OK] Snapshot: %s (use --compare OLD NEW for pre/post diff)", snap_path)
+    else:
+        detail = (((snap_dict.get("assessment_integrity") or {}).get(
+            "phase_errors") or {}).get("Assessment snapshot")
+            or "snapshot writer or structural validation failed")
+        _record_mandatory_failure("Assessment snapshot", detail)
+
+    # ``--redact`` is a safety claim over every shareable artifact, not merely a producer phase.
+    # Independently inspect the exact bytes, bind the verifier's digests, then re-read and compare
+    # immediately before the manifest can seal them.  A direct CLI run therefore has the same
+    # fail-closed postcondition as the web wrapper and cannot claim safety from producer silence.
+    if getattr(args, "redact", False) and snapshot_ok:
+        try:
+            from webapp.backend import redaction_verify as _redaction_verify
+            registered_paths = [
+                Path(record["path"])
+                for record in (_RUN_CUSTODY.get("artifacts") or {}).values()
+            ]
+            proof = _redaction_verify.certify_shareable_artifacts(
+                Path(snap_path), registered_paths
+            )
+            for name, expected_digest in proof.items():
+                candidate = Path(snap_path).parent / name
+                _size, actual_digest = _stable_file_digest(str(candidate))
+                if actual_digest != expected_digest:
+                    raise ValueError(
+                        f"{name} changed after independent redaction verification"
+                    )
+            proof_root = hashlib.sha256(
+                json.dumps(
+                    proof, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+            ).hexdigest()
+            _RUN_CUSTODY["redaction"].update(
+                requested=True,
+                status="verified",
+                verifier="independent-shareable-artifact-scan-v1",
+                verifier_sha256=proof_root,
+                verified_artifacts=len(proof),
+            )
+        except Exception as exc:
+            _RUN_CUSTODY["redaction"].update(
+                requested=True, status="verification_failed"
+            )
+            _record_mandatory_failure(
+                "Shareable redaction verification",
+                f"{type(exc).__name__}: {exc}",
+            )
+            logger.error(
+                "  Independent shareable redaction verification FAILED: %s", exc
+            )
+
+    stale = _excluded_stale_outputs()
+    if stale:
+        logger.warning("  [CUSTODY] %d same-stem output(s) were not produced by this run and are "
+                       "preserved but EXCLUDED from its manifest: %s",
+                       len(stale), ", ".join(row["name"] for row in stale))
+
+    manifest_path = base + ".run_manifest.json"
+    manifest_sealed = False
+    try:
+        from cisco_toolkit import manifest as manifest_mod
+        run_manifest = build_run_manifest(out_xlsx, snap_dict)
+        write_json_file(manifest_path, run_manifest)
+        valid, why = validate_artifact(manifest_path, "manifest")
+        if not valid:
+            raise ValueError(why)
+        verified = manifest_mod.verify_file(
+            manifest_path, artifacts_dir=os.path.dirname(manifest_path) or ".")
+        if not verified.get("ok"):
+            raise ValueError(verified.get("reason") or "post-write verification failed")
+        manifest_sealed = True
+    except Exception as exc:
+        _record_mandatory_failure("Run manifest", f"{type(exc).__name__}: {exc}")
+        from cisco_toolkit import gate_state as gate_state_mod
+        verdicts = gate_state_mod.verdicts()
+        recorded = [v for v in verdicts if v.get("recorded")]
+        unrecorded = [v for v in verdicts if not v.get("recorded")]
+        where = ("; the gate ledger still holds the durable row(s) for "
+                 + ", ".join(v["generator"] for v in recorded)) if recorded else ""
+        lost = ("; NOTHING durable was recorded for "
+                + ", ".join(v["generator"] for v in unrecorded)) if unrecorded else ""
+        logger.error("  Run manifest write FAILED; this run is not sealed%s%s: %s",
+                     where, lost, exc)
+
+    incomplete_path = base + ".incomplete.json"
+    marker_written = False
+    if not (_RUN_CUSTODY.get("mandatory_failures") or {}) and manifest_sealed:
+        try:
+            if os.path.lexists(incomplete_path):
+                os.unlink(incomplete_path)
+            if os.path.lexists(incomplete_path):
+                raise OSError("incomplete marker still exists after removal")
+        except OSError as exc:
+            _record_mandatory_failure(
+                "Incomplete marker clearance", f"{type(exc).__name__}: {exc}")
+            logger.critical(
+                "  [INCOMPLETE] A prior incomplete marker could not be cleared after seal "
+                "verification: %s", exc)
+
+    if _RUN_CUSTODY.get("mandatory_failures"):
+        try:
+            _write_incomplete_marker(incomplete_path, manifest_path, manifest_sealed)
+            marker_written = True
+        except Exception as exc:
+            _record_mandatory_failure(
+                "Incomplete marker", f"{type(exc).__name__}: {exc}")
+            logger.critical(
+                "  [INCOMPLETE] Failed to persist the mandatory incomplete marker %s: %s",
+                incomplete_path, exc)
+
+    complete = bool(
+        manifest_sealed and not _RUN_CUSTODY.get("mandatory_failures")
+        and not os.path.lexists(incomplete_path))
+    failed_mandatory = tuple((_RUN_CUSTODY.get("mandatory_failures") or {}).keys())
+    if complete:
+        logger.info(
+            "[OK] Run manifest (chain-of-custody): %s (chain_root %s..., %d artifact(s))",
+            manifest_path, str(run_manifest.get("chain_root", ""))[:12],
+            len(run_manifest.get("artifacts") or []))
+        logger.info(
+            "[COMPLETE] Mandatory workbook, snapshot, evidence custody, and manifest "
+            "self-verification all passed.")
+    else:
+        if manifest_sealed:
+            logger.error(
+                "  [CUSTODY] A manifest was sealed for this INCOMPLETE run; it describes the "
+                "failure state and must not be treated as a complete delivery.")
+        marker_note = (
+            f"durable marker: {incomplete_path}" if marker_written
+            else "the durable marker write also FAILED; retain this log")
+        logger.error(
+            "[INCOMPLETE] Mandatory finalization failed (%s); exit 1; %s",
+            ", ".join(failed_mandatory) or "unknown failure", marker_note)
+
+    result = FinalizationResult(
+        complete=complete,
+        exit_code=0 if complete else 1,
+        run_id=str(_RUN_CUSTODY.get("run_id") or ""),
+        manifest_path=manifest_path,
+        incomplete_marker_path=incomplete_path,
+        failed_mandatory=failed_mandatory,
+        manifest_sealed=manifest_sealed,
+        marker_written=marker_written,
+    )
+
+    # Closing governance summary remains the final operator-facing result.
+    try:
+        from cisco_toolkit import gate_state as gate_state_mod
+        refused = [v for v in gate_state_mod.verdicts() if v.get("proceed") is False]
+        if refused:
+            fixes = {
+                "pending": "record the approval or use an audited --override-gate reason",
+                "bad_root": "fix --gate-root (NOT overridable)",
+                "unreadable": "repair or remove the unreadable ledger (NOT overridable)",
+                "ownership_mismatch": "select the ledger for this engagement (NOT overridable)",
+                "ownership_unbound": "bind the ledger to this engagement (NOT overridable)",
+            }
+            statuses = sorted({str(v.get("verdict")) for v in refused})
+            how = " ".join(f"[{s}] {fixes.get(s, 'inspect the refusal status')}."
+                           for s in statuses)
+            recorded = [v["generator"] for v in refused if v.get("recorded")]
+            unrecorded = [v["generator"] for v in refused if not v.get("recorded")]
+            durable = (("Durable ledger row(s) written for %s. " % ", ".join(recorded))
+                       if recorded else "")
+            if unrecorded:
+                durable += "NO durable ledger row for %s. " % ", ".join(unrecorded)
+            old_manifest = (not manifest_sealed) and os.path.isfile(manifest_path)
+            if manifest_sealed:
+                seal_note = "Sealed in the run manifest's 'gate' step."
+            elif old_manifest:
+                seal_note = ("NOT SEALED -- a manifest from an EARLIER run remains on disk and "
+                             "does NOT describe this run.")
+            else:
+                seal_note = "NOT SEALED -- this run produced no run manifest."
+            logger.error("[GATE] %d deliverable(s) WITHHELD by the PPDIOO document gates: "
+                         "%s -- %s %s%s",
+                         len(refused),
                          "; ".join(f"{v['generator']} (missing: "
                                    f"{', '.join(v.get('missing') or []) or 'not evaluated'})"
-                                   for v in _refused),
-                         _how,
-                         _durable,
-                         _seal_note)
-    except Exception as e:
-        logger.warning(f"  gate summary failed (non-fatal): {e}")
+                                   for v in refused),
+                         how, durable, seal_note)
+    except Exception as exc:
+        _record_phase_failure("Gate closing summary", f"{type(exc).__name__}: {exc}")
+        logger.warning("  gate summary failed (non-fatal): %s", exc)
+    _RUN_CUSTODY["finalization"] = {
+        "complete": result.complete,
+        "exit_code": result.exit_code,
+        "failed_mandatory": list(result.failed_mandatory),
+        "manifest_sealed": result.manifest_sealed,
+        "marker_written": result.marker_written,
+    }
+    _RUN_CUSTODY["finalized"] = True
+    return result
 
 
 # =============================================================================

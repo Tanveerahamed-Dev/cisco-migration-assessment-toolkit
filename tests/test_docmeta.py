@@ -106,7 +106,7 @@ def test_inputs_required_surfaces_not_collected_devices_coverage_honestly():
 
 def test_document_control_includes_a_distribution_list():
     doc = Document()
-    add_document_control(doc, document="X.docx", label="[HISTORY-REDACTED]", engine_version="9")
+    add_document_control(doc, document="X.docx", label="Meridian", engine_version="9")
     txt = _all_text(doc)
     assert "Distribution list" in txt
 

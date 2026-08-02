@@ -8,14 +8,14 @@ env/
 
 # Build / packaging artifacts (pyproject build, wheels)
 build/
-dist/
+/dist/
 *.whl
 _wheeltest/
 
 # OS
 .DS_Store
 Thumbs.db
-# Office owner-lock files (leak last-editor identity; ~$ prefix defeats the [HISTORY-REDACTED]_* rule)
+# Office owner-lock files leak last-editor identity, and their ~$ prefix defeats basename rules.
 ~$*
 
 # Editors
@@ -25,6 +25,7 @@ Thumbs.db
 
 # Test caches / artifacts
 .pytest_cache/
+/.pytest_tmp_*/
 .ruff_cache/
 .mypy_cache/
 .coverage
@@ -37,18 +38,96 @@ Migration_Diff_*.xlsx
 topology.mmd
 topology.dot
 
+# ...and the same class by SHAPE, not by the one prefix we happened to use.
+#
+# The rules above are NAME-BOUND. The engine takes a free-choice `--output <name>.xlsx` — CLAUDE.md's
+# own documented invocation — and writes ~12 siblings beside it (docmeta.CLI_ARTIFACT_SUFFIX: the
+# workbook, explorer, runbook, design, mop, crd, engagement, archreview, opshandbook and deck, plus
+# .snapshot.json / .run_manifest.json / .phase_timings.json). Measured before adding this block:
+# AcmeBank_Q1.snapshot.json, AcmeBank_Q1_mop.docx, Assessment_20270101.xlsx and
+# captures/sw1/show_running-config.txt were ALL committable. Only a run named
+# `Migration_Assessment_AUTOFILLED_*` was covered.
+#
+# That matters most for the raw captures: a running-config carries SNMP communities, TACACS keys,
+# enable secrets and VPN PSKs — exactly what `--redact-collection` exists to scrub. One `git add -A`
+# is all it takes, and this repo has already had `git add -A` sweep in files nobody intended.
+*.snapshot.json
+*.run_manifest.json
+*.phase_timings.json
+*_runbook.docx
+*_design.docx
+*_mop.docx
+*_crd.docx
+*_engagement.docx
+*_archreview.docx
+*_ops_handbook.docx
+*_deck.pptx
+*_explorer.html
+*_IP_CROSSWALK.xlsx
+show_*.txt
+
+# Every generated office/certificate surface is client-bearing regardless of
+# basename. Explicit negations below are the only reviewable exceptions.
+*.xlsx
+*.docx
+*.pptx
+*.precert.json
+*.precert-readiness.json
+
+# Raw-collection metadata and non-CLI controller/cloud captures do not share the
+# `show_` prefix. Cover both producer filenames and conventional evidence roots.
+*_capture_meta.json
+device_info.json
+command_index.json
+moquery_*.txt
+ers_*.txt
+dataservice_*.txt
+api_*.txt
+aws_*.txt
+get_system_*.txt
+**/captures/**
+**/raw-captures/**
+**/collection/**
+
+# Operator-supplied engagement material belongs outside the pushable source
+# tree. These named roots make the safe workflow obvious while retaining
+# deliberate, reviewed sample fixtures elsewhere.
+client-inputs/
+private-inputs/
+engagements/
+
+# Session transcripts, external-agent exports, and engagement-specific reports
+# are not product source. Keep the synthetic requirements example reviewable.
+/AI_SESSION_CONTEXT.md
+/CHAT_SUMMARY.md
+/compass_artifact_*
+/requirements.*.json
+!/requirements.sample.json
+/docs/assessment/
+/docs/security/
+/docs/universality-gap-audit-raw.json
+/docs/wave-findings-*.md
+/docs/wave-triage-*.md
+
+# The three artifacts the repo legitimately TRACKS and the rules above would otherwise swallow.
+# (tests/golden/snapshot.json is unaffected: `*.snapshot.json` needs a dot before "snapshot".)
+!webapp/sample_data/sample_fleet.snapshot.json
+!cisco_toolkit/blast_radius_explorer.html
+!tests/golden/snapshot.json
+
 # Real device inventory with SSH credentials — NEVER commit
 devices.json
 
 # Claude Code local settings
 .claude/settings.local.json
+/.claude/settings.before-*.json
 
 # graphify knowledge-graph output (generated; regenerate with the graphify skill)
 graphify-out/
 .gstack/
 # Local scratch, client deliverables, generated bundles
 scratch_*
-[HISTORY-REDACTED]_*
+*_DC_Design/
 x3.xlsx
 _aci_conv.txt
 raw/

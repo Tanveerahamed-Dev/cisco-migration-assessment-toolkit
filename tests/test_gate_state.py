@@ -1003,13 +1003,56 @@ def test_ssot_registry_cites_the_gate_state_owner():
 # ------------------------------------------------------- root resolution (the silent-ungate class)
 
 #: Directories that are not production source: the repo's own tests (a synthetic cwd is CORRECT
-#: there — it is the isolation), plus vendored/generated/worktree copies of the tree.
-#: Kept in step with .graphifyignore's exclusions: an untracked side-engagement or scratch copy of
-#: the tree would otherwise contribute a second `.../ingest.py::run_redaction_folder` under a key
-#: absent from _UNGATED_BY_DECISION, turning the suite red for an environmental reason.
+#: there — it is the isolation), plus vendored/generated copies of the tree that git still tracks.
+#:
+#: This list no longer has to chase scratch/ignored copies of the tree. It used to be "kept in step
+#: with .graphifyignore's exclusions" — one hand-maintained list mirroring another — so a scratch
+#: copy contributed a second `.../ingest.py::_run_redaction_folder_locked` under a key absent from
+#: _UNGATED_BY_DECISION and turned the suite red for an environmental reason. It duly happened, with
+#: an ignored directory (`private-inputs/`) that predates neither list but appears in neither.
+#: `_repo_python_files()` now asks git what belongs to this repo, which covers every ignored
+#: directory that will ever exist without anyone maintaining a second copy of the answer.
 _NON_SOURCE_DIRS = frozenset({".claude", ".git", "tests", "graphify-out", "node_modules",
                               "dist", "build", ".venv", "venv", "_ref", "__pycache__",
-                              "ds-bundle", ".ds-sync", "[HISTORY-REDACTED]_DC_Design", "figgen"})
+                              "ds-bundle", ".ds-sync", "Reference_DC_Design", "figgen"})
+
+
+def _repo_python_files() -> list:
+    """Every ``.py`` git considers part of this working tree: tracked + untracked-but-not-ignored.
+
+    NOT a bare filesystem glob. `_NON_SOURCE_DIRS` is a hand-maintained list of directory NAMES, so
+    any IGNORED directory nobody thought to add to it was walked as if it were this repo's source.
+    That is not hypothetical: this review's own sealed recovery backup holds a COPY of
+    ``webapp/backend/ingest.py``, and the guard reported that copy's functions as undeclared engine
+    callers — a failure caused entirely by which scratch directories happen to be on disk. A guard
+    whose verdict depends on that is not deciding anything about the code, and it would fire for any
+    developer keeping a local ignored copy of the tree.
+
+    Ignored-vs-excluded-by-name is the point. Git already knows what belongs to this repo, so ask it
+    rather than maintain a list that silently rots — the same named-subset-instead-of-structural-class
+    shape recorded in handoff 5.2, 5.3 and 5.11. `_NON_SOURCE_DIRS` still applies on top, because
+    ``tests/`` and friends are tracked yet are not production source; what it no longer has to do is
+    guess at every ignored directory that might ever exist.
+
+    Untracked-but-not-ignored files ARE included: a new production module that has not been committed
+    yet is still this repo's source and must not slip past the gate check.
+
+    If git cannot answer, fall back to the glob. That is WIDER, not narrower — a guard that
+    over-reports is recoverable, one that silently stops looking is the failure this file exists to
+    prevent.
+    """
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "-c", "-o", "--exclude-standard", "-z", "--", "*.py"],
+            cwd=str(ROOT), capture_output=True, text=True, timeout=60, check=True).stdout
+        names = [n for n in out.split("\0") if n]
+        if names:
+            return [ROOT / n for n in names]
+    except Exception:
+        pass
+    return list(ROOT.glob("**/*.py"))
 
 
 def _flag_literals(node) -> set:
@@ -1084,7 +1127,17 @@ def _rehomes_the_child(node) -> bool:
 #: must still contain. An exemption with a reason attached is honest; a silent one is the bug this
 #: guard exists for. If someone deletes the reasoning, this fails and they have to re-make the call.
 _UNGATED_BY_DECISION = {
-    "webapp/backend/ingest.py::run_redaction_folder": "deliberately do NOT apply",
+    # Keyed by FUNCTION, and that key went stale when `run_redaction_folder` was renamed to
+    # `_run_redaction_folder_locked`. The exemption silently stopped matching and the guard reported
+    # the function as an undeclared engine caller — correctly: it had no way to know the decision had
+    # merely been renamed rather than withdrawn.
+    #
+    # That is the right failure. A safety exemption keyed by name SHOULD break on a rename and force
+    # someone to re-confirm it, because the alternative is an exemption that follows code it no
+    # longer describes. The re-check below (the reasoning must still be in the docstring) is what
+    # makes re-confirmation mean something, and it still holds here: the P0-3/DEC-003 rationale is
+    # intact in the renamed function.
+    "webapp/backend/ingest.py::_run_redaction_folder_locked": "deliberately do NOT apply",
 }
 
 
@@ -1105,7 +1158,7 @@ def _engine_launching_functions():
     (subprocess or in-process ``main()``) and appears nowhere else."""
     import ast
 
-    for path in sorted(ROOT.glob("**/*.py")):
+    for path in sorted(_repo_python_files()):
         rel = path.relative_to(ROOT).as_posix()
         if _NON_SOURCE_DIRS & set(rel.split("/")[:-1]):
             continue
@@ -1194,12 +1247,14 @@ def test_no_engine_caller_declares_a_gate_posture():
         "--no-design --no-mop, or add it to _UNGATED_BY_DECISION with the reasoning written "
         "into its docstring.")
     # A guard that inspects nothing passes trivially. The three known synthetic-cwd callers are
-    # run_redaction_folder (ungated by decision), _assess_tree and build_sample.main (both inert) —
-    # if a rename drops them off the inventory the guard has stopped guarding, which is the failure.
+    # _run_redaction_folder_locked (ungated by decision), _assess_tree and build_sample.main (both
+    # inert) — if a rename drops them off the inventory the guard has stopped guarding, which is the
+    # failure. That rename has already happened once: `run_redaction_folder` gained a `_locked`
+    # suffix and both this anchor and the _UNGATED_BY_DECISION key went stale with it.
     assert len(inspected) >= 3, (
         f"expected >=3 synthetic-cwd engine callers, found {len(inspected)}: {inspected}. "
         "The inventory stopped matching real call sites — fix the discriminator, do not relax it.")
-    assert "webapp/backend/ingest.py::run_redaction_folder" in inspected, \
+    assert "webapp/backend/ingest.py::_run_redaction_folder_locked" in inspected, \
         "the caller this guard exists for dropped off the inventory"
 
 

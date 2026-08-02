@@ -137,7 +137,7 @@ def test_not_collected_device_is_not_silently_dropped():
     snap['devices'] (that map is built only from hosts that collected) but IS present in
     collection_completeness as 'not collected'. The matrix joined on snap['devices'].keys(), so such a
     device emitted ZERO rows and vanished -- reading as fully covered, the exact false-health the module
-    exists to prevent (on the [HISTORY-REDACTED] fleet: all 50 of 303/253 not-collected devices would disappear). It must
+    exists to prevent (on the Meridian reference fleet: all 50 of 303/253 not-collected devices would disappear). It must
     instead appear as an explicit blind-spot on EVERY base axis, and must NOT read 'covered' on
     capture/parse by mere absence of findings (a never-collected host was never captured or parsed either)."""
     snap = {

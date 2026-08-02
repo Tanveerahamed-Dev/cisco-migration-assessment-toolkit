@@ -1,0 +1,39 @@
+# Explicit, privacy-safe source-distribution inventory.
+include LICENSE
+include README.md
+include pyproject.toml
+include setup.py
+include COLLECT_PARSE_V3_23_0.py
+recursive-include cisco_toolkit *.py *.html *.tsv.gz *.json
+include webapp/*.py
+recursive-include webapp/backend *.py
+recursive-include webapp/frontend/dist *
+recursive-include webapp/sample_data *.json
+include reference-data/official-sources/README.md
+include reference-data/official-sources/manifest.json
+include reference-data/official-sources/cisco/eol-bulletins.json
+include reference-data/official-sources/iana/service-names-port-numbers.csv
+include reference-data/official-sources/ieee/oui.csv
+include reference-data/official-sources/ieee/mam.csv
+include reference-data/official-sources/ieee/oui36.csv
+
+prune .claude
+prune .design-sync
+prune .github
+prune docs
+prune portable
+prune research_lane
+prune tests
+prune webapp/tests
+global-exclude *.py[cod]
+global-exclude __pycache__
+global-exclude *.db
+global-exclude *.sqlite*
+global-exclude *.snapshot.json
+global-exclude *.xlsx
+global-exclude *.docx
+global-exclude *.pptx
+
+# The one deliberately synthetic demo snapshot is the sole exception to the
+# snapshot ban and is required by the installed AssessHub entry point.
+include webapp/sample_data/sample_fleet.snapshot.json

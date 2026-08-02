@@ -13,6 +13,7 @@ dependency — this is a source-level contract and must run everywhere.
 import ast
 import re
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -244,3 +245,84 @@ def test_the_failure_message_never_claims_the_engine_does_not_write_it(monkeypat
     assert "NOT FOUND as a literal" in msg, "say what was actually observed"
     assert "DO NOT delete the map entry" in msg, \
         "the message must steer away from the destructive fix"
+
+
+def test_structural_validator_rejects_partial_deliverables(tmp_path):
+    from cisco_toolkit.docmeta import validate_artifact
+
+    partial = tmp_path / "report.docx"
+    partial.write_bytes(b"PK\x03\x04interrupted")
+    ok, reason = validate_artifact(str(partial), "docx")
+    assert ok is False and "invalid Office package" in reason
+
+    torn = tmp_path / "assessment.snapshot.json"
+    torn.write_text('{"interfaces":', encoding="utf-8")
+    ok, reason = validate_artifact(str(torn), "snapshot")
+    assert ok is False and "invalid JSON" in reason
+
+
+def test_structural_validator_rejects_office_zip_with_malformed_required_xml(tmp_path):
+    from cisco_toolkit.docmeta import validate_artifact
+
+    broken = tmp_path / "looks-complete.xlsx"
+    with zipfile.ZipFile(broken, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types>")
+        zf.writestr("xl/workbook.xml", "<workbook/>")
+
+    ok, reason = validate_artifact(str(broken), "xlsx")
+    assert ok is False
+    assert "invalid Office package" in reason
+
+
+def test_structural_validator_accepts_real_workbook_and_exact_candidates(tmp_path):
+    from openpyxl import Workbook
+    from cisco_toolkit.docmeta import artifact_candidate_paths, validate_artifact
+
+    path = tmp_path / "Assessment.xlsx"
+    Workbook().save(path)
+    assert validate_artifact(str(path), "xlsx")[0] is True
+
+    names = {Path(p).name for p in artifact_candidate_paths(tmp_path / "Assessment")}
+    assert "Assessment.xlsx" in names
+    assert "Assessment.snapshot.json" in names
+    assert "Assessment.phase_timings.json" in names
+    assert "Assessment.run_manifest.json" in names
+    assert {"topology.mmd", "topology.dot"} <= names
+
+
+def _lc_snap(**summary):
+    return {"devices": {f"sw{i}": {} for i in range(4)},
+            "lifecycle_risk": {"summary": summary, "per_device": []}}
+
+
+def test_at_a_glance_does_not_report_zero_past_ldos_when_the_answer_is_UNDETERMINED():
+    """"0 device(s) past last-date-of-support" on the front page of EVERY deliverable.
+
+    `ssot.CANONICAL_FACTS` carried slots for n_past_ldos / n_past_eos / n_near / n_active and NONE
+    for n_unknown, so no consumer had a path to say "not determined" — `v()` maps only `None` to
+    `[NOT OBSERVED]`, and a real `0` passes straight through. A fleet whose every platform is
+    unmatched by the offline EoX KB therefore led with a clean zero on the first page a customer
+    reads.
+
+    Same class as the LC-1 verdict (handoff §7.22) and the reason that one was not enough: fixing the
+    instance is not fixing the class.
+    """
+    from cisco_toolkit import docmeta
+    rows = dict(docmeta._glance_rows(_lc_snap(n_past_ldos=0, n_past_eos=0, n_near=0, n_unknown=4)))
+    lifecycle = rows["Biggest lifecycle exposure?"]
+    # Assert the PROPERTY (the undetermined population is disclosed, with its size), not one
+    # phrasing — a wording check would go red on an editorial pass that changed nothing that matters.
+    low = lifecycle.lower()
+    assert "4" in lifecycle and any(w in low for w in
+                                    ("not assessed", "undetermined", "unknown", "not determined")), (
+        f"the front page reports a bare zero while 4 device(s) were never assessed: {lifecycle!r}"
+    )
+
+
+def test_at_a_glance_still_reads_clean_when_every_device_WAS_assessed():
+    """Non-vacuity: a genuinely clean, fully-assessed fleet must not gain a scary caveat."""
+    from cisco_toolkit import docmeta
+    rows = dict(docmeta._glance_rows(_lc_snap(n_past_ldos=0, n_past_eos=0, n_near=0, n_unknown=0)))
+    lifecycle = rows["Biggest lifecycle exposure?"]
+    assert "unknown" not in lifecycle.lower(), f"clean fleet gained an unknown caveat: {lifecycle!r}"
+    assert "0 device(s) past last-date-of-support" in lifecycle

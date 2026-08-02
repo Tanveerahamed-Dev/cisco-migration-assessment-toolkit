@@ -342,7 +342,7 @@ type/tool hardening — every fix test-first, `tests/golden/snapshot.json` byte-
 - **`coverage_matrix` false-health — a not-collected device no longer vanishes** (PR #279): the matrix joined
   the (device × axis) grid on `snap['devices']`, which is built only from hosts that COLLECTED — so a device
   the collection never reached (unreachable / auth-fail) emitted zero rows and read as fully covered (on the
-  [HISTORY-REDACTED] fleet, all 50 of 303/253 not-collected devices would disappear). The join is now the inventory UNION
+  Meridian reference fleet, all 50 of 303/253 not-collected devices would disappear). The join is now the inventory UNION
   (`snap['devices'] ∪ collection_completeness`), and a never-reached host abstains `not_collected` on every
   base axis (its capture/parse "covered-by-silence" inference is invalid).
 - **`coverage_matrix` inventory join hardened** (PR #282): an architecture-coverage row is emitted only for a

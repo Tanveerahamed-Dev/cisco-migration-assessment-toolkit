@@ -15,10 +15,12 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
 
 import synthetic_fixtures as fx
+from webapp.backend.redaction_verify import certify_shareable_artifacts
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(ROOT, "COLLECT_PARSE_V3_23_0.py")
@@ -46,12 +48,28 @@ def _run_workbook_cells(base, redact):
     out_xlsx = os.path.join(base, "out.xlsx")
     cmd = [sys.executable, SCRIPT, "--no-collect", "--collection-dir", collection,
            "--devices-file", devices, "--template", template, "--output", out_xlsx,
-           "--no-html", "--no-docx", "--no-pptx", "--no-design", "--no-mop", "--no-crd",
+           "--no-docx", "--no-pptx", "--no-design", "--no-mop", "--no-crd",
            "--no-engagement", "--no-opshandbook", "--no-archreview", "--workers", "1"]
     if redact:
         cmd.append("--redact")
+    else:
+        cmd.append("--no-html")
     proc = subprocess.run(cmd, cwd=base, capture_output=True, text=True, timeout=300)
     assert proc.returncode == 0, f"pipeline failed:\nSTDOUT\n{proc.stdout}\nSTDERR\n{proc.stderr}"
+    if redact:
+        snapshot = Path(base, "out.snapshot.json")
+        explorer = Path(base, "out_explorer.html")
+        # The engine SEALS topology.mmd / topology.dot into the run manifest and ships them beside
+        # the deliverables, so they are part of the shareable set whether or not the verifier used
+        # to look at them. Handing them in is the point: a suffix pre-filter silently discarded
+        # both and still returned a proof that read as full coverage.
+        diagrams = [Path(base, "topology.mmd"), Path(base, "topology.dot")]
+        assert all(d.is_file() for d in diagrams), "precondition: the engine shipped the diagrams"
+        proof = certify_shareable_artifacts(snapshot, [Path(out_xlsx), explorer, *diagrams])
+        assert {snapshot.name, Path(out_xlsx).name, explorer.name} <= set(proof)
+        assert {d.name for d in diagrams} <= set(proof), (
+            "a registered run artifact was dropped from the proof instead of being verified or "
+            f"refused: {sorted(set(d.name for d in diagrams) - set(proof))}")
     wb = load_workbook(out_xlsx, read_only=True, data_only=True)
     return "\n".join(str(c) for s in wb.sheetnames
                      for row in wb[s].iter_rows(values_only=True) for c in row if c is not None)
@@ -73,16 +91,15 @@ def test_redact_workbook_does_not_leak_real_inventory(tmp_path):
         "real endpoint MAC leaked into the --redact workbook"
     for ip in REAL_SVI_IPS:
         assert ip not in redacted, f"real SVI host IP {ip} leaked into the --redact workbook"
-    assert re.search(r"\bSN\d{4}\b", redacted), "expected pseudonymized serials (SN####) -> redaction did not run"
+    assert "serial-000001.assesshub-redacted.invalid" in redacted
 
 
 def test_make_redactor_ip_map_never_reproduces_a_real_address():
-    """[NRFU sheet audit] The per-call IPv4 pseudonym map must be COLLISION-PROOF: with the old in-band
-    `10.{len(ip_map)}`-indexed scheme, the Nth distinct real /24 could draw a pseudonym equal to ANOTHER
-    real net (observed: net 10.0.20 -> '10.0.10', re-emitting the real gateway 10.0.10.1 into a --redact
-    workbook), or a net at its own index survived VERBATIM (identity). Pseudonyms now live in the
-    IANA-reserved 240.0.0.0/4 (Class E) block, which no deployed device can carry — so a scrubbed output
-    can never contain a real input IP."""
+    """IPv4 pseudonyms must be collision-proof and never reproduce a real input address.
+
+    The old in-band mapping could draw a pseudonym equal to another real network. Pseudonyms now
+    use a tool-owned ``.invalid`` marker namespace instead of any address-shaped value.
+    """
     from cisco_toolkit.html import _make_redactor
     scrub, _ = _make_redactor()
     # 12 distinct real /24s, so 10.0.10 and 10.0.20 sit near their own would-be indices; host octet .1
@@ -91,22 +108,19 @@ def test_make_redactor_ip_map_never_reproduces_a_real_address():
     outs = [scrub(ip) for ip in reals]
     for real in reals:
         assert all(real not in o for o in outs), f"real address {real} reproduced by the pseudonym map"
-    # /24 grouping is preserved and the pseudonym space is the unassignable Class E block
-    assert all(o.startswith("240.") and o.endswith(".1") for o in outs), outs
-    # the belt-and-braces guards hold even for a (theoretically impossible) 240.x input:
+    assert all(re.fullmatch(
+        r"v4-n\d{5}-h001\.assesshub-redacted\.invalid", o
+    ) for o in outs), outs
     assert scrub("240.0.0.7") != "240.0.0.7"
     # determinism within a call: the same input scrubs to the same output
     assert scrub(reals[0]) == outs[0]
 
 
 def test_redact_snapshot_ip_map_never_reproduces_a_real_address():
-    """[NRFU sheet audit, sibling map] redact_snapshot (the JSON / explorer --redact path) carried the
-    SAME in-band 10.{i//256}.{i%256} collision class _make_redactor was cured of: the Nth distinct real
-    /24 could draw a pseudonym equal to ANOTHER real net (10.0.20 -> '10.0.10', re-emitting the real
-    gateway 10.0.10.1 into a share-safe deliverable), or a net at its own index survived VERBATIM.
-    Pseudonym /24s now live in IANA-reserved 240.0.0.0/4 (Class E). UNLIKE _make_redactor's
-    refuse-everything guard, an already-240.x net maps to ITSELF -- the identity rule that keeps
-    redact_snapshot(redact_snapshot(x)) == redact_snapshot(x) (test_secret_scrub_is_idempotent)."""
+    """The JSON/explorer path uses collision-proof markers and remains idempotent.
+
+    Existing synthetic markers are preserved, while address-shaped input is always replaced.
+    """
     from cisco_toolkit.html import redact_snapshot
     reals = [f"10.0.{n}.1" for n in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20)]
     snap = {"ips": list(reals)}
@@ -114,13 +128,135 @@ def test_redact_snapshot_ip_map_never_reproduces_a_real_address():
     outs = once["ips"]
     for real in reals:
         assert all(real not in o for o in outs), f"real address {real} reproduced by redact_snapshot's map"
-    # /24 grouping is preserved and the pseudonym space is the unassignable Class E block
-    assert all(o.startswith("240.") and o.endswith(".1") for o in outs), outs
-    # the deliberate contrast with _make_redactor: an already-Class-E net is kept (identity), and a real
-    # net may never be handed a /24 that an identity-kept net already claimed
+    assert all(re.fullmatch(
+        r"v4-n\d{5}-h001\.assesshub-redacted\.invalid", o
+    ) for o in outs), outs
     r = redact_snapshot({"seed": "240.0.0.9", "real": "192.168.1.5"})
-    assert r["seed"] == "240.0.0.9"
-    assert r["real"].startswith("240.") and not r["real"].startswith("240.0.0.")
-    # ...which is exactly what keeps the map idempotent: every IPv4 in a scrubbed output is 240.x,
-    # so a second pass maps each net to itself and is a no-op
+    assert r["seed"] != "240.0.0.9"
+    assert r["real"].endswith(".assesshub-redacted.invalid")
     assert redact_snapshot(once) == once
+
+
+def test_redact_snapshot_pseudonymizes_general_cisco_serials_in_keys_and_values():
+    """Serials in generated prose and dict keys use the same stable pseudonym as schema fields."""
+    from cisco_toolkit.html import redact_snapshot
+
+    real = "FDO12345ABC"
+    snapshot = {
+        "nrfu_commands": {
+            "expected": f"chassis N9K-C93180YC-EX, serial {real} present",
+            f"device_{real.lower()}": {"echo": real},
+        },
+        "serial": real,
+    }
+
+    redacted = redact_snapshot(snapshot)
+    pseudonym = redacted["serial"]
+    assert re.fullmatch(r"serial-\d{6}\.assesshub-redacted\.invalid", pseudonym)
+    assert redacted["nrfu_commands"]["expected"].endswith(f"serial {pseudonym} present")
+    assert f"device_{pseudonym}" in redacted["nrfu_commands"]
+    assert redacted["nrfu_commands"][f"device_{pseudonym}"]["echo"] == pseudonym
+    assert real not in json.dumps(redacted)
+    assert redact_snapshot(redacted) == redacted
+
+
+def test_redact_snapshot_preserves_every_colliding_serial_key():
+    """Case variants and a pre-existing pseudonym key must not silently overwrite one another."""
+    from cisco_toolkit.html import redact_snapshot
+
+    snapshot = {
+        "serial": "FDO12345ABC",
+        "FDO12345ABC": "first",
+        "serial-000001.assesshub-redacted.invalid~2": "pre-existing alias",
+        "fdo12345abc": "second",
+        "serial-000001.assesshub-redacted.invalid": "pre-existing pseudonym",
+    }
+
+    redacted = redact_snapshot(snapshot)
+    pseudonym = redacted["serial"]
+    assert pseudonym == "serial-000002.assesshub-redacted.invalid"
+    assert list(redacted)[1:] == [
+        pseudonym,
+        "serial-000001.assesshub-redacted.invalid~2",
+        f"{pseudonym}~2",
+        "serial-000001.assesshub-redacted.invalid",
+    ]
+    assert list(redacted.values())[1:] == [
+        "first",
+        "pre-existing alias",
+        "second",
+        "pre-existing pseudonym",
+    ]
+    assert "FDO12345ABC" not in json.dumps(redacted)
+    assert "fdo12345abc" not in json.dumps(redacted)
+    assert redact_snapshot(redacted) == redacted
+
+
+def test_redact_snapshot_preserves_colliding_serial_keys_inside_secret_container():
+    """The all-leaf secret scrub must use the same non-lossy key insertion path."""
+    from cisco_toolkit.html import redact_snapshot
+
+    snapshot = {
+        "apiSecret": {
+            "FDO12345ABC": "one",
+            "fdo12345abc": "two",
+            "serial-000001.assesshub-redacted.invalid": "three",
+        }
+    }
+
+    redacted = redact_snapshot(snapshot)
+    secret = redacted["apiSecret"]
+    assert list(secret) == [
+        "serial-000002.assesshub-redacted.invalid",
+        "serial-000002.assesshub-redacted.invalid~2",
+        "serial-000001.assesshub-redacted.invalid",
+    ]
+    assert list(secret.values()) == ["<redacted>", "<redacted>", "<redacted>"]
+    assert "FDO12345ABC" not in json.dumps(redacted)
+    assert "fdo12345abc" not in json.dumps(redacted)
+    assert redact_snapshot(redacted) == redacted
+
+
+# ── W1/F3: the shareable proof advertised coverage it did not have ─────────────
+# `certify_shareable_artifacts` pre-filtered its inputs against a hand-listed
+# `_SHAREABLE_SUFFIXES = {.json,.html,.xlsx,.docx,.pptx}` and DROPPED everything else in silence.
+# The CLI registers topology.mmd and topology.dot as run artifacts, seals them into the run
+# manifest, ships them beside the deliverables and hands them to this function; it discarded both,
+# then the caller recorded `status="verified"` with `verified_artifacts` = 4 over a set of 6.
+def _pytest_error():
+    import pytest
+    from webapp.backend.redaction_verify import RedactionVerificationError
+    return pytest, RedactionVerificationError
+
+
+def test_a_text_run_artifact_is_scanned_not_dropped(tmp_path):
+    """The scan must be REAL. A diagram carrying an unredacted address has to be refused, or
+    "covered" would just mean "counted"."""
+    pytest, RedactionVerificationError = _pytest_error()
+    snapshot = tmp_path / "safe.snapshot.json"
+    snapshot.write_text(json.dumps({"devices": {}}), encoding="utf-8")
+
+    clean = tmp_path / "topology.mmd"
+    clean.write_text('graph LR\n    n0["core1"]\n    n0 --- n1\n', encoding="utf-8")
+    proof = certify_shareable_artifacts(snapshot, [clean])
+    assert clean.name in proof, "a .mmd run artifact must be verified, not silently discarded"
+
+    leaky = tmp_path / "topology.dot"
+    leaky.write_text('graph {\n  "core1" -- "acc1" [label="10.44.7.219"];\n}\n', encoding="utf-8")
+    with pytest.raises(RedactionVerificationError, match="leak indicator"):
+        certify_shareable_artifacts(snapshot, [leaky])
+
+
+def test_an_artifact_no_scanner_can_read_is_refused_not_silently_skipped(tmp_path):
+    """The other half of the shape fix. Dropping an unrecognised artifact returned a proof that
+    claimed a clean set over bytes nobody read; refusing says so out loud. A verifier may narrow
+    the caller's set only by telling the caller."""
+    pytest, RedactionVerificationError = _pytest_error()
+    snapshot = tmp_path / "safe.snapshot.json"
+    snapshot.write_text(json.dumps({"devices": {}}), encoding="utf-8")
+    opaque = tmp_path / "capture.pcap"
+    opaque.write_bytes(b"\xd4\xc3\xb2\xa1\x00\x04\x00\x02\xff\xfe\x00\x00")
+    with pytest.raises(RedactionVerificationError, match="cannot be certified"):
+        certify_shareable_artifacts(snapshot, [opaque])
+    # Non-vacuity: the same call over only the readable artifacts still succeeds.
+    assert set(certify_shareable_artifacts(snapshot, [])) == {snapshot.name}

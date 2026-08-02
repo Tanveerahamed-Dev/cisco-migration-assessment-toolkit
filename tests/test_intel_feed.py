@@ -7,6 +7,8 @@ into the Phase-4 self_healing loop routed to the security auditor (closing the e
 """
 import json
 
+import pytest
+
 from cisco_toolkit import intel_feed as IF
 from cisco_toolkit import self_healing as SH
 
@@ -21,6 +23,10 @@ def test_build_and_verify_roundtrip():
     text = IF.build_feed([_adv("cisco-sa-a"), _adv("cisco-sa-b")], generated="2026-07-07")
     res = IF.verify_feed(text)
     assert res["ok"] and len(res["entries"]) == 2 and res["manifest"]["sanitized"] is True
+    assert res["manifest"]["manifest_version"] == 2
+    assert res["manifest"]["integrity"] == "sha256"
+    assert res["authenticated"] is False
+    assert "authenticity not established" in res["reason"]
 
 
 def test_tampered_feed_is_refused():
@@ -37,10 +43,131 @@ def test_unsanitized_feed_is_refused():
     assert res["ok"] is False and "sanitized" in res["reason"]
 
 
+def test_manifest_count_mismatch_and_malformed_entries_are_refused_whole():
+    valid = IF.build_feed([_adv("cisco-sa-a")])
+    lines = valid.splitlines()
+    manifest = json.loads(lines[0])
+    manifest["n"] = 2
+    wrong_count = "\n".join([json.dumps(manifest), *lines[1:]]) + "\n"
+    assert IF.verify_feed(wrong_count)["ok"] is False
+
+    malformed_lines = ["not-json"]
+    malformed_manifest = {
+        "kind": "intel-feed-manifest",
+        "sha256": IF._sha256_of(malformed_lines),
+        "sanitized": True,
+        "producer": "test",
+        "generated": "",
+        "n": 1,
+    }
+    malformed = json.dumps(malformed_manifest) + "\nnot-json\n"
+    result = IF.verify_feed(malformed)
+    assert result["ok"] is False and result["entries"] == []
+
+
 def test_forbidden_identifier_is_refused_even_if_sanitized_flag_set():
     text = IF.build_feed([_adv("cisco-sa-a", title="issue at AcmeCorp core")])
     res = IF.verify_feed(text, forbidden=("AcmeCorp",))
     assert res["ok"] is False and "forbidden identifier" in res["reason"]
+
+
+@pytest.mark.parametrize(
+    ("literal", "kind"),
+    [
+        ("203.0.113.9", "IPv4"),
+        ("2001:db8::9", "IPv6"),
+        ("00:1a:2b:3c:4d:5e", "MAC"),
+        ("FDO2145A1BC", "serial"),
+        ("engineer@example.net", "email"),
+    ],
+)
+def test_standard_identifiers_are_refused_without_caller_denylist(literal, kind):
+    feed = IF.build_feed([
+        _adv("cisco-sa-a", title=f"forged sanitized entry containing {literal}")
+    ])
+    result = IF.verify_feed(feed)
+    assert result["ok"] is False
+    assert kind in result["reason"]
+    assert result["entries"] == []
+
+
+def test_engagement_intake_requires_and_enforces_a_derived_denylist():
+    clean = IF.build_feed([_adv("cisco-sa-a", title="generic platform advisory")])
+    missing = IF.verify_feed(clean, require_forbidden=True)
+    assert missing["ok"] is False
+    assert "denylist is required" in missing["reason"]
+
+    snap = {
+        "devices": {
+            "MERIDIAN-CORE-01": {"hostname": "MERIDIAN-CORE-01", "platform": "ios-xe"}
+        },
+        "engagement": {"client_name": "Meridian Reference"},
+    }
+    denylist = IF.engagement_identifiers(snap)
+    assert {"MERIDIAN-CORE-01", "Meridian Reference"}.issubset(set(denylist))
+    assert IF.verify_feed(
+        clean,
+        forbidden=denylist,
+        require_forbidden=True,
+    )["ok"] is True
+
+    leaked = IF.build_feed([
+        _adv("cisco-sa-b", title="finding observed on MERIDIAN-CORE-01")
+    ])
+    refused = IF.verify_feed(
+        leaked,
+        forbidden=denylist,
+        require_forbidden=True,
+    )
+    assert refused["ok"] is False
+    assert "forbidden identifier" in refused["reason"]
+
+
+def test_forbidden_scan_operates_on_decoded_json_not_escape_spelling():
+    entry_lines = [
+        '{"id":"field-note-1","title":"issue at Ac\\u006de core"}'
+    ]
+    manifest = {
+        "kind": "intel-feed-manifest",
+        "sha256": IF._sha256_of(entry_lines),
+        "sanitized": True,
+        "producer": "legacy-test",
+        "generated": "",
+        "n": 1,
+    }
+    feed = json.dumps(manifest) + "\n" + entry_lines[0] + "\n"
+    result = IF.verify_feed(feed, forbidden=("Acme",))
+    assert result["ok"] is False
+    assert "forbidden identifier" in result["reason"]
+
+
+def test_strict_json_duplicate_keys_nonfinite_values_and_duplicate_ids_are_refused():
+    duplicate_key_lines = ['{"id":"a","id":"b"}']
+    duplicate_key_manifest = {
+        "kind": "intel-feed-manifest",
+        "sha256": IF._sha256_of(duplicate_key_lines),
+        "sanitized": True,
+        "n": 1,
+    }
+    duplicate_key_feed = (
+        json.dumps(duplicate_key_manifest) + "\n" + duplicate_key_lines[0] + "\n"
+    )
+    assert "duplicate key" in IF.verify_feed(duplicate_key_feed)["reason"]
+
+    nonfinite_lines = ['{"id":"a","score":NaN}']
+    nonfinite_manifest = {
+        "kind": "intel-feed-manifest",
+        "sha256": IF._sha256_of(nonfinite_lines),
+        "sanitized": True,
+        "n": 1,
+    }
+    nonfinite_feed = json.dumps(nonfinite_manifest) + "\n" + nonfinite_lines[0] + "\n"
+    assert "non-standard JSON constant" in IF.verify_feed(nonfinite_feed)["reason"]
+
+    with pytest.raises(ValueError, match="duplicate advisory id"):
+        IF.build_feed([_adv("same"), _adv("same")])
+    with pytest.raises(ValueError, match="string id"):
+        IF.build_feed([{"id": 123, "title": "bad"}])
 
 
 def test_missing_manifest_is_refused():
@@ -52,7 +179,7 @@ def test_missing_manifest_is_refused():
 
 def test_load_feeds_empty_dir_is_honest(tmp_path):
     loaded = IF.load_feeds(str(tmp_path))
-    assert loaded["advisories"] == [] and "egress research lane is not wired" in loaded["note"]
+    assert loaded["advisories"] == [] and "no intel feed present" in loaded["note"]
 
 
 def test_load_feeds_reads_good_and_refuses_bad(tmp_path):
@@ -64,6 +191,86 @@ def test_load_feeds_reads_good_and_refuses_bad(tmp_path):
     loaded = IF.load_feeds(str(d))
     assert len(loaded["advisories"]) == 1 and loaded["advisories"][0]["id"] == "cisco-sa-a"
     assert len(loaded["refused"]) == 1 and "feed-2026-07-08.jsonl" == loaded["refused"][0]["feed"]
+
+
+def test_duplicate_advisory_ids_across_files_refuse_every_ambiguous_feed(tmp_path):
+    d = tmp_path / "intel"
+    d.mkdir()
+    (d / "feed-a.jsonl").write_text(
+        IF.build_feed([_adv("same-id"), _adv("only-a")]),
+        encoding="utf-8",
+    )
+    (d / "feed-b.jsonl").write_text(
+        IF.build_feed([_adv("same-id"), _adv("only-b")]),
+        encoding="utf-8",
+    )
+    (d / "feed-c.jsonl").write_text(
+        IF.build_feed([_adv("only-c")]),
+        encoding="utf-8",
+    )
+    loaded = IF.load_feeds(str(d))
+    assert [item["id"] for item in loaded["advisories"]] == ["only-c"]
+    assert {item["feed"] for item in loaded["refused"]} == {
+        "feed-a.jsonl",
+        "feed-b.jsonl",
+    }
+    assert all("duplicate advisory id" in item["reason"] for item in loaded["refused"])
+
+
+def test_feed_reparse_attribute_is_refused_before_open(tmp_path, monkeypatch):
+    feed = tmp_path / "feed-a.jsonl"
+    feed.write_text(IF.build_feed([_adv("a")]), encoding="utf-8")
+    actual = feed.stat()
+    marker = 0x400
+    monkeypatch.setattr(IF.stat, "FILE_ATTRIBUTE_REPARSE_POINT", marker, raising=False)
+
+    class ReparseStat:
+        st_mode = actual.st_mode
+        st_file_attributes = marker
+        st_dev = actual.st_dev
+        st_ino = actual.st_ino
+        st_size = actual.st_size
+
+    monkeypatch.setattr(IF.os, "lstat", lambda _path: ReparseStat())
+
+    def opened_anyway(*_args, **_kwargs):
+        pytest.fail("a reparse-point feed was opened before it was refused")
+
+    monkeypatch.setattr(IF.os, "open", opened_anyway)
+    with pytest.raises(ValueError, match="regular non-link"):
+        IF._read_feed_text(str(feed))
+
+
+def test_feed_identity_change_between_check_and_open_is_refused(tmp_path, monkeypatch):
+    feed = tmp_path / "feed-a.jsonl"
+    feed.write_text(IF.build_feed([_adv("a")]), encoding="utf-8")
+    actual = feed.stat()
+
+    class Before:
+        st_mode = actual.st_mode
+        st_dev = actual.st_dev
+        st_ino = actual.st_ino
+        st_size = actual.st_size
+
+    class After(Before):
+        st_ino = actual.st_ino + 1
+
+    stats = iter((Before(), After()))
+    monkeypatch.setattr(IF.os, "lstat", lambda _path: next(stats))
+    with pytest.raises(ValueError, match="identity changed"):
+        IF._read_feed_text(str(feed))
+
+
+def test_feed_aggregate_budget_refuses_the_set_whole(tmp_path, monkeypatch):
+    (tmp_path / "feed-a.jsonl").write_text(
+        IF.build_feed([_adv("a")]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(IF, "_MAX_FEED_TOTAL_BYTES", 1)
+    loaded = IF.load_feeds(str(tmp_path))
+    assert loaded["advisories"] == []
+    assert loaded["note"].startswith("aggregate feeds exceed")
+    assert loaded["refused"][-1]["feed"] == "*"
 
 
 # --- fleet matching + the self_healing loop ----------------------------------------------------
@@ -134,7 +341,8 @@ def test_forbidden_identifier_is_caught_in_its_device_spelling():
     attested `sanitized: true` with an empty redaction list and was consumed whole.
     """
     feed = IF.build_feed(
-        [{"title": "uplink flap", "detail": "ACME-BANK-CORE-01 lost its uplink", "source": "note"}],
+        [{"id": "field-note-1", "title": "uplink flap",
+          "detail": "ACME-BANK-CORE-01 lost its uplink", "source": "note"}],
         sanitized=True)
     # sanity: the feed is otherwise well-formed, so a refusal below is the identifier check firing
     # and not a manifest/hash problem.

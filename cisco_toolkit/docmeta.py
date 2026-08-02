@@ -15,6 +15,10 @@ writers only call in after their own `from docx import …` has succeeded, so th
 unchanged.
 """
 from datetime import datetime
+import json
+import os
+import zipfile
+from xml.etree import ElementTree
 
 from cisco_toolkit.textutils import xml_safe   # shared XML-illegal-char sanitizer (every cell text routes through it)
 
@@ -95,6 +99,136 @@ def cli_artifacts(stem):
     base = str(stem).replace("\\", "/").rsplit("/", 1)[-1]
     return [(key, name, base + CLI_ARTIFACT_SUFFIX[key])
             for key, name, _role in FAMILY if key in CLI_ARTIFACT_SUFFIX]
+
+
+def artifact_candidate_paths(stem):
+    """Return the finite, producer-owned output set for one engine output ``stem``.
+
+    This is deliberately not a prefix glob.  A prefix glob turns an older run, an operator's
+    similarly-named note, or another concurrent run into evidence for the current assessment.
+    Callers use this exact set only to identify files which already existed and were *not* emitted
+    by the current run; the manifest itself is built exclusively from the live producer registry.
+    """
+    base = os.path.abspath(str(stem))
+    out_dir = os.path.dirname(base) or "."
+    paths = [base + suffix for suffix in CLI_ARTIFACT_SUFFIX.values()]
+    paths.extend([
+        base + ".snapshot.json",
+        base + ".phase_timings.json",
+        base + ".run_manifest.json",
+        os.path.join(out_dir, "topology.mmd"),
+        os.path.join(out_dir, "topology.dot"),
+    ])
+    # Preserve order while protecting against a future suffix collision.
+    return list(dict.fromkeys(os.path.normpath(p) for p in paths))
+
+
+def artifact_kind(path):
+    """Return the structural kind used to validate a generated artifact."""
+    name = os.path.basename(str(path)).lower()
+    if name.endswith(".phase_timings.json"):
+        return "phase-timings"
+    if name.endswith(".snapshot.json"):
+        return "snapshot"
+    if name.endswith(".run_manifest.json"):
+        return "manifest"
+    ext = os.path.splitext(name)[1]
+    return {
+        ".xlsx": "xlsx",
+        ".docx": "docx",
+        ".pptx": "pptx",
+        ".html": "html",
+        ".json": "json",
+        ".mmd": "mermaid",
+        ".dot": "graphviz",
+    }.get(ext, "file")
+
+
+_OFFICE_REQUIRED = {
+    "xlsx": ("[Content_Types].xml", "xl/workbook.xml"),
+    "docx": ("[Content_Types].xml", "word/document.xml"),
+    "pptx": ("[Content_Types].xml", "ppt/presentation.xml"),
+}
+
+
+def validate_artifact(path, kind=None):
+    """Structurally validate one generated file before it may enter custody.
+
+    Returns ``(ok, reason)`` and never raises for a malformed/partial file.  A successful writer
+    return is insufficient evidence of delivery: an interrupted ZIP write can leave a non-empty
+    ``.docx``/``.xlsx``/``.pptx`` which exists but cannot be opened, and a truncated JSON/HTML
+    writer can do the same.  The checks intentionally use only the standard library so the custody
+    gate works in the base installation and frozen Atlas build.
+    """
+    p = os.path.abspath(str(path))
+    k = str(kind or artifact_kind(p)).strip().lower()
+    try:
+        st = os.stat(p)
+    except OSError as exc:
+        return False, f"missing or unreadable: {exc}"
+    if not os.path.isfile(p):
+        return False, "not a regular file"
+    if st.st_size <= 0:
+        return False, "empty file"
+
+    if k in _OFFICE_REQUIRED:
+        try:
+            with zipfile.ZipFile(p, "r") as zf:
+                names = set(zf.namelist())
+                missing = [n for n in _OFFICE_REQUIRED[k] if n not in names]
+                if missing:
+                    return False, "invalid Office package; missing " + ", ".join(missing)
+                bad = zf.testzip()
+                if bad:
+                    return False, f"corrupt Office package member: {bad}"
+                for member in _OFFICE_REQUIRED[k]:
+                    ElementTree.fromstring(zf.read(member))
+        except (OSError, zipfile.BadZipFile, RuntimeError, ValueError,
+                ElementTree.ParseError) as exc:
+            return False, f"invalid Office package: {exc}"
+        return True, "valid Office Open XML package"
+
+    if k in ("json", "snapshot", "phase-timings", "manifest"):
+        try:
+            with open(p, encoding="utf-8-sig") as fh:
+                obj = json.load(fh)
+        except (OSError, UnicodeError, ValueError) as exc:
+            return False, f"invalid JSON: {exc}"
+        if k in ("snapshot", "phase-timings", "manifest") and not isinstance(obj, dict):
+            return False, f"{k} root is {type(obj).__name__}, not an object"
+        if k == "phase-timings" and not isinstance(obj.get("phases"), list):
+            return False, "phase-timings object has no phases list"
+        if k == "manifest" and not isinstance(obj.get("chain"), list):
+            return False, "manifest object has no chain list"
+        return True, "valid JSON"
+
+    if k == "html":
+        try:
+            with open(p, encoding="utf-8") as fh:
+                text = fh.read()
+        except (OSError, UnicodeError) as exc:
+            return False, f"invalid HTML text: {exc}"
+        low = text.lower()
+        if "<html" not in low or "</html>" not in low:
+            return False, "HTML document is missing its root/open or closing tag"
+        return True, "complete HTML document"
+
+    if k in ("mermaid", "graphviz"):
+        try:
+            with open(p, encoding="utf-8") as fh:
+                text = fh.read().strip()
+        except (OSError, UnicodeError) as exc:
+            return False, f"invalid diagram text: {exc}"
+        if k == "mermaid" and not (
+                text.startswith("graph ") or text.startswith("flowchart ")):
+            return False, "Mermaid document has no graph/flowchart declaration"
+        if k == "graphviz" and not (
+                (text.startswith("graph ") or text.startswith("digraph "))
+                and text.endswith("}")):
+            return False, "Graphviz document has no complete graph declaration"
+        return True, f"valid {k} document"
+
+    return True, "non-empty regular file"
 
 # Caveats every generated deliverable shares; writers append doc-specific ones via extra_assumptions.
 _ASSUMPTIONS = (
@@ -371,8 +505,15 @@ def _glance_rows(snap):
         ("What was assessed?", scope),
         ("How healthy is the fleet?",
          f"average health {v(f.get('avg_health'))}/100 — {v(f.get('n_critical'))} Critical, {v(f.get('n_poor'))} Poor"),
+        # The unknown count rides WITH the headline, not in a footnote. `v()` maps only None to
+        # [NOT OBSERVED], so a real 0 passed straight through and the first page of every
+        # deliverable led with "0 device(s) past last-date-of-support" for a fleet whose platforms
+        # the offline EoX KB never matched. Zero findings and zero coverage are different facts.
         ("Biggest lifecycle exposure?",
-         f"{v(f.get('n_past_ldos'))} device(s) past last-date-of-support (migration-critical)"),
+         f"{v(f.get('n_past_ldos'))} device(s) past last-date-of-support (migration-critical)"
+         + (f" — plus {f['n_unknown']} device(s) NOT ASSESSED: no EoX bulletin matched their "
+            f"platform, so their support state is undetermined, not clear"
+            if f.get("n_unknown") else "")),
         ("Scale (VLANs / endpoints)?",
          f"{v(f.get('n_vlans'))} production VLANs · {v(f.get('n_endpoints'))} evidenced endpoints"),
     ]
@@ -396,7 +537,7 @@ def add_excellence_front(doc, snap, *, extra_rows=(), heading="At a Glance"):
         if s.get("verified"):
             # `n_facts` and `n_checked` are NOT the same unit and must never share an "X of Y" frame:
             # n_facts counts the canonical facts PUBLISHED (14), n_checked counts the reconcile CHECKS
-            # that RAN (20 on the [HISTORY-REDACTED] fleet — several facts carry more than one independent basis, and
+            # that RAN (20 on the Meridian reference fleet — several facts carry more than one independent basis, and
             # reconcile also verifies non-canonical siblings such as lifecycle_risk.summary.by_band).
             # Rendered as "{n_checked} of {n_facts}" this shipped "✓ 20 of 14 headline figures
             # self-verified" into all seven DOCX deliverables: a client-facing trust badge claiming more

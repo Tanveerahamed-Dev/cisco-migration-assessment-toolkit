@@ -22,7 +22,34 @@
 # backtick or quote in it can ever be interpolated by the shell — the class that once silently
 # broke the post-commit graph hook.
 set -u
-PY=$(command -v python || command -v python3 || echo python)
+# Resolve an interpreter that actually RUNS, not merely one that resolves.
+#
+# `command -v python` SUCCEEDS for the Microsoft Store App-Execution-Alias stub, which prints
+# "Python was not found" and exits 9009. The verdict below then comes back empty, no BLOCK case
+# matches, and this hook exits 0 = ALLOW. Reproduced on this host with the tests running under Git
+# Bash: a Write to the vault ROOT was ALLOWED (rc=0) with EMPTY stderr — the ADR-0001 write guard
+# silently not guarding, and nothing anywhere saying so.
+#
+# Fail-open stays (a hook bug must never wedge a turn) but becomes a LAST resort after a real
+# search, and it is LOUD. An inert guard that says nothing is indistinguishable from a guard that
+# ran and approved the write.
+PY=""
+for _cand in python python3; do
+  _p=$(command -v "$_cand" 2>/dev/null) || continue
+  if "$_p" -c "import sys" >/dev/null 2>&1; then PY="$_p"; break; fi
+done
+if [ -z "$PY" ] && command -v py >/dev/null 2>&1; then
+  for _v in -3.12 -3; do
+    _p=$(py "$_v" -c "import sys; print(sys.executable)" 2>/dev/null) || continue
+    if [ -n "$_p" ] && [ -x "$_p" ]; then PY="$_p"; break; fi
+  done
+fi
+if [ -z "$PY" ]; then
+  echo "vault-guard: no WORKING Python interpreter found (PATH may hold only Microsoft Store stubs)." >&2
+  echo "The ADR-0001 vault write-guard did NOT run — it is INERT, not satisfied. The default" >&2
+  echo "permission mode remains the hard floor." >&2
+  exit 0
+fi
 VERDICT=$("$PY" -c 'import json,posixpath,sys
 try:
     d=json.load(sys.stdin)

@@ -1,77 +1,110 @@
 # Releasing
 
-Releases are cut by **pushing a version tag**. A GitHub Actions workflow
-([`.github/workflows/release.yml`](.github/workflows/release.yml)) then creates the GitHub Release
-automatically, with notes generated from the merged PRs since the previous tag.
+Releases are immutable promotions of one reviewed Git commit. The tag workflow
+builds and verifies the wheel and source archive once, attaches those exact
+files to a GitHub Release, and records their SHA-256 digests in
+`dist-verification.json`. PyPI publishing is a separate, protected manual
+promotion of those assets; it never rebuilds them.
 
-## Two version numbers (intentional)
+## Version contract
 
-This project deliberately keeps two distinct versions — don't try to unify them:
+The repository intentionally has two version axes:
 
-| Where | Value | Meaning |
-|------|-------|---------|
-| `pyproject.toml` → `[project].version` | the **release** version (e.g. `3.23.142`) | tracks the change log and the git tags; what `pip` reports |
-| `cisco_toolkit.__version__` | pinned at **`3.23.0`** | the **snapshot-schema** version baked into the data contract (`script_version` in every snapshot). Bumping it would change the frozen golden snapshot (`tests/golden/snapshot.json`), so it stays put. The change log records "In-code version `3.23.0`" for every entry. |
+| Location | Meaning |
+|---|---|
+| `pyproject.toml` → `project.version` | Product release and Git tag version |
+| `cisco_toolkit.__version__` | Snapshot-schema version embedded in assessment data |
 
-So a release bumps **`pyproject.toml`**, never `__version__`.
+Only the product release changes for an ordinary release. Change the snapshot
+schema version only with an explicit data-contract migration and updated
+compatibility tests.
 
-## Cutting a release
+## Preconditions
 
-1. Make sure `main` is green in CI and the change log
-   ([`COLLECT_PARSE_V3_23_0.md`](COLLECT_PARSE_V3_23_0.md)) has an entry for the work.
-2. Bump `version` in [`pyproject.toml`](pyproject.toml) to the new release number (match the latest
-   `V3.23.x` in the change log), commit, and merge to `main`.
-3. Tag the release commit and push the tag:
+Before tagging:
 
-   ```bash
-   git checkout main && git pull
-   git tag -a v3.23.143 -m "v3.23.143"
-   git push origin v3.23.143
-   ```
+1. Merge the release commit to `main`.
+2. Confirm all required CI checks are green, including the full Python matrix,
+   coverage, frontend/backend tests, dependency audit, privacy gate, and
+   distribution contract.
+3. Ensure `pyproject.toml` contains the intended release version.
+4. Review the change log and the master reference for user-visible changes.
+5. Confirm the GitHub `pypi` environment still requires the intended approval
+   policy before any public package promotion.
 
-4. The **Release** workflow fires on the tag and creates the GitHub Release with auto-generated notes.
-   Nothing else to do. (The job is idempotent — re-running or pre-creating the Release by hand is safe.)
+## Create the release
 
-## Notes
+Create an **annotated** tag whose value is exactly `v` plus the
+`pyproject.toml` version:
 
-- Tags use a leading `v` (`v3.23.143`); the workflow triggers on `v*`.
-- The first release (`v3.23.142`) was bootstrapped with a concise hand-written note pointing at the
-  change log (the auto-generated "everything since the first commit" would have listed ~200 PRs); every
-  subsequent tag gets a tidy auto-generated diff against the previous tag.
-- No build artifacts are attached to the GitHub Release: the *deliverables* (workbook / explorer /
-  runbook) are generated at runtime from a live collection, not shipped in the repo. The installable
-  package itself goes to PyPI (below), not the Release.
+```bash
+git switch main
+git pull --ff-only
+git tag -a v3.31.0 -m "v3.31.0"
+git push origin v3.31.0
+```
 
-## Publishing to PyPI (optional)
+The `Release` workflow fails closed unless:
 
-The package builds a complete, PyPI-valid sdist + wheel (the explorer template and KB data are bundled
-inside the package, and `twine check` passes). Publishing is wired up via
-[`.github/workflows/publish.yml`](.github/workflows/publish.yml) using **trusted publishing** (OIDC —
-no API token is stored anywhere). It is **opt-in**: it runs on a manual *Run workflow* (or when you
-publish a GitHub Release through the UI), never automatically on a tag, because a PyPI upload is
-irreversible.
+- the ref is an annotated `vX.Y.Z` tag;
+- its version exactly matches `pyproject.toml`;
+- the checked-out commit is the tagged commit; and
+- that commit is an ancestor of `origin/main`.
 
-> ⚠️ **License note.** The repo currently has **no license** (all rights reserved). Publishing to PyPI
-> makes the package publicly `pip install`-able, but without a license others still have no legal right
-> to redistribute or modify it. PyPI does not require an OSI license, but decide whether public
-> installability is what you want before the first publish.
+For a new tag, the workflow rebuilds and tests the AssessHub SPA, creates
+exactly one wheel and one source archive, validates metadata, entry points,
+runtime assets, wheel `RECORD` hashes, archive path safety, and the privacy
+boundary, installs the wheel outside the checkout, runs entry-point and
+authoritative-registry smoke tests, and attaches the verified archives plus
+`dist-verification.json` to the GitHub Release.
 
-**One-time PyPI setup** (only you can do this — it needs your PyPI account):
+Re-running an existing release downloads and re-verifies its existing assets.
+It does not replace them with a fresh build.
 
-1. On <https://pypi.org>, add a **trusted publisher** for the project (PyPI → *Your projects* → the
-   project → *Publishing*, or use the *pending publisher* flow for a brand-new project that isn't on
-   PyPI yet). Fill in:
-   - **Owner:** `Tanveerahamed-Dev`
-   - **Repository:** `cisco-migration-assessment-toolkit`
-   - **Workflow filename:** `publish.yml`
-   - **Environment:** `pypi`
-2. In GitHub → *Settings → Environments*, create an environment named **`pypi`** (optionally add a
-   required reviewer for a manual approval gate before each publish).
+## Promote the exact release to PyPI
 
-**To publish a version:**
+Publishing is intentionally manual because a PyPI version cannot be replaced.
+Run **Publish verified release to PyPI** and supply the existing tag, for
+example `v3.31.0`.
 
-1. Cut the release as above (bump `pyproject.toml` version, tag, push — the Release is created).
-2. GitHub → *Actions → Publish to PyPI → Run workflow* (or publish the GitHub Release via the UI).
-3. The workflow builds the sdist + wheel, runs `twine check`, and uploads via the trusted publisher.
+The workflow:
 
-To build/inspect locally first: `pip install build twine && python -m build && twine check dist/*`.
+1. checks out that exact tag and repeats the tag/version/main-ancestry gate;
+2. downloads the wheel and source archive from the GitHub Release;
+3. re-runs archive and metadata verification without rebuilding;
+4. publishes with PyPI trusted publishing (OIDC); and
+5. requests PyPI attestations for the uploaded files.
+
+One-time repository administration:
+
+- Configure the PyPI trusted publisher for
+  `Tanveerahamed-Dev/cisco-migration-assessment-toolkit`,
+  workflow `publish.yml`, environment `pypi`.
+- Protect the `pypi` GitHub environment with a required reviewer.
+- Decide explicitly whether public installability is appropriate. The package
+  is proprietary (`LicenseRef-Proprietary`); publication grants no additional
+  rights beyond the `LICENSE`.
+
+## Local release-candidate verification
+
+From a clean checkout with Node 20+ and Python 3.12:
+
+```bash
+cd webapp/frontend
+npm ci
+npm test
+npm run build
+cd ../..
+source_commit="$(git rev-parse 'HEAD^{commit}')"
+source_tree="$(git rev-parse 'HEAD^{tree}')"
+python -m pip install "build==1.5.0" "twine==6.2.0"
+python -m build --sdist --wheel --outdir dist
+python -m twine check dist/*
+python -m cisco_toolkit.distribution_verify dist \
+  --source-commit "$source_commit" \
+  --source-tree "$source_tree" \
+  --json-out dist-verification.json
+```
+
+Do not publish locally. The protected workflow is the authoritative promotion
+path and is the only path that binds the reviewed tag to the released bytes.

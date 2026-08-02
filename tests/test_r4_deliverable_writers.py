@@ -130,7 +130,7 @@ def test_mop_pure_mbb_decommissions_legacy_only_after_the_go_no_go_gate(tmp_path
     assert decom is not None and gate is not None, steps
     assert gate < decom, (
         "the legacy path is decommissioned BEFORE the §4.6 go/no-go gate — the rollback's fallback "
-        f"is gone by the time the decision is taken:\n" + "\n".join(steps))
+        "is gone by the time the decision is taken:\n" + "\n".join(steps))
     # and the step must say so, not merely be positioned there
     assert "ONLY once" in steps[decom] and "4.6" in steps[decom]
 

@@ -118,7 +118,7 @@ def _ev(hosts, cap: int = 12, total=None) -> str:
 
     `total` is the TRUE population size for the case where `hosts` is ITSELF already a sample: a
     check's stored `evidence` is capped at `_EVIDENCE_CAP` by `add()`, so a "+N more" computed off
-    the stored list understates the scope by everything the first cut dropped -- on the [HISTORY-REDACTED] fleet
+    the stored list understates the scope by everything the first cut dropped -- on the Meridian reference fleet
     L2-3 carries 230 evidence hosts, and the §3 scorecard rendered "5 shown +15 more" for it.
     Shown + hidden must reconcile to the real total, so the caller passes the check's
     `evidence_total` (absent when nothing was dropped, hence the None default)."""
@@ -142,7 +142,7 @@ def _clip(text, width: int) -> str:
 
     A raw ``str(...)[:60]`` on a device-derived string ends mid-word, and the reader has no way to
     tell a clipped title from a complete one (the same failure the Findings-Delta devices column had:
-    a hostname's front half read as a hostname). Measured on the [HISTORY-REDACTED] fleet: 1 of 3 rendered
+    a hostname's front half read as a hostname). Measured on the Meridian reference fleet: 1 of 3 rendered
     High/Critical drift titles is 69 chars and was cut mid-word."""
     s = str(text if text is not None else "")
     if len(s) <= width:
@@ -238,7 +238,7 @@ def compute_architecture_review(snap: dict) -> dict:
             evidence=()):
         # The evidence cut is DISCLOSED, never silent: every renderer of `evidence` shows a
         # "+N more" tail, and computing that N from the already-capped list is a lie about scope
-        # ([HISTORY-REDACTED] fleet: 8 of 25 checks exceed the cap -- L2-3 at 230 hosts rendered as "+15 more",
+        # (Meridian reference fleet: 8 of 25 checks exceed the cap -- L2-3 at 230 hosts rendered as "+15 more",
         # LC-1 152, HIER-1 116, SEC-1 74, HIER-2 67, L2-1 42, RES-1 21, L2-5 21).
         # `evidence_total` is emitted ONLY when something was actually dropped -- an unconditional
         # key would restate `len(evidence)` on every check for no reader.
@@ -428,7 +428,7 @@ def compute_architecture_review(snap: dict) -> dict:
             "Re-run the assessment with the current engine.",
             "Availability analysis — single-device blast radius")
     elif keystones:
-        # This names 5 of len(keystones) — 193 on the [HISTORY-REDACTED] fleet, 19 on the sample — and without the
+        # This names 5 of len(keystones) — 193 on the Meridian reference fleet, 19 on the sample — and without the
         # tail sentence it reads as the complete keystone set, i.e. "the fleet has five keystones".
         # A migration that hardens those five leaves the rest unhardened and sequences waves off the
         # wrong blast-radius population. The band is read off the DESCENDING tail so it can never
@@ -486,7 +486,7 @@ def compute_architecture_review(snap: dict) -> dict:
         add("L2-1", D3, "Deterministic STP root at the distribution tier", "deviation",
             "Access switch(es) hold the STP root: "
             # This sentence is the check's whole statement of SCOPE — how many closets the design
-            # must re-pin. Naming 6 of len(access_roots) (42 on the [HISTORY-REDACTED] fleet, 17 on the sample) sizes
+            # must re-pin. Naming 6 of len(access_roots) (42 on the Meridian reference fleet, 17 on the sample) sizes
             # an LLD task list and a per-wave STP risk off a display cap.
             + "; ".join(f"{h} roots {roots_by_host[h]} VLAN(s)" for h in access_roots[:6])
             + (f"; and {len(access_roots) - 6} further access switch(es) rooting "
@@ -1063,7 +1063,7 @@ def compute_architecture_review(snap: dict) -> dict:
     # -> snap['segmentation'] -- read here via ssot.segmentation_facts (interface-derived fallback for
     # pre-segmentation snapshots). The local recount this replaced asked a DIFFERENT question under the
     # owner's label: it counted every non-default VRF configured ANYWHERE (mgmt0's management VRF, a vPC
-    # keepalive VRF) as a "VRF in use", so on the [HISTORY-REDACTED] fleet it rendered "4 VRF(s) in use" beside the
+    # keepalive VRF) as a "VRF in use", so on the Meridian reference fleet it rendered "4 VRF(s) in use" beside the
     # runbook's "1 VRF(s) across 231 gateway SVI(s)" off the same snapshot -- and, worse, those 4
     # gateway-less VRFs made `not vrfs` False, downgrading a fabric the owner calls FLAT from the
     # deviation branch to "advisory / partial enforcement". Only VRFs that actually CARRY a gateway SVI
@@ -1111,47 +1111,79 @@ def compute_architecture_review(snap: dict) -> dict:
     lc_sum = _as_dict(_as_dict(snap.get("lifecycle_risk")).get("summary"))
     n_ldos, n_eos, n_near = (_as_int(lc_sum.get("n_past_ldos")), _as_int(lc_sum.get("n_past_eos")),
                              _as_int(lc_sum.get("n_near")))
+    # Published by analyze.compute_lifecycle_risk (analyze.py:6199) and, until now, read by nothing
+    # in this chain — which is exactly how an all-Unknown fleet reached the `conforms` branch below.
+    n_unknown = _as_int(lc_sum.get("n_unknown"))
     lc_dev = [str(_as_dict(r).get("host")) for r in
               _as_list(_as_dict(snap.get("lifecycle_risk")).get("per_device"))
               if _as_dict(r).get("band") in ("Past-EoS", "Past-LDoS")]
+    # COVERAGE is ORTHOGONAL to what was FOUND, so it must not be chained behind the findings.
+    # Subordinated as an `elif` (the shape crd.py carried until this round), the coverage disclosure
+    # fired only when every adverse count was zero — so the BROWNFIELD fleet, some gear banded and
+    # most not, lost it entirely. Measured: 1 Past-LDoS + 20 Unknown emitted verdict `critical`
+    # reading "1 device(s) are past LAST-DAY-OF-SUPPORT: sw0." and never mentioned the 20 devices
+    # whose support state was never determined — while LC-1 feeds domains[].score_pct, the
+    # conformance grade, the Architecture Review DOCX and its workbook sheet.
+    #
+    # Build the coverage sentence ONCE and append it through a wrapper, so EVERY LC-1 exit carries
+    # it by construction rather than by each branch remembering to. A future branch cannot forget.
+    _lc_cov_obs = (f" Separately, {n_unknown} device(s) could NOT be lifecycle-banded — no EoX "
+                   "bulletin in the offline KB covers their platform, so their support state is "
+                   "UNKNOWN, never determined, and this check is unanswered for them."
+                   if n_unknown else "")
+    _lc_cov_imp = (" The undetermined device(s) carry no evidence of vendor support in either "
+                   "direction; absent lifecycle data is not a pass, and a plan that assumes it is "
+                   "may stage a platform with no TAC path into a change window."
+                   if n_unknown else "")
+    _lc_cov_rec = (" Resolve every undetermined platform against Cisco's EoX portal and re-run, or "
+                   "record them as an accepted risk in the engagement RAID log."
+                   if n_unknown else "")
+
+    def add_lc(verdict, observed, implication, recommendation, evidence=()):
+        add("LC-1", D8, "No hardware past end-of-support", verdict,
+            observed + _lc_cov_obs, implication + _lc_cov_imp, recommendation + _lc_cov_rec,
+            "Cisco EoX policy — no TAC/software support past last-day-of-support", evidence=evidence)
+
     if not lc_sum:
-        add("LC-1", D8, "No hardware past end-of-support", "not-assessable",
-            "Lifecycle analysis is absent from this snapshot.", "—",
-            "Re-run the assessment with the current engine (offline EoL KB).",
-            "Cisco EoX policy — no TAC/software support past last-day-of-support")
+        add_lc("not-assessable", "Lifecycle analysis is absent from this snapshot.", "—",
+               "Re-run the assessment with the current engine (offline EoL KB).")
     elif n_ldos:
-        add("LC-1", D8, "No hardware past end-of-support", "critical",
-            f"{n_ldos} device(s) are past LAST-DAY-OF-SUPPORT"
-            # bands are EXCLUSIVE: n_eos is the Past-EoS-ONLY count. Every Past-LDoS device is ALSO past
-            # end-of-sale, so a bare "(and 0 past end-of-sale)" reads as "nothing is past EoS" — omit it
-            # when 0, and say "more" when >0 (the additional EoS-only devices).
-            + (f" (and {n_eos} more past end-of-sale)" if n_eos else "")
-            + ": " + _ev(lc_dev) + ".",
-            "Past LDoS there is NO TAC escalation path and no software fix — a fault during a "
-            "migration window on these devices has no vendor backstop.",
-            "Replace (not upgrade) the LDoS devices as the first migration waves; stage spares for "
-            "any that must briefly remain.",
-            "Cisco EoX policy — no TAC/software support past last-day-of-support",
-            evidence=lc_dev)
+        add_lc("critical",
+               f"{n_ldos} device(s) are past LAST-DAY-OF-SUPPORT"
+               # bands are EXCLUSIVE: n_eos is the Past-EoS-ONLY count. Every Past-LDoS device is ALSO past
+               # end-of-sale, so a bare "(and 0 past end-of-sale)" reads as "nothing is past EoS" — omit it
+               # when 0, and say "more" when >0 (the additional EoS-only devices).
+               + (f" (and {n_eos} more past end-of-sale)" if n_eos else "")
+               + ": " + _ev(lc_dev) + ".",
+               "Past LDoS there is NO TAC escalation path and no software fix — a fault during a "
+               "migration window on these devices has no vendor backstop.",
+               "Replace (not upgrade) the LDoS devices as the first migration waves; stage spares for "
+               "any that must briefly remain.",
+               evidence=lc_dev)
     elif n_eos:
-        add("LC-1", D8, "No hardware past end-of-support", "deviation",
-            f"{n_eos} device(s) past end-of-sale" + (f", {n_near} approaching LDoS" if n_near else "") + ".",
-            "Support windows are closing; replacement lead times belong in the plan now.",
-            "Schedule the EoS platforms into the early waves of the replacement plan.",
-            "Cisco EoX policy — no TAC/software support past last-day-of-support",
-            evidence=lc_dev)
+        add_lc("deviation",
+               f"{n_eos} device(s) past end-of-sale" + (f", {n_near} approaching LDoS" if n_near else "") + ".",
+               "Support windows are closing; replacement lead times belong in the plan now.",
+               "Schedule the EoS platforms into the early waves of the replacement plan.",
+               evidence=lc_dev)
     elif n_near:
-        add("LC-1", D8, "No hardware past end-of-support", "advisory",
-            f"{n_near} device(s) approaching last-day-of-support.",
-            "The window to plan replacement on normal lead times is open but finite.",
-            "Track the dates in the engagement RAID log.",
-            "Cisco EoX policy — no TAC/software support past last-day-of-support")
+        add_lc("advisory",
+               f"{n_near} device(s) approaching last-day-of-support.",
+               "The window to plan replacement on normal lead times is open but finite.",
+               "Track the dates in the engagement RAID log.")
     else:
-        add("LC-1", D8, "No hardware past end-of-support", "conforms",
-            "Every device with lifecycle data is in an Active support band.",
-            "Vendor support backs the whole migration.",
-            "Re-check EoX bulletins at each engagement gate (statuses move).",
-            "Cisco EoX policy — no TAC/software support past last-day-of-support")
+        # Nothing adverse was found. Whether that is a PASS depends entirely on coverage: with any
+        # undetermined device the honest verdict is `not-assessable`, because the sentence "every
+        # device with lifecycle data is in an Active support band" is VACUOUSLY true of a fleet
+        # nothing could band — a true sentence under a false verdict, the hardest form of
+        # "absence rendered as health" to spot. Measured on Catalyst 6500s years past support,
+        # banded Unknown because no retained bulletin covers them.
+        add_lc("not-assessable" if n_unknown else "conforms",
+               ("Every device that COULD be lifecycle-banded is in an Active support band."
+                if n_unknown else "Every device with lifecycle data is in an Active support band."),
+               ("Vendor support backs the banded devices only."
+                if n_unknown else "Vendor support backs the whole migration."),
+               "Re-check EoX bulletins at each engagement gate (statuses move).")
 
     sw_by_model = defaultdict(set)
     for h, d in devices.items():
@@ -1222,7 +1254,7 @@ def compute_architecture_review(snap: dict) -> dict:
                      f"practice; {n_by['critical']} critical and {n_by['deviation']} material "
                      f"deviation(s) require remediation"
                      + (f", concentrated in: {', '.join(worst_doms[:4])}"
-                        # "concentrated in: A, B, C, D" over 7 affected domains ([HISTORY-REDACTED] fleet) inverts
+                        # "concentrated in: A, B, C, D" over 7 affected domains (Meridian reference fleet) inverts
                         # the finding -- the deviations are FLEET-WIDE, not concentrated.
                         + (f" and {len(worst_doms) - 4} further domain(s)"
                            if len(worst_doms) > 4 else "")
@@ -1344,7 +1376,7 @@ def write_archreview_docx(output_path: str, snap_dict: dict, label: str) -> None
     top = _as_list(ar.get("top_actions"))
     if top:
         # The queue is the top 10 of every actionable check; unqualified, a 10-row table titled
-        # "Priority remediation queue" reads as the WHOLE remediation scope ([HISTORY-REDACTED] fleet: 19 actionable
+        # "Priority remediation queue" reads as the WHOLE remediation scope (Meridian reference fleet: 19 actionable
         # checks, sample fleet: 14). Recomputed from `checks`, so an older snapshot discloses too.
         n_actionable = sum(1 for c in _as_list(ar.get("checks"))
                            if isinstance(c, dict)

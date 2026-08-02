@@ -97,7 +97,7 @@ in synthetic data until adversarial review on a *real* snapshot (memory: `pr277-
 ---
 
 ## DATA-GATED — cannot be actioned now (flag for the next real collection)
-- **Collect the 50 uncollected DS/CS core switches** — redundancy is currently **UNKNOWN**; the single biggest evidence unlock (memory: `canonical-[HISTORY-REDACTED]-fleet.md`, `pending-on-new-data.md`).
+- **Collect the 50 uncollected DS/CS core switches** — redundancy is currently **UNKNOWN**; the single biggest evidence unlock (memory: `canonical-reference-fleet.md`, `pending-on-new-data.md`).
 - **fib #19 multi-VRF** (VRF-keyed `RouteEntry`) — unblocks G2 zonematrix + cross-VRF path asserts.
 - Port-security NX-OS un-blinding; BCDOH 9300 `show environment all`; BGP received-prefix depth.
 - The three O(N³) perf terms (dependency-map 8.7×, causality-chains 6.5×, failure-impact 5.8×) — need a real 300+ device fleet **or** a synthetic-fleet builder to validate the relief.

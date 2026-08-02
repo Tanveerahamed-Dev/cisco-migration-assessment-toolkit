@@ -243,7 +243,7 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
   );
 
   // audit-5 FH#21: derive the legend from the bands actually present, so the engine's 'Insufficient Data' band
-  // (uncollected devices — e.g. 50 of the 303 [HISTORY-REDACTED] fleet) is EXPLAINED rather than silently absent from the legend
+  // (uncollected devices — e.g. 50 of the 303 Meridian reference fleet) is EXPLAINED rather than silently absent from the legend
   // while those nodes still render. Canonical order; fall back to the standard five if none match.
   const _bandsPresent = ["Excellent", "Good", "Fair", "Poor", "Critical", "Insufficient Data"]
     .filter((b) => view.nodes.some((n) => (n.band || "") === b));

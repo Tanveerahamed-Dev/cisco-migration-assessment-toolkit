@@ -191,10 +191,19 @@ needs_bash = pytest.mark.skipif(
 
 
 def _make_failing_python_shim(tmp_path):
-    """A directory holding `python`/`python3` that always fail — a broken interpreter."""
+    """A directory holding every interpreter name the hooks try, all failing.
+
+    ``py`` is in this list because the hooks now fall back to the Windows launcher when
+    ``python``/``python3`` resolve to something that does not RUN (the Microsoft Store
+    App-Execution-Alias stub — see .claude/hooks/*.sh). Shadowing only python/python3 left a
+    WORKING interpreter reachable, so the hook produced a perfectly healthy briefing and the
+    "degraded run must be loud" assertion below was testing a scenario that no longer existed.
+    A fixture that no longer manufactures its own precondition is the quietest way for a test
+    to stop testing anything.
+    """
     shim = tmp_path / "shim"
     shim.mkdir()
-    for name in ("python", "python3"):
+    for name in ("python", "python3", "py"):
         p = shim / name
         p.write_text("#!/bin/sh\necho 'simulated interpreter failure' >&2\nexit 1\n",
                      encoding="utf-8")
@@ -215,11 +224,14 @@ def _assert_shim_is_honoured(shim, env):
     Without this the test could pass for the wrong reason (or, worse, quietly stop
     testing anything) if PATH injection were ignored on some host.
     """
-    p = subprocess.run([_BASH, "-c", "command -v python"], env=env,
-                       capture_output=True, text=True, timeout=60)
-    assert shim.name in p.stdout, (
-        "PATH injection was not honoured by bash (resolved %r); this test cannot "
-        "simulate a broken interpreter on this host" % p.stdout.strip())
+    for name in ("python", "python3", "py"):
+        p = subprocess.run([_BASH, "-c", "command -v %s || true" % name], env=env,
+                           capture_output=True, text=True, timeout=60)
+        assert shim.name in p.stdout, (
+            "PATH injection was not honoured by bash for %r (resolved %r); this test cannot "
+            "simulate a broken interpreter on this host. Every name the hooks try must be "
+            "shadowed — one reachable working interpreter and the 'degraded' scenario silently "
+            "becomes a healthy one." % (name, p.stdout.strip()))
 
 
 @needs_bash

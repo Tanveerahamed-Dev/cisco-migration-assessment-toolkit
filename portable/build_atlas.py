@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -135,9 +137,13 @@ def smoke(port: int) -> None:
         print("    engine argparse reached (usage: cisco-assess …)")
 
         print(f"[smoke 4/4] serve + HTTP probes on 127.0.0.1:{port}")
+        instance_nonce = secrets.token_urlsafe(24)
+        child_env = dict(os.environ)
+        child_env["ASSESSHUB_INSTANCE_NONCE"] = instance_nonce
         srv = subprocess.Popen([str(EXE), "--no-browser", "--port", str(port), "--db", db],
                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                               stderr=subprocess.STDOUT, encoding="utf-8", errors="replace")
+                               stderr=subprocess.STDOUT, encoding="utf-8", errors="replace",
+                               env=child_env)
         try:
             base = f"http://127.0.0.1:{port}"
             deadline = time.monotonic() + 60
@@ -148,8 +154,14 @@ def smoke(port: int) -> None:
                     raise SystemExit(f"server exited early (code {srv.returncode}):\n{out[-1200:]}")
                 try:
                     with urllib.request.urlopen(base + "/api/health", timeout=3) as r:
-                        if r.status == 200:
+                        health = json.load(r)
+                        if (r.status == 200
+                                and health.get("instance_nonce") == instance_nonce
+                                and srv.poll() is None):
                             break
+                        last_err = RuntimeError(
+                            "health response did not identify the spawned Atlas child")
+                        time.sleep(0.5)
                 except (urllib.error.URLError, OSError) as e:  # not up yet
                     last_err = e
                     time.sleep(0.5)

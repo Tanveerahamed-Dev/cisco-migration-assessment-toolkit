@@ -140,9 +140,9 @@ def _hook_repo(tmp_path, filename, body):
     return tmp_path
 
 
-def _run_hook(repo):
+def _run_hook(repo, env=None):
     return subprocess.run([_BASH, _HOOK], cwd=str(repo), capture_output=True, text=True,
-                          timeout=300)
+                          timeout=300, env=env)
 
 
 @_needs_shell
@@ -161,6 +161,25 @@ def test_stop_hook_ALLOWS_a_green_suite(tmp_path):
     p = _run_hook(_hook_repo(tmp_path, "test_probe.py", _GREEN_TEST))
     assert p.returncode == 0, (
         f"a passing suite still blocked (rc={p.returncode}). stderr={p.stderr[-400:]!r}")
+
+
+@_needs_shell
+def test_stop_hook_BLOCKS_when_verification_times_out(tmp_path):
+    """A timed-out suite is incomplete and therefore cannot prove green."""
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    repo = _hook_repo(repo_dir, "test_probe.py", _GREEN_TEST)
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    timeout = shim / "timeout"
+    timeout.write_text("#!/bin/sh\nexit 124\n", encoding="utf-8", newline="\n")
+    timeout.chmod(0o755)
+    env = dict(os.environ)
+    env["PATH"] = str(shim) + os.pathsep + env.get("PATH", "")
+    p = _run_hook(repo, env=env)
+    assert p.returncode == 2, (
+        f"an incomplete timed-out suite was allowed (rc={p.returncode}); stderr={p.stderr!r}")
+    assert "BLOCKED" in p.stderr and "partial suite" in p.stderr
 
 
 @_needs_shell
@@ -263,3 +282,37 @@ def test_stop_hook_still_gates_a_path_git_has_to_quote(tmp_path):
     assert p.returncode == 2, (
         f"a red suite in a quoted-path file was NOT gated (rc={p.returncode}) -- the "
         f"change detector missed it. porcelain={porcelain!r}")
+
+
+def test_stop_hook_parallelises_only_when_xdist_is_actually_importable():
+    """The gate's 540s bound sits inside the serial suite's 486-611s load variance, so the hook runs
+    pytest under xdist to get back outside it. Two ways that fix could rot into a lie:
+
+    1. Passing `-n auto` unconditionally. Where pytest-xdist is not installed, pytest exits non-zero
+       on the unknown option and this gate reports "pytest is failing after your Python changes" --
+       the false RED the hook's own header warns about, on a perfectly green suite. The flag must be
+       gated on an actual import check, not on the pyproject declaration.
+    2. Losing `--dist loadfile`. The default `load` scatters a module's tests across workers, so each
+       module-scoped fixture re-runs once per worker that receives one of its tests
+       (test_phase_timings_contract's real `--redact` pipeline run is ~14s of setup). That is a
+       correctness-adjacent cost, not just a slow one.
+
+    Text-level, deliberately: the executed gate below cannot distinguish "ran in parallel" from
+    "ran serially" by its exit code, which is exactly why this needs pinning separately.
+    """
+    hook = _read(".claude", "hooks", "verify-green.sh")
+    assert "-n auto" in hook, "the Stop hook no longer parallelises — the 540s bound will flap again"
+    assert "--dist loadfile" in hook, \
+        "parallel run lost --dist loadfile; module-scoped fixtures will re-run per worker"
+    assert "import xdist" in hook, \
+        "the -n flag is not gated on an import check — a host without xdist gets a false RED"
+    # the flag must be carried in a variable that is left UNQUOTED at the call site, or it reaches
+    # pytest as one argv entry ("-n auto --dist loadfile") and pytest rejects it.
+    assert "$PARALLEL >" in hook, "PARALLEL is quoted or absent at the pytest call site"
+
+
+def test_pyproject_declares_xdist_so_a_fresh_dev_install_gets_the_gate_it_needs():
+    """The hook degrades to serial without xdist -- silently, and back into the flapping band. The
+    dependency has to be declared, or a fresh `pip install -e .[dev]` reintroduces the problem."""
+    pyproject = _read("pyproject.toml")
+    assert "pytest-xdist" in pyproject, "pytest-xdist is not declared in [dev]"

@@ -353,12 +353,27 @@ def test_cable_map_of_snapshot_prefers_stored_then_rehydrates():
 
 
 def _delta_snap(acc_status="connected"):
+    """A two-switch snapshot whose ONLY variable is the access port's link status.
+
+    `health_scores` and `punchlist` are not scenery — without them the delta cannot certify at
+    all. `compute_snapshot_delta` treats a missing analysis section as an integrity gap and takes
+    its FIRST verdict branch, `INDETERMINATE` ("Delta certification withheld ... No missing/failed
+    section was interpreted as clean"), which is correct: a snapshot carrying no health data has
+    not been shown to be healthy. An interfaces-only fixture can therefore never reach CLEAN or
+    REGRESSED, so the verdict assertions below were measuring the fixture's thinness rather than
+    the cabling logic they name. Both sections are held IDENTICAL across the pair so the link
+    status stays the only moving part.
+    """
     return {"interfaces": {
         "CORE-1": {"Gi1/0/1": {"port": "Gi1/0/1", "status": "connected", "cdp_neighbor": "ACC-1",
                                "neighbor_port": "Gi1/0/24", "endpoint_type": "Switch"}},
         "ACC-1": {"Gi1/0/24": {"port": "Gi1/0/24", "status": acc_status, "cdp_neighbor": "CORE-1",
                                "neighbor_port": "Gi1/0/1", "endpoint_type": "Switch"}},
-    }}
+    },
+        "health_scores": [{"switch": "CORE-1", "band": "Good", "score": 88},
+                          {"switch": "ACC-1", "band": "Good", "score": 85}],
+        "punchlist": [],
+    }
 
 
 def test_snapshot_delta_carries_cabling_and_verdict():

@@ -12,12 +12,13 @@ import re
 from typing import Dict, List, Optional, Tuple
 
 from openpyxl.cell.cell import Cell, MergedCell
+from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from cisco_toolkit.analyze import (
-    _health_band, _physical_uplink_index, _poe_device_util, build_network_model,
-    compute_findings, compute_move_groups, compute_topology_links,
+    _UNCLASSIFIED_OVERLAY_STATUS, _health_band, _physical_uplink_index, _poe_device_util,
+    build_network_model, compute_findings, compute_move_groups, compute_topology_links,
 )
 from cisco_toolkit.brand_tokens import DOC_NAVY_HEX, WORKBOOK_NAVY_HEX
 from cisco_toolkit.cmdio import _load_cmd_output
@@ -265,7 +266,7 @@ HEADER_TO_FIELD = {
     "spanning tree rootguard (enable/disable)": "stp_rootguard",
     "spanning tree rootguard": "stp_rootguard",
     "poe status": "poe_status",
-    "system owner ([HISTORY-REDACTED] to confirm)": "system_owner", "system owner": "system_owner",
+    "system owner (customer to confirm)": "system_owner", "system owner": "system_owner",
     "end point type": "endpoint_type",
     "end point location rack-unit": "endpoint_location", "end point location": "endpoint_location",
     "dual connection": "dual_connection",
@@ -645,7 +646,7 @@ def write_endpoint_census_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfac
     # Disclose the basis vs the canonical evidenced-endpoint total: this sheet lists learned MACs on ALL
     # host-facing (non-trunk) ports, a SUPERSET of executive_brief.scale.n_endpoints, which counts only ports
     # explicitly tagged switchport mode 'Access'. Without this the row count silently contradicts the Exec
-    # Summary headline ([HISTORY-REDACTED]: 5326 here vs 5127 there) -- the same disclosure the VLAN Census / Migration Readiness
+    # Summary headline (Meridian: 5326 here vs 5127 there) -- the same disclosure the VLAN Census / Migration Readiness
     # sheets carry (audit-4 #17).
     n_access = sum(1 for _h, d in rows if (d.switchport_mode or "") == "Access")
     if len(rows) != n_access:
@@ -1290,7 +1291,7 @@ def write_protocol_health_sheet(wb, records: List[dict]) -> None:
 
 PROTOCOL_INTELLIGENCE_SHEET_NAME = "Protocol Intelligence"   # NEW-V3.23.100
 
-def write_protocol_intelligence_sheet(wb, records: List[dict]) -> None:
+def write_protocol_intelligence_sheet(wb, records: List[dict], *, unavailable: bool = False) -> None:
     """Write the 'Protocol Intelligence' sheet from compute_protocol_intelligence(): each abnormal
     protocol state turned into meaning + likely cause + remediation (the observed state is a fact;
     the cause is Inferred per Cisco doctrine)."""
@@ -1302,9 +1303,15 @@ def write_protocol_intelligence_sheet(wb, records: List[dict]) -> None:
         c.font = Font(bold=True, color="FFFFFF")
         c.fill = PatternFill("solid", fgColor="434343")
         c.alignment = Alignment(horizontal="center")
-    if not records:
-        ws.cell(2, 1, "No abnormal protocol states detected (control plane healthy).")
-    for r, rec in enumerate(records, 2):
+    unavailable = unavailable or (isinstance(records, dict) and bool(records.get("_unavailable")))
+    rows = [r for r in (records if isinstance(records, list) else []) if isinstance(r, dict)]
+    if unavailable:
+        ws.cell(2, 1, "UNVERIFIED - protocol-intelligence computation failed or was unavailable; "
+                      "no control-plane health conclusion is asserted.")
+    elif not rows:
+        ws.cell(2, 1, "No abnormal protocol-state advisory was emitted by this analysis. This is not "
+                      "a control-plane health certification; confirm protocol and collection coverage.")
+    for r, rec in enumerate(rows, 2):
         vals = [rec["switch"], rec["protocol"], rec["state"], rec["severity"],
                 rec["meaning"], rec["likely_cause"], rec["remediation"]]
         for col, v in enumerate(vals, 1):
@@ -1316,17 +1323,102 @@ def write_protocol_intelligence_sheet(wb, records: List[dict]) -> None:
     for i, w in enumerate([22, 13, 8, 10, 44, 46, 50], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
-    n_high = sum(1 for x in records if x["severity"] == "High")
-    logger.info(f"  [OK] '{PROTOCOL_INTELLIGENCE_SHEET_NAME}' sheet: {len(records)} advisory row(s), {n_high} High")
+    n_high = sum(1 for x in rows if x.get("severity") == "High")
+    logger.info(f"  [OK] '{PROTOCOL_INTELLIGENCE_SHEET_NAME}' sheet: {len(rows)} advisory row(s), {n_high} High")
 
 
 SERVICE_MAP_SHEET_NAME = "Service Map"   # NEW-V3.23.101
+
+# The registry's own authority labels (cisco_toolkit/portdb.py). Rendered defensively: absent on snapshots
+# produced before the producer published them, in which case no authority claim is made either way.
+_SERVICE_AUTHORITY_KEYS = frozenset(("assignment_authoritative", "semantics_authoritative", "overlay_status"))
+
+
+def service_name_authority(s: dict) -> str:
+    """One cell describing how far the registry can VOUCH for this row's service name.
+
+    Coverage-honest: `evidence_class` speaks only to whether traffic was observed. A name carried from the
+    curated overlay is a hypothesis about what the port means; saying so at the point of use is what stops
+    "Confirmed (ACL hit-counts)" from reading as confirmation of the NAME."""
+    if not (_SERVICE_AUTHORITY_KEYS & set(s or {})):
+        return ""
+    assign = bool(s.get("assignment_authoritative"))
+    sem = bool(s.get("semantics_authoritative"))
+    status = str(s.get("overlay_status") or "").strip() or "unknown"
+    if assign and sem:
+        return f"authoritative (port assignment + semantics; overlay {status})"
+    if assign:
+        return (f"port assignment authoritative; NAME is curated, NOT authoritative "
+                f"(overlay {status}) — treat the service label as a hypothesis")
+    return (f"NOT authoritative — curated-only classification (overlay {status}); "
+            "neither the port assignment nor the name is an assignment of record")
+
+
+# The SAME three authority keys ride on every MULTICAST group record (analyze._mcast_authority stamps
+# them). The multicast axis needs its own wording -- a group's `on_air` / Broadcast-AV flag is derived
+# ENTIRELY from the registry's curated category/broadcast fields, so rendering the group's name or its
+# on-air flag bare presents a curated judgement as a measurement.
+_MCAST_AUTHORITY_KEYS = _SERVICE_AUTHORITY_KEYS
+
+
+def multicast_class_authority(g: dict) -> str:
+    """SHORT authority tag for a multicast group's registry classification.
+
+    The tag qualifies the group's NAME/CATEGORY -- and therefore the `on_air` / Broadcast-AV label
+    derived from them, which is what promotes a MAC-alias clash to High. Returns "" when the producer
+    publishes no labels at all: absence of the labels is not evidence of authority, so nothing is
+    claimed either way (a pre-authority snapshot must not silently acquire a verdict)."""
+    if not (_MCAST_AUTHORITY_KEYS & set(g or {})):
+        return ""
+    status = str(g.get("overlay_status") or "").strip() or "unknown"
+    if status == _UNCLASSIFIED_OVERLAY_STATUS:
+        return "UNCLASSIFIED — no registry match; the category shown is a placeholder"
+    assign = bool(g.get("assignment_authoritative"))
+    sem = bool(g.get("semantics_authoritative"))
+    if assign and sem:
+        return f"registry-authoritative (assignment + media semantics; overlay {status})"
+    if sem:
+        return f"media semantics authoritative; group assignment curated (overlay {status})"
+    return (f"CURATED, NOT authoritative (overlay {status}) — the Broadcast-AV / on-air label is a "
+            "hypothesis, not an observation")
+
+
+def multicast_on_air_cell(g: dict) -> str:
+    """The 'On-air' census cell. `on_air` is a curated classification, never a measurement, so the
+    cell says which it is at the point of use instead of a bare 'yes'. FAIL-CLOSED: a record whose
+    producer never published `on_air_authoritative` reads 'basis NOT published', not 'verified'."""
+    if not g or not g.get("on_air"):
+        return ""
+    if "on_air_authoritative" not in g:
+        return "yes — basis NOT published"
+    return "yes (registry-verified)" if g.get("on_air_authoritative") else "yes (CURATED, unverified)"
+
+
+def mac_alias_on_air_cell(a: dict) -> str:
+    """The 'On-air involved' cell of a MAC-alias row. `has_av` is what the producer promotes the
+    finding to High on, and `has_av` is derived from the curated media classification -- so the cell
+    carries its basis. FAIL-CLOSED on a producer that never published `has_av_authoritative`."""
+    if not a or not a.get("has_av"):
+        return ""
+    if "has_av_authoritative" not in a:
+        return "yes — basis NOT published"
+    return "yes (registry-verified)" if a.get("has_av_authoritative") else "yes (CURATED, unverified)"
+
 
 def write_service_map_sheet(wb, sm: dict) -> None:
     """Write the 'Service Map' sheet from compute_service_map(): L4 services referenced in ACLs
     (design intent -- Inferred, not active traffic) + fleet multicast activity."""
     ws = _new_sheet(wb, SERVICE_MAP_SHEET_NAME)
+    # "Evidence" describes the TRAFFIC evidence (ACL reference vs ACL hit-count) and says nothing about whether
+    # the service NAME is authoritative -- a curated-overlay-only name (e.g. 4440/udp "Dante-audio") reached
+    # this sheet indistinguishable from an IANA assignment, and an ACL hit then stamped the row "Confirmed".
+    # The registry labels every record with its own authority; render it AT THE POINT OF USE. Defensive: the
+    # column only appears when the producer actually publishes the labels (older snapshots simply lack them).
     headers = ["Port", "Proto", "Service", "Category", "Broadcast/AV", "ACL refs", "Switches", "Evidence"]
+    _svcs0 = (sm or {}).get("services") or []
+    _has_auth = any(isinstance(s, dict) and _SERVICE_AUTHORITY_KEYS & set(s) for s in _svcs0)
+    if _has_auth:
+        headers.append("Name authority")
     for col, h in enumerate(headers, 1):
         c = ws.cell(1, col, h)
         c.font = Font(bold=True, color="FFFFFF")
@@ -1339,8 +1431,12 @@ def write_service_map_sheet(wb, sm: dict) -> None:
     for s in services:
         vals = [s["port"], s["proto"], s["service"], s["category"], "yes" if s["broadcast"] else "",
                 s["refs"], s["host_count"], s["evidence_class"]]
+        if _has_auth:
+            vals.append(service_name_authority(s))
         for col, v in enumerate(vals, 1):
-            ws.cell(r, col, v)
+            c = ws.cell(r, col, v)
+            if _has_auth and col == 9 and not s.get("assignment_authoritative"):
+                c.font = Font(color="7F6000")   # curated-only: not an assignment of record
         r += 1
     # multicast activity block (Confirmed forwarding presence; per-group classification awaits richer collection)
     mc = (sm or {}).get("multicast") or {}
@@ -1352,8 +1448,14 @@ def write_service_map_sheet(wb, sm: dict) -> None:
             if not mc.get("group_level_collected") else "per-group membership collected")
     ws.cell(r, 1, "group-level detail"); ws.cell(r, 3, note); r += 1
     for g in (mc.get("classified_groups") or []):
-        ws.cell(r, 1, "multicast group"); ws.cell(r, 3, f"{g['group']} = {g['name']} ({g['category']})"); r += 1
-    for i, w in enumerate([8, 8, 16, 14, 12, 9, 9, 52], 1):
+        # The group NAME/CATEGORY is a registry classification, and on the shipped pack every multicast
+        # record is curated-only. Rendered bare it read as an observed property of the fabric; the
+        # authority tag travels with it (and "" when the producer publishes no labels -- no claim either way).
+        _auth = multicast_class_authority(g)
+        ws.cell(r, 1, "multicast group")
+        ws.cell(r, 3, f"{g['group']} = {g['name']} ({g['category']})" + (f" — {_auth}" if _auth else ""))
+        r += 1
+    for i, w in enumerate([8, 8, 16, 14, 12, 9, 9, 52] + ([64] if _has_auth else []), 1):
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
     logger.info(f"  [OK] '{SERVICE_MAP_SHEET_NAME}' sheet: {len(services)} service(s), "
@@ -1373,8 +1475,31 @@ def write_multicast_intelligence_sheet(wb, mi: dict) -> None:
     HDR = Font(bold=True, color="FFFFFF", size=10); HFILL = PatternFill("solid", fgColor="434343")
     DAT = Font(name="Calibri", size=10)
     ws.cell(1, 1, "Multicast / media-fabric intelligence:").font = Font(bold=True, size=10)
-    summ = (f"{s.get('n_groups', 0)} group(s) ({s.get('n_av_groups', 0)} broadcast/AV) · "
-            f"{s.get('n_mac_clashes', 0)} MAC-alias clash(es) · {s.get('n_querier_gaps', 0)} querier gap(s) · "
+    # "N broadcast/AV" alone presents a CURATED classification as a measurement. The producer publishes
+    # how many of those on-air labels rest on an authoritative source (0 on the shipped pack) -- pair the
+    # two here. FAIL-CLOSED: a snapshot that never published the subset says so rather than reading verified.
+    _n_av = s.get("n_av_groups", 0) or 0
+    _n_av_auth = s.get("n_av_groups_authoritative")
+    if not _n_av:
+        _av_txt = f"{_n_av} broadcast/AV"
+    elif _n_av_auth is None:
+        _av_txt = f"{_n_av} broadcast/AV — classification basis NOT published by this snapshot"
+    elif _n_av_auth > _n_av:
+        # The two counts are published independently, so nothing guarantees the subtraction is
+        # meaningful. Unchecked it printed a NEGATIVE "curated/unverified" count -- a number that
+        # cannot exist, in a client workbook. An incoherent pair is a snapshot defect: say that,
+        # rather than deriving a third figure from it and presenting the result as a measurement.
+        _av_txt = (f"{_n_av} broadcast/AV — census INCOHERENT: {_n_av_auth} reported as "
+                   f"registry-authoritative out of {_n_av}; the split cannot be stated")
+    elif _n_av_auth:
+        _av_txt = (f"{_n_av} broadcast/AV — {_n_av_auth} registry-authoritative, "
+                   f"{_n_av - _n_av_auth} curated/unverified")
+    else:
+        _av_txt = f"{_n_av} broadcast/AV — ALL curated, NOT an authoritative source"
+    _n_uncls = s.get("n_unclassified_groups") or 0
+    summ = (f"{s.get('n_groups', 0)} group(s) ({_av_txt}) · "
+            + (f"{_n_uncls} unclassified (no registry match) · " if _n_uncls else "")
+            + f"{s.get('n_mac_clashes', 0)} MAC-alias clash(es) · {s.get('n_querier_gaps', 0)} querier gap(s) · "
             f"{s.get('n_ptp_dormant', 0)}/{s.get('n_ptp_clocks', 0)} PTP dormant · "
             f"{s.get('n_active_interfaces', 0)} mcast iface(s) / {s.get('n_active_switches', 0)} switch(es)")
     c0 = ws.cell(1, 2, summ); c0.font = Font(size=10)
@@ -1395,11 +1520,30 @@ def write_multicast_intelligence_sheet(wb, mi: dict) -> None:
     if not aliases:
         ws.cell(r[0], 1, "None — no two groups collapse to the same multicast MAC."); r[0] += 1
     else:
-        header(["L2 MAC", "Overlapping groups", "On-air involved"])
+        # The producer's own mac-alias risk row carries the severity AND the basis that raised it
+        # (analyze.compute_multicast_intelligence: severity_basis / evidence_confidence). Keyed off its
+        # title so this sheet never re-derives the promotion rule -- it renders the producer's verdict
+        # and the producer's stated basis side by side, which is what stops a High reading as measured.
+        _risk_by_mac = {}
+        for _rk in (m.get("risks") or []):
+            if isinstance(_rk, dict) and _rk.get("kind") == "mac-alias":
+                _t = str(_rk.get("title") or "").strip()
+                if _t:
+                    _risk_by_mac[_t.rsplit(" ", 1)[-1]] = _rk
+        header(["L2 MAC", "Overlapping groups", "On-air involved", "Severity",
+                "Why this severity (basis of the on-air label)"])
         for a in aliases:
+            _rk = _risk_by_mac.get(str(a.get("mac") or ""))
             ws.cell(r[0], 1, a.get("mac")).font = DAT
             ws.cell(r[0], 2, ", ".join(a.get("groups") or [])).font = DAT
-            ws.cell(r[0], 3, "yes" if a.get("has_av") else "").font = DAT
+            ws.cell(r[0], 3, mac_alias_on_air_cell(a)).font = DAT
+            ws.cell(r[0], 4, (_rk or {}).get("severity") or "").font = DAT
+            # FAIL-CLOSED: no risk row (older snapshot) => say the basis is unpublished, never leave the
+            # severity standing bare as if it were an observed measurement.
+            _bc = ws.cell(r[0], 5, (_rk or {}).get("severity_basis")
+                          or "severity basis NOT published by this snapshot — do not read the severity as measured")
+            _bc.font = DAT
+            _bc.alignment = Alignment(vertical="top", wrap_text=True)
             r[0] += 1
     r[0] += 1
 
@@ -1420,15 +1564,21 @@ def write_multicast_intelligence_sheet(wb, mi: dict) -> None:
     ws.cell(r[0], 1, "Grandmaster(s)"); ws.cell(r[0], 3, ", ".join(gms) if gms else "none observed"); r[0] += 2
 
     section(f"Group census ({len(m.get('groups') or [])})")
-    header(["Group", "L2 MAC", "Category", "On-air", "Source", "Name"])
+    # The census columns stay at SIX (the sheet's row-1 width is pinned by tests/golden/sheet_schema.json),
+    # so the classification authority rides IN the Category cell rather than in a seventh column -- the
+    # category and the authority that vouches for it are the same claim, and must not be readable apart.
+    header(["Group", "L2 MAC", "Category (classification authority)", "On-air (basis)", "Source", "Name"])
     for g in (m.get("groups") or []):
-        vals = [g.get("group"), g.get("mac"), g.get("category"), "yes" if g.get("on_air") else "",
-                g.get("source"), g.get("name")]
+        _auth = multicast_class_authority(g)
+        vals = [g.get("group"), g.get("mac"),
+                str(g.get("category") or "") + (f" — {_auth}" if _auth else ""),
+                multicast_on_air_cell(g), g.get("source"), g.get("name")]
         for i, v in enumerate(vals, 1):
             ws.cell(r[0], i, v).font = DAT
         r[0] += 1
 
-    for i, w in enumerate([20, 18, 16, 8, 16, 26], 1):
+    # One width set serves both tables on this sheet (E carries the alias severity-basis sentence).
+    for i, w in enumerate([20, 24, 44, 26, 40, 26], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
     logger.info(f"  [OK] '{MULTICAST_INTEL_SHEET_NAME}' sheet: {s.get('n_groups', 0)} group(s), "
@@ -1993,6 +2143,52 @@ def write_stp_roots_sheet(wb, all_stp_roots: dict, all_interfaces: dict) -> None
 
 PUNCHLIST_SHEET_NAME = "Migration Punch-List"   # consolidated severity-ranked roll-up (NEW-V3.23.63)
 
+# review r10 EXIT X -- the point-of-use disclosure for a severity that is NOT a measurement.
+#
+# compute_migration_punchlist's media fold carries the producer's own `severity_basis` /
+# `evidence_confidence` onto the item (analyze.py :4386), and until now NO punch-list renderer read
+# either key: the basis reached a workbook reader only as a bracketed tail on the Detail cell, which
+# measures 734 characters on a real run -- roughly thirteen wrapped lines PAST the point where the
+# reader has already accepted the "High". So a High raised by a CURATED, explicitly non-authoritative
+# on-air classification looked exactly like a High raised by an observed measurement.
+#
+# Deliberately NOT a new column, and this is measured rather than assumed: on the reference pipeline
+# workbook 37 of 37 punch-list rows publish no basis at all (the fabric has no multicast estate), so a
+# column would be 100% blank in the very deliverable the golden pins, and on the rows where it is not
+# blank it would repeat the Detail text verbatim -- ornamental both ways. A cell NOTE on the Severity
+# cell costs a basis-less row NOTHING (no blank cell to misread as "nothing to disclose", and Excel
+# draws its marker only where a note exists), lands on the exact cell whose claim it qualifies, and
+# leaves the golden-pinned header row untouched. The Detail prose STAYS as-is: it is the copy that
+# survives printing/PDF, where notes do not, so the two layers are permanent record + point-of-use.
+_PUNCH_NOTE_MAX = 900          # pathological-length bound only; a real basis is ~200 chars
+
+
+def punchlist_severity_note(it) -> str:
+    """The Severity-cell note for one punch-list item, or "" when the item publishes no usable basis.
+
+    FAIL CLOSED, and keyed on the VALUE being usable prose rather than on the key being PRESENT --
+    key-presence is the fail-open shape this review keeps finding: a null / 0 / {} / "   " value
+    satisfies `"severity_basis" in it` and would then render an EMPTY note, which a reader takes for
+    "nothing to disclose". An unusable value is treated exactly like a missing one: no note at all,
+    i.e. the row stays an ordinary punch-list row and acquires no noise. A row that DOES publish a
+    basis but no usable confidence says the confidence is unpublished, rather than quietly shipping
+    half a disclosure. The producer's strings are rendered verbatim -- this sheet never re-derives the
+    promotion rule or re-classifies the basis, exactly as the mac-alias cell above does not.
+    """
+    def _usable(v):
+        return v.strip() if isinstance(v, str) and v.strip() else ""
+
+    def _bound(s):
+        return s if len(s) <= _PUNCH_NOTE_MAX else s[:_PUNCH_NOTE_MAX].rsplit(" ", 1)[0] + " …"
+
+    basis = _usable(it.get("severity_basis") if isinstance(it, dict) else None)
+    if not basis:
+        return ""
+    conf = _usable(it.get("evidence_confidence")) or "NOT published by this snapshot"
+    return ("Why this severity — the basis this finding published for it.\n\n"
+            f"Basis: {_bound(basis)}\n\nEvidence: {_bound(conf)}")
+
+
 def write_punchlist_sheet(wb, punchlist: list) -> None:
     """Write the 'Migration Punch-List' sheet: the consolidated, severity-ranked, per-device,
     per-wave roll-up of every actionable finding (cross-layer SPOFs, security, config hygiene,
@@ -2014,6 +2210,24 @@ def write_punchlist_sheet(wb, punchlist: list) -> None:
         ws.cell(r, 6, it.get("title", ""))
         ws.cell(r, 7, it.get("detail", ""))
         ws.cell(r, 8, it.get("remediation", ""))
+        # The severity's own basis, attached to the severity. xml_safe because a `--no-collect`
+        # re-analysis feeds this writer a raw snapshot section, and one illegal byte in a comment
+        # aborts the whole .xlsx.
+        _note = punchlist_severity_note(it)
+        if _note:
+            _c = Comment(xml_safe(_note), "cisco-assess")
+            # Size the box to the TEXT, do not fix it and hope. The note is bounded at
+            # _PUNCH_NOTE_MAX per half, so it can reach ~1,800 characters, while a fixed 460x190 box
+            # shows roughly 850 -- more than half the basis silently invisible in a client workbook.
+            # A note that cannot be read is the same failure as a note that was never written, and it
+            # is worse for being invisible: the reader sees a comment marker and believes they have
+            # the whole reason. ~65 chars per line at this width, ~14px per line, plus a little
+            # padding; height is capped so one pathological snapshot cannot produce a full-screen box,
+            # and the per-half truncation above keeps the content inside that cap.
+            _lines = sum(max(1, -(-len(seg) // 65)) for seg in _note.split("\n"))
+            _c.width = 460
+            _c.height = max(190, min(14 * _lines + 30, 620))
+            ws.cell(r, 2).comment = _c
         fill = PatternFill("solid", fgColor=sev_fill.get(it.get("severity"), "FFFFFF"))
         for col in range(1, 9):
             ws.cell(r, col).fill = fill
@@ -2872,6 +3086,67 @@ def write_platform_health_sheet(wb, ph: dict) -> None:
 
 DEVICE_RISK_SHEET_NAME = "Device Risk Register"   # NEW-V3.23.172 (per-asset compound-risk synthesis)
 
+# audit U1-2 (false-health): compute_device_dossiers() correctly ABSTAINS on an axis it has no evidence
+# for (state 'na'), and abstention is weighted ZERO in the exposure score. So an asset whose EoL, software
+# train, control plane, logs, CIS posture, hygiene, drift and QoS axes were ALL un-assessed scores
+# risk_index 0 -> band "Low" -> GREEN fill -> "No stacked risk - routine migration handling." That is a
+# collection gap rendered as a clean bill of health. The band is the ENGINE's (never re-derived here), but
+# the SHEET must not paint an un-evidenced row the same green as an evidenced one, and it must show the
+# n_na the writer previously computed upstream and dropped.
+_DOSSIER_COVERAGE_NEUTRAL = "D9D9D9"   # grey: "not assessed", visually distinct from Low's green
+
+
+# The dossier coverage rule has THREE runtime mirrors -- this function, the explorer's rrCoverage() and
+# webapp/frontend/src/pages/Snapshot.tsx's dossierCoverage(). Python, embedded JS and TSX cannot import one
+# module, so the rule is CANONICAL here and the drift is caught by execution, not by hope:
+# tests/test_explorer_render_safety.py::test_dossier_coverage_rule_is_identical_in_all_three_mirrors drives
+# all three implementations over ONE shared case table (DOSSIER_COVERAGE_CASES below) and fails the moment
+# any mirror disagrees. Change the rule here and the other two must follow in the same commit.
+#
+# CASES is data, not documentation: {label: (dossier, expected (n_na, n_axes, thin))}.
+DOSSIER_COVERAGE_CASES = {
+    # no axis census AT ALL -> the denominator is unknown, so coverage is NOT ASSESSED -> disclose (thin).
+    "no_exposures_key":      ({}, (0, 0, True)),
+    "exposures_empty_list":  ({"exposures": []}, (0, 0, True)),
+    "exposures_not_a_list":  ({"exposures": "na"}, (0, 0, True)),
+    "no_census_but_n_na":    ({"n_na": 7}, (7, 0, True)),
+    "no_census_n_na_junk":   ({"n_na": "eight"}, (0, 0, True)),
+    # a real census: thin iff at least HALF the axes abstained.
+    "all_assessed":          ({"exposures": [{"state": "ok"}, {"state": "risk"}]}, (0, 2, False)),
+    "one_of_four_na":        ({"exposures": [{"state": "na"}] + [{"state": "ok"}] * 3}, (1, 4, False)),
+    "two_of_four_na":        ({"exposures": [{"state": "na"}] * 2 + [{"state": "ok"}] * 2}, (2, 4, True)),
+    "all_na":                ({"exposures": [{"state": "na"}] * 3}, (3, 3, True)),
+    # a malformed entry is not an axis: the denominator counts only dict axes.
+    "junk_entries_dropped":  ({"exposures": [{"state": "na"}, "junk", None]}, (1, 1, True)),
+}
+
+
+def dossier_coverage(d: dict) -> tuple:
+    """(n_na, n_axes, thin) for one dossier row.
+
+    `thin` is True when at least half the asset's axes ABSTAINED -- a structural test over the row's own
+    axis census, not a list of the bands or hosts that happen to trip it today, so a new abstaining axis
+    is covered the day it ships. Tolerant of a malformed/absent `exposures` list.
+
+    FAIL-CLOSED on a MISSING census (review r8 F1). The previous `bool(n_axes and n_na * 2 >= n_axes)`
+    evaluated False when `n_axes` was 0 -- i.e. on exactly the input its own fallback branch was written
+    for -- so a dossier carrying NO axis data at all reported `thin=False` and rendered as a fully
+    assessed asset. That is absence-rendered-as-health inside the guard that exists to close
+    absence-rendered-as-health. With no census there is no denominator, so how much of the band rests on
+    evidence is itself NOT ASSESSED: disclose it."""
+    ax = d.get("exposures")
+    axes = [e for e in ax if isinstance(e, dict)] if isinstance(ax, list) else []
+    n_axes = len(axes)
+    n_na = sum(1 for e in axes if e.get("state") == "na")
+    if not n_axes:                                    # no axis census published -> fall back to the count
+        try:
+            n_na = max(0, int(d.get("n_na") or 0))
+        except (TypeError, ValueError):
+            n_na = 0
+        return n_na, 0, True                          # unknown denominator -> NOT ASSESSED, never "fine"
+    return n_na, n_axes, n_na * 2 >= n_axes
+
+
 def write_device_risk_sheet(wb, dd: dict) -> None:
     """Write 'Device Risk Register' from compute_device_dossiers(): one row per asset with the
     composite risk index (topology impact x stacked exposure), the per-axis red/watch counts and
@@ -2884,23 +3159,50 @@ def write_device_risk_sheet(wb, dd: dict) -> None:
     pdev = d0.get("per_device") or []
     s = d0.get("summary") or {}
     bands = s.get("bands") or {}
+    # coverage census over the ROWS (the summary carries no n_na) -- see dossier_coverage() above.
+    _cov = [dossier_coverage(d) for d in pdev if isinstance(d, dict)]
+    n_thin = sum(1 for _, _, thin in _cov if thin)
+    n_half = sum(1 for _, ax, thin in _cov if thin and ax)     # thin WITH a census -> "half or more"
+    n_nocensus = sum(1 for _, ax, _ in _cov if not ax)         # thin because there IS no census
+    n_na_tot = sum(na for na, _, _ in _cov)
+    n_ax_tot = sum(ax for _, ax, _ in _cov)
+    n_unassessed = bands.get("Unassessed", 0)
+    _gap = ""
+    if n_ax_tot:
+        _gap = f" COVERAGE: {n_na_tot} of {n_ax_tot} risk axes fleet-wide were NOT ASSESSED (column Q per asset)."
+    if n_nocensus:
+        _gap += (f" {n_nocensus} asset(s) published NO risk-axis census at all — for those rows how much of the "
+                 "band rests on evidence is itself NOT ASSESSED, so they are treated as un-evidenced, never "
+                 "as clean.")
+    if n_half or n_unassessed:
+        _gap += (f" {n_unassessed} asset(s) banded Unassessed and {n_half} asset(s) have HALF OR MORE of their "
+                 "risk axes NOT ASSESSED — an abstaining axis scores ZERO exposure, so those rows can band "
+                 "'Low' on absent evidence. Read column Q before treating a Low row as clean; not assessed is "
+                 "a collection gap, never a clean result.")
     b = ws.cell(1, 1, f"Device Risk Register: {bands.get('Severe', 0)} Severe, "
                       f"{bands.get('Elevated', 0)} Elevated of {s.get('n_devices', 0)} asset(s) · "
                       f"{s.get('n_compound', 0)} compound pattern(s). "
                       "Risk index = topology impact (1-10) × stacked exposure (0-10) — the senior-"
-                      "engineer read: independent risks coinciding on one box outrank any single finding.")
+                      "engineer read: independent risks coinciding on one box outrank any single finding."
+                      + _gap)
     b.font = Font(bold=True, color="9C0006", size=10)
     b.alignment = Alignment(horizontal="left", wrap_text=True)
     ws.cell(2, 1, d0.get("note", "")).font = Font(size=9, italic=True, color="808080")
-    BANDFILL = {"Severe": "F4CCCC", "Elevated": "FCE4D6", "Guarded": "FFF2CC", "Low": "D9EAD3"}
+    BANDFILL = {"Severe": "F4CCCC", "Elevated": "FCE4D6", "Guarded": "FFF2CC", "Low": "D9EAD3",
+                # the engine's own coverage-gap band had NO fill entry, so it rendered blank/neutral
+                # by accident rather than by design -- name it.
+                "Unassessed": _DOSSIER_COVERAGE_NEUTRAL}
     SEVFILL = _AXIS_SEV_FILL
     HDRF = Font(bold=True, color="FFFFFF", size=10)
     DAT = Font(name="Calibri", size=10)
 
     hdr_row = 4
+    # NB: "Not-assessed axes" is APPENDED (col 17), not inserted next to Red/Watch where it reads better --
+    # the column positions of "Compound patterns" (15) and "Engineer's verdict" (16) are pinned by
+    # tests/test_device_dossiers.py::test_device_risk_sheet_writer and by downstream readers.
     cols = ["Device", "Model", "Software", "Wave", "Risk index", "Band", "Impact", "Exposure",
             "Red axes", "Watch axes", "Health", "HW EoL", "SW train", "Control plane",
-            "Compound patterns", "Engineer's verdict"]
+            "Compound patterns", "Engineer's verdict", "Not-assessed axes"]
     for i, h in enumerate(cols, 1):
         c = ws.cell(hdr_row, i, h); c.font = HDRF
         c.fill = PatternFill("solid", fgColor="9C0006")
@@ -2909,18 +3211,28 @@ def write_device_risk_sheet(wb, dd: dict) -> None:
     r = hdr_row + 1
     for d in pdev:
         comp = ", ".join(f"{c.get('code', '')}" for c in (d.get("compound") or [])) or "—"
+        n_na, n_axes, thin = dossier_coverage(d)
+        na_cell = (f"{n_na} of {n_axes} NOT ASSESSED" if n_axes else
+                   f"axis census ABSENT — coverage NOT ASSESSED ({n_na} recorded not-assessed)")
+        if thin:
+            na_cell += " — band computed on absent evidence"
         vals = [d.get("host"), d.get("model") or "—", d.get("sw_version") or "—",
                 d.get("wave") or "—", d.get("risk_index"), d.get("risk_band"),
                 d.get("impact_score"), d.get("exposure_score"),
                 d.get("n_risk"), d.get("n_watch"),
                 d.get("health_band") or "—", d.get("eol_band"), d.get("train_band"),
-                d.get("platform_band"), comp, d.get("verdict")]
+                d.get("platform_band"), comp, d.get("verdict"), na_cell]
         for col, v in enumerate(vals, 1):
             c = ws.cell(r, col, v); c.font = DAT
             c.alignment = Alignment(horizontal="center" if col in (4, 5, 6, 7, 8, 9, 10) else "left",
-                                    vertical="top", wrap_text=col in (15, 16))
+                                    vertical="top", wrap_text=col in (15, 16, 17))
             if col == 6 and v in BANDFILL:
-                c.fill = PatternFill("solid", fgColor=BANDFILL[v])
+                # a row whose axes mostly abstained does NOT get the band's reassuring colour: the fill is
+                # the fastest read on the sheet and green there is a claim the evidence cannot support.
+                c.fill = PatternFill("solid", fgColor=_DOSSIER_COVERAGE_NEUTRAL if thin else BANDFILL[v])
+            if col == 17 and thin:
+                c.fill = PatternFill("solid", fgColor=_DOSSIER_COVERAGE_NEUTRAL)
+                c.font = Font(name="Calibri", size=10, bold=True, color="7F6000")
         r += 1
     if not pdev:
         ws.cell(r, 1, "No per-device axes were computed -- nothing to register.").font = DAT
@@ -2952,10 +3264,10 @@ def write_device_risk_sheet(wb, dd: dict) -> None:
     if not n_comp:
         ws.cell(r, 1, "No compound patterns -- no asset stacks independent risks. "
                       "Single-axis findings live on their own sheets and the punch-list.").font = DAT
-    for i, w in enumerate([22, 20, 16, 10, 10, 10, 8, 9, 9, 10, 12, 12, 14, 13, 22, 60], 1):
+    for i, w in enumerate([22, 20, 16, 10, 10, 10, 8, 9, 9, 10, 12, 12, 14, 13, 22, 60, 34], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     logger.info(f"  [OK] '{DEVICE_RISK_SHEET_NAME}' sheet: {len(pdev)} asset(s), "
-                f"{n_comp} compound pattern(s)")
+                f"{n_comp} compound pattern(s), {n_thin} asset(s) banded on mostly-unassessed axes")
 
 
 LIFECYCLE_RISK_SHEET_NAME = "Lifecycle Risk"   # NEW-V3.23.117 (hardware EoL / end-of-support)
@@ -3311,7 +3623,9 @@ def compute_fhrp_consistency(all_interfaces: Dict[str, Dict[str, InterfaceData]]
     different virtual IPs, mixed protocols, or two actives (split-brain). Reuses parse._parse_fhrp. Returns
     [{vid, issues:[str], members:[{host,proto,group,vip,role,fhrp}]}] for VLANs with an issue (empty when clean)."""
     from cisco_toolkit.parse import _parse_fhrp
-    by_vid: Dict[int, list] = {}
+    # VLAN IDs are locally significant.  Reusing VLAN 10 in two VRFs or disconnected IP
+    # domains must not merge independent FHRP groups into one fabricated split-brain set.
+    by_domain: Dict[tuple, list] = {}
     for host in sorted(all_interfaces):
         for port, d in all_interfaces[host].items():
             m = re.match(r"^Vlan(\d+)$", port or "", re.IGNORECASE)
@@ -3319,10 +3633,14 @@ def compute_fhrp_consistency(all_interfaces: Dict[str, Dict[str, InterfaceData]]
                 continue
             if not ((getattr(d, "svi_ip", "") or "").strip() or (getattr(d, "hsrp_behavior", "") or "").strip()):
                 continue                                                 # only real gateways (SVI with an IP or FHRP)
-            by_vid.setdefault(int(m.group(1)), []).append((host, d))
+            vid = int(m.group(1))
+            _ip, subnet = _svi_ip_net((getattr(d, "svi_ip", "") or "").strip())
+            vrf = str(getattr(d, "vrf", "") or "").strip().lower()
+            vrf = "" if vrf in ("", "default", "global") else vrf
+            by_domain.setdefault((vid, vrf, subnet or "(subnet-unobserved)"), []).append((host, d))
     out: List[dict] = []
-    for vid in sorted(by_vid):
-        gws = by_vid[vid]
+    for vid, vrf, subnet in sorted(by_domain):
+        gws = by_domain[(vid, vrf, subnet)]
         if len(gws) < 2:                                                 # single gateway -> SPOF, handled elsewhere
             continue
         det = []
@@ -3335,23 +3653,40 @@ def compute_fhrp_consistency(all_interfaces: Dict[str, Dict[str, InterfaceData]]
         issues: List[str] = []
         if not withf:
             issues.append(f"{len(gws)} gateways but no FHRP — no first-hop redundancy")
-            out.append({"vid": vid, "issues": issues, "members": det}); continue
+            out.append({"vid": vid, "vrf": vrf, "subnet": subnet,
+                        "issues": issues, "members": det}); continue
         protos = {x["proto"] for x in withf}
         groups = {x["group"] for x in withf if x["group"]}
         vips = {x["vip"] for x in withf if x["vip"]}
-        actives = [x for x in withf if x["role"] == "active"]
+        forward_roles = {"active", "master"}
+        backup_roles = {"standby", "backup", "listen"}
+        actives = [x for x in withf if x["role"] in forward_roles]
+        backups = [x for x in withf if x["role"] in backup_roles]
+        unknown_roles = [x for x in withf if x["role"] not in forward_roles | backup_roles]
         if without:
             issues.append(f"{', '.join(x['host'] for x in without)} runs no FHRP — unprotected, independent gateway")
         if len(protos) > 1:
             issues.append(f"mixed FHRP protocols ({' vs '.join(sorted(protos))})")
+        if any(not x["group"] for x in withf):
+            issues.append("one or more FHRP members has no observed group identifier")
+        if any(not x["vip"] for x in withf):
+            issues.append("one or more FHRP members has no observed virtual IP")
         if len(groups) > 1:
             issues.append(f"different FHRP groups (grp {' vs '.join(sorted(groups))}) — not one redundancy group")
         elif len(vips) > 1:
             issues.append(f"same group but different virtual IPs ({' vs '.join(sorted(vips))})")
+        if len(groups) == 1 and not actives:
+            issues.append("no observed Active/Master router - the forwarding owner is unverified")
+        if len(groups) == 1 and not backups:
+            issues.append("no observed Standby/Backup/Listen member - usable failover is unverified")
+        if unknown_roles:
+            issues.append("unrecognized FHRP role(s) on "
+                          + ", ".join(f"{x['host']} ({x['role'] or 'blank'})" for x in unknown_roles))
         if len(groups) == 1 and len(actives) > 1:
             issues.append(f"two active routers ({', '.join(x['host'] for x in actives)}) — split-brain")
         if issues:
-            out.append({"vid": vid, "issues": issues, "members": det})
+            out.append({"vid": vid, "vrf": vrf, "subnet": subnet,
+                        "issues": issues, "members": det})
     return out
 
 
@@ -3981,7 +4316,8 @@ EXEC_SUMMARY_SHEET_NAME = "Executive Summary"
 
 def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
                                   migration_readiness: list,
-                                  failure_impact: list, brief=None, provenance=None) -> None:
+                                  failure_impact: list, brief=None, provenance=None,
+                                  assessment_integrity=None) -> None:
     """Write the 'Executive Summary' landing sheet (moved to the FRONT of the workbook): a one-page
     synthesis -- fleet posture, the keystone devices the fleet most depends on (migration blast radius),
     the punch-list severity / category breakdown, and per-group migration readiness -- so a reader knows
@@ -4012,8 +4348,38 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
     ws.cell(r, 1, "Network Migration Assessment — Executive Summary").font = TITLE
     r += 2
 
+    ai = assessment_integrity if isinstance(assessment_integrity, dict) else {}
+    if not ai and isinstance(provenance, dict) and isinstance(provenance.get("assessment_integrity"), dict):
+        ai = provenance["assessment_integrity"]
+    failed = ai.get("failed_phases")
+    failed = failed if isinstance(failed, list) else ([failed] if failed else [])
+    if isinstance(brief, dict) and brief.get("_unavailable") and "Executive brief" not in failed:
+        failed = list(failed) + ["Executive brief"]
+    for key, value in ai.items():
+        if key not in ("failed_phases", "n_violations") and \
+                str(value).strip().lower() in ("failed", "compute_failed", "unavailable", "error"):
+            failed = list(failed) + [f"{key}: {value}"]
+    failed = list(dict.fromkeys(str(x) for x in failed))
+
+    def _phase_failed(*tokens):
+        def _key(value):
+            return "".join(ch for ch in str(value).lower() if ch.isalnum())
+        return any(any(_key(token) in _key(item) for token in tokens) for item in failed)
+    if failed:
+        _sub("ASSESSMENT INTEGRITY - UNVERIFIED")
+        cell = ws.cell(
+            r, 1,
+            f"{len(failed)} phase(s) failed or were unavailable: "
+            + ", ".join(str(x) for x in failed)
+            + ". Empty fallback sections are NOT clean results; repair and regenerate before a go/no-go decision.")
+        cell.font = Font(name="Calibri", bold=True, size=10, color="9C0006")
+        cell.fill = PatternFill("solid", fgColor="FFC7CE")
+        cell.alignment = WRAP
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=6)
+        r += 2
+
     # --- migration brief (cross-axis synthesis) NEW-V3.23.120 ---
-    eb = brief or {}
+    eb = brief if isinstance(brief, dict) else {}
     if eb.get("axes"):
         _sub("Migration brief")
         ps = eb.get("posture_statement", "")
@@ -4025,7 +4391,7 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
             ws.cell(r, 1, "Address first").font = KEY
             # DISCLOSE the cut (the subnet-reachability '(+N)' house pattern): these are the
             # brief's GATING items, and a reader who plans around the 6 shown is short the rest
-            # ([HISTORY-REDACTED] fleet: 9). The axis table below lists one row per axis, not per gating item,
+            # (Meridian reference fleet: 9). The axis table below lists one row per axis, not per gating item,
             # so nothing else on this sheet carries the missing three.
             c = ws.cell(r, 2, " · ".join(tg[:6]) + (f" (+{len(tg) - 6})" if len(tg) > 6 else ""))
             c.font = DAT; c.alignment = WRAP; r += 1
@@ -4040,7 +4406,9 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
         r += 1
 
     # --- fleet posture (health band distribution) ---
-    hs = health_scores or []
+    health_unavailable = _phase_failed("health score") or not isinstance(health_scores, list)
+    hs = [x for x in (health_scores if isinstance(health_scores, list) else [])
+          if isinstance(x, dict)]
     n = len(hs)
     bands = {"Excellent": 0, "Good": 0, "Fair": 0, "Poor": 0, "Critical": 0}
     for x in hs:
@@ -4052,11 +4420,14 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
     # arithmetic mean overstates vs posture.avg_health (criticality-weighted), and "assessed = 303" overstates
     # coverage by the 50 not-collected devices vs scale.n_collected. Fall back to the local recompute only if
     # the brief is absent (legacy snapshot).
-    _ebp = (brief or {}).get("posture") or {}
-    _ebs = (brief or {}).get("scale") or {}
+    _ebp = eb.get("posture") if isinstance(eb.get("posture"), dict) else {}
+    _ebs = eb.get("scale") if isinstance(eb.get("scale"), dict) else {}
     _ncoll = _ebs.get("n_collected"); _avgc = _ebp.get("avg_health")
     _sub("Fleet posture")
-    if isinstance(brief, dict) and brief.get("_unavailable"):
+    if health_unavailable:
+        _kv("Switches collected / inventoried", "UNVERIFIED (health-score phase unavailable)")
+        _kv("Average health score", "UNVERIFIED")
+    elif isinstance(brief, dict) and brief.get("_unavailable"):
         # the executive-brief compute RAISED -> _run_phase wired the {'_unavailable':True} sentinel. Do NOT fall
         # back to the raw recompute: that fabricates full collection coverage (n/n) + an all-rows mean that the
         # 'Insufficient Data' devices inflate. Disclose the gap, exactly as the Architecture Review sheet does
@@ -4066,9 +4437,9 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
     else:
         _kv("Switches collected / inventoried", f"{_ncoll if isinstance(_ncoll, int) else n} / {n}")
         _kv("Average health score", f"{_avgc if isinstance(_avgc, (int, float)) else avg} / 100")
-    _kv("Critical band", bands["Critical"])
-    _kv("Poor / Fair", bands["Poor"] + bands["Fair"])
-    _kv("Good / Excellent", bands["Good"] + bands["Excellent"])
+    _kv("Critical band", "UNVERIFIED" if health_unavailable else bands["Critical"])
+    _kv("Poor / Fair", "UNVERIFIED" if health_unavailable else bands["Poor"] + bands["Fair"])
+    _kv("Good / Excellent", "UNVERIFIED" if health_unavailable else bands["Good"] + bands["Excellent"])
     r += 1
 
     # canonical scope/scale from the published brief (one source — not a raw-array recompute). The sheet
@@ -4082,7 +4453,9 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
         r += 1
 
     # --- punch-list severity / category breakdown ---
-    pl = punchlist or []
+    punch_unavailable = _phase_failed("punch-list", "punchlist") or not isinstance(punchlist, list)
+    pl = [x for x in (punchlist if isinstance(punchlist, list) else [])
+          if isinstance(x, dict)]
     sev = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
     cats: Dict[str, int] = {}
     for it in pl:
@@ -4091,22 +4464,25 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
             sev[s] += 1
         cat = it.get("category", "Other")
         cats[cat] = cats.get(cat, 0) + 1
-    _sub(f"Migration punch-list — {len(pl)} item(s)")
-    _kv("Critical / High", f"{sev['Critical']} / {sev['High']}")
-    _kv("Medium / Low", f"{sev['Medium']} / {sev['Low']}")
+    _sub("Migration punch-list — UNVERIFIED" if punch_unavailable
+         else f"Migration punch-list — {len(pl)} item(s)")
+    _kv("Critical / High", "UNVERIFIED" if punch_unavailable
+        else f"{sev['Critical']} / {sev['High']}")
+    _kv("Medium / Low", "UNVERIFIED" if punch_unavailable
+        else f"{sev['Medium']} / {sev['Low']}")
     # ranked, cut at 5 and the remainder COUNTED: "Top categories" names the ranking but not the
-    # population, so five entries read as the punch-list's whole category set ([HISTORY-REDACTED] fleet: 17
+    # population, so five entries read as the punch-list's whole category set (Meridian reference fleet: 17
     # categories, the 12 hidden ones carrying 176 of the 1,805 items).
     top_cats = sorted(cats.items(), key=lambda t: -t[1])[:5]
     _cat_txt = ", ".join(f"{k} ({v})" for k, v in top_cats)
     if _cat_txt and len(cats) > len(top_cats):
         _cat_txt += f" (+{len(cats) - len(top_cats)} more categor{'ies' if len(cats) - len(top_cats) > 1 else 'y'})"
-    _kv("Top categories", _cat_txt or "—")
+    _kv("Top categories", "UNVERIFIED" if punch_unavailable else (_cat_txt or "—"))
     r += 1
 
     # --- keystone devices (the few the fleet actually depends on; works when scores saturate) ---
     fi = failure_impact or []                          # NEW-V3.23.91: precomputed once in main
-    # A 10-row table headed "fix-first" reads as the keystone population; on the [HISTORY-REDACTED] fleet 193 of the
+    # A 10-row table headed "fix-first" reads as the keystone population; on the Meridian reference fleet 193 of the
     # 303 simulated devices strand at least one endpoint. Name the ratio so the reader sizes the
     # problem, not the table. (Rows with NO stranded figure are unmeasured, never counted as zero.)
     _n_keystone = sum(1 for rec in fi
@@ -4126,8 +4502,17 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
     r += 1
 
     # --- per-group migration readiness ---
-    mr = migration_readiness or []
-    if mr:
+    readiness_unavailable = (
+        _phase_failed("migration readiness")
+        or not isinstance(migration_readiness, list)
+    )
+    mr = [x for x in (migration_readiness if isinstance(migration_readiness, list) else [])
+          if isinstance(x, dict)]
+    if readiness_unavailable:
+        _sub("Migration readiness (per move group) — UNVERIFIED")
+        _kv("Gate", "Readiness computation failed or was unavailable; no READY conclusion is issued.")
+        r += 1
+    elif mr:
         _sub("Migration readiness (per move group)")
         _hdr(["Group", "Verdict", "Switches", "Endpoints", "Fail", "Warn"])
         for g in mr:
@@ -4147,11 +4532,15 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
         top = fi[0]
         lines.append(f"• {top.get('host')} is the top keystone — its loss strands "
                      f"{top.get('stranded', 0)} endpoint(s). Harden it first (FHRP / a redundant path).")
-    if n and bands["Critical"] == n:
+    if not health_unavailable and n and bands["Critical"] == n:
         lines.append(f"• All {n} switches land in the Critical band — the per-switch score is "
                      f"saturated, so prioritise by blast radius (above), not by score.")
-    lines.append(f"• {sev['Critical']} critical + {sev['High']} high punch-list item(s) — see the "
-                 f"'Migration Punch-List' tab for the full ranked, per-device action list.")
+    if punch_unavailable:
+        lines.append("• Migration punch-list is UNVERIFIED — repair the failed producer before "
+                     "using this page for prioritization or go/no-go.")
+    else:
+        lines.append(f"• {sev['Critical']} critical + {sev['High']} high punch-list item(s) — see the "
+                     f"'Migration Punch-List' tab for the full ranked, per-device action list.")
     for ln in lines:
         c = ws.cell(r, 1, ln); c.font = DAT; c.alignment = WRAP
         ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=6)

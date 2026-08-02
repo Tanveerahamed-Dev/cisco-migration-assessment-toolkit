@@ -82,6 +82,10 @@ def test_status_eq_abstains_on_lower_bound():
     assert pa._classify({"status": "computed:reached", "computed": True, "reached": True}, "status==computed:reached") == "pass"
 
 
-def test_blank_or_typo_expect_abstains():
+def test_blank_or_typo_expect_is_invalid_at_the_catalog_boundary():
     for e in (None, "", 0, False, " ", "ISOLAT", "status=="):
-        assert _verdict({"id": "x", "src": "10.0.1.1", "dst": "10.0.2.5", "expect": e}) == "not_observed"
+        assert pa._classify({"status": "computed:reached", "computed": True, "reached": True}, e) == "not_observed"
+        row = pa.evaluate_path_assertions(
+            SNAP, [{"id": "x", "src": "10.0.1.1", "dst": "10.0.2.5", "expect": e}]
+        )["results"][0]
+        assert row["verdict"] == "fail" and row["valid"] is False

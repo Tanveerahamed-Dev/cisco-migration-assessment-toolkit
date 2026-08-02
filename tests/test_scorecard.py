@@ -111,7 +111,7 @@ def test_real_reviewer_verdict_shapes_still_parse():
     for good in ("design.docx — BLOCK",
                  "MOP - BLOCK",
                  "runbook.docx: APPROVE",
-                 "[HISTORY-REDACTED]_Assessment_redacted_archreview.docx — APPROVE",
+                 "Meridian_archreview.docx — APPROVE",
                  "> workbook — APPROVE",
                  "NRFU — BLOCK",          # web-rendered deliverables have no _FAMILY label...
                  "cutover: APPROVE"):     # ...but a verdict on one is still a real verdict

@@ -520,7 +520,7 @@ def test_mop_silent_on_evpn_when_not_applicable(tmp_path):
 
 def test_mop_check_counts_sum_to_group_ssot_across_subwaves():
     """[audit-2 #3] a coupled group's fail/warn check counts must SUM across its sub-waves to the group SSOT, not
-    be share-with-floor double-counted ([HISTORY-REDACTED] Group 1's true 3/4 rendered 7/7 across 7 sub-waves). Each check is
+    be share-with-floor double-counted (Meridian Group 1's true 3/4 rendered 7/7 across 7 sub-waves). Each check is
     attributed to the ONE sub-wave owning its canonical member switch."""
     from cisco_toolkit.mop import _join_group_records
     readiness = {"G1": {"group": "G1", "switches": ["swA", "swB", "swC", "swD"], "endpoints": 40,
@@ -767,7 +767,7 @@ def test_mop_bluf_not_assessable_when_evidence_absent(tmp_path):
 
 # ---- EVPN gating: rollback triggers cite the evpn abort conditions only when EVPN is the target
 def test_mop_rollback_triggers_surface_evpn_abort_conditions_when_applicable(tmp_path):
-    """[HISTORY-REDACTED] specificity: when the target fabric is NX-OS VXLAN-EVPN, the quantified rollback triggers
+    """Reference-profile specificity: when the target fabric is NX-OS VXLAN-EVPN, the quantified rollback triggers
     surface the primary-source EVPN abort conditions (gateway-MAC black-hole, L2 loop, control-plane not
     Established). Gated: a non-EVPN MOP does not."""
     snap = _snap()

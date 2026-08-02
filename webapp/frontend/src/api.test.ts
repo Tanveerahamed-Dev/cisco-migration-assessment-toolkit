@@ -70,8 +70,8 @@ describe("api client (request construction + the j response handler)", () => {
   }
 
   it("GETs the right URL and parses the JSON body on success", async () => {
-    const spy = mockFetch(new Response(JSON.stringify([{ id: 1, name: "[HISTORY-REDACTED]" }]), { status: 200 }));
-    await expect(api.listCampaigns()).resolves.toEqual([{ id: 1, name: "[HISTORY-REDACTED]" }]);
+    const spy = mockFetch(new Response(JSON.stringify([{ id: 1, name: "Meridian" }]), { status: 200 }));
+    await expect(api.listCampaigns()).resolves.toEqual([{ id: 1, name: "Meridian" }]);
     expect(spy).toHaveBeenCalledWith("/api/campaigns");
   });
 
@@ -103,6 +103,15 @@ describe("api client (request construction + the j response handler)", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ name: "X", description: "a description" }),
+    });
+  });
+
+  it("exchanges a bearer token for the HttpOnly browser session", async () => {
+    const spy = mockFetch(new Response(null, { status: 204 }));
+    await api.authenticate("field-secret");
+    expect(spy).toHaveBeenCalledWith("/api/session", {
+      method: "POST",
+      headers: { Authorization: "Bearer field-secret" },
     });
   });
 

@@ -15,3 +15,36 @@
 .design-sync/**/*.ts text eol=lf
 .design-sync/**/*.tsx text eol=lf
 .design-sync/**/*.json text eol=lf
+
+# The RETAINED OFFICIAL SOURCES are byte-pinned evidence, not text. `official-sources/manifest.json`
+# records a SHA-256 per file and `registry_integrity` / `verify_repository_privacy` verify the bytes
+# against it, so ANY line-ending translation invalidates the corpus. Caught at the staging gate on
+# 2026-08-01: the IANA CSV is 1,156,064 bytes with 14,530 CRLF pairs in the worktree (hash matches the
+# manifest) and normalized to 1,141,534 bytes / 0 CRLF in the INDEX — exactly one byte lost per CRLF —
+# so `verify_repository_privacy.py` reported "indexed official source fails manifest integrity" for
+# four files. Committing them normalized would ship a corpus that fails its own integrity check, and
+# `distribution_verify.py` REQUIRES these files, so a clean-clone build would verify red.
+#
+# `-text` (not `eol=lf`) is deliberate: eol=lf would still be a translation, and these files must be
+# stored EXACTLY as their publisher issued them, whatever their line endings are. Same reasoning as
+# the .design-sync block above, which pins eol=lf because a byte-wise hash anchor cannot tolerate
+# re-materialization — here the pinned bytes happen to be CRLF, so the only safe rule is "do not
+# touch". Never "fix" trailing whitespace in these files either; it is publisher data and is hashed.
+reference-data/official-sources/** -text
+
+# Local source archives are allowlisted for product source, not engagement or
+# operator-state material. This does not rewrite Git history; it prevents
+# accidental inclusion by `git archive` while the tracked corpus is sanitized.
+/.claude export-ignore
+/.design-sync export-ignore
+/.gstack export-ignore
+/docs export-ignore
+/research_lane export-ignore
+/tests export-ignore
+/webapp/tests export-ignore
+/AI_SESSION_CONTEXT.md export-ignore
+/CHAT_SUMMARY.md export-ignore
+/requirements.reference.json export-ignore
+/devices.json export-ignore
+/compass_artifact_* export-ignore
+/scratch_* export-ignore

@@ -1,10 +1,11 @@
-"""Research-lane producer (egress-fenced, D2) — fetch → Rule-3-sanitize → sign → emit the intel feed.
+"""Research-lane producer (egress-fenced, D2) — fetch → Rule-3-sanitize → hash-seal → emit the intel feed.
 
 The pipeline is source-agnostic: a *source* is any callable returning a list of raw advisory dicts. Two are
 provided — :func:`fixture_source` (offline, no network) and :func:`http_source` (LIVE egress, isolated).
-Everything after the fetch (sanitize → sign → write) is deterministic and offline, so the whole thing is
-tested without a network. The signed feed uses :func:`cisco_toolkit.intel_feed.build_feed`, so the repo's
-consumer verifies exactly what this produces.
+Everything after the fetch (sanitize → hash-seal → write) is deterministic and offline, so the whole thing
+is tested without a network. The feed uses :func:`cisco_toolkit.intel_feed.build_feed`, so the repo's
+consumer verifies exactly what this produces. Its unkeyed SHA-256 detects corruption but deliberately
+declares ``authentication: none``; it is not a digital signature.
 
 **Egress discipline (mirrors the nightly wrapper):** the default CLI path is a fixture; live egress needs
 ``--live`` **and** an explicit ``--url`` — a stray ``--live`` alone fetches nothing. Run this from a
@@ -14,37 +15,58 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from research_lane.sanitize import sanitize_advisories
 
+_OUTPUT_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
 
 def fixture_source(path: str) -> List[Dict[str, Any]]:
     """Offline source: read raw advisories from a local JSON file (a list of advisory dicts). No network."""
+    if os.path.getsize(path) > 32 * 1024 * 1024:
+        raise ValueError("research fixture exceeds the 32 MiB input limit")
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
-    return data if isinstance(data, list) else [data]
+    batch = data if isinstance(data, list) else [data]
+    if len(batch) > 50_000:
+        raise ValueError("research fixture exceeds the 50,000-advisory limit")
+    return batch
 
 
 def http_source(urls: List[str], *, timeout: int = 15) -> List[Dict[str, Any]]:
-    """LIVE EGRESS source — fetches JSON advisories over the network (stdlib ``urllib``). Isolated here in
-    the fenced lane and never called unless the CLI is run with ``--live --url``. Each URL must return a
-    JSON list (or object) of advisories."""
-    import urllib.request                                   # lazy: keep the egress import inside the fenced call
+    """LIVE EGRESS source — fetches JSON advisories through the guarded public-HTTPS path. It validates
+    every DNS answer, pins the connection, disables environment proxies, confines redirects to the initial
+    host, and enforces response, aggregate-byte, URL-count, advisory-count, and wall-clock limits. It is
+    isolated here and never called unless the CLI is run with ``--live --url``. Each URL must return a JSON
+    list (or object) of advisories."""
+    from research_lane.http_guard import (
+        FetchBudget,
+        guarded_urlopen,
+        read_json_response,
+        validate_public_https_url,
+    )
+    if len(urls) > 20:
+        raise ValueError("refusing more than 20 research source URLs in one run")
+    budget = FetchBudget(max_bytes=32 * 1024 * 1024, max_responses=20, deadline_seconds=120)
     out: List[Dict[str, Any]] = []
     for u in urls:
-        with urllib.request.urlopen(u, timeout=timeout) as resp:   # noqa: S310 (fenced, opt-in egress)
-            data = json.loads(resp.read().decode("utf-8"))
+        safe_url = validate_public_https_url(u)
+        with guarded_urlopen(safe_url, timeout=budget.timeout(timeout)) as resp:
+            data = read_json_response(resp, budget=budget)
         out += data if isinstance(data, list) else [data]
+        if len(out) > 50_000:
+            raise ValueError("research source exceeded the 50,000-advisory batch limit")
     return out
 
 
 def produce_feed(raw_advisories: List[Dict[str, Any]], *, forbidden: Tuple[str, ...] = (),
                  generated: str = "", redact_ips: bool = True) -> Tuple[str, List[str]]:
-    """Sanitize then sign. Returns ``(feed_text, redactions)``. ``sanitized: true`` is attested only because
-    the scrub actually ran here (the redactions are the proof)."""
+    """Sanitize then hash-seal. Returns ``(feed_text, redactions)``. ``sanitized: true`` is recorded only
+    after the scrub runs here; the redaction list is audit detail, not independent proof or authentication."""
     clean, redactions = sanitize_advisories(raw_advisories, forbidden=forbidden, redact_ips=redact_ips)
-    from cisco_toolkit.intel_feed import build_feed          # the one signing contract, shared with the consumer
+    from cisco_toolkit.intel_feed import build_feed
     feed = build_feed(clean, sanitized=True, producer="research-lane", generated=generated)
     return feed, redactions
 
@@ -55,23 +77,51 @@ def run(raw_advisories: List[Dict[str, Any]], out_dir: str = os.path.join("docs"
     """Produce a feed from already-fetched advisories and write it under ``out_dir``. Returns ``(path,
     redactions)``. The fetch is the caller's choice (fixture vs live), keeping this write step egress-free.
 
-    **An EMPTY feed is refused by default** (2026-07-28): a signed, ``sanitized: true`` feed carrying zero
+    **An EMPTY feed is refused by default** (2026-07-28): a hash-sealed, ``sanitized: true`` feed carrying zero
     advisories is indistinguishable, to the air-gapped consumer, from a fetch that verified there was
     nothing to report — so a source that silently failed publishes a valid-and-current attestation over no
     data at all. The source layer now raises on unreachability (``sources.SourceUnavailable``); this is the
     second, publish-side gate. Pass ``allow_empty=True`` to record a genuinely-empty sweep deliberately."""
     if not raw_advisories and not allow_empty:
         raise ValueError(
-            "refusing to publish a SIGNED feed with zero advisories: to the consumer that is a positive "
+            "refusing to publish a HASH-SEALED feed with zero advisories: to the consumer that is a positive "
             "attestation that the source was read and had nothing, which a failed fetch cannot claim. "
             "Fix/retry the source, or pass allow_empty=True (CLI: --allow-empty) if the sweep really was "
             "empty.")
-    feed, redactions = produce_feed(raw_advisories, forbidden=forbidden, generated=generated,
-                                    redact_ips=redact_ips)
+    label = generated or "latest"
+    if not _OUTPUT_LABEL.fullmatch(label) or label in (".", ".."):
+        raise ValueError("generated label must be a safe 1-64 character filename token")
+    feed, redactions = produce_feed(
+        raw_advisories,
+        forbidden=forbidden,
+        generated=generated,
+        redact_ips=redact_ips,
+    )
+    from cisco_toolkit.intel_feed import verify_feed
+    verified = verify_feed(feed, forbidden=forbidden)
+    if not verified["ok"]:
+        raise ValueError(f"refusing to publish a feed that fails its intake contract: {verified['reason']}")
+    if not verified["entries"] and not allow_empty:
+        raise ValueError(
+            "refusing to publish a zero-advisory feed after validation; "
+            "fix the malformed/empty source or pass allow_empty=True deliberately"
+        )
     os.makedirs(out_dir, exist_ok=True)
-    path = os.path.join(out_dir, f"feed-{generated or 'latest'}.jsonl")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(feed)
+    path = os.path.join(out_dir, f"feed-{label}.jsonl")
+    import tempfile
+    fd, temp_path = tempfile.mkstemp(prefix=".intel-feed-", suffix=".tmp", dir=out_dir)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(feed)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, path)
+    except BaseException:
+        try:
+            os.unlink(temp_path)
+        except FileNotFoundError:
+            pass
+        raise
     return path, redactions
 
 

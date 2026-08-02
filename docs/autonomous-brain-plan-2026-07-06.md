@@ -157,7 +157,7 @@ The audit surfaced exactly one unreconciled strategic fork in your own docs:
 1. Run the **golden-snapshot eval suite** (§6.2) → record pass-rate + any regressions.
 2. Consume the morning's `intel/feed.md` from the research lane (§6.3) → surface anything relevant to open engagements (e.g., a new PSIRT touching an assessed platform).
 3. Read `session-brief` **rot-watch** and, where a threshold is crossed, *act* (refresh graph, flag stale vault) instead of only displaying.
-4. Surface open **GI/REC items** (e.g., the [HISTORY-REDACTED] HLD open items) and un-promoted `!lesson` bridge-candidates.
+4. Surface open **GI/REC items** (e.g., the Reference HLD open items) and un-promoted `!lesson` bridge-candidates.
 5. Assemble a **MORNING BRIEFING**: a short digest + (optionally) a draft PR. Verifiable facts only — pass-rates, counts, diffs, named advisories. **No self-congratulation** (P-B).
 
 **Acceptance:** you open the laptop and a `briefing-YYYY-MM-DD.md` is waiting, ≤1 screen, every line backed by a number or a link, produced under a hard budget cap, and it **never touched a device or pushed a branch**.
@@ -184,15 +184,15 @@ Three components, in dependency order:
 
 **Goal:** "research everywhere, every day" — *without* breaking the air-gap.
 
-**The key architectural insight (this dissolves the tension you've been stuck on):** the no-egress doctrine protects **two specific things** — the knowledge *graph* (no LLM/URL-derived nodes) and the assessment *engine* (reproducible offline, never phones a device). It does **not** require *you* to be blind. The field's answer is a **fenced connected lane**: research + model-heavy optimization run in a *separate session/worktree that is allowed egress*; only **frozen, sanitized, signed artifacts** cross into the air-gapped repo. This is identical to your documented "offline-first, API-later" §4.4 stance — we're just operationalizing it.
+**The key architectural insight (this dissolves the tension you've been stuck on):** the no-egress doctrine protects **two specific things** — the knowledge *graph* (no LLM/URL-derived nodes) and the assessment *engine* (reproducible offline, never phones a device). It does **not** require *you* to be blind. The field's answer is a **fenced connected lane**: research + model-heavy optimization run in a *separate session/worktree that is allowed egress*; only **frozen, sanitized artifacts** cross into the air-gapped repo, with the feed corruption-evident under an unkeyed SHA-256 (not producer-authenticated). This is identical to your documented "offline-first, API-later" §4.4 stance — we're just operationalizing it.
 
 **The lane (a separate `research-lane` worktree, connected, run manually or on its own cron):**
 - **Daily sweep:** PSIRT/vendor advisories touching assessed platforms; NetDevOps field practice; new tool/technique releases; relevant arXiv/GitHub/blog signal. (Your existing `WebSearch`-enabled agents already do the reactive version; this makes it scheduled.)
 - **Prompt optimization:** GEPA/DSPy runs here (needs model calls = egress) and emits frozen prompt files.
-- **Output:** a distilled, **Rule-3-sanitized** (client identifiers stripped, per ADR-0001 bridge discipline), **provenance-tagged**, signed `intel/feed.md` + `prompts/*.frozen.md`.
+- **Output:** a distilled, **Rule-3-sanitized** (client identifiers stripped, per ADR-0001 bridge discipline), **provenance-tagged**, SHA-256 hash-sealed `intel/feed.md` (unkeyed, so corruption-evident but unauthenticated) + `prompts/*.frozen.md`.
 - **The air-gapped repo CONSUMES these read-only.** It never fetches. The graph stays AST-only. The doctrine holds, verifiably.
 
-**Why this is safe and honest:** the crossing is one-way, sanitized, signed, and *auditable* — the same trust model as your repo→vault bridge, run in reverse for curated intel. Nothing LLM-derived enters the *graph*; intel lives in `docs/intel/` as ordinary cited markdown (which graphify may index as docs, exactly as it already indexes `docs/research/`).
+**Why this is safe and honest:** the crossing is one-way, sanitized, hash-sealed, and *auditable* — the unkeyed digest detects corruption but does not authenticate the producer. Nothing LLM-derived enters the *graph*; intel lives in `docs/intel/` as ordinary cited markdown (which graphify may index as docs, exactly as it already indexes `docs/research/`).
 
 **Acceptance:** a dated `docs/intel/feed-YYYY-MM-DD.md` exists, every item carries a source URL + a "relevant-to" pointer, and the air-gapped repo's graph/engine reproduce **byte-identical** on a disconnected host (the no-egress invariant still passes).
 
@@ -292,7 +292,7 @@ Sequenced so **safety rails precede autonomy** (you must be able to *measure* be
 
 ### Phase 3 — The eyes (Weeks 3–6)
 - Stand up the **`research-lane`** worktree (egress-fenced): daily sweep + **GEPA** prompt-optimization.
-- Emit **sanitized, signed `docs/intel/feed-*.md`** + `prompts/*.frozen.md`; repo consumes read-only.
+- Emit **sanitized, SHA-256 hash-sealed `docs/intel/feed-*.md`** (corruption-evident, unauthenticated) + `prompts/*.frozen.md`; repo consumes read-only.
 - **Acceptance:** dated intel feed with sourced+scoped items; the air-gapped graph/engine reproduce byte-identical disconnected (no-egress invariant still green); one agent prompt improved by a frozen GEPA artifact.
 
 ### Phase 4 — Recall & connect-the-dots (Weeks 4–8)
@@ -330,7 +330,7 @@ Sequenced so **safety rails precede autonomy** (you must be able to *measure* be
 - **The morning briefing becomes noise you stop reading.** → Ruthless relevance filter; verifiable-facts-only; ≤1 screen; every line links to an action or a number. Kill it if the weekly value-report shows no action taken.
 - **The calibration loop overfits to a handful of PIRs.** → Require a minimum labeled-outcome count before it's allowed to move a parameter; keep changes small and reversible; keep a human in the release gate.
 - **Autonomy drift / runaway cost.** → Caps + circuit breaker + propose-only (§11). Start the cron *manual-trigger* for a week before scheduling.
-- **The eyes leak client data across the egress fence.** → Rule-3 sanitization on the crossing (identical to your vault bridge), one-way, signed, auditable; the repo consumes, never emits.
+- **The eyes leak client data across the egress fence.** → Rule-3 sanitization on the crossing (identical to your vault bridge), one-way, SHA-256 hash-sealed and auditable; the unkeyed hash does not authenticate the source, and the repo consumes, never emits.
 - **The vault amendment erodes the two-store separation.** → Only a *sanitized, read-only digest* crosses — not raw vault access; it's an *amendment with a guard*, not a repeal. If it feels wrong on review, Phase 4's recall still works on graph+docs alone.
 - **The six-angle panel becomes theater** (six agents agreeing). → Independence (separate context), refutation-first default, evidence-cited lenses, report counterexamples not consensus. If a panel never dissents, it's miscalibrated — treat unanimous approval as suspicious.
 - **You build all this and still don't *feel* the singularity.** → The feeling is the *scorecard trending up* + the *briefing landing every morning*. If Phases 1–2 don't produce that felt signal, stop and re-scope before Phases 3–5. Ship the feeling early.

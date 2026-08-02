@@ -1235,7 +1235,7 @@ function linkHasVlanEvidence(L){return !!L.ev;}
 
 /* Faithful port of COLLECT_PARSE _canon_host(): strip trailing '(serial)' + FQDN domain,
    lowercase. Restores the neighbor→scanned-host resolution the verified Python core uses
-   (cmap = _canon_host_map). Without it the suffixed CDP device-ids (…broadcast.[HISTORY-REDACTED]) match
+   (cmap = _canon_host_map). Without it the suffixed CDP device-ids (…broadcast.example.net) match
    no host key and the whole topology builds with ZERO links. */
 function canonHost(name){let n=(name||"").trim();n=n.replace(/\(.*?\)\s*$/,"").trim();n=n.split(".")[0];return n.toLowerCase();}
 
@@ -1728,15 +1728,36 @@ function demoSnapshot(){
       peer_link:{id:"1",port:"Po1",status:"up",vlans:"1,10,20,30,99"},vpcs:[{id:"20",port:"Po20",status:"up",consistency:"success",vlans:"10,20"}]}},
   // V3.23.128: multicast intelligence so the Flow Simulator's multicast branch renders (Dante 239.254.3.3 on VLAN 30, which has NO querier).
   multicast_intelligence:{
+    // The authority labels mirror what portdb really stamps: every multicast row in the shipped pack is
+    // curated-only (both flags false), and a group with no registry match is 'unclassified'. The demo must
+    // not be the one dataset where an on-air label looks source-verified.
     groups:[
-      {group:"224.0.1.129",name:"PTP-primary",category:"Broadcast-AV",broadcast:true,on_air:true,source:"IGMP/mroute",mac:"01:00:5e:00:01:81"},
-      {group:"239.254.3.3",name:"Dante",category:"Broadcast-AV",broadcast:true,on_air:true,source:"IGMP/mroute",mac:"01:00:5e:7e:03:03"},
-      {group:"225.1.1.1",name:"",category:"",broadcast:false,on_air:false,source:"IGMP",mac:"01:00:5e:01:01:01"},
+      {group:"224.0.1.129",name:"PTP-primary",category:"Broadcast-AV",broadcast:true,on_air:true,source:"IGMP/mroute",mac:"01:00:5e:00:01:81",
+       assignment_authoritative:false,semantics_authoritative:false,overlay_status:"curated-only",on_air_authoritative:false},
+      {group:"239.254.3.3",name:"Dante",category:"Broadcast-AV",broadcast:true,on_air:true,source:"IGMP/mroute",mac:"01:00:5e:7e:03:03",
+       assignment_authoritative:false,semantics_authoritative:false,overlay_status:"curated-only",on_air_authoritative:false},
+      {group:"225.1.1.1",name:"",category:"",broadcast:false,on_air:false,source:"IGMP",mac:"01:00:5e:01:01:01",
+       assignment_authoritative:false,semantics_authoritative:false,overlay_status:"unclassified",on_air_authoritative:false},
     ],
-    mac_aliases:[{mac:"01:00:5e:01:01:01",groups:["224.1.1.1","225.1.1.1"],names:[],has_av:false}],
+    mac_aliases:[{mac:"01:00:5e:01:01:01",groups:["224.1.1.1","225.1.1.1"],names:[],has_av:false,has_av_authoritative:false}],
     querier:{n_querier_vlans:1,multicast_vlans:["10","30"],gap_vlans:["30"]},
     ptp:{n_clocks:2,n_operational:0,n_dormant:2,grandmasters:[],operational:[],dormant:["DIST-1","DIST-2"]},
-    summary:{n_groups:3,n_av_groups:2,n_mac_clashes:1,n_querier_gaps:1,n_active_switches:2,n_active_interfaces:6,n_ptp_clocks:2,n_ptp_dormant:2}},
+    // Both risks are verbatim compute_multicast_intelligence output for THIS demo fleet (two groups
+    // aliasing onto 01:00:5e:01:01:01; VLAN 30 multicast with no querier). Note the asymmetry, which
+    // is the producer's real behaviour and must survive here: mac-alias publishes a severity basis,
+    // querier-gap publishes NONE (its High is a measurement, so it never grew one). The punch-list
+    // twins of these two rows are in `punchlist` below — keep the two halves in step.
+    risks:[{kind:"mac-alias",severity:"Medium",title:"Multicast MAC-address overlap on 01:00:5e:01:01:01",
+      severity_basis:"Medium: no member group is classified as on-air media. The MAC overlap itself is arithmetic on the observed group addresses and is not in question.",
+      evidence_confidence:"observed overlap = fact",
+      detail:"Groups 224.1.1.1, 225.1.1.1 all map to L2 MAC 01:00:5e:01:01:01 (IPv4 multicast is 32:1 into Ethernet MACs). A switch that constrains multicast at the MAC level forwards them together — receivers of one group see the other's traffic.",
+      remediation:"Re-address one overlapping group so the low-23-bit MAC differs (avoid 224.x/225.x… 239.x families that alias), or use IGMPv3 source-specific forwarding end-to-end.",
+      standard:"RFC 4541 / RFC 1112"},
+      {kind:"querier-gap",severity:"High",title:"1 multicast VLAN(s) without an IGMP querier",
+      detail:"VLAN(s) 30 carry multicast (PIM/mroute on the SVI) but no IGMP querier was seen — membership times out and the switch floods or blackholes the group.",
+      remediation:"Configure exactly one IGMP (snooping) querier per multicast VLAN (lowest IP wins).",
+      standard:"RFC 4541"}],
+    summary:{n_groups:3,n_av_groups:2,n_av_groups_authoritative:0,n_unclassified_groups:1,n_mac_clashes:1,n_querier_gaps:1,n_active_switches:2,n_active_interfaces:6,n_ptp_clocks:2,n_ptp_dormant:2}},
   // V3.23.87: port + PoE capacity headroom (mirrors the Python compute_capacity / 'Capacity' sheet). ACC-1
   // is port-bound (94%), ACC-2 PoE-bound (83%); the rest have headroom to absorb consolidated endpoints.
   capacity:[
@@ -2146,9 +2167,18 @@ function demoSnapshot(){
     {priority:6,severity:"High",rank:3,category:"Security",devices:["DIST-1"],wave:"Group A",title:"VTY transport (telnet)",detail:"A VTY line permits telnet.",remediation:"Set 'transport input ssh'."},
     {priority:7,severity:"High",rank:3,category:"Config hygiene",devices:["DIST-1"],wave:"Group A",title:"Undefined acl '7'",detail:"Referenced by NAT but never defined.",remediation:"Define or remove the reference."},
     {priority:8,severity:"High",rank:3,category:"Health",devices:["DIST-1"],wave:"Group A",title:"Poor-health switch",detail:"Health score 58 (Poor band).",remediation:"Resolve the deductions before migrating."},
-    {priority:9,severity:"Medium",rank:2,category:"Trunk",devices:["ACC-1","DIST-1"],wave:"Group A",title:"Native-VLAN mismatch (99 vs 1)",detail:"DIST-1 Gi1/0/1 (native 99) <-> ACC-1 Gi1/0/24 (native 1) — untagged L2 leak.",remediation:"Set a consistent native VLAN on both ends."},
-    {priority:10,severity:"Medium",rank:2,category:"STP",devices:["ACC-3","DIST-1"],wave:"Group A",title:"STP root != gateway (VLAN 30)",detail:"Gateway traffic hairpins through the root.",remediation:"Align the STP root with the gateway."},
-    {priority:11,severity:"Low",rank:1,category:"STP",devices:["ACC-3"],wave:"Group A",title:"Accidental root (VLAN 30)",detail:"Rooted on the default priority.",remediation:"Set a deliberate root priority."},
+    // The two media rows the fold produces from `multicast_intelligence.risks` above — copied from a
+    // real compute_migration_punchlist run over those exact risks, so they carry what the producer
+    // really emits: no `devices` (a media risk is fleet-level, so no wave either), a source_command,
+    // the basis appended into `detail`, AND the structured `severity_basis`/`evidence_confidence`
+    // that punchlistCard renders as its own field. One of each state on purpose — the querier-gap
+    // High publishes no basis and gets the producer's fail-closed sentinel; the mac-alias Medium
+    // publishes a real, explicitly CURATED one.
+    {priority:9,severity:"High",rank:3,category:"Multicast/Media",devices:[],wave:"",title:"1 multicast VLAN(s) without an IGMP querier",detail:"VLAN(s) 30 carry multicast (PIM/mroute on the SVI) but no IGMP querier was seen — membership times out and the switch floods or blackholes the group.  [Severity basis: severity basis NOT published by this snapshot — check the finding's own detail for what it rests on | Evidence: evidence confidence NOT published by this snapshot]",remediation:"Configure exactly one IGMP (snooping) querier per multicast VLAN (lowest IP wins).",severity_basis:"severity basis NOT published by this snapshot — check the finding's own detail for what it rests on",evidence_confidence:"evidence confidence NOT published by this snapshot",source_command:"show ip igmp snooping groups"},
+    {priority:10,severity:"Medium",rank:2,category:"Trunk",devices:["ACC-1","DIST-1"],wave:"Group A",title:"Native-VLAN mismatch (99 vs 1)",detail:"DIST-1 Gi1/0/1 (native 99) <-> ACC-1 Gi1/0/24 (native 1) — untagged L2 leak.",remediation:"Set a consistent native VLAN on both ends."},
+    {priority:11,severity:"Medium",rank:2,category:"STP",devices:["ACC-3","DIST-1"],wave:"Group A",title:"STP root != gateway (VLAN 30)",detail:"Gateway traffic hairpins through the root.",remediation:"Align the STP root with the gateway."},
+    {priority:12,severity:"Medium",rank:2,category:"Multicast/Media",devices:[],wave:"",title:"Multicast MAC-address overlap on 01:00:5e:01:01:01",detail:"Groups 224.1.1.1, 225.1.1.1 all map to L2 MAC 01:00:5e:01:01:01 (IPv4 multicast is 32:1 into Ethernet MACs). A switch that constrains multicast at the MAC level forwards them together — receivers of one group see the other's traffic.  [Severity basis: Medium: no member group is classified as on-air media. The MAC overlap itself is arithmetic on the observed group addresses and is not in question. | Evidence: observed overlap = fact]",remediation:"Re-address one overlapping group so the low-23-bit MAC differs (avoid 224.x/225.x… 239.x families that alias), or use IGMPv3 source-specific forwarding end-to-end.",severity_basis:"Medium: no member group is classified as on-air media. The MAC overlap itself is arithmetic on the observed group addresses and is not in question.",evidence_confidence:"observed overlap = fact",source_command:"show ip igmp snooping groups"},
+    {priority:13,severity:"Low",rank:1,category:"STP",devices:["ACC-3"],wave:"Group A",title:"Accidental root (VLAN 30)",detail:"Rooted on the default priority.",remediation:"Set a deliberate root priority."},
   ],
   // U1 Cross-Layer: a small array of pre-computed findings the Python pipeline would embed (CL-01..),
   // ingested + merged with the client-computed correlations (de-duped by host-set + title). This one is
@@ -4243,7 +4273,12 @@ function deviceIntelSection(host){
   const pl=((SNAP&&SNAP.punchlist)||[]).filter(i=>(i.devices||[]).includes(host));
   const rem=(((SNAP&&SNAP.remediation_plan&&SNAP.remediation_plan.by_device)||{})[host])||[];   // V3.23.116
   const lc=(((SNAP&&SNAP.lifecycle_risk&&SNAP.lifecycle_risk.per_device)||[]).find(d=>d.host===host))||null;  // V3.23.117
-  const lcConcern=lc&&lc.band&&lc.band!=="Active"&&lc.band!=="Unknown";
+  // The gate below and the pill that renders this band (see lcTok, ~25 lines down) MUST share one
+  // predicate. They did not: the pill's test is `band!=="Active"` -- it happily renders Unknown -- while
+  // this gate additionally excluded Unknown. A device whose ONLY signal was an undetermined lifecycle
+  // band therefore hit the early return, its whole panel was suppressed, and the pill never got a
+  // chance to say so. The reader saw an empty asset, i.e. absence rendered as health. Now identical.
+  const lcConcern=lc&&lc.band&&lc.band!=="Active";
   // V3.23.173: the engine's Device Risk Register dossier for this asset — verdict, compound
   // patterns, impact × exposure. Rendered, never re-derived (one source of truth).
   const dd=(((SNAP&&SNAP.device_dossiers)||{}).per_device||[]).find(d=>d.host===host)||null;
@@ -4253,10 +4288,15 @@ function deviceIntelSection(host){
     const ctok=dd.risk_band==="Severe"?"crit":(dd.risk_band==="Elevated"||dd.risk_band==="Guarded")?"watch":"";
     const chips=(dd.compound||[]).map(c=>
       `<span class="pill ${(c.severity==="Critical"||c.severity==="High")?"pl-crit":"pl-watch"}" title="${esc(c.basis)}">${esc(c.code)} ${esc(c.title)}</span>`).join(" ");
+    /* audit U1-2: `||"pl-ok"` made GREEN the default for any band this map does not know, and the band
+       pill went green for an asset whose axes had all ABSTAINED (abstention = zero exposure = "Low").
+       Neutral default + an explicit coverage line — see rrCoverage(). */
+    const cov=rrCoverage(dd);
     verdictCard=`<div class="card ${ctok}" style="margin-bottom:9px">
-      <div class="ct"><span class="nm">Engineer's verdict</span><span class="pill ${_RR_PILL[dd.risk_band]||"pl-ok"}">${esc(dd.risk_band)} · ${dd.risk_index}/100</span></div>
+      <div class="ct"><span class="nm">Engineer's verdict</span><span class="pill ${(cov.thin?_RR_PILL_DEF:_RR_PILL[dd.risk_band])||_RR_PILL_DEF}">${esc(dd.risk_band)} · ${dd.risk_index}/100</span></div>
       <div class="ln" style="margin-top:3px">${esc(dd.verdict)}</div>
       <div class="ln faint" style="margin-top:2px">impact ${dd.impact_score}/10 × exposure ${dd.exposure_score}/10 · ${dd.n_risk} red / ${dd.n_watch} watch / ${dd.n_na} not-assessed ax${dd.n_na===1?"is":"es"}</div>
+      ${cov.thin?`<div class="ln" style="margin-top:2px;color:var(--text-dim)"><b>Coverage-limited verdict:</b> ${cov.n?`only ${cov.n-cov.na} of ${cov.n} risk axes carried evidence`:"NO risk-axis census was published for this asset, so how much of the band rests on evidence is itself NOT ASSESSED"}. An un-assessed axis scores ZERO exposure, so this band was computed largely on absent evidence — a collection gap, never a clean bill of health.</div>`:""}
       ${chips?`<div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:6px">${chips}</div>`:""}
     </div>`;
   }
@@ -4270,7 +4310,8 @@ function deviceIntelSection(host){
   if(pl.length)pills.push(`<span class="pill pl-neutral">${pl.length} punch-list item${pl.length===1?"":"s"}</span>`);
   if(rem.length)pills.push(`<span class="pill pl-ok">${rem.length} fix snippet${rem.length===1?"":"s"}</span>`);
   const lcTok=b=>b==="Past-LDoS"?"crit":b==="Near-LDoS"?"risk":b==="Past-EoS"?"watch":b==="Active"?"ok":"neutral";
-  if(lc&&lc.band&&lc.band!=="Active")pills.push(`<span class="pill pl-${lcTok(lc.band)}">EoL: ${esc(lc.band)}</span>`);
+  // "EoL: Unknown" reads as a shrug; name it as a coverage gap so it is not mistaken for a mild band.
+  if(lc&&lc.band&&lc.band!=="Active")pills.push(`<span class="pill pl-${lcTok(lc.band)}" title="${lc.band==="Unknown"?"No EoX bulletin matched this platform — its support state was not determined, which is not the same as supported.":""}">EoL: ${lc.band==="Unknown"?"NOT ASSESSED":esc(lc.band)}</span>`);
   let phyDetail="";
   if(phy.length){const byRisk={}; phy.forEach(r=>{const k=r.risk||"issue";(byRisk[k]=byRisk[k]||[]).push(r.port);});
     phyDetail=Object.entries(byRisk).slice(0,4).map(([risk,ports])=>
@@ -5046,6 +5087,47 @@ function inferMlagPairs(){const pairs=new Set(); const add=(a,b)=>{if(a&&b&&a!==
   return pairs;}
 function _mlagPeerOf(host,pairs){for(const k of pairs){const p=k.split("||"); if(p[0]===host)return p[1]; if(p[1]===host)return p[0];} return "";}
 function _isMlag(a,b,pairs){return pairs.has([a,b].sort().join("||"));}
+/* The offline port registry labels every record with its OWN authority (assignment_authoritative /
+   semantics_authoritative / overlay_status). A curated-overlay-only name is a HYPOTHESIS about what the port
+   means; rendered bare it is indistinguishable from an IANA assignment. Defensive by contract: a snapshot
+   from a producer that does not publish the labels gets NO pill and no claim either way — absence of the
+   labels is not evidence of authority. */
+function svcAuthority(s){
+  if(!s||typeof s!=="object")return null;
+  if(!("assignment_authoritative" in s||"semantics_authoritative" in s||"overlay_status" in s))return null;
+  return {assign:!!s.assignment_authoritative,sem:!!s.semantics_authoritative,
+    status:String(s.overlay_status||"unknown")};}
+function svcAuthorityPill(s){const a=svcAuthority(s); if(!a||(a.assign&&a.sem))return "";
+  const t=a.assign?"port assignment is authoritative but the service NAME is curated (overlay "+a.status+") — treat the label as a hypothesis, not a fact"
+    :"curated-only classification (overlay "+a.status+") — neither the port assignment nor the name is an assignment of record";
+  return ` <span class="pill pl-neutral" title="${esc(t)}" style="font-size:10px;padding:0 5px">${a.assign?"name curated":"curated-only"}</span>`;}
+/* The SAME three authority labels ride on every MULTICAST group record (analyze._mcast_authority). A
+   group's `on_air` / Broadcast-AV flag is derived ENTIRELY from the registry's curated category/broadcast
+   fields — and that flag is what promotes a MAC-alias clash to High severity. Rendered bare, a curated
+   judgement reads as a measurement. Defensive by contract: a producer that publishes no labels gets no
+   claim either way; a group with NO registry match is "unclassified", which is a THIRD state, not a
+   quieter kind of curated. */
+function mcastAuthority(g){
+  if(!g||typeof g!=="object")return null;
+  if(!("assignment_authoritative" in g||"semantics_authoritative" in g||"overlay_status" in g))return null;
+  const status=String(g.overlay_status||"unknown");
+  return {assign:!!g.assignment_authoritative,sem:!!g.semantics_authoritative,status:status,
+    unclassified:status==="unclassified"};}
+function mcastAuthorityPill(g){const a=mcastAuthority(g); if(!a||(a.assign&&a.sem))return "";
+  const t=a.unclassified?"no registry match — the category shown is a placeholder, not a classification"
+    :"curated offline registry semantics (overlay "+a.status+") — NOT an authoritative source; the Broadcast-AV / on-air label is a hypothesis, not an observation";
+  return ` <span class="pill pl-neutral" title="${esc(t)}" style="font-size:10px;padding:0 5px">${a.unclassified?"unclassified":"curated"}</span>`;}
+/* One phrase naming what the on-air label RESTS on, for the places that have no room for a pill.
+   FAIL-CLOSED: a record carrying no labels says the basis is unpublished, never "verified". */
+function mcastOnAirBasis(g){const a=mcastAuthority(g);
+  if(!a)return "classification basis not published by this snapshot";
+  if(a.unclassified)return "no registry match — the on-air label is not a classification at all";
+  return a.sem?"registry-verified media semantics"
+              :"curated offline registry semantics — NOT an authoritative source";}
+/* `has_av` is the field the producer promotes a MAC-alias clash to High on, and it is derived from the
+   curated media classification. The tag travels with the pill so a High never reads as measured. */
+function macAliasAvTag(a){if(!a||typeof a!=="object"||!("has_av_authoritative" in a))return "basis not published";
+  return a.has_av_authoritative?"registry-verified":"curated";}
 /* L7 application classification of the flow (multicast group / L4 service / endpoint class / app domain). */
 function flowAppContext(F){const s=F.src,d=F.dst,dip=(d&&d.ip)||"";
   const o1=+String(dip).split(".")[0];
@@ -5053,8 +5135,11 @@ function flowAppContext(F){const s=F.src,d=F.dst,dip=(d&&d.ip)||"";
     why:`Destination ${dip} is a multicast group — delivery follows IGMP snooping / the querier, not unicast routing.`};
   const sm=(SNAP&&SNAP.service_map&&SNAP.service_map.services)||[];
   if(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp"){const svc=sm.find(x=>+x.port===+FLOW_DPORT&&(x.proto||"").toLowerCase()===FLOW_PROTO);
-    if(svc)return {label:svc.service+(svc.category?` · ${svc.category}`:""),verdict:"ok",tag:"inferred",
-      why:`Destination ${FLOW_PROTO.toUpperCase()}/${FLOW_DPORT} matches ${svc.service}${svc.category?` (${svc.category})`:""}.`};}
+    if(svc){const a=svcAuthority(svc);const curated=!!(a&&!a.assign);
+      return {label:svc.service+(svc.category?` · ${svc.category}`:"")+(a&&!(a.assign&&a.sem)?" (curated name)":""),
+        verdict:curated?"watch":"ok",tag:a&&!(a.assign&&a.sem)?"curated":"inferred",
+        why:`Destination ${FLOW_PROTO.toUpperCase()}/${FLOW_DPORT} matches ${svc.service}${svc.category?` (${svc.category})`:""}.`
+          +(a&&!(a.assign&&a.sem)?` The registry marks this name as ${curated?"a CURATED-ONLY classification (overlay "+a.status+") — not an assignment of record":"curated (overlay "+a.status+"): the port assignment is authoritative, the service NAME is not"}.`:"")};}}
   const did=epIdentity(d),sid=epIdentity(s),cls=(did&&did.endpoint_class)||(sid&&sid.endpoint_class)||"";
   const dom=appDomainOf(d&&d.host)||appDomainOf(s&&s.host);
   if(cls&&cls!=="Unknown")return {label:cls+(dom?` · ${dom}`:""),verdict:"ok",tag:"inferred",
@@ -5163,8 +5248,11 @@ function buildMulticastJourney(s,groupIp){
   const clash=aliases.find(a=>(a.groups||[]).includes(groupIp));
   const ptpGroup=/ptp|2059|319|320/i.test((g.name||"")+(g.category||""))||String(groupIp).indexOf("224.0.1.129")===0;
   const rung=(layer,label,verdict,decision,why,tag)=>({layer,label,verdict,decision,why,tag:tag||"derived"});
+  // The group's NAME/CATEGORY and the on-air verdict derived from them are a registry CLASSIFICATION,
+  // not something observed on the wire — the basis rides with them at every point of use.
+  const gBasis=mcastOnAirBasis(g);
   const app={label:(g.name||"Multicast")+(g.category?" · "+g.category:""),verdict:g.on_air?"watch":"ok",tag:"inferred",
-    why:`${groupIp} is an IPv4 multicast group${g.on_air?" — Broadcast-AV / on-air":""}; delivery follows IGMP snooping + the querier, not unicast routing.`};
+    why:`${groupIp} is an IPv4 multicast group${g.on_air?" — classified Broadcast-AV / on-air by "+gBasis:""}; delivery follows IGMP snooping + the querier, not unicast routing.`};
   const J={src:s,dst:{ip:groupIp,host:"(group)",mac:g.mac||""},multicast:true,reachable:true,
     verdict:`MULTICAST — ${groupIp}${g.name?" ("+g.name+")":""}`,app,backup:null,decisiveLayer:null,nodes:[]};
   // sender
@@ -5176,7 +5264,7 @@ function buildMulticastJourney(s,groupIp){
   {const layers=[rung("L2","Data-Link","ok",`L2 MAC ${g.mac||"?"} (32:1)`,
       `IPv4 group ${groupIp} maps to Ethernet MAC ${g.mac||"?"} (RFC 1112, 32:1 — many groups can share one MAC).`)];
    if(clash)layers.push(rung("L2","Data-Link","watch",`MAC clash on ${clash.mac}`,
-     `That L2 MAC also carries ${(clash.groups||[]).filter(x=>x!==groupIp).join(", ")} — a MAC-constraining switch forwards them together; receivers of one see the other. [RFC 4541/1112]`));
+     `That L2 MAC also carries ${(clash.groups||[]).filter(x=>x!==groupIp).join(", ")} — a MAC-constraining switch forwards them together; receivers of one see the other. The overlap is arithmetic on the observed group addresses (fact)${clash.has_av?"; the on-air impact that raises this finding to High rests on the media classification ("+macAliasAvTag(clash)+")":""}. [RFC 4541/1112]`));
    layers.push(noQuerier
      ? rung("L2","Data-Link","block",`No IGMP querier on VLAN ${sv}`,`VLAN ${sv} carries multicast but no IGMP querier was seen — membership times out and the switch floods or blackholes the group. [RFC 4541]`)
      : rung("L2","Data-Link","ok",`IGMP querier present`,`An IGMP (snooping) querier maintains membership on VLAN ${sv||"?"} — forwarded only to ports that joined.`));
@@ -5192,7 +5280,7 @@ function buildMulticastJourney(s,groupIp){
   // receivers
   J.nodes.push({host:"",role:"dest",label:"Receivers",mlagPeer:"",
     layers:[rung("L2","Data-Link","ok","Delivered to joined receivers",`Any host that sent an IGMP join for ${groupIp} on its VLAN receives the stream${noQuerier?" — but with no querier, membership is unreliable":""}.`),
-            rung("L7","Application",g.on_air?"watch":"ok",`${g.on_air?"On-air / Broadcast-AV":"Multicast"} stream`,`Receivers consume the ${g.name||groupIp} stream.`)]});
+            rung("L7","Application",g.on_air?"watch":"ok",`${g.on_air?"On-air / Broadcast-AV":"Multicast"} stream`,`Receivers consume the ${g.name||groupIp} stream.${g.on_air?" The on-air classification comes from "+gBasis+" — confirm the group's real use before acting on it.":""}`)]});
   return J;}
 
 /* V3.23.124: the BACKUP journey — re-simulate the flow after the primary uplink fails. Reroute path
@@ -6197,25 +6285,61 @@ function hygieneCard(){
    SNAP.device_dossiers {per_device, summary} straight from the engine — the explorer renders the
    verdicts, it never re-derives them (one source of truth). Back-compat: no key -> no card. */
 const _RR_PILL={Severe:"pl-crit",Elevated:"pl-risk",Guarded:"pl-watch",Low:"pl-ok",Unassessed:"pl-neutral"};
-const _RR_TOK={Severe:"crit",Elevated:"risk",Guarded:"watch",Low:"ok"};
+/* audit U1-2: _RR_TOK had NO "Unassessed" key while _RR_PILL did, so the engine's own coverage-gap band fell
+   through the `||"ok"` default to a GREEN bar — the two maps disagreed about the same band, and the green one
+   won the most visible element. Both maps now cover every _DOSSIER_BANDS value, and BOTH defaults are NEUTRAL:
+   an unrecognised band (a future engine adding one) must never inherit the colour that means "clean". */
+const _RR_TOK={Severe:"crit",Elevated:"risk",Guarded:"watch",Low:"ok",Unassessed:"text-dim"};
+const _RR_TOK_DEF="text-dim", _RR_PILL_DEF="pl-neutral";
+/* Mirror of cisco_toolkit/excel.py::dossier_coverage — an asset whose axes mostly ABSTAINED (state "na")
+   has its risk_index computed on absent evidence: abstention weighs ZERO exposure, so a wholly un-collected
+   box bands "Low / no stacked risk". Structural over the row's own axis census, never a host/band list.
+   The Python function is the CANONICAL rule; this and Snapshot.tsx::dossierCoverage are its two runtime
+   mirrors, and tests/test_explorer_render_safety.py executes all three over one shared case table
+   (excel.DOSSIER_COVERAGE_CASES) so a drifting copy fails the suite instead of shipping.
+   review r8 F1 — FAIL CLOSED when there is no census: `!!(n&&…)` returned false for n===0, so a dossier
+   with NO axis data (exactly what the n_na fallback below exists for) read as fully assessed. With no
+   denominator, how much of the band rests on evidence is itself NOT ASSESSED -> disclose. */
+function rrCoverage(d){
+  const ax=Array.isArray(d&&d.exposures)?d.exposures.filter(e=>e&&typeof e==="object"):[];
+  const n=ax.length;
+  if(!n){const raw=+((d||{}).n_na); return {na:(isFinite(raw)&&raw>0)?Math.floor(raw):0,n:0,thin:true};}
+  const na=ax.filter(e=>e.state==="na").length;
+  return {na,n,thin:na*2>=n};}
 function riskRegisterCard(){
   const dd=SNAP&&SNAP.device_dossiers; if(!dd)return "";
   const rows=dd.per_device||[]; const s=dd.summary||{}; if(!rows.length)return "";
   const bands=s.bands||{};
-  const badge=bands.Severe?`<span class="badge b-crit">${bands.Severe} Severe</span>`
+  const cov=rows.map(rrCoverage);
+  const nThin=cov.filter(c=>c.thin).length, nUn=+bands.Unassessed||0;
+  const naTot=cov.reduce((a,c)=>a+c.na,0), axTot=cov.reduce((a,c)=>a+c.n,0);
+  /* "no stacked risk" is only a finding when something was actually assessed. With mostly-abstaining axes
+     it is a statement about the COLLECTION, so the badge says so instead of going green. */
+  const gapBadge=(nThin||nUn)
+    ?`<span class="badge b-neutral" title="Not assessed is a coverage gap, not a clean result — an abstaining axis scores ZERO exposure, so these assets can band Low on absent evidence.">${nUn?nUn+" unassessed · ":""}${nThin} asset(s) banded on mostly-unassessed axes</span>`:"";
+  const badge=(bands.Severe?`<span class="badge b-crit">${bands.Severe} Severe</span>`
     :bands.Elevated?`<span class="badge b-warn">${bands.Elevated} Elevated</span>`
-    :`<span class="badge b-ok">no stacked risk</span>`;
+    :(nThin||nUn)?`<span class="badge b-neutral">no stacked risk observed — coverage-limited</span>`
+    :`<span class="badge b-ok">no stacked risk</span>`)+gapBadge;
   const top=rows.slice(0,8).map((d,i)=>{
-    const t=_RR_TOK[d.risk_band]||"ok";
+    const c=cov[i]||rrCoverage(d);
+    const t=(c.thin?_RR_TOK_DEF:_RR_TOK[d.risk_band])||_RR_TOK_DEF;
     const chips=(d.compound||[]).map(c=>
       `<span class="pill ${(c.severity==="Critical"||c.severity==="High")?"pl-crit":"pl-watch"}" title="${esc(c.title)} — ${esc(c.basis)}" style="font-size:10px;padding:0 5px">${esc(c.code)}</span>`).join(" ");
     const verdict=(i<3&&d.risk_band!=="Low")?`<div class="ln faint" style="margin:1px 0 5px 22px">${esc(d.verdict)}</div>`:"";
+    /* the coverage marker rides on EVERY row, not only the Low ones: a Severe box whose other axes were
+       never collected is also a partly-blind verdict, and the reader must see the denominator. */
+    const covPill=c.thin
+      ?(c.n
+        ?`<span class="pill pl-neutral" title="Only ${c.n-c.na} of ${c.n} risk axes carried evidence — an abstaining axis scores ZERO exposure, so this band was computed on absent evidence. Not assessed is a coverage gap, never a clean result." style="font-size:10px;padding:0 5px">${c.na}/${c.n} axes NOT ASSESSED</span>`
+        :`<span class="pill pl-neutral" title="This asset published no risk-axis census at all, so how much of its band rests on evidence is itself NOT ASSESSED. Not assessed is a coverage gap, never a clean result." style="font-size:10px;padding:0 5px">axis census ABSENT — NOT ASSESSED</span>`)
+      :"";
     return `<div class="ln click" data-jump="${esc(d.host)}" style="cursor:pointer;margin-bottom:3px;display:flex;flex-wrap:wrap;align-items:center;gap:6px">`+
       `<span class="faint" style="width:16px;text-align:right">${i+1}.</span>`+
-      `<span class="pill ${_RR_PILL[d.risk_band]||"pl-ok"}" style="min-width:60px;text-align:center">${esc(d.risk_band)}</span>`+
+      `<span class="pill ${(c.thin?_RR_PILL_DEF:_RR_PILL[d.risk_band])||_RR_PILL_DEF}" style="min-width:60px;text-align:center">${esc(d.risk_band)}</span>`+
       `<span class="mono">${esc(shortName(d.host))}</span>`+
       `<span class="bar" style="display:inline-block;width:104px"><i style="width:${Math.max(2,+d.risk_index||0)}%;background:var(--${t})"></i></span>`+
-      `<span class="faint" style="font-size:11px;white-space:nowrap">${d.risk_index}/100 · impact ${d.impact_score} × exposure ${d.exposure_score}</span>${chips}</div>`+verdict;
+      `<span class="faint" style="font-size:11px;white-space:nowrap">${d.risk_index}/100 · impact ${d.impact_score} × exposure ${d.exposure_score}</span>${covPill}${chips}</div>`+verdict;
   }).join("");
   return `<div class="sec"><h3>Asset risk register ${badge}</h3>`+
     `<div class="sub" style="margin-bottom:7px">The senior-engineer read: all 11 per-device axes stacked per ASSET — risk index = topology impact × exposure, compound patterns (CR-xx pills, hover for the why) where independent risks coincide on one box. Click a row to jump to the device; the full register is the 'Device Risk Register' workbook sheet.</div>`+
@@ -6562,6 +6686,52 @@ function stpRootCard(){
     `<div class="sub" style="margin-bottom:6px">Root-bridge design smells a migration inherits — an accidental (default-priority) root, or a root that isn't where the gateway is.</div>`+
     misRows+accRows+`</div>`;
 }
+/* review r10 EXIT Y — the punch-list's SEVERITY BASIS.
+   compute_migration_punchlist's media fold (analyze.py :4386) publishes, per item, WHY the row
+   carries its severity: `severity_basis` + `evidence_confidence`. It matters because a mac-alias
+   row is raised Medium->High purely on a CURATED, explicitly non-authoritative on-air
+   classification, not on a measurement. This card renders severity/priority/title/category and
+   NOT `detail`, so the fold's prose copy (which the workbook and AssessHub's PunchTable do print)
+   reached nothing here: a curated High rendered byte-identically to a measured High.
+   Three states, deliberately distinct:
+     * the item declares NEITHER key   -> nothing at all (an ordinary row must not acquire noise);
+     * a usable basis string           -> the producer's own prose, verbatim, in its own field;
+     * declared but NOT usable, or the producer's "NOT published" sentinel -> a distinct
+       'severity basis NOT published' pill (FAIL CLOSED: never silently read as measured).
+   Participation is keyed on the CONTRACT (either key present), never on a category-name list;
+   WHAT is rendered is keyed on the VALUE being usable prose, never on the key being present. */
+const PL_BASIS_UNPUBLISHED="severity basis NOT published by this snapshot — check the finding's own detail for what it rests on";
+const PL_CONFIDENCE_UNPUBLISHED="evidence confidence NOT published by this snapshot";
+const _plUsable=v=>(typeof v==="string"&&v.trim())?v.trim():"";
+/* The producer's sentinel says, in its own words, that no basis was published. Detect it by that
+   wording (both sentinels carry it) so the explorer and the workbook can never disagree about what
+   an unpublished basis means; tests/test_explorer_render_safety.py pins the two spellings to
+   analyze.PUNCH_BASIS_UNPUBLISHED / PUNCH_CONFIDENCE_UNPUBLISHED so a re-word fails loudly. */
+/* Matched on "published by this snapshot" -- the sentinels' own distinctive marker -- NOT on the
+   generic phrase "not published". `/not\s+published/i` matches ordinary basis PROSE: a real future
+   basis reading "the vendor advisory was not published at capture time" would be classified as
+   HAVING NO BASIS, i.e. a genuine explanation silently relabelled as an absent one. The two states
+   this whole consumer exists to separate would then be decided by whether the explanation happens to
+   contain two common words. Both producer sentinels carry the marker below; neither ordinary
+   sentence does. */
+const _plUnpublished=s=>!s||/published\s+by\s+this\s+snapshot/i.test(s);
+function punchBasis(i){
+  if(!i||typeof i!=="object")return null;
+  const declared=("severity_basis" in i)||("evidence_confidence" in i);
+  const b=_plUsable(i.severity_basis), c=_plUsable(i.evidence_confidence);
+  if(!declared&&!b&&!c)return null;                 // not part of the contract -> no note, no noise
+  return {basis:b, confidence:c, published:!_plUnpublished(b)};
+}
+function punchBasisNote(i){
+  const pb=punchBasis(i); if(!pb)return "";
+  const conf=pb.confidence||PL_CONFIDENCE_UNPUBLISHED;
+  const confPub=!_plUnpublished(pb.confidence);
+  if(!pb.published)
+    return `<div class="ln faint" style="margin-left:22px"><span class="pill pl-watch">severity basis NOT published</span> `+
+      `${esc(pb.basis||PL_BASIS_UNPUBLISHED)} <span class="pill pl-neutral">evidence</span> ${esc(conf)}</div>`;
+  return `<div class="ln faint" style="margin-left:22px"><span class="pill pl-neutral">severity basis</span> ${esc(pb.basis)} `+
+    `<span class="pill ${confPub?"pl-neutral":"pl-watch"}">evidence</span> ${esc(conf)}</div>`;
+}
 /* Migration punch-list (the executive roll-up): the Python pipeline consolidates EVERY actionable
    finding across all layers into one severity-ranked, per-device, per-wave list (SNAP.punchlist).
    This card renders the top N so a migration lead reads 'fix-this-first, in this order' without
@@ -6572,11 +6742,16 @@ function punchlistCard(){
   const counts={Critical:0,High:0,Medium:0,Low:0};
   pl.forEach(i=>{ if(counts[i.severity]!=null)counts[i.severity]++; });
   const N=12;
-  const rows=pl.slice(0,N).map(i=>`<div class="ln">${sevPill(i.severity)} <span class="faint">#${i.priority}</span> <b>${esc(i.title)}</b> <span class="faint">· ${esc(i.category)} · ${(i.devices||[]).map(d=>esc(shortName(d))).join(", ")}${i.wave?` · wave ${esc(i.wave)}`:""}${i.source_command?` · from ${esc(i.source_command)}`:""}</span></div>`).join("");
+  const rows=pl.slice(0,N).map(i=>`<div class="ln">${sevPill(i.severity)} <span class="faint">#${i.priority}</span> <b>${esc(i.title)}</b> <span class="faint">· ${esc(i.category)} · ${(i.devices||[]).map(d=>esc(shortName(d))).join(", ")}${i.wave?` · wave ${esc(i.wave)}`:""}${i.source_command?` · from ${esc(i.source_command)}`:""}</span></div>`+punchBasisNote(i)).join("");
   const more=pl.length>N?`<div class="ln faint" style="margin-top:4px">…and ${pl.length-N} more — see the full <b>Migration Punch-List</b> workbook sheet.</div>`:"";
+  // Fleet roll-up of the same structured keys (over the WHOLE list, not just the rendered top N),
+  // so the basis is readable as data and not only as prose on the rows that happened to fit.
+  const declared=pl.map(punchBasis).filter(Boolean);
+  const nPub=declared.filter(p=>p.published).length;
+  const basisLine=declared.length?`<div class="sub" style="margin-bottom:6px"><b>Severity basis:</b> ${declared.length} item${declared.length===1?"":"s"} carr${declared.length===1?"ies":"y"} one — ${nPub} published, ${declared.length-nPub} not. Read those before ranking them against the rest: a severity resting on a curated, non-authoritative classification is not the same claim as a measured one.</div>`:"";
   return `<div class="sec"><h3>Migration punch-list <span class="badge b-crit">${pl.length} item${pl.length===1?"":"s"}</span></h3>`+
     `<div class="sub" style="margin-bottom:6px">Every finding across all layers, de-duplicated and ranked — work it top-down, by migration wave. <b style="color:var(--crit)">${counts.Critical} critical</b> · ${counts.High} high · ${counts.Medium} medium · ${counts.Low} low.</div>`+
-    rows+more+`</div>`;
+    basisLine+rows+more+`</div>`;
 }
 /* Trunk consistency: native-VLAN mismatch on an inter-switch trunk. When the two ends disagree on the
    native (untagged) VLAN, frames sent untagged on one side pop out in a DIFFERENT VLAN on the other --
@@ -6865,7 +7040,7 @@ function drawXLayer(){
     `<button type="button" class="chip${XL_SEV_FILTER===null?" on":""}" data-xlf-sev="">All</button>`+["High","Medium","Low"].map(sevChip).join("")+
     `</div></div>`;
   // Cap the rendered cards (V3.23.74): a real fleet yields thousands of correlated findings (≈2,963 on the
-  // 60-switch [HISTORY-REDACTED] fleet), and dumping every one as a card built a 2.6 MB DOM that was janky to scroll and
+  // 60-switch Meridian reference fleet), and dumping every one as a card built a 2.6 MB DOM that was janky to scroll and
   // impossible to read. Show the most-severe top-N (the rest live in the workbook's Cross-Layer Analysis
   // sheet; the cockpit distils all of them into fix-first priorities).
   const XL_CARD_CAP=60;
@@ -7574,7 +7749,7 @@ function layerHeatmapCard(){
 // (e.g. a core articulation point a single bypass can't relieve). Returns the winning simulateFix() result.
 // How many candidate SPOFs the remediation simulator actually evaluates. simulateFix deep-clones the
 // snapshot + re-derives the model + diffs (≈1.7s each on a real fleet), so running it for EVERY fixable
-// chain (518 on the 60-switch [HISTORY-REDACTED] fleet ⇒ ~14 min) is what froze the Health view. The card shows
+// chain (518 on the 60-switch Meridian Media fleet ⇒ ~14 min) is what froze the Health view. The card shows
 // only ONE remediation, and the genuine best fix is reliably among the highest-impact chains, so we
 // pre-rank cheaply (severity, then stated blast) and simulate just the strongest few. (V3.23.69)
 const REMEDIATION_SIM_CAP=6;
@@ -7872,10 +8047,12 @@ function serviceMapSection(){
   const sm=(SNAP&&SNAP.service_map)||null; if(!sm)return "";
   const svcs=sm.services||[], mc=sm.multicast||{};
   if(!svcs.length && !(mc.active_interfaces>0))return "";
-  const rows=svcs.slice(0,12).map(s=>`<div class="ln"><span class="pill pl-${s.broadcast?"watch":"neutral"}">${esc(s.service)}</span> `+
+  const rows=svcs.slice(0,12).map(s=>`<div class="ln"><span class="pill pl-${s.broadcast?"watch":"neutral"}">${esc(s.service)}</span>${svcAuthorityPill(s)} `+
     `<span class="mono">${esc(String(s.port))}/${esc(s.proto)}</span> <span class="faint">${esc(s.category)}</span> · `+
     `${s.refs} ACL ref${s.refs===1?"":"s"} on ${s.host_count} switch${s.host_count===1?"":"es"}</div>`).join("");
-  const gset=(mc.classified_groups||[]).slice(0,8).map(g=>`<div class="ln"><span class="pill pl-watch">${esc(g.name||"group")}</span> <span class="mono">${esc(g.group)}</span> <span class="faint">${esc(g.category)}${g.source?" · "+esc(g.source):""}</span></div>`).join("");
+  // The group NAME/CATEGORY is a registry classification — on the shipped pack every multicast record is
+  // curated-only. The authority pill rides beside it so a hypothesis is not read as an observed property.
+  const gset=(mc.classified_groups||[]).slice(0,8).map(g=>`<div class="ln"><span class="pill pl-watch">${esc(g.name||"group")}</span> <span class="mono">${esc(g.group)}</span> <span class="faint">${esc(g.category)}${g.source?" · "+esc(g.source):""}</span>${mcastAuthorityPill(g)}</div>`).join("");
   const mcNote=mc.group_level_collected?` <span class="faint">— ${(mc.classified_groups||[]).length} group(s) classified.</span>`:` <span class="faint">— per-group (S,G)/IGMP membership not collected (Unknown); re-run with <b>show ip igmp groups</b> to map the broadcast/PTP groups.</span>`;
   const ptp=mc.ptp||{}; const ptpHosts=Object.keys(ptp); let ptpLine="";
   if(ptpHosts.length){
@@ -7892,12 +8069,20 @@ function serviceMapSection(){
     const ms=mi.summary||{}, aliases=mi.mac_aliases||[], qc=mi.querier||{}, gaps=qc.gap_vlans||[];
     const aliasHtml=aliases.length
       ? `<div class="ln" style="margin-top:5px"><span class="pill pl-crit">MAC overlap ⚠ ${aliases.length}</span> <span class="faint">group(s) collapse to one L2 MAC (RFC 4541 — IPv4 multicast is 32:1 into MACs):</span></div>`+
-        aliases.slice(0,6).map(a=>`<div class="ln"><span class="mono">${esc(a.mac)}</span> ← ${esc((a.groups||[]).join(", "))}${a.has_av?' <span class="pill pl-crit">on-air</span>':""}</div>`).join("")
+        aliases.slice(0,6).map(a=>`<div class="ln"><span class="mono">${esc(a.mac)}</span> ← ${esc((a.groups||[]).join(", "))}${a.has_av?' <span class="pill pl-crit" title="'+esc("this on-air flag is what raises the clash to High severity; its basis: "+macAliasAvTag(a)+". The MAC overlap itself is arithmetic on the observed group addresses and is not in question.")+'">on-air ('+esc(macAliasAvTag(a))+')</span>':""}</div>`).join("")
       : `<div class="ln" style="margin-top:5px"><span class="pill pl-ok">MAC overlap clean</span> <span class="faint">no two groups share a multicast MAC.</span></div>`;
     const qHtml=gaps.length
       ? `<div class="ln"><span class="pill pl-crit">querier gap ${gaps.length}</span> <span class="faint">multicast VLAN(s) with no IGMP querier — flood/blackhole (RFC 4541):</span> <span class="mono">${esc(gaps.slice(0,12).join(", "))}</span></div>`
       : `<div class="ln"><span class="pill pl-ok">querier coverage</span> <span class="faint">all ${(qc.multicast_vlans||[]).length} multicast VLAN(s) have a querier.</span></div>`;
-    mediaBlock=`<div class="sub" style="margin:10px 0 2px"><b>Media-fabric intelligence</b> <span class="faint">— ${ms.n_groups||0} group(s), ${ms.n_av_groups||0} broadcast/AV; group/MAC/VLAN level (per-(S,G) not collected).</span></div>${aliasHtml}${qHtml}`;
+    // "N broadcast/AV" alone presents a CURATED classification as a measurement. The producer publishes the
+    // authoritative subset (0 on the shipped pack) — pair them. FAIL-CLOSED when the subset is unpublished.
+    const nav=ms.n_av_groups||0, navA=("n_av_groups_authoritative" in ms)?(ms.n_av_groups_authoritative||0):null;
+    const avTxt=!nav?`${nav} broadcast/AV`
+      :navA===null?`${nav} broadcast/AV (classification basis not published)`
+      :navA?`${nav} broadcast/AV — ${navA} registry-verified, ${nav-navA} curated/unverified`
+      :`${nav} broadcast/AV — ALL curated, NOT an authoritative source`;
+    const uncls=ms.n_unclassified_groups||0;
+    mediaBlock=`<div class="sub" style="margin:10px 0 2px"><b>Media-fabric intelligence</b> <span class="faint">— ${ms.n_groups||0} group(s), ${esc(avTxt)}${uncls?", "+uncls+" unclassified (no registry match)":""}; group/MAC/VLAN level (per-(S,G) not collected).</span></div>${aliasHtml}${qHtml}`;
   }
   return `<div class="sec"><h3>Services &amp; multicast <span class="ct">${svcs.length}</span></h3>`+
     `<div class="sub" style="margin-bottom:6px">L4 ports referenced in ACLs = migration <b>design intent</b> (Inferred — not active traffic, no flow telemetry).</div>`+
@@ -9605,6 +9790,31 @@ function abShort(h){return String(h||"").split("-")[0]||String(h||"");}
 function abAttr(s){return esc(s).replace(/"/g,"&quot;");}   // esc() covers &<> only; attributes need quotes dead too
 function abKv(k,v){return v==null||v===""?"":`<div class="ab-kv"><span class="k">${esc(k)}</span><span class="v">${v}</span></div>`;}
 function abHostLink(h){return `<span class="ab-link" data-abq="tell me about ${abAttr(h)}">${esc(h)}</span>`;}
+/* review r8 F5 — the assistant's dossier exits (abH_profile / abH_migrate / abH_risky / abH_fleet) each
+   rendered a dossier's risk_band straight through abPill(). AB_PILL maps "low" -> pl-ok, so an asset whose
+   axes ALL abstained (abstention weighs ZERO exposure -> risk_index 0 -> band "Low") answered a direct
+   question with the same green pill as a fully-assessed clean box. The register card had been qualified;
+   these four exits are the same fact in the same file, unqualified. One helper, used by all of them —
+   a per-exit patch would just be four copies of the rule waiting to drift.
+   Fail-closed by construction: rrCoverage() reports thin for a MISSING census too, so a dossier with no
+   axis data is disclosed rather than assumed assessed. */
+function abDosCov(dos){return rrCoverage(dos||{});}
+function abDosPill(dos){const d=dos||{},c=abDosCov(d);
+  if(!c.thin)return abPill(d.risk_band);
+  const why=c.n?`${c.na} of ${c.n} risk axes carried NO evidence`
+                :"this asset published no risk-axis census at all";
+  return `<span class="pill pl-neutral" title="${abAttr(String(d.risk_band||"(no band)"))} was computed on absent evidence — `+
+    `${abAttr(why)}, and an abstaining axis scores ZERO exposure. Not assessed is a coverage gap, never a clean result.">`+
+    `${esc(String(d.risk_band||"(no band)"))} · NOT ASSESSED</span>`;}
+/* The fleet-level counterpart: how many assets in a dossier set were banded without enough evidence.
+   `absent:true` means the per-asset census itself was not published, so the answer is NOT ASSESSED
+   rather than "none" — a 0 that means "not measured" must never read as "nothing wrong". */
+function abDosCovStats(pd){const rows=Array.isArray(pd)?pd:[];
+  const cov=rows.map(abDosCov);
+  return {n:rows.length,thin:cov.filter(c=>c.thin).length,absent:!rows.length};}
+function abDosCovPill(st){
+  if(st.absent)return ` <span class="pill pl-neutral" title="No per-asset risk-axis census was published with this snapshot, so how much of the band census rests on evidence is itself NOT ASSESSED.">coverage NOT ASSESSED</span>`;
+  return st.thin?` <span class="pill pl-neutral" title="An abstaining risk axis scores ZERO exposure, so these assets were banded on absent evidence. Not assessed is a coverage gap, never a clean result.">${st.thin} of ${st.n} banded on absent evidence — NOT ASSESSED</span>`:"";}
 
 /* ---- conversational layer (V3.23.179) -----------------------------------
    Plain-English tolerance: fillers stripped, synonyms folded onto stable
@@ -9795,7 +10005,7 @@ function abH_profile(h){const d=((SNAP||{}).devices||{})[h]||{};const hs=abHS(h)
   b+=abKv("Role / uptime",esc([(hs||{}).role,d.uptime].filter(Boolean).join(" · ")));
   if(cap)b+=abKv("Ports",`${cap.active_ports}/${cap.total_ports} active (${cap.port_util}% used, ${cap.free_ports} free)`);
   if(hs)b+=abKv("Health",`${abPill(hs.band)} ${hs.score}/100`+(hs.deductions&&hs.deductions.length?` — top issue: ${esc(hs.deductions[0])}`:""));
-  if(dos)b+=abKv("Compound risk",`${abPill(dos.risk_band)} index ${dos.risk_index}/100 — impact ${dos.impact_score}/10 × exposure ${dos.exposure_score}/10`);
+  if(dos)b+=abKv("Compound risk",`${abDosPill(dos)} index ${dos.risk_index}/100 — impact ${dos.impact_score}/10 × exposure ${dos.exposure_score}/10`);
   if(lr)b+=abKv("Hardware lifecycle",`${abPill(lr.band)} ${esc(lr.status||"")}`);
   const doms=abDoms(h);if(doms.length)b+=abKv("App domain(s)",doms.map(x=>esc(x.domain)+" ("+esc(x.tier)+")").join("; "));
   const w=abWave(h);if(w)b+=abKv("Migration wave",esc(w));
@@ -9867,7 +10077,7 @@ function abH_vlanprof(vid){if(!MODEL.vlans.has(vid))
 function abH_migrate(h){const dos=abDos(h),fi=failureImpact(MODEL,h),hs=abHS(h),lr=abLR(h),sr=abSR(h);
   const {peers,off}=abNbrs(h);const doms=abDoms(h);const pun=abPunch(h);const w=abWave(h);
   let b=`<h4>Migration briefing — ${esc(h)}</h4>`;
-  if(dos)b+=abKv("Compound risk",`${abPill(dos.risk_band)} index ${dos.risk_index}/100${dos.verdict?" — "+esc(dos.verdict):""}`);
+  if(dos)b+=abKv("Compound risk",`${abDosPill(dos)} index ${dos.risk_index}/100${dos.verdict?" — "+esc(dos.verdict):""}`);
   if(hs)b+=abKv("Health today",`${abPill(hs.band)} ${hs.score}/100`);
   if(lr)b+=abKv("Hardware",`${abPill(lr.band)} ${esc(lr.status||lr.band||"")}`);
   if(sr&&sr.train_band)b+=abKv("Software train",`${abPill(sr.train_band)} ${esc(sr.train||sr.sw_version||"")}`);
@@ -9922,7 +10132,8 @@ function abH_fleet(){const dd=((SNAP||{}).device_dossiers||{}).summary||{};const
   const sc=eb.scale||{};   // SSOT: canonical scale; MODEL only as fallback
   b+=abKv("Scale",`<b>${sc.n_devices??MODEL.hosts.length}</b> switches · <b>${sc.n_endpoints??MODEL.endpointTotal}</b> endpoints · <b>${sc.n_vlans??MODEL.vlans.size}</b> VLANs · ${MODEL.offscan.length} off-scan uplinks`);
   if(Object.keys(bands).length)b+=abKv("Health bands",Object.entries(bands).map(([k,n])=>`${abPill(k)} ${n}`).join(" "));
-  if(dd.bands)b+=abKv("Risk bands",Object.entries(dd.bands).map(([k,n])=>`${abPill(k)} ${n}`).join(" ")+` · avg index ${dd.avg_risk_index??"?"}`);
+  if(dd.bands)b+=abKv("Risk bands",Object.entries(dd.bands).map(([k,n])=>`${abPill(k)} ${n}`).join(" ")+` · avg index ${dd.avg_risk_index??"?"}`+
+    abDosCovPill(abDosCovStats(((SNAP||{}).device_dossiers||{}).per_device)));
   if(lrs.by_band)b+=abKv("Hardware lifecycle",Object.entries(lrs.by_band).map(([k,n])=>`${abPill(k)} ${n}`).join(" "));
   if(srs.trains)b+=abKv("Software trains",Object.entries(srs.trains).map(([k,n])=>`${esc(k)}: ${n}`).join(" · "));
   if(eb.posture_statement)b+=`<div class="ab-note">${esc(eb.posture_statement)}</div>`;
@@ -9935,9 +10146,13 @@ function abH_risky(){const pd=((SNAP||{}).device_dossiers||{}).per_device||[];
   if(!pd.length)return {html:`<h4>Top risk</h4><div class="ab-note">This snapshot carries no device risk register — regenerate it with the current collector.</div>`,acts:[]};
   const top=[...pd].sort((a,b2)=>(b2.risk_index||0)-(a.risk_index||0)).slice(0,10);
   let b=`<h4>Top 10 by compound risk</h4><table><tr><th>Device</th><th>Band</th><th>Index</th><th>Why</th></tr>`;
+  let nThin=0;
   for(const d of top){const why=(d.exposures||[]).filter(x=>x.state==="risk").slice(0,2).map(x=>x.label).join("; ");
-    b+=`<tr><td>${abHostLink(d.host)}</td><td>${abPill(d.risk_band)}</td><td><b>${d.risk_index}</b></td><td>${esc(why||d.verdict||"")}</td></tr>`;}
+    const c=abDosCov(d);if(c.thin)nThin++;
+    const cov=c.thin?` <span class="pill pl-neutral">${c.n?`${c.na}/${c.n} axes NOT ASSESSED`:"axis census ABSENT — NOT ASSESSED"}</span>`:"";
+    b+=`<tr><td>${abHostLink(d.host)}</td><td>${abDosPill(d)}</td><td><b>${d.risk_index}</b></td><td>${esc(why||d.verdict||"")}${cov}</td></tr>`;}
   b+=`</table><div class="ab-note">Risk index = topology impact × stacked exposure (the workbook's Device Risk Register).</div>`;
+  if(nThin)b+=`<div class="ab-note">${nThin} of these ${top.length} asset(s) were banded on absent evidence — an abstaining risk axis scores ZERO exposure, so a low index there is a COLLECTION gap, not a clean result. "Top risk" is a ranking of what was assessed.</div>`;
   return {html:b,acts:[{label:"Brief me on #1",run:abAskAct("what if I migrate "+top[0].host)}]};}
 function abH_eol(){const lr=(SNAP||{}).lifecycle_risk||{};const sm=lr.summary||{};const pd=lr.per_device||[];
   if(!pd.length)return {html:`<h4>Hardware lifecycle</h4><div class="ab-note">No lifecycle data in this snapshot.</div>`,acts:[]};
@@ -10352,6 +10567,28 @@ const ABQ_ALIAS=[[/firewall|ftd|asa\b|segmentation/, "Firewall & Segmentation"],
   [/application|dependen|east[- ]west/, "Applications & Dependencies"],[/operation|day[- ]?2|\bnoc\b|monitoring/, "Operations & Day-2"],
   [/design|architect/, "Design & Architecture"],[/migration|cutover/, "Migration & Cutover"]];
 function abqFindDomain(t){for(const [re,d] of ABQ_ALIAS)if(re.test(t))return d;return null;}
+/* audit U1-3 (false-health): several ABQ_AUTO rules answer with a BAND CENSUS. On an all-Unknown fleet the
+   lifecycle rule returned "Unknown: 12" — truthy — so the interview stamped the question with a GREEN
+   "📊 evidence" pill, counted it in "N just auto-answered from collected evidence" and abqNext() skipped it
+   out of "left for the humans in the room". The COVERAGE GAP was used as the proof that there is no gap.
+   Structural fix: every census-shaped rule returns through abqCensus(), which classifies each census KEY
+   against the not-assessed CLASS (not a list of the band names that exist today) and
+     (a) refuses to auto-answer at all when NOTHING was assessed — the question goes back to the humans, and
+     (b) labels a partially-assessed census as coverage-qualified, so it renders neutral and is counted apart. */
+const ABQ_NOT_ASSESSED_KEY=/^\s*(unknown|unclassified|undetermined|indeterminate|insufficient(\s*data)?|no\s*data|n\s*\/?\s*a|not[\s_\-]*(assessed|observed|collected|determined|evaluated|matched|applicable))\s*$/i;
+function abqCensus(obj,unit){
+  const es=Object.entries(obj||{}).filter(([k,v])=>k&&(typeof v==="number"||typeof v==="string"));
+  if(!es.length)return null;
+  let gap=0,tot=0;
+  for(const [k,v] of es){const n=+v||0;if(n<0)continue;tot+=n;if(ABQ_NOT_ASSESSED_KEY.test(k))gap+=n;}
+  if(!tot)return null;
+  const text=es.map(([k,n])=>k+": "+n).join(" · ");
+  if(gap>=tot)return null;   // nothing was assessed -> this is a coverage gap, not an answer
+  if(gap>0)return {ev:text+" — ⚠ "+gap+" of "+tot+" "+(unit||"device(s)")+
+    " NOT ASSESSED; this census does not answer the question for them (coverage gap, not a clean result)",
+    gap:gap,total:tot};
+  return {ev:text};
+}
 /* evidence auto-answer rules: question text → a one-line proof from THIS snapshot (or null) */
 const ABQ_AUTO=[
  [/spanning[- ]?tree|stp\b|root (bridge|placement)/i,()=>{const sr=(SNAP||{}).stp_roots||{};if(!Object.keys(sr).length)return null;
@@ -10362,14 +10599,14 @@ const ABQ_AUTO=[
       surface flags it) -- the old summary counted only c/s and silently dropped these, reading as 'all fine'. */
    return `${c} VLAN(s) FHRP-covered · ${s} single-gateway · ${h} multi-gateway but NO FHRP — first-hop redundancy gap (in-scan view)`;}],
  [/end[- ]of[- ](life|support)|\beol\b|ldos|lifecycle|hardware (refresh|age)/i,()=>{const sm=((SNAP||{}).lifecycle_risk||{}).summary;if(!sm)return null;
-   return Object.entries(sm.by_band||{}).map(([k,n])=>k+": "+n).join(" · ");}],
+   return abqCensus(sm.by_band,"device(s)");}],
  [/port (capacity|util|density)|free ports|poe (budget|head)/i,()=>{const c=(SNAP||{}).capacity||[];if(!c.length)return null;
    const t=c.reduce((s,r)=>s+(+r.total_ports||0),0),a=c.reduce((s,r)=>s+(+r.active_ports||0),0);return `${a}/${t} ports active (${t-a} free fleet-wide)`;}],
  [/single[- ]homed|single point|spof|redundant (uplink|path)/i,()=>{let s=0;for(const h of MODEL.hosts){const nb=abNbrs(h);if(nb.peers.size+nb.off.size<=1)s++;}
    return `${s} single-homed switch(es); ${((SNAP||{}).causality||[]).length} failure chain(s) computed`;}],
  [/\bcdp\b|\blldp\b|topology (map|discover)|neighbor discovery/i,()=>`CDP collected: ${MODEL.links.length} in-scan link(s) + ${MODEL.offscan.length} off-scan uplink port(s) → ${(MODEL.ghosts||[]).length} uncollected neighbor(s)`],
  [/software (version|train|consisten)|ios (version|train)|code (level|version)|psirt|advisor/i,()=>{const sm=((SNAP||{}).software_risk||{}).summary;if(!sm)return null;
-   return Object.entries(sm.trains||{}).map(([k,n])=>k+": "+n).join(" · ");}],
+   return abqCensus(sm.trains,"device(s)");}],
  [/duplicate ip|overlapping subnet|address(ing)? conflict/i,()=>{const a=(SNAP||{}).addressing_conflicts||{};
    return `${(a.dup_ip||[]).length} duplicate IP(s), ${(a.dup_subnet||[]).length} overlapping subnet(s) detected`;}],
  [/syslog|logging (level|host|server)/i,()=>{const sy=(SNAP||{}).syslog_intelligence;return sy&&Object.keys(sy).length?`syslog analysis present in snapshot (see workbook Syslog sheet)`:null;}],
@@ -10377,7 +10614,7 @@ const ABQ_AUTO=[
  [/port[- ]security|dhcp snooping|arp inspection|\bcis\b|harden|password|banner|ssh/i,()=>{const sec=(SNAP||{}).security||{};let f=0;
    for(const r of Object.values(sec))for(const x of ((r||{}).findings||[]))if(x&&x.status==="fail")f++;return Object.keys(sec).length?`${f} open CIS-aligned finding(s) across ${Object.keys(sec).length} device(s)`:null;}],/* audit-5 CA#3: count fails only, not na/info (SSOT parity) */
  [/health (score|monitor)|err[- ]?disable|error (counter|rate)|interface error/i,()=>{const hs=(SNAP||{}).health_scores||[];if(!hs.length)return null;
-   const b={};for(const r of hs)b[r.band]=(b[r.band]||0)+1;return Object.entries(b).map(([k,n])=>k+": "+n).join(" · ");}],
+   const b={};for(const r of hs)b[r.band]=(b[r.band]||0)+1;return abqCensus(b,"switch(es)");}],
 ];
 // the ABQ_AUTO rules ALL derive from SWITCH (L1-L4) evidence, so they must only auto-answer questions in domains
 // the switch snapshot actually covers. Without this gate an EAP-TLS / load-balancer / firewall question that merely
@@ -10394,26 +10631,37 @@ const ABQ_SWITCH_DOMAINS=new Set(["Routing & Switching","Design & Architecture",
 // are the root bridges", r&s-03 FHRP deployment, etc.) are unaffected and still auto-answer.
 const ABQ_NON_AUTO=/who (owns|approves|is responsible)|your standard|standard (pre-?check|for |operating|hardening|naming)|how do you (track|enforce|measure|manage|govern)|how is compliance|been (tested|validated|done)\b|validation (has|have|been)|how will\b|will be (enabled|deployed|rolled|re-?routed|used)|do you plan|is it documented|governance|runbook|\braci\b|sign[- ]?off/i;
 const ABQ_STP_PROTECTION=/bpdu|loop guard|storm[- ]control|stp protection/i;
+/* Returns null (leave it to the humans) or {ev, gap?, total?}. A rule may still return a bare string; it is
+   normalised here so a rule author cannot accidentally bypass the coverage qualification above. */
 function abqAuto(it){
   if(it&&it.domain&&!ABQ_SWITCH_DOMAINS.has(it.domain))return null;   // appliance/controller/service domain -> no switch evidence
   const q=it.question||"";
   if(ABQ_NON_AUTO.test(q))return null;                                // process/governance/planning/attestation -> human judgement, not evidence
   for(const [re,fn] of ABQ_AUTO){if(re.test(q)){
     if(re===ABQ_AUTO[0][0]&&ABQ_STP_PROTECTION.test(q))continue;      // root-placement rule can't answer BPDU/Root/Loop Guard
-    try{const s=fn();if(s)return s;}catch(e){}}}return null;}
+    try{const s=fn();
+      const r=(s&&typeof s==="object")?s:(s?{ev:String(s)}:null);
+      if(r&&r.ev)return r;}catch(e){}}}return null;}
+/* A coverage-qualified auto-answer must NOT wear the same green pill as a clean one — the pill is what the
+   room reads. `r.gap` is set only by abqCensus() when part of the census was never assessed. */
 const ABQ_ST={auto:'<span class="pill pl-ok">📊 evidence</span>',pass:'<span class="pill pl-ok">✓ pass</span>',
   flag:'<span class="pill pl-crit">⚠ red flag</span>',skip:'<span class="pill pl-watch">skipped</span>'};
+function abqPill(r){if(!r)return '<span class="pill pl-watch">open</span>';
+  if(r.st==="auto"&&r.gap)return '<span class="pill pl-neutral" title="Part of the evidence census was NOT ASSESSED — this answer is coverage-qualified, not a clean result.">📊 evidence · ⚠ coverage-limited</span>';
+  return ABQ_ST[r.st]||'<span class="pill pl-watch">open</span>';}
 function abqProg(dom){const items=abqDomains().get(dom)||[];const done=items.filter(i=>ABQ.res[i.id]).length;
   return {n:items.length,done,flags:items.filter(i=>(ABQ.res[i.id]||{}).st==="flag").length,
-    auto:items.filter(i=>(ABQ.res[i.id]||{}).st==="auto").length};}
+    auto:items.filter(i=>(ABQ.res[i.id]||{}).st==="auto").length,
+    autoGap:items.filter(i=>(ABQ.res[i.id]||{}).st==="auto"&&(ABQ.res[i.id]||{}).gap).length};}
 function abqStart(dom){const items=abqDomains().get(dom);if(!items)return abRender(abH_qbank());
   ABQ.dom=dom;ABQ.queue=items;ABQ.idx=0;let auto=0;
+  let gapc=0;
   for(const it of items){if(ABQ.res[it.id])continue;
     if(it.go_no_go)continue;   // a GO/NO-GO cutover gate needs a HUMAN attestation -> never silently auto-resolve it from a heuristic (audit-3 #4)
-    const ev=abqAuto(it);if(ev){ABQ.res[it.id]={st:"auto",ev};auto++;}}
+    const a=abqAuto(it);if(a){ABQ.res[it.id]={st:"auto",ev:a.ev,gap:a.gap||0,total:a.total||0};auto++;if(a.gap)gapc++;}}
   abqSave();const p=abqProg(dom);
   abRender({html:`<h4>${esc(dom)} — engagement interview</h4>
-    <div>${p.n} senior-engineer questions · <b>${auto}</b> just auto-answered from collected evidence (📊)${p.done-auto>0?` · ${p.done-auto} answered earlier`:""} · ${p.n-p.done} left for the humans in the room.</div>
+    <div>${p.n} senior-engineer questions · <b>${auto-gapc}</b> just auto-answered from collected evidence (📊)${gapc?` · <b>${gapc}</b> answered from a census that is PARTLY NOT ASSESSED (⚠ coverage-limited — re-ask these)`:""}${p.done-auto>0?` · ${p.done-auto} answered earlier`:""} · ${p.n-p.done} left for the humans in the room.</div>
     <div class="ab-note">One question at a time — judge each answer like a senior would: <b>✓ Pass</b> or <b>⚠ Red flag</b>. Progress survives reloads.</div>`,acts:[]});
   abqNext();}
 function abqNext(){while(ABQ.idx<ABQ.queue.length&&ABQ.res[ABQ.queue[ABQ.idx].id])ABQ.idx++;
@@ -10435,11 +10683,12 @@ function abqScore(dom){if(!dom)return abRender(abH_qbank());
   const items=abqDomains().get(dom)||[];const p=abqProg(dom);
   const flags=items.filter(i=>(ABQ.res[i.id]||{}).st==="flag");
   let b=`<h4>${esc(dom)} — interview scorecard</h4>`;
-  b+=abKv("Progress",`${abBarHtml(p.done/p.n*100)} ${p.done}/${p.n} (${p.auto} from evidence)`);
+  b+=abKv("Progress",`${abBarHtml(p.done/p.n*100)} ${p.done}/${p.n} (${p.auto-p.autoGap} from evidence${p.autoGap?`, ${p.autoGap} ⚠ coverage-limited`:""})`);
   b+=abKv("Red flags",flags.length?`<span class="pill pl-crit">${flags.length}</span>`:'<span class="pill pl-ok">none yet</span>');
   if(flags.length)b+=abX("Red-flagged items",flags.map(i=>`<div>• <b>${esc(i.id)}</b> ${esc(i.question)}</div>`).join(""));
   const autos=items.filter(i=>(ABQ.res[i.id]||{}).st==="auto");
-  if(autos.length)b+=abX(`Evidence-answered (${autos.length})`,autos.map(i=>`<div>• <b>${esc(i.id)}</b> — ${esc((ABQ.res[i.id]||{}).ev||"")}</div>`).join(""));
+  if(autos.length)b+=abX(`Evidence-answered (${autos.length}${p.autoGap?`, ${p.autoGap} coverage-limited`:""})`,
+    autos.map(i=>{const r=ABQ.res[i.id]||{};return `<div>• ${abqPill(r)} <b>${esc(i.id)}</b> — ${esc(r.ev||"")}</div>`;}).join(""));
   return abRender({html:b,acts:[
     {label:p.done<p.n?"Resume interview":"Review again",run:()=>abqStart(dom)},
     {label:"All domains",run:abAskAct("question bank")},
@@ -10462,7 +10711,7 @@ function abH_qboard(){const gg=AB_QBANK.filter(i=>i.go_no_go);
   if(!gg.length)return abH_qbank();
   let open=0;let rows="";
   for(const it of gg){const r=ABQ.res[it.id];if(!r||r.st==="skip"||r.st==="flag")open++;
-    rows+=`<tr><td>${r?ABQ_ST[r.st]:'<span class="pill pl-watch">open</span>'}</td><td><b>${esc(it.id)}</b> ${esc(it.question.replace(/^⛔\s*/,""))}</td></tr>`;}
+    rows+=`<tr><td>${abqPill(r)}</td><td><b>${esc(it.id)}</b> ${esc(it.question.replace(/^⛔\s*/,""))}</td></tr>`;}
   let b=`<h4>GO / NO-GO readiness board — ${gg.length} gating questions</h4>
     <div>${open?`<span class="pill pl-crit">${open} unresolved</span> — a cutover is not approvable until every gate is green.`:`<span class="pill pl-ok">all gates addressed</span>`}</div>
     <table><tr><th>Status</th><th>Gate</th></tr>${rows}</table>`;
@@ -10471,7 +10720,7 @@ function abqMinutes(){let t=`# AS Engagement Interview Minutes — ${SNAP_LABEL}
   for(const [d,items] of abqDomains()){const p=abqProg(d);if(!p.done)continue;
     t+=`\n## ${d} (${p.done}/${p.n}${p.flags?`, ${p.flags} RED FLAG(S)`:""})\n`;
     for(const it of items){const r=ABQ.res[it.id];if(!r)continue;
-      t+=`- [${r.st.toUpperCase()}] ${it.id}: ${it.question}${r.ev?` — evidence: ${r.ev}`:""}\n`;}}
+      t+=`- [${r.st.toUpperCase()}${r.gap?" / COVERAGE-LIMITED":""}] ${it.id}: ${it.question}${r.ev?` — evidence: ${r.ev}`:""}\n`;}}
   try{navigator.clipboard.writeText(t).then(()=>srAnnounce("Interview minutes copied."),
     ()=>abMsg("bot",`<div class="ab-card ab-note">Clipboard unavailable — minutes could not be copied.</div>`));}
   catch(e){abMsg("bot",`<div class="ab-card ab-note">Clipboard unavailable — minutes could not be copied.</div>`);}}

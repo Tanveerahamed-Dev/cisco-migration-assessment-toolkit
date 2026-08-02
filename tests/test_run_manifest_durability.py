@@ -26,6 +26,7 @@ import os
 import sys
 
 import pytest
+from openpyxl import Workbook
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -139,10 +140,13 @@ def test_stray_tmp_is_not_sealed_as_a_delivered_artifact(tmp_path):
     published -- and the manifest would still verify clean.
     """
     out_xlsx = str(tmp_path / "assessment.xlsx")
-    open(out_xlsx, "w").close()
+    wb = Workbook()
+    wb.save(out_xlsx)
     (tmp_path / "assessment.snapshot.json.29460.tmp").write_text(
         '{"chain_root": "NEVER-PUBLISHED"}', encoding="utf-8")
 
+    cp._start_run_custody(out_xlsx)
+    cp._register_artifact(out_xlsx, kind="xlsx", source="test writer")
     man = cp.build_run_manifest(out_xlsx, {})
 
     sealed = [a["name"] for a in man["artifacts"]]

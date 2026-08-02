@@ -1,34 +1,213 @@
 name: Release
 
-# Cut a GitHub Release whenever a version tag (vX.Y.Z) is pushed. Notes are auto-generated from the
-# merged PRs / commits since the previous tag, so a release is one `git push` of a tag away — no manual
-# release authoring. Idempotent: if a Release for the tag already exists (e.g. it was bootstrapped by
-# hand), the job no-ops instead of failing. See RELEASING.md for the full process.
-
 on:
   push:
     tags:
       - "v*"
 
-# Creating a Release requires write access to repository contents.
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
-    name: Create GitHub Release
+    name: Verify tag and create immutable release assets
     runs-on: ubuntu-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
-          fetch-depth: 0          # full history so auto-generated notes can diff against the prior tag
-      - name: Create the Release (idempotent; auto-generated notes)
+          fetch-depth: 0
+      - name: Capture the immutable tagged-source identity
+        id: source
+        run: |
+          echo "commit=$(git rev-parse 'HEAD^{commit}')" >> "$GITHUB_OUTPUT"
+          echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: webapp/frontend/package-lock.json
+      - name: Prove toolchain setup did not change the tagged source
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+      - name: Verify annotated tag, project version, commit, and main ancestry
+        run: >-
+          python .github/scripts/verify_release.py
+          --tag "${GITHUB_REF_NAME}"
+          --commit HEAD
+          --base origin/main
+      - name: Prove release validation did not change the tagged source
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+      - name: Verify the tagged tracked-tree privacy boundary
+        run: python .github/scripts/verify_repository_privacy.py
+      - name: Prove privacy validation did not change the tagged source
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+      - name: Detect an idempotent re-run
+        id: existing
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="${GITHUB_REF_NAME}"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists — nothing to do."
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
           else
-            gh release create "$TAG" --title "$TAG" --generate-notes --verify-tag
+            echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
+      - name: Download the already-published assets on a re-run
+        if: steps.existing.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release download "${GITHUB_REF_NAME}"
+          --pattern "*.whl"
+          --pattern "*.tar.gz"
+          --pattern "dist-verification.json"
+          --dir dist
+      - name: Prove release lookup and download did not change the tagged source
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+          --allow-untracked-prefix dist
+      - name: Rebuild the bundled AssessHub SPA
+        if: steps.existing.outputs.exists == 'false'
+        working-directory: webapp/frontend
+        run: |
+          npm ci
+          npm test
+          npm run build
+      # See the matching note in ci.yml. `webapp/frontend/dist/` is untracked AND not ignored, and
+      # `_untracked_paths` omits --exclude-standard, so `npm run build` produced an unapproved
+      # untracked path and this step failed deterministically — blocking the release job. Renamed to
+      # what the script actually verifies: with dist/ untracked there are no tracked bytes to compare
+      # a build against. Note the existing `--allow-untracked-prefix dist` does NOT cover it: the
+      # match is a str.startswith on the repo-relative path, and `webapp/frontend/dist/` does not
+      # start with `dist/`.
+      - name: Prove the SPA build left the immutable tagged source untouched
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+          --allow-untracked-prefix webapp/frontend/node_modules
+          --allow-untracked-prefix webapp/frontend/dist
+          --allow-untracked-prefix dist
+      - name: Install the exact distribution toolchain
+        run: python -m pip install "build==1.5.0" "twine==6.2.0"
+      - name: Prove tool installation did not change the tagged source
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+          --allow-untracked-prefix webapp/frontend/node_modules
+          --allow-untracked-prefix dist
+      - name: Build the release archives once
+        if: steps.existing.outputs.exists == 'false'
+        run: python -m build --sdist --wheel --outdir dist
+      - name: Prove archive creation did not change the tagged source
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+          --allow-untracked-prefix webapp/frontend/node_modules
+          --allow-untracked-prefix build
+          --allow-untracked-prefix cisco_migration_assessment_toolkit.egg-info
+          --allow-untracked-prefix dist
+      - name: Verify archive metadata
+        run: python -m twine check dist/*.whl dist/*.tar.gz
+      - name: Prove metadata validation did not change the tagged source
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+          --allow-untracked-prefix webapp/frontend/node_modules
+          --allow-untracked-prefix build
+          --allow-untracked-prefix cisco_migration_assessment_toolkit.egg-info
+          --allow-untracked-prefix dist
+      - name: Create the trusted distribution proof
+        if: steps.existing.outputs.exists == 'false'
+        run: >-
+          python -m cisco_toolkit.distribution_verify dist
+          --source-commit "${{ steps.source.outputs.commit }}"
+          --source-tree "${{ steps.source.outputs.tree }}"
+          --json-out dist/dist-verification.json
+      - name: Recompute and compare the trusted distribution proof on a re-run
+        if: steps.existing.outputs.exists == 'true'
+        run: >-
+          python -m cisco_toolkit.distribution_verify dist
+          --source-commit "${{ steps.source.outputs.commit }}"
+          --source-tree "${{ steps.source.outputs.tree }}"
+          --expected-json dist/dist-verification.json
+          --json-out "${RUNNER_TEMP}/recomputed-dist-verification.json"
+      - name: Prove distribution verification did not change the tagged source
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+          --allow-untracked-prefix webapp/frontend/node_modules
+          --allow-untracked-prefix build
+          --allow-untracked-prefix cisco_migration_assessment_toolkit.egg-info
+          --allow-untracked-prefix dist
+      - name: Install and smoke-test the exact wheel
+        run: python -m pip install --force-reinstall dist/*.whl
+      - name: Prove wheel installation did not change the tagged source
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+          --allow-untracked-prefix webapp/frontend/node_modules
+          --allow-untracked-prefix build
+          --allow-untracked-prefix cisco_migration_assessment_toolkit.egg-info
+          --allow-untracked-prefix dist
+      - name: Verify the installed runtime outside the checkout
+        working-directory: ${{ runner.temp }}
+        run: |
+          cisco-assess --help
+          assesshub --selftest
+          # SCOPED authority — see the identical note in ci.yml. `authoritative` is correctly False
+          # for a deliberately mixed pack, so asserting it fails a healthy registry and would block
+          # the release job. Gate on integrity_verified + official_source_authoritative, each
+          # falling back to `authoritative` when the pack does not publish it.
+          python -c "import sys; from cisco_toolkit import ouidb, portdb; ok = lambda h: (lambda w: bool(h.get('integrity_verified', w)) and bool(h.get('official_source_authoritative', w)))(h.get('authoritative')); bad = [(n, h) for n, h in (('oui', ouidb.registry_health()), ('port', portdb.registry_health())) if not ok(h)]; sys.exit('registry pack unusable: %r' % (bad,)) if bad else None"
+      - name: Final immutable-tagged-source proof before release
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+          --allow-untracked-prefix webapp/frontend/node_modules
+          --allow-untracked-prefix build
+          --allow-untracked-prefix cisco_migration_assessment_toolkit.egg-info
+          --allow-untracked-prefix dist
+      - name: Reverify exact bytes and create the GitHub Release
+        if: steps.existing.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -m cisco_toolkit.distribution_verify dist \
+            --source-commit "${{ steps.source.outputs.commit }}" \
+            --source-tree "${{ steps.source.outputs.tree }}" \
+            --expected-json dist/dist-verification.json
+          wheel="$(python -c 'import json; print(json.load(open("dist/dist-verification.json", encoding="utf-8"))["wheel"])')"
+          sdist="$(python -c 'import json; print(json.load(open("dist/dist-verification.json", encoding="utf-8"))["sdist"])')"
+          gh release create "${GITHUB_REF_NAME}" \
+            "dist/${wheel}" \
+            "dist/${sdist}" \
+            dist/dist-verification.json \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --verify-tag

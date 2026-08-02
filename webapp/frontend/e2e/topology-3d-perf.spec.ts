@@ -4,7 +4,7 @@ import { test, expect } from "@playwright/test";
 // runner hardware, so asserting an FPS floor in CI would be flaky by construction. This exists to put
 // NUMBERS on the mesh-cost question (the plan's phase-2 InstancedMesh rewrite is gated on measurement,
 // not vibes): run it on main, run it on a candidate branch, compare renderer.info + sampled FPS.
-// A ~300-node fleet mirrors the documented real-fleet ceiling (the "303 [HISTORY-REDACTED] fleet").
+// A ~300-node fleet mirrors the documented real-fleet ceiling (the "303 Meridian reference fleet").
 const RUN = !!process.env.PERF;
 
 const N = 300;

@@ -60,7 +60,7 @@ Mean Path Delay(ns): 310
 
 
 def test_parse_ptp_clock_dormant_real_format():
-    # the real [HISTORY-REDACTED]-fleet output: PTP available but NOT an active boundary clock (Unknown / 0 ports / no parent)
+    # the real Meridian reference fleet output: PTP available but NOT an active boundary clock (Unknown / 0 ports / no parent)
     out = """ PTP CLOCK INFO
   PTP Device Type: Unknown
   PTP Device Profile: Default Profile

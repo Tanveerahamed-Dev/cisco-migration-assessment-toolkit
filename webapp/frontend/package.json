@@ -4,6 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "description": "AssessHub — web cockpit for the Cisco Migration-Assessment engine.",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -p tsconfig.json && vite build",

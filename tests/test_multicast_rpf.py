@@ -5,7 +5,7 @@ An (S,G) source-tree entry with 'Incoming interface: Null' AND a NON-ZERO RPF ne
 entry (locally-joined / well-known / SSM groups on NX-OS), and an (S,G) whose 'RPF nbr' is 0.0.0.0 -- per Cisco,
 THIS router is the source (a local source / PIM register / SPT-pending), a normal Null IIF, not a failure. A naive
 'Null IIF' detector cries wolf on every such benign entry; the coverage-honest one fires ONLY on (S,G)+Null+
-non-zero-RPF. This is PROVEN against the real [HISTORY-REDACTED] fleet: 36 benign (*,G)-Null entries and 0 (S,G)-Null, so the
+non-zero-RPF. This is PROVEN against the real Meridian reference fleet: 36 benign (*,G)-Null entries and 0 (S,G)-Null, so the
 detector is silent there. Covers parse_mroute_entries (NX-OS + IOS), build_mroute (the (S,G)-only filter), the
 _signals extraction, _d_mcast_rpf_failure, the KB principle and the pim-class registry entry. The mroute text is
 grounded in real NX-OS 'show ip mroute' output."""
@@ -49,7 +49,7 @@ _SG_NULL = _HEALTHY.replace(
 _SG_NULL_LOCAL = _HEALTHY.replace(
     "Incoming interface: Ethernet1/1, RPF nbr: 10.203.0.1",
     "Incoming interface: Null, RPF nbr: 0.0.0.0")
-# Only (*,G) Null entries (the dominant [HISTORY-REDACTED] pattern -- 36 of them) -> must STAY SILENT (no cry-wolf).
+# Only (*,G) Null entries (the dominant Meridian pattern -- 36 of them) -> must STAY SILENT (no cry-wolf).
 _STAR_NULL_ONLY = """\
 IP Multicast Routing Table for VRF "default"
 
@@ -163,7 +163,7 @@ def test_fires_on_ios_sg_null():
 
 # ----------------------------------------------------------------------------- detector: SILENT (no cry-wolf)
 def test_silent_on_star_g_null_only():
-    # THE coverage-honesty case: a table of (*,G) Null entries (the 36-benign [HISTORY-REDACTED] pattern) must NOT fire
+    # THE coverage-honesty case: a table of (*,G) Null entries (the 36-benign Meridian pattern) must NOT fire
     assert _fire(_snap(_STAR_NULL_ONLY)) is None
 
 

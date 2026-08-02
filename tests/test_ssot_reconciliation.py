@@ -11,7 +11,7 @@ crd -> runbook -> engagement -> deck over several audit waves -- is a UNIFIED gu
   1. a producer-side internal-consistency invariant (cisco_toolkit.ssot.reconcile) that proves
      every published canonical value still matches its raw-evidence derivation, and
   2. a cross-surface behavioural lock that renders the lifecycle/scale deliverables from a
-     fixture carrying the exact [HISTORY-REDACTED] trap values (n_past_ldos=152, n_past_eos=0) and asserts each
+     fixture carrying the exact Meridian trap values (n_past_ldos=152, n_past_eos=0) and asserts each
      surface headlines the past-SUPPORT population (152), never the conflated sibling (0).
 
 Together they convert "re-find the drift by hand every wave" into "CI catches it the moment it
@@ -325,7 +325,7 @@ def test_summary_counts_only_published_facts():
 
 
 # --------------------------------------------------------------------------------------------
-# Cross-surface behavioural lock: render the deliverables from the [HISTORY-REDACTED] trap fixture and assert
+# Cross-surface behavioural lock: render the deliverables from the Meridian trap fixture and assert
 # each surface reads the canonical past-support population, not the conflated sibling.
 # --------------------------------------------------------------------------------------------
 docx = pytest.importorskip("docx")  # the render tests below need python-docx
@@ -334,7 +334,7 @@ from docx import Document  # noqa: E402
 
 def _trap_render_snap():
     """Union of the maintained per-deliverable fixtures (so each renderer has the keys it reads),
-    with the canonical SSOT blocks overridden to the exact [HISTORY-REDACTED] trap values: the past-support
+    with the canonical SSOT blocks overridden to the exact Meridian trap values: the past-support
     population is n_past_ldos=152 while the conflated sibling n_past_eos=0. A surface that reads
     the wrong field renders 0 / omits the headline, so 152 vanishing from its output is the
     discriminator."""
@@ -590,14 +590,14 @@ def test_excellence_badge_keeps_the_L1_rendered_citation_guard_passing():
 # Segmentation posture: ONE owner (analyze.compute_segmentation -> snap['segmentation']), read by
 # design/crd/archreview through ssot.segmentation_facts. Before this, each re-derived its own from
 # snap['interfaces'] and counted every non-default VRF on the box -- including management/keepalive
-# VRFs that carry no gateway SVI -- as a "VRF in use". On the [HISTORY-REDACTED] fleet that rendered "4 VRF(s) in
+# VRFs that carry no gateway SVI -- as a "VRF in use". On the Meridian reference fleet that rendered "4 VRF(s) in
 # use" (archreview SEC-2) and "4 non-default VRF(s)" (design 2.6) beside the runbook's "1 VRF(s)
 # across 231 gateway SVI(s)" and the design doc's OWN "202 VLAN(s) across a single global VRF".
 # --------------------------------------------------------------------------------------------
 
 def _flat_fabric_snap():
     """A FLAT gateway tier (every SVI in the global table, no gateway ACL) that nonetheless has
-    management VRFs configured on non-SVI ports -- the exact [HISTORY-REDACTED] shape."""
+    management VRFs configured on non-SVI ports -- the exact Meridian shape."""
     ifaces = {"sw1": {"mgmt0": {"vrf": "management"}, "Vlan99": {"vrf": "Mgmt-vrf"}}}
     for i in range(8):
         ifaces["sw1"]["Vlan%d" % (i + 1)] = {"svi_ip": "10.0.%d.1" % i}

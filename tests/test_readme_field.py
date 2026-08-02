@@ -226,7 +226,7 @@ def test_the_draft_status_row_really_reaches_a_rendered_document(tmp_path):
     from cisco_toolkit import design
 
     out = tmp_path / "d.docx"
-    design.write_design_doc_docx(str(out), {"devices": {"SW1": {"model": "C9300"}}}, "[HISTORY-REDACTED]")
+    design.write_design_doc_docx(str(out), {"devices": {"SW1": {"model": "C9300"}}}, "Meridian")
     text = "\n".join(c.text for t in docx.Document(str(out)).tables
                      for r in t.rows for c in r.cells)
     assert "Status" in text, "the Document Control table lost its Status row"

@@ -22,11 +22,9 @@ running the thing, on 2026-07-28:
 * The ``continue-on-error`` / ``|| true`` guard in tests/test_hooks_automation.py iterates
   ci.yml and webapp-ci.yml only — release.yml and publish.yml were unguarded.
 
-NOT fixed here, deliberately, and NOT pinned by a test because any assertion about it would be a
-timing flake: verify-green.sh caps pytest at ``timeout 540`` and line ~76 treats exit 124 as
-fail-OPEN. Driven with a shortened cap over a deliberately red suite, the hook printed its
-timeout notice and **exited 0** — i.e. the cap converts a red suite into an allowed stop. See the
-round-5 report for the measured suite duration against that cap.
+The former timeout fail-open is pinned deterministically in ``test_ci_gates.py`` by placing a
+``timeout`` shim first on PATH. No wall-clock race is required: exit 124 must block exactly like
+any other incomplete verification.
 """
 import json
 import os

@@ -157,12 +157,20 @@ Every assessment run drops a  <name>.run_manifest.json  beside the
 workbook: a hash-chained ledger of the run plus a SHA-256 of each file it
 produced. To check a set that has been sitting on a share, or that came
 back to you from the client:
-  Atlas.exe --verify-manifest <path to run_manifest.json> --verify-artifacts
+  Atlas.exe --verify-manifest <path to run_manifest.json>
 
 "manifest OK" means the ledger still matches its own seal and every file
 listed hashes to what was sealed. It exits non-zero if not, and names the
 files: MISMATCH = changed since the run, MISSING = not in that folder,
 INVALID = the manifest pointed somewhere outside it and was not opened.
+Artifact bytes are checked by default. Only when the manifest was
+deliberately separated from its files, inspect its sealed metadata alone:
+  Atlas.exe --verify-manifest <path to run_manifest.json> --metadata-only
+That mode explicitly reports that artifact bytes were NOT checked.
+
+The engine performs this same full chain, metadata and artifact-byte check
+immediately after it writes each run manifest. Run the command above again
+after copying or receiving a set to catch damage introduced later.
 
 WHAT THIS PROVES, AND WHAT IT DOES NOT: the seal is UNKEYED, and the code
 that writes it ships in this app. It catches a careless edit, a dropped

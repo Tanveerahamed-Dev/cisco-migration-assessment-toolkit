@@ -91,7 +91,7 @@ def test_docx_family_tolerates_nondict_sections_and_rows(tmp_path):
         "capacity": [None, {"hostname": "SW1"}],
         "l3_forwarding": ["str", None],
     }
-    runbook.write_runbook_docx(str(tmp_path / "r.docx"), hostile, "[HISTORY-REDACTED]")
-    design.write_design_doc_docx(str(tmp_path / "d.docx"), hostile, "[HISTORY-REDACTED]")
-    deck.write_executive_deck_pptx(str(tmp_path / "k.pptx"), hostile, "[HISTORY-REDACTED]")
+    runbook.write_runbook_docx(str(tmp_path / "r.docx"), hostile, "Meridian")
+    design.write_design_doc_docx(str(tmp_path / "d.docx"), hostile, "Meridian")
+    deck.write_executive_deck_pptx(str(tmp_path / "k.pptx"), hostile, "Meridian")
     assert all((tmp_path / f).exists() for f in ("r.docx", "d.docx", "k.pptx"))

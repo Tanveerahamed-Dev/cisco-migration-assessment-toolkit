@@ -502,7 +502,17 @@ def test_runbook_survives_truthy_scalar_nested_value(tmp_path):
         for key in p[:-1]:
             node = node[key]
         node[p[-1]] = 7   # a truthy scalar where a nested dict/list is expected
-        out = str(tmp_path / f"rb_nested_{i}.docx")
+        # ONE output path, rewritten per case. Nothing reads these files — the assertion is purely
+        # "the render did not raise" — but a distinct path per case left 129 .docx files
+        # accumulating in one directory, and on Windows each new file is a fresh AV scan in a
+        # directory that keeps growing. Measured: 262 ms/render into a near-empty directory vs
+        # 174 ms rewriting one path, and this test was the single slowest in the suite at ~155 s
+        # (22% of the whole run) against ~34 s for the same 129 renders measured standalone — the
+        # gap is file accumulation, not the rendering.
+        #
+        # The sweep's REACH is untouched: same 129 cases, same poison, same assertion. Shrinking the
+        # case set is what the reach guard above exists to forbid, and it is not what this does.
+        out = str(tmp_path / "rb_nested.docx")
         try:
             write_runbook_docx(out, snap, "Unit Test Fleet")
         except Exception as e:   # noqa: BLE001 - the whole point is that NOTHING may raise
@@ -578,3 +588,178 @@ def test_runbook_nonstr_join_coercion_is_identity_on_strings(tmp_path):
     write_runbook_docx(out, snap, "Unit Test Fleet")
     txt = _all_text(Document(out))
     assert "alpha1" in txt and "bravo2" in txt, "well-formed hosts must render verbatim"
+
+
+# ===========================================================================================
+# review r9 F1/F2 — the runbook's two un-qualified exits:
+#   §10.1 rendered `risk_band` with no coverage qualification, and §6.6 rendered the curated
+#   broadcast/AV classification with no authority. Both are "absence rendered as health".
+# ===========================================================================================
+
+def _real_dossiers(assessed: bool):
+    """A dossier section built by the REAL producer (analyze.compute_device_dossiers), not a
+    hand-shaped dict. A hand-built row in the shape the writer expects would only prove the writer
+    agrees with itself; this proves the writer agrees with the ENGINE.
+
+    assessed=False feeds ONLY health + blast radius + an Unknown-lifecycle row -> 8 of the 11 risk
+    axes abstain -> exposure 0 -> risk_band 'Low', risk_index 0, verdict "No stacked risk — routine
+    migration handling." That is the exact false-health shape this section fixes. assessed=True
+    feeds most axes -> 5 of 11 na -> NOT thin (the non-vacuity control)."""
+    from cisco_toolkit.analyze import compute_device_dossiers
+    if not assessed:
+        return compute_device_dossiers(
+            health_scores=[{"switch": "sw0", "score": 70, "band": "Good", "role": "access"}],
+            failure_impact=[{"host": "sw0", "stranded": 40, "vlans_impacted": 2}],
+            lifecycle_risk={"per_device": [{"host": "sw0", "band": "Unknown"}]})
+    return compute_device_dossiers(
+        health_scores=[{"switch": "sw0", "score": 92, "band": "Excellent", "role": "access"}],
+        failure_impact=[{"host": "sw0", "stranded": 4, "vlans_impacted": 1}],
+        lifecycle_risk={"per_device": [{"host": "sw0", "band": "Active", "model": "C9300"}]},
+        software_risk={"per_device": [{"host": "sw0", "band": "OK", "n_findings": 0}]},
+        security={"sw0": {"checks": [{"id": "x", "status": "pass"}]}},
+        config_hygiene={"sw0": {"findings": []}})
+
+
+def test_dossier_coverage_mirrors_the_canonical_rule():
+    """runbook._dossier_coverage is a MIRROR of cisco_toolkit/excel.py::dossier_coverage. Drift is
+    caught by EXECUTION over the canonical case table, not by a comment asking for discipline."""
+    from cisco_toolkit.excel import DOSSIER_COVERAGE_CASES, dossier_coverage
+    from cisco_toolkit import runbook as R
+
+    # NON-VACUITY of the table: it must exercise BOTH verdicts, else "they agree" is trivial.
+    thins = {k for k, v in DOSSIER_COVERAGE_CASES.items() if v[1][2]}
+    assert thins and (set(DOSSIER_COVERAGE_CASES) - thins)
+    for label, (row, expected) in DOSSIER_COVERAGE_CASES.items():
+        assert list(R._dossier_coverage(row)) == list(expected), label
+        assert list(R._dossier_coverage(row)) == list(dossier_coverage(row)), label
+
+
+def test_device_risk_register_discloses_not_assessed_axes(tmp_path):
+    """review r9 F1. The §10.1 register rendered host/band/index/verdict and nothing else, so an
+    asset whose 8-of-11 risk axes were NEVER ASSESSED printed as 'Low', index 0, "No stacked risk —
+    routine migration handling" — indistinguishable from a genuinely clean asset. Pre-fix the
+    rendered document contained neither the per-asset census nor the fleet-wide coverage sentence."""
+    dd = _real_dossiers(assessed=False)
+    row = dd["per_device"][0]
+    # the producer really does band an un-assessed asset 'Low' (this is the defect's precondition)
+    assert row["risk_band"] == "Low" and row["risk_index"] == 0 and row["n_na"] == 8
+
+    snap = _snap()
+    snap["device_dossiers"] = dd
+    out = str(tmp_path / "rb_cov.docx")
+    write_runbook_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "8 of 11 NOT ASSESSED" in text, "per-asset coverage cell missing from the register table"
+    assert "band computed on absent evidence" in text, "the 'Low' band is not qualified"
+    assert "8 of 11 risk axes fleet-wide were NOT ASSESSED" in text
+    assert "HALF OR MORE of their risk axes NOT ASSESSED" in text
+    assert "Coverage" in text                                  # the new column header renders
+
+
+def test_device_risk_register_clean_asset_does_not_acquire_the_disclosure(tmp_path):
+    """NON-VACUITY: an asset whose axes WERE assessed (5 of 11 na -> not thin) must keep its clean
+    reading. If the qualifier appeared on every row it would carry no information."""
+    dd = _real_dossiers(assessed=True)
+    row = dd["per_device"][0]
+    assert row["n_na"] == 5 and len(row["exposures"]) == 11     # below the half-abstained threshold
+    snap = _snap()
+    snap["device_dossiers"] = dd
+    out = str(tmp_path / "rb_clean.docx")
+    write_runbook_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "5 of 11 NOT ASSESSED" in text                       # census still stated (always legible)
+    assert "band computed on absent evidence" not in text       # ... but NOT flagged as un-evidenced
+    assert "HALF OR MORE of their risk axes NOT ASSESSED" not in text
+
+
+def test_register_with_no_axis_census_fails_closed(tmp_path):
+    """An OLDER snapshot whose dossier rows carry no `exposures` census must read NOT ASSESSED —
+    an unknown denominator is never 'fine'."""
+    snap = _snap()
+    snap["device_dossiers"] = {
+        "per_device": [{"host": "sw2", "risk_band": "Low", "risk_index": 0, "impact_score": 1,
+                        "exposure_score": 0, "compound": [], "verdict": "No stacked risk."}],
+        "summary": {"n_devices": 1, "bands": {"Severe": 0, "Elevated": 0, "Guarded": 0, "Low": 1},
+                    "n_compound": 0}}
+    out = str(tmp_path / "rb_nocensus.docx")
+    write_runbook_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "axis census ABSENT — coverage NOT ASSESSED" in text
+    assert "published NO risk-axis census at all" in text
+
+
+def _real_multicast_intelligence():
+    """multicast_intelligence from the REAL producer, over two groups that alias onto one L2 MAC,
+    one of them curated Broadcast-AV. compute_multicast_intelligence escalates that finding to High
+    purely on the curated classification."""
+    from cisco_toolkit.analyze import compute_multicast_intelligence
+    return compute_multicast_intelligence({"multicast": {
+        "classified_groups": [
+            {"group": "239.1.1.1", "name": "ST2110-video", "category": "Broadcast-AV",
+             "broadcast": True, "source": "IGMP/mroute"},
+            {"group": "224.1.1.1", "name": "generic", "category": "", "source": "IGMP/mroute"},
+        ],
+        "active_switch_count": 1, "active_interfaces": 2, "ptp": {}, "igmp_queriers": []}}, {})
+
+
+def test_broadcast_av_classification_renders_with_its_authority(tmp_path):
+    """review r9 F2. §6.6 printed '(N broadcast/AV)' and 'MAC ← groups' with no hint that the on-air
+    label is a CURATED offline-registry judgement carrying no authoritative source — the same label
+    that raises the MAC-alias finding from Medium to High. Pre-fix neither string below appeared
+    anywhere in the document."""
+    mi = _real_multicast_intelligence()
+    # the producer's own position: the alias is High, and it rests on a NON-authoritative label
+    assert mi["summary"]["n_av_groups_authoritative"] == 0 and mi["summary"]["n_av_groups"] == 1
+    assert mi["risks"][0]["severity"] == "High" and mi["mac_aliases"][0]["has_av"] is True
+    assert mi["mac_aliases"][0]["has_av_authoritative"] is False
+
+    snap = _snap()
+    snap["multicast_intelligence"] = mi
+    out = str(tmp_path / "rb_av.docx")
+    write_runbook_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "CURATED offline-registry classification, not a measurement" in text
+    assert "CURATED classification, NOT an authoritative source" in text
+    assert "this flag is what raises the finding to High" in text
+
+
+def test_broadcast_av_authority_absent_reads_not_assessed(tmp_path):
+    """FAIL-CLOSED on an older snapshot: no authority census must read NOT ASSESSED, never
+    'authoritative'. NON-VACUITY companion: an AUTHORITATIVE census must NOT print either the
+    'NOT ASSESSED' or the 'NONE of them' wording."""
+    snap = _snap()
+    snap["multicast_intelligence"] = {"summary": {"n_groups": 1, "n_av_groups": 1}}   # legacy: no authority key
+    out = str(tmp_path / "rb_av_old.docx")
+    write_runbook_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "on-air classification authority NOT ASSESSED in this snapshot" in text
+
+    snap["multicast_intelligence"] = {"summary": {"n_groups": 1, "n_av_groups": 1,
+                                                  "n_av_groups_authoritative": 1}}
+    out2 = str(tmp_path / "rb_av_auth.docx")
+    write_runbook_docx(out2, snap, "Unit Test Fleet")
+    text2 = _all_text(Document(out2))
+    assert "1 of 1 on-air classification(s) rest on an authoritative source" in text2
+    assert "authority NOT ASSESSED" not in text2 and "NONE of them" not in text2
+
+
+def test_av_authority_qualifier_refuses_to_state_an_incoherent_ratio():
+    """`{n_auth} of {n_av}` is meaningful only when n_auth <= n_av. The two counts are published
+    independently, so an incoherent snapshot rendered "7 of 3" and a reader had no way to tell that
+    from a real ratio. Fail closed on the incoherence instead of formatting it."""
+    from cisco_toolkit.runbook import _av_authority
+
+    bad = _av_authority({"summary": {"n_av_groups": 3, "n_av_groups_authoritative": 7}})
+    assert "INCOHERENT" in bad, bad
+    assert "7 of 3" not in bad
+
+    # NON-VACUITY in all three healthy directions.
+    good = _av_authority({"summary": {"n_av_groups": 5, "n_av_groups_authoritative": 2}})
+    assert "2 of 5" in good and "INCOHERENT" not in good, good
+    none_auth = _av_authority({"summary": {"n_av_groups": 5, "n_av_groups_authoritative": 0}})
+    assert "NONE of them" in none_auth
+    absent = _av_authority({"summary": {"n_av_groups": 5}})
+    assert "NOT ASSESSED" in absent, "an absent authority census must fail CLOSED"
+    # a malformed value must not read as authoritative either
+    malformed = _av_authority({"summary": {"n_av_groups": 5, "n_av_groups_authoritative": None}})
+    assert "NONE of them" in malformed or "NOT ASSESSED" in malformed, malformed

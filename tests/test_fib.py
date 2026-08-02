@@ -533,7 +533,7 @@ def test_both_sides_never_observed_a_route_is_inconclusive_not_a_clean_non_regre
 
 
 def test_real_route_source_codes_map_correctly():
-    """Format-fidelity vs REAL [HISTORY-REDACTED] snapshot source values (a mix of expanded names AND raw codes with the '*'
+    """Format-fidelity vs REAL Meridian reference snapshot source values (a mix of expanded names AND raw codes with the '*'
     candidate-default marker): 's*' is static, 'o*ia' is OSPF inter-area, '' is unknown. _is_connected and the
     admin-distance must not be fooled by the code/marker form (the recurring self-authored-fixture defect class)."""
     assert fib._admin_distance("s*") == 1            # static + candidate-default

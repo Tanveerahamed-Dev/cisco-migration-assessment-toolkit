@@ -83,7 +83,7 @@ helps only on self-controlled fleets.
   |---|---|---|
   | `blast_radius_explorer.html.stale-root-copy` | 896,156 | 71 keyword hits, **all authored text** — see below |
   | `raw\example_com.md` | 360 | clean |
-  | `[HISTORY-REDACTED]_BOQ.xlsx.lockfile` | 165 | clean (incl. UTF-16 decode) |
+  | `Reference_BOQ.xlsx.lockfile` | 165 | clean (incl. UTF-16 decode) |
 
   **All three** were scanned, for password / passwd / secret / `enable secret` / token / api-key /
   private-key / `BEGIN … PRIVATE KEY` / SNMP community / Cisco type-5 + type-7 / pre-shared / PSK.
@@ -94,7 +94,7 @@ helps only on self-controlled fleets.
   the explorer's own JS regex literal; both SNMP hits read `snmp-server community <redacted> RW`,
   i.e. the placeholder, not a community. It is the explorer carrying its built-in DEMO dataset, not
   a rendered client instance — zero data-injection markers (`__SNAPSHOT_JSON__`, data-script tag)
-  and zero `[HISTORY-REDACTED]*` fleet hostnames. The file says as much itself: "The Python parser already redacted
+  and zero `Meridian*` fleet hostnames. The file says as much itself: "The Python parser already redacted
   every secret value (SNMP communities, password hashes), so nothing sensitive is rendered."
   **Conclusion unchanged — no credential material — but the evidence is now complete.**
 

@@ -106,7 +106,16 @@ def test_campaign_partial_evidence_loss_downgrades_a_clean_improvement():
     c2["health_scores"] = [{"switch": h, "band": "Good", "score": 88} for h in _DEVS]
     c2.pop("punchlist")                                  # the analysis phase stopped emitting it
     t = compute_campaign_trend([c1, c2])
-    assert t["verdict"] == "MIXED", (t["verdict"], t["verdict_note"])
+    # The RULE is "cannot claim a clean IMPROVING over an estate that shrank its evidence", and both
+    # non-certifying outcomes satisfy it: MIXED downgrades, INDETERMINATE withholds certification
+    # outright ("Campaign certification withheld because N collection/schema integrity record(s) are
+    # not trustworthy"). The guard was later hardened from the first to the second — STRICTER — and
+    # this assertion, pinned to the exact label, then read as a failure.
+    #
+    # Deliberately not widened to `!= "IMPROVING"`: that would also admit REGRESSING, i.e. inventing
+    # a decline from missing evidence, which is the mirror-image lie. The three assertions below are
+    # the substantive ones and are unchanged — all four properties were re-measured and still hold.
+    assert t["verdict"] in ("MIXED", "INDETERMINATE"), (t["verdict"], t["verdict_note"])
     assert "NOT COMPARABLE" in t["verdict_note"]
     metrics = {r["metric"] for r in t["trajectory"]}
     assert "Punch-list items" not in metrics             # never scored as a fall to zero

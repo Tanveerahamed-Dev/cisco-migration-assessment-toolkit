@@ -57,8 +57,8 @@ def _upper_hostnames(s):
 
 def test_hostname_case_does_not_erase_the_fabric(snap):
     """`node_ids` held RAW snapshot keys while the neighbour was resolved through `canon()`, which
-    lower-cases. So on any fleet whose hostnames are not already lower-case — [HISTORY-REDACTED]-CORE-01 /
-    [HISTORY-REDACTED]-ACC-14, i.e. the Cisco norm — every neighbour failed the membership test and the graph came
+    lower-cases. So on any fleet whose hostnames are not already lower-case — MERIDIAN-CORE-01 /
+    MERIDIAN-ACC-14, i.e. the Cisco norm — every neighbour failed the membership test and the graph came
     back with ZERO edges. That does not surface as an error: it draws every switch unlinked with an
     EMPTY single-point-of-failure overlay, while the cable map directly below draws the real
     topology (it resolves through a canon map, which is the idiom now copied here)."""

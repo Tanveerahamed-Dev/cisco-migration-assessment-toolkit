@@ -1,10 +1,23 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, bandColor, gateColor } from "../api";
-import type { GateRecord } from "../api";
+import type { GateRecord, SnapshotVerification } from "../api";
 import { ErrorBox, Loading, SegBar, useAsync, useToast } from "../components/ui";
+import {
+  normalizedVerification,
+  VerificationBadge,
+} from "../components/VerificationStatus";
 
 export const NEXT_DECISION: Record<string, string> = { pending: "go", go: "no-go", "no-go": "slipped", slipped: "pending" };
+
+function completionMessage(
+  prefix: string,
+  verificationValue?: SnapshotVerification | null,
+): string {
+  const verification = normalizedVerification(verificationValue);
+  if (verification.status === "verified") return `${prefix} Verified coverage.`;
+  return `${prefix} ${verification.label}; open the snapshot to review the coverage warning.`;
+}
 
 function GateBoard({ id, latest, toast }: { id: number; latest: number; toast: (m: string) => void }) {
   // `latest` (newest snapshot id) is a dependency so uploading/ingesting a snapshot refetches the
@@ -207,7 +220,13 @@ export default function CampaignPage() {
     const f = fileRef.current?.files?.[0];
     if (!f) { toast("Choose a snapshot .json first."); return; }
     setBusy(true);
-    try { await api.uploadSnapshot(cid, f, label); toast("Snapshot added."); setLabel(""); if (fileRef.current) fileRef.current.value = ""; reload(); }
+    try {
+      const meta = await api.uploadSnapshot(cid, f, label);
+      toast(completionMessage("Snapshot added.", meta.summary.verification));
+      setLabel("");
+      if (fileRef.current) fileRef.current.value = "";
+      reload();
+    }
     catch (e: any) { toast(e.message); } finally { setBusy(false); }
   }
   async function ingestZip() {
@@ -216,7 +235,10 @@ export default function CampaignPage() {
     setIngesting(true);
     try {
       const meta = await api.ingestCollection(cid, f, zipLabel);
-      toast(`Engine run complete — ${meta.ingest.n_device_dirs} device(s) in ${meta.ingest.engine_seconds}s.`);
+      toast(completionMessage(
+        `Engine run complete — ${meta.ingest.n_device_dirs} device(s) in ${meta.ingest.engine_seconds}s.`,
+        meta.ingest.verification,
+      ));
       nav(`/snapshots/${meta.id}`);
     } catch (e: any) { toast(e.message); } finally { setIngesting(false); }
   }
@@ -226,7 +248,10 @@ export default function CampaignPage() {
     setFolderIngesting(true);
     try {
       const meta = await api.ingestFolder(cid, p, folderLabel);
-      toast(`Engine run complete — ${meta.ingest.n_device_dirs} device(s) in ${meta.ingest.engine_seconds}s.`);
+      toast(completionMessage(
+        `Engine run complete — ${meta.ingest.n_device_dirs} device(s) in ${meta.ingest.engine_seconds}s.`,
+        meta.ingest.verification,
+      ));
       nav(`/snapshots/${meta.id}`);
     } catch (e: any) { toast(e.message); } finally { setFolderIngesting(false); }
   }
@@ -275,6 +300,7 @@ export default function CampaignPage() {
                       <div className="row-flex" style={{ gap: 10 }}>
                         <span className="chip mono">C{i + 1}</span>
                         <b style={{ fontSize: 15 }}>{s.label}</b>
+                        <VerificationBadge value={s.summary.verification} compact />
                       </div>
                       <span className="dim" style={{ fontSize: 12 }}>{s.n_devices} dev · {new Date(s.uploaded_at).toLocaleDateString()}</span>
                     </div>

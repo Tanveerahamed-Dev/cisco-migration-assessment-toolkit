@@ -151,7 +151,19 @@ LLM_IMPORTS = frozenset({
 # imports" over a file that fetches iana.org. :func:`_claim_no_egress` now NAMES what it exempted
 # and reports an exception that matched nothing, so the exemption cannot go dead again unnoticed.)
 NO_EGRESS_EXCLUDE = frozenset({"rest_collect.py"})
-NO_EGRESS_EXCEPTIONS = frozenset({"data/gen_port_registry.py"})
+# EMPTY, and that is the strong form of this claim rather than a gap in it.
+#
+# This set held "data/gen_port_registry.py" for as long as that generator fetched iana.org over
+# `urllib.request`. It no longer imports urllib at all, so the exemption named a file that could no
+# longer offend — a STALE CHARTER, which `_claim_no_egress` below is built to detect and report
+# ("declared exception(s) that matched nothing"). Measured before removing it: `scan_imports` over
+# the package walks 72 files, reaches `data/gen_port_registry.py`, and returns `offenders={}`.
+#
+# With the set empty the published Trust & Sovereignty claim reads "no documented exception was
+# needed" instead of carrying a caveat that no longer applies. If any file here ever imports a
+# network library again it lands in `unexplained` and the claim goes VIOLATED — which is the
+# fail-closed direction, and the reason removing a dead exception costs nothing.
+NO_EGRESS_EXCEPTIONS: frozenset = frozenset()
 
 _COLLECTOR_MODULE = "COLLECT_PARSE_V3_23_0"
 
@@ -245,11 +257,20 @@ def _claim_read_only(collector_module):
 
 
 def _claim_no_egress(toolkit_dir):
+    # Built FROM the live sets, never restated alongside them. This paragraph previously named
+    # `data/gen_port_registry.py` as a documented exception in prose while NO_EGRESS_EXCEPTIONS had
+    # been emptied, so the published claim contradicted itself: METHOD announced an exception that
+    # DETAIL simultaneously reported as "no documented exception was needed". Worse, the test that
+    # checks exclusions are DISCLOSED was satisfied by the stale prose alone, so it pinned the
+    # contradiction in place instead of catching it. A duplicated fact is a cache; derive it.
+    _exclude_txt = (", ".join(sorted(NO_EGRESS_EXCLUDE)) or "none")
+    _except_txt = (", ".join(sorted(NO_EGRESS_EXCEPTIONS))
+                   or "none — the package is clean without subtracting anything")
     method = ("RECURSIVE AST import-walk (every subpackage, any nesting depth, lazy imports "
-              "included) over the analysis package for network libraries; charter exclusion: "
-              "rest_collect.py (the opt-in REST collector, covered by its own GET-only claim); "
-              "documented dev-only exception: data/gen_port_registry.py (data-pack generator, "
-              "not pipeline-reachable) — subtracted AFTER the scan and named in the result")
+              "included) over the analysis package for network libraries; charter exclusion(s): "
+              f"{_exclude_txt} (the opt-in REST collector is covered by its own GET-only claim); "
+              f"documented exception(s), subtracted AFTER the scan and named in the result: "
+              f"{_except_txt}")
     cid = "no_egress_import_graph"
     if not os.path.isdir(toolkit_dir):
         return _claim(cid, method, NOT_EVALUATED,

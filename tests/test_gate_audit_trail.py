@@ -31,6 +31,7 @@ import textwrap
 import types
 
 import pytest
+from openpyxl import Workbook
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -87,8 +88,7 @@ def _manifest_for(tmp_path):
     """Build the run manifest the engine writes, for a workbook in `tmp_path`."""
     xlsx = os.path.join(str(tmp_path), "wb.xlsx")
     if not os.path.exists(xlsx):
-        with open(xlsx, "w", encoding="utf-8") as f:
-            f.write("workbook")
+        Workbook().save(xlsx)
     return cp.build_run_manifest(xlsx, {})
 
 

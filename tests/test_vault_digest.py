@@ -7,6 +7,8 @@ Pins the safety-critical properties of the one-way, sanitized, read-only vault d
     or unsanitized digest is refused whole; a verified digest fuses into RRF as a real 3rd store.
   * DEGRADATION: no digest -> empty corpus (never a fabricated hit); Ollama absent -> lexical-only.
 """
+import pytest
+
 import ollama_recall
 from cisco_toolkit import recall as R
 from cisco_toolkit.intel_feed import build_feed, verify_feed
@@ -26,7 +28,7 @@ def _write_vault(root):
                                            "Raw client-adjacent note — must never be digested.\n", encoding="utf-8")
     (root / "empty.md").write_text("# Heading only\n", encoding="utf-8")
     # The client marker written where a note WITHOUT frontmatter can carry it: inline tags. This is
-    # the common vault shape, and the frontmatter-only check digested it -- then signed the result
+    # the common vault shape, and the frontmatter-only check digested it -- then hash-sealed the result
     # `sanitized: true`, so a client identifier crossed the ADR-0001 two-store boundary carrying an
     # attestation that it could not have.
     (root / "no-frontmatter-client.md").write_text(
@@ -55,9 +57,25 @@ def test_vault_source_distills_digest_drops_client_and_empty(tmp_path):
     assert all(len(e["detail"]) <= 600 for e in entries)
 
 
+def test_frontmatter_summary_and_tags_cannot_bypass_digest_caps():
+    text = (
+        "---\n"
+        "title: " + ("Title " * 1000) + "\n"
+        "summary: " + ("summary " * 200_000) + "\n"
+        "tags: " + ("tag " * 200_000) + "\n"
+        "---\nbody\n"
+    )
+    entry = VD.distill_note("large.md", text, max_chars=120)
+    assert entry is not None
+    assert len(entry["title"]) <= 200
+    assert len(entry["detail"]) <= 120
+    assert len(entry["notes"]) <= 512
+    assert sum(len(str(value)) for value in entry.values()) <= 900
+
+
 def test_a_client_marker_outside_frontmatter_still_drops_the_note(tmp_path):
     """The client gate read YAML frontmatter only, so a note without frontmatter — the common vault
-    shape — was digested and then SIGNED `sanitized: true`, carrying a client identifier across the
+    shape — was digested and then marked `sanitized: true`, carrying a client identifier across the
     ADR-0001 two-store boundary with an attestation it could not have earned. The marker is the same
     authored one (`#client`), written where such a note can carry it.
 
@@ -102,14 +120,48 @@ def test_run_writes_a_verifiable_digest_and_tamper_is_refused(tmp_path):
     assert verify_feed("\n".join(lines))["ok"] is False
 
 
+def test_vault_source_and_output_paths_fail_closed(tmp_path):
+    root = tmp_path / "vault"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "note.md").write_text("# Outside\n\nmust not cross\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="escapes"):
+        VD.vault_source(str(root), subdir="../outside")
+    with pytest.raises(ValueError, match="empty vault digest"):
+        VD.run([], out_dir=str(tmp_path / "out"), generated="2026-07-30")
+    with pytest.raises(ValueError, match="filename token"):
+        VD.run(
+            [{"title": "safe", "detail": "safe", "source": "test"}],
+            out_dir=str(tmp_path / "out"),
+            generated="../../outside",
+        )
+    assert not (tmp_path / "out").exists()
+
+
 # --- consumer: verify before use, then fuse --------------------------------------------------------
 
 def test_load_vault_digest_verifies_and_builds_corpus(tmp_path):
     root = tmp_path / "v"; root.mkdir(); _write_vault(root)
     out = tmp_path / "vd"
     VD.run(VD.vault_source(str(root)), out_dir=str(out), generated="2026-07-07")
-    corpus = R.load_vault_digest(str(out))
+    corpus = R.load_vault_digest(str(out), forbidden=("Meridian Reference",))
     assert corpus and any("route reflector" in t.lower() for t in corpus.values())
+
+
+def test_load_vault_digest_requires_an_engagement_denylist(tmp_path):
+    out = tmp_path / "vd"
+    out.mkdir()
+    (out / "digest-x.jsonl").write_text(
+        build_feed([{"id": "e1", "title": "generic", "detail": "safe"}]),
+        encoding="utf-8",
+    )
+    status = {}
+    assert R.load_vault_digest(str(out), status=status) == {}
+    assert status["denylist_enforced"] is False
+    assert status["refused"]
+    assert "denylist is required" in status["refused"][0]["reason"]
 
 
 def test_load_vault_digest_refuses_unsanitized_and_missing(tmp_path):
@@ -117,8 +169,47 @@ def test_load_vault_digest_refuses_unsanitized_and_missing(tmp_path):
     # an UNSANITIZED feed (sanitized=False) must be refused -> contributes nothing
     (out / "digest-x.jsonl").write_text(
         build_feed([{"id": "e1", "title": "t", "detail": "d"}], sanitized=False), encoding="utf-8")
-    assert R.load_vault_digest(str(out)) == {}
-    assert R.load_vault_digest(str(tmp_path / "does-not-exist")) == {}    # absence is absence
+    assert R.load_vault_digest(str(out), forbidden=("Meridian",)) == {}
+    assert R.load_vault_digest(
+        str(tmp_path / "does-not-exist"),
+        forbidden=("Meridian",),
+    ) == {}    # absence is absence
+
+
+def test_load_vault_digest_refuses_cross_file_duplicate_ids(tmp_path):
+    out = tmp_path / "vd"
+    out.mkdir()
+    for label in ("a", "b"):
+        (out / f"digest-{label}.jsonl").write_text(
+            build_feed([{"id": "same", "title": label, "detail": "generic"}]),
+            encoding="utf-8",
+        )
+    status = {}
+    assert R.load_vault_digest(
+        str(out),
+        forbidden=("Meridian",),
+        status=status,
+    ) == {}
+    assert len(status["refused"]) == 2
+    assert all("duplicate entry id" in row["reason"] for row in status["refused"])
+
+
+def test_load_vault_digest_enforces_file_size_bound(tmp_path, monkeypatch):
+    out = tmp_path / "vd"
+    out.mkdir()
+    path = out / "digest-large.jsonl"
+    path.write_text(
+        build_feed([{"id": "e1", "title": "generic", "detail": "safe"}]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(R, "_MAX_VAULT_DIGEST_BYTES", 8)
+    status = {}
+    assert R.load_vault_digest(
+        str(out),
+        forbidden=("Meridian",),
+        status=status,
+    ) == {}
+    assert "limit" in status["refused"][0]["reason"]
 
 
 def test_vault_store_fuses_a_vault_only_hit(tmp_path):
@@ -158,3 +249,57 @@ def test_producer_dry_run_previews_and_writes_nothing(tmp_path, capsys):
     assert "DRY-RUN" in printed and "nothing written" in printed
     assert "WARNING: no --forbidden" in printed                # no scrub tokens -> safety warning surfaced
     assert (not out.exists()) or not list(out.glob("digest-*.jsonl"))   # preview writes nothing
+
+
+def test_producer_cli_reports_invalid_inputs_without_traceback(tmp_path, capsys):
+    assert VD.main(["--vault", str(tmp_path), "--max-chars", "not-an-int"]) == 2
+    assert "--max-chars must be an integer" in capsys.readouterr().out
+
+    missing = tmp_path / "missing-vault"
+    assert VD.main(["--vault", str(missing)]) == 3
+    assert "intake refused" in capsys.readouterr().out
+
+
+def test_a_NAMED_client_in_frontmatter_drops_the_note_not_only_the_boolean_spelling():
+    """The drop gate honoured `client: true` but published `client: acme-bank`.
+
+    `_is_client_adjacent`'s last clause required the frontmatter VALUE to be literally
+    true/yes/1. But a client flag is authored by NAMING one at least as often as by asserting a
+    boolean, and `client: acme-bank` is MORE client-adjacent than `client: true`, not less. The
+    gate was therefore inverted exactly where it mattered: the note that named the client was the
+    one that crossed the two-store boundary (ADR-0001) and got hash-sealed as sanitized.
+
+    The tag/type/inline-tag blob above it does not cover this: it reads `tags` and `type`, not an
+    arbitrary `client:` key's value.
+    """
+    from research_lane.vault_digest import _is_client_adjacent, _parse_frontmatter
+
+    def dropped(text):
+        meta, _ = _parse_frontmatter(text)
+        return _is_client_adjacent(meta, text)
+
+    for flag in ("client", "customer", "engagement", "private", "confidential"):
+        text = f"---\n{flag}: Acme Bank PLC\ntitle: T\n---\nbody\n"
+        assert dropped(text), f"a note naming a client under `{flag}:` was NOT dropped"
+
+    # the boolean spellings must keep working -- this fix must not trade one gap for another
+    assert dropped("---\nclient: true\ntitle: T\n---\nbody\n")
+    assert dropped("---\nclient: yes\ntitle: T\n---\nbody\n")
+
+
+def test_the_drop_gate_still_honours_an_explicit_negation_and_stays_off_unmarked_notes():
+    """Non-vacuity, both directions. If every note dropped, the gate would be trivially 'safe' and
+    the lane would be useless -- and this vault is a NETWORKING vault where 'client' and 'private'
+    are ordinary words, so a gate that eats generic notes teaches its operator to bypass it."""
+    from research_lane.vault_digest import _is_client_adjacent, _parse_frontmatter
+
+    def dropped(text):
+        meta, _ = _parse_frontmatter(text)
+        return _is_client_adjacent(meta, text)
+
+    assert not dropped("---\nclient: false\ntitle: T\n---\nbody\n"), "an explicit negation was dropped"
+    assert not dropped("---\nclient: no\ntitle: T\n---\nbody\n")
+    assert not dropped("---\nclient:\ntitle: T\n---\nbody\n"), "an empty value was dropped"
+    assert not dropped("---\ntitle: T\n---\nordinary body\n"), "an unmarked note was dropped"
+    assert not dropped("---\ntitle: DHCP client and private VLAN notes\n---\nbody\n"), \
+        "the gate read PROSE -- it must drop on an authored marker only"

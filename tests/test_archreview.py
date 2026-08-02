@@ -515,3 +515,79 @@ def test_trunk_allowed_none_is_not_classified_allow_all():
     c = _check(compute_architecture_review(snap), "L2-5")
     assert "allow ALL VLANs" not in c["observed"], c["observed"]
     assert c["verdict"] == "conforms", c["verdict"]
+
+
+def _lc_snap(**summary):
+    """A snapshot whose ONLY lifecycle signal is the summary band counts."""
+    return {"devices": {f"sw{i}": {"platform": "ios"} for i in range(4)},
+            "lifecycle_risk": {"summary": summary, "per_device": []}}
+
+
+def _lc1(ar):
+    return next(c for c in ar["checks"] if c["id"] == "LC-1")
+
+
+def test_lc1_does_not_certify_a_fleet_whose_lifecycle_is_UNKNOWN():
+    """An all-Unknown fleet must not read as 'conforms'.
+
+    `analyze.py:6199` publishes `n_unknown` in the lifecycle summary, and the LC-1 chain
+    (`if n_past_ldos / elif n_past_eos / elif n_near / else conforms`) never consulted it. So a fleet
+    of Catalyst 6500s years past support — every one banded Unknown because no retained bulletin
+    covers them — fell to the `else` and was certified:
+
+        VERDICT: conforms — "Every device with lifecycle data is in an Active support band."
+                            "Vendor support backs the whole migration."
+
+    That reaches the Architecture Review DOCX, its workbook sheet, and the conformance grade. It is
+    guardrail 3's exact wording ("Not observed" never silently becomes "healthy") in a signed
+    deliverable, and it is the most consequential form of it: the sentence is VACUOUSLY true —
+    zero devices have lifecycle data, so all zero of them are Active — while the verdict it carries
+    is false.
+    """
+    ar = compute_architecture_review(_lc_snap(n_past_ldos=0, n_past_eos=0, n_near=0, n_unknown=4))
+    f = _lc1(ar)
+    assert f["verdict"] != "conforms", (
+        f"LC-1 certified a fleet with 4 UNKNOWN-lifecycle devices: {f['verdict']} / {f['observed']}"
+    )
+    assert "unknown" in (f["observed"] + f["implication"]).lower(), (
+        f"the unknown count is not disclosed to the reader: {f['observed']!r}"
+    )
+
+
+def test_lc1_still_conforms_when_every_device_IS_assessed_and_active():
+    """Non-vacuity: the fix must not turn a genuinely clean fleet into a deviation."""
+    f = _lc1(compute_architecture_review(_lc_snap(n_past_ldos=0, n_past_eos=0, n_near=0, n_unknown=0)))
+    assert f["verdict"] == "conforms", f"a fully-assessed Active fleet must still conform: {f}"
+
+
+def test_lc1_reports_the_real_finding_when_both_unknown_and_past_ldos_exist():
+    """A real past-LDoS finding must not be displaced by the unknown-coverage branch."""
+    f = _lc1(compute_architecture_review(_lc_snap(n_past_ldos=2, n_past_eos=0, n_near=0, n_unknown=3)))
+    assert f["verdict"] not in ("conforms", "not-assessable"), f
+    assert "2" in f["observed"], f"the past-LDoS count must lead: {f['observed']!r}"
+
+
+def test_lc1_discloses_coverage_even_when_a_real_finding_fires():
+    """The coverage disclosure was SUBORDINATED to the findings (`elif n_unknown`), so it fired only
+    when every adverse count was zero -- covering the all-unbanded fleet and silently dropping the
+    BROWNFIELD one, which is the fleet this instrument exists for.
+
+    Measured before the fix: 1 Past-LDoS + 20 Unknown produced verdict `critical` reading
+    "1 device(s) are past LAST-DAY-OF-SUPPORT: sw0." with the 20 undetermined devices never
+    mentioned -- and LC-1 feeds domains[].score_pct, the conformance grade, the Architecture Review
+    DOCX and its workbook sheet. What was FOUND and what could NOT BE ASSESSED are orthogonal facts.
+    """
+    for adverse in (dict(n_past_ldos=1), dict(n_past_eos=1), dict(n_near=1)):
+        base = dict(n_past_ldos=0, n_past_eos=0, n_near=0, n_unknown=20)
+        base.update(adverse)
+        f = _lc1(compute_architecture_review(_lc_snap(**base)))
+        assert f["verdict"] not in ("conforms", "not-assessable"), (adverse, f)
+        assert "20 device(s) could NOT be lifecycle-banded" in f["observed"], (adverse, f["observed"])
+        assert "UNKNOWN" in f["observed"], (adverse, f["observed"])
+
+    # NON-VACUITY: with the same real finding and FULL coverage, no coverage clause may appear --
+    # otherwise the disclosure is always-on and tells the reader nothing.
+    clean_cov = _lc1(compute_architecture_review(
+        _lc_snap(n_past_ldos=1, n_past_eos=0, n_near=0, n_unknown=0)))
+    assert "could NOT be lifecycle-banded" not in clean_cov["observed"], clean_cov["observed"]
+    assert clean_cov["verdict"] == "critical", clean_cov

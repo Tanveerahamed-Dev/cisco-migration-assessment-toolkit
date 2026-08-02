@@ -1,5 +1,9 @@
 # Whole-repo code review — 2026-07-28
 
+> **Historical record:** for the live, loss-preserving checkpoint,
+> completed-versus-unfinished status, and continuation plan, read
+> [`review-hardening-handoff-2026-07-30.md`](review-hardening-handoff-2026-07-30.md).
+
 Register of every finding from the repo-wide review sweep (307 Python files, ~111k lines,
 27 reviewer agents partitioned by subsystem). **All 98 are closed.** Tranche 1 in `1f0e652`,
 then `5b8711a`, `2139bab`, `e67fa81`, `62f3dd8`, with the golden re-blessed in `66e2bad`.
@@ -261,7 +265,7 @@ Roughly 90 further findings. The three that matter most:
    — including a single-homed path advertised as an STP "transient outage" while the correct
    "permanent partition" warning sat in the file as **dead code**.
 
-Also: `/graph` matched canonicalised names against RAW hostnames, so any fleet named `[HISTORY-REDACTED]-CORE-01`
+Also: `/graph` matched canonicalised names against RAW hostnames, so any fleet named `MERIDIAN-CORE-01`
 (the Cisco norm) returned **zero edges** — 25 → 0 — drawn as a fabric with an empty SPOF overlay; a
 management VRF made a FLAT fabric grade `advisory` instead of `deviation` (conformance weight 0.7 vs
 0.35); `archreview` counted a port with BPDU Guard **explicitly disabled** as guarded, while

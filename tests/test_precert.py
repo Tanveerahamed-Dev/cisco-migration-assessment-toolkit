@@ -9,6 +9,7 @@ Verdict doctrine under test (coverage-honest, exact):
   * nothing definitively checkable -> INDETERMINATE.
 Every changed flow is cited before->after; every blind spot is NAMED.
 """
+import hashlib
 import json
 import os
 import subprocess
@@ -18,7 +19,8 @@ from openpyxl import load_workbook
 
 from cisco_toolkit.html import write_diff_workbook
 from cisco_toolkit.precert import (CERT_SHEET_HEADERS, CERT_SHEET_NAME, READINESS_SCHEMA,
-                                   compute_precert, compute_readiness_freeze)
+                                   compute_precert, compute_readiness_freeze,
+                                   verify_readiness_freeze)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(ROOT, "COLLECT_PARSE_V3_23_0.py")
@@ -369,6 +371,66 @@ def test_readiness_freeze_shadow_and_real_share_the_prediction_hash():
     real = compute_readiness_freeze(_readiness_snap(g), mode="real")
     assert shadow["prediction_hash"] == real["prediction_hash"]      # mode is metadata; prediction is identical
     assert (shadow["mode"], real["mode"]) == ("shadow", "real")
+    assert shadow["certificate_hash"] != real["certificate_hash"]    # full decision envelope is not identical
+    assert verify_readiness_freeze(shadow) == (True, "ok")
+    assert verify_readiness_freeze(real) == (True, "ok")
+
+
+def test_readiness_freeze_malformed_row_is_named_unrated_not_dropped():
+    cert = compute_readiness_freeze(
+        _readiness_snap([
+            {"group": "G1", "readiness": "READY", "checks": []},
+            "malformed-row",
+        ]),
+        mode="real",
+    )
+    assert cert["verdict"] == "INDETERMINATE"
+    assert cert["n_groups"] == 2
+    assert cert["readiness_distribution"]["UNRATED"] == 1
+    assert cert["groups"][1]["group"] == "malformed row #2"
+    assert any("expected an object" in item for item in cert["blind_spots"])
+    assert verify_readiness_freeze(cert) == (True, "ok")
+
+
+def test_readiness_freeze_full_envelope_hash_detects_mode_relabelling():
+    cert = compute_readiness_freeze(
+        _readiness_snap([{"group": "G1", "readiness": "CAUTION", "checks": []}]),
+        mode="shadow",
+    )
+    cert["mode"] = "real"
+    ok, reason = verify_readiness_freeze(cert)
+    assert ok is False
+    assert "certificate_hash" in reason
+
+
+def test_invalid_source_hash_is_not_accepted_as_a_binding():
+    cert = compute_readiness_freeze(
+        _readiness_snap([{"group": "G1", "readiness": "READY", "checks": []}]),
+        source_hash="looks-like-a-hash",
+    )
+    assert cert["source_binding"] == {}
+    assert cert["verdict"] == "INDETERMINATE"
+    assert any("source hash" in item for item in cert["integrity"]["failures"])
+
+    pair = compute_precert({}, {}, source_hashes={"before": "nope", "after": "also-nope"})
+    assert pair["source_binding"] == {}
+    assert pair["verdict"] == "FAIL"
+    assert any("source hash" in item for item in pair["gate_failures"])
+
+    for supplied in ("", {"sha256": ""}, {"hash": None}):
+        cert = compute_readiness_freeze(
+            _readiness_snap([{"group": "G1", "readiness": "READY", "checks": []}]),
+            source_hash=supplied,
+        )
+        assert cert["source_binding"] == {}
+        assert cert["verdict"] == "INDETERMINATE"
+        assert any("source hash" in item for item in cert["integrity"]["failures"])
+
+    for supplied in ("not-an-object", {"before": ""}, {"before": {}}):
+        pair = compute_precert({}, {}, source_hashes=supplied)
+        assert pair["source_binding"] == {}
+        assert pair["verdict"] == "FAIL"
+        assert any("source hash" in item for item in pair["gate_failures"])
 
 
 def test_readiness_freeze_total_on_bad_input():
@@ -389,3 +451,21 @@ def test_main_unreadable_snapshot_returns_2(capsys):
     from cisco_toolkit import precert as P
     assert P.main(["no-such-snapshot.json"]) == 2
     assert "cannot read snapshot" in capsys.readouterr().out
+
+
+def test_main_binds_certificate_to_exact_snapshot_bytes(tmp_path):
+    from cisco_toolkit import precert as P
+
+    raw = json.dumps(
+        _readiness_snap([{"group": "G1", "readiness": "READY", "checks": []}]),
+        ensure_ascii=True,
+        indent=1,
+    ).encode("utf-8")
+    source = tmp_path / "source.snapshot.json"
+    output = tmp_path / "freeze.json"
+    source.write_bytes(raw)
+
+    assert P.main([str(source), "--mode", "real", "--out", str(output)]) == 0
+    cert = json.loads(output.read_text(encoding="utf-8"))
+    assert cert["source_binding"]["snapshot"] == "sha256:" + hashlib.sha256(raw).hexdigest()
+    assert verify_readiness_freeze(cert) == (True, "ok")

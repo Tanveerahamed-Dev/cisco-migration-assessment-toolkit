@@ -169,7 +169,12 @@ def advisory_remediation(old_snap: Any, new_snap: Any, intel_dir: str) -> Dict[s
     (absence is absence, not "no advisories"); a feed that fails provenance is refused and surfaced, never
     silently dropped. Read-only; proposes nothing to any device."""
     from cisco_toolkit import intel_feed
-    loaded = intel_feed.load_feeds(intel_dir)
+    denylist = intel_feed.engagement_identifiers(old_snap, new_snap)
+    loaded = intel_feed.load_feeds(
+        intel_dir,
+        forbidden=denylist,
+        require_forbidden=True,
+    )
     platforms = intel_feed.fleet_platforms(new_snap)
     hits = intel_feed.match_fleet(loaded["advisories"], platforms)
     items = intel_feed.advisory_drift_items(hits)

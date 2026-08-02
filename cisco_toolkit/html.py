@@ -8,7 +8,8 @@ import logging
 import os
 import re
 from datetime import datetime
-from typing import Dict, List
+from pathlib import PurePath
+from typing import Any, Dict, List, Optional
 
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
@@ -134,6 +135,90 @@ def _as_list(x):
     return x if isinstance(x, list) else []
 
 
+_SECTION_TYPES = {
+    "health_scores": list,
+    "punchlist": list,
+    "migration_readiness": list,
+    "lifecycle_risk": dict,
+}
+
+
+def _schema_status(value: Any) -> dict:
+    """Normalize an optional caller-provided schema-compatibility result.
+
+    The CLI owns the exact file paths and therefore remains the authority that can compare their
+    schema versions before loading them.  The reporting layer accepts either the historic
+    ``(status, message)`` tuple or a mapping and preserves an explicit ``override`` marker.  An
+    absent value is not invented here.
+    """
+    if isinstance(value, dict):
+        return {
+            "status": str(value.get("status") or "").strip().lower(),
+            "message": str(value.get("message") or ""),
+            "override": bool(value.get("override") or value.get("overridden")),
+        }
+    if isinstance(value, (list, tuple)) and value:
+        return {
+            "status": str(value[0] or "").strip().lower(),
+            "message": str(value[1] or "") if len(value) > 1 else "",
+            "override": False,
+        }
+    if isinstance(value, str) and value.strip():
+        return {"status": value.strip().lower(), "message": "", "override": False}
+    return {}
+
+
+def _analysis_integrity(snap: Any, required_sections=()) -> dict:
+    """Machine-readable assessment-integrity view used by every decision renderer in this module.
+
+    ``assessment_integrity.failed_phases`` is authoritative even when the failed producer returned
+    an empty fallback.  Top-level ``_unavailable`` sentinels and required-but-missing analysis
+    sections are folded into the same channel.  The helper deliberately reports *all* failed phases:
+    a report may still render the observations that remain valid, but it cannot certify the run as
+    clean while its own snapshot says part of the assessment failed.
+    """
+    s = snap if isinstance(snap, dict) else {}
+    integrity = _as_dict(s.get("assessment_integrity"))
+    failures: List[str] = []
+    raw_failed = integrity.get("failed_phases")
+    if isinstance(raw_failed, list):
+        failures.extend(f"phase failed: {str(p)}" for p in raw_failed if str(p).strip())
+    elif raw_failed:
+        failures.append(f"phase failed: {str(raw_failed)}")
+    for key, value in integrity.items():
+        if key in ("failed_phases", "n_violations"):
+            continue
+        if str(value).strip().lower() in ("failed", "compute_failed", "unavailable", "error"):
+            failures.append(f"{key}: {value}")
+    for key, value in s.items():
+        if isinstance(value, dict) and value.get("_unavailable"):
+            failures.append(f"{key}: unavailable")
+    for key in required_sections:
+        expected = _SECTION_TYPES.get(str(key), object)
+        if key not in s or not isinstance(s.get(key), expected):
+            failures.append(f"{key}: missing or unusable")
+    # Stable order, no duplicate disclosure when a sentinel and the integrity map name the same block.
+    failures = list(dict.fromkeys(failures))
+    return {"ok": not failures, "failures": failures}
+
+
+def _section_available(snap: dict, key: str, phase_tokens=()) -> bool:
+    """Whether a list-shaped analysis section is safe to delta.
+
+    A failed producer commonly leaves the exact same ``[]`` as a legitimate clean computation.  The
+    failed-phase channel is therefore part of availability; without it, comparing a healthy baseline
+    to a failed empty fallback fabricates that every old finding was resolved.
+    """
+    if key not in snap or not isinstance(snap.get(key), list):
+        return False
+    failures = _analysis_integrity(snap).get("failures") or []
+    def _phase_key(value: Any) -> str:
+        return "".join(ch for ch in str(value).lower() if ch.isalnum())
+
+    lowered = [_phase_key(f) for f in failures]
+    return not any(any(_phase_key(tok) in f for tok in phase_tokens) for f in lowered)
+
+
 def _finding_key(f: dict) -> tuple:
     """Stable identity for a punch-list finding across two runs: (category, FULL title, device-set).
     The title is intentionally NOT digit-normalized: stripping digits collapsed DISTINCT per-identifier
@@ -159,10 +244,10 @@ def _devices_cell(devices, width: int = _DEVICES_CELL_WIDTH) -> str:
     ``(+N more)`` disclosure when it does not fit.
 
     The raw ``", ".join(...)[:60]`` this replaces cut mid-token and said nothing about it, so a
-    finding on 9 devices rendered as ``AS25-MGM-CA05R46, ..., DS03-DC`` -- a silent cap in a
+    finding on 9 devices rendered as ``MERIDIAN-SW-171, ..., DS03-DC`` -- a silent cap in a
     CUTOVER-GATE artifact, and the reader's two wrong conclusions are (a) the finding is scoped to
     the devices shown and (b) ``DS03-DC`` is a hostname (it is not; it is the front half of one).
-    Measured on the real [HISTORY-REDACTED] snapshot: 109 of 1805 punch-list findings, and 11 of 115 in
+    Measured on the real Meridian reference snapshot: 109 of 1805 punch-list findings, and 11 of 115 in
     webapp/sample_data/sample_fleet.snapshot.json.
 
     Truncation now lands on a whole-device boundary and the remainder is COUNTED, never dropped
@@ -188,14 +273,31 @@ def _devices_cell(devices, width: int = _DEVICES_CELL_WIDTH) -> str:
     return ", ".join(shown) + (f" (+{hidden} more)" if hidden else "")
 
 
-def compute_snapshot_delta(old: dict, new: dict) -> dict:
+def compute_snapshot_delta(old: dict, new: dict, *, source_binding: Optional[dict] = None,
+                           schema_status: Any = None) -> dict:
     """Migration-validation delta between two snapshots: switch/interface counts, per-switch health-band
     shifts (regressed vs improved), punch-list findings opened vs resolved, and an overall verdict.
-    Returns a dict; every section degrades to empty when a snapshot lacks the computed keys."""
+    Returns a dict.  Missing/failed computed sections abstain and make the overall result
+    ``INDETERMINATE``; they are never interpreted as a clean empty result.
+
+    ``source_binding`` and ``schema_status`` are optional caller-owned provenance.  The file-loading
+    caller can supply exact input byte hashes; when present they are copied into the returned result
+    and into the workbook rather than being replaced by a weaker re-serialization hash.
+    """
     old = old if isinstance(old, dict) else {}            # total: the --compare/--trend path may hand us a
     new = new if isinstance(new, dict) else {}            # non-dict (a JSON file that parsed to null/[]/scalar)
     od, nd = _as_dict(old.get("devices")), _as_dict(new.get("devices"))
     oi, ni = _as_dict(old.get("interfaces")), _as_dict(new.get("interfaces"))
+    old_integrity = _analysis_integrity(old, ("health_scores", "punchlist"))
+    new_integrity = _analysis_integrity(new, ("health_scores", "punchlist"))
+    schema = _schema_status(schema_status)
+    integrity_failures = ([f"before: {f}" for f in old_integrity["failures"]]
+                          + [f"after: {f}" for f in new_integrity["failures"]])
+    if schema and schema.get("status") not in ("", "ok"):
+        qualifier = " (explicitly overridden)" if schema.get("override") else ""
+        integrity_failures.append(
+            f"schema compatibility {schema.get('status')}{qualifier}: "
+            f"{schema.get('message') or 'cross-input compatibility was not proven'}")
 
     # ---- health-band shifts (per switch present in BOTH runs) ----
     # isinstance guard: a null element in the list (hand-trimmed / older-schema snapshot fed to --compare/--trend)
@@ -204,8 +306,14 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
     # a guard on only `old` leaves the identical crash reachable through `new` on the same route).
     # _hkey on the KEY leaf: an unhashable dict/list `switch` raised TypeError here, aborting the whole
     # --compare workbook (and 500ing the webapp diff route) on a snapshot that is stored and re-read.
-    oh = {_hkey(r.get("switch")): r for r in _as_list(old.get("health_scores")) if isinstance(r, dict)}
-    nh = {_hkey(r.get("switch")): r for r in _as_list(new.get("health_scores")) if isinstance(r, dict)}
+    health_comparable = (
+        _section_available(old, "health_scores", ("health score",))
+        and _section_available(new, "health_scores", ("health score",))
+    )
+    oh = ({_hkey(r.get("switch")): r for r in _as_list(old.get("health_scores")) if isinstance(r, dict)}
+          if health_comparable else {})
+    nh = ({_hkey(r.get("switch")): r for r in _as_list(new.get("health_scores")) if isinstance(r, dict)}
+          if health_comparable else {})
     regressed: List[dict] = []
     improved: List[dict] = []
     coverage_shifts: List[dict] = []   # transitions in/out of 'Insufficient Data' (coverage events, not health)
@@ -235,8 +343,14 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
     newly_bad = [c for c in coverage_shifts if c["kind"] == "newly_assessed" and c["new_band"] in ("Critical", "Poor")]
 
     # ---- punch-list findings opened vs resolved ----
-    o_find = {_finding_key(f): f for f in _as_list(old.get("punchlist")) if isinstance(f, dict)}
-    n_find = {_finding_key(f): f for f in _as_list(new.get("punchlist")) if isinstance(f, dict)}
+    findings_comparable = (
+        _section_available(old, "punchlist", ("punch-list", "punchlist"))
+        and _section_available(new, "punchlist", ("punch-list", "punchlist"))
+    )
+    o_find = ({_finding_key(f): f for f in _as_list(old.get("punchlist")) if isinstance(f, dict)}
+              if findings_comparable else {})
+    n_find = ({_finding_key(f): f for f in _as_list(new.get("punchlist")) if isinstance(f, dict)}
+              if findings_comparable else {})
     # fully-deterministic order (set-difference iteration order is unstable): severity, then the
     # finding's stable identity, so two runs of the diff workbook are byte-reproducible.
     def _fsort(f: dict) -> tuple:
@@ -255,6 +369,7 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
         rdelta = {"summary": {}, "newly_blocked": [], "newly_reachable": [], "preserved": 0,
                   "inconclusive": 0, "pairs_tested": 0, "subnets_tested": 0, "capped": False}
     n_newly_blocked = len(rdelta.get("newly_blocked") or [])
+    n_ecmp_partial = len(_as_list(rdelta.get("ecmp_partial_drop")))
 
     # Coverage-honest reachability clause -- NEVER an unqualified 'no reachability regressions' (no-silent-caps /
     # not-assessed!=healthy doctrine). It always discloses either 'NOT assessed' or the BOUNDED sample it tested.
@@ -292,13 +407,44 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
 
     # ---- verdict ----
     removed_sw = sorted(set(od) - set(nd), key=_skey)
-    if n_opened_high or regressed or n_newly_blocked or n_cables_down:
+    adverse_delta = bool(
+        n_opened_high or regressed or n_newly_blocked or n_ecmp_partial or n_cables_down
+    )
+    # Integrity/schema uncertainty dominates the certification verdict.  Keep any adverse
+    # observations visible in the note, but never let a real-looking delta imply that the
+    # incompatible or incomplete inputs themselves were valid to compare.
+    if integrity_failures:
+        verdict = "INDETERMINATE"
+        observed = []
+        if n_opened_high:
+            observed.append(f"{n_opened_high} apparent new High/Critical finding(s)")
+        if regressed:
+            observed.append(f"{len(regressed)} apparent health-band regression(s)")
+        if n_newly_blocked:
+            observed.append(f"{n_newly_blocked} apparent newly blocked sampled flow(s)")
+        if n_ecmp_partial:
+            observed.append(f"{n_ecmp_partial} apparent blackholing ECMP leg(s)")
+        if n_cables_down:
+            observed.append(f"{n_cables_down} apparent cable-down transition(s)")
+        observed_note = (
+            " Adverse observations that still require investigation: " + "; ".join(observed) + "."
+            if observed else ""
+        )
+        note = (
+            f"Delta certification withheld: {len(integrity_failures)} integrity/schema gap(s) make one "
+            "or more analyses unavailable. No missing/failed section was interpreted as clean. "
+            + "; ".join(integrity_failures)
+            + f".{observed_note} {cable_phrase}; {reach_phrase}."
+        )
+    elif adverse_delta:
         verdict = "REGRESSED"
         bits = []
         if n_opened_high:
             bits.append(f"{n_opened_high} new High/Critical finding(s)")
         if regressed:
             bits.append(f"{len(regressed)} switch(es) dropped a health band")
+        if n_ecmp_partial:
+            bits.append(f"{n_ecmp_partial} sampled flow(s) have a proven blackholing ECMP leg")
         bits.append(cable_phrase)
         bits.append(reach_phrase)
         note = "; ".join(bits) + ". Investigate before declaring the cutover good."
@@ -314,7 +460,12 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
                 + f"; {cable_phrase}; {reach_phrase}. Confirm these are expected.")
     else:
         verdict = "CLEAN"
-        note = f"No health-band regressions, no new findings; {cable_phrase}; {reach_phrase}."
+        note = (
+            "Delta-only observation: no health-band regressions or newly opened findings were observed "
+            "in the available comparable analyses; "
+            f"{cable_phrase}; {reach_phrase}. This is not a cutover authorization; reconcile the "
+            "Pre-Change Certificate and named blind spots."
+        )
 
     def _scn(s):  # SSOT: canonical device count (one source); raw len() only as the pre-brief fallback
         # _as_dict at BOTH levels (the same shape _trend_point's local _d() already guards): a truthy
@@ -335,14 +486,29 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
                      "n_resolved": len(resolved), "n_opened_high": n_opened_high},
         "reachability": rdelta,
         "cabling": cdelta,
-        "verdict": verdict, "verdict_note": note,
+        "integrity": {
+            "ok": not integrity_failures,
+            "failures": integrity_failures,
+            "health_comparable": health_comparable,
+            "findings_comparable": findings_comparable,
+        },
+        "provenance": {
+            "source_binding": dict(source_binding) if isinstance(source_binding, dict) else {},
+            "schema_status": schema,
+        },
+        "verdict": verdict,
+        "verdict_display": ("NO DELTA REGRESSION OBSERVED" if verdict == "CLEAN" else verdict),
+        "verdict_scope": "delta_only",
+        "verdict_note": note,
     }
 
-def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = None) -> None:
+def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = None, *,
+                        source_binding: Optional[dict] = None, schema_status: Any = None) -> None:
     """Write a diff workbook (Summary / Interface Changes / Endpoint Changes /
     SVI Changes) comparing two snapshot_state() dicts. `precert` is an optional precomputed
     Pre-Change Validation Certificate (roadmap C1); when None it is computed here, so the
-    'Pre-Change Certificate' sheet is always present."""
+    'Pre-Change Certificate' sheet is always present.  Exact input hashes and schema-gate status
+    supplied by the file-loading caller are rendered into both decision surfaces."""
     old = old if isinstance(old, dict) else {}            # total on a non-dict snapshot (parsed null/[]/scalar)
     new = new if isinstance(new, dict) else {}
     from openpyxl import Workbook
@@ -390,7 +556,20 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
 
     oi, ni = _ifmap(old), _ifmap(new)
     od, nd = _as_dict(old.get("devices")), _as_dict(new.get("devices"))
-    delta = compute_snapshot_delta(old, new)   # NEW-V3.23.106: migration-validation analysis
+    delta = compute_snapshot_delta(old, new, source_binding=source_binding,
+                                   schema_status=schema_status)   # migration-validation analysis
+    # Compute the independent certificate BEFORE the Summary so its coverage verdict can constrain
+    # the headline gate.  A clean delta over an unassessed reachability surface is not a PASS.
+    from cisco_toolkit.precert import CERT_SHEET_HEADERS, CERT_SHEET_NAME, compute_precert
+    if isinstance(precert, dict):
+        cert = dict(precert)
+        if source_binding and not cert.get("source_binding"):
+            cert["source_binding"] = dict(source_binding)
+        if schema_status is not None and not cert.get("schema_status"):
+            cert["schema_status"] = _schema_status(schema_status)
+    else:
+        cert = compute_precert(
+            old, new, source_hashes=source_binding, schema_status=schema_status)
     rd0 = delta.get("reachability") or {}      # W2 reachability what-if (disclose the bounded sample, never silent)
     cd0 = (delta.get("cabling") or {}).get("summary") or {}   # physical cable delta (EDA cable-map SSOT)
 
@@ -404,9 +583,29 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
     # the AssessHub compare view and the CLI diff workbook disagreeing at the cutover gate.
     o_sw, n_sw = delta["switches"]["old"], delta["switches"]["new"]
     o_if, n_if = delta["interfaces"]["old"], delta["interfaces"]["new"]
-    _VERDICT_FILL = {"CLEAN": "C6EFCE", "REVIEW": "FFEB9C", "REGRESSED": "FFC7CE"}
+    cert_verdict = str(cert.get("verdict") or "INDETERMINATE")
+    if delta["verdict"] == "REGRESSED":
+        gate_verdict = "REGRESSED"
+    elif cert_verdict == "FAIL":
+        gate_verdict = "FAIL"
+    elif delta["verdict"] == "INDETERMINATE" or cert_verdict == "INDETERMINATE":
+        gate_verdict = "INDETERMINATE"
+    elif delta["verdict"] == "REVIEW":
+        gate_verdict = "REVIEW"
+    elif cert_verdict == "CONDITIONAL":
+        gate_verdict = "CONDITIONAL"
+    else:
+        gate_verdict = "PASS"
+    gate_note = (
+        f"Delta observation: {delta.get('verdict_display', delta['verdict'])}. "
+        f"Pre-Change Certificate: {cert_verdict}. {cert.get('verdict_note') or delta['verdict_note']}"
+    )
+    _VERDICT_FILL = {"PASS": "C6EFCE", "CLEAN": "C6EFCE", "CONDITIONAL": "FFEB9C",
+                     "REVIEW": "FFEB9C", "INDETERMINATE": "D9D9D9",
+                     "FAIL": "FFC7CE", "REGRESSED": "FFC7CE"}
     metrics = [
-        ("CUTOVER VERDICT", "", delta["verdict"], delta["verdict_note"]),
+        ("CUTOVER GATE VERDICT", "", gate_verdict, gate_note),
+        ("DELTA OBSERVATION", "", delta.get("verdict_display", delta["verdict"]), delta["verdict_note"]),
         ("Switches", o_sw, n_sw, _dnum(o_sw, n_sw)),
         # ...added/removed enumerate the COLLECTED devices, which is a narrower set than the canonical
         # count above whenever the estate holds devices that were inventoried but not collected. Labelled,
@@ -438,9 +637,9 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
     for m in metrics:
         for c, v in enumerate(m, 1):
             cell = ws.cell(row=r, column=c, value=_cv(v)); cell.font = DF; cell.alignment = AL
-        if m[0] == "CUTOVER VERDICT":
+        if m[0] == "CUTOVER GATE VERDICT":
             vc = ws.cell(row=r, column=3)
-            vc.fill = PatternFill("solid", fgColor=_VERDICT_FILL.get(delta["verdict"], "FFFFFF"))
+            vc.fill = PatternFill("solid", fgColor=_VERDICT_FILL.get(gate_verdict, "FFFFFF"))
             vc.font = Font(name="Calibri", bold=True, size=11)
         r += 1
     autofit(ws, 4); ws.column_dimensions["D"].width = 70
@@ -614,8 +813,6 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
     # artifact: verdict + every changed flow cited before->after + segmentation invariants + path intents
     # + every NAMED blind spot. Rendered from the certificate dict (the .precert.json SSOT); computed here
     # when the caller did not pass one, so the sheet is always present.
-    from cisco_toolkit.precert import CERT_SHEET_HEADERS, CERT_SHEET_NAME, compute_precert
-    cert = precert if isinstance(precert, dict) else compute_precert(old, new)
     cf = cert.get("flows") or {}
     _CERT_FILL = {"PASS": "C6EFCE", "CONDITIONAL": "FFEB9C", "FAIL": "FFC7CE", "INDETERMINATE": "D9D9D9"}
     stamps = cert.get("stamps") or {}
@@ -651,10 +848,24 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
                           f"{i0.get('old_status')} -> {i0.get('new_status')}"))
     for b0 in (cert.get("blind_spots") or []):
         cert_rows.append(("Blind spot", b0, "", "", "OPEN", ""))
+    for g0 in (cert.get("gate_failures") or []):
+        cert_rows.append(("Gate failure", g0, "", "", "BLOCKING", "Do not proceed"))
     if not (cert.get("blind_spots") or []):
         cert_rows.append(("Blind spot", "none open", "", "", "", ""))
+    binding = cert.get("source_binding") if isinstance(cert.get("source_binding"), dict) else {}
+    for side in ("before", "after"):
+        if binding.get(side):
+            cert_rows.append(("Provenance", f"{side} input SHA-256", "", "",
+                              "BOUND", str(binding.get(side))))
+    schema_binding = cert.get("schema_status") if isinstance(cert.get("schema_status"), dict) else {}
+    if schema_binding:
+        cert_rows.append(("Provenance", "schema compatibility", "", "",
+                          str(schema_binding.get("status") or "unverifiable").upper(),
+                          str(schema_binding.get("message") or "")
+                          + (" (explicit override recorded)" if schema_binding.get("override") else "")))
     _ROW_FILL = {"NEWLY BLOCKED": "FFC7CE", "newly reachable": "C6EFCE", "VIOLATED": "FFC7CE",
                  "REGRESSED": "FFC7CE", "INCONCLUSIVE": "D9D9D9", "NOT EVALUABLE": "D9D9D9", "OPEN": "FFEB9C"}
+    _ROW_FILL["BLOCKING"] = "FFC7CE"
     ws = sheet(CERT_SHEET_NAME, list(CERT_SHEET_HEADERS))
     r = 2
     for vals in cert_rows:
@@ -731,6 +942,8 @@ def _trend_point(snap: dict) -> dict:
     # `or ""` and the ts[:10] slice below then raises (`5[:10]` -> TypeError) -- or, for a list, silently
     # returns a LIST into the timeline's 'date' column. The slicing variant of the same guard gap.
     ts = str(snap.get("generated_at") or "")
+    integrity = _analysis_integrity(
+        snap, ("health_scores", "punchlist", "migration_readiness", "lifecycle_risk"))
     return {
         "date": ts[:10], "generated_at": ts, "version": snap.get("script_version", ""),
         # SSOT: prefer the engine's canonical scale / posture; the local len()/band-tally is a fallback only.
@@ -746,7 +959,19 @@ def _trend_point(snap: dict) -> dict:
         # "Past end-of-support" = Past-LDoS (no TAC / no fixes) — the migration-critical count the
         # brief/deck/explorer/workbook all headline. NOT Past-EoS (end-of-SALE, still supported): reading
         # n_past_eos here showed 0 while 152 boxes were past support (the EoS/LDoS silent-drop class).
-        "past_ldos": lr.get("n_past_ldos", "") if lr else "",
+        # A count over PARTIAL coverage must not be trended as if it were complete. `past_ldos` is
+        # lower-is-better in _TREND_METRICS, so a fleet whose platforms the offline EoX KB never
+        # matched reports 0 and scores as the BEST possible value — an un-assessed campaign step
+        # reads as an improvement over a fully-assessed earlier one. That is absence converted into
+        # a positive signal, which is worse than absence rendered as neutral.
+        #
+        # `""` is this dict's existing "not available" convention (see n_punchlist / n_not_ready
+        # above), and the trajectory skips a metric that is missing on either side rather than
+        # comparing against it. So an incomplete step drops out of THIS metric only; every other
+        # metric on that snapshot still trends. (handoff §7.25)
+        "past_ldos": ("" if lr.get("n_unknown") else lr.get("n_past_ldos", "")) if lr else "",
+        "integrity_ok": integrity["ok"],
+        "integrity_failures": integrity["failures"],
     }
 
 
@@ -759,15 +984,36 @@ _TREND_METRICS = (("Avg health / 100", "avg_health", False),
                   ("Past end-of-support", "past_ldos", True))
 
 
-def compute_campaign_trend(snapshots: List[dict]) -> dict:
+def compute_campaign_trend(snapshots: List[dict], *, source_bindings: Optional[list] = None,
+                           schema_status: Any = None) -> dict:
     """Trajectory of a migration campaign across a SERIES of snapshots. Returns
-    {timeline, steps, trajectory, verdict, verdict_note}; degrades gracefully when a metric is absent."""
+    {timeline, steps, trajectory, verdict, verdict_note}; degrades gracefully when a metric is absent.
+    A collection with a failed/missing core analysis makes the campaign verdict INDETERMINATE rather
+    than allowing the remaining counters to manufacture an improvement."""
     snaps = list(snapshots or [])
     timeline = [dict(_trend_point(s), collection=f"C{i + 1}") for i, s in enumerate(snaps)]
+    schema = _schema_status(schema_status)
+    failed_collections = [
+        {"collection": pt["collection"], "failures": list(pt.get("integrity_failures") or [])}
+        for pt in timeline if not pt.get("integrity_ok")
+    ]
+    if schema and schema.get("status") not in ("", "ok"):
+        failed_collections.append({
+            "collection": "series",
+            "failures": [
+                f"schema compatibility {schema.get('status')}: "
+                f"{schema.get('message') or 'cross-input compatibility was not proven'}"
+                + (" (explicit override recorded)" if schema.get("override") else "")
+            ],
+        })
 
     steps: List[dict] = []
     for i in range(len(snaps) - 1):
-        d = compute_snapshot_delta(snaps[i], snaps[i + 1])
+        pair_binding = None
+        if isinstance(source_bindings, list) and i + 1 < len(source_bindings):
+            pair_binding = {"before": source_bindings[i], "after": source_bindings[i + 1]}
+        d = compute_snapshot_delta(snaps[i], snaps[i + 1],
+                                   source_binding=pair_binding, schema_status=schema)
         steps.append({
             "from": timeline[i]["collection"], "to": timeline[i + 1]["collection"],
             "from_date": timeline[i]["date"], "to_date": timeline[i + 1]["date"],
@@ -778,6 +1024,8 @@ def compute_campaign_trend(snapshots: List[dict]) -> dict:
         })
 
     trajectory: List[dict] = []
+    lost: List[str] = []
+    never: List[str] = []
     verdict, note = "INSUFFICIENT", "Need at least two collections to show a trend."
     if len(timeline) >= 2:
         first, last = timeline[0], timeline[-1]
@@ -785,15 +1033,24 @@ def compute_campaign_trend(snapshots: List[dict]) -> dict:
         # them from the trajectory is right (they are not comparable) but doing it SILENTLY is the same
         # survivorship trap as a device dropping out: the surviving metrics then set a verdict over a
         # narrower estate than the reader assumes. Disclosed below, and (like a dark device) a clean
-        # IMPROVING/FLAT is downgraded. Metrics absent from BOTH ends were never part of this campaign's
-        # evidence, so they are simply omitted, exactly as before.
-        lost: List[str] = []
+        # IMPROVING/FLAT is downgraded.
+        #
+        # BOTH ends abstaining was the remaining silence, and it is the WORSE one. "Never part of this
+        # campaign's evidence" was an assumption, not an observation: `_trend_point` yields a non-numeric
+        # value for a metric whose analysis FAILED or was never collected, so a campaign in which the
+        # lifecycle/EoL pass fell over at every collection dropped that metric out of the trajectory
+        # entirely -- measured, both ends all-Unknown gives verdict FLAT with the lifecycle row simply
+        # absent and no NOT-COMPARABLE line. A reader cannot tell "we looked and found nothing" from
+        # "we never looked", and a count of 0 that means NOT MEASURED must not read as nothing wrong.
+        # Disclosed separately from `lost` because the actions differ: one endpoint missing is usually a
+        # collection gap in that run, both missing means the metric was never measured in this campaign
+        # at all. It does NOT downgrade the verdict -- there is no evidence in either direction to
+        # downgrade on -- it is stated.
         for metric, key, good_down in _TREND_METRICS:
             a, b = first.get(key), last.get(key)
             ok_a, ok_b = isinstance(a, (int, float)), isinstance(b, (int, float))
             if not ok_a or not ok_b:
-                if ok_a != ok_b:
-                    lost.append(metric)
+                (lost if ok_a != ok_b else never).append(metric)
                 continue
             delta = b - a
             direction = "flat" if delta == 0 else (
@@ -851,13 +1108,39 @@ def compute_campaign_trend(snapshots: List[dict]) -> dict:
             parts.append(f"NOT COMPARABLE: {len(lost)} metric(s) lost their evidence between the first and "
                          f"last collection ({', '.join(lost)}) -- excluded from the verdict, and NOT a "
                          "statement that they are clean.")
+        if never:
+            parts.append(f"NOT COMPARABLE: {len(never)} metric(s) were never measured at EITHER end of "
+                         f"this campaign ({', '.join(never)}) -- absent from the trajectory above because "
+                         "there is no evidence, NOT because there is nothing to report.")
         note = " ".join(parts).strip()
 
+        if failed_collections:
+            verdict = "INDETERMINATE"
+            detail = "; ".join(
+                f"{row['collection']}: {', '.join(str(x) for x in row['failures'])}"
+                for row in failed_collections)
+            note = (
+                f"Campaign certification withheld because {len(failed_collections)} collection/schema "
+                f"integrity record(s) are not trustworthy. The trajectory remains visible only as a "
+                f"partial observation and is not an improvement claim. {detail}. {note}"
+            ).strip()
+
     return {"timeline": timeline, "steps": steps, "trajectory": trajectory,
+            # Machine-readable twin of the two NOT-COMPARABLE sentences in verdict_note, so a
+            # renderer can show the gap as a row rather than having to parse prose. `lost` = the
+            # evidence existed at one end only; `never_measured` = neither end had it, which is
+            # NOT the same as a clean zero.
+            "not_comparable": {"lost": list(lost), "never_measured": list(never)},
+            "integrity": {"ok": not failed_collections, "failures": failed_collections},
+            "provenance": {
+                "source_bindings": list(source_bindings) if isinstance(source_bindings, list) else [],
+                "schema_status": schema,
+            },
             "verdict": verdict, "verdict_note": note}
 
 
-def write_campaign_workbook(snapshots: List[dict], out_path: str) -> None:
+def write_campaign_workbook(snapshots: List[dict], out_path: str, *,
+                            source_bindings: Optional[list] = None, schema_status: Any = None) -> None:
     """Write a migration-campaign trend workbook (Campaign Summary verdict + per-metric trajectory /
     Timeline w/ a trajectory line chart / Burndown of findings opened-vs-resolved per step) from a SERIES
     of snapshot_state() dicts."""
@@ -868,7 +1151,8 @@ def write_campaign_workbook(snapshots: List[dict], out_path: str) -> None:
     CEN = Alignment(horizontal="center", vertical="center", wrap_text=True)
     DF = Font(name="Calibri", size=10)
 
-    trend = compute_campaign_trend(snapshots)
+    trend = compute_campaign_trend(
+        snapshots, source_bindings=source_bindings, schema_status=schema_status)
     wb = Workbook(); wb.remove(wb.active)
     from cisco_toolkit.excel import harden_workbook
     harden_workbook(wb)   # sanitize control chars in device-derived text -> no IllegalCharacterError abort
@@ -891,7 +1175,8 @@ def write_campaign_workbook(snapshots: List[dict], out_path: str) -> None:
 
     _DIR_FILL = {"improving": "C6EFCE", "worsening": "FFC7CE", "flat": "FFEB9C"}
     _VERDICT_FILL = {"IMPROVING": "C6EFCE", "MIXED": "FFEB9C", "FLAT": "DDEBF7",
-                     "REGRESSING": "FFC7CE", "INSUFFICIENT": "EFEFEF"}
+                     "REGRESSING": "FFC7CE", "INDETERMINATE": "D9D9D9",
+                     "INSUFFICIENT": "EFEFEF"}
 
     # ---- Campaign Summary (leads with the trajectory verdict) ----
     ws = sheet("Campaign Summary", ["Metric", "First", "Last", "Delta", "Trajectory"])
@@ -909,6 +1194,22 @@ def write_campaign_workbook(snapshots: List[dict], out_path: str) -> None:
         r += 1
     if not trend["trajectory"]:
         ws.cell(row=4, column=1, value="Not enough comparable metrics across the snapshots.").font = DF
+    prov = trend.get("provenance") or {}
+    binds = prov.get("source_bindings") if isinstance(prov.get("source_bindings"), list) else []
+    if binds:
+        r += 1
+        ws.cell(row=r, column=1, value="INPUT SHA-256 BINDINGS").font = Font(name="Calibri", bold=True, size=10)
+        ws.cell(row=r, column=2, value=_cv("; ".join(
+            f"C{i + 1}={str(v)}" for i, v in enumerate(binds)))).alignment = AL
+        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=5)
+    schema = prov.get("schema_status") if isinstance(prov.get("schema_status"), dict) else {}
+    if schema:
+        r += 1
+        ws.cell(row=r, column=1, value="SCHEMA COMPATIBILITY").font = Font(name="Calibri", bold=True, size=10)
+        ws.cell(row=r, column=2, value=_cv(
+            f"{str(schema.get('status') or 'unverifiable').upper()}: {schema.get('message') or ''}"
+            + (" (explicit override recorded)" if schema.get("override") else ""))).alignment = AL
+        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=5)
     autofit(ws, 5); ws.column_dimensions["A"].width = 26
 
     # ---- Timeline (one row per collection) + a trajectory line chart ----
@@ -988,7 +1289,7 @@ def sparsify_interfaces(snap: dict) -> dict:
 # NEW-V3.23.90: shrink the snapshot copy EMBEDDED in the single-file explorer.
 # The on-disk snapshot.json stays full-fidelity (it is the data contract and the
 # `--compare` input); this only trims the in-page payload, which on a real fleet
-# (the 254-device [HISTORY-REDACTED] scan embedded a 52 MB blob) is dominated by two things the
+# (the 254-device Meridian scan embedded a 52 MB blob) is dominated by two things the
 # explorer never renders verbatim:
 #   * interfaces  - hundreds of ports/device, ~50 fields each, most empty strings.
 #     The explorer reads every interface field defensively (`d.x||""`, `d.x&&...`,
@@ -1180,28 +1481,33 @@ _REDACT_SERIAL_KEYS = {"serial_number", "chassis_serial",
 # substitutes it for itself. We are deliberately narrow (no blanket token redaction) so
 # non-secret structured fields are never corrupted.
 _REDACT_PLACEHOLDER = "<redacted>"
-_REDACT_SECRET_RES = [re.compile(p, re.I) for p in (
+# A secret value may be a bare token or a quoted, space-bearing value.  Matching only ``\S+``
+# changed ``set passphrase "correct horse battery staple"`` into
+# ``set passphrase <redacted> horse battery staple"`` and the verifier then blessed the residue
+# because the first token was the placeholder.  Consume one complete shell/config value instead.
+_REDACT_SECRET_VALUE = r"""(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|\S+)"""
+_REDACT_SECRET_RES = [re.compile(prefix + "(" + _REDACT_SECRET_VALUE + ")", re.I) for prefix in (
     # SNMP community strings: 'snmp-server community <VALUE>' and the bare
     # 'community <VALUE>' form (host/group/trap lines).
-    r"(snmp-server\s+community\s+)(\S+)",
-    r"(\bcommunity\s+)(\S+)",
+    r"(snmp-server\s+community\s+)",
+    r"(\bcommunity\s+)",
     # 'snmp-server host <ip> [vrf X] [traps|informs] version {1|2c} <COMMUNITY>' -- the trap-host community is a
     # bare positional token with NO 'community' keyword to anchor on, so the two patterns above missed it and it
     # shipped verbatim under --redact (leak-corpus K4). v3 uses a username (not a secret), so only 1|2c match.
-    r"(snmp-server\s+host\s+\S+\s+(?:vrf\s+\S+\s+)?(?:(?:traps?|informs?)\s+)?version\s+(?:1|2c)\s+)(\S+)",
+    r"(snmp-server\s+host\s+\S+\s+(?:vrf\s+\S+\s+)?(?:(?:traps?|informs?)\s+)?version\s+(?:1|2c)\s+)",
     # Cisco password/secret forms: type-7/type-5 and cleartext, 'enable secret',
     # and 'username <u> password|secret <VALUE>'. The username token is preserved.
-    r"(\bpassword\s+(?:(?:ENC|\d+)\s+)?)(\S+)",
-    r"(\bsecret\s+(?:\d+\s+)?)(\S+)",
-    r"((?:username|user)\s+\S+\s+(?:password|secret)\s+(?:\d+\s+)?)(\S+)",
+    r"(\bpassword\s+(?:(?:ENC|\d+)\s+)?)",
+    r"(\bsecret\s+(?:\d+\s+)?)",
+    r"((?:username|user)\s+\S+\s+(?:password|secret)\s+(?:\d+\s+)?)",
     # Shared keys. Specific forms FIRST so the generic bare 'key' below cannot consume
     # their qualifier (e.g. 'pre-shared-key local <V>' must not let 'key local' match).
     # TACACS+/RADIUS server keys, 'key-string <VALUE>' (SNMPv3 / EIGRP / OSPF keychains),
     # IKE pre-shared keys, and 'crypto isakmp key <VALUE> address ...'.
-    r"((?:tacacs-server|radius-server)\s+(?:host\s+\S+\s+)?key\s+(?:\d+\s+)?)(\S+)",
-    r"(key-string\s+(?:\d+\s+)?)(\S+)",
-    r"(pre-shared-key\s+(?:(?:local|remote|ascii-text|hexadecimal)\s+)?(?:\d+\s+)?)(\S+)",
-    r"(crypto\s+isakmp\s+key\s+(?:\d+\s+)?)(\S+)",
+    r"((?:tacacs-server|radius-server)\s+(?:host\s+\S+\s+)?key\s+(?:\d+\s+)?)",
+    r"(key-string\s+(?:\d+\s+)?)",
+    r"(pre-shared-key\s+(?:(?:local|remote|ascii-text|hexadecimal)\s+)?(?:\d+\s+)?)",
+    r"(crypto\s+isakmp\s+key\s+(?:\d+\s+)?)",
     # Generic 'key 7 <hex>' / 'key <cleartext>' (keychain key, OSPF/EIGRP authentication). The optional
     # inner group absorbs a hash-algorithm label so 'authentication-key|message-digest-key N md5|sha|
     # hmac-sha <DIGEST>' (NTP/OSPF/EIGRP) redacts the DIGEST after it, not the 'md5'/'sha' token -- the
@@ -1210,11 +1516,11 @@ _REDACT_SECRET_RES = [re.compile(p, re.I) for p in (
     # follow-words intact: 'key chain <NAME>' declares a keychain (name is not a secret), and the bare rule
     # runs AFTER the pre-shared-key rule over the accumulating string, so without the guard it re-fired on
     # 'pre-shared-key local <redacted>' and mangled the 'local'/'remote' direction qualifier.
-    r"((?<!private-)(?<!shared-)\bkey\s+(?:\d+\s+)?(?:(?:md5|sha\S*|hmac-\S+|cmac-\S+)\s+(?:\d+\s+)?)?)(?!chain\b|local\b|remote\b)(\S+)",
+    r"((?<!private-)(?<!shared-)\bkey\s+(?:\d+\s+)?(?:(?:md5|sha\S*|hmac-\S+|cmac-\S+)\s+(?:\d+\s+)?)?)(?!chain\b|local\b|remote\b)",
     # Non-Cisco vendor config forms: FortiGate 'set passwd|psksecret|password [ENC] <VALUE>' and Junos
     # 'authentication-key|secret "<VALUE>"' -- 'passwd'/'psksecret' are not the whole words 'password'/'secret',
     # so the Cisco patterns above miss them.
-    r"(set\s+(?:passwd|psksecret|password|private-key|passphrase)\s+(?:ENC\s+)?)(\S+)",
+    r"(set\s+(?:passwd|psksecret|password|private-key|passphrase)\s+(?:ENC\s+)?)",
 )]
 # JSON-VALUE secrets: the controller-REST channels (ACI / ISE / FMC / vManage) and IaC exports store a secret as
 # a VALUE under a key, with no inline keyword for the deny-list regexes above to anchor on. So redact the WHOLE
@@ -1241,6 +1547,79 @@ _REDACT_SECRET_TOKENS = (
 # Match a parenthesized Cisco serial (3 letters + 4 digits + 2-6 alnum, e.g. FOC1830R1QS) so it routes through the
 # SAME serial pseudonymizer for a consistent SNxxxx; the SNxxxx pseudonym (2 leading letters) never re-matches.
 _REDACT_CDP_SERIAL_RE = re.compile(r"\(([A-Z]{3}[0-9]{4}[A-Z0-9]{2,6})\)")
+# Cisco serials also occur in arbitrary prose and generated validation expectations, where no
+# serial-shaped schema key or CDP parentheses exist.  Match the same deliberately narrow token
+# shape independently of context; SN#### pseudonyms cannot re-match it, so the pass is idempotent.
+_REDACT_INLINE_SERIAL_RE = re.compile(
+    r"(?<![A-Z0-9])([A-Z]{3}[0-9]{4}[A-Z0-9]{2,6})(?![A-Z0-9])",
+    re.IGNORECASE,
+)
+_REDACT_EMAIL_RE = re.compile(
+    r"(?<![\w.+-])[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@"
+    r"(?:[A-Z0-9-]+\.)+[A-Z]{2,63}(?![\w.-])",
+    re.IGNORECASE,
+)
+
+_SYNTH_DOMAIN = "assesshub-redacted.invalid"
+_SYNTH_MARKER_RE = re.compile(
+    r"(?:v4-n\d{5}-h\d{3}|v6-\d{8}|mac-\d{12}|serial-\d{6})\."
+    + re.escape(_SYNTH_DOMAIN),
+    re.IGNORECASE,
+)
+_SYNTH_SERIAL_RE = re.compile(
+    r"serial-\d{6}\." + re.escape(_SYNTH_DOMAIN) + r"\Z",
+    re.IGNORECASE,
+)
+_SYNTH_EMAIL_RE = re.compile(
+    r"contact-\d{6}@" + re.escape(_SYNTH_DOMAIN) + r"\Z",
+    re.IGNORECASE,
+)
+_MAX_V4_SYNTH_NETWORKS = 65_536
+_MAX_SYNTH_IDENTITIES = 999_999
+
+
+class RedactionPseudonymExhausted(RuntimeError):
+    """The bounded synthetic namespace cannot issue another collision-free marker."""
+
+
+class _SyntheticAllocator:
+    """Issue unmistakably synthetic, bounded, collision-checked ``.invalid`` markers."""
+
+    def __init__(self, reserved=None, limit: int = _MAX_SYNTH_IDENTITIES):
+        self.reserved = set(reserved or ())
+        self.issued = set()
+        self.next_value = 1
+        self.limit = int(limit)
+
+    def issue(self, render) -> str:
+        while self.next_value <= self.limit:
+            value = render(self.next_value)
+            self.next_value += 1
+            if value in self.reserved or value in self.issued:
+                continue
+            self.issued.add(value)
+            return value
+        raise RedactionPseudonymExhausted(
+            "bounded redaction pseudonym namespace exhausted; refusing partial redaction"
+        )
+
+
+def _existing_synthetic_markers(root) -> set:
+    """Reserve producer-origin markers already present so a new identity cannot collide with one."""
+    found = set()
+    stack = [root]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, dict):
+            stack.extend(value.keys())
+            stack.extend(value.values())
+        elif isinstance(value, (list, tuple, set)):
+            stack.extend(value)
+        elif isinstance(value, str):
+            found.update(match.group(0).casefold() for match in _SYNTH_MARKER_RE.finditer(value))
+            found.update(match.group(0).casefold() for match in _REDACT_EMAIL_RE.finditer(value)
+                         if _SYNTH_EMAIL_RE.fullmatch(match.group(0)))
+    return found
 
 
 def _norm_key(k) -> str:
@@ -1257,7 +1636,7 @@ def _scrub_secrets(s: str) -> str:
 
 
 def redact_snapshot(snap: dict) -> dict:
-    """Return a copy of the snapshot with IPs, MACs, and serial numbers consistently
+    """Return a copy of the snapshot with IPs, MACs, serial numbers, and emails consistently
     pseudonymized for sharing the single-file deliverable. Same input maps to the same
     output and IPs keep their /24 grouping, so topology / ARP / subnet relationships
     survive; hostnames are kept. Pure (stdlib only); the input is not mutated.
@@ -1268,55 +1647,102 @@ def redact_snapshot(snap: dict) -> dict:
     gateway 10.0.10.1). A net ALREADY in 240.x maps to ITSELF: every IPv4 in a scrubbed
     output is 240.x, so that identity rule is exactly what keeps redact_snapshot
     idempotent (a second pass is a no-op)."""
-    ip_map: Dict[str, str] = {}
+    reserved = _existing_synthetic_markers(snap)
+    ip_map: Dict[str, int] = {}
     ip6_map: Dict[str, str] = {}
     mac_map: Dict[str, str] = {}
     serial_map: Dict[str, str] = {}
-    _next_net = [0]
+    email_map: Dict[str, str] = {}
+    ip6_allocator = _SyntheticAllocator(reserved)
+    mac_allocator = _SyntheticAllocator(reserved)
+    serial_allocator = _SyntheticAllocator(reserved)
+    email_allocator = _SyntheticAllocator(reserved)
+    _next_net = [1]
 
     def _ip(m):
         net = f"{m.group(1)}.{m.group(2)}.{m.group(3)}"
         if net not in ip_map:
-            if m.group(1) == "240":
-                ip_map[net] = net       # already a Class E pseudonym (re-scrub of our own output): identity
-            else:
-                i = _next_net[0]
-                while True:
-                    cand = f"240.{i // 256}.{i % 256}"   # remap /24 into Class E, keep host octet
-                    i += 1
-                    if cand not in ip_map:               # never hand out a /24 an identity-kept net already claimed
-                        break
-                _next_net[0] = i
-                ip_map[net] = cand
-        return f"{ip_map[net]}.{m.group(4)}"
+            while _next_net[0] <= _MAX_V4_SYNTH_NETWORKS:
+                candidate = _next_net[0]
+                _next_net[0] += 1
+                if not any(
+                    f"v4-n{candidate:05d}-h{host:03d}.{_SYNTH_DOMAIN}".casefold() in reserved
+                    for host in range(256)
+                ):
+                    ip_map[net] = candidate
+                    break
+            if net not in ip_map:
+                raise RedactionPseudonymExhausted(
+                    "bounded IPv4 redaction namespace exhausted; refusing partial redaction"
+                )
+        return f"v4-n{ip_map[net]:05d}-h{int(m.group(4)):03d}.{_SYNTH_DOMAIN}"
 
     def _ip6(m):
         s = m.group(0)
-        if s not in ip6_map:                                            # consistent ULA fd00::/8 pseudonym
-            i = len(ip6_map) + 1
-            ip6_map[s] = "fd00::%x:%x" % ((i >> 16) & 0xffff, i & 0xffff)
+        if s not in ip6_map:
+            ip6_map[s] = ip6_allocator.issue(
+                lambda i: f"v6-{i:08d}.{_SYNTH_DOMAIN}"
+            )
         return ip6_map[s]
 
     def _mac(m):
         key = re.sub(r"[^0-9a-f]", "", m.group(0).lower())
         if key not in mac_map:
-            i = len(mac_map) + 1
-            mac_map[key] = "02:%02x:%02x:%02x:%02x:%02x" % (
-                (i >> 32) & 255, (i >> 24) & 255, (i >> 16) & 255, (i >> 8) & 255, i & 255)
+            mac_map[key] = mac_allocator.issue(
+                lambda i: f"mac-{i:012d}.{_SYNTH_DOMAIN}"
+            )
         return mac_map[key]
 
     def _serial(v):
         if not v:
             return v
-        if v not in serial_map:
-            serial_map[v] = f"SN{len(serial_map) + 1:04d}"
-        return serial_map[v]
+        if _SYNTH_SERIAL_RE.fullmatch(str(v)):
+            return v
+        key = str(v).upper()
+        if key not in serial_map:
+            serial_map[key] = serial_allocator.issue(
+                lambda i: f"serial-{i:06d}.{_SYNTH_DOMAIN}"
+            )
+        return serial_map[key]
+
+    def _email(value):
+        address = str(value)
+        if _SYNTH_EMAIL_RE.fullmatch(address):
+            return address
+        key = address.casefold()
+        if key not in email_map:
+            email_map[key] = email_allocator.issue(
+                lambda i: f"contact-{i:06d}@{_SYNTH_DOMAIN}"
+            )
+        return email_map[key]
+
+    def _scrub_identity_tokens(s):
+        """Pseudonymize serials outside email tokens, then pseudonymize real email addresses.
+
+        Shielding each complete address from the serial matcher preserves approved example-domain
+        placeholders even if their local part happens to look like a Cisco serial.
+        """
+        out = []
+        cursor = 0
+
+        def serials(chunk):
+            chunk = _REDACT_CDP_SERIAL_RE.sub(
+                lambda m: "(" + _serial(m.group(1)) + ")", chunk
+            )
+            return _REDACT_INLINE_SERIAL_RE.sub(lambda m: _serial(m.group(1)), chunk)
+
+        for match in _REDACT_EMAIL_RE.finditer(s):
+            out.append(serials(s[cursor:match.start()]))
+            out.append(_email(match.group(0)))
+            cursor = match.end()
+        out.append(serials(s[cursor:]))
+        return "".join(out)
 
     def _scrub(s):
         # Strip credentials / community / key material first so a secret token is replaced wholesale, THEN
         # pseudonymize any remaining IPv4 / IPv6 / MACs in context. IPv6 is remapped before MAC; the two
         # patterns are mutually exclusive (a MAC has neither 7 colons nor a '::'), so neither corrupts the other.
-        s = _REDACT_CDP_SERIAL_RE.sub(lambda m: "(" + _serial(m.group(1)) + ")", _scrub_secrets(s))
+        s = _scrub_identity_tokens(_scrub_secrets(s))
         return _REDACT_MAC_RE.sub(_mac, _REDACT_IP6_RE.sub(_ip6, _REDACT_IP_RE.sub(_ip, s)))
 
     def _is_secret_key(key) -> bool:
@@ -1325,11 +1751,38 @@ def redact_snapshot(snap: dict) -> dict:
             return False
         return nk in _REDACT_SECRET_KEYS or any(tok in nk for tok in _REDACT_SECRET_TOKENS)
 
+    def _redact_key(key):
+        if not isinstance(key, str):
+            return key
+        return _scrub(key)
+
+    def _store_preserving_key(out, safe_key, value):
+        """Store a redacted key without silently overwriting a colliding original entry.
+
+        Case variants of one serial intentionally share a stable ``SN####`` pseudonym, and a
+        pre-existing pseudonym-shaped key may already occupy that spelling.  Preserve the first
+        spelling and add a deterministic ordinal alias for every later collision.  The alias
+        contains only the stable pseudonym, never the source serial.
+        """
+        candidate = safe_key
+        if candidate in out:
+            base = str(safe_key)
+            ordinal = 2
+            candidate = f"{base}~{ordinal}"
+            while candidate in out:
+                ordinal += 1
+                candidate = f"{base}~{ordinal}"
+        out[candidate] = value
+
     def _redact_all(o):
         # Every string leaf under a credential-named container is a secret bearer -- a secret nested one level
         # below the key ({'apikey':{'value':...}}) must not survive (multi-domain audit #7). Over-redacting
         # non-secret siblings (e.g. an 'enc: type6' tag) is the safe direction.
-        if isinstance(o, dict): return {k: _redact_all(v) for k, v in o.items()}
+        if isinstance(o, dict):
+            out = {}
+            for k, v in o.items():
+                _store_preserving_key(out, _redact_key(k), _redact_all(v))
+            return out
         if isinstance(o, list): return [_redact_all(v) for v in o]
         if isinstance(o, str): return _REDACT_PLACEHOLDER if o else o
         return o
@@ -1338,10 +1791,13 @@ def redact_snapshot(snap: dict) -> dict:
         if isinstance(o, dict):
             out = {}
             for k, v in o.items():
+                safe_key = _redact_key(k)
                 if isinstance(v, (dict, list)) and _is_secret_key(k):
-                    out[k] = _redact_all(v)                 # secret-named key over a CONTAINER -> scrub every leaf
+                    # secret-named key over a CONTAINER -> scrub every leaf
+                    safe_value = _redact_all(v)
                 else:
-                    out[k] = _walk(v, k)
+                    safe_value = _walk(v, k)
+                _store_preserving_key(out, safe_key, safe_value)
             return out
         if isinstance(o, list):
             return [_walk(v, key) for v in o]
@@ -1356,7 +1812,7 @@ def redact_snapshot(snap: dict) -> dict:
     return _walk(snap)
 
 
-def _make_redactor():
+def _make_redactor(reserved=None):
     """A fresh, self-consistent pseudonymizer (same scheme as redact_snapshot: IPv4 keeps its /24 grouping;
     IPv6 -> fd00::; MAC -> 02:..; serial -> SNxxxx). Returns (scrub_str, redact_serial) sharing per-call maps.
     Shared by redact_collected_inplace + redact_workbook_cells so the --redact workbook is scrubbed everywhere.
@@ -1369,59 +1825,199 @@ def _make_redactor():
     net, or an already-issued pseudonym even if a capture somehow contains 240.x addresses — unlike
     redact_snapshot, which must map an already-240.x net to ITSELF to stay idempotent, this per-call map
     is never re-fed its own output, so it refuses identity outright. Deterministic per call."""
-    ip_map: Dict[str, str] = {}
+    reserved = set(reserved or ())
+    ip_map: Dict[str, int] = {}
     ip6_map: Dict[str, str] = {}
     mac_map: Dict[str, str] = {}
     serial_map: Dict[str, str] = {}
-    _issued: set = set()
-    _next_ip = [0]
+    email_map: Dict[str, str] = {}
+    ip6_allocator = _SyntheticAllocator(reserved)
+    mac_allocator = _SyntheticAllocator(reserved)
+    serial_allocator = _SyntheticAllocator(reserved)
+    email_allocator = _SyntheticAllocator(reserved)
+    _next_ip = [1]
 
     def _ip(m):
         net = f"{m.group(1)}.{m.group(2)}.{m.group(3)}"
         if net not in ip_map:
-            i = _next_ip[0]
-            while True:
-                cand = f"240.{i // 256}.{i % 256}"
-                i += 1
-                if cand != net and cand not in ip_map and cand not in _issued:
+            while _next_ip[0] <= _MAX_V4_SYNTH_NETWORKS:
+                candidate = _next_ip[0]
+                _next_ip[0] += 1
+                if not any(
+                    f"v4-n{candidate:05d}-h{host:03d}.{_SYNTH_DOMAIN}".casefold() in reserved
+                    for host in range(256)
+                ):
+                    ip_map[net] = candidate
                     break
-            _next_ip[0] = i
-            ip_map[net] = cand
-            _issued.add(cand)
-        return f"{ip_map[net]}.{m.group(4)}"
+            if net not in ip_map:
+                raise RedactionPseudonymExhausted(
+                    "bounded IPv4 redaction namespace exhausted; refusing partial redaction"
+                )
+        return f"v4-n{ip_map[net]:05d}-h{int(m.group(4)):03d}.{_SYNTH_DOMAIN}"
 
     def _ip6(m):
         s = m.group(0)
         if s not in ip6_map:
-            i = len(ip6_map) + 1; ip6_map[s] = "fd00::%x:%x" % ((i >> 16) & 0xffff, i & 0xffff)
+            ip6_map[s] = ip6_allocator.issue(
+                lambda i: f"v6-{i:08d}.{_SYNTH_DOMAIN}"
+            )
         return ip6_map[s]
 
     def _mac(m):
         key = re.sub(r"[^0-9a-f]", "", m.group(0).lower())
         if key not in mac_map:
-            i = len(mac_map) + 1
-            mac_map[key] = "02:%02x:%02x:%02x:%02x:%02x" % (
-                (i >> 32) & 255, (i >> 24) & 255, (i >> 16) & 255, (i >> 8) & 255, i & 255)
+            mac_map[key] = mac_allocator.issue(
+                lambda i: f"mac-{i:012d}.{_SYNTH_DOMAIN}"
+            )
         return mac_map[key]
-
-    def scrub(s):
-        s = _REDACT_CDP_SERIAL_RE.sub(lambda m: "(" + serial(m.group(1)) + ")", _scrub_secrets(s))
-        return _REDACT_MAC_RE.sub(_mac, _REDACT_IP6_RE.sub(_ip6, _REDACT_IP_RE.sub(_ip, s)))
 
     def serial(v):
         if not v:
             return v
-        if v not in serial_map:
-            serial_map[v] = f"SN{len(serial_map) + 1:04d}"
-        return serial_map[v]
+        if _SYNTH_SERIAL_RE.fullmatch(str(v)):
+            return v
+        key = str(v).upper()
+        if key not in serial_map:
+            serial_map[key] = serial_allocator.issue(
+                lambda i: f"serial-{i:06d}.{_SYNTH_DOMAIN}"
+            )
+        return serial_map[key]
+
+    def email(v):
+        address = str(v)
+        if _SYNTH_EMAIL_RE.fullmatch(address):
+            return address
+        key = address.casefold()
+        if key not in email_map:
+            email_map[key] = email_allocator.issue(
+                lambda i: f"contact-{i:06d}@{_SYNTH_DOMAIN}"
+            )
+        return email_map[key]
+
+    def _identities(s):
+        chunks = []
+        cursor = 0
+
+        def serials(chunk):
+            chunk = _REDACT_CDP_SERIAL_RE.sub(
+                lambda m: "(" + serial(m.group(1)) + ")", chunk
+            )
+            return _REDACT_INLINE_SERIAL_RE.sub(lambda m: serial(m.group(1)), chunk)
+
+        for match in _REDACT_EMAIL_RE.finditer(s):
+            chunks.append(serials(s[cursor:match.start()]))
+            chunks.append(email(match.group(0)))
+            cursor = match.end()
+        chunks.append(serials(s[cursor:]))
+        return "".join(chunks)
+
+    def scrub(s):
+        s = _identities(_scrub_secrets(s))
+        return _REDACT_MAC_RE.sub(_mac, _REDACT_IP6_RE.sub(_ip6, _REDACT_IP_RE.sub(_ip, s)))
 
     return scrub, serial
+
+
+#: Structured documents `redact_collection_dir` does NOT rewrite in place, and the scratch name it
+#: writes while rewriting a capture. `_scrub_secrets` is a grammar over line-oriented device-config
+#: text (``snmp-server community <V>``, ``username u password <V>``); it does not read structured
+#: data, substituting inside a serialised document is how a capture stops parsing, and rewriting a
+#: generated ``.html`` deliverable that happens to sit in the collection folder would break the run
+#: manifest that already sealed it. These are the ONLY exclusions — see `_is_raw_capture` — they
+#: are the same set the independent verifier applies
+#: (`webapp.backend.redaction_verify._STRUCTURED_CAPTURE_SUFFIXES`), and that verifier reports them
+#: under ``uncovered`` rather than letting the silence read as "clean".
+#:
+#: RULE OWNER: ``webapp.backend.redaction_verify.is_uncoverable_capture`` states this rule for the
+#: independent verifier AND for the ingest census (``ingest._is_raw_capture`` delegates to it), so it
+#: is the owner of record. The producer cannot import it — ``cisco_toolkit`` must not depend on
+#: ``webapp``, and the verifier's independence forbids importing the producer — so the rule is
+#: RESTATED here with the SAME suffix set and the SAME primitive: the owner's own expression,
+#: ``PurePath(name).suffix.casefold()`` (see `_capture_suffix`).
+#:
+#: Two earlier restatements used a DIFFERENT primitive and each opened a hole. ``str.endswith``
+#: disagreed on bare-name dotfiles (the producer skipped ``.json`` as structured while the verifier
+#: scanned it as a capture). ``os.path.splitext(name)[1]`` replaced it under a comment claiming the
+#: two were byte-for-byte identical — they are not, ``splitext`` skips ALL leading dots on the
+#: basename and ``PurePath.suffix`` skips only the first — so they disagreed on every name with two
+#: or more leading dots. Suffix-of-a-name is deceptively easy to restate and has now been restated
+#: wrongly twice, which is why the rule has ONE owner and ``tests/test_redact_collection.py`` pins
+#: the two against each other over a GENERATED corpus of that structural class rather than a
+#: hand-list of examples.
+_REDACT_SKIP_CAPTURE_SUFFIXES = frozenset({".json", ".xml", ".yml", ".yaml", ".html", ".htm"})
+_REDACT_SCRUB_TEMP_SUFFIX = ".redacting"
+#: Deliberate BOUND on the widened (default-INCLUDE) rule — see `redact_collection_dir`. Mirrors the
+#: verifier's ``redaction_verify.MAX_ARTIFACT_BYTES``: a file larger than this is not a device
+#: capture, and reading it whole into memory to rewrite the engineer's only copy is the wrong risk to
+#: take on a field laptop. Skipped files are DISCLOSED (returned), never silently dropped.
+_REDACT_MAX_CAPTURE_BYTES = 128 * 1024 * 1024
+
+
+def _capture_suffix(filename: str) -> str:
+    """The basename's final extension, casefolded — the ONE primitive both sides of the raw-capture
+    rule use.
+
+    This is the OWNER's own expression, not a paraphrase of it: the independent verifier computes
+    ``Path(filename).suffix.casefold()``, and ``Path.suffix`` IS ``PurePath.suffix`` on every
+    platform, so this cannot drift from it.
+
+    It is deliberately NOT ``os.path.splitext(filename)[1]``, which stood here under a comment
+    asserting the two were byte-for-byte identical. Measured over a generated corpus of 168 names
+    they return different strings for 51, and for names with two or more leading dots the difference
+    changes the CLASSIFICATION: ``splitext("..json")[1]`` is ``""`` (⇒ a capture) while
+    ``PurePath("..json").suffix`` is ``".json"`` (⇒ a structured serialisation the scrub must not
+    touch). Measured consequence with the old primitive: `redact_collection_dir` rewrote
+    ``CORE-1/..json`` in place until it no longer parsed (``Expecting ',' delimiter``) while the
+    verifier declared the same file uncoverable, and the count reconciliation at
+    ``COLLECT_PARSE_V3_23_0.py:4267`` then failed the whole run with "producer/verifier raw-capture
+    file counts disagree"."""
+    return PurePath(filename or "").suffix.casefold()
+
+
+def _is_raw_capture(filename: str) -> bool:
+    """Is ``filename`` a raw device capture the in-place secret scrub owns? (name half.)
+
+    The old test was ``fn.endswith(".txt")`` — a single extension standing in for the class
+    "collected capture text". A device folder holding ``show_version.txt`` alongside
+    ``backup-config.cfg`` or ``show_tech-support.log`` is accepted everywhere else in this
+    codebase, and those two were never scrubbed: measured, they kept cleartext ``enable secret``,
+    ``snmp-server community`` and ``username ... password`` values through a run that reported the
+    captures SCRUBBED and exited 0.
+
+    So the default is now INCLUDE, and only the two structural exclusions above opt out. An
+    extension nobody anticipated (``.conf``, ``.cfg``, ``.log``, ``.out``, none at all) is a
+    capture and gets scrubbed — the failure mode is inverted from "unknown ⇒ leaked" to
+    "unknown ⇒ protected". The content half of the rule (binary bytes are not a capture) is
+    applied at the read in `redact_collection_dir`, because only the bytes can decide it.
+
+    Matched with `_capture_suffix`, which is the OWNER's primitive verbatim — not `str.endswith`
+    (which disagreed on bare-name dotfiles: ``.json`` has no extension, so the verifier counted it a
+    capture while the endswith form skipped it) and not `os.path.splitext` (which disagreed on names
+    with two or more leading dots: ``..json``). Two matchers for one rule is two rules; see
+    `_REDACT_SKIP_CAPTURE_SUFFIXES` for who owns it and what each divergence cost."""
+    suffix = _capture_suffix(filename)
+    return suffix != _REDACT_SCRUB_TEMP_SUFFIX and suffix not in _REDACT_SKIP_CAPTURE_SUFFIXES
+
+
+class _ScrubResult(tuple):
+    """``(scanned, changed)`` — plus ``.uncovered``, the files this pass declined to rewrite.
+
+    A plain 2-tuple, so every existing ``scanned, changed = redact_collection_dir(...)`` caller and
+    every ``== (1, 1)`` assertion keeps working unchanged; the coverage list rides alongside as an
+    attribute instead of being visible only in a ``logger.debug`` line nobody reads at a client site.
+    Each entry is ``(relative_path, reason)``."""
+
+    def __new__(cls, scanned: int, changed: int, uncovered=()):
+        self = super().__new__(cls, (scanned, changed))
+        self.uncovered = tuple(uncovered)
+        return self
 
 
 def redact_collection_dir(collection_dir: str) -> tuple:
     """Plan A / Tier-1 #5: scrub SECRET VALUES (passwords / communities / keys — the same
     conservative _scrub_secrets deny-list --redact uses) IN PLACE across every collected
-    .txt capture under collection_dir. Values only: IPs / hostnames / interfaces are KEPT
+    text capture under collection_dir (see `_is_raw_capture`; NOT just ``*.txt``). Values
+    only: IPs / hostnames / interfaces are KEPT
     so the dir stays analyzable with --no-collect and remains the --compare/--trend
     source; nothing is ever deleted. Idempotent (the placeholder never re-matches).
     Returns (txt_files_scanned, files_changed). Fail-soft per file — one unreadable
@@ -1437,18 +2033,67 @@ def redact_collection_dir(collection_dir: str) -> tuple:
       Windows, which changed every line of every scrubbed capture.
     * temp file + ``os.replace`` makes the rewrite atomic: a yank or a full disk mid-write left
       a truncated capture that is indistinguishable from a legitimate scrub, because the run
-      manifest was sealed a phase earlier."""
+      manifest was sealed a phase earlier.
+
+    THE BOUND (because `_is_raw_capture` defaults to INCLUDE, this pass can otherwise reach any text
+    file anywhere under the collection root, and it rewrites the engineer's only copy in place).
+    Four deliberate limits, none of them a list of names, and every exclusion is DISCLOSED in the
+    returned ``.uncovered`` rather than left in a debug log:
+
+    1. the name rule (structured serialisations + the scrub's own scratch suffix) — `_is_raw_capture`;
+    2. binary content — a NUL byte anywhere means this is a container, not line-oriented capture text;
+    3. size — over `_REDACT_MAX_CAPTURE_BYTES` (the verifier's own artifact ceiling) nothing is even
+       read: a 200 MB blob in a collection folder is a core dump or a pcap, not a ``show`` capture;
+    4. the grammar itself — a file is only ever REWRITTEN when `_scrub_secrets` actually matched a
+       secret line in it, so an unrelated ``.md`` or ``.csv`` that happens to sit under the root is
+       read and left byte-identical.
+
+    Returns ``(scanned, changed)`` (a `_ScrubResult`, so ``.uncovered`` carries limits 1-3)."""
     scanned = changed = 0
-    for root, _dirs, files in os.walk(collection_dir or ""):
+    uncovered: List[tuple] = []
+    base = collection_dir or ""
+
+    def _rel(path: str) -> str:
+        try:
+            return os.path.relpath(path, base).replace(os.sep, "/")
+        except ValueError:                      # different drive on Windows -- name it absolutely
+            return path
+
+    for root, _dirs, files in os.walk(base):
         for fn in files:
-            if not fn.endswith(".txt"):
-                continue
             p = os.path.join(root, fn)
+            if not _is_raw_capture(fn):
+                uncovered.append((_rel(p), "not a raw capture by name (structured serialisation "
+                                           "or the scrub's own scratch file)"))
+                continue
+            try:
+                size = os.path.getsize(p)
+            except OSError as e:
+                logger.debug(f"redact_collection_dir: unsizeable {p}: {e}")
+                uncovered.append((_rel(p), f"size could not be read ({e.__class__.__name__})"))
+                continue
+            if size > _REDACT_MAX_CAPTURE_BYTES:
+                # Bound 3. Not read, not rewritten, not counted as scanned -- and said out loud,
+                # because "we did not look at this one" must never arrive as part of a clean count.
+                logger.warning(f"redact_collection_dir: {p} is {size} bytes (> "
+                               f"{_REDACT_MAX_CAPTURE_BYTES}); NOT scrubbed and NOT scanned")
+                uncovered.append((_rel(p), f"{size} bytes exceeds the {_REDACT_MAX_CAPTURE_BYTES}-byte "
+                                           "capture ceiling; not read, so not scrubbed"))
+                continue
             try:
                 with open(p, "r", encoding="utf-8", errors="surrogateescape", newline="") as f:
                     text = f.read()
             except Exception as e:
                 logger.debug(f"redact_collection_dir: unreadable {p}: {e}")
+                uncovered.append((_rel(p), f"unreadable ({e.__class__.__name__})"))
+                continue
+            if "\x00" in text:
+                # The content half of the capture rule. A NUL byte means binary; the deny-list
+                # grammar would read noise out of it, and rewriting it is the one thing the
+                # BYTE FIDELITY contract above must never risk. Not counted as scanned either --
+                # a file this pass declines to protect must not inflate its own coverage number.
+                logger.debug(f"redact_collection_dir: binary, not a capture: {p}")
+                uncovered.append((_rel(p), "binary content (a NUL byte), not a text capture"))
                 continue
             scanned += 1
             scrubbed = _scrub_secrets(text)
@@ -1466,7 +2111,11 @@ def redact_collection_dir(collection_dir: str) -> tuple:
                         os.unlink(tmp)      # never leave a partial beside the real capture
                     except OSError:
                         pass
-    return scanned, changed
+                    uncovered.append((_rel(p), f"secrets were found but the rewrite FAILED "
+                                               f"({e.__class__.__name__}); the original is unchanged "
+                                               "and still holds them"))
+    uncovered.sort()
+    return _ScrubResult(scanned, changed, uncovered)
 
 
 def redact_collected_inplace(all_interfaces: dict, all_device_physical: list) -> None:
@@ -1477,7 +2126,19 @@ def redact_collected_inplace(all_interfaces: dict, all_device_physical: list) ->
     (Sheets built from COMPUTED structures / raw config text, not these dataclasses, are caught separately by
     redact_workbook_cells.)"""
     import dataclasses as _dc
-    scrub, serial = _make_redactor()
+    values = []
+    for dp in (all_device_physical or []):
+        try:
+            values.extend(getattr(dp, f.name, "") for f in _dc.fields(dp))
+        except TypeError:
+            pass
+    for ports in (all_interfaces or {}).values():
+        for obj in (ports or {}).values():
+            try:
+                values.extend(getattr(obj, f.name, "") for f in _dc.fields(obj))
+            except TypeError:
+                pass
+    scrub, serial = _make_redactor(_existing_synthetic_markers(values))
 
     def _red_obj(o):
         try:
@@ -1505,11 +2166,18 @@ def redact_workbook_cells(wb) -> None:
     -- which redact_collected_inplace can't reach because they don't come from the collected dataclasses -- cannot
     leak real addresses/secrets. Serials carry no reliable text pattern, so they are pseudonymized upstream in the
     dataclasses; this pass covers everything pattern-matchable. Mutates in place; never raises."""
-    scrub, _ = _make_redactor()
     try:
         sheets = list(wb.worksheets)
-    except Exception:
-        return
+    except Exception as exc:
+        raise RuntimeError("workbook cells could not be enumerated for redaction") from exc
+    values = [
+        cell.value
+        for ws in sheets
+        for row in ws.iter_rows()
+        for cell in row
+        if isinstance(cell.value, str)
+    ]
+    scrub, _ = _make_redactor(_existing_synthetic_markers(values))
     for ws in sheets:
         for row in ws.iter_rows():
             for cell in row:

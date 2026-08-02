@@ -32,10 +32,90 @@ _ACTIONS = ("fail_node", "fail_site", "shut_link", "move_fhrp_active")
 
 # --------------------------------------------------------------------- step mutations ---
 
+def _fhrp_members(snap: Dict[str, Any], ifname: Any, group: Any) -> List[tuple]:
+    """Collected members of one exact (interface, group) tuple, with normalized interface matching."""
+    fd = snap.get("fhrp_detail")
+    if not isinstance(fd, dict):
+        return []
+    want_if = _norm_intf(ifname)
+    want_grp = str(group or "").strip()
+    members: List[tuple] = []
+    for host, mlist in fd.items():
+        if not isinstance(mlist, list):
+            continue
+        for member in mlist:
+            if isinstance(member, dict) and _norm_intf(member.get("ifname")) == want_if \
+                    and str(member.get("group", "")).strip() == want_grp:
+                members.append((str(host), member))
+    return members
+
+
+def _validate_fhrp_move(snap: Dict[str, Any], step: Dict[str, Any]) -> List[str]:
+    """Validate the group and target before changing either member's state."""
+    errors: List[str] = []
+    if not _norm_intf(step.get("ifname")):
+        errors.append("ifname is required")
+    if not str(step.get("group") or "").strip():
+        errors.append("group is required")
+    if errors:
+        return errors
+    members = _fhrp_members(snap, step.get("ifname"), step.get("group"))
+    if len(members) < 2:
+        return ["FHRP group not found with at least two collected members"]
+    hosts = [host for host, _member in members]
+    if len(set(hosts)) != len(hosts):
+        errors.append("FHRP group contains duplicate member records for a host")
+    actives = [(host, member) for host, member in members
+               if str(member.get("state", "")).strip().lower() in ("active", "master")]
+    if len(actives) != 1:
+        errors.append(f"FHRP group must have exactly one observed forwarding member (found {len(actives)})")
+    vips = {str(m.get("vip") or "").strip() for _h, m in members}
+    versions = {str(m.get("version") or "").strip() for _h, m in members}
+    if "" in vips or len(vips) != 1:
+        errors.append("FHRP group members do not share one non-empty virtual IP")
+    if len(versions - {""}) > 1:
+        errors.append("FHRP group members use inconsistent protocol versions")
+    target = str(step.get("to_host") or "").strip()
+    if target:
+        if target not in hosts:
+            errors.append(f"target host {target!r} is not a member of the requested FHRP group")
+        elif actives and target == actives[0][0]:
+            errors.append("target host is already the active member")
+    elif actives:
+        candidates = [(h, m) for h, m in members if h != actives[0][0]]
+        priorities = [failover._int_or(m.get("priority"), None) for _h, m in candidates]
+        if not candidates:
+            errors.append("FHRP group has no alternate target")
+        elif any(p is None for p in priorities):
+            errors.append("default target cannot be proven because an alternate priority is missing")
+        elif priorities.count(max(priorities)) > 1:
+            errors.append("default target is ambiguous because alternate priorities tie; specify to_host")
+    return errors
+
+
+def _validate_step(snap: Dict[str, Any], step: Dict[str, Any]) -> List[str]:
+    action = str((step or {}).get("action") or "").strip()
+    if action not in _ACTIONS:
+        return [f"unsupported action {action!r}"]
+    if action in ("fail_node", "fail_site") and not str(step.get("id") or "").strip():
+        return ["id is required"]
+    if action == "shut_link":
+        errors = []
+        if not str(step.get("host") or "").strip():
+            errors.append("host is required")
+        if not _norm_intf(step.get("interface")):
+            errors.append("interface is required")
+        return errors
+    if action == "move_fhrp_active":
+        return _validate_fhrp_move(snap, step)
+    return []
+
 def _apply_step(before: Dict[str, Any], step: Dict[str, Any]) -> Dict[str, Any]:
     """Return a DEEP COPY of `before` with `step` applied. Never mutates `before`. Unknown/malformed steps
     return an untouched deep copy (a no-op) — the caller flags them so nothing is silently skipped."""
     after = copy.deepcopy(before)
+    if _validate_step(before, step):
+        return after
     action = str((step or {}).get("action") or "").strip()
     if action == "fail_node":
         _remove_hosts(after, [{"type": "node", "id": step.get("id")}])
@@ -91,10 +171,13 @@ def _move_fhrp_active(snap: Dict[str, Any], ifname: Any, group: Any, to_host: An
     (an explicit `to_host`, else the highest-priority OTHER collected member) to the forwarding role. Only
     the fhrp_detail state is adjusted — the virtual IP does not move, so this is L2-only (routes unchanged).
     A group/target that can't be resolved is a no-op (reported by the caller as a no-effect step)."""
+    probe = {"ifname": ifname, "group": group, "to_host": to_host}
+    if _validate_fhrp_move(snap, probe):
+        return
     fd = snap.get("fhrp_detail")
     if not isinstance(fd, dict):
         return
-    want_if = str(ifname or "").strip()
+    want_if = _norm_intf(ifname)
     want_grp = str(group or "").strip()
     # collect (host, member_dict) for the target group across all hosts
     members = []
@@ -102,7 +185,7 @@ def _move_fhrp_active(snap: Dict[str, Any], ifname: Any, group: Any, to_host: An
         if not isinstance(mlist, list):
             continue
         for m in mlist:
-            if isinstance(m, dict) and str(m.get("ifname", "")) == want_if and str(m.get("group", "")) == want_grp:
+            if isinstance(m, dict) and _norm_intf(m.get("ifname")) == want_if and str(m.get("group", "")) == want_grp:
                 members.append((host, m))
     if len(members) < 2:
         return                                       # nothing to move to (single-homed / not found) — no-op
@@ -172,9 +255,13 @@ def _fhrp_moves(before: Dict[str, Any], after: Dict[str, Any]) -> List[dict]:
 # ------------------------------------------------------------------- narrative maker ---
 
 def _narrative(action: str, step: Dict[str, Any], removed: List[str], n_lost: int, n_recovered: int,
-               stp: List[dict], fhrp: List[dict], is_noop: bool) -> str:
+               stp: List[dict], fhrp: List[dict], is_noop: bool,
+               validation_errors: Optional[List[str]] = None) -> str:
     """A plain-English one-liner for a step. Coverage-honest wording: 'path lost (inconclusive)' phrasing,
     never a claimed hard block unless fib returned one."""
+    if validation_errors:
+        return ("step rejected as INVALID - no topology mutation was applied: "
+                + "; ".join(str(x) for x in validation_errors))
     if is_noop:
         return f"step had no effect ({action or 'unknown action'} matched nothing) — no change to reachability or L2"
     parts: List[str] = []
@@ -241,6 +328,7 @@ def simulate_cutover(snap: Dict[str, Any], steps: List[Dict[str, Any]],
         step = step if isinstance(step, dict) else {}
         action = str(step.get("action") or "").strip()
         before = current
+        validation_errors = _validate_step(before, step)
         after = _apply_step(before, step)
 
         # L3: marginal reachability change from this step (before -> after), over the fixed flow set.
@@ -263,7 +351,8 @@ def simulate_cutover(snap: Dict[str, Any], steps: List[Dict[str, Any]],
         n_take = sum(1 for r in fhrp if not r.get("indeterminate") and r.get("new_active"))
         n_split = sum(1 for r in fhrp if r.get("split_brain_risk"))
         n_indet = (sum(1 for r in stp if r.get("indeterminate"))
-                   + sum(1 for r in fhrp if r.get("indeterminate")))
+                   + sum(1 for r in fhrp if r.get("indeterminate"))
+                   + (1 if validation_errors else 0))
 
         step_rows.append({
             "step_index": idx,
@@ -276,8 +365,12 @@ def simulate_cutover(snap: Dict[str, Any], steps: List[Dict[str, Any]],
             "fhrp_takeovers": [r for r in fhrp if r.get("new_active") and not r.get("indeterminate")],
             "split_brain_risks": [r for r in fhrp if r.get("split_brain_risk")],
             "indeterminate": n_indet,
+            "valid": not validation_errors,
+            "validation_errors": validation_errors,
             "is_noop": is_noop,
-            "narrative": _narrative(action, step, removed, len(newly_lost), len(recovered), stp, fhrp, is_noop),
+            "narrative": _narrative(
+                action, step, removed, len(newly_lost), len(recovered), stp, fhrp, is_noop,
+                validation_errors),
         })
         total_lost += len(newly_lost)
         total_recovered += len(recovered)
@@ -301,6 +394,7 @@ def simulate_cutover(snap: Dict[str, Any], steps: List[Dict[str, Any]],
             "total_split_brain_risks": total_split,
             "total_indeterminate": total_indet,
             "n_noop_steps": sum(1 for r in step_rows if r["is_noop"]),
+            "n_invalid_steps": sum(1 for r in step_rows if not r["valid"]),
         },
     }
 

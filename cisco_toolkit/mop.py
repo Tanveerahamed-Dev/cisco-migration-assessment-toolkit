@@ -122,7 +122,7 @@ def _join_group_records(gnames, wave_switches, readiness_by_group, seq_by_group,
         r["endpoints"] += round(_i(rr.get("endpoints")) * share)   # endpoints ARE divisible -> apportion by share
         # n_fail/n_warn: ATTRIBUTE each fail/warn check to the ONE sub-wave that owns its canonical (lowest-sorted)
         # member switch, so the per-sub-wave counts SUM to the group SSOT. The old share-with-floor reprinted a
-        # 'max(.,1)' on every slice, so an N-way split of a positive count summed toward N ([HISTORY-REDACTED] Group 1's true 3/4
+        # 'max(.,1)' on every slice, so an N-way split of a positive count summed toward N (Meridian Group 1's true 3/4
         # rendered 7/7 across 7 sub-waves) -- a one-source-of-truth break vs migration_readiness (audit-2 #3).
         checks = [c for c in _as_list(rr.get("checks"))
                   if isinstance(c, dict) and str(c.get("status", "")).lower() in ("fail", "warn")]

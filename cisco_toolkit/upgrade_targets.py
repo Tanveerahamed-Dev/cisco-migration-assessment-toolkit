@@ -2,7 +2,7 @@
 
 This module closes the Phase-B loop the KEV-remediation deliverables mark **parameter-pending**
 (`docs/security/kev-remediation-nrfu-2026-07-07.md` UP-1/UP-2; `…-mop-2026-07-07.md` §6 `TARGET_RELEASE`).
-Given the signed intel feed's per-CVE ``fixed`` releases (from ``research_lane`` ⟶ :mod:`cisco_toolkit.intel_feed`),
+Given the hash-checked intel feed's per-CVE ``fixed`` releases (from ``research_lane`` ⟶ :mod:`cisco_toolkit.intel_feed`),
 the device roster (``devices[host].sw_version`` + the exposure groups in
 ``docs/security/kev-exposure-2026-07-07-devices.json``), and the CVE→exposure-group mapping (grounded in the
 verified finding), it emits per-device ``{host, current, target, needs_upgrade}`` rows.
@@ -330,7 +330,8 @@ def _fixed_by_cve(advisories: List[Dict[str, Any]]) -> Dict[str, List[str]]:
 
 def build_upgrade_targets(advisories: List[Dict[str, Any]], device_versions: Dict[str, Dict[str, Any]],
                           device_groups: Dict[str, Any], *,
-                          cve_map: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
+                          cve_map: Optional[Dict[str, Dict[str, Any]]] = None,
+                          feed_refusals: Optional[List[str]] = None) -> Dict[str, Any]:
     """Join the feed's per-CVE ``fixed`` releases to each affected device's current release.
 
     * ``advisories`` — verified feed entries (from :func:`cisco_toolkit.intel_feed.load_feeds`); ``fixed`` used.
@@ -407,7 +408,9 @@ def build_upgrade_targets(advisories: List[Dict[str, Any]], device_versions: Dic
         "not_applicable": {h: sorted(cves) for h, cves in sorted(na_hosts.items())},
         "version_unknown": {h: sorted(cves) for h, cves in sorted(version_unknown.items())},
         "unknown_platform": sorted(unknown_platform),
-        "note": _coverage_note(summary, cve_map),
+        "note": _coverage_note(summary, cve_map, feed_refusals),
+        # Surfaced, never swallowed: a feed the intake REFUSED is not a feed that was absent.
+        "feed_refusals": list(feed_refusals or ()),
     }
     return {"rows": rows, "summary": summary, "coverage": coverage}
 
@@ -416,8 +419,20 @@ def _needs_rank(needs: Any) -> int:
     return {True: 0, MANUAL_VERIFY: 1, TARGET_PENDING: 2, False: 3}.get(needs, 4)
 
 
-def _coverage_note(summary: Dict[str, Any], cve_map: Dict[str, Any]) -> str:
+def _coverage_note(summary: Dict[str, Any], cve_map: Dict[str, Any],
+                   feed_refusals: Optional[List[str]] = None) -> str:
     if not summary["cves_with_fixed"]:
+        # A REFUSED feed and an ABSENT feed produce the same empty advisory list, and this note used
+        # to describe both as "the sweep has not run" — so a refused critical-RCE advisory read as a
+        # lane nobody had wired yet. Say which one actually happened; the operator's next action is
+        # completely different (fix the feed vs run the sweep).
+        if feed_refusals:
+            return ("no CVE carries a fixed-version because the intake REFUSED "
+                    f"{len(feed_refusals)} feed(s) -- this is NOT an unrun sweep, and the advisories "
+                    "in those feeds were never assessed: "
+                    + "; ".join(feed_refusals[:3])
+                    + ("; ..." if len(feed_refusals) > 3 else "")
+                    + ". Every affected device is TARGET-PENDING, not 'already patched'.")
         return ("no CVE carries a fixed-version yet -- the credential-gated Cisco PSIRT/openVuln sweep "
                 "(P5) has not run; every affected device is TARGET-PENDING, not 'already patched'.")
     parts = [f"{summary['needs_upgrade']} need upgrade", f"{summary['already_current']} already current",
@@ -516,7 +531,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     devices-json ``replace_upgrade_train`` inline versions (the coverage the committed repo can reproduce)."""
     import json
     import sys
-    from cisco_toolkit.intel_feed import load_feeds
+    from cisco_toolkit.intel_feed import engagement_identifiers, load_feeds
 
     argv = list(sys.argv[1:] if argv is None else argv)
     try:
@@ -533,24 +548,39 @@ def main(argv: Optional[List[str]] = None) -> int:
     snap_path = next((a for a in argv if not a.startswith("-")
                       and a not in (intel_dir, dev_json)), None)
 
-    advisories = load_feeds(intel_dir).get("advisories", [])
     try:
-        groups = json.load(open(dev_json, encoding="utf-8"))
+        with open(dev_json, encoding="utf-8") as handle:
+            groups = json.load(handle)
     except Exception as e:
         print(f"could not read device roster {dev_json!r}: {e!r}")
         return 2
 
     if snap_path:
         try:
-            snap = json.load(open(snap_path, encoding="utf-8"))
+            with open(snap_path, encoding="utf-8") as handle:
+                snap = json.load(handle)
             device_versions = device_versions_from_snapshot(snap)
         except Exception as e:
             print(f"could not read snapshot {snap_path!r}: {e!r}")
             return 2
     else:
+        snap = None
         device_versions = device_versions_from_devices_json(groups)
 
-    result = build_upgrade_targets(advisories, device_versions, groups)
+    denylist = engagement_identifiers(groups, snap)
+    # Keep the REFUSALS, not just the advisories. Discarding them made a refused feed
+    # indistinguishable from an absent one, and the renderer says "the credential-gated Cisco
+    # PSIRT/openVuln sweep (P5) has not run" — so a refused critical-RCE advisory was reported as a
+    # lane that was never wired. `self_healing.advisory_remediation` already surfaces `[REFUSED]`
+    # lines; this was the single exit that dropped them.
+    _feeds = load_feeds(intel_dir, forbidden=denylist, require_forbidden=True)
+    advisories = _feeds.get("advisories", [])
+    feed_refusals = [
+        f"{r.get('feed', '?')}: {r.get('reason', 'refused')}"
+        for r in (_feeds.get("refused") or [])
+    ]
+    result = build_upgrade_targets(advisories, device_versions, groups,
+                                   feed_refusals=feed_refusals)
     print(json.dumps(result, indent=2, sort_keys=True) if as_json else render(result))
     return 0
 

@@ -32,19 +32,24 @@ Design points:
 from __future__ import annotations
 
 import io
+import contextlib
+import hashlib
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import zipfile
+import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, BinaryIO, Dict, List, Optional, Tuple
 
-from . import engine
+from . import engine, redaction_verify, summary
 from .serve import ENGINE_SENTINEL
 
 _REPO_ROOT = Path(engine.__file__).resolve().parents[2]
@@ -79,6 +84,7 @@ ENGINE_TIMEOUT_S = 600
 #: A redaction run renders the FULL document family (workbook, explorer, 7 DOCX, deck) rather than
 #: ingest's snapshot-only fast path, so it needs a materially longer ceiling on a field laptop.
 REDACT_TIMEOUT_S = 1800
+OUTPUT_LOCK_TIMEOUT_S = 30.0
 
 _DEVICE_KEYS = ("hostname", "ip", "username", "password", "platform")
 
@@ -91,6 +97,58 @@ class EngineRunError(RuntimeError):
     """The engine pipeline failed or timed out over an extracted collection."""
 
 
+@contextlib.contextmanager
+def _output_dir_lock(out: Path):
+    """Interprocess exclusive lock for one canonical redaction destination."""
+    lock_path = out.parent / f".{out.name}.atlas-redaction.lock"
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(lock_path, "a+b")
+    except OSError as exc:
+        raise IngestError(
+            f"Cannot create the output folder {out}: {exc}. Check the drive letter and that "
+            "the parent path is a writable directory."
+        ) from exc
+    handle.seek(0, os.SEEK_END)
+    if handle.tell() == 0:
+        handle.write(b"\0")
+        handle.flush()
+    deadline = time.monotonic() + OUTPUT_LOCK_TIMEOUT_S
+    acquired = False
+    try:
+        while not acquired:
+            try:
+                handle.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+            except (OSError, BlockingIOError):
+                if time.monotonic() >= deadline:
+                    raise EngineRunError(
+                        f"Another redaction run still owns the output folder {out}; "
+                        "nothing from this run was written there."
+                    )
+                time.sleep(0.05)
+        yield
+    finally:
+        if acquired:
+            try:
+                handle.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+        handle.close()
+
+
 #: Windows reserved DEVICE names. ``open()`` on one of these SUCCEEDS and writes to the device
 #: rather than to a file: bytes sent to ``NUL`` vanish without an error, ``COM1``-``COM9`` go out a
 #: serial port, ``CON``/``PRN``/``AUX`` reach the console and the printer. The reservation is per
@@ -98,82 +156,230 @@ class EngineRunError(RuntimeError):
 #: null device — and both pass a containment check, because the path really does resolve inside
 #: ``dest``. Checked on every OS, not only Windows: a ZIP extracted on a Linux server is carried to
 #: a Windows field laptop, where the same names become devices again.
-_WIN_RESERVED = frozenset(["con", "prn", "aux", "nul"]
+_WIN_RESERVED = frozenset(["con", "prn", "aux", "nul", "conin$", "conout$", "clock$"]
                           + [f"com{i}" for i in range(1, 10)]
                           + [f"lpt{i}" for i in range(1, 10)])
 
 
 def _unsafe_component(part: str) -> str:
-    """Why this path component cannot be written as an ordinary file, or "" if it is fine."""
+    """Why this component is unsafe or ambiguous on any supported extraction platform."""
+    if not part:
+        return "is empty"
     if part in (".", ".."):
-        # Not filenames but navigation, and `..` trips the trailing-dot rule below. The containment
-        # check owns these: it resolves the whole path and reports TRAVERSAL, which is both the
-        # right diagnosis and the one the API contract is pinned on.
-        return ""
+        return "is a navigation component"
+    if any(unicodedata.category(char) in {"Cc", "Cf", "Cs"} for char in part):
+        return "contains a control, formatting, surrogate, or NUL character"
+    if ":" in part:
+        return "contains a colon (drive, URI, or NTFS alternate-data-stream syntax)"
+    if part.strip() != part:
+        return "starts or ends with whitespace"
     if part.rstrip(". ") != part:
-        # Windows silently strips trailing dots and spaces when opening, so `show_run.txt.` lands
-        # as `show_run.txt` — a second entry overwriting a capture of that name, with the count
-        # below still reporting both as written.
         return ("ends in a dot or space, which Windows silently strips (it would land on top of "
                 "another entry)")
-    if part.split(".")[0].strip().lower() in _WIN_RESERVED:
+    portable_stem = unicodedata.normalize("NFKC", part).split(".")[0].strip().casefold()
+    if portable_stem in _WIN_RESERVED:
         return "is a reserved device name - writing it would go to the device, not to a file"
     return ""
 
 
-def _safe_extract(raw: bytes, dest: Path) -> int:
-    """Extract the archive under ``dest``, refusing traversal/absolute entries, names that are not
-    files on this platform, and bomb-sized content.
-
-    Returns the number of files actually on disk afterwards — not the entry count. Those differ
-    for reasons that have nothing to do with a hostile archive: two entries whose names collide
-    on this filesystem (``SHOW_VERSION.TXT`` and ``show_version.txt``, both legal in a ZIP built
-    on Linux) leave ONE file, and the count is reported to the uploader as
-    ``n_archive_files``. ``dest`` is a freshly created directory in both callers, so a walk of it
-    is exactly what this extraction wrote."""
+def _source_size(source: bytes | bytearray | BinaryIO) -> int:
+    if isinstance(source, (bytes, bytearray)):
+        return len(source)
     try:
-        zf = zipfile.ZipFile(io.BytesIO(raw))
-    except zipfile.BadZipFile as e:
-        raise IngestError(f"Not a valid ZIP archive: {e}") from e
-    infos = [i for i in zf.infolist() if not i.is_dir()]
-    if not infos:
+        original = source.tell()
+        source.seek(0, os.SEEK_END)
+        size = source.tell()
+        source.seek(original)
+    except (AttributeError, OSError, ValueError) as exc:
+        raise IngestError("The uploaded archive is not a seekable file.") from exc
+    return int(size)
+
+
+def _zip_parts(info: zipfile.ZipInfo) -> Tuple[str, ...]:
+    """Lexically validate one member name without touching the destination filesystem."""
+    raw = info.filename
+    normalized = raw.replace("\\", "/")
+    lowered = normalized.casefold()
+    if not raw:
+        raise IngestError("Archive contains an empty member name - refused.")
+    if (
+        normalized.startswith("/")
+        or lowered.startswith(("//?/", "//./", "/??/", "/device/", "/globalroot/"))
+        or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", normalized)
+    ):
+        raise IngestError(
+            f"Archive entry {raw!r} is rooted, remote, drive/device, URI, or ADS syntax - refused."
+        )
+    if any(unicodedata.category(char) in {"Cc", "Cf", "Cs"} for char in raw):
+        raise IngestError(
+            f"Archive entry {raw!r} contains a control or hidden formatting character - refused."
+        )
+    trimmed = normalized[:-1] if info.is_dir() and normalized.endswith("/") else normalized
+    parts = tuple(trimmed.split("/"))
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        if ".." in parts:
+            raise IngestError(
+                f"Archive entry {raw!r} escapes the extraction directory "
+                "(path traversal) - refused."
+            )
+        raise IngestError(
+            f"Archive entry {raw!r} has an empty or ambiguous path component - refused."
+        )
+    for part in parts:
+        why = _unsafe_component(part)
+        if why:
+            raise IngestError(f"Archive entry {raw!r} {why} - refused.")
+        compat = unicodedata.normalize("NFKC", part)
+        if "/" in compat or "\\" in compat:
+            raise IngestError(
+                f"Archive entry {raw!r} changes path structure under Unicode normalization - refused."
+            )
+    return parts
+
+
+def _zip_member_special(info: zipfile.ZipInfo) -> bool:
+    mode = (info.external_attr >> 16) & 0xFFFF
+    kind = stat.S_IFMT(mode)
+    if not kind:
+        return False
+    expected = stat.S_IFDIR if info.is_dir() else stat.S_IFREG
+    return kind != expected
+
+
+def _preflight_zip(zf: zipfile.ZipFile) -> List[Tuple[zipfile.ZipInfo, Tuple[str, ...]]]:
+    """Validate all metadata and aliases before the first destination lookup or write."""
+    infos = zf.infolist()
+    files = [info for info in infos if not info.is_dir()]
+    if not files:
         raise IngestError("The ZIP archive is empty.")
     if len(infos) > MAX_FILES:
-        raise IngestError(f"Archive has {len(infos)} files - more than the {MAX_FILES} limit.")
-    total = sum(i.file_size for i in infos)
-    if total > MAX_UNCOMPRESSED_BYTES:
-        raise IngestError(f"Archive expands to {total // (1024 * 1024)} MB - over the "
-                          f"{MAX_UNCOMPRESSED_BYTES // (1024 * 1024)} MB limit.")
-    dest_resolved = dest.resolve()
+        raise IngestError(
+            f"Archive has {len(infos)} entries - more than the {MAX_FILES} limit."
+        )
+
+    prepared: List[Tuple[zipfile.ZipInfo, Tuple[str, ...]]] = []
+    aliases: Dict[Tuple[str, str], str] = {}
+    file_windows_keys: set[str] = set()
+    all_windows_keys: List[Tuple[str, str]] = []
+    total = 0
+    supported_compression = {
+        zipfile.ZIP_STORED,
+        zipfile.ZIP_DEFLATED,
+        getattr(zipfile, "ZIP_BZIP2", -1),
+        getattr(zipfile, "ZIP_LZMA", -2),
+    }
     for info in infos:
-        name = info.filename.replace("\\", "/")
-        for part in name.split("/"):
-            why = _unsafe_component(part) if part else ""
-            if why:
-                raise IngestError(f"Archive entry {info.filename!r} {why} - refused.")
-        target = (dest / name).resolve()
-        if not str(target).startswith(str(dest_resolved) + os.sep):
-            raise IngestError(f"Archive entry {info.filename!r} escapes the extraction directory "
-                              "(path traversal) — refused.")
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with zf.open(info) as src, open(target, "wb") as out:
-                shutil.copyfileobj(src, out)
-        # Per-entry failures are user-fixable archive problems, not server faults: encrypted
-        # entries (RuntimeError), unsupported compression like Deflate64 (NotImplementedError),
-        # CRC mismatch on a truncated file (BadZipFile), names invalid on this OS (OSError).
-        # NB the check below sits OUTSIDE this handler on purpose: IngestError IS a ValueError,
-        # so raising it here would be caught and re-wrapped as an extraction failure.
-        except (OSError, RuntimeError, NotImplementedError, ValueError, zipfile.BadZipFile) as e:
-            raise IngestError(f"Cannot extract archive entry {info.filename!r}: {e}") from e
-        # A write that reports success but leaves nothing behind is the failure the name guard
-        # above exists to prevent. Refusing LOUDLY here is the defence in depth for that class -
-        # the count below would only under-report it, which is exactly the kind of quiet the rest
-        # of this module is organised against. Cheap - one stat per entry.
-        if not target.is_file():
-            raise IngestError(f"Archive entry {info.filename!r} reported as written but is not on "
-                              f"disk afterwards - refused.")
-    return sum(len(filenames) for _dirpath, _dirnames, filenames in os.walk(dest))
+        parts = _zip_parts(info)
+        if info.flag_bits & 0x1:
+            raise IngestError(f"Archive entry {info.filename!r} is encrypted - refused.")
+        if info.compress_type not in supported_compression:
+            raise IngestError(
+                f"Archive entry {info.filename!r} uses unsupported compression - refused."
+            )
+        if _zip_member_special(info):
+            raise IngestError(
+                f"Archive entry {info.filename!r} is a symlink or special filesystem object - refused."
+            )
+        if info.file_size < 0 or info.compress_size < 0:
+            raise IngestError(f"Archive entry {info.filename!r} has an invalid size - refused.")
+        if not info.is_dir():
+            total += info.file_size
+            if total > MAX_UNCOMPRESSED_BYTES:
+                raise IngestError(
+                    f"Archive expands beyond the "
+                    f"{MAX_UNCOMPRESSED_BYTES // (1024 * 1024)} MB limit."
+                )
+
+        slash = "/".join(parts)
+        namespaces = {
+            "exact": info.filename,
+            "slash": slash,
+            "casefold": slash.casefold(),
+            "nfc": unicodedata.normalize("NFC", slash),
+            "nfkc": unicodedata.normalize("NFKC", slash),
+            "windows": "/".join(
+                unicodedata.normalize("NFKC", part).rstrip(" .").casefold()
+                for part in parts
+            ),
+        }
+        for namespace, key in namespaces.items():
+            alias_key = (namespace, key)
+            prior = aliases.get(alias_key)
+            if prior is not None:
+                raise IngestError(
+                    f"Archive entries {prior!r} and {info.filename!r} are duplicate aliases "
+                    f"under {namespace} normalization - refused."
+                )
+            aliases[alias_key] = info.filename
+        windows_key = namespaces["windows"]
+        all_windows_keys.append((windows_key, info.filename))
+        if not info.is_dir():
+            file_windows_keys.add(windows_key)
+        prepared.append((info, parts))
+
+    for key, original in all_windows_keys:
+        components = key.split("/")
+        for index in range(1, len(components)):
+            if "/".join(components[:index]) in file_windows_keys:
+                raise IngestError(
+                    f"Archive entry {original!r} descends through another file entry - refused."
+                )
+    return prepared
+
+
+def _safe_extract(source: bytes | bytearray | BinaryIO, dest: Path) -> int:
+    """Extract a preflighted archive under ``dest`` without aliasing or special-file semantics."""
+    if _source_size(source) > MAX_ARCHIVE_BYTES:
+        raise IngestError(
+            f"Archive exceeds the {MAX_ARCHIVE_BYTES // (1024 * 1024)} MB compressed-size limit."
+        )
+    archive_source: BinaryIO
+    if isinstance(source, (bytes, bytearray)):
+        archive_source = io.BytesIO(source)
+    else:
+        archive_source = source
+        archive_source.seek(0)
+    try:
+        zf = zipfile.ZipFile(archive_source)
+    except (zipfile.BadZipFile, OSError, ValueError) as exc:
+        raise IngestError(f"Not a valid ZIP archive: {exc}") from exc
+    with zf:
+        # Load-bearing order: this lexical/metadata pass completes before dest.resolve(), mkdir(),
+        # ZipFile.open(), or builtins.open() can run.
+        prepared = _preflight_zip(zf)
+        dest_resolved = dest.resolve(strict=True)
+        written = 0
+        actual_total = 0
+        for info, parts in prepared:
+            if info.is_dir():
+                continue
+            target = dest_resolved.joinpath(*parts)
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(info) as src, open(target, "xb") as out:
+                    while True:
+                        chunk = src.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        actual_total += len(chunk)
+                        if actual_total > MAX_UNCOMPRESSED_BYTES:
+                            raise IngestError(
+                                "Archive expanded beyond its declared verification budget."
+                            )
+                        out.write(chunk)
+            except IngestError:
+                raise
+            except (OSError, RuntimeError, NotImplementedError, ValueError, zipfile.BadZipFile) as exc:
+                raise IngestError(
+                    f"Cannot extract archive entry {info.filename!r}: {exc}"
+                ) from exc
+            if not target.is_file():
+                raise IngestError(
+                    f"Archive entry {info.filename!r} reported as written but is not on disk "
+                    "afterwards - refused."
+                )
+            written += 1
+    return written
 
 
 def _find_collection_root(dest: Path) -> Tuple[Path, List[str]]:
@@ -182,8 +388,14 @@ def _find_collection_root(dest: Path) -> Tuple[Path, List[str]]:
     Tolerates a wrapping folder in the ZIP (``my-export/<host>/show_*.txt``) and stray copies nested
     INSIDE a device folder (``core1/backup/show_version.txt`` — the engine's loader ignores those
     too). Returns ``(root, device_dir_names)``."""
+    def fail_walk(exc: OSError) -> None:
+        raise IngestError(
+            "The collection could not be completely enumerated; no partial folder scan "
+            "will be assessed."
+        ) from exc
+
     candidates: List[Path] = []
-    for dirpath, _dirnames, filenames in os.walk(dest):
+    for dirpath, _dirnames, filenames in os.walk(dest, onerror=fail_walk, followlinks=False):
         if any(f.startswith("show_") and f.endswith(".txt") for f in filenames):
             candidates.append(Path(dirpath))
     if not candidates:
@@ -293,13 +505,13 @@ def _engine_argv() -> List[str]:
     return [sys.executable, str(_ENGINE_SCRIPT)]
 
 
-def run_collection_zip(raw: bytes) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def run_collection_zip(source: bytes | bytearray | BinaryIO) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Extract the ZIP, run the engine over it, and return ``(snapshot_dict, ingest_report)``."""
     workdir = Path(tempfile.mkdtemp(prefix="assesshub_ingest_"))
     try:
         extracted = workdir / "extracted"
         extracted.mkdir()
-        n_files = _safe_extract(raw, extracted)
+        n_files = _safe_extract(source, extracted)
         return _assess_tree(extracted, n_files, workdir)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
@@ -317,12 +529,142 @@ _INGEST_ROOTS_ENV = "ASSESSHUB_INGEST_ROOTS"
 
 
 def _allowed_ingest_roots() -> List[Path]:
+    def lexical(raw_path: str) -> Path:
+        return Path(os.path.abspath(os.path.normpath(os.path.expanduser(raw_path))))
+
     raw = os.environ.get(_INGEST_ROOTS_ENV, "").strip()
     if raw:
-        return [Path(p).expanduser().resolve() for p in raw.split(os.pathsep) if p.strip()]
+        roots: List[Path] = []
+        for configured in (p.strip() for p in raw.split(os.pathsep) if p.strip()):
+            normalized = configured.replace("/", "\\")
+            if ("\x00" in configured or any(ord(ch) < 32 for ch in configured)
+                    or normalized.startswith("\\\\")
+                    or (os.name == "nt" and normalized.startswith("\\"))
+                    or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", configured)):
+                raise IngestError(f"{_INGEST_ROOTS_ENV} contains an unsafe remote/device root.")
+            roots.append(lexical(configured))
+        return roots
     # The bundle root on a stick, or the repo checkout in a dev/server install.
     return [Path(sys.argv[0]).resolve().parent if getattr(sys, "frozen", False)
             else Path(__file__).resolve().parents[2]]
+
+
+def _is_link_or_reparse(st: os.stat_result) -> bool:
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return stat.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0) & reparse)
+
+
+def _directory_identity(st: os.stat_result) -> Tuple[int, int]:
+    """Stable identity used to pin a queued directory across its scan delay."""
+    return int(st.st_dev), int(st.st_ino)
+
+
+def _file_identity(st: os.stat_result) -> Tuple[int, int, int, int]:
+    return int(st.st_dev), int(st.st_ino), int(st.st_size), int(st.st_mtime_ns)
+
+
+def _stage_physical_tree(source: Path, destination: Path) -> Dict[str, Dict[str, Any]]:
+    """Copy one fully scanned physical tree into private custody using stable, no-follow reads.
+
+    The engine receives only ``destination``.  A link/junction swap after the HTTP preflight can
+    therefore neither redirect the subprocess nor change the bytes it analyses.
+    """
+    destination.mkdir(parents=True, exist_ok=False)
+    try:
+        root_stat = os.lstat(source)
+    except OSError as exc:
+        raise IngestError("The collection changed before it could enter private custody.") from exc
+    if _is_link_or_reparse(root_stat) or not stat.S_ISDIR(root_stat.st_mode):
+        raise IngestError("The collection became a link or non-directory before custody.")
+
+    bindings: Dict[str, Dict[str, Any]] = {}
+    total = 0
+    pending = [(source, destination, _directory_identity(root_stat))]
+    while pending:
+        current, target, expected_directory = pending.pop()
+        try:
+            current_stat = os.lstat(current)
+        except OSError as exc:
+            raise IngestError("A collection directory disappeared during custody copy.") from exc
+        if (
+            _is_link_or_reparse(current_stat)
+            or not stat.S_ISDIR(current_stat.st_mode)
+            or _directory_identity(current_stat) != expected_directory
+        ):
+            raise IngestError("A collection directory changed identity during custody copy.")
+        target.mkdir(parents=True, exist_ok=True)
+        try:
+            entries = list(os.scandir(current))
+        except OSError as exc:
+            raise IngestError("The collection could not be completely copied into custody.") from exc
+        for entry in entries:
+            if _unsafe_component(entry.name):
+                raise IngestError("The collection contains an unsafe filesystem entry.")
+            path = Path(entry.path)
+            try:
+                before = os.lstat(path)
+            except OSError as exc:
+                raise IngestError("A collection entry disappeared during custody copy.") from exc
+            if _is_link_or_reparse(before):
+                raise IngestError("The collection became linked during custody copy.")
+            if stat.S_ISDIR(before.st_mode):
+                pending.append(
+                    (path, target / entry.name, _directory_identity(before))
+                )
+                continue
+            if not stat.S_ISREG(before.st_mode):
+                raise IngestError("The collection contains a special filesystem entry.")
+            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            try:
+                fd = os.open(path, flags)
+                with os.fdopen(fd, "rb") as handle:
+                    opened = os.fstat(handle.fileno())
+                    if _file_identity(opened) != _file_identity(before):
+                        raise IngestError("A collection file changed while custody opened it.")
+                    chunks: List[bytes] = []
+                    read = 0
+                    while True:
+                        chunk = handle.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        read += len(chunk)
+                        total += len(chunk)
+                        if total > MAX_UNCOMPRESSED_BYTES:
+                            raise IngestError(
+                                "The collection exceeded its byte budget during custody copy."
+                            )
+                        chunks.append(chunk)
+                    after_handle = os.fstat(handle.fileno())
+                after_path = os.lstat(path)
+            except IngestError:
+                raise
+            except OSError as exc:
+                raise IngestError("A collection file could not enter private custody.") from exc
+            if (
+                _file_identity(after_handle) != _file_identity(opened)
+                or _file_identity(after_path) != _file_identity(opened)
+                or _is_link_or_reparse(after_path)
+                or read != opened.st_size
+            ):
+                raise IngestError("A collection file changed while it entered private custody.")
+            data = b"".join(chunks)
+            relative = path.relative_to(source).as_posix()
+            (target / entry.name).write_bytes(data)
+            bindings[relative] = {
+                "identity": _file_identity(opened),
+                "size": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(),
+            }
+        try:
+            after_directory = os.lstat(current)
+        except OSError as exc:
+            raise IngestError("A collection directory disappeared during custody copy.") from exc
+        if (
+            _is_link_or_reparse(after_directory)
+            or _directory_identity(after_directory) != expected_directory
+        ):
+            raise IngestError("A collection directory changed during custody copy.")
+    return bindings
 
 
 def _resolve_and_scan(path: Any, *, contain: bool = False) -> Tuple[Path, int]:
@@ -333,37 +675,150 @@ def _resolve_and_scan(path: Any, *, contain: bool = False) -> Tuple[Path, int]:
     where the path arrives from a client, and OFF for the CLI/Atlas channels, where the operator IS
     the caller and naming any folder on their own machine is the whole point of ``--redact-folder``.
     """
-    folder = Path(str(path)).expanduser()
-    if not folder.is_dir():
-        # The message deliberately does NOT echo the resolved absolute path: differing 400 bodies
-        # turn this route into a filesystem-layout oracle (`~/nope` returned the operator's real home
-        # directory). ingest.py already scrubs resolved paths out of the engine log tail for the same
-        # reason; this sibling did not.
-        raise IngestError("Not a directory, or not readable.")
-    folder = folder.resolve()
+    raw_path = str(path)
     if contain:
+        # Refuse remote/device forms before is_dir() or resolve(): on Windows either call can
+        # initiate an outbound SMB lookup and offer NTLM credentials to a caller-selected host.
+        normalized = raw_path.replace("/", "\\")
+        if ("\x00" in raw_path or any(ord(ch) < 32 for ch in raw_path)
+                or normalized.startswith("\\\\")
+                or (os.name == "nt" and normalized.startswith("\\"))
+                or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", raw_path)):
+            raise IngestError("Remote, device, or control-character paths cannot be ingested.")
+        folder = Path(os.path.abspath(os.path.normpath(os.path.expanduser(raw_path))))
         roots = _allowed_ingest_roots()
-        if not any(folder == r or folder.is_relative_to(r) for r in roots):
+        matching = [root for root in roots if folder == root or folder.is_relative_to(root)]
+        if not matching:
             raise IngestError(
                 "That folder is outside the directories this server may ingest from. Move the "
                 f"collection under the app directory, or set {_INGEST_ROOTS_ENV} to the roots you "
                 "want to allow.")
+        root = max(matching, key=lambda candidate: len(candidate.parts))
+        cursor = root
+        try:
+            for component in folder.relative_to(root).parts:
+                if _unsafe_component(component):
+                    raise IngestError(
+                        "The requested folder uses a reserved or ambiguous path component.")
+                cursor = cursor / component
+                if _is_link_or_reparse(os.lstat(cursor)):
+                    raise IngestError(
+                        "The requested folder crosses a symlink or junction; ingest a physical "
+                        "directory beneath an allowed root instead.")
+        except FileNotFoundError:
+            raise IngestError("Not a directory, or not readable.") from None
+        except OSError as exc:
+            raise IngestError("Not a directory, or not readable.") from exc
+        if not folder.is_dir():
+            raise IngestError("Not a directory, or not readable.")
+        try:
+            resolved_root = root.resolve(strict=True)
+            resolved_folder = folder.resolve(strict=True)
+        except OSError as exc:
+            raise IngestError("Not a directory, or not readable.") from exc
+        if not (resolved_folder == resolved_root
+                or resolved_folder.is_relative_to(resolved_root)):
+            raise IngestError("The requested folder escapes its allowed ingest root.")
+        folder = resolved_folder
+    else:
+        folder = Path(raw_path).expanduser()
+        if not folder.is_dir():
+            # Do not echo a resolved path: differing errors become a filesystem-layout oracle.
+            raise IngestError("Not a directory, or not readable.")
+        folder = folder.resolve()
+
+    try:
+        root_stat = os.lstat(folder)
+    except OSError as exc:
+        raise IngestError("Not a directory, or not readable.") from exc
+    if _is_link_or_reparse(root_stat) or not stat.S_ISDIR(root_stat.st_mode):
+        raise IngestError("Not a physical directory, or not readable.")
+
+    n_entries = 0
     n_files = 0
     total = 0
-    for dirpath, _dirnames, filenames in os.walk(folder):
-        for name in filenames:
-            n_files += 1
-            if n_files > MAX_FILES:
-                raise IngestError(f"Folder has more than the {MAX_FILES}-file limit.")
-            try:
-                total += os.stat(os.path.join(dirpath, name)).st_size
-            except OSError:
-                continue  # vanished/unreadable entry — the engine's loader skips it too
+    pending = [(folder, _directory_identity(root_stat))]
+    while pending:
+        current, expected_identity = pending.pop()
+        try:
+            current_stat = os.lstat(current)
+        except OSError as exc:
+            raise IngestError(
+                "A queued collection directory disappeared before it could be scanned."
+            ) from exc
+        if (
+            _is_link_or_reparse(current_stat)
+            or not stat.S_ISDIR(current_stat.st_mode)
+            or _directory_identity(current_stat) != expected_identity
+        ):
+            raise IngestError(
+                "A queued collection directory changed identity or became a link before scanning; "
+                "no partial folder scan will be assessed."
+            )
+        try:
+            with os.scandir(current) as iterator:
+                for entry in iterator:
+                    n_entries += 1
+                    if n_entries > MAX_FILES:
+                        raise IngestError(
+                            f"Folder has more than the {MAX_FILES}-entry limit."
+                        )
+                    if _unsafe_component(entry.name):
+                        raise IngestError(
+                            "The collection contains a reserved or ambiguous filesystem entry.")
+                    try:
+                        entry_stat = entry.stat(follow_symlinks=False)
+                    except OSError as exc:
+                        raise IngestError(
+                            "A collection entry could not be statted; no partial folder scan will "
+                            "be assessed."
+                        ) from exc
+                    if _is_link_or_reparse(entry_stat):
+                        raise IngestError(
+                            "The collection contains a symlink or junction; all ingested evidence "
+                            "must be physically contained under the allowed root.")
+                    if stat.S_ISDIR(entry_stat.st_mode):
+                        # On Windows ``DirEntry.stat()`` may report zero device/inode fields even
+                        # though ``lstat(path)`` exposes the stable file ID. Pin from a fresh lstat,
+                        # also closing the entry-stat -> enqueue link-swap window.
+                        try:
+                            queued_stat = os.lstat(entry.path)
+                        except OSError as exc:
+                            raise IngestError(
+                                "A collection directory disappeared before it could be queued."
+                            ) from exc
+                        if (
+                            _is_link_or_reparse(queued_stat)
+                            or not stat.S_ISDIR(queued_stat.st_mode)
+                        ):
+                            raise IngestError(
+                                "A collection directory became a link or changed type before it "
+                                "could be queued."
+                            )
+                        pending.append(
+                            (Path(entry.path), _directory_identity(queued_stat))
+                        )
+                        continue
+                    if not stat.S_ISREG(entry_stat.st_mode):
+                        raise IngestError(
+                            "The collection contains an unsupported special filesystem entry."
+                        )
+                    n_files += 1
+                    total += entry_stat.st_size
+                    if total > MAX_UNCOMPRESSED_BYTES:
+                        raise IngestError(
+                            f"Folder holds more than the "
+                            f"{MAX_UNCOMPRESSED_BYTES // (1024 * 1024)} MB limit."
+                        )
+        except IngestError:
+            raise
+        except OSError as exc:
+            raise IngestError(
+                "The collection could not be completely enumerated; no partial folder scan "
+                "will be assessed."
+            ) from exc
     if not n_files:
         raise IngestError("The folder is empty.")
-    if total > MAX_UNCOMPRESSED_BYTES:
-        raise IngestError(f"Folder holds {total // (1024 * 1024)} MB - over the "
-                          f"{MAX_UNCOMPRESSED_BYTES // (1024 * 1024)} MB limit.")
     return folder, n_files
 
 
@@ -382,7 +837,13 @@ def run_collection_folder(path: Any, *, contain: bool = False) -> Tuple[Dict[str
     folder, n_files = _resolve_and_scan(path, contain=contain)
     workdir = Path(tempfile.mkdtemp(prefix="assesshub_ingest_"))
     try:
-        return _assess_tree(folder, n_files, workdir)
+        staged = workdir / "custody"
+        bindings = _stage_physical_tree(folder, staged)
+        if len(bindings) != n_files:
+            raise IngestError(
+                "The collection file count changed between preflight and private custody."
+            )
+        return _assess_tree(staged, n_files, workdir)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
@@ -449,10 +910,6 @@ _INCOMPLETE_FALLBACK = "INCOMPLETE-SET-ATLAS.txt"
 _INCOMPLETE_HEADER = "This deliverable set is INCOMPLETE."
 _INCOMPLETE_TRAILER = "-- written by Atlas; delete once you have acted on it --"
 
-#: Containers whose bytes can be validated cheaply: a .docx/.pptx/.xlsx IS a zip, and its central
-#: directory sits at the END of the file, so a truncated one fails to open. That is the exact
-#: shape of the failure this matters for (see `_unusable`).
-_ZIP_DOC_SUFFIXES = (".docx", ".pptx", ".xlsx")
 
 
 def _engine_filenames(stem: str) -> frozenset:
@@ -485,11 +942,26 @@ def _written_by_this_run(p: Path, engine_names: frozenset,
     has already paid for once (see the _DOC_KEYS note below), so the test must not depend on the
     direction the clock moved. Size is compared alongside mtime so a rewrite inside one coarse
     timestamp tick is still seen."""
-    prev = pre_existing.get(p.name)
-    if prev is None:
+    if not engine_names:
+        # NO census supplied at all. The caller is not claiming to know what this run wrote, so
+        # there is nothing here to contradict and staleness cannot be inferred from an empty set.
+        # This is the contract stated in _assert_redaction_phases_ran's docstring — "with neither
+        # supplied (the direct-call contract tests use that form) every file reads as this run's,
+        # which is the pre-existing behaviour" — and the code did the opposite: an empty
+        # `engine_names` made the membership test below fail for EVERY path, so the guard reported a
+        # freshly written ledger in a fresh temp dir as "unchanged from before this run started, so
+        # it belongs to an EARLIER run". A guard that refuses everything is not strict, it is broken,
+        # and it refuses hardest exactly where it has the least information.
+        #
+        # This does NOT weaken the real path: `_engine_filenames()` always returns at least the
+        # three sidecar names, so the production caller's census is never empty and still gets the
+        # full closed-set membership test below.
         return True
     if p.name not in engine_names:
         return False
+    prev = pre_existing.get(p.name)
+    if prev is None:
+        return True
     try:
         st = p.stat()
     except OSError:
@@ -558,8 +1030,20 @@ def _unusable(p: Path) -> str:
     carrying a brand-new timestamp — and the engine, being fail-soft, logs a warning and exits 0.
     Checking only for the filename would certify that folder as complete: the ORIGINAL bug with a
     fresh coat of paint. Worse on a re-run, where the truncate destroys the good copy from the
-    previous run. Cheap by construction — a size call, plus a central-directory read for the zip
-    formats; nothing here parses a document."""
+    previous run.
+
+    The structural test is `docmeta.validate_artifact`, which the ENGINE already applies to the
+    same bytes before admitting them to custody — one owner for "does this document actually
+    open", so a new family member cannot be left behind. What stood here was a hand-listed
+    `(".docx", ".pptx", ".xlsx")`: every member of `docmeta.CLI_ARTIFACT_SUFFIX` is a zip EXCEPT
+    `_explorer.html`, and for that one the ONLY test was size > 0. Measured: a 36-byte
+    `<!doctype html><html><body>truncated` produced ``missing == []``, no INCOMPLETE-SET.txt,
+    receipt status "verified" and exit 0 - the repo's contract for "complete + verified, safe to
+    send" - while `validate_artifact` on the very same file returned
+    ``(False, 'HTML document is missing its root/open or closing tag')``.
+
+    The 0-byte case keeps its own sentence because it names the CAUSE the engineer can act on (a
+    full disk), which "empty file" does not."""
     try:
         if p.stat().st_size == 0:
             return "0 bytes - the write was cut short (a full disk does this)"
@@ -567,14 +1051,20 @@ def _unusable(p: Path) -> str:
         # strerror only: the full OSError repr carries the absolute path, and this string is
         # copied into a note that sits in the folder the engineer zips and sends.
         return f"cannot be read back ({e.__class__.__name__}: {e.strerror or 'unreadable'})"
-    if p.suffix.lower() in _ZIP_DOC_SUFFIXES:
-        try:
-            with zipfile.ZipFile(p) as zf:
-                if not zf.namelist():
-                    return "empty document container"
-        except (zipfile.BadZipFile, OSError, ValueError):
-            return "truncated or corrupt - it will not open"
-    return ""
+    from cisco_toolkit.docmeta import validate_artifact
+
+    try:
+        ok, reason = validate_artifact(str(p))
+    except Exception as e:                       # a validator that raises must not certify
+        return f"could not be structurally validated ({e.__class__.__name__}) - do not send it"
+    if ok:
+        return ""
+    # `reason` embeds the exception text for a malformed container, and that text carries the
+    # ABSOLUTE path - the same WEBAP-01 disclosure the OSError branch above is written to avoid,
+    # into a note that travels to the client. Scrub the path before it is quoted.
+    absolute = os.path.abspath(str(p))
+    detail = str(reason).replace(absolute, p.name).replace(os.path.dirname(absolute), "<out>")
+    return f"{detail} - it will not open"
 
 
 def _family_state(stem: str, out: Path, produced: set) -> List[Dict[str, str]]:
@@ -744,40 +1234,6 @@ def _clear_stale_incomplete_marker(out: Path) -> None:
             pass
 
 
-#: Private IPv4 space. Redaction remaps every /24 into the IANA-reserved Class E block
-#: (``cisco_toolkit.html.redact_snapshot``), so a surviving RFC 1918 address proves the scrub did
-#: not happen — the one failure that must never be silent.
-_RFC1918_RE = re.compile(
-    r"\b(?:10\.\d{1,3}|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}\b")
-
-
-#: Keys whose values are AUTHORED COPY, not observed evidence — form labels, guidance notes and
-#: the like legitimately cite RFC 1918 ranges as examples ("supernet, e.g. 10.0.0.0/16"). Scanning
-#: the raw JSON text flagged those and failed EVERY real run; a check that always fires is worse
-#: than none, because it teaches the engineer to ignore it. (Found by running the real engine —
-#: the stubbed unit tests could not have shown it.)
-#: Deliberately SHORT. An earlier, wider list exempted 28% of the snapshot's strings — including
-#: real observed evidence (`punchlist[].title`, `decisions[].evidence.summary`,
-#: `interfaces.<host>.<port>.description`, per-device exposure labels). Those are exactly where a
-#: surviving address would matter, so only keys that are unambiguously AUTHORED UI copy stay here.
-_DOC_KEYS = frozenset({"help", "hint", "placeholder", "guidance", "doctrine", "tradeoffs"})
-_EXAMPLE_MARKERS = ("e.g.", "eg.", "such as", "for example", "example:")
-
-
-def _iter_evidence_strings(node: Any, path: str = ""):
-    """Every string in the snapshot that is OBSERVED EVIDENCE rather than authored copy."""
-    if isinstance(node, dict):
-        for k, v in node.items():
-            if str(k).lower() in _DOC_KEYS:
-                continue
-            yield from _iter_evidence_strings(v, f"{path}.{k}")
-    elif isinstance(node, list):
-        for i, v in enumerate(node):
-            yield from _iter_evidence_strings(v, f"{path}[{i}]")
-    elif isinstance(node, str):
-        yield path, node
-
-
 #: The engine's redaction phases. `_run_phase` (COLLECT_PARSE_V3_23_0.py:1383) LOGS AND CONTINUES
 #: on any exception "so the workbook still saves" — so a redaction failure leaves the workbook
 #: unredacted while `redact_snapshot` (a direct call) still succeeds and the snapshot stays clean.
@@ -808,9 +1264,7 @@ def _phase_ok(value: Any) -> bool:
     `null` and a missing key all have to read as "not a success". Anything this function cannot
     positively confirm is treated as unverified by the caller and refuses — the whole point of the
     rewrite below is that silence must never mean "fine"."""
-    if isinstance(value, str):
-        return value.strip().lower() in ("true", "1", "yes", "ok")
-    return value is not None and bool(value)
+    return value is True
 
 
 def _assert_redaction_phases_ran(out_xlsx: Path, engine_output: str,
@@ -830,14 +1284,18 @@ def _assert_redaction_phases_ran(out_xlsx: Path, engine_output: str,
     unconditional under ``--redact`` (``COLLECT_PARSE_V3_23_0.py:2008`` and ``:2575``) and this
     caller always passes ``--redact``, so a missing row is genuinely anomalous, never routine.
 
-    The sidecar being ABSENT is the one tolerated case: its write is fail-soft in the engine, so
-    absence proves nothing either way and the stderr arm carries the run alone.
-
     A sidecar left by an EARLIER run is not evidence, and — unlike an absent one — it REFUSES.
     ``--reuse-out`` renders into a folder that already holds one, so on every reuse run the
     previous job's ledger sits under this run's name, and an ``ok: true`` ledger from a run that
     DID redact would otherwise certify a run whose redaction phase failed soft. Absence is
-    tolerated because there is genuinely no evidence either way; a stale ledger is different, and
+    NOT tolerated by this code — and the absent-ledger branch is UNREACHABLE in production, which is
+    the honest description of its status. `ingest` raises on a non-zero engine exit ~28 lines before
+    this check runs, and every engine path that omits the ledger exits non-zero, so no caller can
+    observe this refusal. A producer-side escalation making the ledger mandatory was tried on
+    2026-07-31 and reverted: it turned a fully successful run into `[INCOMPLETE]` under an ordinary
+    file lock while buying this dead branch nothing (see the note at COLLECT_PARSE_V3_23_0.py's
+    "Phase timings" emit). Whether to restore tolerance here is therefore a TIDINESS question, not a
+    safety one; do not "fix" it by making the producer strict. A stale ledger is a different failure, and
     is the anomalous case rather than the routine one: the engine reached this check only by
     exiting 0, and it writes the sidecar after the redaction phases, so a normal reuse run
     rewrites it. ``engine_names``/``pre_existing`` are the caller's pre-run census; with neither
@@ -845,7 +1303,11 @@ def _assert_redaction_phases_ran(out_xlsx: Path, engine_output: str,
     is the pre-existing behaviour."""
     failed, unverified = [], []
     timings = Path(str(out_xlsx)[: -len(".xlsx")] + ".phase_timings.json")
-    if timings.is_file() and not _written_by_this_run(timings, engine_names, pre_existing or {}):
+    if not timings.is_file():
+        unverified.append(
+            "the mandatory phase ledger is absent, so successful redaction phases are unproved"
+        )
+    elif not _written_by_this_run(timings, engine_names, pre_existing or {}):
         unverified.append("the phase ledger in the output folder is unchanged from before this run "
                           "started, so it belongs to an EARLIER run and this run left none of its "
                           "own")
@@ -856,8 +1318,17 @@ def _assert_redaction_phases_ran(out_xlsx: Path, engine_output: str,
         except (OSError, ValueError, TypeError, AttributeError) as e:
             unverified.append(f"the phase ledger could not be read ({type(e).__name__})")
         if rows is not None:
-            seen = {str(r.get("phase", "")).lower(): r for r in rows
-                    if str(r.get("phase", "")).lower() in _REDACTION_PHASES}
+            seen: Dict[str, dict] = {}
+            for row in rows:
+                phase_name = str(row.get("phase", "")).lower()
+                if phase_name not in _REDACTION_PHASES:
+                    continue
+                if phase_name in seen:
+                    unverified.append(
+                        f"the phase ledger repeats '{phase_name}', so its result is ambiguous"
+                    )
+                    continue
+                seen[phase_name] = row
             for phase in _REDACTION_PHASES:
                 if phase not in seen:
                     unverified.append(f"the phase ledger has no '{phase}' row, so there is no "
@@ -880,38 +1351,227 @@ def _assert_redaction_phases_ran(out_xlsx: Path, engine_output: str,
             f"failed one. Do NOT send anything from this run until it is re-run or checked by hand.")
 
 
-def _assert_scrubbed(snap_path: Path) -> int:
-    """Fail LOUD if the 'redacted' snapshot still carries private addresses in EVIDENCE.
-
-    Shipping unredacted client evidence labelled redacted is the worst outcome of this feature,
-    and a flag that silently did nothing looks identical to success — so the result is verified
-    rather than trusted. Config text is scanned too (``ip address 10.x`` inside a running-config
-    line is a real leak); only authored copy and explicit examples are exempt."""
-    try:
-        snap = json.loads(snap_path.read_text(encoding="utf-8", errors="replace"))
-    except ValueError as e:
-        # A truncated snapshot (stick filled, yank mid-write) reached the console as a
-        # JSONDecodeError traceback. It also means the run is unverifiable — refuse.
-        raise EngineRunError(f"The snapshot could not be read back for verification ({e}). "
-                             f"Treat the output as UNREDACTED.")
-    leaks: Dict[str, str] = {}
-    for where, value in _iter_evidence_strings(snap):
-        # Exempt only the SENTENCE carrying the example, not the whole string: one "e.g." used to
-        # excuse an entire field, and real evidence summaries legitimately contain one.
-        # Split on REAL sentence boundaries only (period + space + capital). Splitting on any
-        # period severed "e.g." from the address it introduces, so the example itself lost its
-        # exemption and every advisory string was flagged.
-        segments = [s for s in re.split(r"(?<=[.;])\s+(?=[A-Z])", value)
-                    if not any(m in s.lower() for m in _EXAMPLE_MARKERS)]
-        for hit in _RFC1918_RE.findall(" ".join(segments)):
-            leaks.setdefault(hit, where.lstrip("."))
-    if leaks:
-        shown = ", ".join(f"{ip} (at {loc})" for ip, loc in list(leaks.items())[:3])
+def _assert_mandatory_completion(
+    out_xlsx: Path,
+    engine_names: frozenset,
+    pre_existing: Dict[str, Tuple[float, int]],
+) -> None:
+    """Require the current run's sealed, positive producer-finalization ledger."""
+    manifest_path = Path(str(out_xlsx)[: -len(".xlsx")] + ".run_manifest.json")
+    if (
+        not manifest_path.is_file()
+        or not _written_by_this_run(manifest_path, engine_names, pre_existing)
+    ):
         raise EngineRunError(
-            f"REDACTION DID NOT APPLY - {len(leaks)} private address(es) survive in "
-            f"{snap_path.name}: {shown}. The output is NOT safe to share; nothing was deleted, "
-            f"so inspect it before sending anything.")
-    return len(leaks)
+            "RUN COMPLETION COULD NOT BE VERIFIED - the current run produced no mandatory "
+            "manifest ledger. Process exit and stderr silence are not proof of success."
+        )
+    try:
+        from cisco_toolkit import manifest as manifest_mod
+
+        verified = manifest_mod.verify_file(
+            str(manifest_path), artifacts_dir=str(manifest_path.parent)
+        )
+        if verified.get("ok") is not True:
+            raise ValueError(verified.get("reason") or "manifest verification failed")
+        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        metadata = manifest_data.get("metadata")
+        finalization = (
+            metadata.get("producer_finalization")
+            if isinstance(metadata, dict)
+            else None
+        )
+        redaction = metadata.get("redaction") if isinstance(metadata, dict) else None
+        if not isinstance(finalization, dict):
+            raise ValueError("manifest has no producer finalization ledger")
+        if (
+            finalization.get("mandatory_prerequisites") != "complete"
+            or finalization.get("failed_mandatory") != []
+        ):
+            raise ValueError("mandatory producer phases were not positively complete")
+        if (
+            not isinstance(redaction, dict)
+            or redaction.get("requested") is not True
+            or redaction.get("status") != "verified"
+        ):
+            raise ValueError("producer redaction verification is not positive")
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise EngineRunError(
+            f"RUN COMPLETION COULD NOT BE VERIFIED - {exc}. A quiet process is never treated "
+            "as success; no output was certified."
+        ) from exc
+
+
+def _iter_evidence_strings(node: Any, path: str = ""):
+    """Compatibility diagnostic: yield every string value without schema-wide exemptions.
+
+    The independent verifier also scans dictionary keys; this iterator remains for the historical
+    fixture-coverage regression, whose denominator counts string values only.
+    """
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield from _iter_evidence_strings(value, f"{path}.{key}")
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            yield from _iter_evidence_strings(value, f"{path}[{index}]")
+    elif isinstance(node, str):
+        yield path, node
+
+
+def _assert_scrubbed(snap_path: Path) -> int:
+    """Compatibility wrapper around the independent, all-class snapshot verifier."""
+    try:
+        return redaction_verify.verify_shareable_artifacts(snap_path, ())
+    except redaction_verify.RedactionVerificationError as exc:
+        raise EngineRunError(
+            f"REDACTION DID NOT APPLY - the snapshot could not be read back or safely verified: "
+            f"{exc}. The output is NOT safe to share; nothing was deleted, so inspect it before "
+            "sending anything."
+        ) from exc
+
+
+def _assert_shareable_artifacts_scrubbed(snap_path: Path, paths: List[Path]) -> int:
+    """Independently scan the snapshot and every current-run engine shareable artifact."""
+    try:
+        return redaction_verify.verify_shareable_artifacts(snap_path, paths)
+    except redaction_verify.RedactionVerificationError as exc:
+        raise EngineRunError(
+            f"REDACTION POSTCONDITION FAILED - {exc}. At least one current-run shareable "
+            "artifact is unsafe or unverifiable. Do NOT send anything from this run."
+        ) from exc
+
+
+def _certify_shareable_artifacts(
+    snap_path: Path, paths: List[Path]
+) -> Dict[str, str]:
+    """Return digests of the exact independently verified bytes."""
+    try:
+        return redaction_verify.certify_shareable_artifacts(snap_path, paths)
+    except redaction_verify.RedactionVerificationError as exc:
+        raise EngineRunError(
+            f"REDACTION POSTCONDITION FAILED - {exc}. At least one current-run shareable "
+            "artifact is unsafe or unverifiable. Do NOT send anything from this run."
+        ) from exc
+
+
+def _stable_regular_sha256(path: Path) -> str:
+    try:
+        before = os.lstat(path)
+        if _is_link_or_reparse(before) or not stat.S_ISREG(before.st_mode):
+            raise OSError("not a physical regular file")
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(path, flags)
+        with os.fdopen(fd, "rb") as handle:
+            opened = os.fstat(handle.fileno())
+            if _file_identity(opened) != _file_identity(before):
+                raise OSError("identity changed while opening")
+            digest = hashlib.sha256()
+            read = 0
+            while True:
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                read += len(chunk)
+                digest.update(chunk)
+            after_handle = os.fstat(handle.fileno())
+        after_path = os.lstat(path)
+        if (
+            _file_identity(after_handle) != _file_identity(opened)
+            or _file_identity(after_path) != _file_identity(opened)
+            or _is_link_or_reparse(after_path)
+            or read != opened.st_size
+        ):
+            raise OSError("identity changed during digest")
+        return digest.hexdigest()
+    except OSError as exc:
+        raise EngineRunError(
+            f"{path.name} changed after verification; refusing to certify or promote the set."
+        ) from exc
+
+
+_REDACTION_RECEIPT = "Assessment_redacted.redaction.json"
+
+
+def _promote_verified_delivery(
+    stage: Path,
+    out: Path,
+    current_paths: List[Path],
+    engine_names: frozenset,
+    verifier_proof: Dict[str, str],
+) -> Tuple[List[str], Optional[str]]:
+    """Promote one staged generation; an atomic receipt is the coherent-set commit point."""
+    for name, expected in verifier_proof.items():
+        if _stable_regular_sha256(stage / name) != expected:
+            raise EngineRunError(
+                f"{name} no longer matches the independently verified bytes; nothing was promoted."
+            )
+
+    all_proof = {
+        path.name: _stable_regular_sha256(path)
+        for path in current_paths
+    }
+    run_id = uuid.uuid4().hex
+    rollback = out.parent / f".{out.name}.replaced-{run_id}"
+    moved_old: List[Tuple[Path, Path]] = []
+    promoted: List[Path] = []
+    out.mkdir(parents=True, exist_ok=True)
+    try:
+        # Preserve prior generation markers with the generation they describe. Keeping an old
+        # failure marker beside a newly certified receipt makes the canonical folder contradict
+        # itself even though the failed staged bytes were never promoted.
+        old_names = set(engine_names) | {_REDACTION_RECEIPT, UNSAFE_MARKER}
+        for name in sorted(old_names):
+            old = out / name
+            if not old.exists():
+                continue
+            rollback.mkdir(parents=True, exist_ok=True)
+            saved = rollback / name
+            os.replace(old, saved)
+            moved_old.append((old, saved))
+        for path in sorted(current_paths, key=lambda item: item.name):
+            destination = out / path.name
+            os.replace(path, destination)
+            promoted.append(destination)
+        # Recheck after promotion.  The receipt is written LAST and atomically renamed: without a
+        # matching receipt the visible canonical files make no verified/coherent-set claim.
+        for destination in promoted:
+            if _stable_regular_sha256(destination) != all_proof[destination.name]:
+                raise EngineRunError(
+                    f"{destination.name} changed during coherent-set promotion."
+                )
+        receipt = {
+            "schema": 1,
+            "status": "verified",
+            "run_id": run_id,
+            "files": all_proof,
+            "independent_verifier": verifier_proof,
+        }
+        receipt_tmp = out / f".{_REDACTION_RECEIPT}.{run_id}.tmp"
+        receipt_tmp.write_text(
+            json.dumps(receipt, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        os.replace(receipt_tmp, out / _REDACTION_RECEIPT)
+    except Exception:
+        recovery = out.parent / f".{out.name}.failed-promotion-{run_id}"
+        recovery.mkdir(parents=True, exist_ok=True)
+        for path in promoted:
+            if path.exists():
+                try:
+                    os.replace(path, recovery / path.name)
+                except OSError:
+                    pass
+        for original, saved in reversed(moved_old):
+            if saved.exists():
+                try:
+                    os.replace(saved, original)
+                except OSError:
+                    pass
+        raise
+    return (
+        sorted([path.name for path in promoted] + [_REDACTION_RECEIPT]),
+        str(rollback) if moved_old else None,
+    )
 
 
 #: The engine's own record of the opt-in raw-capture scrub (Phase 40,
@@ -924,15 +1584,48 @@ _SCRUB_OK_RE = re.compile(r"redact-collection: scrubbed secret values in (\d+) o
 _SCRUB_FAIL_RE = re.compile(r"redact-collection failed", re.I)
 
 
-def _count_txt_captures(root: Path) -> int:
-    """How many ``.txt`` captures the raw-capture scrub SHOULD have scanned under ``root``.
+def _is_raw_capture(path: Path) -> bool:
+    """Is ``path`` a raw capture the scrub owns, by the SAME structural rule the producer and the
+    independent verifier apply?
 
-    Matches ``redact_collection_dir``'s own selector exactly (``fn.endswith(".txt")``, case
-    sensitive, recursive from the collection root the engine was pointed at), because the whole
-    value of the number is comparing like with like."""
+    All three used to test ``endswith(".txt")``, and three matchers that agree with each other are
+    one matcher: ``backup-config.cfg`` and ``show_tech-support.log`` sitting beside a scrubbed
+    ``show_version.txt`` were never scrubbed, never scanned, never counted, and the run still
+    printed SCRUBBED and exited 0. The name half is asked of ``redaction_verify`` (one owner for
+    the rule, and this module is the census, not a second opinion); the content half - a NUL byte
+    means binary, so it is not a capture - is read here exactly as both other sites read it.
+
+    Unreadable is NOT "not a capture": it stays counted, so a capture the scrub could not open
+    still shows up as a shortfall instead of quietly leaving the denominator."""
+    if redaction_verify.is_uncoverable_capture(path.name):
+        return False
+    try:
+        with open(path, "rb") as fh:
+            while True:
+                chunk = fh.read(1024 * 1024)
+                if not chunk:
+                    return True
+                if b"\x00" in chunk:
+                    return False
+    except OSError:
+        return True
+
+
+def _count_raw_captures(root: Path) -> int:
+    """How many raw captures the scrub SHOULD have scanned under ``root``.
+
+    Matches ``redact_collection_dir``'s selector by RULE rather than by copied expression (see
+    ``_is_raw_capture``), recursive from the collection root the engine was pointed at, because
+    the whole value of the number is comparing like with like."""
+    def fail_walk(exc: OSError) -> None:
+        raise IngestError(
+            "The raw capture folder could not be completely enumerated; scrub coverage is "
+            "unverifiable."
+        ) from exc
+
     n = 0
-    for _dirpath, _dirnames, filenames in os.walk(root):
-        n += sum(1 for f in filenames if f.endswith(".txt"))
+    for dirpath, _dirnames, filenames in os.walk(root, onerror=fail_walk, followlinks=False):
+        n += sum(1 for f in filenames if _is_raw_capture(Path(dirpath) / f))
     return n
 
 
@@ -967,14 +1660,73 @@ def _collection_scrub_outcome(engine_output: str, present: int) -> Tuple[bool, s
     changed, scanned = int(m.group(1)), int(m.group(2))
     if scanned < present:
         return False, (f"INCOMPLETE - the engine scrubbed {changed} of the {scanned} capture "
-                       f"file(s) it could read, but {present} .txt capture(s) are in the folder: "
+                       f"file(s) it could read, but {present} capture(s) are in the folder: "
                        f"{present - scanned} were not readable and were left untouched")
     return True, (f"scrubbed secret values in {changed} of {scanned} raw capture file(s), in "
                   f"place (IPs and hostnames kept by design)")
 
 
+def _copy_back_scrubbed_collection(
+    staged_source: Path,
+    source: Path,
+    bindings: Dict[str, Dict[str, Any]],
+    root: Optional[Path] = None,
+) -> int:
+    """Replace original raw captures only if they still match the custody source bytes.
+
+    The selector is the SAME structural rule the scrub and the verifier use, not ``rglob("*.txt")``
+    - a fourth copy of the extension test would have made the whole fix pointless: the .cfg is
+    scrubbed in the private staging tree, independently verified there, and then never written
+    back, so the engineer's own folder keeps the cleartext secret while the run reports success.
+
+    ``root`` scopes the walk to the collection root the engine actually scrubbed. Files staged from
+    ABOVE it were never touched by the scrub, so copying them back is a no-op that only inflates
+    the returned count past the verifier's - which the caller compares for equality."""
+    base = Path(root) if root is not None else staged_source
+    prepared: List[Tuple[Path, Path]] = []
+    for staged in sorted(base.rglob("*")):
+        if not staged.is_file() or not _is_raw_capture(staged):
+            continue
+        relative = staged.relative_to(staged_source).as_posix()
+        binding = bindings.get(relative)
+        if binding is None:
+            raise EngineRunError(
+                "A staged raw capture has no source custody binding; refusing copy-back."
+            )
+        original = source / Path(relative)
+        if _stable_regular_sha256(original) != binding["sha256"]:
+            raise EngineRunError(
+                f"{relative} changed after entering custody; scrubbed bytes were not copied back."
+            )
+        temp = original.with_name(f".{original.name}.atlas-scrub-{uuid.uuid4().hex}.tmp")
+        data = staged.read_bytes()
+        temp.write_bytes(data)
+        if _stable_regular_sha256(temp) != hashlib.sha256(data).hexdigest():
+            raise EngineRunError(
+                f"{relative} could not be staged safely for raw-capture scrub copy-back."
+            )
+        prepared.append((original, temp))
+    for original, temp in prepared:
+        os.replace(temp, original)
+    return len(prepared)
+
+
 def run_redaction_folder(path: Any, out_dir: Any, redact_collection: bool = False,
                          reuse_out: bool = False) -> Dict[str, Any]:
+    """Serialize every run targeting one canonical output directory."""
+    out = Path(str(out_dir)).expanduser().resolve()
+    source_candidate = Path(str(path)).expanduser()
+    if not source_candidate.is_dir():
+        raise IngestError("Not a directory, or not readable.")
+    _refuse_unsafe_out_dir(out, source_candidate.resolve())
+    with _output_dir_lock(out):
+        return _run_redaction_folder_locked(
+            path, out, redact_collection=redact_collection, reuse_out=reuse_out
+        )
+
+
+def _run_redaction_folder_locked(path: Any, out_dir: Any, redact_collection: bool = False,
+                                 reuse_out: bool = False) -> Dict[str, Any]:
     """Produce a **redacted, share-safe deliverable set** from a local collection folder.
 
     The field problem this closes (ADR-0004 P3): ``--redact`` is the control that makes client data
@@ -1045,8 +1797,16 @@ def run_redaction_folder(path: Any, out_dir: Any, redact_collection: bool = Fals
 
     workdir = Path(tempfile.mkdtemp(prefix="atlas_redact_"))
     try:
-        root, device_dirs = _find_collection_root(source)
-        devices, provenance, skipped = _load_or_synthesize_devices(root, source, device_dirs)
+        staged_source = workdir / "custody"
+        source_bindings = _stage_physical_tree(source, staged_source)
+        if len(source_bindings) != n_files:
+            raise IngestError(
+                "The collection file count changed between preflight and private custody."
+            )
+        root, device_dirs = _find_collection_root(staged_source)
+        devices, provenance, skipped = _load_or_synthesize_devices(
+            root, staged_source, device_dirs
+        )
         devices_file = workdir / "devices.json"
         devices_file.write_text(json.dumps(devices), encoding="utf-8")
         template = workdir / "template.xlsx"
@@ -1059,10 +1819,13 @@ def run_redaction_folder(path: Any, out_dir: Any, redact_collection: bool = Fals
             # the one value the engineer invents on the spot, so it is the likeliest typo.
             raise IngestError(f"Cannot create the output folder {out}: {e}. Check the drive "
                               f"letter and that the path is writable and not an existing file.")
-        out_xlsx = out / "Assessment_redacted.xlsx"
+        canonical_stem = "Assessment_redacted"
         if not reuse_out:
-            _refuse_reused_out_dir(out, out_xlsx.stem)
-        engine_names = _engine_filenames(out_xlsx.stem)
+            _refuse_reused_out_dir(out, canonical_stem)
+        engine_names = _engine_filenames(canonical_stem)
+        delivery_stage = workdir / "delivery"
+        delivery_stage.mkdir()
+        out_xlsx = delivery_stage / f"{canonical_stem}.xlsx"
         # Name -> (mtime, size), so "did THIS run write it" survives a re-run into the same
         # folder. Membership alone (the original test) reported every re-rendered document as
         # pre-existing: a second run into the same --out printed "Wrote 0 file(s)" and would now
@@ -1085,20 +1848,6 @@ def run_redaction_folder(path: Any, out_dir: Any, redact_collection: bool = Fals
         # touched. If the run dies before the engine writes, those files read a day old on disk —
         # cosmetic, on files this run was about to overwrite anyway.
         pre_existing: Dict[str, Tuple[float, int]] = {}
-        sentinel = time.time() - 86400.0
-        for p in out.iterdir():
-            try:
-                if not p.is_file():
-                    continue
-                if p.name in engine_names:
-                    try:
-                        os.utime(p, (sentinel, sentinel))
-                    except OSError:
-                        pass          # read-only stick / FS without utime: fall back to raw stat
-                st = p.stat()
-                pre_existing[p.name] = (st.st_mtime, st.st_size)
-            except OSError:
-                continue
 
         cmd = [
             *_engine_argv(),
@@ -1152,15 +1901,35 @@ def run_redaction_folder(path: Any, out_dir: Any, redact_collection: bool = Fals
                 f"this run started, so it belongs to an EARLIER run and there is nothing from THIS "
                 f"run to verify. Do NOT send anything from this folder. Log tail:\n{log_tail}")
         try:
-            _assert_redaction_phases_ran(out_xlsx, engine_output, engine_names, pre_existing)
+            current_run_paths = [
+                path for path in delivery_stage.iterdir()
+                if path.is_file() and _written_by_this_run(path, engine_names, pre_existing)
+            ]
+            # Parse the canonical snapshot before consulting the producer ledger so a truncated
+            # snapshot is reported as such, while artifact-family verification remains a separate
+            # gate below.
             _assert_scrubbed(snap_path)
-        except EngineRunError:
+            # Positive producer evidence is the first gate. The independent byte scanner is a
+            # separate second gate and must not obscure a producer-declared failed phase.
+            _assert_redaction_phases_ran(out_xlsx, engine_output, engine_names, pre_existing)
+            verifier_proof = _certify_shareable_artifacts(snap_path, current_run_paths)
+            _assert_mandatory_completion(out_xlsx, engine_names, pre_existing)
+            for name, expected_digest in verifier_proof.items():
+                if _stable_regular_sha256(delivery_stage / name) != expected_digest:
+                    raise EngineRunError(
+                        f"{name} changed after independent verification; refusing the run."
+                    )
+        except (EngineRunError, OSError) as exc:
             _mark_output_unsafe(out, "a redaction check FAILED")
-            raise
+            if isinstance(exc, EngineRunError):
+                raise
+            raise EngineRunError(
+                "REDACTION POSTCONDITION FAILED - current-run output could not be completely "
+                "enumerated. Do NOT send anything from this run."
+            ) from exc
         # Only what THIS run produced — enumerating the directory reported pre-existing files
         # (an engineer's own notes, an earlier unredacted export) under the share-safe banner.
-        written = sorted(p.name for p in out.iterdir()
-                         if p.is_file() and _written_by_this_run(p, engine_names, pre_existing))
+        staged_written = sorted(path.name for path in current_run_paths)
         # Coverage honesty for the document family itself: the redaction checks above certify
         # that what IS here is safe, and say nothing about what is ABSENT. Every engine writer
         # fails soft, so an incomplete family is the one failure mode that still exits 0 and
@@ -1168,7 +1937,7 @@ def run_redaction_folder(path: Any, out_dir: Any, redact_collection: bool = Fals
         # and routing it through EngineRunError would tell the engineer their correctly-redacted
         # files are UNREDACTED, which is both false and the fastest way to make the real alarm
         # unbelievable. The set stays usable; the gap is disclosed here, on the console and on disk.
-        missing = _family_state(out_xlsx.stem, out, set(written))
+        missing = _family_state(out_xlsx.stem, delivery_stage, set(staged_written))
         gap_lines = _engine_gap_lines(engine_output, (workdir, out, source))
         # What the raw-capture scrub actually DID, read back from the engine's own record and
         # compared against the captures that are really there. Only computed when it was asked
@@ -1176,7 +1945,67 @@ def run_redaction_folder(path: Any, out_dir: Any, redact_collection: bool = Fals
         scrub_ok, scrub_detail = (False, "")
         if redact_collection:
             scrub_ok, scrub_detail = _collection_scrub_outcome(engine_output,
-                                                               _count_txt_captures(root))
+                                                               _count_raw_captures(root))
+            if not scrub_ok:
+                _mark_output_unsafe(out, "the requested raw-capture scrub could not be verified")
+                raise EngineRunError(
+                    f"RAW-CAPTURE SCRUB COULD NOT BE VERIFIED - {scrub_detail}. "
+                    "No deliverable set was promoted."
+                )
+            try:
+                staged_scrub_proof = redaction_verify.verify_collection_secret_scrub(root)
+                if staged_scrub_proof["files"] != _count_raw_captures(root):
+                    raise EngineRunError(
+                        "raw-capture verifier coverage did not match the staged collection"
+                    )
+                copied = _copy_back_scrubbed_collection(
+                    staged_source, source, source_bindings, root
+                )
+                original_root = source / root.relative_to(staged_source)
+                original_scrub_proof = redaction_verify.verify_collection_secret_scrub(
+                    original_root
+                )
+                if (
+                    copied != staged_scrub_proof["files"]
+                    or original_scrub_proof != staged_scrub_proof
+                ):
+                    raise EngineRunError(
+                        "raw-capture scrub copy-back does not match the independently verified "
+                        "staged bytes"
+                    )
+                scrub_detail = (
+                    f"independently verified {copied} raw capture file(s) after custody-bound "
+                    "copy-back (IPs and hostnames kept by design)"
+                )
+                # Coverage honesty, and the reason the verifier returns this at all: files the
+                # capture grammar cannot read (a JSON/XML controller dump, a binary) were NOT
+                # scrubbed and NOT scanned. Reporting only the verified count let "verified N"
+                # read as "the folder is clean", which is the same false-health shape as a
+                # dark device disappearing out of an average.
+                uncovered = staged_scrub_proof.get("uncovered") or []
+                if uncovered:
+                    names = ", ".join(row["file"] for row in uncovered[:6])
+                    scrub_detail += (
+                        f"; NOT COVERED: {len(uncovered)} file(s) under the collection root were "
+                        f"neither scrubbed nor scanned ({names}"
+                        + (", ..." if len(uncovered) > 6 else "")
+                        + ") - the capture grammar does not read them, so this is NOT a statement "
+                          "that they are free of secrets"
+                    )
+            except (EngineRunError, redaction_verify.RedactionVerificationError, OSError) as exc:
+                _mark_output_unsafe(out, "the requested raw-capture scrub verification FAILED")
+                if isinstance(exc, EngineRunError):
+                    raise
+                raise EngineRunError(
+                    "RAW-CAPTURE SCRUB POSTCONDITION FAILED; no deliverable set was promoted."
+                ) from exc
+        written, previous_set = _promote_verified_delivery(
+            delivery_stage,
+            out,
+            current_run_paths,
+            engine_names,
+            verifier_proof,
+        )
         marker = None
         if missing:
             marker = _mark_output_incomplete(out, missing, gap_lines)
@@ -1185,13 +2014,22 @@ def run_redaction_folder(path: Any, out_dir: Any, redact_collection: bool = Fals
         return {
             "out_dir": str(out),
             "files": written,
+            "previous_set": previous_set,
             "missing": missing,
             "incomplete_note": str(marker) if marker else None,
             # A DO-NOT-SEND marker from an EARLIER failed run into this folder does not apply to
             # this one, and nothing removes it (deleting a safety warning is the wrong direction
             # to err). Surfacing it keeps the folder from saying "unsafe" and "complete" at once.
             "stale_unsafe_marker": (out / UNSAFE_MARKER).is_file(),
-            "engine_warnings": gap_lines if missing else [],
+            # NOT `gap_lines if missing else []`. The produced-vs-expected diff is the DETECTOR
+            # for a short set, but these lines are the engine's own account of what it refused or
+            # could not do — a [GATE REFUSED], a writer that raised, a phase it skipped — and a
+            # run can emit them while still producing every family document (a re-run into the
+            # same folder, a writer that failed and then succeeded, a gate refusing a document
+            # that was already on disk). Discarding them whenever the diff came back clean threw
+            # away the evidence precisely in the case that looks healthy, which is the one case
+            # where the reader has nothing else to go on.
+            "engine_warnings": gap_lines,
             "n_device_dirs": len(device_dirs) - len(skipped),
             "devices": device_dirs,
             "skipped_dirs": skipped,
@@ -1302,5 +2140,6 @@ def _assess_tree(tree: Path, n_files: int, workdir: Path) -> Tuple[Dict[str, Any
         "devices_json": provenance,
         "engine_seconds": duration,
         "engine_log_tail": log_tail,
+        "verification": summary.snapshot_verification(snap),
     }
     return snap, report

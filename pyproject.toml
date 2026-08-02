@@ -11,7 +11,7 @@
 # than migrating into [tool.*] here, to avoid any change in how those tools resolve their settings.
 
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools==83.0.0", "wheel==0.46.2"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -24,6 +24,8 @@ version = "3.31.0"
 description = "Evidence-led Cisco L1-L4 network migration-assessment toolkit: one offline SSH collection produces a multi-sheet Excel workbook, an interactive single-file topology explorer, and a DOCX runbook."
 readme = "README.md"
 requires-python = ">=3.10"
+license = "LicenseRef-Proprietary"
+license-files = ["LICENSE"]
 authors = [{ name = "Tanveerahamed-Dev" }]
 keywords = ["cisco", "network", "migration", "assessment", "ios", "ios-xe", "nxos", "netmiko", "topology"]
 classifiers = [
@@ -42,25 +44,56 @@ classifiers = [
     "Topic :: System :: Systems Administration",
 ]
 dependencies = [
+    "tomli>=2,<3; python_version < '3.11'",
     "netmiko>=4.1,<5",
     "openpyxl>=3.1,<4",
+    "python-docx>=1.1,<2",
+    "python-pptx>=0.6,<2",
+    "fastapi>=0.110,<1",
+    "uvicorn[standard]>=0.27,<1",
+    "python-multipart>=0.0.9,<1",
 ]
 
 [project.optional-dependencies]
-# The DOCX runbook is optional: without python-docx the run still produces the workbook + explorer +
-# snapshot and logs that the runbook was skipped.
+# Compatibility aliases retained for existing install commands. DOCX/PPTX and the web runtime are
+# base dependencies because their entry points and deliverables are enabled by default.
 docx = ["python-docx>=1.1,<2"]
-# The executive PPTX deck is optional too (python-pptx).
 pptx = ["python-pptx>=0.6,<2"]
 # Test / lint / type tooling (report-only mypy baseline; ruff gates correctness rules).
-dev = ["pytest>=8,<10", "ruff>=0.5", "mypy>=1.8"]
+dev = [
+    "pytest>=8,<10",
+    "pytest-cov>=5,<8",
+    # REQUIRED by the Stop hook's green gate, not an optional speed-up. The suite runs 486-611 s
+    # serially depending on machine load, and `.claude/hooks/verify-green.sh` bounds its run at
+    # 540 s — INSIDE that variance band, so the gate blocked turns on a suite that passes, at
+    # random. Raising the bound is not available: the hook ceiling is 600 s. Under
+    # `-n auto --dist loadfile` the same 5,015 tests (verified id-for-id against a serial run,
+    # zero either-side-only) complete in ~166 s, which puts the gate back outside the band.
+    # `--dist loadfile` rather than the default `load`: several modules own expensive module-scoped
+    # fixtures (test_phase_timings_contract's real `--redact` pipeline run is ~14 s), and splitting
+    # a module across workers would re-run its fixture once per worker.
+    "pytest-xdist>=3,<4",
+    "ruff>=0.5",
+    "mypy>=1.8",
+    "ntc-templates>=4,<9",
+    # REQUIRED for webapp/tests to be COLLECTED AT ALL. `webapp/tests/conftest.py` needs
+    # ("fastapi", "httpx") and sets collect_ignore_glob when either is missing; pytest then exits 5
+    # having run nothing. httpx is NOT a base fastapi dependency — it ships only under fastapi's
+    # `standard`/`all` extras, and this project depends on bare `fastapi>=0.110,<1`. Since
+    # webapp-ci.yml installs `-e ".[dev]"`, its entire suite (Atlas redaction, security hardening,
+    # DNS-rebinding, unplug-safety) was collected in ZERO jobs, and ci.yml's matrix silently skipped
+    # webapp/tests for the same reason. Declared here rather than only in webapp/requirements.txt
+    # because `[dev]` is what CI actually installs.
+    "httpx>=0.23,<1",
+]
 # The Model Context Protocol server is optional: it exposes READ-ONLY query tools over a
 # already-produced snapshot.json (offline, no egress). The base engine never imports `mcp`
 # unless this extra is installed; cisco_toolkit.mcp_server guards the import at call time.
 mcp = ["mcp>=1.28,<2"]
 # The AssessHub web layer (webapp/backend) + the `assesshub` entry point (ADR-0004 P1: the
 # portable app's one door). Mirrors webapp/requirements.txt — keep the two in lockstep.
-webapp = ["fastapi>=0.110", "uvicorn[standard]>=0.27", "python-multipart>=0.0.9"]
+# Compatibility alias; AssessHub runtime dependencies are already in the base set.
+webapp = []
 # Building the Atlas one-folder portable bundle (ADR-0004 P2; portable/build_atlas.py).
 build = ["pyinstaller>=6.10,<7"]
 # The D10 Phase-2 retrieval-eval stack (P2-0b; docs/d10-retrieval-eval-design-2026-07-08.md §8) —
@@ -79,7 +112,7 @@ cisco-assess = "COLLECT_PARSE_V3_23_0:main"
 # Optional MCP server over a produced snapshot.json (needs the [mcp] extra). Read-only, offline.
 cisco-mcp-server = "cisco_toolkit.mcp_server:main"
 # Atlas / AssessHub production entry (ADR-0004 P1): uvicorn.run(app) with no reload/workers,
-# --selftest for the silent-degrade assets, and the frozen engine-child sentinel. Needs [webapp].
+# --selftest for silent-degrade assets, and the frozen engine-child sentinel.
 assesshub = "webapp.backend.serve:main"
 
 [project.urls]
@@ -92,17 +125,19 @@ Changelog = "https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-too
 # otherwise be ambiguous given the flat root (conftest.py, the entry script, etc.).
 [tool.setuptools]
 py-modules = ["COLLECT_PARSE_V3_23_0"]
+include-package-data = false
 
 [tool.setuptools.packages.find]
-# webapp.backend rides along for the `assesshub` entry point (webapp/ itself is an implicit
-# namespace package — the exact, non-wildcard entry keeps webapp/frontend + webapp/tests out).
-include = ["cisco_toolkit*", "webapp.backend"]
+# The explicit webapp package keeps tests and source tooling out while package-data includes
+# only the built SPA and synthetic demo snapshot needed by the installed AssessHub command.
+include = ["cisco_toolkit*", "webapp", "webapp.backend"]
 
 [tool.setuptools.package-data]
 # Ship the runtime data inside any built distribution: the gzipped KB files portdb/ouidb load, and the
-# single-file explorer template write_html_explorer patches the live snapshot into. Both now live inside
-# the package and resolve relative to it, so a wheel is fully relocatable.
-cisco_toolkit = ["data/*.tsv.gz", "blast_radius_explorer.html"]
+# single-file explorer template, verified registry manifest, complete AssessHub SPA, and synthetic
+# demo snapshot. Every installed entry point is usable from an isolated wheel.
+cisco_toolkit = ["data/*.tsv.gz", "data/registry_manifest.json", "blast_radius_explorer.html"]
+webapp = ["frontend/dist/index.html", "frontend/dist/assets/*", "sample_data/*.json"]
 
 [tool.coverage.run]
 source = ["cisco_toolkit"]

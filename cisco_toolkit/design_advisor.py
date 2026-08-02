@@ -168,7 +168,7 @@ def _dev_list(tagged, sep=" "):
 def _svi_network(svi):
     """The network (CIDR str) of an SVI address, or None. Handles 'ip/prefix' and 'ip mask' forms (the two
     shapes l3_forwarding.svi_ip is collected in); a bare IP with no mask is unknown -> None. Used to recover a
-    VLAN's subnet when l3_forwarding.primary_subnet is empty (108/231 [HISTORY-REDACTED] rows) so VLAN-ID reuse across sites is
+    VLAN's subnet when l3_forwarding.primary_subnet is empty (108/231 Meridian rows) so VLAN-ID reuse across sites is
     not silently read as one broadcast domain."""
     import ipaddress
     s = str(svi or "").strip()
@@ -240,6 +240,136 @@ def _version_tuple(s):
     return tuple(out) if out else None
 
 
+# --------------------------------------------------------------- on-air (broadcast/AV) classification authority
+# review r9 (D-derivations lane). `analyze.compute_multicast_intelligence` classifies a multicast group as
+# on-air / Broadcast-AV from the OFFLINE registry's CURATED media semantics, and publishes the basis right
+# beside the count (`summary.n_av_groups_authoritative`, per-group `on_air_authoritative`, per-alias
+# `has_av_authoritative`). On the shipped port pack that authoritative count is ZERO -- every multicast row is
+# curated -- and that same curated flag is what escalates a MAC-alias finding from Medium to High
+# (analyze.py:2769). So any sentence this module authors around an AV count, or around a risk COUNT that folds
+# such an escalation in, must carry what it rests on; otherwise the HLD states a curated hint in the same voice
+# as an IANA-assigned fact. The fix is DISCLOSURE, not re-scoring: the severity stays where the producer put it.
+# Wording/semantics deliberately mirror `runbook._av_authority` (the already-reviewed phrasing of this
+# qualifier) so the two documents cannot disagree about the same snapshot.
+
+def _av_auth_census(mi):
+    """(n_authoritative, n_av, assessed) from `multicast_intelligence.summary`.
+
+    Keyed on the value being USABLE, not on the key being present: a missing key, a null, a string, a dict,
+    a bool or a JSON Infinity/NaN all yield `assessed=False` -> the caller must say NOT ASSESSED. A
+    presence-only test plus the house `_as_int` coercion would have turned exactly those into a confident
+    zero, and a zero here reads as the strong claim "no classification is authoritative"."""
+    s = _as_dict(_as_dict(mi).get("summary"))
+    raw_auth, raw_av = s.get("n_av_groups_authoritative"), s.get("n_av_groups")
+
+    def _census(raw):
+        """A census count ONLY if the producer actually published a number. Otherwise None.
+
+        The house `_as_int` delegates to `textutils._as_num`, which does `float(x)` -- so the STRING
+        "1" parsed to 1 and this census read USABLE AND AUTHORITATIVE off a malformed field. The
+        docstring above already promised strings yield `assessed=False`; the coercion silently
+        disagreed with it. A malformed-value probe only catches this if it includes malformed values
+        that PARSE: the test that missed it probed with "many", which fails float() and passes for
+        the wrong reason.
+        A census is an int. `bool` is excluded before `int` (it IS an int subclass, and `true` is not
+        a count); a float is accepted only when it is exactly integral and finite, because JSON has
+        no int/float distinction and 3.0 is a legitimate wire form for 3 -- 3.5 is not.
+        """
+        if isinstance(raw, bool) or raw is None:
+            return None
+        if isinstance(raw, int):
+            return raw if raw >= 0 else None
+        if isinstance(raw, float):
+            return int(raw) if (raw == raw and raw not in (float("inf"), float("-inf"))
+                                and raw >= 0 and raw.is_integer()) else None
+        return None                      # str / dict / list / anything else is NOT a census
+
+    n_auth, n_av = _census(raw_auth), _census(raw_av)
+    return n_auth, n_av, (n_auth is not None and n_av is not None)
+
+
+def _av_auth_backed(mi) -> bool:
+    """Is the on-air classification actually BACKED by an authoritative source?
+
+    THE one predicate for that question, because two answers to it already disagreed in this file.
+    `_av_authority` refuses to state a ratio when the census is INCOHERENT (`n_auth > n_av`) -- it
+    says "the authority split cannot be stated for this snapshot" -- while the target-state gate
+    asked `_assessed and _n_auth > 0`, which is TRUE for that same incoherent pair. So a snapshot
+    reporting 7 authoritative out of 3 groups was simultaneously "cannot be stated" in the qualifier
+    sentence and "authoritative, mark the dimension Observed" in the confidence field.
+
+    A census the module has already declared unusable cannot also be evidence of authority. Coherence
+    is part of usability, not a separate presentation concern -- so it belongs here, where every
+    caller inherits it, rather than in each caller's own conjunction.
+    """
+    n_auth, n_av, assessed = _av_auth_census(mi)
+    if not assessed or n_auth is None or n_av is None:
+        return False                 # no usable census at all -> NOT ASSESSED, never "backed"
+    if n_auth > n_av:
+        return False                 # incoherent -> the split cannot be stated, so nothing is backed
+    return n_auth > 0
+
+
+def _av_authority(mi) -> str:
+    """The authority qualifier that must travel with any broadcast/AV (on-air) count this module authors.
+    FAIL-CLOSED: no usable census reads NOT ASSESSED, never 'authoritative'; an incoherent pair
+    (authoritative > total) refuses to state a ratio rather than rendering a nonsense '7 of 3'."""
+    n_auth, n_av, assessed = _av_auth_census(mi)
+    if not assessed:
+        return (" — on-air classification authority NOT ASSESSED in this snapshot; treat the "
+                "broadcast/AV label as curated, not authoritative")
+    if n_auth <= 0:
+        return (" — NONE of them classified on-air by an authoritative source: the broadcast/AV label is "
+                "a CURATED offline-registry classification, not a measurement")
+    if n_auth > n_av:
+        return (f" — census INCOHERENT: {n_auth:g} classification(s) reported as authoritative out of "
+                f"{n_av:g} on-air group(s); the authority split cannot be stated for this snapshot")
+    return (f" — {n_auth:g} of {n_av:g} on-air classification(s) rest on an authoritative source; the "
+            "remainder are CURATED, not measurements")
+
+
+def _av_escalation_census(mi):
+    """How many published multicast risks carry a severity that rests on the on-air classification, split by
+    what that classification rests on: {n_escalated, n_authoritative, n_curated, n_unassessed}.
+
+    STRUCTURAL, not a hand-kept list of risk titles: every `mac_aliases[]` entry whose `has_av` is set is
+    exactly the population the producer escalates Medium -> High (analyze.py:2769), and each alias carries its
+    own `has_av_authoritative`. FAIL-CLOSED on usability -- only a real `True` counts as authoritative and only
+    a real `False` counts as known-curated; absent / null / string / int flags count as NOT ASSESSED, so a
+    stripped or malformed authority flag can never be read as "an authoritative source said so"."""
+    esc = [a for a in _dict_rows(_as_dict(mi).get("mac_aliases")) if a.get("has_av")]
+    n_auth = sum(1 for a in esc if a.get("has_av_authoritative") is True)
+    n_cur = sum(1 for a in esc if a.get("has_av_authoritative") is False)
+    return {"n_escalated": len(esc), "n_authoritative": n_auth, "n_curated": n_cur,
+            "n_unassessed": len(esc) - n_auth - n_cur}
+
+
+def _mcast_risk_basis(mi, n_risks) -> str:
+    """The sentence that must follow a bare `N multicast risk(s)` count, saying what the severities rest on.
+    Empty when NOTHING was escalated by an on-air classification -- a fleet whose multicast risks are all
+    observed fact (or which has no media estate at all) must not acquire a caveat it has not earned."""
+    b = _av_escalation_census(mi)
+    n_esc = b["n_escalated"]
+    if n_esc <= 0:
+        return ""
+    if n_esc > n_risks:
+        # The alias census and the risk list are published independently, so "N of M" is only meaningful
+        # while N <= M. Disclose the incoherence rather than rendering a ratio a reader cannot check.
+        return (f" BASIS INCOHERENT: {n_esc} MAC-overlap(s) carry an on-air classification but only "
+                f"{n_risks} multicast risk(s) are published — the severity basis of this count cannot be "
+                f"stated for this snapshot.")
+    bits = []
+    if b["n_authoritative"]:
+        bits.append(f"{b['n_authoritative']} on an AUTHORITATIVE registry source")
+    if b["n_curated"]:
+        bits.append(f"{b['n_curated']} on CURATED offline-registry semantics, NOT an authoritative source")
+    if b["n_unassessed"]:
+        bits.append(f"{b['n_unassessed']} on a classification whose authority is NOT ASSESSED in this snapshot")
+    return (f" {n_esc} of those {n_risks} risk(s) are High ONLY because a member group is classified "
+            f"Broadcast-AV / on-air — " + "; ".join(bits) + ". The MAC overlap itself is arithmetic on the "
+            "observed group addresses and is not in question.")
+
+
 def _signals(snap):
     sig = {}
     bad_fhrp = _no_fhrp_vlans(snap)
@@ -266,7 +396,7 @@ def _signals(snap):
                                          for m in _dict_rows(g.get("members"))
                                          if m.get("host") and _scalar(m.get("host"))})[:12]
     # FHRP RESILIENCE from the published detail axis (parse_hsrp_detail -> snap['fhrp_detail']): ACTIVE
-    # gateways missing interface tracking or preemption -- the senior red flags the [HISTORY-REDACTED] fleet (no FHRP at
+    # gateways missing interface tracking or preemption -- the senior red flags the Meridian reference fleet (no FHRP at
     # all) could never surface. Coverage-honest: empty lists when the detail axis is absent.
     sig["fhrp_no_track"] = []; sig["fhrp_no_preempt"] = []
     _fd = snap.get("fhrp_detail")
@@ -755,7 +885,7 @@ def _signals(snap):
     # an (S,G) source-tree entry with a Null incoming (RPF) interface -- the device has no reverse-path toward
     # the source, so that stream is blackholed (the #1 multicast data-plane outage). Coverage-honest & non-cry-
     # wolf: a (*,G) shared-tree Null IIF is benign (locally-joined / well-known / SSM) and is EXCLUDED already at
-    # build_mroute -- proven on the [HISTORY-REDACTED] fleet (36 benign (*,G)-Null entries, 0 (S,G)-Null -> the detector is silent).
+    # build_mroute -- proven on the Meridian reference fleet (36 benign (*,G)-Null entries, 0 (S,G)-Null -> the detector is silent).
     _mroute = _as_dict(snap.get("mroute"))
     _rpf = []
     for _mh, _mf in sorted(_mroute.items()):
@@ -1093,6 +1223,24 @@ def _signals(snap):
     sig["lifecycle_supported"] = sum(1 for d in life
                                      if str(d.get("band", "")).strip().lower() == "active")
     sig["lifecycle_unknown"] = max(0, len(life) - sig["eol"] - sig["near"] - sig["lifecycle_supported"])
+    # ...and the FIFTH disposition, the one `lifecycle_unknown` itself cannot express: a device the
+    # lifecycle axis produced NO ROW FOR AT ALL. `lifecycle_unknown` is derived from len(life), so it
+    # is 0 both when every device is banded Active AND when the axis emitted nothing -- the two cases
+    # were byte-identical downstream. Both are reachable without any exception: COLLECT_PARSE runs the
+    # phase under `_run_phase(..., _default={})` (any raised exception -> {}), and a collection whose
+    # parse yields no device rows gives `per_device: []` with no exception at all.
+    #
+    # The honest question is not "how many rows said Unknown" but "how many of the fleet's devices
+    # does this axis fail to account for", which is the structural class that contains both. The
+    # census is whichever enumeration is larger -- the device inventory or the collection census --
+    # so a lifecycle axis that ran on a subset cannot hide behind the smaller one.
+    _lc_hosts = {str(d.get("host")).strip().lower() for d in life if str(d.get("host") or "").strip()}
+    _fleet_hosts = {str(h).strip().lower() for h in _as_dict(snap.get("devices")) if str(h).strip()}
+    _cc_inv = _as_int(_as_dict(_as_dict(snap.get("collection_completeness")).get("summary")).get("inventory"))
+    _lc_census = max(len(_fleet_hosts), _cc_inv)
+    sig["lifecycle_not_assessed"] = max(0, _lc_census - len(_lc_hosts))
+    # The whole UNDETERMINED-refresh-exposure population: banded Unknown, or never banded at all.
+    sig["lifecycle_undetermined"] = sig["lifecycle_unknown"] + sig["lifecycle_not_assessed"]
     sig["lifecycle_unknown_hosts"] = sorted(
         str(d.get("host")) for d in life
         if str(d.get("band", "")).strip().lower() not in ("active", "past-ldos")
@@ -1177,6 +1325,14 @@ def _signals(snap):
     q = _as_dict(_as_dict(snap.get("multicast_intelligence")).get("querier"))
     sig["querier_gaps"] = len(_as_list(q.get("gap_vlans")))
     sig["mcast_risks"] = len(_as_list(_as_dict(snap.get("multicast_intelligence")).get("risks")))
+    # ...and what those severities REST ON. A bare count folds the High mac-alias risk -- whose promotion from
+    # Medium to High comes entirely from the registry's CURATED on-air classification -- in with risks that are
+    # observed fact, and presents one number. Carry the basis alongside the count so every consumer of
+    # sig["mcast_risks"] can state it (see _d_mcast); empty string when nothing was escalated.
+    sig["mcast_av_escalations"] = _av_escalation_census(
+        _as_dict(snap.get("multicast_intelligence")))["n_escalated"]
+    sig["mcast_risk_basis"] = _mcast_risk_basis(_as_dict(snap.get("multicast_intelligence")),
+                                                sig["mcast_risks"])
 
     cc = _as_dict(_as_dict(snap.get("collection_completeness")).get("summary"))
     sig["not_collected"] = _as_int(cc.get("not_collected"))
@@ -1360,7 +1516,7 @@ def _signals(snap):
                 if gw and _scalar(gw):
                     v2gw.setdefault(str(vid), set()).add(gw)
     # l3_forwarding corroborates AND extends: VLAN-ID reuse across sites is frequently visible ONLY here, not in
-    # subnet_intelligence (e.g. [HISTORY-REDACTED] VLAN 64 = 10.200.64.0/24 at one site + 10.203.64.0/24 at another, the latter
+    # subnet_intelligence (e.g. Meridian VLAN 64 = 10.200.64.0/24 at one site + 10.203.64.0/24 at another, the latter
     # recoverable only from svi_ip since primary_subnet is empty). Subnet = primary_subnet, else derived from the
     # SVI ip+mask; gateway = the switch. This is also the single-broadcast-domain authority for #9 below.
     for r in _as_list(snap.get("l3_forwarding")):
@@ -1643,7 +1799,7 @@ def _d_fhrp(snap, sig):
 def _d_fhrp_state(snap, sig):
     """Broken-but-PRESENT FHRP (distinct from _d_fhrp's absence case). Coverage-honest: fires only when the
     engine observed a split-brain / mixed-protocol / mismatched-group|VIP / partial pair -- silent when FHRP
-    is absent or clean (e.g. the [HISTORY-REDACTED] fleet runs no FHRP at all, so this correctly stays at 0)."""
+    is absent or clean (e.g. the Meridian reference fleet runs no FHRP at all, so this correctly stays at 0)."""
     if sig.get("fhrp_broken", 0) <= 0:
         return None
     vids = sig.get("fhrp_broken_vids") or []
@@ -1667,7 +1823,7 @@ def _d_fhrp_resilience(snap, sig):
     an ACTIVE gateway with NO interface tracking (a failed uplink won't trigger failover -> traffic
     black-holes) or NO preemption (the intended primary won't reclaim after recovery -> non-deterministic
     election). Coverage-honest: silent when the FHRP detail axis is absent or clean. First health check on
-    a NON-[HISTORY-REDACTED] architecture (the [HISTORY-REDACTED] fleet runs no FHRP at all)."""
+    a NON-Meridian architecture (the Meridian reference fleet runs no FHRP at all)."""
     nt = sig.get("fhrp_no_track") or []
     npre = sig.get("fhrp_no_preempt") or []
     if not nt and not npre:
@@ -2692,7 +2848,7 @@ def _d_mcast_rpf_failure(snap, sig):
     toward the source, so that multicast stream is blackholed. An RPF failure is the single most common
     multicast data-plane outage. Coverage-honest & non-cry-wolf: a (*,G) shared-tree entry legitimately shows a
     Null IIF on NX-OS for locally-joined / well-known / SSM groups, so ONLY a specific-source (S,G) Null IIF is
-    flagged (the exclusion is enforced in build_mroute). Proven on the [HISTORY-REDACTED] fleet -- 36 benign (*,G)-Null entries
+    flagged (the exclusion is enforced in build_mroute). Proven on the Meridian reference fleet -- 36 benign (*,G)-Null entries
     and zero (S,G)-Null, so the detector is silent there. None when no RPF failure is observed."""
     bad = sig.get("mcast_rpf_failures") or []
     if not bad:
@@ -3118,9 +3274,15 @@ def _d_mcast(snap, sig):
     return _decision(
         "multicast-security-and-l2-edge",
         f"{sig['querier_gaps']} active multicast VLAN(s) lack an IGMP querier and {sig['mcast_risks']} "
-        f"multicast risk(s) were observed -- multicast may be flooded or stranded at cutover.",
+        f"multicast risk(s) were observed -- multicast may be flooded or stranded at cutover."
+        # The count is not homogeneous: a mac-alias risk is High only because a member group carries the
+        # registry's CURATED Broadcast-AV label. Say so here, where the number is rendered, rather than
+        # letting §4.2's Evidence column present a curated escalation as an observed one.
+        + sig.get("mcast_risk_basis", ""),
         sig["querier_gaps"] + sig["mcast_risks"], ["security", "scalability"],
-        ["multicast_intelligence.querier.gap_vlans", "multicast_intelligence.risks"],
+        ["multicast_intelligence.querier.gap_vlans", "multicast_intelligence.risks"]
+        + (["multicast_intelligence.mac_aliases[].has_av_authoritative"]
+           if sig.get("mcast_av_escalations") else []),
         priority="High", driver="L2 multicast hygiene: snooping + a querier per active VLAN, and an edge boundary.")
 
 
@@ -3218,7 +3380,13 @@ def _d_oncrit_seg(snap, sig):
         "security-isolate-oncritical-application-tier",
         f"{sig['oncrit_exposed']} on-air-critical broadcast domain(s) ({names}) are L3-reachable (not "
         f"isolated) and {acl}{gws} -- a compromise or misconfiguration anywhere on the flat L3 can reach "
-        f"the on-air media fabric.",
+        f"the on-air media fabric."
+        # The L3-reachability and the ACL coverage are MEASURED; which domains are "on-air-critical" is
+        # not -- that tier comes from the same CURATED registry media semantics as every other on-air
+        # claim, and it is what raises this decision to High. Disclose the basis at the point the
+        # decision is stated, or the reader takes a curated classification for an observed one.
+        + _av_authority(snap.get("multicast_intelligence"))
+        + " (the L3 reachability and ACL coverage above ARE measured; the on-air tiering is not).",
         sig["oncrit_exposed"], ["security", "modularity", "availability"],
         ["segmentation.summary.n_oncrit_exposed", "segmentation.gateway_acl.coverage_pct",
          "segmentation.domains[].tier"],
@@ -3655,7 +3823,7 @@ def _scorecard(snap, sig):
                f"{sig['bridges']} cut-edge link(s); {sig['nobackup_high']} node(s) with no backup path." + cov_note))
     # convergence -- absence-inferred (all signals 0 when nothing was collected), so cap + disclose on a partial
     # estate too, not just availability/load_balancing (audit-4 #6). The cap is a no-op once real deviations
-    # already pull the score to <=2 (e.g. on the real [HISTORY-REDACTED] fleet), so it only bites a clean-sample/large-blind estate.
+    # already pull the score to <=2 (e.g. on the real Meridian reference fleet), so it only bites a clean-sample/large-blind estate.
     cv = 4 - (1 if _gw_gap else 0) - (1 if sig["stp_blocked"] else 0) - (1 if sig["eol"] else 0)
     if coverage_gap:
         cv = min(cv, 2)
@@ -3705,8 +3873,33 @@ def _scorecard(snap, sig):
     co = _clamp(4 - (2 if sig["eol"] else 0) - (1 if sig["near"] else 0))
     if coverage_gap:
         co = min(co, 2)                  # cannot certify 'Comfortable' refresh-CapEx when part of the fleet's lifecycle is unknown
+    # `coverage_gap` measures COLLECTION coverage, which is a DIFFERENT axis from lifecycle-band
+    # coverage: a fleet can be 100% collected (census known, not_collected == 0) and still have every
+    # platform unmatched by the offline EoX KB. Both eol and near then count 0, and this axis scored a
+    # top 4/4 'Comfortable' with the evidence sentence "0 past-LDoS + 0 near-LDoS/past-EoS asset(s)" --
+    # byte-identical to a fully-assessed healthy fleet. Refresh CapEx cannot be called comfortable when
+    # the lifecycle of the assets it would be spent on was never determined (not-observed != healthy).
+    #
+    # And `lifecycle_unknown` alone was itself a NAMED SUBSET of that class: it is derived from
+    # len(life), so it reads 0 when the axis produced NOTHING -- lifecycle_risk absent from the
+    # snapshot, or `per_device: []`. Measured on a fully-collected fleet (coverage_gap False), both
+    # scored 4/4 'Comfortable' with the evidence sentence byte-identical to the healthy control.
+    # Clamp on the whole undetermined population -- banded Unknown OR never banded at all -- and
+    # name the two sub-populations separately so "we asked and could not tell" is distinguishable
+    # from "we never asked".
+    lc_unknown = _as_int(sig.get("lifecycle_unknown"))
+    lc_missing = _as_int(sig.get("lifecycle_not_assessed"))
+    lc_undet = _as_int(sig.get("lifecycle_undetermined")) or (lc_unknown + lc_missing)
+    if lc_undet:
+        co = min(co, 2)
     out.append(_axis_entry("cost", co, "Pressure" if co <= 2 else "Comfortable",
                f"{sig['eol']} past-LDoS + {sig['near']} near-LDoS/past-EoS asset(s) imply refresh CapEx."
+               + (f" {lc_undet} asset(s) could NOT be lifecycle-banded"
+                  + (f" ({lc_unknown} matched no EoX bulletin; {lc_missing} were never assessed by the "
+                     "lifecycle axis at all)" if lc_unknown and lc_missing
+                     else " (never assessed by the lifecycle axis at all)" if lc_missing else "")
+                  + " -- their refresh exposure is UNDETERMINED, not nil, so this axis cannot read "
+                    "'Comfortable'." if lc_undet else "")
                + cov_note))
     return out
 
@@ -3968,7 +4161,7 @@ def _replacement_bom(snap):
     CURRENT model. Read straight from lifecycle_risk.per_device (band + model). A supported successor SKU
     is chosen at detailed design -- not invented here. Supportable assets carry forward."""
     life = _dict_rows(_as_dict(snap.get("lifecycle_risk")).get("per_device"))
-    replace, refresh = {}, {}
+    replace, refresh, undetermined = {}, {}, {}
     for d in life:
         band = str(d.get("band", "")).strip().lower()
         model = d.get("model") or "Unknown"
@@ -3976,15 +4169,28 @@ def _replacement_bom(snap):
             replace[model] = replace.get(model, 0) + 1
         elif _is_refresh_band(band):                     # approaching LDoS, or past-sale but STILL supported
             refresh[model] = refresh.get(model, 0) + 1    # -> refresh, NOT replace-now (one owner: #50)
+        elif band == "unknown":
+            # A THIRD disposition, because "not banded" is not "carries forward". Unknown fell
+            # through both branches, so an all-Unknown fleet produced two empty lists and §5.1 was
+            # omitted ENTIRELY (design.py gates the heading on n_replace or n_refresh) — the
+            # customer was never offered a procurement decision on hardware nobody could assess.
+            # These are NOT counted as replace-now: nothing observed says they are past support.
+            undetermined[model] = undetermined.get(model, 0) + 1
     def _rows(m):
         return sorted(([model, qty] for model, qty in m.items()), key=lambda r: (-r[1], r[0]))
     return {
         "replace_now": _rows(replace),
         "refresh_soon": _rows(refresh),
+        "undetermined": _rows(undetermined),
         "n_replace": sum(replace.values()),
         "n_refresh": sum(refresh.values()),
+        "n_undetermined": sum(undetermined.values()),
         "note": "Quantities are the current models at/near end-of-support; a supported successor SKU is "
-                "selected at detailed design (not auto-chosen here). Supportable assets carry forward.",
+                "selected at detailed design (not auto-chosen here). Supportable assets carry forward."
+                + (" Undetermined models could not be banded — no EoX bulletin in the offline KB "
+                   "matched them — so they are listed for resolution, not costed: their support state "
+                   "is unknown, which is not the same as supportable."
+                   if undetermined else ""),
     }
 
 
@@ -4451,7 +4657,12 @@ def compute_target_state(snap, requirements=None, sig=None):
                                     "stp-root-fhrp-active-colocation"]))
 
     # 4. Hardware lifecycle disposition -- strong evidence
-    if sig["eol"] or sig["near"] or sig["not_collected"] or sig.get("lifecycle_unknown"):
+    # `lifecycle_not_assessed` is in the gate for the same reason it is in the cost axis: without it
+    # a fleet the lifecycle axis produced NO rows for (absent block, or `per_device: []`) failed every
+    # clause here and the target state carried NO hardware-lifecycle dimension at all -- the reader
+    # infers there is nothing to say about refresh, which is the strongest form of absence-as-health.
+    if (sig["eol"] or sig["near"] or sig["not_collected"] or sig.get("lifecycle_unknown")
+            or sig.get("lifecycle_not_assessed")):
         # The dispositions must PARTITION the lifecycle-assessed fleet, or procurement orders to one
         # number while the migration plan assumes another (#50). replace = past-LDoS, refresh = the
         # _is_refresh_band class (near-LDoS + past-EoS -- exactly _replacement_bom.refresh_soon), retain = the
@@ -4464,11 +4675,20 @@ def compute_target_state(snap, requirements=None, sig=None):
         # (retain == lifecycle_assessed - eol - near whenever nothing is undetermined, so a fleet with a fully
         # determined lifecycle census renders exactly as before -- the disclosure only appears when it is real.)
         retain, undet = sig["lifecycle_supported"], sig.get("lifecycle_unknown", 0)
-        undet_cur = (f" {undet} of the {sig['lifecycle_assessed']} lifecycle-assessed asset(s) carry an "
-                     f"UNDETERMINED band." if undet else "")
-        undet_tgt = (f" {undet} asset(s) have an UNDETERMINED lifecycle band (the model did not match Cisco's "
-                     f"EoL data) -- they are NOT counted as supportable: resolve each model on the EoL portal "
-                     f"before the carry-forward list is final." if undet else "")
+        # The devices the lifecycle axis never produced a row for are a DIFFERENT population from the
+        # ones it banded Unknown, and neither is covered by `not_collected` (a device can be fully
+        # collected and still never reach the lifecycle axis). Name it separately.
+        never = _as_int(sig.get("lifecycle_not_assessed"))
+        undet_cur = ((f" {undet} of the {sig['lifecycle_assessed']} lifecycle-assessed asset(s) carry an "
+                      f"UNDETERMINED band." if undet else "")
+                     + (f" {never} asset(s) of the fleet census were NOT lifecycle-assessed at all "
+                        f"(the axis produced no row for them)." if never else ""))
+        undet_tgt = ((f" {undet} asset(s) have an UNDETERMINED lifecycle band (the model did not match Cisco's "
+                      f"EoL data) -- they are NOT counted as supportable: resolve each model on the EoL portal "
+                      f"before the carry-forward list is final." if undet else "")
+                     + (f" A further {never} asset(s) were never lifecycle-assessed -- re-run the lifecycle "
+                        f"axis before the carry-forward list is final; they are NOT supportable by default."
+                        if never else ""))
         dims.append(_ts_dim(
             "Hardware lifecycle disposition",
             f"{sig['eol']} past-LDoS, {sig['near']} approaching-LDoS or past-EoS, {sig['not_collected']} "
@@ -4507,17 +4727,36 @@ def compute_target_state(snap, requirements=None, sig=None):
     if n_clocks > 0 or n_av > 0:
         n_op = _as_int(ptp.get("n_operational"))
         n_gm = len(_as_list(ptp.get("grandmasters")))
+        # `n_av` is a CURATED classification, and design.py renders this sentence verbatim under a column
+        # headed "Current (observed)" (design.py:895-899; the explorer does the same at
+        # blast_radius_explorer.html:7381). Qualify the count where the sentence is authored, in the wording
+        # runbook._av_authority already uses. Only when there IS an AV count -- a PTP-only media estate must
+        # not acquire an on-air caveat it has not earned.
+        av_note = _av_authority(mi) if n_av > 0 else ""
+        # THE GATE: `n_clocks > 0 or n_av > 0` fires on the curated count alone, so a fleet with no PTP
+        # evidence whatever can raise a whole target-state dimension off an unverified hint. Deliberate
+        # choice: KEEP the gate (the classified AV groups are really joined on the fabric -- suppressing the
+        # dimension would hide a real media estate, and the mandate here is disclosure, not re-scoring) but
+        # STOP calling it "Observed". When nothing but a non-authoritative AV label raised it, the confidence
+        # says so and the sentence states that no PTP evidence was seen.
+        # `not (_assessed and _n_auth > 0)` inlined a SECOND, laxer definition of "authoritatively
+        # backed" than the one `_av_authority` uses two lines above, and they disagreed on the
+        # incoherent census. One predicate now answers it for both.
+        curated_gate = n_clocks <= 0 and n_av > 0 and not _av_auth_backed(mi)
         dims.append(_ts_dim(
             "Media / timing fabric",
             f"{n_clocks} PTP-capable switch(es), {n_op} operational / {n_gm} grandmaster; "
-            f"{n_av} audio/video multicast group(s) on the flat fabric.",
+            f"{n_av} audio/video multicast group(s) on the flat fabric{av_note}."
+            + (" This dimension was raised by that multicast classification ALONE -- no PTP-capable switch "
+               "was observed -- so it rests on a classification, not on observed timing evidence."
+               if curated_gate else ""),
             "Run SMPTE ST 2059-2 (the broadcast PTP profile) with a boundary clock on every media-path switch, "
             "locked to a REDUNDANT grandmaster pair in one PTP domain (sub-microsecond, ~1 us accuracy); carry the "
             "AV essence flows as IGMPv3/SSM and isolate the media plane in a dedicated VRF/zone off the flat global L3.",
             f"A professional media (ST 2110) fabric lives or dies on timing: PTP-capable switches with "
             f"{'no operational grandmaster' if n_gm == 0 else 'a single grandmaster'} have no resilient time "
             f"reference, so a clock loss silently corrupts every audio/video essence flow.",
-            "Observed",
+            "Curated-classification" if curated_gate else "Observed",
             drivers=["multicast-media-fabric-ptp-timing", "security-isolate-oncritical-application-tier"]))
 
     n_gated = sum(1 for d in dims if d.get("requirement_needed"))

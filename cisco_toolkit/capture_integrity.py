@@ -18,6 +18,8 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
+from .input_custody import read_text as read_custodied_text
+
 # Live-collect sidecar (Plan A / Tier-2 #6): collect() persists {command: "timing_fallback"}
 # per device dir for every capture that fell back to netmiko send_command_timing (prompt
 # never confirmed -> completeness unproven). The offline loader builds cmd_to_file from
@@ -126,10 +128,7 @@ def load_capture_meta(dev_dir: str) -> Dict[str, str]:
     no prompt-verification claim can be made."""
     try:
         p = os.path.join(dev_dir or "", CAPTURE_META_FILENAME)
-        if not os.path.isfile(p):
-            return {}
-        with open(p, "r", encoding="utf-8") as f:
-            meta = json.load(f)
+        meta = json.loads(read_custodied_text(p, encoding="utf-8"))
         return meta if isinstance(meta, dict) else {}
     except Exception:
         return {}
@@ -174,8 +173,8 @@ def compute_capture_integrity_from_paths(
         host_meta = meta_all.get(host) or {}
         for command, path in (cmd_paths or {}).items():
             try:
-                with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                    body = f.read()
+                body = read_custodied_text(
+                    path, encoding="utf-8", errors="ignore")
             except Exception as exc:
                 try:
                     present = os.path.exists(path)

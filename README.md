@@ -50,27 +50,20 @@ consolidated severity-ranked **migration punch-list**, and a blast-radius
 - **Python 3.10+** (CI tests 3.10 → 3.14 on Linux and Windows)
 - [`netmiko`](https://pypi.org/project/netmiko/) — SSH collection
 - [`openpyxl`](https://pypi.org/project/openpyxl/) — Excel read/write
-- [`python-docx`](https://pypi.org/project/python-docx/) — *optional*, enables the DOCX runbook
-- Everything else is the standard library.
+- [`python-docx`](https://pypi.org/project/python-docx/) and
+  [`python-pptx`](https://pypi.org/project/python-pptx/) — the default document family
+- FastAPI/Uvicorn/python-multipart — the installed AssessHub surface
 
 ## Install
 
-The quickest path is just the two runtime dependencies:
+Install the project itself to get the complete, stable **`cisco-assess`**,
+**`assesshub`**, and **`cisco-mcp-server`** command surface. A plain install
+(or built wheel) is relocatable: the explorer template, verified offline
+registries, AssessHub SPA and synthetic demo data ship inside the distribution:
 
 ```bash
-pip install netmiko openpyxl          # minimal runtime
-```
-
-Or install the project itself to get a stable **`cisco-assess`** console command
-plus declared dependencies. A plain install (or a built wheel) is fully
-relocatable: the explorer-HTML template and the offline KB data ship *inside*
-the `cisco_toolkit` package as package-data and are loaded package-relative, so
-they work the same from a checkout, a `pip install .`, or a wheel:
-
-```bash
-pip install .                         # runtime only
-pip install ".[docx]"                # + the DOCX runbook
-pip install -e ".[dev,docx]"         # editable, + pytest / ruff / mypy for development
+pip install .                         # complete runtime
+pip install -e ".[dev]"              # editable + test/lint/type tooling
 ```
 
 After installing, `cisco-assess …` is equivalent to `python COLLECT_PARSE_V3_23_0.py …`
@@ -140,6 +133,13 @@ code edits take effect without reinstalling — not a runtime requirement.
   operations calendar and a TAC-readiness evidence pack; sections whose
   evidence was not collected are declared, never invented (unless
   `--no-opshandbook`; needs `python-docx`).
+- `<output-base>.run_manifest.json` — the per-run, hash-chained custody record. The
+  finalizer seals the exact current-run artifact set, provenance, evidence,
+  redaction state, phase failures, and finalized timings, then immediately
+  re-verifies the chain, metadata, and artifact bytes before reporting success.
+  The seal is unkeyed: it detects corruption or careless edits, but it does not
+  authenticate the producer unless its full `chain_root` is compared with a
+  value retained out of band.
 
 ## Usage
 
@@ -157,6 +157,12 @@ python COLLECT_PARSE_V3_23_0.py --trend wave0.snapshot.json wave1.snapshot.json 
 
 # See every option
 python COLLECT_PARSE_V3_23_0.py --help
+
+# Re-check a delivered set after transfer (artifact bytes are checked by default)
+python -m cisco_toolkit.manifest verify path/to/run.run_manifest.json
+
+# Inspect only a deliberately separated manifest; this explicitly skips artifact bytes
+python -m cisco_toolkit.manifest verify path/to/run.run_manifest.json --metadata-only
 ```
 
 Useful flags: `--workers N` (parallel SSH workers, default 5; `1` = sequential),

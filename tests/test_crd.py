@@ -764,3 +764,187 @@ def test_crd_deliverable_route_renders_wellformed_snapshot(hub_client):
     assert r.status_code == 200, r.text[:300]
     assert r.content[:2] == b"PK", "expected a .docx (zip) body"
     assert len(r.content) > 10_000, f"suspiciously small CRD: {len(r.content)} bytes"
+
+
+def _crd_cells(models, tmp_path):
+    """Every table cell of a CRD built from a fleet with the given device models."""
+    from cisco_toolkit.analyze import compute_lifecycle_risk
+    from cisco_toolkit.crd import write_crd_docx
+    snap = {"schema": "collect_parse_snapshot/1", "interfaces": {},
+            "lifecycle_risk": compute_lifecycle_risk(
+                {f"sw{i}": {"model": m, "sw_version": "x"} for i, m in enumerate(models)},
+                asof="2026-06-07")}
+    out = str(tmp_path / "crd.docx")
+    write_crd_docx(out, snap, "Unit Test Fleet")
+    return [c.text for t in Document(out).tables for r in t.rows for c in r.cells]
+
+
+def test_crd_discloses_an_unbanded_fleet_in_BOTH_the_evidence_row_and_the_constraints(tmp_path):
+    """Two exits carried the same false-clean reading; fixing one would have left the other.
+
+    §2's evidence table printed `n_past_ldos` bare, so a fleet nothing could be banded on showed a
+    plain "0" — identical to a fleet verified fully supported. Separately, §4's constraints register
+    emitted a hardware-lifecycle constraint only when `n_past_ldos > 0` or `n_past_eos > 0`; both read
+    0 on an unbanded fleet, so NO constraint was recorded and the workshop wrote requirements as
+    though refresh were a settled non-issue.
+
+    The CRD is the instrument the requirements workshop is run from — both readings must be honest.
+    """
+    cells = _crd_cells(["TOTALLY-MADE-UP", "C9300-48T"], tmp_path)
+    ldos_row = [c for c in cells if c.startswith("0 (+ 2 device(s) NOT ASSESSED")]
+    assert ldos_row, f"§2 printed a bare LDoS count on an unbanded fleet: {cells!r}"
+    assert any("could NOT be lifecycle-banded" in c for c in cells), \
+        "§4 recorded no hardware-lifecycle constraint for a fleet whose lifecycle is undetermined"
+    assert any("COVERAGE GAP (lifecycle risk)" in c for c in cells), \
+        "the constraint is not labelled as a coverage gap"
+
+
+def test_crd_leaves_a_fully_banded_fleet_untouched(tmp_path):
+    """Non-vacuity: neither disclosure may fire when every platform WAS banded, or they say nothing."""
+    cells = _crd_cells(["WS-C4948E-F"], tmp_path)
+    assert not any("NOT ASSESSED" in c for c in cells), \
+        "a fully-banded fleet gained a spurious coverage disclosure in §2"
+    assert not any("could NOT be lifecycle-banded" in c for c in cells)
+    # ...and the real EoL constraint must still be the one recorded.
+    assert any("past last-day-of-support (LDoS)" in c for c in cells)
+
+
+# =====================================================================================================
+# §4.3 REQ-T-MC-001 multicast classification AUTHORITY (review r9 EXIT D).
+#
+# The requirement named the classified-group count -- "Preserve multicast delivery for the N classified
+# group(s) (e.g. PTP-primary) ..." -- with no authority qualification. The CRD is the instrument a
+# requirements WORKSHOP is run from, so a requirement written against a CURATED classification and
+# stated as though observed becomes a contractual commitment. analyze.compute_multicast_intelligence
+# already publishes the basis (`summary.n_av_groups_authoritative`); on the SHIPPED port pack it is
+# ZERO -- every multicast row is curated -- and the same on-air flag escalates a mac-alias finding from
+# Medium to High (analyze.py:2774). The fix is DISCLOSURE inside the requirement, not a re-scoring.
+# =====================================================================================================
+_MC_BASIS_LEAD = "CLASSIFICATION BASIS: the group addresses and their multicast activity are OBSERVED"
+
+
+def _real_multicast_crd_snap(groups=("224.0.1.129", "239.255.255.250"), authoritative=()):
+    """A CRD snapshot whose multicast sections come from the REAL producers.
+
+    `compute_service_map(igmp_groups=...)` classifies the addresses through the SHIPPED offline port
+    registry, and `compute_multicast_intelligence` derives the authority census from that. Addresses
+    named in `authoritative` have their registry semantics flipped BEFORE the intelligence pass, so the
+    census is still the producer's own arithmetic -- the only way to obtain the authoritative fleet the
+    shipped pack cannot produce (every multicast row in it is curated)."""
+    from cisco_toolkit.analyze import compute_multicast_intelligence, compute_service_map
+    sm = compute_service_map({}, {}, igmp_groups=list(groups))
+    for g in sm["multicast"]["classified_groups"]:
+        if g.get("group") in authoritative:
+            g["semantics_authoritative"] = True
+            g["semantics_source"] = "IANA multicast-addresses registry"
+    sm["multicast"]["active_switch_count"], sm["multicast"]["active_interfaces"] = 1, 2
+    snap = _snap()
+    snap["service_map"] = sm
+    snap["multicast_intelligence"] = compute_multicast_intelligence(sm)
+    return snap
+
+
+def _crd_text(snap, tmp_path, name="c.docx"):
+    out = str(tmp_path / name)
+    write_crd_docx(out, snap, "Multicast Fleet")
+    return _all_text(Document(out))
+
+
+def test_crd_multicast_requirement_states_its_curated_classification_basis(tmp_path):
+    """Shipped-pack reality: NO multicast group is classified on-air by an authoritative source, so
+    REQ-T-MC-001 must say so in the row the customer signs. Pre-fix the requirement ended at
+    '...snooping/querier behaviour per VLAN.' and the word CURATED appeared nowhere in the CRD."""
+    snap = _real_multicast_crd_snap()
+    s = snap["multicast_intelligence"]["summary"]
+    assert (s["n_av_groups"], s["n_av_groups_authoritative"]) == (1, 0)   # producer's verdict
+    text = _crd_text(snap, tmp_path)
+    assert "Preserve multicast delivery for the 2 classified group(s)" in text   # the ask is unchanged
+    assert _MC_BASIS_LEAD in text, "REQ-T-MC-001 still states a curated classification as observed"
+    assert ("NONE of them classified on-air by an authoritative source: the broadcast/AV label is a "
+            "CURATED offline-registry classification, not a measurement") in text
+    assert "Confirm the real use of each group in the workshop" in text
+
+
+def test_crd_multicast_requirement_is_not_assessed_when_the_census_is_absent(tmp_path):
+    """FAIL-CLOSED. A snapshot with classified groups but no `multicast_intelligence` at all must read
+    NOT ASSESSED -- an absent census may never be presented as authority, and may never be silently
+    dropped from a requirement that is about to become a commitment."""
+    snap = _real_multicast_crd_snap()
+    snap.pop("multicast_intelligence")
+    text = _crd_text(snap, tmp_path)
+    assert _MC_BASIS_LEAD in text
+    assert ("on-air classification authority NOT ASSESSED in this snapshot; treat the broadcast/AV "
+            "label as curated, not authoritative") in text
+
+
+def test_crd_multicast_requirement_credits_an_authoritative_fleet(tmp_path):
+    """NON-VACUITY 1. A fleet whose on-air classification IS authoritative must be reported as such --
+    the qualifier is derived from the census, not an unconditional caveat on every CRD."""
+    snap = _real_multicast_crd_snap(authoritative=("224.0.1.129",))
+    s = snap["multicast_intelligence"]["summary"]
+    assert (s["n_av_groups"], s["n_av_groups_authoritative"]) == (1, 1)   # producer's verdict
+    text = _crd_text(snap, tmp_path)
+    assert "1 of 1 on-air classification(s) rest on an authoritative source" in text
+    assert "NONE of them classified on-air by an authoritative source" not in text
+    assert "authority NOT ASSESSED in this snapshot" not in text
+
+
+def test_crd_fleet_with_no_media_estate_gains_no_multicast_requirement_or_caveat(tmp_path):
+    """NON-VACUITY 2. §4.3 is gated on observed multicast, so a fleet with no media estate must get
+    NEITHER the requirement NOR its authority caveat -- the disclosure may not leak into a document
+    that classifies nothing."""
+    snap = _snap()
+    snap["service_map"] = {"services": snap["service_map"]["services"]}
+    text = _crd_text(snap, tmp_path)
+    assert "REQ-T-MC-001" not in text
+    for token in (_MC_BASIS_LEAD, "NONE of them classified on-air",
+                  "on-air classification authority NOT ASSESSED"):
+        assert token not in text, f"a non-media fabric acquired multicast authority text: {token!r}"
+
+
+def test_crd_multicast_requirement_refuses_an_incoherent_census(tmp_path):
+    """authoritative > total is incoherent (the counts are published independently). '7 of 3' is
+    indistinguishable from a real ratio, so the incoherence is disclosed instead -- runbook.py carries
+    the same check because an earlier fix printed a NEGATIVE count into a client workbook."""
+    snap = _real_multicast_crd_snap()
+    snap["multicast_intelligence"]["summary"].update(n_av_groups=3, n_av_groups_authoritative=7)
+    text = _crd_text(snap, tmp_path)
+    assert "census INCOHERENT: 7 classification(s) reported as authoritative out of 3 on-air group(s)" in text
+    assert "7 of 3" not in text
+
+
+@pytest.mark.parametrize("bad", [5, "x", [1, 2], {"k": 1}, None, {"summary": 5}])
+def test_crd_multicast_authority_tolerates_a_malformed_census(tmp_path, bad):
+    """A malformed `multicast_intelligence` must degrade to NOT ASSESSED and still emit an openable
+    CRD -- never claim authority, never abort the deliverable (an HTTP 500 on the webapp route)."""
+    import os
+    snap = _real_multicast_crd_snap()
+    snap["multicast_intelligence"] = bad
+    out = str(tmp_path / "c.docx")
+    write_crd_docx(out, snap, "Poison")
+    assert os.path.exists(out)
+    text = _all_text(Document(out))
+    assert "authority NOT ASSESSED in this snapshot" in text
+    assert "rest on an authoritative source" not in text
+
+
+def test_crd_av_authority_mirrors_the_runbook_wording():
+    """crd._av_authority is a deliberate MIRROR of runbook._av_authority (documented in both
+    docstrings) so the CRD and the runbook cannot make two different authority claims about the same
+    fact in one deliverable set. Drive both over one case table."""
+    from cisco_toolkit.crd import _av_authority as crd_av
+    from cisco_toolkit.runbook import _av_authority as runbook_av
+    cases = [
+        None, {}, 5, "x", {"summary": 5}, {"summary": {}},
+        {"summary": {"n_av_groups": 3, "n_av_groups_authoritative": 0}},
+        {"summary": {"n_av_groups": 3, "n_av_groups_authoritative": 2}},
+        {"summary": {"n_av_groups": 3, "n_av_groups_authoritative": 3}},
+        {"summary": {"n_av_groups": 3, "n_av_groups_authoritative": 7}},
+        {"summary": {"n_av_groups": 3, "n_av_groups_authoritative": None}},
+        {"summary": {"n_av_groups": 3, "n_av_groups_authoritative": "lots"}},
+        {"summary": {"n_av_groups": 3, "n_av_groups_authoritative": -4}},
+        {"summary": {"n_av_groups": None, "n_av_groups_authoritative": 2}},
+    ]
+    for case in cases:
+        assert crd_av(case) == runbook_av(case), f"wording diverged on {case!r}"
+    assert len({runbook_av(c) for c in cases}) >= 4    # the table is not vacuous

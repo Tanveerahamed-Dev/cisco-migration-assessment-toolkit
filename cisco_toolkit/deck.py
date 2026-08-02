@@ -60,6 +60,42 @@ def _clean(s) -> str:
     return xml_safe((str(s) if s is not None else "").replace("Â·", "·").replace("Â", ""))
 
 
+def _dossier_coverage(d) -> tuple:
+    """(n_na, n_axes, thin) for one device-dossier row — how much of its risk band rests on evidence.
+
+    MIRROR of the canonical rule in cisco_toolkit/excel.py::dossier_coverage. Duplicated rather than
+    imported because excel.py pulls in openpyxl + analyze + parse and this module is a thin presentation
+    layer; the duplication is caught by EXECUTION --
+    tests/test_deck.py::test_dossier_coverage_mirrors_the_canonical_rule drives this function over
+    excel.DOSSIER_COVERAGE_CASES and fails the moment the two disagree.
+
+    compute_device_dossiers weights an ABSTAINING axis at ZERO exposure, so an asset whose axes were
+    never assessed bands 'Low' with risk_index 0 — a collection gap that renders as a clean bill of
+    health. FAIL-CLOSED on a missing census: no denominator means coverage is itself NOT ASSESSED."""
+    dd = d if isinstance(d, dict) else {}
+    ax = dd.get("exposures")
+    axes = [e for e in ax if isinstance(e, dict)] if isinstance(ax, list) else []
+    n_axes = len(axes)
+    n_na = sum(1 for e in axes if e.get("state") == "na")
+    if not n_axes:
+        try:
+            n_na = max(0, int(dd.get("n_na") or 0))
+        except (TypeError, ValueError):
+            n_na = 0
+        return n_na, 0, True
+    return n_na, n_axes, n_na * 2 >= n_axes
+
+
+def _coverage_phrase(d) -> str:
+    """Short per-asset coverage phrase for the slide. Never blank — absence has to be legible next to
+    the band, or a 'Low' chip reads as a measured clean result."""
+    n_na, n_axes, thin = _dossier_coverage(d)
+    if not n_axes:
+        return f"axis census ABSENT — coverage NOT ASSESSED ({n_na} recorded not-assessed)"
+    return (f"{n_na} of {n_axes} risk axes NOT ASSESSED"
+            + (" — band rests on absent evidence" if thin else ""))
+
+
 def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> None:
     """Render the executive deck to `output_path`. A missing python-pptx is a warning + skip (the run's
     other deliverables are unaffected); any unexpected render error is logged, never raised."""
@@ -168,6 +204,24 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     def _D(x): return x if isinstance(x, dict) else {}    # audit-5 totality: a truthy non-dict section -> {}
     def _R(x): return [r for r in (x if isinstance(x, list) else []) if isinstance(r, dict)]
     def _L(x): return x if isinstance(x, list) else []    # list of anything (ids/strings) -> [] when not a list
+    _ai = _D(snap.get("assessment_integrity"))
+    _raw_failed = _ai.get("failed_phases")
+    _failed = [str(x) for x in _raw_failed] if isinstance(_raw_failed, list) else (
+        [str(_raw_failed)] if _raw_failed else [])
+    for _key, _value in _ai.items():
+        if _key not in ("failed_phases", "n_violations") and \
+                str(_value).strip().lower() in ("failed", "compute_failed", "unavailable", "error"):
+            _failed.append(f"{_key}: {_value}")
+    for _key, _value in snap.items():
+        if isinstance(_value, dict) and _value.get("_unavailable"):
+            _failed.append(f"{_key}: unavailable")
+    _failed = list(dict.fromkeys(_failed))
+
+    def _phase_failed(*tokens):
+        def _key(value):
+            return "".join(ch for ch in str(value).lower() if ch.isalnum())
+        return any(any(_key(token) in _key(item) for token in tokens) for item in _failed)
+
     s = slide(dark=True)
     rect(s, 0, 0, W, 7.5, _NAVY)
     eb = _D(snap.get("executive_brief"))
@@ -181,8 +235,12 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     sub = eb.get("posture_statement") or ""
     # honesty (wave R2-4-02): when the cross-axis synthesis FAILED (sentinel / assessment_integrity flag),
     # say so on the title slide rather than rendering an em-dash "— devices · — endpoints" as if it were scale.
-    if eb.get("_unavailable") or _D(snap.get("assessment_integrity")).get("executive_brief") == "compute_failed":
+    if eb.get("_unavailable") or _ai.get("executive_brief") == "compute_failed" or _failed:
         _scale_line = "⚠ Cross-axis synthesis unavailable — see the workbook Executive Brief"
+        if _failed:
+            _scale_line = (
+                f"ASSESSMENT UNVERIFIED - {len(_failed)} failed phase(s); "
+                "empty fallbacks are not clean results")
     else:
         # coerce PER VALUE: dict.get(default) only substitutes when the KEY is absent, so a present-but-null
         # scale value (an uploaded / partially-computed snapshot) rendered the literal 'None devices' on the
@@ -222,12 +280,16 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
         _b = str(r.get("band", ""))   # str(): a list/dict band from a malformed upload is an unhashable key
         band_counts[_b] = band_counts.get(_b, 0) + 1
     avg = posture.get("avg_health", "—")
+    health_unavailable = _phase_failed("health score") or not isinstance(snap.get("health_scores"), list)
+    if health_unavailable:
+        avg = "-"
     # stat callouts across the full width (generous gaps, no side-by-side columns to overlap)
     stat(s, 0.7, 1.95, f"{avg}", "avg health / 100", _NAVY, w=3.4)
     # false-health guard: if the brief is absent/failed, posture is {} — fall back to the band tally
     # computed above from health_scores, never a literal 0 that would claim '0 Critical' on a Critical fleet.
-    stat(s, 5.0, 1.95, posture.get("n_critical", band_counts.get("Critical", 0)), "Critical-band switches", _CRIT, w=3.4)
-    stat(s, 9.3, 1.95, len(hs), "switches in scope", _INK, w=3.3)   # 303 inventoried; 50 not collected -> "assessed" overclaims
+    stat(s, 5.0, 1.95, "-" if health_unavailable else posture.get(
+        "n_critical", band_counts.get("Critical", 0)), "Critical-band switches", _CRIT, w=3.4)
+    stat(s, 9.3, 1.95, "-" if health_unavailable else len(hs), "switches in scope", _INK, w=3.3)
     # full-width band-distribution bar
     order = ["Excellent", "Good", "Fair", "Poor", "Critical", "Insufficient Data"]
     segs = [(band_counts.get(b, 0), _BAND_COLOR.get(b, _MUTED)) for b in order]
@@ -261,10 +323,14 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     s = slide()
     header(s, "What gates the migration", "Top migration risks")
     pl = _R(snap.get("punchlist"))
+    punch_unavailable = _phase_failed("punch-list", "punchlist") or not isinstance(snap.get("punchlist"), list)
     n_crit = sum(1 for i in pl if i.get("severity") == "Critical")
     n_high = sum(1 for i in pl if i.get("severity") == "High")
+    pl_count = "UNVERIFIED" if punch_unavailable else len(pl)
+    if punch_unavailable:
+        n_crit = n_high = "UNVERIFIED"
     text(s, 0.7, 1.95, W - 1.4, 0.4,
-         [[(f"{len(pl)} consolidated finding(s)  ", 14, _NAVY, True),
+         [[(f"{pl_count} consolidated finding(s)  ", 14, _NAVY, True),
            (f"· {n_crit} Critical · {n_high} High — the de-duplicated, severity-ranked punch-list.",
             13, _MUTED, False)]])
     y = 2.6
@@ -287,35 +353,63 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     # compound patterns, and the engineer's verdict. Skipped when the snapshot has no register.
     _dossiers = _D(snap.get("device_dossiers"))   # a truthy non-dict section would crash the .get() chain
     dd = _R(_dossiers.get("per_device"))
-    dd_top = [d for d in dd if d.get("risk_band") in ("Severe", "Elevated", "Guarded")][:5]
+    _banded = [d for d in dd if d.get("risk_band") in ("Severe", "Elevated", "Guarded")]
+    # review r9 F1 (absence rendered as health, in a customer-facing deck): dd_top SELECTED only
+    # Severe/Elevated/Guarded. compute_device_dossiers weights a not-assessed axis at ZERO exposure, so a
+    # fleet whose lifecycle/software/control-plane/log/CIS/hygiene/drift/QoS axes were never collected
+    # bands EVERY asset 'Low' with risk_index 0 -- the selection then matched nothing and the slide was
+    # dropped entirely. The steering committee saw no stacked-risk slide at all and read that as "no
+    # stacked risk". The un-evidenced assets are the finding: rank them by not-assessed axes and say so.
+    _thin = [d for d in dd if _dossier_coverage(d)[2]]
+    dd_top = _banded[:5]
+    _absence_mode = False
+    if not dd_top and _thin:
+        dd_top = sorted(_thin, key=lambda d: (-_dossier_coverage(d)[0], str(d.get("host", ""))))[:5]
+        _absence_mode = True
     if dd_top:
         s = slide()
-        header(s, "Stacked risk per asset", "The assets that worry an engineer most")
+        header(s, "Stacked risk per asset",
+               "Assets whose risk axes were NOT ASSESSED — coverage gap, not a clean result"
+               if _absence_mode else "The assets that worry an engineer most")
         dsum = _D(_dossiers.get("summary"))
         dbands = _D(dsum.get("bands"))
-        text(s, 0.7, 1.95, W - 1.4, 0.4,
-             [[(f"{dbands.get('Severe', 0)} Severe · {dbands.get('Elevated', 0)} Elevated  ", 14, _NAVY, True),
-               ("— risk index = topology impact × stacked exposure; compound patterns (CR-xx) mark "
-                "independent risks coinciding on one box.", 13, _MUTED, False)]])
+        _n_half = sum(1 for d in dd if _dossier_coverage(d)[2])
+        _lead = ([("0 Severe · 0 Elevated · 0 Guarded  ", 14, _NAVY, True),
+                  (f"— NOT a clean fleet: {_n_half} of {len(dd)} asset(s) have half or more of their risk "
+                   "axes NOT ASSESSED, and an un-assessed axis scores ZERO exposure, so those assets band "
+                   "'Low' on absent evidence. Collect the missing evidence before reading this as low risk.",
+                   13, _MUTED, False)] if _absence_mode else
+                 [(f"{dbands.get('Severe', 0)} Severe · {dbands.get('Elevated', 0)} Elevated  ", 14, _NAVY, True),
+                  ("— risk index = topology impact × stacked exposure; compound patterns (CR-xx) mark "
+                   "independent risks coinciding on one box. "
+                   f"{_n_half} of {len(dd)} asset(s) have half or more of their risk axes NOT ASSESSED — an "
+                   "un-assessed axis scores ZERO exposure, so a low band can rest on absent evidence.",
+                   13, _MUTED, False)])
+        text(s, 0.7, 1.95, W - 1.4, 0.62, [_lead])
         _BAND_SEV = {"Severe": "Critical", "Elevated": "High", "Guarded": "Medium", "Low": "Low", "Unassessed": "Info"}
-        y = 2.6
+        y = 2.75
         for d in dd_top:
             band = d.get("risk_band", "Low")
-            chip(s, 0.7, y, _clean(f"{band} {d.get('risk_index', 0)}"),
-                 _SEV_COLOR.get(_BAND_SEV.get(band, "Low"), _MUTED), w=1.45, h=0.34, size=10)
+            _thin_row = _dossier_coverage(d)[2]
+            # A thin row must NOT get the green 'Low' chip: that colour is the whole false-health signal.
+            _chip_rgb = (_MUTED if _thin_row
+                         else _SEV_COLOR.get(_BAND_SEV.get(band, "Low"), _MUTED))
+            chip(s, 0.7, y, _clean(f"{band} {d.get('risk_index', 0)}" + (" ?" if _thin_row else "")),
+                 _chip_rgb, w=1.45, h=0.34, size=10)
             crs = " · ".join(c.get("code", "") for c in _R(d.get("compound"))) or ""
-            text(s, 2.35, y - 0.04, W - 3.1, 0.7,
+            text(s, 2.35, y - 0.04, W - 3.1, 0.86,
                  [[(_clean(str(d.get("host", ""))), 14, _INK, True),
                    (f"   {crs}", 11, _MUTED, False)],
+                  [(_clean(_coverage_phrase(d)), 10, _MUTED, False)],
                   # _ellip, not a bare [:160]: this is the exact class _ellip exists for (see its
-                  # docstring) — the [HISTORY-REDACTED]-fleet verdicts run 186-217 chars and the bare cut ended
+                  # docstring) — the Meridian reference fleet verdicts run 186-217 chars and the bare cut ended
                   # "…high-severity operational events in the device's own logs; removal strand",
                   # silently dropping "s 286 endpoint(s) across 3 VLAN(s)." with no cue that the
                   # engineer's verdict had been cut, let alone that its quantified impact was gone.
-                  [(_clean(_ellip(str(d.get("verdict") or ""), 160)), 11, _MUTED, False)]], space=1)
-            y += 0.78
+                  [(_clean(_ellip(str(d.get("verdict") or ""), 150)), 11, _MUTED, False)]], space=1)
+            y += 0.84
         if len(dd) > len(dd_top):
-            text(s, 2.35, y, W - 3.1, 0.3,
+            text(s, 2.35, min(y, 7.05), W - 3.1, 0.3,
                  [(f"+ {len(dd) - len(dd_top)} more asset(s) in the Device Risk Register workbook sheet.",
                    11, _MUTED, False, True)])
 
@@ -369,7 +463,14 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     # ---------------------------------------------------------------- 5. Hardware lifecycle (light)
     lr = _D(snap.get("lifecycle_risk"))
     lsum = _D(lr.get("summary"))
-    if lsum.get("n_devices"):
+    lifecycle_unavailable = _phase_failed("lifecycle risk") or bool(lr.get("_unavailable"))
+    if lifecycle_unavailable:
+        s = slide()
+        header(s, "A primary migration driver", "Hardware end-of-support exposure")
+        text(s, 0.7, 2.1, W - 1.4, 1.0,
+             [("UNVERIFIED - lifecycle-risk computation failed or was unavailable. No zero-exposure "
+               "conclusion is asserted; repair the phase and regenerate.", 15, _CRIT, True)])
+    elif lsum.get("n_devices"):
         s = slide()
         header(s, "A primary migration driver", "Hardware end-of-support exposure")
         # "Past end-of-support" is the Past-LDoS band ALONE (no TAC) — Past-EoS is end-of-SALE with
@@ -407,6 +508,12 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     header(s, "How it sequences", "Migration waves & readiness")
     mr = _R(snap.get("migration_readiness"))
     mg = _L(snap.get("move_groups"))   # only len()-ed below; a truthy non-list would crash len(mg)
+    readiness_unavailable = (
+        _phase_failed("migration readiness", "move groups")
+        or not isinstance(snap.get("migration_readiness"), list)
+    )
+    if readiness_unavailable:
+        mr = []
     # SSOT: the honest, actionable headline is the SEQUENCED wave count from the design blueprint's
     # wave_plan -- the raw move-group count is the L2 blast-radius partition (one big coupled domain +
     # singletons), which read as a wave count overstates parallelism (the audit's coverage-honesty fix).
@@ -422,13 +529,19 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     # the tiles themselves, so the wave count beside them cannot read as the whole scope (an exec read
     # "9 candidate waves" + a 6-row list as the full estate; the real estate was 53 groups, ~7x larger).
     _denom = f" of {n_groups} device group(s)" if n_groups else " — no groups assessed"
-    if wp.get("n_waves"):
+    if readiness_unavailable:
+        _denom = " - assessment UNVERIFIED"
+        stat(s, 0.7, 2.1, "-", "move groups - UNVERIFIED", _MUTED)
+    elif wp.get("n_waves"):
         stat(s, 0.7, 2.1, wp["n_waves"], f"candidate waves · {_nmg} move-group(s)", _NAVY)
     else:
         stat(s, 0.7, 2.1, len(mg) or len(mr), "move groups", _NAVY)
-    stat(s, 3.3, 2.1, tally["NOT READY"], f"NOT READY{_denom}", _CRIT, w=2.5)
-    stat(s, 5.9, 2.1, tally["CAUTION"], f"CAUTION{_denom}", _MED, w=2.5)
-    stat(s, 8.5, 2.1, tally["READY"], f"READY{_denom}", _OK, w=2.5)
+    stat(s, 3.3, 2.1, "-" if readiness_unavailable else tally["NOT READY"],
+         f"NOT READY{_denom}", _CRIT, w=2.5)
+    stat(s, 5.9, 2.1, "-" if readiness_unavailable else tally["CAUTION"],
+         f"CAUTION{_denom}", _MED, w=2.5)
+    stat(s, 8.5, 2.1, "-" if readiness_unavailable else tally["READY"],
+         f"READY{_denom}", _OK if not readiness_unavailable else _MUTED, w=2.5)
     _rt = {"READY": _OK, "CAUTION": _MED, "NOT READY": _CRIT}
     text(s, 0.7, 3.58, W - 1.4, 0.35, [("PER-GROUP READINESS", 12, _HIGH, True)])
     # Layout is COMPUTED, never coordinated by hand (QA row-11 BLOCK: the footnote was pinned at 6.5in
@@ -457,7 +570,11 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
                "Migration Readiness workbook sheet.", 11, _MUTED, False, True)])
         y += CUE_H
     foot_top = y + FOOT_GAP
-    if wp.get("n_waves"):
+    if readiness_unavailable:
+        text(s, 0.7, foot_top, W - 1.4, foot_h,
+             [("Readiness and wave-sequencing evidence is UNVERIFIED. Empty fallback arrays are "
+               "not proof that no groups are blocked or that the estate is ready.", 12, _CRIT, True)])
+    elif wp.get("n_waves"):
         text(s, 0.7, foot_top, W - 1.4, foot_h,
              [(f"{_nmg} L2-coupled move-group(s) — largest a "
                f"{wp.get('largest_group', 0)}-switch broadcast domain — sequence into {wp['n_waves']} "
@@ -492,7 +609,7 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
         _weak_all = [a for a in sc if isinstance(a.get("score"), int) and a.get("score") <= 1]
         weak = _weak_all[:5]   # 5 chips at 2.1in pitch is what the 13.33in slide holds
         if weak:
-            # A label promising "the weakest axes" must not silently drop one (the [HISTORY-REDACTED] fleet scores 6
+            # A label promising "the weakest axes" must not silently drop one (the Meridian reference fleet scores 6
             # axes at 0-1/4 and the 6th chip had nowhere to go). Disclose in the label itself.
             text(s, 0.7, 2.5, W - 1.4, 0.3,
                  [(("WEAKEST TRADE-OFF AXES (0–1 / 4)"
@@ -541,6 +658,10 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
             text(s, 0.7, y + 0.04, 0.5, 0.42, [(str(i), 18, _WHITE, True)], align=PP_ALIGN.CENTER)
             text(s, 1.4, y + 0.03, W - 2.1, 0.6, [(_clean(g), 15, _WHITE, False)])
             y += 0.78
+    elif _failed or eb.get("_unavailable") or _ai.get("executive_brief") == "compute_failed":
+        text(s, 0.7, y, W - 1.4, 0.8,
+             [("ASSESSMENT UNVERIFIED - no clean gating conclusion is issued because one or more "
+               "producer phases failed or were unavailable.", 16, _CRIT, True)])
     else:
         text(s, 0.7, y, W - 1.4, 0.5, [("No High/Critical gating items — the fleet is in good shape to schedule.",
                                         16, _OK, True)])

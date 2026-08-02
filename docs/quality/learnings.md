@@ -53,17 +53,17 @@ falsifiable fact and cite where it is checkable (a file, a test, or a commit).
 
 - Editable, overlap-free figures come from a register-sourced data model → clean SVG (real `<text>` + shapes,
   editable in draw.io/Inkscape) → 600-DPI PNG via PyMuPDF (`fitz`), never hand-patched raster; auto-sized boxes +
-  opaque label chips make overlap impossible by construction. Evidence: `[HISTORY-REDACTED]_DC_Design/figgen/svgkit.py`
+  opaque label chips make overlap impossible by construction. Evidence: `Reference_DC_Design/figgen/svgkit.py`
   (+ `figdata.py` SSOT + `build/swap_figures.py`).
 - `python-docx` cannot embed SVG (`add_picture` raises); a programmatically-assembled `.docx` needs raster PNG, so
-  the SVG stays the editable master and the PNG is the embed. Evidence: `[HISTORY-REDACTED]_DC_Design/figgen/build/swap_figures.py`.
+  the SVG stays the editable master and the PNG is the embed. Evidence: `Reference_DC_Design/figgen/build/swap_figures.py`.
 - A `.docx` authored by a non-python-docx tool (docx-js) exposes no style-name lookup: `add_paragraph(style="Heading 1")`
   raises `KeyError` though the body uses that style — capture the style OBJECT from an existing paragraph and assign
-  it. Evidence: `[HISTORY-REDACTED]_DC_Design/figgen/build/build_v75_content.py` (`capture()`).
+  it. Evidence: `Reference_DC_Design/figgen/build/build_v75_content.py` (`capture()`).
 - A static (non-field) TOC does not auto-update; after any pagination change re-measure each Heading-1 page (Word COM
   `Range.Information(3)`) and patch the trailing `\t<page>` run — a live TOC field auto-updates on open instead. No
   LibreOffice/pandoc → docx→PDF via Word COM `ExportAsFixedFormat(path, 17)`. Evidence:
-  `[HISTORY-REDACTED]_DC_Design/figgen/build/patch_toc.py` + `export_measure.py`.
+  `Reference_DC_Design/figgen/build/patch_toc.py` + `export_measure.py`.
 - The repo-wide review (2026-07-28, 98 findings) found ONE dominant class across every subsystem: an
   **empty/absent input treated as a clean one**. Its shapes are stable — `if not flags: flags = ["ok"]`;
   `.get(host, 1.0)` defaulting an unmeasured quality to perfect; a coverage guard keyed on a counter that reads 0

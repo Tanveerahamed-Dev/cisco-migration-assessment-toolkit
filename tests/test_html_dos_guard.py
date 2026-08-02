@@ -126,18 +126,46 @@ def test_write_html_explorer_survives_poisoned_interfaces(tmp_path):
 # --------------------------------------------------------------------------------------------------
 
 
+# A poisoned section makes an analysis genuinely unavailable, and html.py's FIRST verdict branch
+# withholds certification for exactly that reason ("No missing/failed section was interpreted as
+# clean" -- html.py:434). INDETERMINATE is therefore a CORRECT outcome for poisoned input.
+#
+# These assertions previously admitted only the three CERTIFYING verdicts, which pinned the
+# opposite contract: a corrupted snapshot must still yield a certification. That is the
+# false-health class CLAUDE.md guardrail 3 forbids ("Not observed" never silently becomes
+# "healthy"), asserted as the requirement. The tests were written for the crash surface and the
+# verdict clause was incidental to them, but the guard was later hardened to refuse, and then the
+# tests -- not the guard -- were what stood in the way.
+#
+# Widening an allowed set is exactly how a test gets defanged to green a suite, so this pairs the
+# widening with a check that does not exist today: an INDETERMINATE verdict must SAY it withheld
+# certification, or it is indistinguishable from a silent default. Discrimination is held at the
+# other end by test_delta_well_formed_result_unchanged and
+# test_routes_still_serve_a_well_formed_snapshot, which require a well-formed pair to certify.
+_DELTA_VERDICTS = ("CLEAN", "REVIEW", "REGRESSED", "INDETERMINATE")
+
+
+def _assert_honest_verdict(result, site, why):
+    verdict = result["verdict"]
+    assert verdict in _DELTA_VERDICTS, f"{site} -- {why}"
+    if verdict == "INDETERMINATE":
+        note = (result.get("verdict_note") or "").casefold()
+        assert "withheld" in note, (
+            f"{site} -- INDETERMINATE carried no withheld-certification note, so it cannot be told "
+            f"apart from a silent default: {why}"
+        )
+
+
 @pytest.mark.parametrize("poison, site, why", _DELTA_POISON, ids=_DELTA_IDS)
 def test_delta_survives_poison_in_old(poison, site, why):
-    d = compute_snapshot_delta(poison, _snap())
-    assert d["verdict"] in ("CLEAN", "REVIEW", "REGRESSED"), f"{site} -- {why}"
+    _assert_honest_verdict(compute_snapshot_delta(poison, _snap()), site, why)
 
 
 @pytest.mark.parametrize("poison, site, why", _DELTA_POISON, ids=_DELTA_IDS)
 def test_delta_survives_poison_in_new(poison, site, why):
     """Both operands must be guarded -- html.py:95 / :126 are the `new` twins of :94 / :125, and a fix
     applied to only one side leaves the other reachable from the same route."""
-    d = compute_snapshot_delta(_snap(), poison)
-    assert d["verdict"] in ("CLEAN", "REVIEW", "REGRESSED"), f"{site} -- {why}"
+    _assert_honest_verdict(compute_snapshot_delta(_snap(), poison), site, why)
 
 
 def test_delta_well_formed_result_unchanged():
@@ -214,7 +242,15 @@ def test_trend_point_well_formed_output_unchanged():
 def test_campaign_trend_survives_poison(poison, site, why):
     """Needs >= 2 snapshots: the went-dark scan at :637/:640 sits under `if len(timeline) >= 2`."""
     t = compute_campaign_trend([poison, _snap(generated_at="2026-02-01T00:00:00")])
-    assert t["verdict"] in ("IMPROVING", "MIXED", "REGRESSING", "FLAT", "INSUFFICIENT"), f"{site} -- {why}"
+    # INDETERMINATE for the same reason as the delta verdicts above: a poisoned band scan makes the
+    # trajectory unprovable, and inventing one of the five confident trend verdicts from it is the
+    # false-health outcome, not the safe one.
+    assert t["verdict"] in ("IMPROVING", "MIXED", "REGRESSING", "FLAT", "INSUFFICIENT",
+                            "INDETERMINATE"), f"{site} -- {why}"
+    if t["verdict"] == "INDETERMINATE":
+        assert "withheld" in (t.get("verdict_note") or "").casefold(), (
+            f"{site} -- INDETERMINATE without a withheld-certification note: {why}"
+        )
     assert len(t["timeline"]) == 2, f"{site} -- {why}"
 
 
@@ -331,7 +367,7 @@ def test_compare_route_survives_poison(client, poison, site, why):
     for old, new in ((good_id, bad_id), (bad_id, good_id)):   # both operands, both directions
         r = client.post("/api/compare", json={"old_id": old, "new_id": new})
         assert r.status_code == 200, f"{site} -- {why}\n{r.text[:400]}"
-        assert r.json()["verdict"] in ("CLEAN", "REVIEW", "REGRESSED")
+        _assert_honest_verdict(r.json(), site, why)
 
 
 @pytest.mark.parametrize("poison, site, why", [

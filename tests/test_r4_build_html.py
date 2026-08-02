@@ -47,7 +47,7 @@ _RUNCFG_IFACE_CMDS = ("show running-config interface", "show running-config | se
 # which is exactly the state a read-only TACACS policy produces for `show running-config`.
 _AUTHZ_DENIED = "command authorization failed\n"
 
-# Real `show vrf interface` output (the NX-OS column layout, copied from the [HISTORY-REDACTED] collection and
+# Real `show vrf interface` output (the NX-OS column layout, copied from the Meridian collection and
 # re-pointed at the fixture's own VLAN ids). This is the capture that put the SVI in the model on
 # the real device that reproduced BH-1: with the run-config refused, `show vrf interface` was the
 # ONLY source naming Vlan1/Vlan25, and Vlan25 was also a route out-interface.
@@ -70,7 +70,7 @@ def test_svi_without_an_ip_does_not_abort_the_whole_device(tmp_path):
     entirely. COLLECT_PARSE_V3_23_0.parse_one is wrapped by a bare `except Exception` in the
     ThreadPoolExecutor branch, so the device is silently omitted from `all_interfaces` and
     lands in the snapshot with ZERO interfaces -- 'this switch has no ports', not 'the parse
-    failed'. Precondition (reproduced verbatim on a real [HISTORY-REDACTED] device): the run-config channel
+    failed'. Precondition (reproduced verbatim on a real Meridian device): the run-config channel
     did not land, so svi_ip is '' on every SVI, while `show vrf interface` still names the
     SVIs and `show ip route` still exits through one of them.
     """
@@ -104,7 +104,7 @@ def test_svi_route_ranking_still_works_when_the_address_is_present(tmp_path):
 #       its pre-IOS-XE-16 spelling, so 25 real devices / 647 access ports read 'not captured'.
 # ======================================================================================
 _BPDU_CLASSIC = "spanning-tree portfast bpduguard default"
-_BPDU_EDGE = "spanning-tree portfast edge bpduguard default"     # IOS-XE 16.x+ (25 [HISTORY-REDACTED] devices)
+_BPDU_EDGE = "spanning-tree portfast edge bpduguard default"     # IOS-XE 16.x+ (25 Meridian devices)
 
 
 def _runcfg_with(global_line):
@@ -153,7 +153,7 @@ _IDENT = {"hostname": "core1", "serial_number": "FOC0000LOCAL",
 
 
 def test_neighbor_vtp_domain_is_never_a_copy_of_the_local_switchs_domain(tmp_path):
-    """367 of 367 rows on the [HISTORY-REDACTED] collection published a neighbour VTP domain identical to the
+    """367 of 367 rows on the Meridian collection published a neighbour VTP domain identical to the
     local one -- because it WAS the local one, assigned from switch_identity. A reader
     comparing the two workbook columns to find a VTP-domain mismatch could only conclude
     'every trunk agrees'. Not observed must not render as agreement."""
@@ -172,7 +172,7 @@ def test_neighbor_vtp_domain_is_never_a_copy_of_the_local_switchs_domain(tmp_pat
 
 
 def test_neighbor_switch_serial_is_never_the_neighbour_hostname(tmp_path):
-    """581 rows on the [HISTORY-REDACTED] collection carried the neighbour's HOSTNAME in a column labelled
+    """581 rows on the Meridian collection carried the neighbour's HOSTNAME in a column labelled
     'Neighbor Switch Serial' (no serial was ever parsed). The name is already published in
     its own `cdp_neighbor` column."""
     c2f = _write_device(tmp_path, "core1")

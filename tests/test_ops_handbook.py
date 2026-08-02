@@ -334,3 +334,67 @@ def test_known_issues_security_affected_names_only_failing_hosts():
     cissues, cabsent = _known_issues(_facts(clean))
     assert any(r[0] == "Security Posture" and "no failing check" in r[1].lower() for r in cissues)
     assert "security posture" not in " | ".join(a for a, _ in cabsent).lower()
+
+
+def _ev_with_lifecycle(**summary):
+    ev = {k: {} for k in ("si", "ph", "gd", "qa", "sr", "sec")}
+    ev.update({"devices": {}, "keystones": [], "n_keystones": 0, "n_sec_fail": 0,
+               "routing_protos": [], "n_proto_high": 0, "n_gw": 0, "n_fhrp": 0,
+               "lc": {"summary": summary}})
+    return ev
+
+
+def _lifecycle_row(ev):
+    from cisco_toolkit.ops import _known_issues
+    issues, _absent = _known_issues(ev)
+    return next((i for i in issues if i[0] == "Lifecycle Risk"), None)
+
+
+def test_ops_handbook_does_not_report_a_clean_lifecycle_for_an_UNASSESSED_fleet():
+    """"No past-LDoS / past-EoS platform flagged at assessment." is true of a fleet nobody assessed.
+
+    In a day-2 handbook the NOC runs the network from, that sentence reads as "your hardware is
+    supported". Same class as the LC-1 verdict (§7.22) and the At-a-Glance front matter (§7.23) —
+    the count exists in the summary, the consumer just never looked at it.
+    """
+    row = _lifecycle_row(_ev_with_lifecycle(n_past_ldos=0, n_past_eos=0, n_unknown=4))
+    assert row is not None, "an all-Unknown fleet produced NO lifecycle row at all"
+    text = (row[1] + row[3]).lower()
+    assert "4" in row[1] and ("undetermined" in text or "unknown" in text), (
+        f"the handbook reports a clean lifecycle for 4 unassessed devices: {row[1]!r}"
+    )
+
+
+def test_ops_handbook_still_reports_clean_when_the_fleet_WAS_assessed():
+    """Non-vacuity: a genuinely assessed, clean fleet must keep its clean statement."""
+    row = _lifecycle_row(_ev_with_lifecycle(n_past_ldos=0, n_past_eos=0, n_unknown=0))
+    assert row is not None and "No past-LDoS / past-EoS platform flagged" in row[1], row
+
+
+def test_ops_handbook_leads_with_the_real_finding_over_the_coverage_caveat():
+    """A real past-LDoS population must not be displaced by the undetermined branch."""
+    row = _lifecycle_row(_ev_with_lifecycle(n_past_ldos=2, n_past_eos=0, n_unknown=3))
+    assert row is not None and "past last-date-of-support" in row[1] and "2" in row[1], row
+
+
+def test_ops_handbook_discloses_undetermined_lifecycle_alongside_a_real_finding():
+    """The undetermined-coverage row was chained behind the findings (`elif`), so it fired only when
+    the fleet had ZERO past-LDoS and ZERO past-EoS. That covers the all-unbanded fleet and silently
+    drops the BROWNFIELD one -- some gear banded, most not -- which is the fleet a day-2 handbook is
+    actually written for.
+
+    Measured before the fix: 1 Past-LDoS + 20 Unknown emitted the past-LDoS caveat alone; the NOC
+    reading §7 was never told that 20 devices had no support state at all.
+    """
+    from cisco_toolkit.ops import _known_issues
+    issues, _absent = _known_issues(_ev_with_lifecycle(n_past_ldos=1, n_past_eos=0, n_unknown=20))
+    rows = [i for i in issues if i[0] == "Lifecycle Risk"]
+    assert len(rows) == 2, f"the coverage row was dropped behind the finding: {rows}"
+    assert any("past last-date-of-support" in r[1] for r in rows), rows
+    cov = [r for r in rows if "UNDETERMINED" in r[1]]
+    assert cov and "20" in cov[0][1], rows
+
+    # NON-VACUITY: a fully-banded fleet with the SAME real finding gains no coverage row.
+    issues2, _a2 = _known_issues(_ev_with_lifecycle(n_past_ldos=1, n_past_eos=0, n_unknown=0))
+    rows2 = [i for i in issues2 if i[0] == "Lifecycle Risk"]
+    assert len(rows2) == 1 and "UNDETERMINED" not in rows2[0][1], rows2

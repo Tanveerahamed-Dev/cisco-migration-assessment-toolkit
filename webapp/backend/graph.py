@@ -34,8 +34,8 @@ def build_graph(snap: Dict[str, Any], keystones: Optional[List[str]] = None) -> 
 
     # CANONICAL -> RAW node id. Both sides of the comparison must live in the same namespace, and
     # they did not: `node_ids` holds RAW snapshot keys while `target` came back from `canon()`, which
-    # lower-cases (engine.canon_host('[HISTORY-REDACTED]-CORE-01.lab') -> '[HISTORY-REDACTED]-core-01'). So on any fleet whose
-    # hostnames are not already lower-case -- [HISTORY-REDACTED]-CORE-01 / [HISTORY-REDACTED]-ACC-14, i.e. the Cisco norm -- EVERY
+    # lower-cases (engine.canon_host('MERIDIAN-CORE-01.lab') -> 'MERIDIAN-core-01'). So on any fleet whose
+    # hostnames are not already lower-case -- MERIDIAN-CORE-01 / MERIDIAN-ACC-14, i.e. the Cisco norm -- EVERY
     # neighbour failed the `target not in node_ids` test and the graph came back with ZERO edges.
     # Measured on the shipped sample fleet: 23 nodes / 25 edges as stored, 23 nodes / 0 edges with
     # the same fleet upper-cased. That does not render as an error; it renders as a fabric of

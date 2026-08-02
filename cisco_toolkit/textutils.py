@@ -64,7 +64,7 @@ def is_trunk_mode(mode) -> bool:
 # landed for that port -- NOT ASSESSED, never "off".
 # Both consumers hand-rolled their own token set and NEITHER matched it, in opposite directions:
 # archreview L2-2 asked `v not in ("no","disabled","off","false","-","--")`, and "disable" is not in
-# that set, so an explicitly DISABLED edge port counted as GUARDED (6 such ports on the [HISTORY-REDACTED] fleet);
+# that set, so an explicitly DISABLED edge port counted as GUARDED (6 such ports on the Meridian reference fleet);
 # design_advisor asked `v in ("enable","enabled","true","on")` and counted the same ports UNGUARDED.
 # Same field, same snapshot, opposite verdicts -- and archreview's direction was the false-health one.
 # Same class as is_trunk_mode above (PR-#396). Three-state on purpose so no caller can collapse "no
@@ -289,7 +289,27 @@ def _split_macs(s: str) -> List[str]:
 
 
 #: Separators a client or site name is re-spelt with once it becomes an identifier.
-FORBIDDEN_TOKEN_SEPARATORS = r"[\s._\-]"
+#:
+#: ASCII-only was a NAMED SUBSET of "any separator". Measured: denylist ``ACME BANK`` caught
+#: ``ACME-BANK`` and ``ACME_BANK`` but NOT ``ACME–BANK`` (U+2013 EN DASH) — and an en dash is what
+#: autocorrect produces, what Word paste carries, and what a wrapped terminal emits. NFKC
+#: normalisation does NOT fix this one: U+2013 has no compatibility decomposition, so it survives
+#: normalisation unchanged. It has to be in the separator class itself.
+#:
+#: Included, each because it has been seen standing between the two halves of a real client name:
+#: the Unicode dash/hyphen block (U+2010–U+2015, incl. non-breaking hyphen and en/em dash), MINUS
+#: SIGN, FULLWIDTH HYPHEN-MINUS, SOFT HYPHEN, the zero-width format characters (ZWSP/ZWNJ/ZWJ, WORD
+#: JOINER, ZWNBSP) which render as nothing at all, MIDDLE DOT, and FULLWIDTH LOW LINE. ``\s``
+#: already covers NBSP for str patterns, so it is not repeated here.
+FORBIDDEN_TOKEN_SEPARATORS = (
+    r"[\s._\-"
+    r"­"              # SOFT HYPHEN — invisible unless the line wraps
+    r"‐-―"       # HYPHEN, NON-BREAKING HYPHEN, FIGURE/EN/EM DASH, HORIZONTAL BAR
+    r"−－"        # MINUS SIGN, FULLWIDTH HYPHEN-MINUS
+    r"​-‍⁠﻿"   # ZWSP, ZWNJ, ZWJ, WORD JOINER, ZWNBSP — render as nothing
+    r"·＿"        # MIDDLE DOT, FULLWIDTH LOW LINE
+    r"]"
+)
 
 
 def forbidden_token_pattern(tok: str):

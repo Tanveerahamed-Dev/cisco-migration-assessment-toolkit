@@ -2137,7 +2137,7 @@ def parse_hsrp_detail(output: str) -> Dict[tuple, dict]:
     """Full 'show standby [all]' DETAIL -> {(ifname, group): {state, priority, cfg_priority, preempt,
     preempt_delay, vip, vmac, hello, hold, standby_ip, track:[{obj,decrement}], version}}. The brief
     parser (parse_hsrp_summary) keeps only state+VIP; this captures the fields a senior FHRP audit needs
-    -- election (priority/preempt), failure-awareness (tracking) -- the [HISTORY-REDACTED] fleet (no FHRP) never exercised.
+    -- election (priority/preempt), failure-awareness (tracking) -- the Meridian reference fleet (no FHRP) never exercised.
     Tolerant: {} on empty / non-detail input; never raises."""
     res: Dict[tuple, dict] = {}
     cur = None
@@ -3852,7 +3852,7 @@ def parse_ptp_clock(output: str) -> dict:
     # operational = a real boundary/transparent clock. A known device type that is NOT explicitly
     # 0-port (num_ports unparsed/None is treated as unknown, NOT dormant -- so a known clock on a
     # platform whose output omits the port count is not false-flagged), OR positive sync evidence
-    # (a grandmaster identity or a measured offset). The [HISTORY-REDACTED] case (Device Type Unknown / 0 ports /
+    # (a grandmaster identity or a measured offset). The Meridian case (Device Type Unknown / 0 ports /
     # no parent) stays correctly dormant.
     dt = r["device_type"].lower()
     r["operational"] = bool((dt and dt != "unknown" and r["num_ports"] != 0)

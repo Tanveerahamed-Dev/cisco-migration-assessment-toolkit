@@ -20,7 +20,7 @@ never conflate a sibling field. This module is the one place that
 
 The recurring drift class this exists to kill (it cost several audit waves to find by hand, one
 surface at a time across crd/runbook/engagement/deck): a surface reads
-``lifecycle_risk.summary.n_past_eos`` (0 on the [HISTORY-REDACTED] fleet) where it means the *past-support*
+``lifecycle_risk.summary.n_past_eos`` (0 on the Meridian reference fleet) where it means the *past-support*
 population, which is ``n_past_ldos`` (152) -- silently dropping 152 end-of-support devices into a
 false "healthy" reading. The near-twin: ``len(devices)`` / ``len(health_scores)`` used as a
 reported device count instead of ``executive_brief.scale.n_devices``.
@@ -50,6 +50,11 @@ CANONICAL_FACTS: Dict[str, tuple] = {
     "n_past_eos":         ("lifecycle_risk.summary.n_past_eos",   "devices past end-of-sale but NOT yet past LDoS (a different, smaller set)"),
     "n_near":             ("lifecycle_risk.summary.n_near",       "devices within 1yr of LDoS (Near-LDoS band)"),
     "n_active":           ("lifecycle_risk.summary.n_active",     "devices in active support (Active band)"),
+    # The COVERAGE slot. Without it there was no canonical way to say "not determined", and every
+    # consumer of n_past_ldos rendered a bare 0 for a fleet nothing had assessed — including the
+    # "At a Glance" front matter of every deliverable. A band count that omits Unknown is not a
+    # partition of the fleet, and the omission reads as health.
+    "n_unknown":          ("lifecycle_risk.summary.n_unknown",    "devices whose support state was NOT determined (no EoX bulletin matched the platform) — absence of a finding, never a clean result"),
     "n_design_decisions": ("design_blueprint.summary.n_decisions","ranked target-state design decisions"),
 }
 
@@ -63,11 +68,21 @@ _HEALTH_BAND_POOR = "Poor"
 # as the worst health band, and the avg-health mean excludes it too.
 _HEALTH_BAND_ORDER = ("Critical", "Poor", "Fair", "Good", "Excellent")
 _HEALTH_BAND_NOT_SCORED = "Insufficient Data"
+# EVERY band analyze.compute_lifecycle_risk can emit (analyze._LIFECYCLE_BAND_RANK is the producer's
+# vocabulary: Past-LDoS / Near-LDoS / Past-EoS / Active / Unknown) mapped to the summary field that
+# counts it. "Unknown" was the one omission, and it was the worst possible one: n_unknown is a
+# registered CANONICAL_FACT, so it is published, cited and rendered -- but with no entry here it had
+# NO raw-basis guard, and reconcile() silently accepted any value. Measured: mutating
+# summary.n_unknown from 2 to 99 returned reconcile() == [] while the same mutation to n_past_ldos
+# was caught. The one canonical fact whose whole job is to say "not determined" was the only
+# lifecycle fact nothing verified. Completeness against the producer's vocabulary is asserted by
+# tests/test_ssot_registry.py -- a new band cannot be added upstream without a guard here.
 _LIFECYCLE_BANDS = {
     "n_past_ldos": "Past-LDoS",
     "n_past_eos": "Past-EoS",
     "n_near": "Near-LDoS",
     "n_active": "Active",
+    "n_unknown": "Unknown",
 }
 
 
@@ -196,7 +211,7 @@ def abstention_reason(snap: Dict[str, Any], subject: str, device: str = None) ->
 # ---------------------------------------------------------------------------------------------
 # schema census (J3): a snapshot self-describes what it actually SAW -- the SuzieQ `describe`
 # analog. For EVERY top-level snapshot section, project the coverage-honest 3-state token onto a
-# queryable coverage map, so an access-only collection (e.g. the [HISTORY-REDACTED] fleet, where a whole
+# queryable coverage map, so an access-only collection (e.g. the Meridian reference fleet, where a whole
 # distribution/core tier is UN-collected) reports exactly what was seen vs what is a blind spot,
 # instead of a rendered "filler" output whose real cause is an uncollected tier, not a code bug.
 # ---------------------------------------------------------------------------------------------
@@ -320,7 +335,7 @@ def compute_fact_lineage(snap: Dict[str, Any]) -> Dict[str, Any]:
 # (design/crd/archreview) each re-derived their own from ``snap['interfaces']`` and asked a
 # *different* question while using the owner's label: they counted every non-default VRF configured
 # ANYWHERE (mgmt0's management VRF, a vPC keepalive VRF) as a "VRF in use", where the owner counts
-# only the VRF buckets that actually CARRY a gateway SVI. On the [HISTORY-REDACTED] fleet that reads 4 vs 1 for the
+# only the VRF buckets that actually CARRY a gateway SVI. On the Meridian reference fleet that reads 4 vs 1 for the
 # same phrase, in the same deliverable set, off the same snapshot -- and it flipped archreview's
 # SEC-2 gate off the owner's `flat` verdict. This accessor is the one place both questions are
 # answered, each under its own name.

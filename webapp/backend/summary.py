@@ -8,9 +8,10 @@ blast radius, readiness, and which detail sections actually carry data (so the U
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
-from . import engine
+from . import engine  # noqa: F401  (also bootstraps sys.path for the cisco_toolkit import below)
+from cisco_toolkit import registry_integrity
 
 SEVERITY_ORDER = ["Critical", "High", "Medium", "Low", "Info"]
 _SEV_RANK = {s: i for i, s in enumerate(SEVERITY_ORDER)}
@@ -154,6 +155,276 @@ def _section_index(snap: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
+_REQUIRED_DATA_AUTHORITIES = ("oui", "ports", "eol")
+SNAPSHOT_PROVENANCE_KEY = "_assesshub_provenance"
+LOCAL_ENGINE_ORIGIN = "local-engine"
+DIRECT_UPLOAD_ORIGIN = "direct-upload"
+VERIFICATION_CONTRACT_VERSION = 3
+
+
+def snapshot_verification(snap: Dict[str, Any]) -> Dict[str, Any]:
+    """Coverage-honest trust state for an engine or uploaded snapshot.
+
+    ``verified`` is intentionally a narrow claim: the server must have stamped the snapshot as the
+    result of a locally executed engine run, every required authority must carry the current explicit
+    ``source_authoritative: true`` contract, and no analysis phase may have failed.  Client-uploaded
+    booleans remain self-reported evidence, never a server attestation.
+    """
+    provenance_raw = snap.get(SNAPSHOT_PROVENANCE_KEY)
+    provenance = provenance_raw if isinstance(provenance_raw, dict) else {}
+    origin = provenance.get("origin")
+    if origin not in {LOCAL_ENGINE_ORIGIN, DIRECT_UPLOAD_ORIGIN}:
+        origin = "legacy-or-unknown"
+    locally_attested = origin == LOCAL_ENGINE_ORIGIN
+    run_integrity_raw = provenance.get("integrity_verified")
+    run_integrity = (
+        "verified" if run_integrity_raw is True
+        else "failed" if run_integrity_raw is False
+        else "unknown"
+    )
+
+    integrity_raw = snap.get("assessment_integrity")
+    integrity = integrity_raw if isinstance(integrity_raw, dict) else {}
+    failed_raw = integrity.get("failed_phases")
+    malformed_integrity = failed_raw not in (None, []) and not isinstance(failed_raw, list)
+    failed_phases = [
+        str(value)[:160]
+        for value in (failed_raw if isinstance(failed_raw, list) else [])
+        if str(value).strip()
+    ][:100]
+
+    authorities_raw = snap.get("data_authorities")
+    authorities = authorities_raw if isinstance(authorities_raw, dict) else {}
+    missing: List[str] = []
+    non_authoritative: List[str] = []
+    integrity_failed: List[str] = []
+    integrity_unknown: List[str] = []
+    for name in _REQUIRED_DATA_AUTHORITIES:
+        health = authorities.get(name)
+        if not isinstance(health, dict) or "source_authoritative" not in health:
+            missing.append(name)
+            continue
+        # Was `source_authoritative is not True`, which reads the port pack's HONEST mixed-pack
+        # false as total registry failure. Effect measured on the real sample snapshot: status
+        # "partial", verified false, reason "Known non-source-authoritative data packs: ports."
+        # -> VerificationStatus.tsx renders a role="alert" telling the reader not to treat the
+        # snapshot as a complete verified assessment, on EVERY healthy run. The §5.2 scoped-
+        # authority fix reached serve.py and the engine self-test and missed this exit.
+        # One shared predicate now, so the next consumer cannot disagree with the others.
+        if not registry_integrity.pack_is_usable(health):
+            non_authoritative.append(name)
+        if health.get("integrity_verified") is False:
+            integrity_failed.append(name)
+        elif health.get("integrity_verified") is not True:
+            integrity_unknown.append(name)
+
+    reasons: List[str] = []
+    if not locally_attested:
+        reasons.append(
+            "Snapshot origin was not a locally executed engine run; authority fields are "
+            "self-reported and cannot establish verified coverage."
+        )
+    if run_integrity == "unknown":
+        reasons.append(
+            "Producer run integrity is unknown; no current positive completion attestation was "
+            "persisted for this snapshot."
+        )
+    elif run_integrity == "failed":
+        reasons.append(
+            "Producer run integrity failed; this snapshot cannot support a verified claim."
+        )
+    if failed_phases:
+        reasons.append(
+            f"{len(failed_phases)} analysis phase(s) failed; empty or absent results are not "
+            "evidence of health."
+        )
+    if malformed_integrity:
+        reasons.append("assessment_integrity.failed_phases is malformed and cannot be trusted.")
+    if missing:
+        reasons.append(
+            "Missing current source-authority evidence for: " + ", ".join(missing) + "."
+        )
+    if non_authoritative:
+        reasons.append(
+            "Known non-source-authoritative data packs: " + ", ".join(non_authoritative) + "."
+        )
+    if integrity_failed:
+        reasons.append(
+            "Data-pack byte/schema integrity failed for: " + ", ".join(integrity_failed) + "."
+        )
+    if integrity_unknown:
+        reasons.append(
+            "Data-pack integrity is unknown for: " + ", ".join(integrity_unknown) + "."
+        )
+
+    if (
+        not locally_attested
+        or run_integrity != "verified"
+        or malformed_integrity
+        or missing
+        or integrity_unknown
+    ):
+        status = "unverified"
+    elif failed_phases or non_authoritative or integrity_failed:
+        status = "partial"
+    else:
+        status = "verified"
+    labels = {
+        "verified": "Verified coverage",
+        "partial": "Partial coverage",
+        "unverified": "Unverified coverage",
+    }
+    return {
+        "contract_version": VERIFICATION_CONTRACT_VERSION,
+        "origin": origin,
+        "integrity_status": run_integrity,
+        "status": status,
+        "label": labels[status],
+        "verified": status == "verified",
+        "coverage_honest": True,
+        "reasons": reasons,
+        "failed_phases": failed_phases,
+        "missing_authorities": missing,
+        "non_authoritative_authorities": non_authoritative,
+        "integrity_failed_authorities": integrity_failed,
+        "integrity_unknown_authorities": integrity_unknown,
+    }
+
+
+# The lifecycle bands the engine publishes as a DETERMINATION. `compute_lifecycle_risk`
+# (cisco_toolkit/analyze.py, _LIFECYCLE_BAND_RANK) emits exactly Past-LDoS / Near-LDoS / Past-EoS / Active
+# when it could decide, plus "Unknown" when no EoX record matched the platform.
+#
+# review r8 F4 -- STRUCTURAL INVERSION. This used to be a regex over not-assessed SPELLINGS
+# (unknown|undetermined|insufficient data|n/a|...). That is this repo's most recurrent defect shape: a
+# hand-maintained list of NAMES standing in for the class it means. The most likely FUTURE spelling is the
+# one nobody wrote down -- and under a spelling list it fell through to "assessed" and was banked as
+# health. Classifying against the KNOWN-GOOD vocabulary inverts the default in the safe direction: any
+# band this projection does not recognise is NOT ASSESSED, so an unanticipated band is DISCLOSED rather
+# than silently counted clean. (CLAUDE.md guardrail 3 -- "not observed" never becomes "healthy".)
+_ASSESSED_BANDS = frozenset(("past-ldos", "near-ldos", "past-eos", "active"))
+
+
+def _is_assessed_band(name: Any) -> bool:
+    """True only for a band name the engine emits as a lifecycle DETERMINATION.
+
+    Everything else -- today's "Unknown", a future "Undetermined"/"Not assessed", a typo, a band added by
+    a newer engine than this projection knows about -- is not-assessed. Over-disclosure is the safe
+    direction here; the reverse is false health."""
+    return str(name).strip().lower() in _ASSESSED_BANDS
+
+
+def _int0(v: Any) -> int:
+    """A census count coerced to a non-negative int; anything non-numeric (a malformed upload) is 0."""
+    if isinstance(v, bool):
+        return 0
+    if isinstance(v, int):
+        return max(0, v)
+    if isinstance(v, float):
+        return max(0, int(v)) if v == v and v not in (float("inf"), float("-inf")) else 0
+    try:
+        return max(0, int(str(v).strip()))
+    except Exception:
+        return 0
+
+
+def _census_int(v: Any) -> Optional[int]:
+    """A census count if the value is USABLE as one, else ``None`` -- "no basis", never a silent 0.
+
+    The sibling of `_int0` for the one place the difference matters: deciding whether a figure was
+    MEASURED. `_int0` is a renderer's coercion -- it must always yield a number -- but using it to
+    answer "did the producer report this?" turns every malformed value into a confident zero, and a
+    zero that means "not measured" reading as "nothing wrong" is the exact false-health class this
+    module's lifecycle projection exists to close. `None` here is honest ignorance; the caller
+    discloses it rather than counting it as a clean result.
+    """
+    if v is None or isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v if v >= 0 else None
+    if isinstance(v, float):
+        return int(v) if (v == v and v not in (float("inf"), float("-inf")) and v >= 0) else None
+    try:
+        parsed = int(str(v).strip())
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _lifecycle(lr: Dict[str, Any]) -> Dict[str, Any]:
+    """Project the engine's hardware-lifecycle census for the dashboard.
+
+    HISTORY (audit U1-1, CRITICAL false-health): this projected exactly three named rollups --
+    past_eos / near_eos / past_ldos -- and DROPPED `n_unknown`, the count of devices whose platform
+    matched no EoX bulletin at all. An all-Unknown fleet therefore serialised to
+    `{"past_eos":0,"near_eos":0,"past_ldos":0}`, BYTE-IDENTICAL to a fully-assessed all-Active fleet:
+    the browser was structurally incapable of disclosing the gap because the gap never crossed the
+    API boundary. The whole `by_band` census now crosses it, so a band the projection does not know
+    by name still reaches the UI, and `unknown` is summed over the NOT-ASSESSED CLASS (above)
+    rather than off the single `n_unknown` key."""
+    _bb = lr.get("by_band")
+    by_band: Dict[str, int] = ({str(k): _int0(v) for k, v in _bb.items()}
+                               if isinstance(_bb, dict) else {})
+    # bands OUTSIDE the engine's assessed vocabulary -- structural, see _is_assessed_band()
+    gap_bands = sorted(k for k in by_band if not _is_assessed_band(k))
+    derived = sum(by_band[k] for k in gap_bands)
+
+    # SSOT (review r8 F2/F3): `lifecycle_risk.summary.n_unknown` is the OWNER of "how many assets could
+    # not be lifecycle-assessed" (docs/ssot.md -- read a fact from its owner; a copy is a cache and must
+    # cite the owner). This used to read the owner ONLY when `by_band` was empty and otherwise RE-DERIVE
+    # the count by classifying band-name strings, i.e. it ignored the canonical field exactly when that
+    # field was best evidenced; and the `if not by_band and not n_unknown:` line that followed was dead,
+    # the preceding ternary having already handled it. Owner first, classification as a labelled
+    # FALLBACK, and `unknown_source` names which read produced this row's figure.
+    # Keyed on whether the owner's value is USABLE, not on whether the key is PRESENT. `_int0` maps
+    # null / a string / a dict / a negative to 0, so `"n_unknown" in lr` accepted a malformed value as
+    # a measurement of zero: the row then read "assessed, nothing undetermined" off a section that had
+    # measured nothing. That is the same fail-open this projection was changed to close, one layer in.
+    # An unusable value is NO BASIS -- identical to the key being absent -- and is named as such below.
+    owner: Optional[int] = _census_int(lr.get("n_unknown"))
+    if owner is None:
+        n_unknown = derived
+        source = "derived:by_band — owner field lifecycle_risk.summary.n_unknown is absent"
+    elif derived > owner:
+        # The owner's own census carries not-assessed bands its count does not cover (a newer engine
+        # emitting a band this projection has never seen). FAIL CLOSED on the larger gap and name both
+        # figures, so the disclosure is never smaller than the evidence in front of us.
+        n_unknown = derived
+        source = (f"lifecycle_risk.summary.n_unknown={owner}, RAISED to {derived} by by_band band(s) "
+                  f"outside the engine's assessed vocabulary: {', '.join(gap_bands)}")
+    else:
+        n_unknown = owner
+        source = "lifecycle_risk.summary.n_unknown"
+
+    n_devices = _int0(lr.get("n_devices")) or sum(by_band.values())
+    # Was there any basis at all for counting un-assessed assets? A section publishing neither a band
+    # census nor the owner field gives none -- and a 0 that means "NOT MEASURED" must not read as
+    # "nothing wrong" (review r8 F6, the silence-as-health half of U1-1). Fail CLOSED: no basis == gap.
+    measured = bool(by_band) or owner is not None
+    return {
+        "past_eos": lr.get("n_past_eos", ""),
+        "near_eos": lr.get("n_near", ""),      # canonical Near-LDoS count (was a non-existent n_near_eos -> always blank)
+        "past_ldos": lr.get("n_past_ldos", ""),
+        "active": lr.get("n_active", ""),
+        # --- the coverage-honest half the UI could not previously see ---
+        "unknown": n_unknown,
+        # provenance of the figure above: the owner's own value, and which read produced `unknown`
+        "unknown_reported": owner if owner is not None else "",
+        "unknown_source": source,
+        "n_devices": n_devices,
+        "by_band": by_band,
+        "not_assessed_bands": gap_bands,
+        # False == the section gave NO basis to count un-assessed assets; `unknown` is then 0 because
+        # nothing was measured, not because nothing is wrong.
+        "coverage_measured": measured,
+        # True == at least one asset's support state was NOT determined, OR nothing was measurable at
+        # all. An empty lifecycle risk list is then a COVERAGE GAP, not a clean fleet, and the UI must
+        # say so.
+        "coverage_gap": bool(n_unknown > 0 or not measured),
+        "assessed": max(0, n_devices - n_unknown) if measured else 0,
+    }
+
+
 def summarize(snap: Dict[str, Any]) -> Dict[str, Any]:
     """Headline + breakdowns used by the dashboard cards. Every field degrades gracefully."""
     hs = [r for r in _as_list(snap.get("health_scores")) if isinstance(r, dict)]
@@ -203,10 +474,7 @@ def summarize(snap: Dict[str, Any]) -> Dict[str, Any]:
         },
         "readiness": readiness,
         "keystones": _keystones(snap),
-        "lifecycle": {
-            "past_eos": lr.get("n_past_eos", ""),
-            "near_eos": lr.get("n_near", ""),          # canonical Near-LDoS count (was a non-existent n_near_eos -> always blank)
-            "past_ldos": lr.get("n_past_ldos", ""),
-        } if lr else {},
+        "lifecycle": _lifecycle(lr) if lr else {},
+        "verification": snapshot_verification(snap),
         "sections": _section_index(snap),
     }

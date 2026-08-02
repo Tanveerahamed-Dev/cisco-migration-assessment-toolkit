@@ -543,12 +543,12 @@ def test_send_file_deletes_the_temp_deliverable_before_returning(tmp_path):
 
     p = tmp_path / "assesshub_probe.docx"
     p.write_bytes(b"UNREDACTED CLIENT DELIVERABLE")
-    resp = app_module._send_file(str(p), "application/octet-stream", "[HISTORY-REDACTED] Fleet/2026", "_mop.docx",
+    resp = app_module._send_file(str(p), "application/octet-stream", "Meridian reference fleet/2026", "_mop.docx",
                                  headers={"X-Gate-Status": "pending:design"})
     assert not _os.path.exists(p), "the rendered deliverable survived the response construction"
     assert resp.body == b"UNREDACTED CLIENT DELIVERABLE"          # bytes are unchanged
     assert resp.headers["x-gate-status"] == "pending:design"      # out-of-band notes survive
-    assert 'filename="[HISTORY-REDACTED]_Fleet_2026_mop.docx"' in resp.headers["content-disposition"]
+    assert 'filename="Meridian_reference_fleet_2026_mop.docx"' in resp.headers["content-disposition"]
 
 
 def test_downloaded_deliverable_leaves_no_temp_file(client, tmp_path, monkeypatch):

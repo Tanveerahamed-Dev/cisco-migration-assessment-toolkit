@@ -76,6 +76,22 @@ def _missing_text(d: dict) -> str:
     return ", ".join(items)[:80]
 
 
+def _integrity_failures(snap: dict) -> list:
+    """All failed-phase and explicit unavailable signals that withhold an engagement decision."""
+    s = snap if isinstance(snap, dict) else {}
+    ai = _as_dict(s.get("assessment_integrity"))
+    failed = ai.get("failed_phases")
+    failures = [str(x) for x in failed] if isinstance(failed, list) else ([str(failed)] if failed else [])
+    for key, value in ai.items():
+        if key not in ("failed_phases", "n_violations") and \
+                str(value).strip().lower() in ("failed", "compute_failed", "unavailable", "error"):
+            failures.append(f"{key}: {value}")
+    for key, value in s.items():
+        if isinstance(value, dict) and value.get("_unavailable"):
+            failures.append(f"{key}: unavailable")
+    return list(dict.fromkeys(failures))
+
+
 def _workflow_facts(snap: dict) -> dict:
     """Pull the evidence the workflow synthesizes — all defensive reads of known shapes."""
     punch = sorted((i for i in _as_list(snap.get("punchlist")) if isinstance(i, dict)),
@@ -119,6 +135,7 @@ def _workflow_facts(snap: dict) -> dict:
             "sc": sc, "sc_by": sc_by, "by_wave": by_wave, "csum": csum,
             "coll_present": coll_present, "blind": blind,
             "brief": brief, "lc": lc, "rem": rem, "notready": notready, "pilot": pilot,
+            "integrity_failures": _integrity_failures(snap),
             # SSOT: read the canonical inventory count first (the same source n_collected reads), with
             # the local len(devices) only as a pre-brief fallback — else "N collected of M inventoried"
             # mixes a canonical n_collected with a recount and can render "253 collected of 3 inventoried".
@@ -137,6 +154,11 @@ def _verdict(f: dict) -> tuple:
     n_crit = f["sev_count"].get("Critical", 0)
     n_high = f["sev_count"].get("High", 0)
     n_blind = _as_int(f["csum"].get("partial")) + _as_int(f["csum"].get("not_collected"))
+    if f.get("integrity_failures"):
+        conds.append(
+            f"{len(f['integrity_failures'])} assessment phase/sentinel failure(s) make this plan "
+            "UNVERIFIED. Repair and regenerate before scheduling any wave: "
+            + "; ".join(str(x) for x in f["integrity_failures"]))
     if n_crit:
         conds.append(f"{n_crit} Critical punch-list item(s) must be closed before any wave is scheduled.")
     if f["notready"]:
@@ -158,7 +180,20 @@ def _verdict(f: dict) -> tuple:
     if _as_int(f["lc"].get("n_past_eos")):
         conds.append(f"{f['lc']['n_past_eos']} device(s) are past end-of-sale (EoS), support window "
                      "closing — plan a refresh before they reach last-day-of-support.")
-    if n_crit or f["notready"]:
+    # Independent of the two above, NOT chained to them: an all-Unknown fleet counts zero past-LDoS
+    # and zero past-EoS, so this verdict returned PROCEED with an EMPTY condition list and §-summary
+    # printed "No conditions attached — the evidence shows no gating findings; schedule the pilot
+    # wave." over a fleet whose hardware support state was never determined. Near-LDoS was unread
+    # here too, so a fleet months from end-of-support also cleared silently.
+    if _as_int(f["lc"].get("n_near")):
+        conds.append(f"{f['lc']['n_near']} device(s) reach last-day-of-support within the planning "
+                     "horizon — schedule their replacement inside this programme, not after it.")
+    if _as_int(f["lc"].get("n_unknown")):
+        conds.append(f"{f['lc']['n_unknown']} device(s) could NOT be lifecycle-banded — no EoX "
+                     "bulletin in the offline knowledge base matched their platform. Their support "
+                     "state is UNDETERMINED, not clear: resolve it against Cisco's published EoX "
+                     "data before the go/no-go gate, or the gate is taken on unmeasured risk.")
+    if f.get("integrity_failures") or n_crit or f["notready"]:
         return "HOLD", conds
     if conds:
         return "PROCEED WITH CONDITIONS", conds
@@ -283,7 +318,7 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
         # `executive_brief.top_gating` is EVERY Critical/High axis headline, not a pre-ranked top-N
         # (analyze.py: `[a["headline"] for a in axes if a["severity"] in ("Critical", "High")]`), so a
         # 6-bullet cap drops gating axes from the section that carries the engagement VERDICT — 9 on
-        # the [HISTORY-REDACTED] fleet. "Full detail in the workbook" points at depth, never at missing axes.
+        # the Meridian reference fleet. "Full detail in the workbook" points at depth, never at missing axes.
         if len(gating) > 6:
             doc.add_paragraph(
                 f"…and {len(gating) - 6} further gating headline(s) NOT listed above "
@@ -539,7 +574,7 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
     # Filter FIRST, then cap — and keep the true Critical/High total, because §1 already told the
     # reader what it is ("N Critical punch-list item(s) must be closed…", "N High … before the
     # go/no-go gate"). Slicing the punch-list to 8 and filtering afterwards made this log render 8
-    # rows against §1's 216 Critical + 916 High on the [HISTORY-REDACTED] fleet, with nothing saying the RAID log was
+    # rows against §1's 216 Critical + 916 High on the Meridian reference fleet, with nothing saying the RAID log was
     # short: a reviewer who closes every row printed here believes the risk register is clear.
     # (`f["punch"]` is severity-sorted, so ch[:8] is the same 8 rows the old slice produced.)
     _ch = [i for i in f["punch"] if i.get("severity") in ("Critical", "High")]
@@ -557,6 +592,10 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
                                 "(single-homed switches)", "wave sequencing",
                       "Schedule those switches inside agreed maintenance windows; dual-home first "
                       "where feasible"))
+    if not risks and f.get("integrity_failures"):
+        risks.append(("High", "Assessment risk synthesis is UNVERIFIED because one or more phases failed",
+                      "assessment_integrity.failed_phases",
+                      "Repair the failed phases and regenerate; an empty fallback is not a cleared risk register"))
     if not risks:
         risks.append(("—", "No Critical/High findings recorded by the assessment", "punch-list",
                       "Keep the log open — new risks land here as the engagement runs"))
@@ -581,6 +620,11 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
     ], widths=[0.8, 3.4, 2.5])
 
     doc.add_heading("5.3 Issues (open now)", level=2)
+    if f.get("integrity_failures"):
+        doc.add_paragraph(
+            "Assessment-integrity failures are open issues and block every downstream gate: "
+            + "; ".join(str(x) for x in f["integrity_failures"])
+            + ". Empty fallback registers are not evidence that the issue/risk set is clear.")
     if f["blind"]:
         table(["ID", "Issue", "Evidence", "Action"],
               [(f"ISS-{i:03d}",
@@ -590,7 +634,7 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
                 "Re-collect; missing: " + (_missing_text(d) or "—"))
                for i, d in enumerate(f["blind"][:8], 1)], widths=[0.7, 2.4, 1.3, 2.6])
         # §2's phase tracker states the FULL blind-spot count ("Evidence collected; 50 device(s) with
-        # blind spots" on the [HISTORY-REDACTED] fleet) and §1 makes every verdict on them provisional. Eight ISS rows
+        # blind spots" on the Meridian reference fleet) and §1 makes every verdict on them provisional. Eight ISS rows
         # with no marker is the same document contradicting itself, and the re-collection work order
         # built from this table covers 8 of 50 devices.
         if len(f["blind"]) > 8:

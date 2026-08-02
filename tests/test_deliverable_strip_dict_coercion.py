@@ -54,10 +54,10 @@ def _write_all(snap, tmp_path, tag):
     from cisco_toolkit import crd, design, mop, runbook
     names = {"crd": f"c{tag}.docx", "design": f"d{tag}.docx",
              "mop": f"m{tag}.docx", "runbook": f"r{tag}.docx"}
-    crd.write_crd_docx(str(tmp_path / names["crd"]), snap, "[HISTORY-REDACTED]")
-    design.write_design_doc_docx(str(tmp_path / names["design"]), snap, "[HISTORY-REDACTED]")
-    mop.write_mop_docx(str(tmp_path / names["mop"]), snap, "[HISTORY-REDACTED]")
-    runbook.write_runbook_docx(str(tmp_path / names["runbook"]), snap, "[HISTORY-REDACTED]")
+    crd.write_crd_docx(str(tmp_path / names["crd"]), snap, "Meridian")
+    design.write_design_doc_docx(str(tmp_path / names["design"]), snap, "Meridian")
+    mop.write_mop_docx(str(tmp_path / names["mop"]), snap, "Meridian")
+    runbook.write_runbook_docx(str(tmp_path / names["runbook"]), snap, "Meridian")
     for g in _GENERATORS:
         p = tmp_path / names[g]
         assert p.exists() and p.stat().st_size > 0, f"{g} produced no file for {tag}"

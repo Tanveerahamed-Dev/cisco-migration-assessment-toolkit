@@ -70,6 +70,50 @@ def _pick(row: Dict[str, Any], keys) -> Dict[str, Any]:
     return {k: row.get(k) for k in keys}
 
 
+def dossier_coverage(d: Any) -> tuple:
+    """(n_na, n_axes, thin) for one device-dossier row -- how much of its risk band rests on evidence.
+
+    MIRROR of the canonical rule in cisco_toolkit/excel.py::dossier_coverage. It is duplicated rather
+    than imported because this data layer is deliberately PURE and stdlib-only (excel.py drags in
+    openpyxl + analyze + parse); the duplication is caught by EXECUTION, not by hope --
+    tests/test_mcp_server.py::test_dossier_coverage_mirrors_the_canonical_rule drives this function over
+    excel.DOSSIER_COVERAGE_CASES and fails the moment the two disagree.
+
+    Why the assistant needs it (review r9 F1): compute_device_dossiers ABSTAINS on an axis it has no
+    evidence for (state 'na') and an abstention is weighted ZERO exposure, so an asset whose EoL /
+    software / control-plane / log / CIS / hygiene / drift / QoS axes were ALL un-assessed scores
+    risk_index 0 -> risk_band 'Low' -> verdict "No stacked risk". Handing an assistant that bare band
+    lets it answer "is sw0 OK?" with "low risk" when the honest answer is "8 of its 11 risk axes were
+    never assessed". FAIL-CLOSED on a missing census: no denominator means coverage is itself NOT
+    ASSESSED (thin=True), never 'fine'."""
+    dd = d if isinstance(d, dict) else {}
+    ax = dd.get("exposures")
+    axes = [e for e in ax if isinstance(e, dict)] if isinstance(ax, list) else []
+    n_axes = len(axes)
+    n_na = sum(1 for e in axes if e.get("state") == "na")
+    if not n_axes:                                    # no axis census published -> fall back to the count
+        try:
+            n_na = max(0, int(dd.get("n_na") or 0))
+        except (TypeError, ValueError):
+            n_na = 0
+        return n_na, 0, True                          # unknown denominator -> NOT ASSESSED, never "fine"
+    return n_na, n_axes, n_na * 2 >= n_axes
+
+
+def risk_band_basis(d: Any) -> str:
+    """The sentence that must travel with a `risk_band` so the band is never read as a measurement when
+    it rests on axes that were never assessed. Never empty -- an assistant that sees no qualifier will
+    supply "healthy" on its own."""
+    n_na, n_axes, thin = dossier_coverage(d)
+    if not n_axes:
+        return (f"risk axis census ABSENT -- coverage NOT ASSESSED ({n_na} recorded not-assessed); the band "
+                "is not evidence of health")
+    if thin:
+        return (f"{n_na} of {n_axes} risk axes NOT ASSESSED -- an un-assessed axis scores ZERO exposure, so "
+                "this band rests on absent evidence, not on a clean result")
+    return f"{n_na} of {n_axes} risk axes NOT ASSESSED"
+
+
 def load_snapshot(path: str) -> Dict[str, Any]:
     """Load a snapshot.json from disk. Raises if it is not a JSON object (read-only)."""
     with open(path, encoding="utf-8") as f:
@@ -99,7 +143,19 @@ def list_devices(snap: Dict[str, Any]) -> List[Dict[str, Any]]:
     if per:
         cols = ("host", "model", "platform", "sw_version", "role", "wave",
                 "health_band", "eol_band", "risk_band", "verdict")
-        return [_pick(r, cols) for r in per if isinstance(r, dict)]
+        # review r9 F1: `risk_band` alone let an all-unassessed asset be listed as "Low" with the verdict
+        # "No stacked risk", indistinguishable from a genuinely clean one. Every row that carries the band
+        # carries its basis (this is the same qualification search_devices and the workbook publish).
+        out = []
+        for r in per:
+            if not isinstance(r, dict):
+                continue
+            row = _pick(r, cols)
+            n_na, n_axes, thin = dossier_coverage(r)
+            row.update({"n_na": n_na, "n_axes": n_axes, "coverage_thin": thin,
+                        "risk_band_basis": risk_band_basis(r)})
+            out.append(row)
+        return out
     # fallback for older snapshots without dossiers: derive from health_scores
     return [{"host": r.get("switch"), "role": r.get("role"),
              "health_band": r.get("band"), "score": r.get("score")}
@@ -112,7 +168,11 @@ def device_detail(snap: Dict[str, Any], host: str) -> Dict[str, Any]:
     want = str(host or "").strip().lower()
     for r in per:
         if isinstance(r, dict) and str(r.get("host", "")).lower() == want:
-            return r
+            # Shallow COPY, never the snapshot row itself: the qualifier is added for the caller, and
+            # mutating the loaded snapshot in place would poison every later read of the same object.
+            out = dict(r)
+            out["risk_band_basis"] = risk_band_basis(r)
+            return out
     available = [r.get("host") for r in per if isinstance(r, dict)][:40]
     return {"error": f"device not found: {host!r}", "available_hosts": available}
 
@@ -237,10 +297,18 @@ def search_devices(snap: Dict[str, Any], query: Any) -> Dict[str, Any]:
             continue
         health_band = dos.get("health_band") or health.get(hl, {}).get("band")
         risk_band = dos.get("risk_band") if dossiers else None    # no dossiers -> never fabricate a risk band
+        # review r9 F1: the same honesty one level deeper. A band that EXISTS can still rest on axes that
+        # were never assessed -- compute_device_dossiers weights an abstaining axis at ZERO exposure, so
+        # 8-of-11 not-assessed still bands 'Low'. Publishing the bare band let an assistant answer "is sw0
+        # OK?" with "low risk". The basis travels with the band, in the posture string the caller reads.
+        _basis = risk_band_basis(dos) if risk_band else ""
         matches.append({
             "host": host, "matched_on": matched_on,
             "health_band": health_band, "risk_band": risk_band,
-            "posture": f"health: {health_band or 'not-assessed'}; risk: {risk_band or 'not-assessed'}",
+            "risk_band_basis": _basis or None,
+            "posture": (f"health: {health_band or 'not-assessed'}; "
+                        f"risk: {risk_band or 'not-assessed'}"
+                        + (f" ({_basis})" if _basis else "")),
         })
     return {"available": True, "query": str(query), "n_matches": len(matches),
             "matches": matches[:100], "sources": sources}

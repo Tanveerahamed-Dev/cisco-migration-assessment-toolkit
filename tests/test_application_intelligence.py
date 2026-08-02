@@ -17,18 +17,18 @@ def test_taxonomy_assigns_primary_domains():
     ai = {
         "SW01-BC-DANTE-CAR6": {"Gi1/0/1": InterfaceData(port="Gi1/0/1", vlan="10")},
         "SW01-BC-NEXIS-CAR05": {"Gi1/0/1": InterfaceData(port="Gi1/0/1", vlan="11")},
-        "AS16-BC-CA01A10-ROBOTICS": {"Gi1/0/1": InterfaceData(port="Gi1/0/1", vlan="12")},
+        "MERIDIAN-SW-ROBOTICS-152": {"Gi1/0/1": InterfaceData(port="Gi1/0/1", vlan="12")},
         "AS01-MGM-CA05R34": {"Gi1/0/1": InterfaceData(port="Gi1/0/1", vlan="13")},
-        "ACS01-BC-CA05R30": {"Vlan20": InterfaceData(port="Vlan20", multicast_info="PIM Sparse")},
+        "MERIDIAN-SW-043": {"Vlan20": InterfaceData(port="Vlan20", multicast_info="PIM Sparse")},
         "AS99-GENERIC-X": {"Gi1/0/1": InterfaceData(port="Gi1/0/1", vlan="14")},
     }
     out = compute_application_intelligence(ai, [], {}, _sm(), [], [], [])
     dom = {d["id"]: d for d in out["domains"]}
     assert "SW01-BC-DANTE-CAR6" in dom["audio"]["switches"]
     assert "SW01-BC-NEXIS-CAR05" in dom["storage"]["switches"]
-    assert "AS16-BC-CA01A10-ROBOTICS" in dom["robotics"]["switches"]
+    assert "MERIDIAN-SW-ROBOTICS-152" in dom["robotics"]["switches"]
     assert "AS01-MGM-CA05R34" in dom["mgmt"]["switches"]
-    assert "ACS01-BC-CA05R30" in dom["media"]["switches"]            # by observed multicast, not a token
+    assert "MERIDIAN-SW-043" in dom["media"]["switches"]            # by observed multicast, not a token
     assert "AS99-GENERIC-X" in dom["general"]["switches"]            # no signal -> not over-claimed
     # deterministic: domains ordered by criticality tier
     tiers = [d["tier"] for d in out["domains"]]

@@ -221,16 +221,16 @@ def test_merge_any_manual_verify_makes_host_manual_verify():
 
 def test_device_versions_from_devices_json_parses_inline_versions():
     groups = {"replace_upgrade_train": [
-        "10GSW01-BC-CA11F17 [NX-OS 6.x 6.0(2)N2(3)]",
-        "AS01-BC-CA01RA13-CXDOH [IOS XE 3.x 03.06.06E]",
-        "DS-VSS-AVID-CAR05-R37-AJDOH [IOS XE 3.x 03.11.03a.E]",
+        "MERIDIAN-SW-001 [NX-OS 6.x 6.0(2)N2(3)]",
+        "MERIDIAN-SW-051 [IOS XE 3.x 03.06.06E]",
+        "MERIDIAN-SW-STORAGE-179 [IOS XE 3.x 03.11.03a.E]",
     ]}
     dv = UT.device_versions_from_devices_json(groups)
-    assert dv["10GSW01-BC-CA11F17"]["sw_version"] == "6.0(2)N2(3)"
-    assert dv["10GSW01-BC-CA11F17"]["platform"] == "nxos"
-    assert dv["AS01-BC-CA01RA13-CXDOH"]["sw_version"] == "03.06.06E"
-    assert dv["AS01-BC-CA01RA13-CXDOH"]["platform"] == "ios-xe"    # "IOS XE 3.x" label → ios-xe, not classic ios
-    assert dv["DS-VSS-AVID-CAR05-R37-AJDOH"]["sw_version"] == "03.11.03a.E"
+    assert dv["MERIDIAN-SW-001"]["sw_version"] == "6.0(2)N2(3)"
+    assert dv["MERIDIAN-SW-001"]["platform"] == "nxos"
+    assert dv["MERIDIAN-SW-051"]["sw_version"] == "03.06.06E"
+    assert dv["MERIDIAN-SW-051"]["platform"] == "ios-xe"    # "IOS XE 3.x" label → ios-xe, not classic ios
+    assert dv["MERIDIAN-SW-STORAGE-179"]["sw_version"] == "03.11.03a.E"
 
 
 def test_device_versions_from_snapshot():
@@ -356,7 +356,7 @@ def test_end_to_end_psirt_pipeline(tmp_path):
     d.mkdir()
     (d / "feed-2026-07-07.jsonl").write_text(IF.build_feed(entries, generated="2026-07-07"), encoding="utf-8")
     loaded = IF.load_feeds(str(d))
-    assert loaded["advisories"], "signed feed should round-trip through the provenance gate"
+    assert loaded["advisories"], "hash-sealed feed should round-trip through the intake gate"
 
     cve_map = {"CVE-2023-20198": {"group": "http_server_flagged", "applies_to": ("ios-xe",), "surface": "web"},
                "CVE-XXXX-NXOS": {"group": "smart_install_flagged", "applies_to": ("nxos",), "surface": "nx"}}

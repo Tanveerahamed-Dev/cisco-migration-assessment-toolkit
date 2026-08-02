@@ -555,7 +555,19 @@ def _locked_update(path: str, apply, require_existing: bool = False):
 #: sleeps covers it without any caller waiting perceptibly. NOT the lock timeout — this exists because
 #: ``load_store`` is deliberately UNLOCKED, so a reader can always collide with a writer's rename.
 _RACE_RETRIES = 6
+#: FIRST backoff, then doubled per attempt with jitter -- not a fixed sleep. A constant 5 ms retried
+#: 6 times covers only ~25 ms AND beats in lockstep with a writer that is itself renaming on a tight
+#: loop: every retry can land in the same busy window, so the attempts are correlated rather than
+#: independent and the extra tries buy almost nothing. Measured: with the fixed backoff this module's
+#: own race test still refused a HEALTHY ledger in roughly 2 of 8 full-suite runs at 14-way
+#: concurrency, while passing in isolation every time.
+#: Doubling (5/10/20/40/80 ms) widens the covered window to ~155 ms with the SAME attempt count, and
+#: the jitter de-synchronises the reader from the writer's cycle. Deliberately NOT a bigger retry
+#: count: the defect was the SHAPE of the wait, not its budget, and raising a threshold to green a
+#: gate is the move this repo's doctrine forbids. Still bounded and still fail-CLOSED at the end --
+#: an unreadable ledger after the full budget is refused, exactly as before.
 _RACE_BACKOFF_S = 0.005
+_RACE_BACKOFF_MAX_S = 0.080
 
 #: errnos meaning the ledger is genuinely NOT THERE, as opposed to "there but I could not look at it".
 _ABSENT_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR, errno.ENAMETOOLONG})
@@ -618,7 +630,13 @@ def _read_ledger(path: str) -> Optional[dict]:
         except OSError as e:                       # lost the race with a writer's rename, or real
             last = e
             if attempt < _RACE_RETRIES - 1:
-                time.sleep(_RACE_BACKOFF_S)
+                # exponential + jitter; see _RACE_BACKOFF_S. The jitter is derived from the monotonic
+                # clock rather than `random` so this module keeps its deterministic import surface and
+                # adds no dependency -- any de-correlation from the writer's cycle will do, it does not
+                # need to be cryptographic.
+                _base = min(_RACE_BACKOFF_S * (2 ** attempt), _RACE_BACKOFF_MAX_S)
+                _jitter = _base * 0.5 * ((time.monotonic() * 1000.0) % 1.0)
+                time.sleep(_base + _jitter)
                 continue
             raise GateStateError(f"unreadable gate-state store {path}: {e}") from e
         # RecursionError is included because it is a property of the FILE, not a bug here, and this
@@ -720,7 +738,14 @@ def save_store(path: str, store: dict) -> None:
                 # transient reader (an editor, an AV scan) must still surface, loudly, to the caller.
                 if attempt == _RACE_RETRIES - 1:
                     raise
-                time.sleep(_RACE_BACKOFF_S)
+                # Same exponential + jitter as the READ path (see _RACE_BACKOFF_S). This side had the
+                # identical fixed-5 ms pathology: ~25 ms total against a reader that can legitimately
+                # hold the destination for ~12 ms, which is marginal the moment the scheduler is busy,
+                # and a constant sleep keeps the writer beating in lockstep with that reader. Fixing
+                # only the read half left the mirror defect live -- the two are one defect with two
+                # exits, and this repo's every-exit rule applies to its own internals too.
+                _base = min(_RACE_BACKOFF_S * (2 ** attempt), _RACE_BACKOFF_MAX_S)
+                time.sleep(_base + _base * 0.5 * ((time.monotonic() * 1000.0) % 1.0))
         promoted = True
     finally:
         if not promoted:

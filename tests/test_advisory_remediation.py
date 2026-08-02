@@ -53,6 +53,22 @@ def test_missing_feed_dir_is_honest_absence(tmp_path):
     assert bundle["loaded"]["n_feeds"] == 0
 
 
+def test_engagement_hostname_leak_is_refused_before_remediation(tmp_path):
+    intel_dir = _write_feed(tmp_path, [
+        {
+            "id": "CVE-2026-0003",
+            "title": "issue observed on sw1",
+            "severity": "critical",
+            "affected": ["C9300"],
+        },
+    ])
+    bundle = self_healing.advisory_remediation(_SNAP, _SNAP, intel_dir)
+    assert bundle["loaded"]["advisories"] == []
+    assert bundle["loaded"]["refused"]
+    assert "forbidden identifier" in bundle["loaded"]["refused"][0]["reason"]
+    assert [p for p in bundle["result"]["plan"] if p["kind"] == "advisory"] == []
+
+
 def test_plain_path_never_emits_advisory_items():
     # the no --intel path is unchanged: propose_remediation with no extra_items has no advisory kind
     res = self_healing.propose_remediation(_SNAP, _SNAP)

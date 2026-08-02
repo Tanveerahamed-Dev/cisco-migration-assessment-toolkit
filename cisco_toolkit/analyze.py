@@ -242,7 +242,7 @@ def compute_topology_links(all_interfaces: Dict[str, Dict[str, InterfaceData]]) 
                 continue
             nbr = str(d.cdp_neighbor or "").strip()   # tolerate a wrong-typed cdp_neighbor (list/int) -> never raises
             # Display name: resolve a scanned neighbor advertised by its FQDN/serial-suffixed
-            # CDP id (e.g. 'CORE.broadcast.[HISTORY-REDACTED]') back to its real scanned hostname, so the
+            # CDP id (e.g. 'CORE.broadcast.example.net') back to its real scanned hostname, so the
             # diagram / 'Topology Links' sheet don't render it as a second, duplicate node. A
             # genuinely off-scan neighbor (no canon match) keeps its raw advertised name.
             b_host = scanned_map.get(_canon_host(nbr), nbr)
@@ -2477,6 +2477,33 @@ def compute_protocol_intelligence(protocol_health: List[dict]) -> List[dict]:
 # =============================================================================
 _ACL_PROTOS = {"tcp", "udp", "sctp", "dccp"}
 
+# The authority vocabulary portdb stamps on EVERY registry record (ports and multicast groups
+# alike): whether the assignment (the number -> name binding) and the semantics (category /
+# broadcast-AV flag) come from the retained authoritative IANA bytes or from this repo's curated
+# overlay, plus which overlay disposition produced the row. Named once so the projections below
+# and the renderers that label them cannot drift apart.
+_REGISTRY_AUTHORITY_KEYS = ("assignment_authoritative", "semantics_authoritative", "overlay_status")
+# A multicast group with no registry match carries NO authority claim at all. It is not
+# "curated-only" (that is a real registry disposition) -- it is unclassified, and must be
+# distinguishable from both.
+_UNCLASSIFIED_OVERLAY_STATUS = "unclassified"
+
+
+def _mcast_authority(mc: Optional[dict]) -> dict:
+    """Authority labels for a multicast classification (``None`` = no registry match).
+
+    Coverage-honest: an unmatched group gets ``overlay_status='unclassified'`` with both
+    authoritative flags False, so no renderer can read "we could not classify this" as "the
+    registry asserts this". A matched group carries portdb's own labels verbatim -- every
+    multicast row in the pack is curated (``curated-only``), so both flags are False there
+    too, which is exactly the fact that must reach the reader rather than being dropped."""
+    src = mc if isinstance(mc, dict) else {}
+    out = {k: bool(src.get(k)) for k in _REGISTRY_AUTHORITY_KEYS if k != "overlay_status"}
+    out["assignment_source"] = str(src.get("assignment_source") or "")
+    out["semantics_source"] = str(src.get("semantics_source") or "")
+    out["overlay_status"] = str(src.get("overlay_status") or "") or _UNCLASSIFIED_OVERLAY_STATUS
+    return out
+
 
 def compute_service_map(acls: Dict[str, dict],
                         all_interfaces: Dict[str, Dict[str, InterfaceData]],
@@ -2512,8 +2539,22 @@ def compute_service_map(acls: Dict[str, dict],
                     if not rec:
                         continue
                     key = (val, lookup_proto)
-                    e = svc.setdefault(key, {"service": rec["service"], "category": rec["category"],
-                                             "broadcast": rec["broadcast"], "refs": 0, "hosts": set()})
+                    # Carry the WHOLE registry record forward, not a hand-picked three of its
+                    # fourteen keys. portdb labels every record with its own authority
+                    # (assignment_authoritative / semantics_authoritative / overlay_status /
+                    # *_source / note / aliases): projecting a named subset dropped all of it one
+                    # hop from the lookup, so a curated-only, non-authoritative classification
+                    # (e.g. 4440/udp "Dante-audio") reached the workbook indistinguishable from an
+                    # IANA-assigned one -- and the ACL-hit "Confirmed" evidence class then read as
+                    # if it confirmed the SERVICE NAME too. A projection is a named subset standing
+                    # in for the class; splatting the record makes any future registry field flow
+                    # through automatically instead of silently vanishing here.
+                    # Copy the record's own list values as well: `rec` is the shared, process-lived
+                    # registry cache entry, and a downstream consumer mutating a list it handed out
+                    # would poison the registry for every later lookup. Only fires once per distinct
+                    # (port, proto) thanks to setdefault, so it is not on the per-rule hot path.
+                    e = svc.setdefault(key, dict({k: (list(v) if isinstance(v, list) else v)
+                                                  for k, v in rec.items()}, refs=0, hosts=set()))
                     e["refs"] += 1
                     e["hosts"].add(host)
                 for addr in (r.get("src"), r.get("dst")):
@@ -2521,9 +2562,11 @@ def compute_service_map(acls: Dict[str, dict],
                     if ip and ip not in mcast_groups:
                         mc = portdb.classify_multicast(ip)
                         if mc:
-                            mcast_groups[ip] = {"group": ip, "name": mc.get("group", ""),
-                                                "category": mc["category"], "broadcast": mc["broadcast"],
-                                                "source": "ACL reference"}
+                            mcast_groups[ip] = dict(_mcast_authority(mc),
+                                                    group=ip, name=mc.get("group", ""),
+                                                    category=mc["category"],
+                                                    broadcast=mc["broadcast"],
+                                                    source="ACL reference")
 
     def _evidence(port, proto):
         m = acl_hits.get(f"{port}:{proto}")
@@ -2531,10 +2574,14 @@ def compute_service_map(acls: Dict[str, dict],
             return f"Confirmed (ACL hit-counts: {m} matches)"
         return "Inferred (ACL design intent -- not active traffic; no flow telemetry)"
 
+    # `hosts` is the only working-set key (a set -- not JSON-serialisable); everything else the
+    # registry stamped on the record rides through to the renderers, including the authority
+    # labels. `evidence_class` describes the TRAFFIC evidence (an ACL reference vs an ACL hit
+    # count) and says nothing about whether the service NAME is authoritative -- the two are
+    # independent, which is precisely why both must be published.
     services = sorted(
-        ({"port": p, "proto": pr, "service": e["service"], "category": e["category"],
-          "broadcast": e["broadcast"], "refs": e["refs"], "host_count": len(e["hosts"]),
-          "evidence_class": _evidence(p, pr)}
+        (dict({k: v for k, v in e.items() if k != "hosts"},
+              port=p, proto=pr, host_count=len(e["hosts"]), evidence_class=_evidence(p, pr))
          for (p, pr), e in svc.items()),
         key=lambda s: (-s["refs"], s["port"]))
 
@@ -2548,10 +2595,13 @@ def compute_service_map(acls: Dict[str, dict],
     for grp in (igmp_groups or []):
         if grp not in mcast_groups:
             mc = portdb.classify_multicast(grp)
-            mcast_groups[grp] = {"group": grp, "name": (mc or {}).get("group", ""),
-                                 "category": (mc or {}).get("category", "Multicast"),
-                                 "broadcast": bool((mc or {}).get("broadcast")),
-                                 "source": "IGMP/mroute"}
+            # `category` defaults to the generic "Multicast" when nothing matched -- a placeholder,
+            # not a classification. The authority block below is what tells the two apart.
+            mcast_groups[grp] = dict(_mcast_authority(mc),
+                                     group=grp, name=(mc or {}).get("group", ""),
+                                     category=(mc or {}).get("category", "Multicast"),
+                                     broadcast=bool((mc or {}).get("broadcast")),
+                                     source="IGMP/mroute")
 
     active_ifaces, active_switches = 0, set()
     for host, ports in (all_interfaces or {}).items():
@@ -2663,9 +2713,15 @@ def compute_multicast_intelligence(service_map: Optional[dict] = None,
         ip = g.get("group", "")
         mac = _mcast_mac(ip)
         on_air = bool(g.get("broadcast")) or (g.get("category") or "") in _MCAST_ONAIR_CATS
+        # `on_air` is derived ENTIRELY from the curated broadcast/category fields, so it inherits
+        # their authority -- carry the labels through instead of laundering a curated claim into a
+        # bare boolean. Every multicast row in the pack is curated-only, so `on_air` is never
+        # semantically authoritative; that is a fact about the evidence, and it drives severity below.
+        _auth = _mcast_authority(g)
         rec = {"group": ip, "name": g.get("name", ""), "category": g.get("category", ""),
                "broadcast": bool(g.get("broadcast")), "on_air": on_air,
-               "source": g.get("source", ""), "mac": mac}
+               "on_air_authoritative": bool(on_air and _auth["semantics_authoritative"]),
+               "source": g.get("source", ""), "mac": mac, **_auth}
         groups.append(rec)
         if mac:
             by_mac[mac].append(rec)
@@ -2676,7 +2732,12 @@ def compute_multicast_intelligence(service_map: Optional[dict] = None,
         if len(recs) > 1:
             mac_aliases.append({"mac": mac, "groups": sorted((r["group"] for r in recs), key=_ipk),
                                 "names": sorted({r["name"] for r in recs if r["name"]}),
-                                "has_av": any(r["on_air"] for r in recs)})
+                                "has_av": any(r["on_air"] for r in recs),
+                                # Does an AUTHORITATIVE source say one of these is on-air media, or
+                                # only this repo's curated overlay? The severity below turns on
+                                # has_av, so the basis of has_av has to travel with it.
+                                "has_av_authoritative": any(r.get("on_air_authoritative")
+                                                            for r in recs)})
     mac_aliases.sort(key=lambda a: (not a["has_av"], a["mac"]))
 
     # querier coverage: multicast-active SVI VLANs (PIM/mroute on a VlanN interface) lacking an IGMP querier
@@ -2702,12 +2763,31 @@ def compute_multicast_intelligence(service_map: Optional[dict] = None,
 
     risks: List[dict] = []
     for a in mac_aliases:
+        # The OVERLAP itself is arithmetic on the observed group addresses -- Confirmed, and the
+        # sole reason this is a finding at all. The Broadcast-AV promotion from Medium to High is
+        # NOT: it rests on the offline registry's curated media semantics, which carry no
+        # authoritative source. Keep the higher severity (under-reporting a possible on-air impact
+        # is the worse error) but publish the basis, so a reader is never told a curated guess and
+        # an IANA-assigned fact in the same voice.
+        _av_basis = ("registry semantics (authoritative source)" if a["has_av_authoritative"]
+                     else "curated offline registry semantics — NOT an authoritative source")
         risks.append({"kind": "mac-alias", "severity": "High" if a["has_av"] else "Medium",
+            "severity_basis": (f"raised to High because a member group is classified Broadcast-AV / on-air "
+                               f"by {_av_basis}; the MAC overlap itself is arithmetic on the observed "
+                               f"group addresses and is not in question."
+                               if a["has_av"] else
+                               "Medium: no member group is classified as on-air media. The MAC overlap "
+                               "itself is arithmetic on the observed group addresses and is not in question."),
+            "evidence_confidence": ("observed overlap = fact; on-air classification = "
+                                    + ("authoritative" if a["has_av_authoritative"] else "curated, unverified")
+                                    if a["has_av"] else "observed overlap = fact"),
             "title": f"Multicast MAC-address overlap on {a['mac']}",
             "detail": (f"Groups {', '.join(a['groups'])} all map to L2 MAC {a['mac']} (IPv4 multicast is 32:1 "
                        "into Ethernet MACs). A switch that constrains multicast at the MAC level forwards them "
                        "together — receivers of one group see the other's traffic"
-                       + (" (and at least one is a Broadcast-AV / on-air group)." if a["has_av"] else ".")),
+                       + (f" (and at least one is classified Broadcast-AV / on-air by {_av_basis} — "
+                          "confirm the group's real use before acting on the severity)."
+                          if a["has_av"] else ".")),
             "remediation": "Re-address one overlapping group so the low-23-bit MAC differs (avoid 224.x/225.x… "
                            "239.x families that alias), or use IGMPv3 source-specific forwarding end-to-end.",
             "standard": "RFC 4541 / RFC 1112"})
@@ -2727,6 +2807,12 @@ def compute_multicast_intelligence(service_map: Optional[dict] = None,
                            "PTP/media-timing punch-list item.", "standard": "SMPTE ST 2059"})
 
     summary = {"n_groups": len(groups), "n_av_groups": sum(1 for g in groups if g["on_air"]),
+               # How many of those on-air classifications rest on an AUTHORITATIVE source. On the
+               # shipped pack this is 0 (every multicast row is curated), and a headline that says
+               # "44 broadcast/AV group(s)" without it presents a curated judgement as a measurement.
+               "n_av_groups_authoritative": sum(1 for g in groups if g.get("on_air_authoritative")),
+               "n_unclassified_groups": sum(1 for g in groups
+                                            if g.get("overlay_status") == _UNCLASSIFIED_OVERLAY_STATUS),
                "n_mac_clashes": len(mac_aliases), "n_querier_gaps": len(gap_vlans),
                "n_mcast_vlans": len(mcast_vlans),   # collected multicast SVIs -> 0 = querier coverage NOT assessable
                "n_active_switches": mc.get("active_switch_count", 0),
@@ -4061,6 +4147,31 @@ _PUNCH_SOURCE_COMMAND: Dict[str, str] = {
     "Link L1": "show interface status",
 }
 
+# review r10 EXIT A -- the fail-closed text a folded risk gets when it publishes NO usable basis for
+# its own severity. Wording deliberately matches excel.py's mac-alias "Why this severity" cell so the
+# workbook's two surfaces (the Multicast sheet and the Punch-List sheet) never disagree about what an
+# unpublished basis means. Absence of a basis is a DISCLOSURE, never a licence to read the severity
+# as if it had been measured.
+# Discloses ABSENCE of a published basis WITHOUT asserting the severity was unmeasured -- two
+# different claims, and fusing them made the sentinel wrong in the harmful direction. It is applied
+# to every media risk, and `querier-gap`'s High IS a measurement (observed querier state); telling a
+# reader not to trust a measured finding devalues the real ones and teaches them to skip the caveat
+# on the curated rows it exists for. Say only what is true of every row it can land on.
+PUNCH_BASIS_UNPUBLISHED = ("severity basis NOT published by this snapshot — check the finding's own "
+                           "detail for what it rests on")
+PUNCH_CONFIDENCE_UNPUBLISHED = "evidence confidence NOT published by this snapshot"
+
+
+def _usable_text(value) -> str:
+    """A basis string is only carried forward when its VALUE is usable prose.
+
+    Keying a disclosure on key-PRESENCE (`"severity_basis" in risk`) is the fail-open shape this
+    review keeps finding: a null / 0 / {} / "   " value satisfies the presence test and then renders
+    as an empty cell that a reader takes for "nothing to disclose". Only a non-empty string is a
+    basis; everything else is treated exactly like a missing one (i.e. FAIL CLOSED to the sentinel).
+    """
+    return value.strip() if isinstance(value, str) and value.strip() else ""
+
 
 def compute_migration_punchlist(cross_layer: List[dict],
                                 security: Dict[str, dict],
@@ -4101,12 +4212,33 @@ def compute_migration_punchlist(cross_layer: List[dict],
         s = s or ""
         return s if len(s) <= n else s[:n].rsplit(" ", 1)[0] + " …"
 
-    def add(severity: str, category: str, devices, title: str, detail: str, remediation: str = "") -> None:
+    def add(severity: str, category: str, devices, title: str, detail: str, remediation: str = "",
+            basis: str = "", confidence: str = "") -> None:
         devs = sorted({d for d in devices if d})
         waves = sorted({wave_of.get(d, "") for d in devs} - {""})
         it = {"severity": severity, "rank": _PUNCH_RANK.get(severity, 0),
               "category": category, "devices": devs, "wave": ", ".join(waves),
               "title": title, "detail": _clip(detail), "remediation": remediation}
+        # review r10 EXIT A. A folded risk that explains WHY it carries its severity must not lose
+        # that explanation in the fold. Publish it two ways, because the punch-list has two kinds of
+        # consumer and only one of them reads structured keys:
+        #   * structured -- `severity_basis` / `evidence_confidence`, the producer's own key names,
+        #     so a renderer can put the basis in its own column/tooltip;
+        #   * rendered   -- appended to `detail`, which is the ONLY free-text field every existing
+        #     punch-list renderer already prints (excel.write_punchlist_sheet col 7, the explorer's
+        #     punchlistCard, the design/engagement/CRD tables). Without this the fix would be inert:
+        #     no shipped renderer reads a key it has never heard of.
+        # Appended AFTER _clip so the disclosure can never be the part that gets truncated away
+        # (each note is length-bounded on its own, so a pathological snapshot still cannot run away).
+        notes = []
+        if basis:
+            it["severity_basis"] = basis
+            notes.append("Severity basis: " + _clip(basis))
+        if confidence:
+            it["evidence_confidence"] = confidence
+            notes.append("Evidence: " + _clip(confidence))
+        if notes:
+            it["detail"] = (it["detail"] + "  [" + " | ".join(notes) + "]").strip()
         cmd = _PUNCH_SOURCE_COMMAND.get(category)   # W1-3: cite the backing show-command (absent for composite cats)
         if cmd:
             it["source_command"] = cmd
@@ -4237,9 +4369,22 @@ def compute_migration_punchlist(cross_layer: List[dict],
 
     # NEW-V3.23.115: fold in multicast/media-fabric findings (MAC-aliasing / IGMP querier gaps from
     # compute_multicast_intelligence) so the broadcast-fabric risks are in the prioritized action list.
+    #
+    # review r10 EXIT A. compute_multicast_intelligence raises a mac-alias risk from Medium to High
+    # purely on a CURATED on-air classification (analyze.py :2774) and publishes exactly why, in
+    # `severity_basis` + `evidence_confidence`. This fold used to drop both keys, so the punch-list --
+    # and everything downstream of it (the workbook Punch-List sheet, the explorer, the executive
+    # brief's severity counts, the engagement/CRD packs) -- carried a High with its basis erased, i.e.
+    # an unverified registry hint presented in the same voice as an IANA-assigned fact.
+    # Carry the basis through, and FAIL CLOSED on absence: a risk that publishes no usable basis
+    # (older snapshot, or a null/non-string value) is rendered basis-NOT-published, never as though
+    # the severity had been measured. Applied to EVERY media risk, not a hand-picked kind list --
+    # querier-gap genuinely publishes no basis today, and saying so is honest rather than noisy.
     for d in (media_risks or []):
         add(d.get("severity", "Medium"), "Multicast/Media", d.get("devices", []),
-            d.get("title", ""), d.get("detail", ""), d.get("remediation", ""))
+            d.get("title", ""), d.get("detail", ""), d.get("remediation", ""),
+            basis=_usable_text(d.get("severity_basis")) or PUNCH_BASIS_UNPUBLISHED,
+            confidence=_usable_text(d.get("evidence_confidence")) or PUNCH_CONFIDENCE_UNPUBLISHED)
 
     # NEW-V3.23.169: fold in the V3.23.164-.167 axes so they reach the decision layer. Each axis
     # already aggregates per host; here like findings are GROUPED by kind across devices (the same
@@ -6115,11 +6260,21 @@ def compute_lifecycle_risk(devices: Optional[dict] = None, asof: Optional[object
         if rec is None:
             per_device.append({"host": host, "model": model or "(unknown)", "platform": "", "sw_version": sw,
                                "eos": "", "ldos": "", "band": "Unknown", "years_to_ldos": None,
-                               "status": "Unknown model — verify on Cisco's EoL portal", "source": "", "conf": ""})
+                               "status": "Unknown model — verify on Cisco's EoL portal", "source": "", "conf": "",
+                               "matched_pattern": "", "match_kind": "none",
+                               "reviewed_at": eoldb._EOL_REVIEWED, "citation_status": "missing"})
             continue
         eos, ldos = _d(rec["eos"]), _d(rec["ldos"])
         if rec["conf"] == "active" or (not eos and not ldos):
-            band, status, yrs = "Active", "Active (no end-of-life announced)", None
+            if rec.get("citation_status") != "bulletin-id":
+                band = "Unknown"
+                status = (
+                    "Unverified active claim - no resolvable Cisco bulletin/reference is bound "
+                    "to this offline row"
+                )
+                yrs = None
+            else:
+                band, status, yrs = "Active", "Active (no end-of-life announced)", None
         else:
             # Decide the band from the UNROUNDED delta; the rounded `yrs` is for DISPLAY only. Rounding first
             # let a device genuinely ~1.05 yr out round to 1.0 and fall into Near-LDoS (the band ~18 days too
@@ -6137,7 +6292,9 @@ def compute_lifecycle_risk(devices: Optional[dict] = None, asof: Optional[object
                 band = "Active"; status = f"In support (LDoS {rec['ldos']})"
         per_device.append({"host": host, "model": model, "platform": rec["platform"], "sw_version": sw,
                            "eos": rec["eos"], "ldos": rec["ldos"], "band": band, "years_to_ldos": yrs,
-                           "status": status, "source": rec["source"], "conf": rec["conf"]})
+                           "status": status, "source": rec["source"], "conf": rec["conf"],
+                           "matched_pattern": rec["matched_pattern"], "match_kind": rec["match_kind"],
+                           "reviewed_at": rec["reviewed_at"], "citation_status": rec["citation_status"]})
 
     by_band = Counter(d["band"] for d in per_device)
     pcount: "Counter" = Counter(); pband: Dict[str, str] = {}; pldos: Dict[str, str] = {}
@@ -6151,25 +6308,80 @@ def compute_lifecycle_risk(devices: Optional[dict] = None, asof: Optional[object
                          key=lambda r: (_LIFECYCLE_BAND_RANK[r["band"]], -r["count"], r["platform"]))
 
     risks: List[dict] = []
-    for band, sev, title, rem in (
+    for band, base_severity, title, remediation in (
         ("Past-LDoS", "Critical", "Hardware past Cisco end-of-support (no TAC / no fixes)",
-         "Prioritize these in the migration / hardware refresh — they get no software fixes or TAC support."),
+         "Prioritize these in the migration / hardware refresh and verify each exact PID against Cisco EoX."),
         ("Near-LDoS", "High", "Hardware within 1 year of end-of-support",
-         "Schedule replacement before LDoS; confirm the migration target covers these."),
+         "Schedule replacement before LDoS and verify each exact PID against Cisco EoX."),
     ):
-        devs = sorted(d["host"] for d in per_device if d["band"] == band)
-        if devs:
-            plats = sorted({d["platform"] for d in per_device if d["band"] == band})
-            risks.append({"severity": sev, "devices": devs, "title": title,
-                          "detail": f"{len(devs)} device(s) on {', '.join(plats)}.", "remediation": rem})
+        matching = [d for d in per_device if d["band"] == band]
+        for evidence_class, subset in (
+            ("confirmed", [d for d in matching if d["conf"] == "confirmed"]),
+            ("derived", [d for d in matching if d["conf"] != "confirmed"]),
+        ):
+            if not subset:
+                continue
+            severity = base_severity
+            if evidence_class == "derived":
+                severity = "High" if band == "Past-LDoS" else "Medium"
+            devices_for_risk = sorted(d["host"] for d in subset)
+            platforms = sorted({d["platform"] for d in subset})
+            risks.append({
+                "severity": severity,
+                "devices": devices_for_risk,
+                "title": title if evidence_class == "confirmed" else f"{title} (derived date; verify)",
+                "detail": (
+                    f"{len(devices_for_risk)} device(s) on {', '.join(platforms)}; "
+                    f"lifecycle evidence is {evidence_class}."
+                ),
+                "remediation": remediation,
+                "evidence_confidence": evidence_class,
+            })
+
+    # The loop above enumerates only the two ADVERSE bands, so a fleet whose platforms matched no EoX
+    # bulletin produced `risks == []` -- and every downstream consumer (punch-list, workbook, explorer)
+    # renders an empty risk list as "no lifecycle risk found". That is absence rendered as health: the
+    # support state was never determined, which is not the same as determined-to-be-fine. Emitted after
+    # the loop so it never outranks a real Past-LDoS/Near-LDoS finding, and deliberately NOT Critical --
+    # nothing observed says these are out of support, only that we cannot say they are in it.
+    unknown_devices = [d for d in per_device if d["band"] == "Unknown"]
+    if unknown_devices:
+        _u_hosts = sorted(d["host"] for d in unknown_devices)
+        # `platform` is the EoX bulletin's platform family and is "" for exactly the devices this
+        # risk is about (no bulletin matched -> nothing to name it with), so joining it rendered
+        # "3 device(s) on  could not be matched" -- a blank where the reader expects the platform
+        # list. Fall back to the collected MODEL string, which is the identifier that failed to
+        # match and the one an engineer resolves against Cisco's EoX portal; only when even that is
+        # empty do we say so explicitly rather than printing nothing.
+        _u_platforms = sorted({(d["platform"] or d["model"] or "").strip() for d in unknown_devices}
+                              - {""})
+        _u_where = (", ".join(_u_platforms) if _u_platforms
+                    else "platforms whose model string was not collected")
+        risks.append({
+            "severity": "Medium",
+            "devices": _u_hosts,
+            "title": "Hardware lifecycle NOT ASSESSED (no EoX match — support state undetermined)",
+            "detail": (
+                f"{len(_u_hosts)} device(s) on {_u_where} could not be matched to an EoX "
+                "bulletin in the offline knowledge base, so no support band could be assigned. Their "
+                "end-of-support exposure is UNKNOWN, not nil — an empty lifecycle risk list would "
+                "otherwise read as a clean fleet."
+            ),
+            "remediation": ("Resolve each exact PID against Cisco's published EoX data and re-run the "
+                            "assessment; until then treat these devices as un-costed for refresh."),
+            "evidence_confidence": "not-assessed",
+        })
 
     summary = {"n_devices": len(per_device), "by_band": dict(by_band),
                "n_past_ldos": by_band.get("Past-LDoS", 0), "n_near": by_band.get("Near-LDoS", 0),
                "n_past_eos": by_band.get("Past-EoS", 0), "n_active": by_band.get("Active", 0),
                "n_unknown": by_band.get("Unknown", 0), "by_platform": by_platform, "asof": today.isoformat()}
     return {"per_device": per_device, "summary": summary, "risks": risks, "asof": today.isoformat(),
+            "kb_reviewed_at": eoldb._EOL_REVIEWED,
             "note": "Reference dates from a curated offline KB (Cisco EoL bulletins); last-day-of-support is "
-                    "often derived = end-of-sale + 5yr. Verify exact dates on Cisco's End-of-Life portal."}
+                    "often derived = end-of-sale + 5yr. Derived dates are never promoted to Critical without "
+                    "confirmed evidence, and an uncited 'active' row is reported Unknown rather than healthy. "
+                    "Verify exact PIDs on Cisco's End-of-Life portal."}
 
 
 # =============================================================================
@@ -6302,6 +6514,26 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
     app = application_intelligence or {}
     asum = app.get("summary") or {}
     lc = (lifecycle_risk or {}).get("summary") or {}
+    # compute_lifecycle_risk publishes an explicit NOT-ASSESSED risk row (evidence_confidence
+    # 'not-assessed') for every device it could not band. Until now nothing in the repo read
+    # `lifecycle_risk['risks']`, so that disclosure was inert -- an honesty record with no
+    # consumer is not a disclosure. THIS is its consumer: it gates the EoL axis's severity below.
+    lc_coverage_risks = [r for r in ((lifecycle_risk or {}).get("risks") or [])
+                         if isinstance(r, dict) and r.get("evidence_confidence") == "not-assessed"]
+    # A risk ROW is not a device. `len(lc_coverage_risks)` counts DISCLOSURES; the posture flag below
+    # states a DEVICE count, and printing one where the other belongs is a number the run never
+    # measured. Each row names the devices it covers, so the device population is the union of those
+    # lists -- and when a row names none, the flag says what the number actually is instead of
+    # borrowing the row count.
+    lc_undetermined_hosts = sorted({str(h) for r in lc_coverage_risks
+                                    for h in (r.get("devices") if isinstance(r.get("devices"),
+                                                                             (list, tuple)) else [])})
+    # The producer's own not-assessed SENTENCE (it names the platforms/models to resolve on Cisco's
+    # EoX portal). Carried into the rendered EoL axis detail below so `lifecycle_risk["risks"]` has a
+    # consumer that a READER reaches, not only a severity gate: a disclosure whose sole evidence is
+    # that it exists in JSON is not a disclosure.
+    lc_coverage_detail = next((str(r.get("detail") or "").strip()
+                               for r in lc_coverage_risks if str(r.get("detail") or "").strip()), "")
     seg = (segmentation or {}).get("summary") or {}
     mi = (multicast_intelligence or {}).get("summary") or {}
     rem = (remediation_plan or {}).get("summary") or {}
@@ -6334,6 +6566,10 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
     lc_known = lc_tot - lc_unknown                                # only KNOWN-model devices are EoL-assessable
     lc_pe = lc.get("n_past_ldos", 0) + lc.get("n_near", 0)        # past-LDoS + near-LDoS = "past/near end-of-support"
     lc_pct = round(100 * lc_pe / lc_known) if lc_known else 0     # % over ASSESSABLE devices, not diluted by unknowns (audit-3 #5)
+    # COVERAGE, as a boolean, independent of what was found. `lc_unknown` counts devices whose
+    # support state was never determined; `lc_coverage_risks` is the producer's own not-assessed
+    # disclosure. Either one means this axis does not cover the whole fleet.
+    lc_incomplete = bool(lc_unknown) or bool(lc_coverage_risks)
 
     axes: List[dict] = []
 
@@ -6364,15 +6600,27 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
            "Recommended lowest-risk-first order.")
     if lc.get("n_devices"):
         ax("Hardware lifecycle (EoL)",
-           # 0 known-model devices -> NOT assessable (Info), never 'Low / 0%' by silence: a fleet whose hardware-
-           # critical core is uncollected must not read identically to a verified-clean one (audit-3 #5).
-           "Critical" if lc.get("n_past_ldos") else "High" if lc.get("n_near") else "Info" if not lc_known else "Low",
+           # `Low` is the CLEAN-FLEET value and it must require COMPLETE coverage, not merely one
+           # bandable device. The old test was `Info if not lc_known else Low`, i.e. the green value
+           # returned the instant a SINGLE device became assessable: measured, 2 Active / 8 Unknown
+           # scored "Low" -- the same machine-readable severity as a fully-verified fleet, feeding
+           # the axis colour, the _APP_SEV_RANK sort and top_gating. Absence of a finding across 80%
+           # of the fleet is not a finding of absence. A REAL adverse finding still leads (Critical /
+           # High outrank Info), so this only bites the case where nothing adverse was found and the
+           # reason may simply be that nothing was looked at.
+           "Critical" if lc.get("n_past_ldos") else "High" if lc.get("n_near")
+           else "Info" if (lc_incomplete or not lc_known) else "Low",
            f"{lc.get('n_past_ldos', 0)} past end-of-support, {lc.get('n_near', 0)} within 1yr "
            f"({lc_pct}% of {lc_known} assessable)"
            + (f" · {lc_unknown} unknown model(s) not assessed" if lc_unknown else ""),
            f"Reference dates from the offline KB; bands are time-relative, computed as-of "
            f"{lc.get('asof') or 'the analysis date'} (they shift as time passes), and an LDoS absent from "
-           f"the KB is derived as end-of-sale + 5yr — re-verify on Cisco's EoX portal before acting.")
+           f"the KB is derived as end-of-sale + 5yr — re-verify on Cisco's EoX portal before acting."
+           # The NOT-ASSESSED row's own sentence, verbatim, on a RENDERED surface (this detail reaches
+           # the workbook / deck / explorer / brief). It names the model strings that failed to match,
+           # which is the actionable half of the disclosure and was previously visible only to a
+           # reader of the raw snapshot JSON.
+           + (f" NOT ASSESSED — {lc_coverage_detail}" if lc_coverage_detail else ""))
     if seg.get("n_gateways"):
         ax("Segmentation", "High" if seg.get("flat") or seg.get("n_oncrit_exposed") else "Low",
            ("flat L3 — " if seg.get("flat") else "")
@@ -6383,6 +6631,24 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
         # (the gap signal derives from collected SVIs only) -> report Info / not-assessable, never '0 gaps / Low'
         # by silence -- so a blind media core doesn't read like a verified-clean one (audit-3 #12).
         _q_blind = mi.get("n_av_groups", 0) > 0 and not mi.get("n_mcast_vlans", 0)
+        # The SAME curated-vs-measured disclosure the multicast MAC-overlap risk row already carries
+        # (compute_multicast_intelligence: `has_av_authoritative` / evidence_confidence). `n_av_groups`
+        # counts groups whose on-air label comes from the curated overlay; on the shipped pack NONE of
+        # them rest on an authoritative registry source, so a bare "44 broadcast/AV group(s)" states a
+        # judgement in the voice of a measurement. `n_av_groups_authoritative` is absent from
+        # pre-feature snapshots -- that is "not recorded", never "0 authoritative", so it abstains
+        # rather than asserting a number it does not have.
+        _n_av = mi.get("n_av_groups", 0)
+        _n_av_auth = mi.get("n_av_groups_authoritative")
+        if not _n_av:
+            _av_detail = f"{_n_av} broadcast/AV group(s)."
+        elif not isinstance(_n_av_auth, int):
+            _av_detail = (f"{_n_av} broadcast/AV group(s) — the basis of that on-air classification is "
+                          "not recorded in this snapshot; treat it as curated, not measured.")
+        else:
+            _av_detail = (f"{_n_av} broadcast/AV group(s) — {_n_av_auth} classified on-air by an "
+                          f"authoritative registry source, {max(0, _n_av - _n_av_auth)} by this repo's "
+                          "curated overlay only (a judgement, not a measurement).")
         ax("Multicast / timing",
            "High" if mi.get("n_mac_clashes") or mi.get("n_querier_gaps")
            else "Medium" if mi.get("n_ptp_dormant")
@@ -6391,7 +6657,7 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
            f"{mi.get('n_ptp_clocks', 0)} PTP dormant · "
            + ("querier coverage not assessable (no multicast SVI collected)" if _q_blind
               else f"{mi.get('n_querier_gaps', 0)} querier gap(s)"),
-           f"{mi.get('n_av_groups', 0)} broadcast/AV group(s).")
+           _av_detail)
     if rem.get("n_items"):
         ax("Remediation", "Info",
            f"{rem.get('n_items', 0)} review-ready config snippet(s) across {rem.get('n_devices', 0)} device(s)",
@@ -6473,6 +6739,21 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
     flags: List[str] = []
     if lc.get("n_past_ldos") or lc.get("n_near"):
         flags.append(f"hardware end-of-support is a primary driver ({lc_pct}% past/near)")
+    # Coverage rides with its own topic and is INDEPENDENT of the flag above: the two are
+    # orthogonal facts. Without it, an 89%-unassessed fleet produced the fallback sentence "no
+    # top-tier blockers flagged across the assessed axes - proceed with the standard wave plan",
+    # which is the whole posture headline of every deliverable. Placed second so the [:4] cut below
+    # can never drop it while a real end-of-support finding leads.
+    if lc_incomplete:
+        # DEVICES, never risk rows: `lc_unknown` is a device count and `lc_undetermined_hosts` is the
+        # union of the hosts the not-assessed rows name. If neither is available the sentence states
+        # the quantity it DOES have (disclosures) and labels it as such, rather than presenting a
+        # row count as a device count.
+        _n_undet = lc_unknown or len(lc_undetermined_hosts)
+        flags.append(f"hardware support state is UNDETERMINED on {_n_undet} device(s) — not assessed, "
+                     "not clear" if _n_undet else
+                     f"hardware support state is UNDETERMINED — {len(lc_coverage_risks)} not-assessed "
+                     "lifecycle disclosure(s) name no device count — not assessed, not clear")
     if seg.get("flat"):
         flags.append("the L3 fabric is flat (no segmentation)")
     if mi.get("n_ptp_clocks") and mi.get("n_ptp_dormant") == mi.get("n_ptp_clocks"):
@@ -6485,7 +6766,13 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
         flags.append(f"{not_ready} move-group(s) are NOT READY")
     if n_crit:
         flags.append(f"{n_crit} switch(es) are in Critical health")
+    # The [:4] cut is a DISPLAY cap, and an undisclosed display cap reads as the complete list --
+    # this sentence is the posture headline of every deliverable and states no flag total anywhere
+    # else. Say how many were held back.
+    _flag_cut = max(0, len(flags) - 4)
     posture_statement = ("Migration posture: " + "; ".join(flags[:4])
+                         + (f"; +{_flag_cut} further flag(s) not shown here (see the axis table)"
+                            if _flag_cut else "")
                          + ". Address these in the target design and sequence before cutover." if flags
                          else "Migration posture: no top-tier blockers flagged across the assessed axes — "
                               "proceed with the standard wave plan.")
@@ -6846,7 +7133,7 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
         # Data' band, every risk axis n/a, no risk/watch signal) is NOT low-risk — it is UNASSESSED.
         # Banding it "Low / no stacked risk" would read a collection GAP as a clean bill of health
         # (the exact false-health the doctrine forbids). Distinct band so it never inflates the risk
-        # view yet is counted + visible. ([HISTORY-REDACTED]: the 50 not-collected devices.)
+        # view yet is counted + visible. (Meridian: the 50 not-collected devices.)
         if band == "Insufficient Data" and n_risk == 0 and n_watch == 0:
             risk_band = "Unassessed"
 

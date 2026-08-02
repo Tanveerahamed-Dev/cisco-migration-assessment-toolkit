@@ -7,7 +7,15 @@
 # Fail-open: any error on a metric -> that line is omitted/marked '?'; never blocks. exit 0.
 set -u
 cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" 2>/dev/null || exit 0
-PY=$(command -v python || command -v python3 || echo python)
+# Resolve an interpreter that RUNS — `command -v python` succeeds for the Microsoft Store stub,
+# which exits 9009 and turns this briefing into a silent no-op. Fail-open behaviour is unchanged.
+PY=""
+for _c in python python3; do _p=$(command -v "$_c" 2>/dev/null) || continue
+  if "$_p" -c "import sys" >/dev/null 2>&1; then PY="$_p"; break; fi; done
+if [ -z "$PY" ] && command -v py >/dev/null 2>&1; then
+  for _v in -3.12 -3; do _p=$(py "$_v" -c "import sys; print(sys.executable)" 2>/dev/null) || continue
+    if [ -n "$_p" ] && [ -x "$_p" ]; then PY="$_p"; break; fi; done; fi
+[ -z "$PY" ] && PY=python
 
 ver=$(grep -E '^version *= *"' pyproject.toml 2>/dev/null | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
 export ASNE_VER="${ver:-?}"

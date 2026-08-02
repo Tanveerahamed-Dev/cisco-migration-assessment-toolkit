@@ -344,11 +344,20 @@ def test_upload_and_compare(client):
     assert cmp.status_code == 200
     assert "verdict" in cmp.json()
     assert "schema_compat" in cmp.json()          # P3-E2: the diff surfaces its schema-compat verdict
+    binding = cmp.json()["provenance"]["source_binding"]
+    assert binding["before"]["source"] == "persisted snapshots.snapshot_json blob"
+    assert binding["after"]["source"] == "persisted snapshots.snapshot_json blob"
+    assert binding["before"]["sha256"].startswith("sha256:")
+    assert binding["after"]["sha256"].startswith("sha256:")
 
     trend = client.get(f"/api/campaigns/{cid}/trend")
     assert trend.status_code == 200
     assert len(trend.json()["timeline"]) == 2
     assert "schema_compat" in trend.json()        # P3-E2: the trend surfaces its schema-compat verdict
+    trend_bindings = trend.json()["provenance"]["source_bindings"]
+    assert len(trend_bindings) == 2
+    assert all(b["source"] == "persisted snapshots.snapshot_json blob"
+               and b["sha256"].startswith("sha256:") for b in trend_bindings)
 
 
 def test_engine_diff_surfaces_schema_compat_status():
@@ -359,11 +368,13 @@ def test_engine_diff_surfaces_schema_compat_status():
     mism = engine.snapshot_delta({"script_version": "V3.23.0", "devices": {}},
                                  {"script_version": "V9.9.9", "devices": {}})
     assert mism["schema_compat"]["status"] == "mismatch"
+    assert mism["verdict"] == "INDETERMINATE"
     assert mism["schema_compat"]["message"].isascii()
     ok = engine.snapshot_delta({"script_version": "V3.23.0"}, {"script_version": "V3.23.0"})
     assert ok["schema_compat"]["status"] == "ok"
     trend = engine.campaign_trend([{"script_version": "V3.23.0"}, {"script_version": "V9.9.9"}])
     assert trend["schema_compat"]["status"] == "mismatch"
+    assert trend["verdict"] == "INDETERMINATE"
 
 
 def test_graph_endpoint(client):
@@ -1267,6 +1278,19 @@ def test_execution_outcome_vocabulary(client):
 
     def close_all(eid, ex, decision):
         for w in ex["waves"]:
+            if decision == "COMPLETE":
+                for index, step in enumerate(w["steps"]):
+                    if step["status"] == "pending":
+                        ex = client.post(
+                            f"/api/executions/{eid}/step",
+                            json={"wave": w["group"], "index": index, "status": "done"},
+                        ).json()
+                for index, check in enumerate(w["checks"]):
+                    if check["result"] == "pending":
+                        ex = client.post(
+                            f"/api/executions/{eid}/check",
+                            json={"wave": w["group"], "index": index, "result": "pass"},
+                        ).json()
             ex = client.post(f"/api/executions/{eid}/closeout",
                              json={"wave": w["group"], "decision": decision}).json()
         return ex
@@ -1927,8 +1951,13 @@ def test_execution_outcome_needs_positive_evidence_of_completion():
     empty = {"waves": [], "events": [], "status": "in_progress"}
     assert execution._derive_outcome(empty, "completed") == execution.OUTCOME_PARTIAL
     assert execution._derive_outcome(empty, "aborted") == execution.OUTCOME_ABORTED
-    # a run that DID complete a wave is still SUCCESSFUL — the fix must not blanket-demote
-    ok = {"waves": [{"closeout": {"decision": "COMPLETE"}, "checks": [], "steps": []}],
+    # A closeout signature over no required work is not positive evidence.
+    hollow = {"waves": [{"closeout": {"decision": "COMPLETE"}, "checks": [], "steps": []}],
+              "events": [], "status": "in_progress"}
+    assert execution._derive_outcome(hollow, "completed") == execution.OUTCOME_PARTIAL
+    # A wave with every required item positively actioned remains successful.
+    ok = {"waves": [{"closeout": {"decision": "COMPLETE"},
+                     "checks": [{"result": "pass"}], "steps": [{"status": "done"}]}],
           "events": [], "status": "in_progress"}
     assert execution._derive_outcome(ok, "completed") == execution.OUTCOME_SUCCESS
 
@@ -2116,3 +2145,309 @@ def test_start_execution_loses_the_snapshot_mid_request(client):
     assert store.count_executions(vanished) == 0
     # and the ordinary start still works
     assert client.post(f"/api/snapshots/{real}/executions", json={}).status_code == 201
+
+import re  # noqa: E402  (U1-1 source ratchet below)
+
+
+# --------------------------------------------------------------------------- #
+# U1-1 — the API discarded n_unknown, so the browser could not disclose the gap
+# --------------------------------------------------------------------------- #
+def _life(**bands):
+    """A lifecycle_risk section in the shape compute_lifecycle_risk() emits (analyze.py: `summary` carries
+    by_band plus the named rollups)."""
+    return {"lifecycle_risk": {"summary": {
+        "n_devices": sum(bands.values()), "by_band": dict(bands),
+        "n_past_ldos": bands.get("Past-LDoS", 0), "n_near": bands.get("Near-LDoS", 0),
+        "n_past_eos": bands.get("Past-EoS", 0), "n_active": bands.get("Active", 0),
+        "n_unknown": bands.get("Unknown", 0)}, "per_device": []}}
+
+
+def test_summarize_lifecycle_distinguishes_unassessed_from_healthy():
+    """[U1-1 CRITICAL false-health] summarize() projected only past_eos / near_eos / past_ldos, so a fleet
+    on which NOTHING could be lifecycle-assessed serialised byte-identically to a fully-assessed all-Active
+    fleet, and the browser was structurally incapable of disclosing the gap.
+
+    Measured pre-fix:
+        all-Unknown (12) -> {"past_eos":0,"near_eos":0,"past_ldos":0}
+        all-Active  (12) -> {"past_eos":0,"near_eos":0,"past_ldos":0}     # identical
+    """
+    from backend.summary import summarize
+    blind = summarize(_life(Unknown=12))["lifecycle"]
+    clean = summarize(_life(Active=12))["lifecycle"]
+
+    assert blind != clean, (
+        "an all-Unknown fleet still projects identically to a fully-assessed all-Active one: "
+        f"{blind!r}")
+    assert blind["unknown"] == 12 and blind["coverage_gap"] is True and blind["assessed"] == 0, blind
+    assert blind["by_band"] == {"Unknown": 12} and blind["not_assessed_bands"] == ["Unknown"], blind
+
+    # NON-VACUITY: the assessed fleet must NOT acquire the gap disclosure, or the flag is always-on.
+    assert clean["unknown"] == 0 and clean["coverage_gap"] is False and clean["assessed"] == 12, clean
+    assert clean["not_assessed_bands"] == [], clean
+
+    # the risk rollups still reconcile with the engine, unchanged
+    mixed = summarize(_life(**{"Past-LDoS": 1, "Unknown": 11}))["lifecycle"]
+    assert mixed["past_ldos"] == 1 and mixed["unknown"] == 11 and mixed["assessed"] == 1, mixed
+
+
+def test_summarize_lifecycle_not_assessed_is_the_complement_of_the_assessed_vocabulary():
+    """[r8 F4] The gap classifier must be a PROPERTY, not a longer list of spellings.
+
+    The previous test tried "Undetermined" / "Not assessed" / "Insufficient Data" / "n/a" /
+    "NOT-OBSERVED" -- every one of which was a literal alternative already written into the classifier's
+    regex, so it only proved the regex matched itself. The most likely FUTURE band is precisely the one
+    nobody wrote down, and under a spelling list that one fell through to "assessed" and was banked as
+    health. The classifier is now the COMPLEMENT of the engine's known-good vocabulary, so this asserts
+    the property over band names the classifier cannot possibly have anticipated: pseudo-random tokens,
+    non-Latin text, punctuation, and names that merely CONTAIN a good band's spelling."""
+    import random
+    import string
+    from backend.summary import summarize
+
+    rnd = random.Random(20260801)                      # deterministic, but written by nobody
+    unanticipated = ["".join(rnd.choice(string.ascii_letters) for _ in range(9)) for _ in range(25)]
+    unanticipated += [
+        "Kategorie unbekannt", "未評価", "???", "band-7", "TBD_2031",
+        "Past-LDoS-ish", "Not Active", "Active-Pending-Review", "Superseded", "EoX-lookup-timeout",
+    ]
+    for band in unanticipated:
+        out = summarize({"lifecycle_risk": {"summary": {"by_band": {band: 7, "Active": 1},
+                                                        "n_devices": 8}}})["lifecycle"]
+        assert out["unknown"] == 7, f"{band!r} was silently counted as assessed: {out!r}"
+        assert out["coverage_gap"] is True and out["not_assessed_bands"] == [band], f"{band!r}: {out!r}"
+
+    # NON-VACUITY, and the inverse property: a band the ENGINE really does assess is NOT swept into the
+    # gap bucket, whatever its casing/padding.
+    for band in ("Active", "Past-EoS", "Past-LDoS", "Near-LDoS", " past-eos ", "ACTIVE"):
+        out = summarize({"lifecycle_risk": {"summary": {"by_band": {band: 7}, "n_devices": 7}}})["lifecycle"]
+        assert out["unknown"] == 0 and out["coverage_gap"] is False, f"{band!r}: {out!r}"
+
+
+def test_summarize_lifecycle_vocabulary_reconciles_with_the_engine_that_owns_it():
+    """SSOT ratchet for the test above. The projection's assessed-band vocabulary is a CACHE of the
+    engine's (cisco_toolkit.analyze::_LIFECYCLE_BAND_RANK); if the engine ever adds or renames a band,
+    this fails and forces a coverage decision instead of letting the new band drift into either bucket
+    unnoticed. Only "Unknown" is the engine's own not-assessed band."""
+    from cisco_toolkit.analyze import _LIFECYCLE_BAND_RANK
+    from backend.summary import _ASSESSED_BANDS
+
+    engine_bands = {b.strip().lower() for b in _LIFECYCLE_BAND_RANK}
+    assert "unknown" in engine_bands, _LIFECYCLE_BAND_RANK
+    assert _ASSESSED_BANDS == engine_bands - {"unknown"}, (
+        "webapp/backend/summary.py::_ASSESSED_BANDS no longer matches the engine's lifecycle band "
+        f"vocabulary: projection={sorted(_ASSESSED_BANDS)} engine={sorted(engine_bands)}")
+
+
+def test_summarize_lifecycle_reads_the_unknown_count_from_the_field_that_owns_it():
+    """[r8 F2/F3] `lifecycle_risk.summary.n_unknown` is the OWNER of "how many assets could not be
+    lifecycle-assessed" (docs/ssot.md). The previous revision read it ONLY when `by_band` was empty and
+    otherwise RE-DERIVED the count by classifying band-name strings -- so an engine that publishes an
+    explicit n_unknown alongside a census that does not itself carry an un-assessed band had its own
+    figure DISCARDED, and four un-assessed devices vanished from the API.
+
+    Measured pre-fix on the first case below: unknown=0, coverage_gap=False (the engine said 4)."""
+    from backend.summary import summarize
+
+    owned = summarize({"lifecycle_risk": {"summary": {
+        "by_band": {"Active": 8}, "n_unknown": 4, "n_devices": 12}}})["lifecycle"]
+    assert owned["unknown"] == 4, f"the engine's own n_unknown was discarded: {owned!r}"
+    assert owned["coverage_gap"] is True and owned["assessed"] == 8, owned
+    assert owned["unknown_source"] == "lifecycle_risk.summary.n_unknown", owned
+    assert owned["unknown_reported"] == 4, owned
+
+    # The FALLBACK is labelled as such: no owner field -> the classification, and the projection says so
+    # rather than passing a derived number off as the engine's. (This is also the branch whose
+    # `if not by_band and not n_unknown:` follow-up line was dead code -- the ternary above it already
+    # handled it, so it could never change anything.)
+    derived = summarize({"lifecycle_risk": {"summary": {
+        "by_band": {"Active": 8, "Unknown": 4}, "n_devices": 12}}})["lifecycle"]
+    assert derived["unknown"] == 4 and derived["unknown_reported"] == "", derived
+    assert derived["unknown_source"].startswith("derived:by_band"), derived
+
+    # FAIL CLOSED where the two disagree in the dangerous direction: the owner under-reports relative to
+    # its OWN census (a newer engine emitting a band this projection has never seen). Disclose the larger
+    # gap and cite both figures -- never the smaller number.
+    raised = summarize({"lifecycle_risk": {"summary": {
+        "by_band": {"Active": 5, "Quantum-Undecided": 7}, "n_unknown": 0,
+        "n_devices": 12}}})["lifecycle"]
+    assert raised["unknown"] == 7 and raised["coverage_gap"] is True, raised
+    assert raised["unknown_reported"] == 0 and "RAISED to 7" in raised["unknown_source"], raised
+    assert raised["not_assessed_bands"] == ["Quantum-Undecided"], raised
+
+
+def test_summarize_lifecycle_with_no_basis_to_count_is_not_measured_not_clean():
+    """[r8 F6, backend half] A lifecycle section that publishes the risk ROLLUPS but neither a band
+    census nor `n_unknown` gives no basis at all for counting un-assessed assets. `unknown` is then 0
+    because nothing was measured, NOT because nothing is wrong -- and pre-fix that 0 set
+    coverage_gap=False, i.e. the projection asserted full coverage it had never measured."""
+    from backend.summary import summarize
+
+    blind = summarize({"lifecycle_risk": {"summary": {
+        "n_past_ldos": 152, "n_past_eos": 0, "n_near": 61}}})["lifecycle"]
+    assert blind["coverage_measured"] is False, blind
+    assert blind["coverage_gap"] is True, (
+        "a lifecycle section with no census and no n_unknown reported FULL coverage: " + repr(blind))
+    # the rollups it DID publish still reconcile with the engine, unchanged
+    assert blind["past_ldos"] == 152 and blind["near_eos"] == 61 and blind["past_eos"] == 0, blind
+    # `assessed` must not claim the fleet either: with nothing measured there is no assessed count
+    assert blind["assessed"] == 0, blind
+
+    # NON-VACUITY: publishing EITHER basis is enough to be "measured", and a measured-clean census must
+    # NOT acquire the gap, or the flag is always-on and means nothing.
+    for basis in ({"by_band": {"Active": 12}, "n_devices": 12},
+                  {"n_unknown": 0, "n_devices": 12}):
+        out = summarize({"lifecycle_risk": {"summary": basis}})["lifecycle"]
+        assert out["coverage_measured"] is True and out["coverage_gap"] is False, (basis, out)
+
+
+def test_summarize_lifecycle_still_degrades_on_a_malformed_census():
+    """summarize() runs on EVERY upload and on every snapshot read, so a hostile/malformed lifecycle
+    section must degrade rather than 500."""
+    from backend.summary import summarize
+    for bad in ({"by_band": "not a dict", "n_unknown": "3"},
+                {"by_band": {"Unknown": None, "Active": [1, 2]}},
+                {"by_band": {"Unknown": -5}, "n_devices": "x"}):
+        out = summarize({"lifecycle_risk": {"summary": bad}})["lifecycle"]
+        assert isinstance(out["unknown"], int) and out["unknown"] >= 0, (bad, out)
+        assert isinstance(out["by_band"], dict), (bad, out)
+
+
+def test_snapshot_page_does_not_gate_the_lifecycle_line_on_a_truthy_count():
+    """[U1-1, the compounding front-end half] Snapshot.tsx rendered the ONLY lifecycle text on the page as
+    `{eol ? ` . ${eol} past-EoS` : ""}` where `eol = s.lifecycle?.past_eos`. 0 is falsy in JS, so the line
+    vanished exactly when the count was a measured zero AND when everything was un-assessed.
+
+    This is a SOURCE ratchet (the behavioural half lives in the vitest suite, which this lane does not
+    own). Its non-vacuity is asserted directly: the pre-fix expression is shown to be detectable by the
+    same check, so a revert cannot pass silently."""
+    src = (Path(__file__).resolve().parents[2] / "webapp" / "frontend" / "src"
+           / "pages" / "Snapshot.tsx").read_text(encoding="utf-8")
+    # comments QUOTE the defect verbatim (that is how the history stays readable) -- strip them so the
+    # ratchet reads live CODE only, or documenting the bug would itself trip the guard.
+    code = re.sub(r"//[^\n]*", "", re.sub(r"/\*.*?\*/", "", src, flags=re.S))
+
+    prefix_shape = re.compile(r"\{\s*eol\s*\?")
+    assert not prefix_shape.search(code), (
+        "Snapshot.tsx still gates the lifecycle line on the truthiness of a COUNT — a measured 0 "
+        "erases the line, and an all-Unknown fleet renders as a clean one")
+    # NON-VACUITY: the check can actually see that shape.
+    assert prefix_shape.search('x{eol ? " past-EoS" : ""}y'), "the ratchet cannot detect its own target"
+
+    # the replacement must actually render the coverage gap, not merely drop the ternary
+    assert "LifecycleNote" in src, "the lifecycle line was removed rather than made coverage-honest"
+    assert "EoL NOT ASSESSED" in src, "Snapshot.tsx never discloses the un-assessed lifecycle count"
+    # ... and it must be wired into BOTH branches of the readiness hint (enumerate every exit).
+    assert src.count("<LifecycleNote lc={lc} />") == 2, (
+        "only some of the sites that used to render the lifecycle text were converted")
+
+
+# --------------------------------------------------------------------------------------------------- #
+# r8 F6, front-end half — EXECUTED, not grepped
+# --------------------------------------------------------------------------------------------------- #
+# The lifecycle line's gap predicate lives in Snapshot.tsx. A source ratchet over that file can only
+# prove a phrase is present; it cannot prove the predicate BEHAVES. `lifecycleGapDisclosed` was pulled
+# out of LifecycleNote's JSX precisely so it is a pure function with no React/DOM dependency: extract it
+# from the real file, strip its TypeScript annotations, and run it under node. If the strip is wrong node
+# throws and this fails loudly; if the extraction grabbed the wrong text the table below disagrees.
+import json          # noqa: E402
+import shutil        # noqa: E402
+import subprocess    # noqa: E402
+
+_NODE = shutil.which("node")
+_SNAPSHOT_TSX = (Path(__file__).resolve().parents[2] / "webapp" / "frontend" / "src"
+                 / "pages" / "Snapshot.tsx")
+
+
+def _tsx_fn_as_js(name):
+    """`function <name>(...)` out of Snapshot.tsx, with its TypeScript annotations removed."""
+    src = _SNAPSHOT_TSX.read_text(encoding="utf-8")
+    m = re.search(r"^function %s\(.*?^\}" % re.escape(name), src, re.S | re.M)
+    assert m, "Snapshot.tsx no longer declares a top-level `function %s(`" % name
+    body = m.group(0)
+    head, _, rest = body.partition("{")            # the signature is annotation-only (no braces in it)
+    assert "{" not in head, "%s's signature grew a brace - the strip below is no longer safe" % name
+    head = re.sub(r":\s*[^,)]+", "", head)         # param annotations AND the trailing return type
+    stripped = head + "{" + rest
+    assert ": " not in stripped.split("{", 1)[0], "a type annotation survived: %r" % (stripped,)
+    return stripped
+
+
+def _run_tsx_predicate(name, calls):
+    """Run the extracted predicate over `calls` (a list of argument lists) under node.
+
+    JSON has no `undefined`: a null in `calls` is mapped back to `undefined` in the driver, which is
+    what an older backend omitting the flag actually delivers to this predicate."""
+    js = _tsx_fn_as_js(name)
+    driver = (js + "\nconst A=" + json.dumps(calls) + ";"
+              + "\nprocess.stdout.write(JSON.stringify("
+              + "A.map(a=>!!%s(...a.map(x=>x===null?undefined:x)))));" % name)
+    proc = subprocess.run([_NODE, "-e", driver], capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, "node run of the extracted %s failed:\n%s" % (name, proc.stderr[:2000])
+    return json.loads(proc.stdout)
+
+
+@pytest.mark.skipif(not _NODE, reason="node is not available")
+def test_snapshot_lifecycle_line_discloses_a_section_that_measured_nothing():
+    """[r8 F6] Silence-as-health. With every rollup the engine's "" (not measured) and unknown 0,
+    LifecycleNote rendered NOTHING - indistinguishable from a fully-assessed, fully-clean fleet.
+
+    Arguments are (coverage_gap, unknown, hasFigures); null == the flag is ABSENT (an older backend).
+    Measured pre-fix the predicate was `counted || coverage_gap === true`, which returns FALSE for the
+    two no-measurement rows below."""
+    table = [
+        ([None, 0, False], True,  "no flag and no figures -> silence is not a result"),
+        ([True, 0, False], True,  "backend's fail-closed verdict with nothing measured"),
+        ([True, 0, True],  True,  "backend's verdict still wins when rollups ARE present"),
+        ([False, 4, True], True,  "a counted un-assessed population always discloses"),
+        ([False, 0, True], False, "measured, nothing un-assessed -> NO disclosure (non-vacuity)"),
+        ([None, 0, True],  False, "pre-flag backend that DID publish figures -> unchanged behaviour"),
+    ]
+    got = _run_tsx_predicate("lifecycleGapDisclosed", [a for a, _e, _w in table])
+    for (args, expected, why), actual in zip(table, got):
+        assert actual is expected, "%r -> %r, expected %r (%s)" % (args, actual, expected, why)
+
+    # NON-VACUITY of the table: it must contain both verdicts, or "the predicate agrees" is empty.
+    assert {e for _a, e, _w in table} == {True, False}, table
+
+    # ... and the predicate must actually be WIRED into the rendered line, not merely present.
+    src = _SNAPSHOT_TSX.read_text(encoding="utf-8")
+    code = re.sub(r"//[^\n]*", "", re.sub(r"/\*.*?\*/", "", src, flags=re.S))
+    assert "lifecycleGapDisclosed(lc.coverage_gap" in code, (
+        "LifecycleNote no longer computes its gap through the predicate this test executes")
+
+
+def test_lifecycle_coverage_is_keyed_on_a_USABLE_owner_value_not_on_key_presence():
+    """A malformed `n_unknown` was accepted as a measurement of zero.
+
+    `_lifecycle` decided "was this measured?" with `"n_unknown" in lr` and read the value through
+    `_int0`, which maps null / a string / a dict / a negative / a bool to 0. So a lifecycle section
+    carrying `n_unknown: null` reported coverage_measured=True and unknown=0 -- "assessed, nothing
+    undetermined" -- off a section that had measured nothing. That is the same zero-means-not-measured
+    false-health this projection exists to close, one layer further in, and it was introduced by the
+    fix for the outer layer.
+
+    Key PRESENCE is not evidence; a usable VALUE is. An unusable one is no basis at all.
+    """
+    from webapp.backend.summary import _lifecycle
+
+    for label, value in (("null", None), ("string", "lots"), ("dict", {}),
+                         ("negative", -1), ("bool", True), ("list", [])):
+        got = _lifecycle({"n_devices": 10, "n_unknown": value})
+        assert got["coverage_measured"] is False, f"a {label} n_unknown was treated as measured"
+        assert got["coverage_gap"] is True, f"a {label} n_unknown did not raise a coverage gap"
+
+    absent = _lifecycle({"n_devices": 10})
+    assert absent["coverage_measured"] is False and absent["coverage_gap"] is True
+
+    # NON-VACUITY, both directions. An honest zero is the ONE case that may report no gap -- otherwise
+    # the projection is permanently alarmed and tells the reader nothing; and an honest count must
+    # still be read from the owner rather than fabricated.
+    honest_zero = _lifecycle({"n_devices": 10, "n_unknown": 0})
+    assert honest_zero["coverage_measured"] is True and honest_zero["coverage_gap"] is False, honest_zero
+    honest_three = _lifecycle({"n_devices": 10, "n_unknown": 3})
+    assert honest_three["unknown"] == 3 and honest_three["coverage_gap"] is True
+    assert "n_unknown" in str(honest_three["unknown_source"]), "the owner is no longer cited"
+
+    # the by_band fallback must still work when the owner field is genuinely absent
+    fallback = _lifecycle({"n_devices": 10, "by_band": {"Active": 7, "Unknown": 3}})
+    assert fallback["coverage_measured"] is True and fallback["unknown"] == 3

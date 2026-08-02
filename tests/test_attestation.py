@@ -78,12 +78,32 @@ def test_read_only_claim_detail_carries_real_counts():
 
 
 def test_no_egress_claim_names_its_documented_exceptions():
-    """Coverage-honesty: the two charter exclusions (rest_collect.py, the opt-in REST
-    collector; gen_port_registry.py, the dev-only data-pack generator) are DISCLOSED in
-    the claim, not silently absorbed."""
+    """Coverage-honesty: every charter exclusion and exception is DISCLOSED in the claim.
+
+    Derived from the LIVE sets, not restated. This test used to hardcode two filenames, and when
+    `NO_EGRESS_EXCEPTIONS` was emptied it went on passing — satisfied by a stale METHOD paragraph
+    that still announced an exception the DETAIL simultaneously reported as unnecessary. A test that
+    names the thing it is checking cannot notice the thing being removed; it pinned a
+    self-contradicting client-facing claim in place instead of catching it.
+    """
+    from cisco_toolkit.attestation import NO_EGRESS_EXCEPTIONS, NO_EGRESS_EXCLUDE
+
     c = _by_id(compute_attestation())["no_egress_import_graph"]
-    assert "rest_collect.py" in (c["method"] + c["detail"])
-    assert "gen_port_registry.py" in (c["method"] + c["detail"])
+    published = c["method"] + c["detail"]
+    for name in sorted(NO_EGRESS_EXCLUDE | NO_EGRESS_EXCEPTIONS):
+        assert name in published, (
+            f"{name!r} is excluded or exempted by the charter but is not disclosed in the "
+            f"published claim — a subtraction the reader cannot see: {published!r}"
+        )
+    # Non-vacuity: with both sets empty the loop above would assert nothing at all.
+    assert NO_EGRESS_EXCLUDE, "no exclusions left — this test can no longer prove disclosure"
+    # And the claim must not announce an exception that is no longer in the set (the defect above).
+    for stale in ("gen_port_registry.py",):
+        if stale not in {n.rsplit("/", 1)[-1] for n in NO_EGRESS_EXCEPTIONS}:
+            assert stale not in published, (
+                f"the published claim still names {stale!r} as an exception, but it is not in "
+                "NO_EGRESS_EXCEPTIONS — METHOD and DETAIL now contradict each other"
+            )
 
 
 def test_no_egress_walk_reaches_subpackages_and_the_exception_is_not_dead():
@@ -100,14 +120,62 @@ def test_no_egress_walk_reaches_subpackages_and_the_exception_is_not_dead():
                                            NO_EGRESS_EXCLUDE, scan_imports)
     pkg = os.path.join(ROOT, "cisco_toolkit")
     n, offenders = scan_imports(pkg, NETWORK_IMPORTS, exclude=NO_EGRESS_EXCLUDE)
-    assert "data/gen_port_registry.py" in offenders, (
-        "the subpackage file was never scanned -> the documented exception is dead code "
-        f"(offenders={offenders})")
-    assert "urllib.request" in offenders["data/gen_port_registry.py"]
+
+    # Recursion is proven STRUCTURALLY, against an independent enumeration — not by naming one
+    # subpackage file and checking it is an offender. The original form did the latter, using
+    # `data/gen_port_registry.py` (which then imported urllib). When that generator was made
+    # offline the assertion started demanding a defect that had been REPAIRED, and the test failed
+    # for the best possible reason. A guard anchored to one file's current contents expires when
+    # that file improves; anchored to the walk itself, it cannot.
+    # COMPARE SETS, NOT COUNTS. The first version of this test asserted `n == len(expected)` against
+    # an enumeration that differed from `_iter_py` in TWO ways — it kept dot-directories (the impl
+    # prunes them) and excluded by BASENAME (the impl excludes by RELPATH). Those divergences point
+    # in opposite directions and CANCEL, so the count matched while the sets did not: a
+    # `.vendored/hidden_egress.py` importing `requests` was never opened by the scan and the guard
+    # stayed green. Equal counts are not equal coverage.
+    from cisco_toolkit.attestation import _iter_py
+
+    scanned = {rel for rel, _path in _iter_py(pkg, NO_EGRESS_EXCLUDE)}
+    assert len(scanned) == n, "scan_imports did not scan exactly what _iter_py yielded"
+
+    expected = set()
+    for dirpath, dirs, files in os.walk(pkg):
+        dirs[:] = [d for d in dirs if d != "__pycache__" and not d.startswith(".")]
+        for f in files:
+            if not f.endswith(".py"):
+                continue
+            rel = os.path.relpath(os.path.join(dirpath, f), pkg).replace(os.sep, "/")
+            if rel not in NO_EGRESS_EXCLUDE:      # RELPATH, matching the implementation
+                expected.add(rel)
+    assert scanned == expected, (
+        "the scan's file set differs from an independent recursive enumeration.\n"
+        f"  missed by the scan : {sorted(expected - scanned)}\n"
+        f"  scanned but unexpected: {sorted(scanned - expected)}\n"
+        "A file the walk never opened must never be counted as one it cleared."
+    )
+    assert any("/" in rel for rel in expected), (
+        "no subpackage .py files exist any more, so this test can no longer prove recursion at all"
+    )
+    # Both enumerations share `os.walk` with followlinks=False and both prune dot-directories, so a
+    # divergence hidden INSIDE those shared choices cannot be caught by comparing sets either. Pin
+    # the conditions under which that could matter, so they fail loudly the day they arise instead
+    # of silently shrinking the evidence behind a client-facing claim.
+    hidden = [os.path.relpath(os.path.join(dp, d), pkg)
+              for dp, dirs, _f in os.walk(pkg) for d in dirs
+              if d.startswith(".") or os.path.islink(os.path.join(dp, d))]
+    assert not hidden, (
+        f"dot-directories or directory symlinks under the analysis package: {hidden}. Both "
+        "enumerations skip these by construction, so their contents are UNSCANNED while the claim "
+        "reads '0 network-library imports'. Decide explicitly whether they must be walked."
+    )
+
     assert set(offenders) <= set(NO_EGRESS_EXCEPTIONS), f"undocumented egress import: {offenders}"
     c = _by_id(compute_attestation())["no_egress_import_graph"]
     assert c["result"] == HOLDS
-    assert "exception(s) applied: data/gen_port_registry.py -> urllib.request" in c["detail"]
+    # The charter is EMPTY on purpose (see NO_EGRESS_EXCEPTIONS): nothing under the package imports
+    # a network library, so the claim carries no caveat. Both halves still matter — a stale
+    # exception must still be reported as such, and there must be none to report.
+    assert "no documented exception was needed" in c["detail"]
     assert "matched nothing" not in c["detail"], "a never-firing exception is a stale charter"
 
 

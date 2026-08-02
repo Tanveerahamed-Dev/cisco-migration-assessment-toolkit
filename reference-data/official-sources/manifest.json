@@ -1,0 +1,99 @@
+{
+  "purpose": "Hash-pinned primary-source inputs retained for deterministic offline registry generation",
+  "retrieved_at": "2026-07-30T12:47:53Z",
+  "schema_version": 1,
+  "sources": {
+    "cisco-eol-bulletin-semantic-fixture": {
+      "bytes": 13261,
+      "encoding": "utf-8",
+      "expected_bulletins": 17,
+      "expected_claims": 44,
+      "expected_urls": 17,
+      "fixture_schema_version": 1,
+      "media_type": "application/json",
+      "name": "Cisco EoL bulletin semantic primary-source fixture",
+      "path": "reference-data/official-sources/cisco/eol-bulletins.json",
+      "retrieved_at": "2026-07-30T13:48:46Z",
+      "reviewed_at": "2026-07-30",
+      "sha256": "7683b29e66d3e5b39d89407e60a5f08ffbf8ef9f19ab029279ffc9d0861349c3"
+    },
+    "iana-service-names-port-numbers": {
+      "bytes": 1156064,
+      "encoding": "utf-8",
+      "expected_header": [
+        "Service Name",
+        "Port Number",
+        "Transport Protocol",
+        "Description",
+        "Assignee",
+        "Contact",
+        "Registration Date",
+        "Modification Date",
+        "Reference",
+        "Service Code",
+        "Unauthorized Use Reported",
+        "Assignment Notes"
+      ],
+      "expected_rows": 14529,
+      "media_type": "text/csv",
+      "name": "IANA Service Name and Transport Protocol Port Number Registry",
+      "path": "reference-data/official-sources/iana/service-names-port-numbers.csv",
+      "sha256": "466e31f9db1eba0d193b86a8c94e0c7d9027678cf0c2d7280b726ab1b0eeee4a",
+      "url": "https://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.csv"
+    },
+    "ieee-ma-l": {
+      "assignment_bits": 24,
+      "bytes": 3805373,
+      "encoding": "utf-8",
+      "expected_header": [
+        "Registry",
+        "Assignment",
+        "Organization Name",
+        "Organization Address"
+      ],
+      "expected_rows": 39859,
+      "media_type": "text/csv",
+      "name": "IEEE Registration Authority MA-L public listing",
+      "path": "reference-data/official-sources/ieee/oui.csv",
+      "registry": "MA-L",
+      "sha256": "0c1a4c437089029dbb08ff16f4a2960238611ba0587e912e5f4ae2e754ceb442",
+      "url": "https://standards-oui.ieee.org/oui/oui.csv"
+    },
+    "ieee-ma-m": {
+      "assignment_bits": 28,
+      "bytes": 742311,
+      "encoding": "utf-8",
+      "expected_header": [
+        "Registry",
+        "Assignment",
+        "Organization Name",
+        "Organization Address"
+      ],
+      "expected_rows": 6516,
+      "media_type": "text/csv",
+      "name": "IEEE Registration Authority MA-M public listing",
+      "path": "reference-data/official-sources/ieee/mam.csv",
+      "registry": "MA-M",
+      "sha256": "ae5a9c2a4b44d7694a1071b905b1a28dc8fec5dd6cb7c0575eba8cee63efedba",
+      "url": "https://standards-oui.ieee.org/oui28/mam.csv"
+    },
+    "ieee-ma-s": {
+      "assignment_bits": 36,
+      "bytes": 659624,
+      "encoding": "utf-8",
+      "expected_header": [
+        "Registry",
+        "Assignment",
+        "Organization Name",
+        "Organization Address"
+      ],
+      "expected_rows": 7114,
+      "media_type": "text/csv",
+      "name": "IEEE Registration Authority MA-S public listing",
+      "path": "reference-data/official-sources/ieee/oui36.csv",
+      "registry": "MA-S",
+      "sha256": "a209d197af77cf82235af104d785f24309a357e783955b21fe31089e26120e5d",
+      "url": "https://standards-oui.ieee.org/oui36/oui36.csv"
+    }
+  }
+}

@@ -1,0 +1,1 @@
+"""AssessHub web application package."""

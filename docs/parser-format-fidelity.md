@@ -19,7 +19,7 @@ was fixed **test-first** (a fixture built from the *real* format → watch it fa
 **The dominant bug class:** a parser built/tested against ONE platform's format silently fails on the OTHER
 platform's real output — NX-OS vs IOS-XE column/label splits — or on the BGP-summary line-wrap that occurs for
 wide addresses/ASNs. Several were empirically reproduced against the live parser by the verifiers. This matters
-acutely because the canonical [HISTORY-REDACTED] fleet's DS/CS core + EVS vPC pair are **Nexus** — so the NX-OS blind spots hit
+acutely because the canonical Meridian reference fleet's DS/CS core + EVS vPC pair are **Nexus** — so the NX-OS blind spots hit
 the real target estate, not a hypothetical one.
 
 ## Fixes (15 parser functions, test-first, real-format fixtures)
@@ -49,8 +49,8 @@ real formats gain coverage).
 ## Detector enhancements (follow-up — closed 2 of the 3 residuals)
 
 Two residuals were closed not by a parser-format fix but by a **detector** change — test-first, golden
-unchanged, and **[HISTORY-REDACTED]-re-verified coverage-honest**: both stay silent on the [HISTORY-REDACTED] fleet (which collected neither
-axis, so [HISTORY-REDACTED] holds steady at 40 decisions) and would fire on a customer that has the condition.
+unchanged, and **reference-re-verified coverage-honest**: both stay silent on the Meridian reference fleet (which collected neither
+axis, so Meridian holds steady at 40 decisions) and would fire on a customer that has the condition.
 
 - **`_d_storm_control_active`** (new detector) — fires on an observed storm-control `Filter State = Blocking`
   (a broadcast/multicast/unicast storm being suppressed *right now*). Directly observed, so it works on the

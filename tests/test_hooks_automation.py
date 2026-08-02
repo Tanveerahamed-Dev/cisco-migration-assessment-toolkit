@@ -135,9 +135,16 @@ def _git_repo(tmp_path, name):
 
 def test_no_settings_hook_invokes_a_bare_python3():
     """`python3` is not a portable interpreter name. On this project's primary dev OS it is the
-    Microsoft Store App-Execution-Alias stub: on PATH, exits 49, produces nothing. Hooks must
-    resolve an interpreter the way the .sh hooks do (`command -v python || command -v python3`),
-    so the working one is preferred and the stub is only ever a last resort."""
+    Microsoft Store App-Execution-Alias stub: on PATH, exits 49, produces nothing.
+
+    Hooks must resolve an interpreter that RUNS — probe each candidate with `-c "import sys"` and
+    fall back to the `py` launcher — as every `.claude/hooks/*.sh` script and the inline
+    settings.json commands now do.
+
+    This docstring used to name `command -v python || command -v python3` as the pattern to copy.
+    That is PRESENCE, not function, and `command -v` succeeds for the stub — it was the defect, not
+    the remedy, and it silently disabled the ADR-0001 vault write-guard among others. A guard whose
+    prose recommends the bug it exists to prevent will eventually be obeyed."""
     offenders = []
     for event, i, cmd in _hook_commands(_settings()):
         # A leading/standalone `python3 ...` invocation, as opposed to `command -v python3`.

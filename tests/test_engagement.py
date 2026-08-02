@@ -162,7 +162,7 @@ def test_engagement_gate_and_raid_key_on_past_ldos_not_past_eos(tmp_path):
     """A2 (coverage-honesty): the band that LOSES TAC is Past-LDoS, not Past-EoS (end-of-sale,
     support window still open). A fleet with 152 past-LDoS and 0 past-EoS must surface the 152 in
     BOTH the go/no-go conditions and the RAID risk — reading n_past_eos (=0) silently drops the 152
-    (the exact [HISTORY-REDACTED] defect). Discriminating fixture: n_past_eos=0 so only an n_past_ldos reader passes."""
+    (the exact Meridian defect). Discriminating fixture: n_past_eos=0 so only an n_past_ldos reader passes."""
     snap = _snap()
     snap["lifecycle_risk"] = {"summary": {"n_devices": 303, "n_past_ldos": 152, "n_past_eos": 0,
                                           "n_near": 61}}
@@ -345,7 +345,7 @@ def test_engagement_title_does_not_falsely_claim_full_collection(tmp_path):
     from docx import Document
     out = str(tmp_path / "eng.docx")
     write_engagement_docx(out, {"executive_brief": {"scale": {"n_devices": 303, "n_collected": 0}},
-                                "devices": {f"s{i}": {} for i in range(303)}}, "[HISTORY-REDACTED]")
+                                "devices": {f"s{i}": {} for i in range(303)}}, "Meridian")
     txt = " ".join(p.text for p in Document(out).paragraphs)
     assert "0 collected of 303" in txt
 

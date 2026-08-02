@@ -32,7 +32,7 @@
 ```
                     ┌──────────── EYES (egress-fenced research-lane worktree) ────────────┐
                     │  daily PSIRT/advisory + field sweep · GEPA (1 prompt/run, eval-gated)│
-                    │  → Rule-3-sanitized, signed docs/intel/feed-*.md + prompts/*.frozen  │
+                    │  → sanitized, SHA-256-sealed feed (unauthenticated) + frozen prompts│
                     └───────────────────────────────┬────────────────────────────────────┘
                                                      │  frozen sanitized artifacts ONLY
   ┌──────────────────────────────────────────────── AIR-GAPPED REPO (no-egress doctrine intact) ─────────────┐
@@ -101,7 +101,7 @@ Each phase is independently shippable and independently valuable. Safety/measure
 **Acceptance:** an induced drift produces a proposed remediation PR (never applied) that NRFU can check; a deliberately-broken guard shows **red**, not green, in the next briefing.
 
 ### Phase 5 — Eyes + Recall *(egress-dependent; heaviest, so last)*
-- **Research lane** (egress-fenced worktree): daily sweep + **GEPA one prompt/run, eval-gated (D7)**; emits sanitized, signed `docs/intel/feed-*.md` + `prompts/*.frozen.md`; repo consumes read-only; no-egress invariant stays byte-identical-reproducible disconnected.
+- **Research lane** (egress-fenced worktree): daily sweep + **GEPA one prompt/run, eval-gated (D7)**; emits a sanitized, unkeyed SHA-256 hash-sealed `docs/intel/feed-*.md` (corruption-evident, not producer-authenticated) + `prompts/*.frozen.md`; repo consumes read-only; no-egress invariant stays byte-identical-reproducible disconnected.
 - **RRF hybrid retrieval** (D10, as an experiment with its own eval) over graphify ⊕ docs ⊕ **local vault-digest RAG (Ollama, D4)**.
 - **ADR-0001 amendment (D3)** for the one-way sanitized vault digest; **CoALA-label** stores; adopt agent-memory on the read-only analysts; **temporal fact-supersession**.
 **Acceptance:** a dated intel feed with sourced+scoped items; the air-gapped graph/engine reproduce byte-identical disconnected; one agent prompt improved by a frozen GEPA artifact *that passed the eval gate*; an `/ask` answer visibly fuses graph + doc + vault-digest; a superseded fleet-count stops resurfacing.

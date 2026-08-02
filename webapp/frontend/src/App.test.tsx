@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import App from "./App";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import type { Meta } from "./api";
 
 // App is the routing spine: the top bar (always present), the route table, and the theme toggle.
@@ -106,5 +106,21 @@ describe("TopBar app identity", () => {
     vi.spyOn(api, "meta").mockRejectedValue(new Error("api down"));
     renderApp();
     expect(screen.getByRole("link", { name: "About" })).toBeInTheDocument();
+  });
+
+  it("exchanges the bearer for a browser session when meta answers 401", async () => {
+    vi.spyOn(api, "meta")
+      .mockRejectedValueOnce(new ApiError("token required", 401))
+      .mockResolvedValueOnce(META);
+    const authenticate = vi.spyOn(api, "authenticate").mockResolvedValue(null);
+    renderApp();
+
+    const dialog = await screen.findByRole("dialog", { name: "Atlas sign-in" });
+    fireEvent.change(screen.getByLabelText("API token"), { target: { value: "field-secret" } });
+    fireEvent.submit(dialog);
+
+    await waitFor(() => expect(authenticate).toHaveBeenCalledWith("field-secret"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.getByText("Atlas")).toBeInTheDocument();
   });
 });

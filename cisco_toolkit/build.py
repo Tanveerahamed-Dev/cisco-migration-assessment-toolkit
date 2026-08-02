@@ -146,8 +146,8 @@ def build_fhrp_detail(cmd_to_file: Dict[str, str]) -> list:
     """Full first-hop-redundancy state for THIS device from 'show standby [all]' DETAIL (parse_hsrp_detail):
     [{ifname, group, state, priority, cfg_priority, preempt, preempt_delay, vip, vmac, standby_ip, track}].
     [] when the device runs no HSRP. The brief form (interface hsrp_behavior) keeps only state+VIP; this
-    carries the election / preempt / tracking fields a senior FHRP audit needs (the [HISTORY-REDACTED] fleet ran no FHRP,
-    so this is the first capability proven on a non-[HISTORY-REDACTED] environment). Fail-soft via _safe_parse."""
+    carries the election / preempt / tracking fields a senior FHRP audit needs (the Meridian reference fleet ran no FHRP,
+    so this is the first capability proven on a non-Meridian environment). Fail-soft via _safe_parse."""
     d = _safe_parse(parse_hsrp_detail, _load_cmd_output(cmd_to_file, "show standby all", "show standby")) or {}
     return [{"ifname": k[0], "group": k[1], **v} for k, v in d.items()]
 
@@ -435,7 +435,7 @@ def build_mroute(cmd_to_file: Dict[str, str]) -> dict:
     group, oil_count}]}, or {} when no mroute table. rpf_failures lists ONLY the (S,G) source-tree entries with
     a Null incoming (RPF) interface AND a NON-ZERO RPF neighbour -- the genuinely anomalous blackhole. TWO benign
     Null-IIF classes are deliberately excluded so the detector cannot cry wolf:
-      * (*,G) shared-tree entries (locally-joined / well-known / SSM groups -- 36 of them across the [HISTORY-REDACTED] fleet); and
+      * (*,G) shared-tree entries (locally-joined / well-known / SSM groups -- 36 of them across the Meridian reference fleet); and
       * an (S,G) whose 'RPF nbr' is 0.0.0.0, which per Cisco means THIS router is the source (a local source / PIM
         register / SPT-pending) -- a normal, expected Null IIF, NOT an RPF failure (a real RPF failure shows a valid
         mismatched interface or dropped packets, never (S,G)+Null+RPF-0.0.0.0).
@@ -689,7 +689,7 @@ def _neighbor_is_infra(rec: Dict[str, str]) -> bool:
     proto = (rec.get("proto") or "cdp").lower()
     # An LLDP capability TLV is OPTIONAL, and both IOS-XE and NX-OS render a missing one as literal
     # TEXT rather than an empty field ('not advertised' on 395 of the 838 LLDP neighbour records in
-    # the [HISTORY-REDACTED] collection; 'null' / 'N/A' elsewhere). Treating that text as a real advertisement made
+    # the Meridian collection; 'null' / 'N/A' elsewhere). Treating that text as a real advertisement made
     # the `if caps:` branch authoritative and SKIPPED the platform fallback the docstring above
     # promises for exactly this case -- so a neighbour that advertised NO capabilities could never
     # be classified infra no matter which switch/router family it named, and dropped silently out
@@ -1148,7 +1148,7 @@ def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
     # ("BPDU Guard state was not captured"). Collected-and-protected therefore rendered as
     # not-observed; and on a box that also sets bpduguard on one interface explicitly, the
     # per-host `_bpdu_seen` gate flips and the rest of its ports become an OBSERVED unguarded gap
-    # that does not exist. Measured on the [HISTORY-REDACTED] collection: 25 devices / 647 access ports.
+    # that does not exist. Measured on the Meridian collection: 25 devices / 647 access ports.
     global_bdg = bool(re.search(r"spanning-tree\s+portfast\s+(?:edge\s+)?bpduguard\s+default",
                                 global_run, re.IGNORECASE))
     if global_bdg:
@@ -1321,11 +1321,11 @@ def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
         # `neighbor_switch_vtp_domain` used to be filled with switch_identity['vtp_domain'] -- THIS
         # switch's own domain, copied onto a column that claims to describe the NEIGHBOUR. It sits
         # beside `current_switch_vtp_domain`, which step 12 sets from the same value, so the pair was
-        # identical by construction on every inter-switch link (367 of 367 rows on the [HISTORY-REDACTED] collection):
+        # identical by construction on every inter-switch link (367 of 367 rows on the Meridian collection):
         # a reader comparing the two columns to spot a VTP-domain mismatch could only ever conclude
         # "every trunk agrees" -- a health claim manufactured from a self-copy, never observed.
         # The neighbour's real domain IS advertised ('show cdp neighbors detail' carries a
-        # `VTP Management Domain[ Name]:` line, and the [HISTORY-REDACTED] captures show it genuinely differing
+        # `VTP Management Domain[ Name]:` line, and the Meridian captures show it genuinely differing
         # between neighbours), but extracting it belongs to parse.parse_neighbors_cdp -- the owner of
         # that block format -- not to this join layer. Until it is parsed there, the honest value is
         # "not observed": an empty column cannot be misread as a match.
@@ -1353,7 +1353,7 @@ def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
         d.current_switch_ip = switch_identity.get('mgmt_ip', '')
         d.current_switch_vtp_domain = switch_identity.get('vtp_domain', '')
         # `neighbor_switch_serial` used to be filled with d.cdp_neighbor -- the neighbour's HOSTNAME,
-        # written into a column labelled "Neighbor Switch Serial" (581 rows on the [HISTORY-REDACTED] collection where
+        # written into a column labelled "Neighbor Switch Serial" (581 rows on the Meridian collection where
         # the two were byte-identical). No serial was ever observed; CDP only embeds one in the
         # `Device ID: host(FOC1912R0XH)` form, which parse_neighbors_cdp keeps verbatim inside
         # device_id rather than splitting out. A hostname in a serial column is a fabricated

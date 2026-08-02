@@ -205,6 +205,7 @@ def _known_issues(ev: dict) -> tuple:
     if lc_sum:
         n_ldos = lc_sum.get("n_past_ldos")
         n_eos = lc_sum.get("n_past_eos")
+        n_unk = lc_sum.get("n_unknown")
         if n_ldos or n_eos:
             issues.append((
                 "Lifecycle Risk",
@@ -213,10 +214,29 @@ def _known_issues(ev: dict) -> tuple:
                 "(see Lifecycle Risk sheet)",
                 "Standing caveat until the fleet is migrated: an unfixable defect on a past-LDoS platform is "
                 "a when-not-if incident. Feed into budget and the migration wave order."))
-        else:
+        elif not n_unk:
             issues.append((
                 "Lifecycle Risk", "No past-LDoS / past-EoS platform flagged at assessment.",
                 "(fleet)", "Re-check EoX bands quarterly (§8); lifecycle status drifts as Cisco publishes notices."))
+        # COVERAGE, not a clean bill — and an INDEPENDENT `if`, not an `elif` chained behind the
+        # findings above. Subordinated, this fired only when the fleet had ZERO past-LDoS and ZERO
+        # past-EoS, i.e. it covered the all-unbanded fleet and silently dropped the BROWNFIELD one
+        # (some gear banded, most not) — which is the case a day-2 handbook is actually written for.
+        # Measured: 1 Past-LDoS + 20 Unknown emitted the past-LDoS caveat alone and never mentioned
+        # the 20 undetermined devices. What was FOUND and what could NOT BE ASSESSED are orthogonal
+        # facts; chaining them makes the second conditional on the first being absent. (handoff §7.23)
+        if n_unk:
+            issues.append((
+                # Same source axis, so the same axis label: this is a SECOND row on the Lifecycle
+                # Risk axis, not a different axis. The register renders one row per fact.
+                "Lifecycle Risk",
+                f"{n_unk} device(s) have UNDETERMINED support status — no EoX bulletin in the "
+                "offline KB matched their platform, so no lifecycle band was assigned. This is not "
+                "a clean result, and it is separate from whatever was found on the devices that "
+                "could be banded.",
+                "(see Lifecycle Risk sheet)",
+                "Resolve each undetermined platform against Cisco's EoX portal before relying on "
+                "this section; until then treat their support state as unknown, not supported."))
     else:
         absent.append(("Lifecycle Risk (past-LDoS / past-EoS platforms)",
                        "re-run the assessment with a current engine to populate the hardware-lifecycle bands."))

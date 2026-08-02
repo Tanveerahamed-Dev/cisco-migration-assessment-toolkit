@@ -29,7 +29,7 @@ def _admin_distance(source: str) -> int:
     tie-breaker between same-prefix routes; longest-prefix-match always dominates. Tolerant of BOTH the expanded
     names parse_ip_routes emits ('connected','static','ospf') AND the raw route-codes that survive on some entries
     ('s*' static+candidate-default, 'o*ia' ospf-inter-area, 'c','l','b','d','i','r') -- the '*' candidate-default
-    marker and spaces are stripped first. Unknown / blank sources sort last (255). [verified vs real [HISTORY-REDACTED] sources]"""
+    marker and spaces are stripped first. Unknown / blank sources sort last (255). [verified vs real Meridian sources]"""
     s = str(source or "").strip().lower().replace("*", "").replace(" ", "")
     if not s:
         return 255

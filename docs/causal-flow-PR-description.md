@@ -8,9 +8,9 @@
 ---
 
 ## What & why
-The blast-radius explorer had one standout visual — a **Trigger → Mechanism → Impact → Mitigation** "causal flow" — but it only covered 3 structural-SPOF types. This generalises it to **every finding family the assessment surfaces** (19 on the [HISTORY-REDACTED] fleet) across **both** surfaces — the offline explorer *and* the AssessHub web platform — and adds a **bowtie** layout for multi-cause cross-layer compounds.
+The blast-radius explorer had one standout visual — a **Trigger → Mechanism → Impact → Mitigation** "causal flow" — but it only covered 3 structural-SPOF types. This generalises it to **every finding family the assessment surfaces** (19 on the Meridian reference fleet) across **both** surfaces — the offline explorer *and* the AssessHub web platform — and adds a **bowtie** layout for multi-cause cross-layer compounds.
 
-On the [HISTORY-REDACTED] fleet that's **2,152 causal flows across 19 families** (Structural SPOF 324, Cross-layer 513, Compound risk 665, Health 200, Inventory 143, STP 104, Protocol 75, FHRP 52, Design decisions 30, Addressing 11, Security, Operational-logs, False-health, L1/L3, Software, QoS, Multicast, Timing).
+On the Meridian reference fleet that's **2,152 causal flows across 19 families** (Structural SPOF 324, Cross-layer 513, Compound risk 665, Health 200, Inventory 143, STP 104, Protocol 75, FHRP 52, Design decisions 30, Addressing 11, Security, Operational-logs, False-health, L1/L3, Software, QoS, Multicast, Timing).
 
 ## What's in it (3 commits)
 - **`feat(causal)`** — `cisco_toolkit/causal.py::compute_causal_flows(snap)`: the canonical normalization that maps `causality`, `cross_layer`, `design_blueprint` and the `punchlist` into one trigger→mechanism→impact→mitigation list (cross-layer ⇒ bowtie). Pure function of the snapshot and the canonical source the explorer JS and the webapp both mirror.

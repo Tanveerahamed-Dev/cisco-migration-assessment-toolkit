@@ -15,8 +15,9 @@ architecture family scored 55.27-56.03% — Cognee and Graphiti statistically ti
 The no-egress signals fused here are two **local** corpora: the **docs** (prose) and the **code** (the
 ``cisco_toolkit`` sources — a lexical proxy for the graphify structural signal). Both are offline. Two more
 stores plug into the same fusion when available: **graphify** (the AST graph, via :func:`graph_rank`, a
-best-effort subprocess — offline) and the **vault digest** (D3/D4, ADR-0001 Amendment 1): a signed,
-sanitized, provenance-**verified** corpus ranked **lexically** here (:func:`vault_digest_rank` — fence-clean,
+best-effort subprocess — offline) and the **vault digest** (D3/D4, ADR-0001 Amendment 1): a sanitized,
+SHA-256 hash-checked but explicitly unauthenticated corpus ranked **lexically** here
+(:func:`vault_digest_rank` — fence-clean,
 always available when a digest exists), with an OPTIONAL local-Ollama semantic re-rank
 (:func:`ollama_digest_rank`, gated — degrades to lexical). So a fused answer visibly draws on ≥ 2 stores —
 the plan's recall metric.
@@ -38,6 +39,7 @@ import json
 import math
 import os
 import re
+import stat
 from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -118,28 +120,156 @@ def graph_rank(query: str, *, timeout: int = 30) -> List[str]:
 
 # --- the vault-digest store (Phase 5, D3/D4, ADR-0001 Amendment 1) -----------------------------
 # The one-way, sanitized, read-only vault digest. PRODUCED in the fenced lane (research_lane/vault_digest.py,
-# outside cisco_toolkit/); the air-gapped repo only ever VERIFIES + reads the frozen signed digest here.
+# outside cisco_toolkit/); the air-gapped repo only integrity-checks + reads the frozen digest here.
 VAULT_DIGEST_DIR = os.path.join("docs", "vault-digest")
+_MAX_VAULT_DIGEST_FILES = 100
+_MAX_VAULT_DIGEST_BYTES = 32 * 1024 * 1024
+_MAX_VAULT_DIGEST_TOTAL_BYTES = 64 * 1024 * 1024
 
 
-def load_vault_digest(digest_dir: str = VAULT_DIGEST_DIR, *, forbidden: Tuple[str, ...] = ()) -> Dict[str, str]:
-    """Load + PROVENANCE-VERIFY the signed vault digest(s) into a ``{entry_id: text}`` corpus. Amendment 1
-    point 2: the repo verifies before use — reuses :func:`cisco_toolkit.intel_feed.verify_feed` (sanitized +
-    SHA-256 + forbidden-scan), the SAME gate as the intel feed. A refused digest is skipped whole (never
+def load_vault_digest(
+    digest_dir: str = VAULT_DIGEST_DIR,
+    *,
+    forbidden: Tuple[str, ...] = (),
+    status: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    """Load + integrity-check vault digest(s) into a ``{entry_id: text}`` corpus. Amendment 1
+    point 2: the repo checks before use — reuses :func:`cisco_toolkit.intel_feed.verify_feed` (sanitization
+    claim + SHA-256 + forbidden-scan), the SAME gate as the intel feed. This does not authenticate the
+    producer. A refused digest is skipped whole (never
     partially consumed); no digest at all -> ``{}`` (coverage-honest — recall degrades to graph+docs, never a
     fabricated hit)."""
-    from cisco_toolkit.intel_feed import verify_feed          # the shared sign/verify contract
+    from cisco_toolkit.intel_feed import verify_feed          # shared hash-envelope intake contract
     corpus: Dict[str, str] = {}
-    for p in sorted(glob.glob(os.path.join(digest_dir, "digest-*.jsonl"))):
+    refused: List[Dict[str, str]] = []
+    configured = forbidden or tuple(
+        token.strip()
+        for token in os.environ.get("CISCO_ASSESS_FORBIDDEN", "").split(",")
+        if token.strip()
+    )
+    paths = sorted(glob.glob(os.path.join(digest_dir, "digest-*.jsonl")))
+    if len(paths) > _MAX_VAULT_DIGEST_FILES:
+        refused.append({
+            "digest": "*",
+            "reason": (
+                f"{len(paths)} digest files exceed the "
+                f"{_MAX_VAULT_DIGEST_FILES}-file intake limit"
+            ),
+        })
+        paths = []
+    verified: List[Tuple[str, List[Dict[str, Any]]]] = []
+    total_bytes = 0
+    aggregate_exceeded = False
+    for p in paths:
         try:
-            text = open(p, encoding="utf-8").read()
-        except OSError:
+            file_stat = os.lstat(p)
+            reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+            if (
+                stat.S_ISLNK(file_stat.st_mode)
+                or (reparse and getattr(file_stat, "st_file_attributes", 0) & reparse)
+                or not stat.S_ISREG(file_stat.st_mode)
+            ):
+                raise ValueError("digest path is not a regular non-link file")
+            if file_stat.st_size > _MAX_VAULT_DIGEST_BYTES:
+                raise ValueError(
+                    f"file exceeds the {_MAX_VAULT_DIGEST_BYTES}-byte intake limit"
+                )
+            total_bytes += file_stat.st_size
+            if total_bytes > _MAX_VAULT_DIGEST_TOTAL_BYTES:
+                aggregate_exceeded = True
+                refused.append({
+                    "digest": "*",
+                    "reason": (
+                        "aggregate digests exceed the "
+                        f"{_MAX_VAULT_DIGEST_TOTAL_BYTES}-byte intake limit; refused whole"
+                    ),
+                })
+                break
+            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(p, flags)
+            try:
+                opened = os.fstat(fd)
+                after = os.lstat(p)
+                if (
+                    not stat.S_ISREG(opened.st_mode)
+                    or (reparse and getattr(opened, "st_file_attributes", 0) & reparse)
+                    or stat.S_ISLNK(after.st_mode)
+                    or (reparse and getattr(after, "st_file_attributes", 0) & reparse)
+                    or (file_stat.st_dev, file_stat.st_ino) != (opened.st_dev, opened.st_ino)
+                    or (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino)
+                ):
+                    raise ValueError("digest file identity changed during verification")
+                with os.fdopen(fd, "rb") as handle:
+                    fd = -1
+                    raw = handle.read(_MAX_VAULT_DIGEST_BYTES + 1)
+            finally:
+                if fd >= 0:
+                    os.close(fd)
+            if len(raw) > _MAX_VAULT_DIGEST_BYTES:
+                raise ValueError(
+                    f"file exceeds the {_MAX_VAULT_DIGEST_BYTES}-byte intake limit"
+                )
+            text = raw.decode("utf-8")
+        except (OSError, UnicodeError, ValueError) as exc:
+            refused.append({"digest": os.path.basename(p), "reason": str(exc)})
             continue
-        res = verify_feed(text, forbidden=forbidden)
+        res = verify_feed(
+            text,
+            forbidden=configured,
+            require_forbidden=True,
+        )
         if not res["ok"]:
+            refused.append({"digest": os.path.basename(p), "reason": res["reason"]})
             continue
-        for e in res["entries"]:
-            corpus[str(e.get("id"))] = " ".join(str(e.get(f, "")) for f in ("title", "detail", "notes", "tags"))
+        verified.append((os.path.basename(p), res["entries"]))
+
+    if aggregate_exceeded:
+        if status is not None:
+            status.update({
+                "n_files": len(paths),
+                "n_entries": 0,
+                "refused": refused,
+                "denylist_enforced": bool(configured),
+            })
+        return {}
+
+    id_sources: Dict[str, List[str]] = {}
+    for digest_name, entries in verified:
+        for entry in entries:
+            id_sources.setdefault(str(entry.get("id")), []).append(digest_name)
+    conflicted = {
+        source
+        for sources in id_sources.values()
+        if len(sources) > 1
+        for source in sources
+    }
+    for digest_name, entries in verified:
+        if digest_name in conflicted:
+            duplicate_ids = sorted(
+                entry_id
+                for entry_id, sources in id_sources.items()
+                if digest_name in sources and len(sources) > 1
+            )
+            refused.append({
+                "digest": digest_name,
+                "reason": (
+                    "duplicate entry id across digest files; ambiguous digest refused whole: "
+                    + ", ".join(duplicate_ids[:5])
+                ),
+            })
+            continue
+        for entry in entries:
+            corpus[str(entry.get("id"))] = " ".join(
+                str(entry.get(field, ""))
+                for field in ("title", "detail", "notes", "tags")
+            )
+    if status is not None:
+        status.update({
+            "n_files": len(paths),
+            "n_entries": len(corpus),
+            "refused": refused,
+            "denylist_enforced": bool(configured),
+        })
     return corpus
 
 
@@ -223,7 +353,7 @@ _EVAL_LABELS: List[Tuple[str, str]] = [
     ("PIR calibration gap N floor descriptive", "calibration.py"),
     ("domain pack selection architecture coverage", "domain_packs.py"),
     ("council refute-first majority lens", "council.py"),
-    ("intel feed provenance sanitized signed", "intel_feed.py"),
+    ("intel feed sanitization hash integrity unauthenticated", "intel_feed.py"),
     ("self healing drift remediation propose only", "self_healing.py"),
     ("agent system self check non vacuous guard", "selfcheck.py"),
 ]
@@ -310,7 +440,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     g = graph_rank(query)                                       # offline graphify signal if available
     if g:
         extra.append(g)
-    vault = load_vault_digest()                                 # verified signed vault digest (empty if none/gated)
+    vault = load_vault_digest()                         # integrity-checked vault digest (empty if none/gated)
     used_ollama = False
     if vault:
         extra.append(vault_digest_rank(query, vault))

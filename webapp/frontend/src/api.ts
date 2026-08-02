@@ -14,8 +14,48 @@ export interface Summary {
   };
   readiness: Record<"READY" | "CAUTION" | "NOT READY", number>;
   keystones: Array<Record<string, any>>;
-  lifecycle: { past_eos?: number | string; near_eos?: number | string; past_ldos?: number | string };
+  lifecycle: LifecycleSummary;
+  verification?: SnapshotVerification;
   sections: Array<{ key: string; label: string; count: number }>;
+}
+
+/** Hardware-lifecycle (EoX) census as projected by webapp/backend/summary.py::_lifecycle.
+ *
+ *  COVERAGE-HONESTY CONTRACT (audit U1-1): `past_eos`/`near_eos`/`past_ldos` are the RISK rollups —
+ *  all three being 0 does NOT mean the fleet is supported, it can equally mean nothing was assessed.
+ *  `unknown` / `coverage_gap` are the other half of that fact and must be rendered wherever the
+ *  rollups are: an all-Unknown fleet used to serialise byte-identically to an all-Active one.
+ *  Every count may be `""` when the engine published no figure — treat "" as UNKNOWN, never as 0. */
+export interface LifecycleSummary {
+  past_eos?: number | string;
+  near_eos?: number | string;
+  past_ldos?: number | string;
+  active?: number | string;
+  /** Assets whose support state could NOT be determined (no EoX match). A gap, never a clean result. */
+  unknown?: number;
+  n_devices?: number;
+  assessed?: number;
+  /** The FULL engine band census, so a band this client does not know by name still reaches the UI. */
+  by_band?: Record<string, number>;
+  /** Which census keys were classified as not-assessed buckets (e.g. ["Unknown"]). */
+  not_assessed_bands?: string[];
+  coverage_gap?: boolean;
+}
+
+export interface SnapshotVerification {
+  contract_version: number;
+  origin?: string;
+  integrity_status: "verified" | "failed" | "unknown";
+  status: "verified" | "partial" | "unverified";
+  label: string;
+  verified: boolean;
+  coverage_honest: boolean;
+  reasons: string[];
+  failed_phases: string[];
+  missing_authorities: string[];
+  non_authoritative_authorities: string[];
+  integrity_failed_authorities: string[];
+  integrity_unknown_authorities: string[];
 }
 
 export interface SnapshotMeta {
@@ -183,6 +223,7 @@ export interface IngestReport {
   devices_json: "bundled" | "synthesized";
   engine_seconds: number;
   engine_log_tail: string;
+  verification: SnapshotVerification;
 }
 
 export interface ExecutionMeta {
@@ -508,6 +549,12 @@ async function j<T>(r: Response): Promise<T> {
 
 export const api = {
   health: () => fetch("/api/health").then((r) => j<{ status: string; sample_available: boolean }>(r)),
+  authenticate: (token: string) =>
+    fetch("/api/session", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    }).then((r) => j<null>(r)),
+  logout: () => fetch("/api/session", { method: "DELETE" }).then((r) => j<null>(r)),
   meta: () => fetch("/api/meta").then((r) => j<Meta>(r)),
 
   listCampaigns: () => fetch("/api/campaigns").then((r) => j<Campaign[]>(r)),

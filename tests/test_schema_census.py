@@ -3,7 +3,7 @@
 `ssot.compute_schema_census(snap)` turns a snapshot into a coverage MAP: for every top-level
 section it records the coverage-honest 3-state token (published / collected_but_empty /
 not_collected), the section's cardinality, its structural shape, and an honest note. This is the
-map that answers, for an access-only collection (the [HISTORY-REDACTED] fleet, where a whole distribution/core
+map that answers, for an access-only collection (the Meridian reference fleet, where a whole distribution/core
 tier is UN-collected), exactly what was SEEN vs what is a blind spot — directly addressing the
 real "outputs feel filler" field problem (an uncollected tier, never a code bug).
 

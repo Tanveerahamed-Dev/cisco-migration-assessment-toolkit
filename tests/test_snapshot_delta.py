@@ -65,7 +65,8 @@ def test_delta_clean_verdict_when_no_regressions():
 def test_delta_tolerates_snapshots_without_computed_keys():
     bare = {"devices": {"sw1": {}}, "interfaces": {"sw1": {}}}
     d = compute_snapshot_delta(bare, bare)
-    assert d["verdict"] == "CLEAN" and d["health"]["n_regressed"] == 0 and d["findings"]["n_opened"] == 0
+    assert d["verdict"] == "INDETERMINATE"
+    assert d["health"]["n_regressed"] == 0 and d["findings"]["n_opened"] == 0
 
 
 def _routes_snap(routes):
@@ -135,8 +136,8 @@ def test_verdict_note_is_coverage_honest_about_reachability():
 def test_compute_snapshot_delta_is_total_on_non_dict_snapshots():
     """[w2-live wave #4 HIGH] the --compare / --trend path must degrade, never raise, on a non-dict snapshot."""
     for bad in (None, [], 42, "s", True):
-        assert compute_snapshot_delta(bad, {})["verdict"] in ("CLEAN", "REVIEW", "REGRESSED")
-        assert compute_snapshot_delta({}, bad)["verdict"] in ("CLEAN", "REVIEW", "REGRESSED")
+        assert compute_snapshot_delta(bad, {})["verdict"] in ("CLEAN", "REVIEW", "REGRESSED", "INDETERMINATE")
+        assert compute_snapshot_delta({}, bad)["verdict"] in ("CLEAN", "REVIEW", "REGRESSED", "INDETERMINATE")
 
 
 def test_diff_workbook_has_validation_sheets(tmp_path):

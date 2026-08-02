@@ -19,7 +19,6 @@ a false 100.
 """
 import glob
 import importlib
-import os
 
 import pytest
 
@@ -216,7 +215,7 @@ def test_known_good_renders_and_scores_100_full(tmp_path):
     for mod, fn in WRITERS:
         writer = getattr(importlib.import_module("cisco_toolkit." + mod), fn)
         out = str(tmp_path / f"{mod}.docx")
-        writer(out, snap, "[HISTORY-REDACTED]")
+        writer(out, snap, "Meridian")
         doc = Document(out)
         seg = [p.text for p in doc.paragraphs]
         for t in doc.tables:

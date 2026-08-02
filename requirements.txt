@@ -2,9 +2,12 @@
 # Install with:  python -m pip install -r requirements.txt
 netmiko>=4.1,<5
 openpyxl>=3.1,<4
-# Optional: enables the Assessment & Migration Runbook (DOCX) deliverable. Without it the run still
-# produces the workbook + explorer + snapshot and logs that the runbook was skipped (or pass --no-docx).
-python-docx>=1.1,<2   # optional
-# Optional: enables the Executive presentation deck (PPTX) deliverable. Without it the run still produces
-# the other deliverables and logs that the deck was skipped (or pass --no-pptx).
-python-pptx>=0.6,<2   # optional
+# Default deliverables: runbook (DOCX) and executive deck (PPTX). Both are base
+# dependencies because the default CLI enables their output paths.
+python-docx>=1.1,<2
+python-pptx>=0.6,<2
+
+# Installed AssessHub entry point and multipart upload surface.
+fastapi>=0.110,<1
+uvicorn[standard]>=0.27,<1
+python-multipart>=0.0.9,<1

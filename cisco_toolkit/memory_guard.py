@@ -33,6 +33,7 @@ import dataclasses
 import hashlib
 import os
 import re
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 # The non-negotiable safety invariants that MUST survive every consolidation pass. Each is
@@ -196,18 +197,25 @@ def unpinned_constraints(entries: List[Any]) -> List[str]:
 
 
 # --- the runtime arms (P0-1 / DEC-005; gap G-001, evidence BLK-1) ---------------------------------
-# The real store lives OUTSIDE the repo (Claude Code auto-memory for this project), so its location
-# cannot be derived from the repo root: the known per-machine path is pinned literally BY DESIGN,
-# $AGENT_MEMORY_DIR relocates it on any other machine, and every consumer (selfcheck's
+# The real store lives OUTSIDE the repo (Claude Code auto-memory for this project). Claude Code
+# deterministically encodes the checkout's absolute path into its project directory, so the default
+# is portable without publishing one operator's account name. $AGENT_MEMORY_DIR relocates it, and
+# every consumer (selfcheck's
 # check_protected_artifact, the snapshot/verify wrapper below) resolves through here — one owner.
 PROTECTED_ARTIFACT = "protected-constraints.md"
 AGENT_MEMORY_DIR_ENV = "AGENT_MEMORY_DIR"
-DEFAULT_AGENT_MEMORY_DIR = r"C:\Users\[HISTORY-REDACTED]\.claude\projects\C--Users-[HISTORY-REDACTED]-Desktop-Enhancements\memory"
+def _default_agent_memory_dir() -> str:
+    repo_root = Path(__file__).resolve().parents[1]
+    project_key = re.sub(r"[^A-Za-z0-9]", "-", str(repo_root))
+    return str(Path.home() / ".claude" / "projects" / project_key / "memory")
+
+
+DEFAULT_AGENT_MEMORY_DIR = _default_agent_memory_dir()
 
 
 def resolve_store_dir(explicit: Optional[str] = None) -> str:
-    """The agent-memory store location: explicit arg > ``$AGENT_MEMORY_DIR`` > the known per-machine
-    path. Pure resolution — existence is the CALLER's coverage-honest signal to report."""
+    """The agent-memory store location: explicit arg > ``$AGENT_MEMORY_DIR`` > derived project path.
+    Pure resolution — existence is the CALLER's coverage-honest signal to report."""
     return explicit or os.environ.get(AGENT_MEMORY_DIR_ENV) or DEFAULT_AGENT_MEMORY_DIR
 
 

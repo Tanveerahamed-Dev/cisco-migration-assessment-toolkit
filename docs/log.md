@@ -987,7 +987,7 @@ Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembe
   `ollama_judge` cross-family 0.2 / deterministic 1.0 → the design.docx APPROVE is now explicitly PROVISIONAL), cleared
   the binary phantom-health audit (0 violations across 9 AUTOFILLED deliverables), and BUILT
   `precert.compute_readiness_freeze` (single-snapshot readiness cert, schema `precert-readiness/1`, +7 tests,
-  shadow-validated NOT READY on the [HISTORY-REDACTED] snapshot). 8 commits, whole suite green. *(Honest slip: dated the new planning
+  shadow-validated NOT READY on the Meridian reference snapshot). 8 commits, whole suite green. *(Honest slip: dated the new planning
   docs `2026-07-08` by anchoring on a sibling filename; the system clock was `2026-07-10` — git timestamps are the truth.)*
 - `!lesson` **An external planner blind to the codebase re-derives instruments you already ship — map every proposal to
   a shipped symbol BEFORE building.** Twice now (two Fable plans earlier, two Perplexity passes here) the "build this"
@@ -1042,12 +1042,12 @@ Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembe
   keeps it out of tuning. Result: the calibration nerve is proven end-to-end (`N=7, accuracy=1.0, false-confidence
   0.0`) while still correctly `[GATED]` at 0 REAL — data fed without loosening the no-fabrication law. bridge-candidate
 
-## [2026-07-07] — [HISTORY-REDACTED] DC HLD → v7.5 full-family rebuild (research → audit → mining → figures → content → resync → independent QA)
+## [2026-07-07] — Reference DC HLD → v7.5 full-family rebuild (research → audit → mining → figures → content → resync → independent QA)
 
-- Rebuilt the [HISTORY-REDACTED] Qatar-DC deliverable set to a best-possible v7.5 across a ~50-agent marathon: a research wave
+- Rebuilt the Reference reference-DC deliverable set to a best-possible v7.5 across a ~50-agent marathon: a research wave
   (cited HLD/diagram best-practices brief), an audit wave (14 figures + document + family-skew), and a mining wave
   (every v3–v7 HLD/LLD for content dropped along the way → 32-recovery plan) fed a ground-up rebuild. Shipped a NEW
-  reusable figure generator (`[HISTORY-REDACTED]_DC_Design/figgen/`: `svgkit.py` vector engine + `figdata.py` SSOT →
+  reusable figure generator (`Reference_DC_Design/figgen/`: `svgkit.py` vector engine + `figdata.py` SSOT →
   editable SVG + 600-DPI PNG), 14 rebuilt figures, an elevated 78-page HLD (18 content recoveries + Appendices E–I),
   and the whole companion family (LLD/ConfigPack/MOP/NRFU/NIP) resync'd to v7.5 via their generators. docx→PDF via Word COM.
 - !lesson **A single wrong "canonical fact" in a generation spec propagates silently across an entire
@@ -1114,13 +1114,13 @@ Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembe
   doesn't fire for Agent-tool subagents. Flagged as task_dcf0043c (needs a fallback recording path that
   records only a real subagent verdict, never main-agent prose). bridge-candidate
 
-## [2026-07-06] — [HISTORY-REDACTED] HLD v7.1: integrity reissue + FCSLA-delivery + firewall-terminated-edge deltas (side engagement)
+## [2026-07-06] — Reference HLD v7.1: integrity reissue + FCSLA-delivery + firewall-terminated-edge deltas (side engagement)
 
-- Side-engagement session only — produced [HISTORY-REDACTED] DC HLD v7.1 from v7.0 in three stacked deltas: an integrity/completeness
+- Side-engagement session only — produced Reference DC HLD v7.1 from v7.0 in three stacked deltas: an integrity/completeness
   reissue (~27 fixes: ACP rule off-by-one, FPR3105 copper-port media, C9400 SVL single-active-supervisor behaviour,
   figure renumber, consolidated 39-REQ + 10-OQ Appendix A, reinstated §12.6/§14.4, S-30, REC-6 optics gap), then the
   Ooredoo FCSLA delivery as a design variation, then the resolved firewall-terminated eBGP edge (D-14 topology /
-  D-15 C-2 evolution). No tracked repo code touched — `[HISTORY-REDACTED]_DC_Design/` is gitignored with its own SSOT, so `git log`
+  D-15 C-2 evolution). No tracked repo code touched — `Reference_DC_Design/` is gitignored with its own SSOT, so `git log`
   is unchanged. Built via an idempotent, assertion-guarded XML-transform script re-runnable from a pristine `.orig` unpack.
 - !lesson **The Windows git-bash docx toolchain is missing the obvious binaries — reach for pip wheels and Python
   stdlib instead.** `pandoc`, `pdftoppm`/poppler, and `zip` are all absent; the console is cp1252. Fixes that worked:
@@ -1176,7 +1176,7 @@ Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembe
 
 ## [2026-07-05] — v3.30 "deliverable release" wave: MOP / Ops-Handbook / CRD excellence (§3.6 / DE-01)
 
-- 3-agent isolated-worktree wave built the client-facing DOCX upgrades for the [HISTORY-REDACTED] engagement: MOP BLUF +
+- 3-agent isolated-worktree wave built the client-facing DOCX upgrades for the reference engagement: MOP BLUF +
   quantified rollback triggers + pre-impl checklist + comms/escalation (mop.py); Backup-&-Recovery +
   Known-Issues from the fleet's own axes (ops.py); Constraints + Out-of-Scope + Requirements Traceability
   Matrix (crd.py). All 3 agents completed cleanly; merges conflict-free (disjoint files); GOLDEN-NEUTRAL
@@ -1202,7 +1202,7 @@ Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembe
 
 - 2-agent isolated-worktree wave built the moat-deepening §3.5 features: `ssot.compute_schema_census` (J3 —
   the snapshot self-describes published/collected-but-empty/not-collected per section; the SuzieQ `describe`
-  analog that answers the [HISTORY-REDACTED] access-only "filler" problem: it's an uncollected tier, not a code bug),
+  analog that answers the reference access-only "filler" problem: it's an uncollected tier, not a code bug),
   `ssot.compute_fact_lineage` (J2 provenance for canonical facts), and `detector_schema.py` (J1 — 32
   descriptors making "not-observed ≠ healthy" a schema property via a mandatory `abstains_when`).
 - `!lesson` **The golden shrink-guard caught a real integration defect, not me:** the Coverage Schema sheet put
@@ -1230,7 +1230,7 @@ Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembe
   merged golden-neutral (failover is target-actuated, not snapshot-embedded) except the attestation module-count
   re-bless (47→49 for the 2 new modules).
 - `!lesson` **Adversarial review (3 lenses, find→refute) confirmed 11 real findings — ALL one class: false-health
-  when the incumbent is off-scan**, which is the COMMON case on the [HISTORY-REDACTED] fleet (every uplink → uncollected core).
+  when the incumbent is off-scan**, which is the common case in the reference fleet (every uplink → uncollected core).
   The twin as first built would hand a client a confident "you have a backup" verdict for switches whose real STP
   root / FHRP active were never collected. Fixed: `_current_root` names a root only on collected `is_root=True`
   (never from the identical advertised root vector); `_current_active` only trusts an explicit Active/Master;
@@ -1265,7 +1265,7 @@ Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembe
   - `redact_snapshot` 10.x pseudonym collision (HIGH) — user is fixing in a separate session (task_e9a652d1).
   - LOW: attestation shares its read-only grammar with the doctrine CI test (single point of failure) — deferred.
 - `!lesson` **Real client Type-5 password hashes were committed in `test_audit5_parse_fidelity.py`** (pre-existing
-  leak from [HISTORY-REDACTED] device CS01; the K2 registry copied them). Cross-checked all 513 real collection secrets against
+  leak from reference device MERIDIAN-CS01; the K2 registry copied them). Cross-checked all collected secrets against
   every tracked file: those 2 hashes were the ONLY leak repo-wide. Scrubbed to synthetic length-preserving tokens
   in the parser-examples branch (fixes both files on merge).
 

@@ -215,17 +215,21 @@ def test_selftest_fails_when_explorer_template_missing(monkeypatch, tmp_path, ca
 
 def test_selftest_fails_when_oui_kb_degraded(monkeypatch, tmp_path, capsys):
     """The OUI pack silently degrades to ''-lookups when the tsv.gz is missing — exactly the class
-    --selftest exists to catch. Simulate the degrade at the lookup the check probes."""
+    --selftest exists to catch. Authority health, not one lucky sentinel lookup, owns the verdict."""
     from cisco_toolkit import ouidb
 
-    monkeypatch.setattr(ouidb, "vendor_for_mac", lambda mac: "")
+    monkeypatch.setattr(
+        ouidb,
+        "registry_health",
+        lambda: {"authoritative": False, "status": "invalid", "error": "hash mismatch"},
+    )
     dist = tmp_path / "dist"
     dist.mkdir()
     (dist / "index.html").write_text("<html>", encoding="utf-8")
     rc = serve.run_selftest(dist_dir=dist, db_path=str(tmp_path / "a.db"))
     out = capsys.readouterr().out
     assert rc == 1
-    assert "oui" in out.lower()
+    assert "oui" in out.lower() and "authoritative" in out.lower()
 
 
 def test_selftest_flag_exits_with_failure_code(tmp_path):
@@ -264,11 +268,11 @@ def test_run_collection_folder_happy_path(monkeypatch, tmp_path):
     assert snap["devices"]
     assert report["n_device_dirs"] == 1 and report["devices"] == ["core1"]
     assert report["devices_json"] == "synthesized"
-    # engine reads the user's folder IN PLACE…
+    # The engine reads a private custody copy, closing the scan-to-subprocess swap window.
     coll = Path(record["cmd"][record["cmd"].index("--collection-dir") + 1])
-    assert coll == folder.resolve()
-    # …but every output lands in a private temp workdir, never in the user's tree
-    assert Path(record["cwd"]).resolve() != folder.resolve()
+    assert coll == Path(record["cwd"]).resolve() / "custody"
+    assert folder.resolve() not in coll.parents
+    # Every output also lands in that private workdir, never in the user's tree.
     assert not (folder / "ingest.xlsx").exists() and not (folder / "devices.json").exists()
 
 
@@ -379,18 +383,20 @@ def test_verify_manifest_flag_exits_nonzero_on_a_broken_chain(tmp_path, capsys):
     assert "INTEGRITY FAILURE" in capsys.readouterr().err
 
 
-def test_verify_manifest_flag_supports_expect_root_and_artifacts(tmp_path, capsys):
+def test_verify_manifest_flag_supports_expect_root_and_checks_artifacts_by_default(tmp_path, capsys):
     from cisco_toolkit import manifest as M
     (tmp_path / "wb.xlsx").write_bytes(b"bytes")
     man, path = _sealed(tmp_path, artifacts={"wb.xlsx": M.artifact_sha256(b"bytes")})
-    assert serve.main(["--verify-manifest", path, "--verify-artifacts",
-                       "--expect-root", man["chain_root"]]) == 0
+    assert serve.main(["--verify-manifest", path, "--expect-root", man["chain_root"]]) == 0
     capsys.readouterr()
     assert serve.main(["--verify-manifest", path, "--expect-root", "0" * 64]) == 4
     assert "MISMATCH" in capsys.readouterr().err
     (tmp_path / "wb.xlsx").write_bytes(b"other bytes")
-    assert serve.main(["--verify-manifest", path, "--verify-artifacts"]) == 4
+    assert serve.main(["--verify-manifest", path]) == 4
     assert "[MISMATCH] wb.xlsx" in capsys.readouterr().err
+    # Skipping bytes is possible only through an explicit, loudly named opt-out.
+    assert serve.main(["--verify-manifest", path, "--metadata-only"]) == 0
+    assert "artifact bytes NOT checked" in capsys.readouterr().out
 
 
 def test_verify_only_flags_refuse_without_verify_manifest(capsys):
@@ -399,6 +405,7 @@ def test_verify_only_flags_refuse_without_verify_manifest(capsys):
     assert serve.main(["--expect-root", "abc"]) == 2
     assert "only apply to --verify-manifest" in capsys.readouterr().err
     assert serve.main(["--verify-artifacts"]) == 2
+    assert serve.main(["--metadata-only"]) == 2
     # empty string is falsy: `if args.expect_root` would fall through here and START THE SERVER,
     # the engineer believing they had asked for a check
     assert serve.main(["--expect-root", ""]) == 2
@@ -407,3 +414,11 @@ def test_verify_only_flags_refuse_without_verify_manifest(capsys):
     # invocation, not a manifest that failed to verify. See test_atlas_redaction.py for the
     # whole-class coverage.
     assert serve.main(["--verify-manifest", ""]) == 2
+
+
+def test_manifest_metadata_only_conflicts_with_legacy_explicit_artifact_flag(tmp_path, capsys):
+    _man, path = _sealed(tmp_path)
+    assert serve.main(
+        ["--verify-manifest", path, "--metadata-only", "--verify-artifacts"]
+    ) == 2
+    assert "mutually exclusive" in capsys.readouterr().err

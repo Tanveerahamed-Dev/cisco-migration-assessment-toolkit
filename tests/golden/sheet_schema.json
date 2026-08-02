@@ -265,7 +265,8 @@
   "Broadcast/AV",
   "ACL refs",
   "Switches",
-  "Evidence"
+  "Evidence",
+  "Name authority"
  ],
  "Multicast Intelligence": [
   "Multicast / media-fabric intelligence:",
@@ -423,7 +424,8 @@
   "Remediation"
  ],
  "Device Risk Register": [
-  "Device Risk Register: 1 Severe, 0 Elevated of 3 asset(s) \u00b7 5 compound pattern(s). Risk index = topology impact (1-10) \u00d7 stacked exposure (0-10) \u2014 the senior-engineer read: independent risks coinciding on one box outrank any single finding.",
+  "Device Risk Register: 1 Severe, 0 Elevated of 3 asset(s) \u00b7 5 compound pattern(s). Risk index = topology impact (1-10) \u00d7 stacked exposure (0-10) \u2014 the senior-engineer read: independent risks coinciding on one box outrank any single finding. COVERAGE: 11 of 33 risk axes fleet-wide were NOT ASSESSED (column Q per asset). 0 asset(s) banded Unassessed and 1 asset(s) have HALF OR MORE of their risk axes NOT ASSESSED \u2014 an abstaining axis scores ZERO exposure, so those rows can band 'Low' on absent evidence. Read column Q before treating a Low row as clean; not assessed is a collection gap, never a clean result.",
+  null,
   null,
   null,
   null,

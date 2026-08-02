@@ -788,8 +788,8 @@ def test_parse_poe_inline_budget_sums_modules_and_skips_na(cp):
 def test_parse_hsrp_detail_captures_priority_preempt_track(cp):
     """Universality (FHRP gap): the brief parser keeps only state+VIP, silently dropping priority,
     preemption and tracking. parse_hsrp_detail reads the FULL 'show standby [all]' so a senior FHRP
-    audit (election, preempt, untracked-active) becomes possible. [HISTORY-REDACTED] has zero FHRP -> this is the first
-    capability proven on a NON-[HISTORY-REDACTED] environment."""
+    audit (election, preempt, untracked-active) becomes possible. Meridian has zero FHRP -> this is the first
+    capability proven on a NON-Meridian environment."""
     out = (
         "GigabitEthernet0/1 - Group 10\n"
         "  State is Active\n"
@@ -819,7 +819,7 @@ def test_parse_hsrp_detail_captures_priority_preempt_track(cp):
     assert g10["vip"] == "10.1.1.1" and g10["standby_ip"] == "10.1.1.3"
     assert g10["track"] == [{"obj": "1", "decrement": 20}] and g10["preempt_delay"] == 30
     g20 = by_grp["20"]
-    # the senior red flags [HISTORY-REDACTED] could never surface: an Active group with NO preemption and NO tracking
+    # the senior red flags Meridian could never surface: an Active group with NO preemption and NO tracking
     assert g20["preempt"] is False and g20["track"] == [] and g20["priority"] == 100
     # HSRPv2 header carries a '(version 2)' suffix -- the group must still be captured (not dropped) + version read.
     g50 = by_grp["50"]
@@ -1277,7 +1277,7 @@ def test_parse_ipv6_interface_addrs_nxos_dad(cp):
     """parse_ipv6_interface_addrs must read the NX-OS 'show ipv6 interface' format (its '<intf>, Interface
     status: protocol-.../admin-...' header, the bare 'IPv6 address:' block, and 'IPv6 link-local address:'
     line all differ from IOS). Previously it returned [] for EVERY Nexus device -> a [DUPLICATE] DAD failure on
-    the Nexus core ([HISTORY-REDACTED]'s DS/CS tier is Nexus) was silently reported as clean."""
+    the Nexus core (Meridian's DS/CS tier is Nexus) was silently reported as clean."""
     out = (
         "Ethernet2/1, Interface status: protocol-up/link-up/admin-up, iod: 36\n"
         "  IPv6 address:\n"
@@ -2001,7 +2001,7 @@ def test_parse_neighbors_detail_cdp_and_lldp_keep_capabilities(cp):
 def test_parse_neighbors_detail_nxos(cp):
     """NX-OS LLDP detail has NO 'Local Intf:' (the local interface is on a 'Local Port id:' line and each block
     begins with 'Chassis id:'). The old split-on-'Local Intf:' returned ONE Frankenstein record for N neighbours,
-    feeding the shadow-infra detector garbage on every Nexus switch ([HISTORY-REDACTED]'s core is Nexus). NX-OS CDP also reports
+    feeding the shadow-infra detector garbage on every Nexus switch (Meridian's core is Nexus). NX-OS CDP also reports
     'IPv4 Address:' (not IOS 'IP address:'). Both must parse one correct record per neighbour."""
     lldp = (
         "Chassis id: 547f.eeab.0001\n"
@@ -2203,15 +2203,43 @@ def test_lisp_sessions_parses_ipv6_rloc_peers():
 def test_eoldb_compact_3560c_2960c_not_classic_family_dates():
     """[audit-3 L5 format-fidelity] WS-C3560CG / WS-C2960CG compacts shared the classic family PREFIX so
     longest-prefix matching credited them to the classic 3560/2960 bulletin + past dates. They have their OWN
-    (years-later) EoL notices. The -CX cry-wolf was fixed; -CG/-C/-S were missed."""
+    (years-later) EoL notices. The -CX cry-wolf was fixed; -CG/-C/-S were missed.
+
+    Dates re-checked 2026-07-31 against the RETAINED primary-source fixture
+    ``reference-data/official-sources/cisco/eol-bulletins.json`` (SHA-256-pinned by
+    ``eoldb._EOL_FIXTURE_SHA256``, retrieved 2026-07-30), not against the code. What it carries:
+
+    * EOL10691 / c51-736180 (Catalyst 3560-C notice) claims prefix ``WS-C3560CG-8PC-`` ->
+      ldos 2021-10-31, and ALSO claims ``WS-C2960CG-8TC-L`` by EXACT match -> ldos 2021-10-31.
+    * EOL13189 / c51-743071 (Catalyst 2960-C notice) claims prefix ``WS-C2960C-`` -> ldos 2025-10-31.
+
+    **Scope of the change, stated precisely — an earlier version of this note got it wrong.**
+    Against ``git show HEAD``, ``WS-C3560CG-8PC-S`` was ``2021-10-31`` and still is: UNCHANGED. Only
+    ``WS-C2960CG-8TC-L`` moved, ``2025-10-31 -> 2021-10-31`` — four years EARLIER — because the
+    registry rebuild reassigned it from EOL13189/c51-743071 (the 2960-C series notice, prefix
+    ``WS-C2960C-``, which this PID does not match: the next character is ``G``, not ``-``) to
+    EOL10691/c51-736180, which names it by EXACT match. That is a one-PID reassignment between two
+    real bulletins, not a pair of off-by-one date corrections; the ``-10-30`` values that story was
+    built on came from an uncommitted working-tree edit, never from HEAD.
+
+    This matters because the direction is adverse: a platform's end-of-support moves four years
+    earlier in customer-facing deliverables. It is backed only by the retained fixture, which is
+    itself UNTRACKED — see the handoff's Phase B findings before treating it as settled.
+    """
     from cisco_toolkit.eoldb import lifecycle_for
     cg35 = lifecycle_for("WS-C3560CG-8PC-S")
     assert cg35["platform"] == "Catalyst 3560-C" and cg35["ldos"] == "2021-10-31"   # NOT Catalyst 3560 / 2018
     cg29 = lifecycle_for("WS-C2960CG-8TC-L")
-    assert cg29["platform"] == "Catalyst 2960-C" and cg29["ldos"] == "2025-10-31"   # NOT Catalyst 2960 / 2024
-    # the longer -CX prefix still wins (not shadowed by the new -C row), and the bare classic PID is unchanged
-    assert lifecycle_for("WS-C3560CX-12PC-S")["platform"] == "Catalyst 3560-CX"
-    assert lifecycle_for("WS-C3560-48PS")["platform"] == "Catalyst 3560"
+    assert cg29["platform"] == "Catalyst 2960-C" and cg29["ldos"] == "2021-10-31"   # EOL10691 exact-match row
+    # THE INVARIANT THIS TEST EXISTS FOR, and it is unchanged: the compacts are not credited to the
+    # classic family, and the longer -CX prefix is not shadowed by the shorter -C rows.
+    assert lifecycle_for("WS-C3560CX-12PC-S")["platform"].startswith("Catalyst 3560-CX")
+    # The bare classic PID no longer resolves at all: the registry was rebuilt to assert ONLY what a
+    # retained primary source backs, and no classic-3560 bulletin is in that set. `None` is the
+    # coverage-honest answer, and analyze.compute_lifecycle_risk renders it as band "Unknown" with
+    # "verify on Cisco's EoL portal" — never as Active. Asserting `is None` here keeps the
+    # anti-shadowing point: whatever the classic PID does, it must NOT inherit a compact's row.
+    assert lifecycle_for("WS-C3560-48PS") is None
 
 
 def test_parse_ospf_neighbors_p2p_unnumbered_state():

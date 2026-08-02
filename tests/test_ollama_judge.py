@@ -7,6 +7,12 @@ so these never require a running model. Properties:
   mode we hunt), a correct rejection localizes to 1.0, a wrong-reason reject is unlocalized;
 - Ollama-down degrades to {ok: False}, never raises.
 """
+import email.message
+import http.client
+import io
+
+import pytest
+
 import ollama_judge as J
 from cisco_toolkit import defect_panel as P
 
@@ -285,12 +291,6 @@ def test_think_flag_is_plumbed_to_run_baseline(monkeypatch):
 # through a faked transport: no socket is ever created, and the assertion is on the hosts urllib
 # WOULD have opened. Reverting the _no_redirect_opener() call sites fails this with
 # `2 hop(s) opened: ['127.0.0.1', 'ollama.corp.example']`.
-import email.message
-import http.client
-import io
-
-import pytest
-
 _REAL_CONN = http.client.HTTPConnection
 
 

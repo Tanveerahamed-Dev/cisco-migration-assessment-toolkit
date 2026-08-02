@@ -28,10 +28,12 @@ needs a real terminal, so the frozen app is built ``console=True``.
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import multiprocessing
 import os
 import sqlite3
 import sys
+import tempfile
 import threading
 from importlib.metadata import PackageNotFoundError, version as _dist_version
 from pathlib import Path
@@ -156,6 +158,18 @@ def _schedule_browser_open(url: str) -> None:
     t.start()
 
 
+def _bind_is_loopback(host: str) -> bool:
+    candidate = str(host).strip()
+    if candidate.lower() == "localhost":
+        return True
+    if candidate.startswith("[") and candidate.endswith("]"):
+        candidate = candidate[1:-1]
+    try:
+        return ipaddress.ip_address(candidate).is_loopback
+    except ValueError:
+        return False
+
+
 #: Characters that make a value unusable as a path/host but survive `str.strip()`: the zero-width
 #: and BOM codepoints (str.strip removes NBSP and the exotic spaces, but NOT these), plus every C0
 #: control including NUL.
@@ -184,14 +198,31 @@ def _unusable_value(value: str):
 def _writable_failure(dirpath: Path):
     """OSError text if `dirpath` cannot be created and written — the write-locked-stick /
     read-only-folder class a field boot must turn into a friendly refusal, not a traceback."""
+    fd = -1
+    probe: Path | None = None
     try:
         dirpath.mkdir(parents=True, exist_ok=True)
-        probe = dirpath / ".atlas-write-probe"
-        probe.write_text("ok", encoding="utf-8")
+        fd, raw_probe = tempfile.mkstemp(prefix=".atlas-write-probe-", dir=str(dirpath))
+        probe = Path(raw_probe)
+        os.write(fd, b"ok")
+        os.close(fd)
+        fd = -1
         probe.unlink()
+        probe = None
         return None
     except OSError as e:
         return str(e)
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if probe is not None:
+            try:
+                probe.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 # ── --selftest ──────────────────────────────────────────────────────────────────
@@ -220,12 +251,48 @@ def run_selftest(dist_dir=None, db_path=None) -> int:
 
     from cisco_toolkit import ouidb, portdb
 
-    vendor = ouidb.vendor_for_mac("00:00:0C:12:34:56")  # Cisco's classic MA-L block
-    check("oui-kb", None if "cisco" in vendor.lower()
-          else "MAC→vendor lookup degraded — oui_registry.tsv.gz missing/corrupt "
-               "(endpoint classification would silently empty)")
-    check("port-kb", None if portdb.service_for_port(443, "tcp")
-          else "L4 port lookup degraded — port_registry.tsv.gz missing/corrupt")
+    oui_health = ouidb.registry_health()
+    oui_rows = oui_health.get("row_count")
+    oui_detail = (f"{oui_rows or 0} rows; "
+                  f"provenance={oui_health.get('provenance_status', 'unknown')}")
+    check(f"oui-kb [{oui_detail}]",
+          None if oui_health.get("authoritative")
+          and isinstance(oui_rows, int) and oui_rows > 0
+          else "OUI registry is not authoritative — "
+               f"{oui_health.get('error') or oui_health.get('status', 'unknown')}")
+
+    port_health = portdb.registry_health()
+    port_rows = port_health.get("row_count")
+    port_detail = (
+        f"{port_rows or 0} rows "
+        f"({port_health.get('port_count', 0)} ports, "
+        f"{port_health.get('multicast_count', 0)} multicast); "
+        f"provenance={port_health.get('provenance_status', 'unknown')}"
+    )
+    # SCOPED AUTHORITY (handoff 5.2). The port pack is deliberately MIXED: IANA assignment records
+    # are official and freshness-verified, while curated service hints and the 21 bounded multicast
+    # scopes are explicitly non-authoritative. `authoritative` is therefore whole-pack and correctly
+    # False -- relabelling curated rows as official to make it True would be the actual lie.
+    #
+    # Gating the self-test on that flag treated an honest mixed pack as a DEAD registry: Atlas
+    # reported "[FAIL] port-kb ... Port registry is not authoritative" on a pack whose bytes,
+    # schema and IANA source chain had all verified. What this check must require is that the pack
+    # is intact and its OFFICIAL component is source-proven -- not universal authority over every
+    # curated row.
+    #
+    # Freshness is not a separate condition here because it is subsumed:
+    # registry_integrity.source_authority_details only sets source_authoritative when the retained
+    # source bytes verify AND satisfy the 180-day max-age / 5-minute future-skew bounds. Exposing a
+    # duplicate official_source_fresh would assert a second, independent proof that does not exist.
+    check(f"port-kb [{port_detail}]",
+          None if port_health.get("integrity_verified")
+          and port_health.get("official_source_authoritative")
+          and isinstance(port_rows, int) and port_rows > 0
+          else "Port registry unusable — "
+               f"{port_health.get('error') or port_health.get('status', 'unknown')}"
+               + ("" if port_health.get("integrity_verified") else " [pack integrity FAILED]")
+               + ("" if port_health.get("official_source_authoritative")
+                  else " [IANA source chain unverified or stale]"))
 
     import importlib.util as _ilu
 
@@ -305,22 +372,16 @@ def run_redaction(src: str, out: str, redact_collection: bool = False,
     # "DRAFT - generated; not yet reviewed" status. A gate verdict inferred from whichever ledger
     # happened to sit nearby would be worse than silence: it could report another client's
     # approvals as this engagement's.
-    # The leftover marker is reported, but NOT as "safe to delete". This run passing its checks
-    # says nothing about the files the earlier FAILED run left here — and those files can still be
-    # in the folder under the canonical names (reported below as STALE). Telling the engineer to
-    # delete the one warning that covers them, next to a line claiming the folder is safe, is how
-    # unredacted client data gets sent.
+    # A successful promotion archives a prior generation and its marker together. A marker that
+    # nevertheless appears beside the current receipt is therefore contradictory external state,
+    # and is reported loudly.
     if report.get("stale_unsafe_marker"):
         print(f"\n  WARNING: this folder still holds {ingest_mod.UNSAFE_MARKER} from an EARLIER\n"
               f"  run whose redaction could NOT be certified. This run passed its own checks, but\n"
-              f"  that says nothing about files the earlier run left here - any document listed as\n"
-              f"  STALE below was written by THAT run, not this one. Read that file, and do not\n"
-              f"  delete it until the output it refers to is gone.")
-    # Say exactly what was checked. The engine pseudonymizes IPs, MACs and serials, but the
-    # verification here covers surviving PRIVATE IPv4 in the snapshot plus proof that the engine's
-    # redaction phases actually ran. Claiming more than that ("every IP/MAC/serial ... verified")
-    # certified roughly three times what the code inspects — and hostnames are kept BY DESIGN, so
-    # a "fully anonymous" mental model is exactly the wrong one to leave the engineer with.
+              f"  that conflicts with the current verified receipt. Do not send this folder until\n"
+              f"  the marker's provenance is understood.")
+    # Say exactly what was checked. Hostnames remain by design, so this is a share-safety claim
+    # about identity tokens and recognised credentials, not a claim of full anonymisation.
     # The raw-capture scrub is the ONE control that removes cleartext secrets (enable secrets, SNMP
     # communities, PSKs) from the captures on the stick, and it is fail-soft: redact_collection_dir
     # skips any capture it cannot read or rewrite and continues. Its verdict is therefore reported
@@ -333,9 +394,10 @@ def run_redaction(src: str, out: str, redact_collection: bool = False,
         if not report.get("redacted_collection"):
             print("    The RAW captures may still hold secrets in cleartext. Do not hand the\n"
                   "    collection folder over until you have confirmed the scrub yourself.")
-    print("  Checked: the engine's redaction phases ran, and no private (RFC 1918) address\n"
-          "  survives in the redacted snapshot.\n"
-          "  NOT checked: MACs, serials, public/IPv6 addresses, or the workbook's own cells.\n"
+    print("  Checked: mandatory redaction/finalization completed; every current JSON, HTML and\n"
+          "  OOXML artifact was independently scanned for non-synthetic IP, MAC, email and serial\n"
+          "  identities plus recognised credential residue; verified digests were rechecked at\n"
+          "  coherent-set promotion.\n"
           "  HOSTNAMES ARE KEPT BY DESIGN - device names and site codes still identify the\n"
           "  client. Review before sending.")
     # An engine writer that fails is fail-soft by design (the workbook and snapshot still save),
@@ -348,6 +410,17 @@ def run_redaction(src: str, out: str, redact_collection: bool = False,
     # line-buffers stderr: the warning got hoisted ABOVE the command banner, so it read as
     # belonging to a previous command, and the log ENDED on the reassurance block. A `tail` showed
     # a clean success. One stream, warning last, so the final word is the warning.
+    # The engine's own account of what it refused, skipped or could not do. `ingest.run_redaction_folder`
+    # deliberately keeps these EVEN WHEN the family came out complete (see its `engine_warnings` comment:
+    # "Discarding them whenever the diff came back clean threw away the evidence precisely in the case
+    # that looks healthy"), and then this function only printed them inside the INCOMPLETE branch below --
+    # so on exactly that healthy-looking case they reached no human at all, and the key was a control in
+    # name only. Printed here, before the early return, so both outcomes surface them.
+    engine_warnings = report.get("engine_warnings") or []
+    if engine_warnings:
+        print(f"\n  The engine reported {len(engine_warnings)} warning(s) during this run:")
+        for line in engine_warnings:
+            print(f"    engine: {line}")
     missing = report.get("missing") or []
     if not missing:
         return 0
@@ -355,8 +428,7 @@ def run_redaction(src: str, out: str, redact_collection: bool = False,
     for m in missing:
         print(f"    {m['state'].upper():9} {m['name']}  ({m['filename']})\n"
               f"              {m['detail']}")
-    for line in report.get("engine_warnings") or []:
-        print(f"    engine: {line}")
+    # (the engine's warnings are printed above, on BOTH the complete and incomplete paths)
     # Only promise the note if it was really written - a read-only folder, or a file of that
     # name Atlas did not author, means there is no note to go and read.
     note = report.get("incomplete_note")
@@ -369,9 +441,9 @@ def run_redaction(src: str, out: str, redact_collection: bool = False,
         print(f"  DO NOT SEND THIS FOLDER until you have read {ingest_mod.UNSAFE_MARKER} above -\n"
               f"  files from the earlier uncertified run may contain REAL client data.")
     else:
-        print("  What THIS RUN wrote is redacted. Anything listed as STALE above was not written\n"
-              "  by this run and is not covered by its redaction check. The SET is short: re-run\n"
-              "  into an empty folder, or tell the recipient which documents are not included.")
+        print("  What THIS RUN wrote is independently verified; no prior canonical artifact was\n"
+              "  carried into it. The SET is short: re-run, or tell the recipient which documents\n"
+              "  are not included.")
     # Exit 3, not 0: this command exists to certify a deliverable set, so "0" must keep meaning
     # "complete and verified". Nothing consumes the code today, which is exactly why adopting it
     # now is free and adopting it later would be a breaking change. It is deliberately NOT 1 -
@@ -380,7 +452,7 @@ def run_redaction(src: str, out: str, redact_collection: bool = False,
 
 
 # ── --verify-manifest: does a delivered manifest still match its own seal? ──────
-def run_verify_manifest(path: str, expect_root=None, artifacts: bool = False) -> int:
+def run_verify_manifest(path: str, expect_root=None, metadata_only: bool = False) -> int:
     """Check a ``*.run_manifest.json`` from the stick. There is no Python on a field laptop, so
     ``python -m cisco_toolkit.manifest verify`` — the repo-side command — is unreachable there;
     this is the same check behind the one door, delegating to the same function so the two can
@@ -388,8 +460,10 @@ def run_verify_manifest(path: str, expect_root=None, artifacts: bool = False) ->
     from cisco_toolkit import manifest as manifest_mod  # lazy: the engine-child path skips it
 
     res = manifest_mod.verify_file(
-        path, expect_root=expect_root,
-        artifacts_dir=(os.path.dirname(os.path.abspath(path)) or ".") if artifacts else None)
+        path,
+        expect_root=expect_root,
+        metadata_only=metadata_only,
+    )
     if res["ok"]:
         print(f"{APP_TITLE}: manifest OK - {res['reason']}")
     else:
@@ -417,7 +491,7 @@ def main(argv=None) -> int:
         description=f"{APP_TITLE} — serve AssessHub (production: no reload, no workers).")
     parser.add_argument("--host", default=_DEFAULT_HOST,
                         help=f"bind address (default {_DEFAULT_HOST}; non-loopback serves need "
-                             "ASSESSHUB_TOKEN — see webapp/README.md)")
+                             "ASSESSHUB_TOKEN + TLS — see webapp/README.md)")
     parser.add_argument("--port", type=int, default=_DEFAULT_PORT,
                         help=f"port (default {_DEFAULT_PORT})")
     parser.add_argument("--db", default=None,
@@ -426,6 +500,10 @@ def main(argv=None) -> int:
     parser.add_argument("--dist", default=None,
                         help="built frontend directory (default: $ASSESSHUB_DIST, the bundled "
                              "copy when frozen, else webapp/frontend/dist)")
+    parser.add_argument("--ssl-certfile", default=os.environ.get("ASSESSHUB_TLS_CERT"),
+                        help="TLS certificate PEM (or $ASSESSHUB_TLS_CERT)")
+    parser.add_argument("--ssl-keyfile", default=os.environ.get("ASSESSHUB_TLS_KEY"),
+                        help="TLS private-key PEM (or $ASSESSHUB_TLS_KEY)")
     parser.add_argument("--no-browser", action="store_true",
                         help="do not auto-open the UI in a browser")
     parser.add_argument("--selftest", action="store_true",
@@ -451,9 +529,12 @@ def main(argv=None) -> int:
     parser.add_argument("--expect-root", default=None, metavar="SHA256",
                         help="with --verify-manifest: the chain_root recorded out of band (in the "
                              "report) that this file must match")
-    parser.add_argument("--verify-artifacts", action="store_true",
-                        help="with --verify-manifest: ALSO re-hash every deliverable listed in the "
-                             "manifest, from the manifest's own folder (missing counts as a failure)")
+    parser.add_argument("--metadata-only", action="store_true",
+                        help="with --verify-manifest: explicitly skip listed artifact bytes and "
+                             "check only the sealed chain/metadata; use only when the files were "
+                             "deliberately separated from the manifest")
+    # Backward-compatible no-op: artifact-byte verification is now the safe default.
+    parser.add_argument("--verify-artifacts", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--reuse-out", action="store_true",
                         help="with --redact-folder: render into an --out folder that already "
                              "holds a deliverable set. Refused by default: if that set is from "
@@ -475,6 +556,8 @@ def main(argv=None) -> int:
     # remembered: the next path-valued flag someone adds is covered by construction. Empty is
     # never a meaningful value for any of these - a real path, host or hash is always required.
     for flag, value in (("--host", args.host), ("--db", args.db), ("--dist", args.dist),
+                        ("--ssl-certfile", args.ssl_certfile),
+                        ("--ssl-keyfile", args.ssl_keyfile),
                         ("--redact-folder", args.redact_folder), ("--out", args.out),
                         ("--verify-manifest", args.verify_manifest),
                         ("--expect-root", args.expect_root)):
@@ -507,9 +590,14 @@ def main(argv=None) -> int:
 
     if args.verify_manifest is not None:    # `is not None`: --verify-manifest "" must be REFUSED,
         # not fall through and quietly start the server instead of running the check that was asked for
-        return run_verify_manifest(args.verify_manifest, args.expect_root, args.verify_artifacts)
-    if args.expect_root is not None or args.verify_artifacts:   # `is not None`: --expect-root ""
-        print(f"{APP_TITLE}: --expect-root and --verify-artifacts only apply to --verify-manifest.",
+        if args.metadata_only and args.verify_artifacts:
+            print(f"{APP_TITLE}: --metadata-only and --verify-artifacts are mutually exclusive.",
+                  file=sys.stderr)
+            return 2
+        return run_verify_manifest(args.verify_manifest, args.expect_root, args.metadata_only)
+    if args.expect_root is not None or args.metadata_only or args.verify_artifacts:
+        print(f"{APP_TITLE}: --expect-root, --metadata-only and --verify-artifacts only apply to "
+              f"--verify-manifest.",
               file=sys.stderr)                                  # must still be refused, not ignored
         return 2
 
@@ -530,6 +618,28 @@ def main(argv=None) -> int:
         print(f"{APP_TITLE}: --out, --redact-collection and --reuse-out only apply to "
               f"--redact-folder.", file=sys.stderr)
         return 2
+
+    if bool(args.ssl_certfile) != bool(args.ssl_keyfile):
+        print(f"{APP_TITLE}: --ssl-certfile and --ssl-keyfile must be supplied together.",
+              file=sys.stderr)
+        return 2
+    if args.ssl_certfile:
+        missing_tls = [p for p in (args.ssl_certfile, args.ssl_keyfile)
+                       if not Path(str(p)).is_file()]
+        if missing_tls:
+            print(f"{APP_TITLE}: TLS certificate/key file not found: {missing_tls[0]}",
+                  file=sys.stderr)
+            return 2
+    if not _bind_is_loopback(args.host):
+        if not os.environ.get("ASSESSHUB_TOKEN"):
+            print(f"{APP_TITLE}: a non-loopback bind requires ASSESSHUB_TOKEN.",
+                  file=sys.stderr)
+            return 2
+        if not args.ssl_certfile:
+            print(f"{APP_TITLE}: a non-loopback bearer-token bind requires TLS. Supply "
+                  "--ssl-certfile and --ssl-keyfile (or ASSESSHUB_TLS_CERT / "
+                  "ASSESSHUB_TLS_KEY).", file=sys.stderr)
+            return 2
 
     # Field refusal #1 — write-locked stick / read-only folder: friendly line, not a traceback.
     data_dir = Path(_effective_db_path(args.db)).parent
@@ -560,7 +670,9 @@ def main(argv=None) -> int:
               f"  The file was not modified. Close any other Atlas window and try again "
               f"(README-FIELD.txt, 'Corruption').", file=sys.stderr)
         return 1
-    url = f"http://{args.host}:{args.port}/"
+    scheme = "https" if args.ssl_certfile else "http"
+    url_host = f"[{args.host}]" if ":" in args.host and not args.host.startswith("[") else args.host
+    url = f"{scheme}://{url_host}:{args.port}/"
     note = "" if (dist / "index.html").is_file() else \
         "   [frontend dist missing — API only; run --selftest]"
     print(f"{_version_line()}\n  {url}{note}")
@@ -569,7 +681,11 @@ def main(argv=None) -> int:
 
     import uvicorn  # lazy for the same reason
 
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    uvicorn_kwargs = {"host": args.host, "port": args.port, "log_level": "info"}
+    if args.ssl_certfile:
+        uvicorn_kwargs.update(
+            ssl_certfile=str(args.ssl_certfile), ssl_keyfile=str(args.ssl_keyfile))
+    uvicorn.run(app, **uvicorn_kwargs)
     return 0
 
 

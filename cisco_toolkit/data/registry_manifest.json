@@ -1,0 +1,133 @@
+{
+  "packs": {
+    "oui_registry.tsv.gz": {
+      "build_provenance_verified": true,
+      "compressed_bytes": 563919,
+      "compressed_sha256": "2120d5ca8a07cd320d480c6b5bcb5cd810c877cb70a5c949e2d635891e48a51a",
+      "conflicting_prefix_count": 2,
+      "decompressed_sha256": "5bae084489f21916c573d7159907ab9c4543b0f6bd786a7a40c7abe2655cca19",
+      "freshness_status": "fresh",
+      "generated_at": "2026-07-30T12:47:53Z",
+      "generator": "cisco_toolkit.gen_oui_registry",
+      "ma_l_count": 39859,
+      "ma_m_count": 6516,
+      "ma_s_count": 7114,
+      "provenance_status": "generated-from-retained-ieee-primary-sources",
+      "row_count": 53486,
+      "runtime_source_verification_required": true,
+      "source": {
+        "artifacts": [
+          {
+            "bytes": 3805373,
+            "encoding": "utf-8",
+            "hash_scope": "raw-source-bytes",
+            "id": "ieee-ma-l",
+            "media_type": "text/csv",
+            "name": "IEEE Registration Authority MA-L public listing",
+            "record_count": 39859,
+            "retained_path": "reference-data/official-sources/ieee/oui.csv",
+            "retrieved_at": "2026-07-30T12:47:53Z",
+            "sha256": "0c1a4c437089029dbb08ff16f4a2960238611ba0587e912e5f4ae2e754ceb442",
+            "url": "https://standards-oui.ieee.org/oui/oui.csv"
+          },
+          {
+            "bytes": 742311,
+            "encoding": "utf-8",
+            "hash_scope": "raw-source-bytes",
+            "id": "ieee-ma-m",
+            "media_type": "text/csv",
+            "name": "IEEE Registration Authority MA-M public listing",
+            "record_count": 6516,
+            "retained_path": "reference-data/official-sources/ieee/mam.csv",
+            "retrieved_at": "2026-07-30T12:47:53Z",
+            "sha256": "ae5a9c2a4b44d7694a1071b905b1a28dc8fec5dd6cb7c0575eba8cee63efedba",
+            "url": "https://standards-oui.ieee.org/oui28/mam.csv"
+          },
+          {
+            "bytes": 659624,
+            "encoding": "utf-8",
+            "hash_scope": "raw-source-bytes",
+            "id": "ieee-ma-s",
+            "media_type": "text/csv",
+            "name": "IEEE Registration Authority MA-S public listing",
+            "record_count": 7114,
+            "retained_path": "reference-data/official-sources/ieee/oui36.csv",
+            "retrieved_at": "2026-07-30T12:47:53Z",
+            "sha256": "a209d197af77cf82235af104d785f24309a357e783955b21fe31089e26120e5d",
+            "url": "https://standards-oui.ieee.org/oui36/oui36.csv"
+          }
+        ],
+        "inventory": "reference-data/official-sources/manifest.json",
+        "inventory_schema_version": 1,
+        "name": "IEEE Registration Authority MA-L, MA-M, and MA-S public listings"
+      },
+      "source_authoritative": false,
+      "source_fresh": true,
+      "source_future_dated": false,
+      "source_max_age_days": 180,
+      "source_max_future_skew_seconds": 300,
+      "source_retrieved_at": "2026-07-30T12:47:53Z",
+      "source_row_count": 53489,
+      "source_stale": false
+    },
+    "port_registry.tsv.gz": {
+      "alias_selection_policy": "first retained IANA CSV row is primary; every subsequent row is preserved in source order",
+      "authority_scope": "iana-service-assignments-only",
+      "build_provenance_verified": true,
+      "compressed_bytes": 145622,
+      "compressed_sha256": "3fcfa1c38e5cb7b7acf6a740f75214a3c8bfa000cb7df422593682045dea8519",
+      "curated_multicast_authoritative": false,
+      "curated_overlay_authoritative": false,
+      "decompressed_sha256": "b45b87bcdf9a63363163fd8c1d002bea03a0ca1e557bea01c9c88bceeb1f9c68",
+      "freshness_status": "fresh",
+      "generated_at": "2026-07-30T12:47:53Z",
+      "generator": "cisco_toolkit.data.gen_port_registry",
+      "iana_alias_record_count": 232,
+      "iana_assignment_count": 12341,
+      "iana_duplicate_key_count": 226,
+      "iana_max_records_per_key": 3,
+      "iana_source_record_count": 12573,
+      "multicast_count": 21,
+      "overlay_conflict_count": 3,
+      "overlay_enriched_iana_count": 69,
+      "overlay_expanded_count": 83,
+      "overlay_only_port_count": 11,
+      "port_count": 12352,
+      "port_schema_version": 2,
+      "provenance_status": "generated-from-retained-iana-primary-source",
+      "row_count": 12373,
+      "runtime_source_verification_required": true,
+      "source": {
+        "artifacts": [
+          {
+            "bytes": 1156064,
+            "encoding": "utf-8",
+            "hash_scope": "raw-source-bytes",
+            "id": "iana-service-names-port-numbers",
+            "media_type": "text/csv",
+            "name": "IANA Service Name and Transport Protocol Port Number Registry",
+            "record_count": 14529,
+            "retained_path": "reference-data/official-sources/iana/service-names-port-numbers.csv",
+            "retrieved_at": "2026-07-30T12:47:53Z",
+            "sha256": "466e31f9db1eba0d193b86a8c94e0c7d9027678cf0c2d7280b726ab1b0eeee4a",
+            "url": "https://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.csv"
+          }
+        ],
+        "inventory": "reference-data/official-sources/manifest.json",
+        "inventory_schema_version": 1,
+        "name": "IANA Service Name and Transport Protocol Port Number Registry; repository-curated overlay is separately labelled non-authoritative"
+      },
+      "source_authoritative": false,
+      "source_fresh": true,
+      "source_future_dated": false,
+      "source_max_age_days": 180,
+      "source_max_future_skew_seconds": 300,
+      "source_retrieved_at": "2026-07-30T12:47:53Z",
+      "source_row_count": 14529,
+      "source_stale": false
+    }
+  },
+  "purpose": "Integrity and source-provenance contract for offline registry packs",
+  "schema_version": 1,
+  "updated_at": "2026-07-30T12:47:53Z"
+}
