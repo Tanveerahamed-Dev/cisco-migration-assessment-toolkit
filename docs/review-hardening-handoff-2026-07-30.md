@@ -4538,6 +4538,13 @@ and the source state is pushed (`f984e9a`):
   localhost, decision-card and pipeline-tab interactions verified, mobile 375px single-column
   with zero horizontal overflow, reduced-motion rules present.
 
+**The repo's own guards caught this lane's one slip.** The browser QA used a temporary
+master-reference entry in `.claude/launch.json`; the r7 launch-contract tests refused it
+(`tests/test_r7_unwired.py:401,432` — only `python -m` modules, loopback-pinned, port-in-args; an
+npm script is exactly the "something unexpected" the guard keeps out of preview configs). The
+ENTRY was removed, not the guard widened; the vinext server had bound localhost only and is
+stopped. Preview in the deploy session: run `npm --prefix master-reference run dev` directly.
+
 **Deploy mechanism (user's pick): the documented Codex Sites path.** `create_site` is Codex
 tooling and does not exist in this session, so the remaining §5.7 tail runs in a Codex session,
 in this order, against the pushed state `f984e9a`:
