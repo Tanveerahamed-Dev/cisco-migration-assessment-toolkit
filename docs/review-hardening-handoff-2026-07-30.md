@@ -4186,3 +4186,45 @@ the NEW head — read it from actual job/step conclusions, never the run summary
 
 PR #506 retitled/re-described to reflect that it now carries both lines of work (66 commits), left in
 DRAFT — marking ready-for-review is the user's call.
+
+### 13.3 First full CI run: two never-executed gates failed, both root-caused and fixed
+
+The merged head's first complete CI run returned two job failures. Neither was a flake and neither
+was what its summary suggested; both were gates failing on their FIRST real execution.
+
+**Distribution contract — the cross-platform SPA answer, and it is better than feared.** The
+reproduction step failed naming exactly ONE file:
+
+```text
+tracked checkout bytes differ from immutable HEAD: ['webapp/frontend/dist/index.html']
+```
+
+All four content-hashed JS/CSS assets — 1.8 MB of minified output — reproduced **byte-identically**
+on ubuntu/node-20 from a Windows-built commit. Minified code is EOL-insensitive; the 627-byte
+index.html is a verbatim TEMPLATE passthrough, and Vite carries the template's line endings straight
+through. My worktree materialized the template with 13 CRLF (autocrlf); ubuntu checks out the LF blob.
+Fixed at the cause: `webapp/frontend/index.html text eol=lf` in `.gitattributes`, template
+re-materialized, bundle rebuilt (now 614 bytes, 0 CRLF), determinism re-proven (two builds, identical
+sha), and the four assets confirmed UNTOUCHED vs HEAD. Prediction: the reproduction step goes green on
+the next run; if it does, cross-platform reproducibility is fully established.
+
+**Dependency audit — a gate that could never pass, not a vulnerability.** `pip_audit --strict` exited
+1 with ZERO vulnerabilities reported:
+
+```text
+ERROR: cisco-migration-assessment-toolkit: Dependency not found on PyPI and could not be audited
+```
+
+The job installs the PROJECT ITSELF editable (`-e ".[dev]"`), the project is private and unpublished,
+and --strict makes not-on-PyPI fatal — so the gate was structurally unpassable from the day the
+install line changed from requirements-files to `-e ".[dev]"`. Fixed with `--skip-editable`: the same
+dependency set is audited in full; the only exclusion is the one package PyPI can never know about.
+Same class as the SPA step and `verify_archives`' accept path: **a gate nobody has executed is not a
+gate, and its first real run is a finding generator.** That is now three instances in one review.
+
+Also this session: my previous commit chained the privacy gate with `;` instead of `&&`, so its
+FAILURE did not block — and it was red, because the ledger text and commit message had named the
+side-engagement client's directory. Pushed for ~2 minutes, then scrubbed, tip amended, and replaced
+with `--force-with-lease` pinned to the bad sha (private repo, own just-pushed commit, nothing else
+moved). Two rules re-learned at cost: **a verification gate chained with `;` is decoration**, and a
+client marker is a marker in PROSE too, including inside a commit message describing an ignore rule.
