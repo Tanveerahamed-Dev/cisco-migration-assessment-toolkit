@@ -269,8 +269,13 @@ def test_run_collection_folder_happy_path(monkeypatch, tmp_path):
     assert report["n_device_dirs"] == 1 and report["devices"] == ["core1"]
     assert report["devices_json"] == "synthesized"
     # The engine reads a private custody copy, closing the scan-to-subprocess swap window.
-    coll = Path(record["cmd"][record["cmd"].index("--collection-dir") + 1])
-    assert coll == Path(record["cwd"]).resolve() / "custody"
+    # BOTH sides resolved: the argv path arrives in whatever spelling the OS handed out, and on
+    # windows-latest %TEMP% is the DOS 8.3 form — measured on the first completed windows CI leg,
+    # WindowsPath('C:/Users/RUNNER~1/...') != WindowsPath('C:/Users/runneradmin/...'), two
+    # spellings of one directory failing equality. Same asymmetry class as the custody sealer's
+    # resolved-vs-raw containment bug that leg found in the engine itself.
+    coll = Path(record["cmd"][record["cmd"].index("--collection-dir") + 1]).resolve()
+    assert coll == (Path(record["cwd"]).resolve() / "custody").resolve()
     assert folder.resolve() not in coll.parents
     # Every output also lands in that private workdir, never in the user's tree.
     assert not (folder / "ingest.xlsx").exists() and not (folder / "devices.json").exists()

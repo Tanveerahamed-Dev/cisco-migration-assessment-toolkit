@@ -545,3 +545,56 @@ def test_trend_cli_wires_each_exact_hash_and_schema_status(tmp_path, monkeypatch
         cp.file_sha256(str(path)) for path in paths]
     assert captured["schema_status"] == {
         "status": "ok", "message": "", "override": False}
+
+
+def test_evidence_seals_when_the_root_is_a_different_spelling_of_the_same_directory(tmp_path):
+    """Custody's containment check compared a REALPATH'D file against a RAW root.
+
+    Two spellings of one directory then read as different directories, and custody refused every
+    evidence file of a healthy run: the first windows-latest CI leg ever to complete had %TEMP%
+    in DOS 8.3 form (`RUNNER~1`), realpath expanded the files to the long form (`runneradmin`),
+    and the engine exited 1 with "cannot seal raw evidence ...: evidence file resolves outside
+    collection root" — a FALSE refusal, fail-closed on nothing.
+
+    8.3 names cannot be minted portably, so the same divergence is reproduced with a directory
+    LINK (junction on Windows, symlink on POSIX): the root is addressed through the link while
+    realpath resolves the files to the target — different spelling, same directory, exactly the
+    8.3 shape. Both sides must be resolved before comparison.
+    """
+    import os
+    import subprocess
+
+    import COLLECT_PARSE_V3_23_0 as engine
+
+    target = tmp_path / "real_collection"
+    (target / "CORE-1").mkdir(parents=True)
+    capture = target / "CORE-1" / "show_version.txt"
+    capture.write_text("Cisco IOS Software, Version 15.2\n", encoding="utf-8")
+
+    link = tmp_path / "spelled_differently"
+    try:
+        os.symlink(str(target), str(link), target_is_directory=True)
+    except OSError:
+        # Windows without developer mode: a JUNCTION needs no privilege at all.
+        proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                              capture_output=True)
+        if proc.returncode != 0:
+            pytest.skip("neither symlink nor junction can be created here: "
+                        f"{proc.stderr.decode(errors='replace')[:120]}")
+
+    # evidence addressed THROUGH the link, root given AS the link -- realpath diverges the file,
+    # and before the fix the raw root then failed commonpath containment.
+    mapping = {"CORE-1": {"show version": str(link / "CORE-1" / "show_version.txt")}}
+    records = engine._evidence_records(mapping, str(link))
+    paths = [r["path"] for r in records["files"]] if isinstance(records, dict) and "files" in records \
+        else [r["path"] for r in records.get("rows", [])] if isinstance(records, dict) \
+        else [r["path"] for r in records]
+    assert any("show_version.txt" in p for p in paths), (
+        f"the evidence file was not sealed: {records!r}")
+
+    # NON-VACUITY: a file genuinely OUTSIDE the root must still be refused after both sides
+    # resolve -- the fix must not have widened containment into acceptance.
+    outside = tmp_path / "elsewhere.txt"
+    outside.write_text("outside\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="outside collection root"):
+        engine._evidence_records({"CORE-1": {"show version": str(outside)}}, str(link))

@@ -62,7 +62,15 @@ def _release_version() -> str:
     pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
     if pyproject.is_file():
         try:
-            import tomllib  # 3.11+; a 3.10 checkout just falls through to dist metadata
+            try:
+                import tomllib  # stdlib 3.11+
+            except ModuleNotFoundError:
+                # 3.10: the old comment said "a 3.10 checkout just falls through to dist metadata"
+                # -- which silently DROPPED the "(checkout)" marker there, and the first py3.10 CI
+                # leg ever to run failed the version-flag test on exactly that. tomli ships in
+                # [dev] and verify_release.py already falls back to it; the marker should not
+                # depend on which Python happens to run the checkout.
+                import tomli as tomllib  # type: ignore[no-redef]
 
             with pyproject.open("rb") as f:
                 v = tomllib.load(f).get("project", {}).get("version")

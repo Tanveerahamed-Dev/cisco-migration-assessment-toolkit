@@ -220,6 +220,21 @@ def test_stop_hook_BLOCKS_when_verification_times_out(tmp_path):
     timeout.chmod(0o755)
     env = dict(os.environ)
     env["PATH"] = str(shim) + os.pathsep + env.get("PATH", "")
+    # PROVE the shim engaged before asserting anything about the hook. On both GitHub runner OSes
+    # this test failed with rc=0 and EMPTY stderr — the signature of the hook truthfully reporting
+    # a green one-test probe repo because `command -v timeout` under the runner's bash never
+    # resolved to this shim (PATH-injection into a spawned bash is environment-dependent; this
+    # box's own memory records the same trap). Asserting fail-closed against a run in which the
+    # simulation never fired blamed the hook for the harness. The hook's code is unambiguous
+    # (rc=124 -> exit 2 BLOCKED); where the shim cannot be injected, say so loudly instead of
+    # reporting a false verdict either way.
+    probe = subprocess.run([_BASH, "-c", "command -v timeout"], env=env,
+                           capture_output=True, text=True)
+    resolved = (probe.stdout or "").strip().replace("\\", "/")
+    if str(shim).replace("\\", "/").lower() not in resolved.lower():
+        pytest.skip("the timeout shim cannot be injected under this bash "
+                    f"(command -v timeout -> {resolved!r}); the block-on-timeout property is "
+                    "asserted wherever injection works, and the hook's rc=124 branch is exit 2")
     p = _run_hook(repo, env=env)
     assert p.returncode == 2, (
         f"an incomplete timed-out suite was allowed (rc={p.returncode}); stderr={p.stderr!r}")

@@ -4355,3 +4355,73 @@ Verified locally: full suite exit 0, ruff exit 0, focused registry/supply-chain 
 `tomli` import confirmed. Expected on cycle 4: every ubuntu leg green on the pack tests, py3.10
 green on supply-chain; remaining watch items are the windows leg (cancelled mid-run in cycles 2-3,
 never a completed verdict since cycle 1) and any recurrence of the cycle-1-only failures.
+
+### 13.7 CI cycle 5 — the windows leg's first verdict held a real engine bug; every red leg fixed locally
+
+**Cycle 4 (`32b2f09`) verdicts.** Firsts for the branch: **Coverage, py3.12-ubuntu and py3.13-ubuntu
+green** (Dependency audit and Distribution contract held from cycle 3 — the §13.6 fixes were causal,
+not coincident). The cycle-1-only failures did not recur. Remaining reds, each isolated per-job, all
+fixed locally this cycle: **py3.10 (6), py3.11 (2), py3.14 (6), windows (4 — its first COMPLETED
+verdict since cycle 1)**.
+
+**windows — a production custody bug, not a test artifact.** `_evidence_records`
+(COLLECT_PARSE_V3_23_0.py) realpath'd each evidence FILE but compared containment against the RAW
+root string. On windows-latest, `%TEMP%` arrives in DOS 8.3 form (`RUNNER~1` vs `runneradmin`), so
+the resolved file never sat "under" the unresolved root and custody refused every evidence file of a
+healthy run — engine exit 1, surfacing as two ingest-route 500s. Fix: resolve BOTH sides before
+`commonpath`. Pinned by a new test that spells the collection root through a symlink/junction — the
+same resolved-vs-raw divergence 8.3 produces, mintable on any OS — plus the non-vacuity direction (a
+genuinely outside file still refuses). Same asymmetry class as the index-vs-worktree and
+gate-vs-qualifier findings: two spellings of one fact, compared raw.
+
+**windows — the §7.16 "Stop-hook fails open" contradiction, resolved by reading, in the hook's
+favour.** The hook's code is fail-closed (`rc=124` -> exit 2 BLOCKED); the "fails open" text beside
+it is a STALE COMMENT. The runner's `rc=0` was the TEST's own `timeout` shim never engaging under
+runner bash — the hook truthfully reported a green probe repo. The test now proves its shim engaged
+before asserting, and skips LOUDLY naming what it could not simulate. The hook itself: untouched
+(byte-exact protected). Third windows fix, same file: the happy-path custody assert now resolves
+both sides. All three windows fixes are 8.3-or-shim; none weakened a guard.
+
+**py3.10 — the floor keeps paying.** `SpooledTemporaryFile` gained `seekable()` only in 3.11
+(bpo-35112), so ingest's seek probe rejected every spooled upload on 3.10: unwrap shim in
+`ingest.py`, pinned by a `_Py310Spool` test that proves zipfile got PAST the probe. And
+`serve.py::_release_version` needed the same tomli fallback §13.6 gave `verify_release.py` — the
+`(checkout)` marker was 3.11+ only. **py3.11 — property, not prose:** stdlib json's recursion guard
+fires before the app's own depth guard on some versions; both are fail-closed, so the nesting pair
+now asserts the property (refused, with either message) instead of one version's wording.
+
+**py3.14 — the brief's direction was wrong, and the agent measured the correction.** Not "splitext
+moved onto pathlib's answer" but the reverse: 3.14's `PurePath("..json").suffix == ""` — pathlib
+adopted splitext's reading of leading-dot runs. Consequence: production stays PARITY-stable
+(producer, verifier, census and copy-back all read one primitive, so the §10-class killer cannot
+recur), but the CLASSIFICATION of a `..json`-spelled name flips to raw-capture on 3.14, and six
+tests had the <=3.13 side hardcoded. All six now derive expectations from the owner rule
+(`redaction_verify.is_uncoverable_capture`) over the names each test plants, with the
+version-stable halves still HARD-asserted (single-dot spellings always excluded; the bare dotfile
+always a capture — the safe direction). Proof: 154 tests exit 0 (re-run independently of the
+agent); a `sitecustomize` simulation of 3.14's suffix answer — reaching the engine subprocess —
+exit 0, and the brief's (wrong) direction simulated too, also exit 0; a mutation battery restoring
+each historical lookalike restatement is caught by all 5 name-rule tests; no `sys.version_info`
+conditional and no skip introduced.
+
+**Carried forward (production semantics, deliberately NOT decided in a test lane):** on 3.14 a file
+literally named `..json`/`..xml` is no longer excluded as a structured document — the exclusion
+follows whatever the stdlib currently calls a suffix. Coherent on every version, and the flip is
+toward scrubbing (fail-safe), but if the exclusion is meant to hold by NAME SHAPE,
+`html._capture_suffix` + `is_uncoverable_capture` need a pinned-semantics decision. Second carry:
+the splitext-restatement mutation is UNDETECTABLE on 3.14 by construction (measured 0/5 under
+simulation — there the lookalike and the owner agree); the <=3.13 matrix legs are the only guard
+against that regression, so dropping 3.12/3.13 would silently retire it.
+
+> The cycle's lesson is §13.3's, inverted: a matrix leg that has never completed is not "probably
+> like the others" — the windows leg's first finished run in four cycles held the only PRODUCTION
+> bug of the whole matrix effort. An uncompleted verdict is an unopened envelope, not a pass.
+
+Environment note: python resolution on this host broke mid-session (the WindowsApps stub shadows
+`Python312` on PATH); `py -3.12` is the stable spelling.
+
+**Full suite `exit 0` (parallel). Ruff `exit 0`. Worktree privacy gate `exit 0`.** One phantom red
+en route: a Stop-hook pytest raced the still-running background suite and flagged 17 "failures"
+across seven files this cycle never touched; all 132 tests in those files pass serially, exit 0.
+Two pytest runs must not share this repo concurrently — the losers are exactly the tests that
+touch shared surfaces (stick layout copies, CLI subprocesses, freshness reads).

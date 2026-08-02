@@ -338,6 +338,15 @@ def _safe_extract(source: bytes | bytearray | BinaryIO, dest: Path) -> int:
         archive_source = io.BytesIO(source)
     else:
         archive_source = source
+        # py3.10: tempfile.SpooledTemporaryFile does not implement the full IO interface --
+        # seekable()/readable()/writable() arrived in 3.11 (bpo-35112) -- and zipfile.ZipFile
+        # probes .seekable() (zipfile.py:744; AttributeError measured on the first py3.10 CI leg
+        # ever to run this path, five tests at once). The spool's underlying ._file (BytesIO
+        # before rollover, a real temp file after) carries the full interface, so unwrap it
+        # rather than teaching zipfile about spools. On 3.11+ hasattr succeeds and this is a
+        # no-op, which is why every other leg never saw it.
+        if not hasattr(archive_source, "seekable") and hasattr(archive_source, "_file"):
+            archive_source = archive_source._file
         archive_source.seek(0)
     try:
         zf = zipfile.ZipFile(archive_source)

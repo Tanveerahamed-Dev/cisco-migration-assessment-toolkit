@@ -1844,7 +1844,19 @@ def _evidence_records(all_cmd_to_files: Dict[str, Dict[str, str]], root_dir: str
     for p, refs in sorted(by_path.items()):
         try:
             real = os.path.realpath(p)
-            if os.path.commonpath((root, real)) != os.path.commonpath((root, root)):
+            # BOTH sides resolved, or the comparison is between two spellings of the same
+            # directory. The file side was realpath'd while `root` (= abspath of the CLI's
+            # --collection-dir / the web tier's temp dir) was compared RAW — and on Windows the
+            # temp path often arrives in DOS 8.3 form: the first windows-latest CI leg ever to
+            # complete had %TEMP% under `RUNNER~1`, realpath expanded the files to `runneradmin`,
+            # commonpath diverged at that component, and custody REFUSED every evidence file of a
+            # perfectly healthy run ("evidence file resolves outside collection root") — the
+            # engine exited 1 and the web tier surfaced a 500. Fail-closed, but a FALSE refusal:
+            # resolved-vs-unresolved is the same asymmetry class as the review's index-vs-worktree
+            # and gate-vs-qualifier findings. realpath(root) also folds symlinked/junctioned temp
+            # dirs, which is the same bug wearing a different coat.
+            root_real = os.path.realpath(root)
+            if os.path.commonpath((root_real, real)) != os.path.commonpath((root_real, root_real)):
                 raise ValueError("evidence file resolves outside collection root")
             rel = os.path.relpath(p, root).replace("\\", "/")
             if rel == ".." or rel.startswith("../"):

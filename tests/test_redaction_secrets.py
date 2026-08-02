@@ -431,11 +431,17 @@ def test_the_producer_restates_the_owners_suffix_PRIMITIVE_not_a_lookalike():
 
     ``is_uncoverable_capture`` is the owner of this rule and computes ``Path(name).suffix``. The
     producer restated it as ``os.path.splitext(name)[1]`` under a comment asserting the two were
-    byte-for-byte identical. They are not: ``splitext`` skips EVERY leading dot of the basename and
-    ``suffix`` skips only the first, so ``..json`` was a capture to one and a structured document
-    to the other — the producer rewrote it in place until it stopped parsing, and the run then died
-    reconciling the two counts. The set-equality test above passes either way, which is why this
-    one exists."""
+    byte-for-byte identical. They are not — on the interpreter that shipped the bug ``splitext``
+    skipped EVERY leading dot of the basename while ``suffix`` skipped only the first, so
+    ``..json`` was a capture to one and a structured document to the other; the producer rewrote
+    it in place until it stopped parsing, and the run then died reconciling the two counts. The
+    set-equality test above passes either way, which is why this one exists.
+
+    WHICH restatement is wrong is a property of the standard library, not of this repo, and it
+    moves: 3.14 aligned ``os.path.splitext`` and ``PurePath.suffix`` on leading-dot runs, retiring
+    that particular divergence. So the anti-tautology guard below is stated over the CLASS of
+    plausible restatements rather than over one named function: the corpus has to be able to catch
+    a wrong restatement, and it is the OWNER's answer the producer must reproduce."""
     import os
     from pathlib import Path
 
@@ -451,7 +457,34 @@ def test_the_producer_restates_the_owners_suffix_PRIMITIVE_not_a_lookalike():
         "the producer's suffix primitive has drifted from the owner's on "
         f"{len(mismatched)} name(s): {ascii(mismatched[:12])}")
 
-    # ANTI-TAUTOLOGY: the assertion above is only meaningful because the lookalike really does
-    # answer differently — if this list is ever empty the corpus has stopped covering the class.
-    lookalike = [n for n in names if os.path.splitext(n)[1].casefold() != Path(n).suffix.casefold()]
-    assert lookalike, "the corpus no longer contains a name os.path.splitext reads differently"
+    # ANTI-TAUTOLOGY: the assertion above is only meaningful while the corpus still contains names
+    # a WRONG restatement reads differently. Each lookalike below is a real restatement that has
+    # either shipped here or is the obvious next one to write; at least one of them must still
+    # classify a corpus name differently from the owner, or this corpus has stopped covering the
+    # class. (No single lookalike is named in the assertion: `os.path.splitext` diverged on
+    # <=3.13 and agrees on 3.14+, and pinning THAT would pin an interpreter, not a property.)
+    skip = set(html._REDACT_SKIP_CAPTURE_SUFFIXES) | {html._REDACT_SCRUB_TEMP_SUFFIX}
+
+    def owner_says_capture(n: str) -> bool:
+        return Path(n).suffix.casefold() not in skip
+
+    lookalikes = {
+        "str.endswith(<the owner's suffix set>)":
+            lambda n: not n.casefold().endswith(tuple(sorted(skip))),
+        "os.path.splitext(n)[1]":
+            lambda n: os.path.splitext(n)[1].casefold() not in skip,
+        "n.rpartition('.')[2]":
+            lambda n: ("." + n.rpartition(".")[2]).casefold() not in skip,
+    }
+    divergent = {label: [n for n in names if fn(n) != owner_says_capture(n)]
+                 for label, fn in lookalikes.items()}
+    assert any(divergent.values()), (
+        "the corpus no longer discriminates ANY plausible restatement of the suffix rule, so the "
+        "parity assertion above proves nothing: " + ascii(sorted(lookalikes)))
+
+    # ...and on every name a lookalike gets wrong — the only names that can catch this — the
+    # producer answers the OWNER's way. Derived from the owner primitive in this same process, so
+    # a stdlib change moves both sides of the comparison together.
+    for label, diverging in divergent.items():
+        for n in diverging:
+            assert html._is_raw_capture(n) == owner_says_capture(n), (label, ascii(n))

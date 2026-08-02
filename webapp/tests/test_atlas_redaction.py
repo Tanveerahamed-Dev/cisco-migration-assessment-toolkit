@@ -1893,7 +1893,14 @@ def test_the_ingest_census_counts_exactly_what_the_producer_scrubs(tmp_path):
     different sets.
 
     A real tree and the REAL producer, not a hand-shaped expectation: the census is asserted equal
-    to what ``redact_collection_dir`` actually scanned."""
+    to what ``redact_collection_dir`` actually scanned, and the set the two are supposed to be
+    counting is read back out of the OWNER of the name rule
+    (``redaction_verify.is_uncoverable_capture``). That matters for the leading-dot class planted
+    below: ``PurePath("..json").suffix`` reads it as a structured document through 3.13 and as a
+    capture from 3.14, so a hand-built expected list would encode an interpreter. The equality the
+    delivery gate depends on — census == producer == the owner rule's own answer — holds on
+    either."""
+    from cisco_toolkit import html as _html
     from cisco_toolkit.html import redact_collection_dir
     from backend import redaction_verify
 
@@ -1902,27 +1909,42 @@ def test_the_ingest_census_counts_exactly_what_the_producer_scrubs(tmp_path):
     structured = sorted(set(redaction_verify._STRUCTURED_CAPTURE_SUFFIXES)
                         | {redaction_verify._SCRUB_TEMP_SUFFIX})
     # the class the two primitives read differently: a leading run of two dots
+    planted = []
     for suffix in structured:
-        (root / f"dump{suffix}").write_text('{"k": "v"}', encoding="utf-8")
-        (root / f"..{suffix.lstrip('.')}").write_text('{"k": "v"}', encoding="utf-8")
+        for name in (f"dump{suffix}", f"..{suffix.lstrip('.')}"):
+            (root / name).write_text('{"k": "v"}', encoding="utf-8")
+            planted.append(name)
     (root / "blob.bin").write_bytes(b"\x00\x01\x02")
+    # ...plus the BARE dotfile whose whole name is an excluded suffix: no extension, so a capture
+    # on every interpreter — and the case the `str.endswith` restatement of this rule got wrong.
     captures = ["show_run.cfg", "show_tech-support.log", "running-config", ".hidden",
-                "show_version.txt"]
+                "show_version.txt"] + structured
     for name in captures:
         (root / name).write_text("snmp-server community S3cr3t RO\n", encoding="utf-8")
+        planted.append(name)
+
+    # the expected set, from the owner rule itself (blob.bin is excluded by CONTENT, which is the
+    # half of the rule the name cannot decide, so it is never in this list)
+    expected = sorted(n for n in planted if not redaction_verify.is_uncoverable_capture(n))
+    assert set(captures) <= set(expected), sorted(set(captures) - set(expected))
+    assert set(expected) < set(planted), "the name rule excluded nothing — the tree proves nothing"
 
     collection = tmp_path / "collection"
     census = ing._count_raw_captures(collection)
     scanned, _changed = redact_collection_dir(str(collection))
 
-    assert census == scanned == len(captures), (
+    assert census == scanned == len(expected), (
         f"ingest census {census} vs producer scanned {scanned}; the two are counting different "
-        "sets of physical files")
+        f"sets of physical files (the owner rule names {len(expected)})")
     # ...and the copy-back selector — the fourth place the same rule is applied — agrees file by
     # file, because a capture it does not select is scrubbed in staging and never written back.
     selected = sorted(p.name for p in collection.rglob("*")
                       if p.is_file() and ing._is_raw_capture(p))
-    assert selected == sorted(captures), selected
+    assert selected == expected, selected
+    # ...as does the PRODUCER's own name rule, file by file: the count matching while the two sets
+    # differ is exactly the failure the equality above is supposed to catch.
+    for name in planted:
+        assert _html._is_raw_capture(name) == (name in set(expected)), name
 
     # NON-VACUITY: the census is not simply "every file" — the excluded ones really are there.
-    assert len(list(collection.rglob("*"))) > len(captures) + 1
+    assert len(list(collection.rglob("*"))) > len(expected) + 1

@@ -733,7 +733,13 @@ def test_snapshot_parser_turns_excessive_json_nesting_into_a_closed_failure(tmp_
         '{"devices":' + ("[" * depth) + "0" + ("]" * depth) + "}",
         encoding="utf-8",
     )
-    with pytest.raises(verifier.RedactionVerificationError, match="depth verification budget"):
+    # EITHER refusal layer satisfies the property. On 3.12+ the module's own depth budget fires
+    # ("depth verification budget"); on 3.11 stdlib json's recursion ceiling fires FIRST and the
+    # wrapper reports the file unreadable -- measured on the first py3.11 CI leg. Both are CLOSED
+    # failures of the same input; pinning the layer made the test assert an implementation detail
+    # that legitimately varies by Python version. A 500/crash would fail both branches.
+    with pytest.raises(verifier.RedactionVerificationError,
+                       match="depth verification budget|unreadable snapshot JSON"):
         verifier.verify_shareable_artifacts(path, ())
 
 
@@ -908,7 +914,12 @@ def test_snapshot_upload_rejects_excessive_json_nesting_without_a_500(tmp_path):
             files={"file": ("snapshot.json", payload, "application/json")},
         )
     assert response.status_code == 400
-    assert "nesting-depth limit" in response.json()["detail"]
+    # The PROPERTY is refusal-closed with a depth-shaped reason and no 500 -- which layer refused
+    # varies by Python version: 3.12+ reaches the app's own guard ("nesting-depth limit"); on 3.11
+    # stdlib json's recursion ceiling fires first ("maximum recursion depth exceeded while
+    # decoding"). Both are the same fail-closed outcome; measured on the first py3.11 CI leg.
+    detail = response.json()["detail"]
+    assert ("nesting-depth limit" in detail) or ("recursion depth" in detail), detail
 
 
 def test_request_body_spool_io_runs_off_the_event_loop(monkeypatch):
