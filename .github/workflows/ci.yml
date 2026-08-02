@@ -153,21 +153,31 @@ jobs:
           npm ci
           npm test
           npm run build
-      # Named for what it CHECKS. It was "Prove the SPA build reproduced the immutable source", which
-      # this script cannot do: `webapp/frontend/dist/` is untracked, so there are no tracked bytes to
-      # compare the build against — it can only assert that the build introduced no unapproved
-      # untracked paths. And it could not even do that: `_untracked_paths` omits --exclude-standard
-      # (ignored files count as violations) and `dist/` is neither tracked nor ignored, so `npm run
-      # build` created an unapproved path and this step failed DETERMINISTICALLY the first time it
-      # ran. Allow-listing the build output is the minimal honest fix; making the reproduction claim
-      # real would mean TRACKING dist/ and byte-comparing it, which is a separate decision.
-      - name: Prove the SPA build left the immutable source untouched
+      # The separate decision named in the previous revision of this comment has now been TAKEN:
+      # `webapp/frontend/dist/` is TRACKED (2026-08-02), pinned `-text` in .gitattributes so the bytes
+      # survive round-tripping. That makes this step mean what its name says for the first time — the
+      # rebuild is byte-compared against the committed bundle, so a build that does not reproduce it
+      # shows up here as a MODIFIED TRACKED FILE and fails.
+      #
+      # Why it matters: without tracking, `distribution_verify --require-source-binding` exits 3 with
+      # "5 shipped archive member(s) are outside the claimed commit" — index.html plus the four
+      # content-hashed assets ship in the wheel bound to nothing. Tracking them is what makes the
+      # release source-bound.
+      #
+      # The dist allow-listing is deliberately GONE (tracked paths are not untracked paths, so it is
+      # now a no-op that would only mask an unexpected build output). node_modules stays.
+      #
+      # FIRST RUN IS THE REAL TEST: these bytes were built on Windows and this job rebuilds on
+      # ubuntu/node-20. Two consecutive builds were verified byte-identical on the authoring machine,
+      # but CROSS-PLATFORM reproduction — including Vite's content-hashed filenames — is unproven
+      # until this step runs. If it fails, the honest reading is that the bundle is not reproducible
+      # across platforms, and the fix is a pinned/containerised build, NOT re-adding the allowlist.
+      - name: Prove the SPA build reproduced the immutable source
         run: >-
           python .github/scripts/verify_checkout_immutable.py
           --expected-commit "${{ steps.source.outputs.commit }}"
           --expected-tree "${{ steps.source.outputs.tree }}"
           --allow-untracked-prefix webapp/frontend/node_modules
-          --allow-untracked-prefix webapp/frontend/dist
       - name: Install the exact distribution toolchain
         run: python -m pip install "build==1.5.0" "twine==6.2.0"
       - name: Prove tool installation did not change the source

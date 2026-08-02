@@ -99,13 +99,17 @@ jobs:
       # a build against. Note the existing `--allow-untracked-prefix dist` does NOT cover it: the
       # match is a str.startswith on the repo-relative path, and `webapp/frontend/dist/` does not
       # start with `dist/`.
-      - name: Prove the SPA build left the immutable tagged source untouched
+      # `webapp/frontend/dist/` is TRACKED as of 2026-08-02 (pinned `-text`), so its allow-listing is
+      # gone: the rebuild is now byte-compared against the tagged bundle, which is what lets
+      # `distribution_verify --require-source-binding` bind the shipped SPA members to the tag instead
+      # of reporting them as outside the claimed commit. The root `dist/` (wheel/sdist output) and
+      # node_modules stay allow-listed — both are genuinely untracked build products.
+      - name: Prove the SPA build reproduced the immutable tagged source
         run: >-
           python .github/scripts/verify_checkout_immutable.py
           --expected-commit "${{ steps.source.outputs.commit }}"
           --expected-tree "${{ steps.source.outputs.tree }}"
           --allow-untracked-prefix webapp/frontend/node_modules
-          --allow-untracked-prefix webapp/frontend/dist
           --allow-untracked-prefix dist
       - name: Install the exact distribution toolchain
         run: python -m pip install "build==1.5.0" "twine==6.2.0"

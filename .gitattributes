@@ -32,6 +32,22 @@
 # touch". Never "fix" trailing whitespace in these files either; it is publisher data and is hashed.
 reference-data/official-sources/** -text
 
+# The built AssessHub SPA is TRACKED so the wheel's bytes can be bound to a commit (without it,
+# `distribution_verify --require-source-binding` exits 3: "5 shipped archive member(s) are outside the
+# claimed commit" — those five are exactly index.html plus the four content-hashed assets). Tracking
+# it only works if the bytes survive round-tripping EXACTLY, because CI rebuilds the bundle and
+# byte-compares it against these blobs: any line-ending translation makes a correct rebuild look like
+# a modified tracked file and fails the immutability proof. Same rule and same reason as the retained
+# official sources above — the reference-data corpus was caught by this at the staging gate on
+# 2026-08-01 (one byte lost per CRLF against a SHA-256 manifest), so it is applied here BEFORE the
+# first commit rather than after the first failure.
+#
+# Verified byte-reproducible on this platform before tracking: two consecutive `npm run build` runs
+# produced an identical file set with identical SHA-256s for all five members. CROSS-PLATFORM
+# reproduction (CI is ubuntu/node-20, these bytes were built on Windows) is NOT yet demonstrated —
+# it is exactly what the CI step now proves or disproves on its first run.
+webapp/frontend/dist/** -text
+
 # Local source archives are allowlisted for product source, not engagement or
 # operator-state material. This does not rewrite Git history; it prevents
 # accidental inclusion by `git archive` while the tracked corpus is sanitized.
