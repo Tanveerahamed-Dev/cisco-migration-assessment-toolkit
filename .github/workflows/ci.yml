@@ -223,6 +223,25 @@ jobs:
           --allow-untracked-prefix build
           --allow-untracked-prefix cisco_migration_assessment_toolkit.egg-info
           --allow-untracked-prefix dist
+      # From PR #506 (security: protect client evidence and audit release artifacts). This is the one
+      # control that branch had and this job did not: it inspects the archives' MEMBER LIST for client
+      # evidence and for required assets, which distribution_verify does not do in those terms. Its
+      # sibling steps there (install the wheel, smoke the entry point / KB / explorer template) are
+      # deliberately NOT merged -- the steps below already do all of that and more, installing with
+      # --force-reinstall and running `assesshub --selftest` plus the scoped registry-authority checks.
+      # Placed BEFORE the install and the preservation so a client-evidence leak stops the job at the
+      # cheapest point rather than after an artifact has been installed and preserved.
+      - name: Audit distribution contents (no client evidence / required assets present)
+        run: python tools/audit_wheel.py dist
+      - name: Prove the content audit did not change the source
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+          --allow-untracked-prefix webapp/frontend/node_modules
+          --allow-untracked-prefix build
+          --allow-untracked-prefix cisco_migration_assessment_toolkit.egg-info
+          --allow-untracked-prefix dist
       - name: Install the wheel non-editably
         run: python -m pip install --force-reinstall dist/*.whl
       - name: Prove wheel installation did not change the source

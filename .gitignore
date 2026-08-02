@@ -118,6 +118,56 @@ engagements/
 # Real device inventory with SSH credentials — NEVER commit
 devices.json
 
+# Client evidence / operator state — raw captures can contain credentials, keys, addressing,
+# inventory, serials, neighbor tables, logs, and other client-identifying data. The default
+# migration_collection_* root is covered above. These rules also cover common --collection-dir
+# names, every current command-capture filename family beneath an arbitrary root, collection
+# metadata sidecars, and AssessHub's client snapshot database (including SQLite WAL/SHM sidecars).
+/collection/
+/collections/
+/collection_*/
+/collections_*/
+/client_data/
+/client-data/
+/client_evidence/
+/client-evidence/
+/evidence/
+/captures/
+/raw_collection/
+/raw-collection/
+/raw_evidence/
+/raw-evidence/
+show_*.txt
+moquery_-c_*.txt
+api_v1_*.txt
+api_fmc_*.txt
+ers_config_*.txt
+dataservice_*.txt
+aws_ec2_describe-security-groups.txt
+get_system_ha_status.txt
+device_info.json
+command_index.json
+_capture_meta.json
+/webapp/data/*.db
+/webapp/data/*.db-*
+/webapp/data/*.sqlite
+/webapp/data/*.sqlite-*
+/webapp/data/*.sqlite3
+/webapp/data/*.sqlite3-*
+
+# Synthetic command captures and metadata under tests are reviewable source fixtures, not client data.
+!tests/**/show_*.txt
+!tests/**/moquery_-c_*.txt
+!tests/**/api_v1_*.txt
+!tests/**/api_fmc_*.txt
+!tests/**/ers_config_*.txt
+!tests/**/dataservice_*.txt
+!tests/**/aws_ec2_describe-security-groups.txt
+!tests/**/get_system_ha_status.txt
+!tests/**/device_info.json
+!tests/**/command_index.json
+!tests/**/_capture_meta.json
+
 # Claude Code local settings
 .claude/settings.local.json
 /.claude/settings.before-*.json

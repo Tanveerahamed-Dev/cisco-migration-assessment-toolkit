@@ -3,7 +3,8 @@
 The class this pins: an asset EXISTS but silently sits outside the gate — webapp/tests
 lived outside the default suite + Stop hook for months, and the ~2700-line entry module
 sat outside the coverage measurement. "Suite green" is only meaningful if what should be
-gated actually is; these tests fail the moment a gate un-wires."""
+gated actually is; these tests fail the moment a gate un-wires.
+"""
 import configparser
 import os
 import shutil
@@ -108,6 +109,49 @@ def test_coverage_measures_the_entry_module():
     assert "--cov=cisco_toolkit" in ci
     assert "--cov=COLLECT_PARSE_V3_23_0" not in ci, \
         "the module-name/path --cov forms are broken on this stack — use source_pkgs"
+
+
+def test_distribution_confidentiality_audit_stays_in_ci_and_release():
+    """Both publishable artifacts must be inspected before installation or upload.
+
+    A directory argument keeps the command portable under PowerShell, which does not expand the
+    POSIX-style wildcard that previously passed the literal path ``dist/*.whl`` to Python.
+
+    Asserted as a PROPERTY of the pipeline, not as the literal step names one branch happened to
+    use. This test arrived by merge (2026-08-02) from the branch that introduced `audit_wheel.py`,
+    and it originally pinned that branch's exact spellings -- `python -m build --outdir dist`, a step
+    named "Install the audited wheel". The receiving branch builds with
+    `python -m build --sdist --wheel --outdir dist`, names its install step differently, and in
+    `publish.yml` DOWNLOADS the tagged release's archives instead of rebuilding them. Every one of
+    those is at least as strong, yet three of the four literal assertions failed and one
+    (`ci.index("Install the audited wheel")`) raised ValueError rather than asserting.
+
+    A gate that breaks when an equivalent-or-better implementation replaces it is not protecting the
+    property; it is pinning a paraphrase. What actually matters: the audit RUNS in both workflows,
+    and it runs BEFORE anything installs or publishes those bytes.
+    """
+    ci = _read(".github", "workflows", "ci.yml")
+    assert "python tools/audit_wheel.py dist" in ci, \
+        "the distribution content audit is no longer wired into CI"
+    assert "audit_wheel.py dist/*" not in ci, \
+        "a POSIX glob would be passed literally under PowerShell; pass the DIRECTORY"
+    assert "pip install dist/*.whl" not in ci, "same glob hazard on the install step"
+    # the audit must precede every step that installs the artifact
+    audit_at = ci.index("python tools/audit_wheel.py dist")
+    installs = [i for i in (ci.find("pip install --force-reinstall dist"),
+                            ci.find("Install the audited wheel"),
+                            ci.find("Install the wheel non-editably")) if i != -1]
+    assert installs, "CI no longer installs the built wheel at all -- the audit guards nothing"
+    assert audit_at < min(installs), \
+        "the wheel is installed before its contents are audited for client evidence"
+
+    publish = _read(".github", "workflows", "publish.yml")
+    assert "python tools/audit_wheel.py dist" in publish, \
+        "artifacts can reach PyPI without a member-list confidentiality scan"
+    assert "audit_wheel.py dist/*" not in publish
+    assert publish.index("python tools/audit_wheel.py dist") < publish.index(
+        "pypa/gh-action-pypi-publish"
+    ), "the audit must run before the upload, not after"
 
 
 def test_stop_hook_runs_the_default_suite():

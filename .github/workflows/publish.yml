@@ -92,6 +92,19 @@ jobs:
           --expected-commit "${{ steps.source.outputs.commit }}"
           --expected-tree "${{ steps.source.outputs.tree }}"
           --allow-untracked-prefix dist
+      # From PR #506. Their branch rebuilt the distribution here and audited that; rebuilding at
+      # publish time would publish bytes that nothing verified, so the rebuild is NOT merged -- this
+      # job downloads the tagged release's own archives. The audit is merged and pointed at those
+      # downloaded bytes, which is strictly better: it inspects the member list of the artifact that
+      # is actually about to be published, not of a local rebuild of it.
+      - name: Audit downloaded distribution contents (no client evidence)
+        run: python tools/audit_wheel.py dist
+      - name: Prove the content audit did not change the tagged source
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+          --allow-untracked-prefix dist
       - name: Validate downloaded release archives
         run: |
           python -m twine check dist/*.whl dist/*.tar.gz
