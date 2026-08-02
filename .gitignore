@@ -7,15 +7,22 @@ venv/
 env/
 
 # Build / packaging artifacts (pyproject build, wheels)
-build/
-dist/
+# ROOT-anchored, exactly like /dist/ one line down and for the same reason: the unanchored form
+# matches a directory named `build` ANYWHERE, and master-reference/build/ holds SOURCE (the
+# sites-vite-plugin that vite.config.ts imports). Unanchored, that plugin was silently ignored,
+# never committed, and the first CI run of the master-reference workflow failed with
+#   vite.config.ts(3,23): error TS2307: Cannot find module './build/sites-vite-plugin.ts'
+# while every LOCAL run passed, because the file sat in the worktree. Local-green/CI-red with no
+# code difference is the signature of an ignore rule eating a tracked dependency.
+/build/
+/dist/
 *.whl
 _wheeltest/
 
 # OS
 .DS_Store
 Thumbs.db
-# Office owner-lock files (leak last-editor identity; ~$ prefix defeats the [HISTORY-REDACTED]_* rule)
+# Office owner-lock files leak last-editor identity, and their ~$ prefix defeats basename rules.
 ~$*
 
 # Editors
@@ -25,6 +32,7 @@ Thumbs.db
 
 # Test caches / artifacts
 .pytest_cache/
+/.pytest_tmp_*/
 .ruff_cache/
 .mypy_cache/
 .coverage
@@ -37,18 +45,146 @@ Migration_Diff_*.xlsx
 topology.mmd
 topology.dot
 
+# ...and the same class by SHAPE, not by the one prefix we happened to use.
+#
+# The rules above are NAME-BOUND. The engine takes a free-choice `--output <name>.xlsx` — CLAUDE.md's
+# own documented invocation — and writes ~12 siblings beside it (docmeta.CLI_ARTIFACT_SUFFIX: the
+# workbook, explorer, runbook, design, mop, crd, engagement, archreview, opshandbook and deck, plus
+# .snapshot.json / .run_manifest.json / .phase_timings.json). Measured before adding this block:
+# AcmeBank_Q1.snapshot.json, AcmeBank_Q1_mop.docx, Assessment_20270101.xlsx and
+# captures/sw1/show_running-config.txt were ALL committable. Only a run named
+# `Migration_Assessment_AUTOFILLED_*` was covered.
+#
+# That matters most for the raw captures: a running-config carries SNMP communities, TACACS keys,
+# enable secrets and VPN PSKs — exactly what `--redact-collection` exists to scrub. One `git add -A`
+# is all it takes, and this repo has already had `git add -A` sweep in files nobody intended.
+*.snapshot.json
+*.run_manifest.json
+*.phase_timings.json
+*_runbook.docx
+*_design.docx
+*_mop.docx
+*_crd.docx
+*_engagement.docx
+*_archreview.docx
+*_ops_handbook.docx
+*_deck.pptx
+*_explorer.html
+*_IP_CROSSWALK.xlsx
+show_*.txt
+
+# Every generated office/certificate surface is client-bearing regardless of
+# basename. Explicit negations below are the only reviewable exceptions.
+*.xlsx
+*.docx
+*.pptx
+*.precert.json
+*.precert-readiness.json
+
+# Raw-collection metadata and non-CLI controller/cloud captures do not share the
+# `show_` prefix. Cover both producer filenames and conventional evidence roots.
+*_capture_meta.json
+device_info.json
+command_index.json
+moquery_*.txt
+ers_*.txt
+dataservice_*.txt
+api_*.txt
+aws_*.txt
+get_system_*.txt
+**/captures/**
+**/raw-captures/**
+**/collection/**
+
+# Operator-supplied engagement material belongs outside the pushable source
+# tree. These named roots make the safe workflow obvious while retaining
+# deliberate, reviewed sample fixtures elsewhere.
+client-inputs/
+private-inputs/
+engagements/
+
+# Session transcripts, external-agent exports, and engagement-specific reports
+# are not product source. Keep the synthetic requirements example reviewable.
+/AI_SESSION_CONTEXT.md
+/CHAT_SUMMARY.md
+/compass_artifact_*
+/requirements.*.json
+!/requirements.sample.json
+/docs/assessment/
+/docs/security/
+/docs/universality-gap-audit-raw.json
+/docs/wave-findings-*.md
+/docs/wave-triage-*.md
+
+# The three artifacts the repo legitimately TRACKS and the rules above would otherwise swallow.
+# (tests/golden/snapshot.json is unaffected: `*.snapshot.json` needs a dot before "snapshot".)
+!webapp/sample_data/sample_fleet.snapshot.json
+!cisco_toolkit/blast_radius_explorer.html
+!tests/golden/snapshot.json
+
 # Real device inventory with SSH credentials — NEVER commit
 devices.json
 
+# Client evidence / operator state — raw captures can contain credentials, keys, addressing,
+# inventory, serials, neighbor tables, logs, and other client-identifying data. The default
+# migration_collection_* root is covered above. These rules also cover common --collection-dir
+# names, every current command-capture filename family beneath an arbitrary root, collection
+# metadata sidecars, and AssessHub's client snapshot database (including SQLite WAL/SHM sidecars).
+/collection/
+/collections/
+/collection_*/
+/collections_*/
+/client_data/
+/client-data/
+/client_evidence/
+/client-evidence/
+/evidence/
+/captures/
+/raw_collection/
+/raw-collection/
+/raw_evidence/
+/raw-evidence/
+show_*.txt
+moquery_-c_*.txt
+api_v1_*.txt
+api_fmc_*.txt
+ers_config_*.txt
+dataservice_*.txt
+aws_ec2_describe-security-groups.txt
+get_system_ha_status.txt
+device_info.json
+command_index.json
+_capture_meta.json
+/webapp/data/*.db
+/webapp/data/*.db-*
+/webapp/data/*.sqlite
+/webapp/data/*.sqlite-*
+/webapp/data/*.sqlite3
+/webapp/data/*.sqlite3-*
+
+# Synthetic command captures and metadata under tests are reviewable source fixtures, not client data.
+!tests/**/show_*.txt
+!tests/**/moquery_-c_*.txt
+!tests/**/api_v1_*.txt
+!tests/**/api_fmc_*.txt
+!tests/**/ers_config_*.txt
+!tests/**/dataservice_*.txt
+!tests/**/aws_ec2_describe-security-groups.txt
+!tests/**/get_system_ha_status.txt
+!tests/**/device_info.json
+!tests/**/command_index.json
+!tests/**/_capture_meta.json
+
 # Claude Code local settings
 .claude/settings.local.json
+/.claude/settings.before-*.json
 
 # graphify knowledge-graph output (generated; regenerate with the graphify skill)
 graphify-out/
 .gstack/
 # Local scratch, client deliverables, generated bundles
 scratch_*
-[HISTORY-REDACTED]_*
+*_DC_Design/
 x3.xlsx
 _aci_conv.txt
 raw/
@@ -81,6 +217,20 @@ docs/vault-digest/digest-*.jsonl
 # (Human decision 2026-07-10, resolving the #319/#321 duplicate-design split.)
 docs/quality/query_log.jsonl
 
+# D10 retrieval-eval judge payload. The pairs file carries full corpus excerpts — INCLUDING
+# vault-digest text — so it must never reach the pushable repo (two-store rule, ADR-0001).
+# retrieval_eval.invoke_judge_helper now writes it to the system temp dir instead; this rule is the
+# backstop for a leftover from a build that predates that (a hard kill skipped the cleanup `finally`).
+docs/quality/.d10-judge-pairs.tmp.json
+docs/quality/.d10-judge-pairs*.json
+
 # Atlas portable build outputs (ADR-0004 P2) — the bundle is built, never committed
 portable/build/
 portable/dist/
+
+# gate-ledger lock sidecars. Inert by design (they hold no data and are re-locked on the next run),
+# and deliberately never unlinked: the sidecar IS the mutual-exclusion token, so removing one to tidy
+# a directory can hand two writers the same lock on POSIX. See cisco_toolkit/gate_state.py ::
+# _locked_update. Ignoring them is the right way to keep an engagement folder clean.
+docs/engagement-state.json.lock
+*.json.lock

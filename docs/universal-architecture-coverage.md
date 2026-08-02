@@ -139,7 +139,7 @@ Then add the controller as a device in `devices.json` and run the normal offline
 A detector that cries wolf is worse than no detector. Every detector here fires only on an observed,
 genuinely-broken state; benign/intentional/transient states are excluded (IPsec UP-IDLE, BFD AdminDown, IPv6
 TENTATIVE, OSPFv3 2WAY-DROTHER, a lone LISP Down peer, a transient firewall sync state, a standalone ISE
-deployment). Proven on the canonical [HISTORY-REDACTED] customer snapshot (verified at the 40-detector baseline; classes
+deployment). Proven on the canonical Meridian customer snapshot (verified at the 40-detector baseline; classes
 added since carry their own per-vendor parser test files): the detectors fire on synthetic fixtures yet
-produce **zero** decisions on the real [HISTORY-REDACTED] fleet (which captured none of these axes). A fuzz/robustness gate (`tests/test_universal_arch_robustness.py`) guarantees no parser raises
+produce **zero** decisions on the real Meridian reference fleet (which captured none of these axes). A fuzz/robustness gate (`tests/test_universal_arch_robustness.py`) guarantees no parser raises
 on hostile input and the detectors survive malformed evidence without spuriously firing.

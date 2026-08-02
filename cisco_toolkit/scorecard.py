@@ -78,8 +78,24 @@ _FAMILY = [
 # "verdict"/"BLOCK" and may even render markdown tables, but it has no "<artifact> <sep> VERDICT" line,
 # so a session summary no longer fabricates a scorecard row. Deliberately strict — favour a MISSED
 # verdict (no row; the verdict is still in the transcript) over a fabricated one.
+#
+# The capture is a CANDIDATE only: `([A-Za-z][\w./+-]{1,40})` is any single word, so on its own this
+# pattern accepted "Verdict: APPROVE", "Status: BLOCK" and "Recommendation: APPROVE" — the ordinary
+# heading shape of the prose it was written to reject — and each minted a scorecard row with no
+# reviewer and no artifact (proposer == verifier at the persistence layer, feeding summarize_trend,
+# selfcheck.check_judge_trust and the calibration nerve). :func:`_is_artifact_token` is the ALLOW-LIST
+# that makes the "<artifact>" half real: a named artifact FILE, or a deliverable word — read from the
+# same `_FAMILY` table `_infer_deliverable` uses (one owner), plus `_ARTIFACT_WORDS` for the two
+# web-rendered deliverables `_FAMILY` has no scorecard label for.
 _ARTIFACT_VERDICT_RE = re.compile(
     r"(?im)^[\s>*_.\-]{0,8}([A-Za-z][\w./+-]{1,40})[ \t]*(?:[—–:]|-)[ \t]*(APPROVE|APPROVED|BLOCK|BLOCKED)\b")
+# Deliverable file kinds a reviewer names (the docx/pptx/xlsx/html family the engine writes, plus the
+# markdown/JSON artifacts a plan or snapshot review names).
+_ARTIFACT_FILE_RE = re.compile(r"\.(?:docx|pptx|xlsx|html?|md|json|pdf|csv)$", re.I)
+# Deliverable nouns `_FAMILY` carries no scorecard LABEL for (AssessHub renders these two; see
+# docmeta.WEB_ONLY_KINDS) — an artifact named bare, without a filename, must still be recognised, or
+# tightening the artifact half would silently stop recording verdicts on real deliverables.
+_ARTIFACT_WORDS = re.compile(r"^(?:cutover|nrfu|atp|pir)$", re.I)
 # Any verdict token — used only to pick a factual notes line when a verdict carries no finding table.
 _VERDICT_RE = re.compile(r"\b(APPROVE|APPROVED|BLOCK|BLOCKED)\b")
 _LAW_RE = re.compile(r"\bL(\d{1,2})\b|\bLaw\s+(\d{1,2})\b")
@@ -91,6 +107,27 @@ def _families_in(hay: str) -> List[str]:
         if re.search(pat, hay, re.I) and label not in out:
             out.append(label)
     return out
+
+
+def _is_artifact_token(token: str) -> bool:
+    """Is ``token`` (the left half of a candidate verdict line) really an ARTIFACT?
+
+    True only for a named deliverable FILE ("design.docx", "Assessment_redacted_runbook.docx") or a
+    deliverable word — a canonical `_FAMILY` token ("MOP", "runbook", "workbook" — the documented
+    "MOP - BLOCK" shape) or one of `_ARTIFACT_WORDS` (the web-rendered cutover/NRFU/PIR, which
+    `_FAMILY` has no label for). Everything else — "Verdict", "Status", "Recommendation" — is a prose
+    heading, not an artifact, and must not mint a row. Conservative in the documented direction: a
+    reviewer naming an artifact this list does not know yields NO row (the verdict stays in the
+    transcript) rather than a row with no reviewed artifact behind it."""
+    t = (token or "").strip().strip("*_`.,:;-")
+    if not t:
+        return False
+    return bool(_ARTIFACT_FILE_RE.search(t) or _families_in(t) or _ARTIFACT_WORDS.match(t))
+
+
+def _artifact_verdicts(text: str) -> List[tuple]:
+    """The (artifact, verdict) pairs whose left half is a real artifact (see :func:`_is_artifact_token`)."""
+    return [(a, v) for a, v in _ARTIFACT_VERDICT_RE.findall(text or "") if _is_artifact_token(a)]
 
 
 def _infer_deliverable(text: str) -> str:
@@ -133,16 +170,18 @@ def parse_qa_verdict(text: str, *, date: str, commit: str) -> Optional[Dict[str,
     """Turn a QA verdict message into one scorecard row, or ``None`` if ``text`` is not confidently a
     QA verdict (conservative: no confident verdict → no row, never a fabricated one).
 
-    Requires the reviewer's structural signature — at least one per-artifact verdict LINE
-    ("design.docx — BLOCK"). Text that merely *discusses* QA (a session summary, another subagent)
-    has none and yields ``None`` (no fabricated row). ``verdict`` is BLOCK if any artifact blocked (a
+    Requires the reviewer's structural signature — at least one per-artifact verdict LINE naming a
+    real ARTIFACT ("design.docx — BLOCK", "MOP - BLOCK"). Text that merely *discusses* QA (a session
+    summary, another subagent) has none and yields ``None`` (no fabricated row), and neither does a
+    prose heading in verdict shape ("Verdict: APPROVE" / "Status: BLOCK" — see
+    :func:`_is_artifact_token`). ``verdict`` is BLOCK if any artifact blocked (a
     single blocking finding blocks the set), else APPROVE. ``counterexamples`` is the number of
     grounded findings (the pipe-delimited rows; falling back to 1 for a BLOCK with no enumerated
     table). ``score`` is ``None`` — the numeric eval score is the golden harness's job, not a transcript's.
     """
     if not text or not text.strip():
         return None
-    artifact_verdicts = _ARTIFACT_VERDICT_RE.findall(text)
+    artifact_verdicts = _artifact_verdicts(text)
     if not artifact_verdicts:
         return None                            # no per-artifact verdict line -> not a verdict, record nothing
     verdicts = {v.upper() for _artifact, v in artifact_verdicts}
@@ -244,20 +283,52 @@ def latest_judge_baseline(rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]
     return None
 
 
+def judge_provenance(row: Dict[str, Any]) -> str:
+    """The POSITIVE evidence that a JUDGE produced this verdict, as a short reason string, else ``''``.
+
+    Two signals, both self-declared by the writers: a declared ``reviewed_by`` identity (the reviewing
+    agent — :func:`_annotate_provenance` sets it), and a numeric ``judge_tnr`` (only
+    :func:`stamp_judge_trust` puts a measured judge TNR on a row, and only on a judge verdict).
+    Deliberately NOT a proof of provenance — it is the honest half that IS readable off the row, and
+    it is what the deterministic-score exemption in :func:`is_provisional` must not override."""
+    if not isinstance(row, dict):
+        return ""
+    who = str(row.get("reviewed_by") or "").strip()
+    if who:
+        return f"reviewed_by={who!r}"
+    if _num(row.get("judge_tnr")) is not None:
+        return f"judge_tnr={row.get('judge_tnr')} stamped (only a judge verdict carries one)"
+    return ""
+
+
 def is_provisional(row: Dict[str, Any]) -> bool:
     """THE provisional predicate (P0-6 / DEC-004): does this row's APPROVE quantify trust, or merely
-    assert it? ``True`` iff the row is a JUDGE verdict — an APPROVE with no numeric ``score`` (a
-    numeric score means the deterministic golden harness produced it: bias-free, no judge involved) —
-    whose ``judge_tnr`` is unmeasured (null) or measured below :data:`JUDGE_TNR_FLOOR`. A provisional
-    APPROVE is ADVISORY: no gate may advance on it. BLOCK rows are never provisional — a grounded
-    counterexample stands regardless of the judge's TNR (a weak judge OVER-approves; its rejections
-    are findings to verify, not confidence to discount)."""
+    assert it? ``True`` iff the row is a JUDGE verdict — an APPROVE with no *unrebutted* numeric
+    ``score`` — whose ``judge_tnr`` is unmeasured (null) or measured below :data:`JUDGE_TNR_FLOOR`. A
+    provisional APPROVE is ADVISORY: no gate may advance on it. BLOCK rows are never provisional — a
+    grounded counterexample stands regardless of the judge's TNR (a weak judge OVER-approves; its
+    rejections are findings to verify, not confidence to discount).
+
+    The ``score`` exemption (a numeric score is taken to mean the deterministic golden harness
+    produced the row: bias-free, no judge involved) is NARROWED: it does not apply to a row that also
+    carries judge provenance (:func:`judge_provenance`). Unnarrowed, adding one field to a judge
+    verdict disabled the whole :data:`JUDGE_TNR_FLOOR` enforcement — including at the
+    :func:`append_row` choke point that exists to make fabricated confidence unpersistable, and in
+    ``selfcheck.check_judge_trust``, which reads this same predicate and so dropped the row out of its
+    denominator entirely (measured: a scored, reviewed_by-stamped, judge_tnr=0.2 APPROVE persisted
+    ``provisional: false`` and the check reported "0/0 judge-APPROVE row(s) advisory", GREEN).
+    :func:`stamp_judge_trust` closes the writer side by clearing a score off a judge verdict.
+
+    HONEST RESIDUAL: a row carrying a score and NO judge signal is indistinguishable from a genuine
+    harness row — the schema has no provenance field to authenticate it — so it is still exempt.
+    ``selfcheck.check_judge_trust`` DISCLOSES how many rows took that exemption rather than absorbing
+    them silently; closing it for real needs a persisted producer identity in the row schema."""
     if not isinstance(row, dict):
         return False
     if str(row.get("verdict") or "").strip().upper() not in ("APPROVE", "APPROVED"):
         return False
-    if _num(row.get("score")) is not None:       # deterministic harness row — bias-free by construction
-        return False
+    if _num(row.get("score")) is not None and not judge_provenance(row):
+        return False                             # deterministic harness row — bias-free by construction
     tnr = _num(row.get("judge_tnr"))
     return tnr is None or tnr < JUDGE_TNR_FLOOR
 
@@ -268,9 +339,16 @@ def stamp_judge_trust(row: Dict[str, Any], rows: List[Dict[str, Any]]) -> Dict[s
     ever measured: honest absence, never a guess) plus the machine-readable ``provisional`` mark, so
     PROVISIONAL vs quantified is readable off the row itself. Pure over the given rows; the writers
     (:func:`run_hook` and the ``--record`` arm) pass ``read_rows(path)``. QA-verdict rows only — a
-    deterministic ``eval_harness`` row carries no judge and must never inherit a judge's TNR."""
+    deterministic ``eval_harness`` row carries no judge and must never inherit a judge's TNR.
+
+    A numeric ``score`` is CLEARED here: this row came from a transcript, and the module's rule is
+    that the numeric eval score is the golden harness's job, not a transcript's. Without that, a
+    caller could hand a judge verdict a score and buy it out of the TNR floor at the write choke
+    point (:func:`is_provisional`'s narrowed exemption)."""
     base = latest_judge_baseline(rows)
     row["judge_tnr"] = _num(base.get("judge_tnr")) if base else None
+    if _num(row.get("score")) is not None:
+        row["score"] = None                      # a judge verdict never carries a harness score
     row["provisional"] = is_provisional(row)
     return row
 

@@ -12,12 +12,8 @@ that actually exists, checked in CI. It bites the moment a refactor moves an own
 the map. It is deliberately structural -- it asserts on stable anchors (paths, symbol names, snapshot
 keys, cross-links), never on prose that legitimately changes.
 """
-import os
 import pathlib
 import re
-import subprocess
-
-import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REGISTRY = ROOT / "docs" / "ssot.md"
@@ -142,85 +138,78 @@ def test_arch_coverage_cached_counts_match_registry():
                 "update the doc from the owner (a copy is a cache and must match)")
 
 
-# --- Side engagements (the 2026-07-06 rot class: a pointer to a file that never migrated) ---------
+# --- Side engagements ---------------------------------------------------------------------------
 #
-# The 'Side engagements' row points OUTSIDE the tracked tree at untracked local artifacts
-# (.gitignore `[HISTORY-REDACTED]_*` keeps client deliverables out of git by design). Until 2026-07-06 the row
-# pointed at `[HISTORY-REDACTED]/ssot.py` -- a module that was never tracked in this repo's history and never
-# migrated from the old laptop -- and none of the guards above covered the row, so the registry
-# asserted "the truth is over there" about a path that existed nowhere. Three layers close that
-# class: a citation guard (runs everywhere), an existence guard (owner machine only -- the
-# artifacts deliberately exist on no other checkout), and a regression pin on the old pointer.
+# The pushable registry records fictional aliases and the ownership boundary, never real client
+# names or owner-machine paths. The private inventory is the authority for resolving those aliases.
 
-SIDE_ENGAGEMENT_POINTERS = [
-    # deliverables + their generator scripts (HLD/LLD/MOP/NRFU/NIP docx+pdf, build_hld_*.py)
-    "[HISTORY-REDACTED]_DC_Design",
-    # the engagement record: what changed in the current HLD and why
-    "[HISTORY-REDACTED]_DC_Design/HLD_v7_1_CHANGES.md",
-    # CRD + BOQ live at the repo root (untracked)
-    "[HISTORY-REDACTED]_DC_Network_CRD_v1.1.docx",
-    "[HISTORY-REDACTED]_BOQ.xlsx",
+SIDE_ENGAGEMENT_ALIASES = [
+    "Reference_DC_Design",
+    "Reference_CCTV_PS_Proposal",
 ]
 
 
-def _main_checkout_root() -> pathlib.Path:
-    """The side-engagement artifacts are UNTRACKED, so they exist only in the MAIN checkout -- a
-    linked worktree under .claude/worktrees/ has none (the graphify-out/ trap again; mirrors
-    .claude/hooks/session-brief.sh :: _main_root). `git rev-parse --git-common-dir` is the main
-    .git from any worktree ('.git', relative, in the main checkout itself). Fail-open to ROOT."""
-    try:
-        out = subprocess.run(
-            ["git", "rev-parse", "--git-common-dir"],
-            cwd=ROOT, capture_output=True, text=True, timeout=30, check=True,
-        ).stdout.strip()
-        git_dir = pathlib.Path(out)
-        if not git_dir.is_absolute():
-            git_dir = (ROOT / git_dir).resolve()
-        if git_dir.name == ".git" and git_dir.parent.is_dir():
-            return git_dir.parent
-    except Exception:
-        pass
-    return ROOT
-
-
-def test_side_engagement_row_cites_the_on_disk_record():
-    """Citation guard (runs EVERYWHERE -- needs no artifacts): the row must name each real on-disk
-    pointer, so dropping or renaming one in the registry is caught even on checkouts that don't
-    carry the files (hosted CI, fresh clones, worktrees)."""
+def test_side_engagement_row_cites_only_public_aliases():
+    """The public registry retains ownership without publishing private on-disk pointers."""
     txt = _registry_text()
-    not_cited = [p for p in SIDE_ENGAGEMENT_POINTERS if p.rsplit("/", 1)[-1] not in txt]
+    not_cited = [alias for alias in SIDE_ENGAGEMENT_ALIASES if alias not in txt]
     assert not_cited == [], f"'Side engagements' row no longer cites: {not_cited}"
-    # The second engagement in the row must stay on the map. Existence is deliberately NOT
-    # asserted for it: the dir was not found on this machine on 2026-07-06 and the row says so.
-    assert "[HISTORY-REDACTED]_[HISTORY-REDACTED]_CCTV_PS_Proposal" in txt, "the [HISTORY-REDACTED] CCTV side engagement fell off the map"
 
 
-@pytest.mark.skipif(bool(os.environ.get("CI")),
-                    reason="hosted CI clones never carry the untracked side-engagement artifacts "
-                           "(.gitignore `[HISTORY-REDACTED]_*`) -- only the owner machine can verify existence")
-def test_side_engagement_pointers_exist_on_owner_machine():
-    """Existence guard (owner machine only): every [HISTORY-REDACTED] pointer the registry names must resolve
-    on disk under the MAIN checkout. This is the check that was missing while the row pointed at
-    the never-migrated [HISTORY-REDACTED]/ssot.py. Failing here after a machine migration is the guard WORKING:
-    bring the artifacts over from the old machine, or repoint the row at what actually exists."""
-    main_root = _main_checkout_root()
-    missing = [p for p in SIDE_ENGAGEMENT_POINTERS if not (main_root / p).exists()]
-    assert missing == [], (
-        f"docs/ssot.md points at side-engagement artifacts that do not exist under {main_root}: "
-        f"{missing} -- restore them or repoint the 'Side engagements' row (and keep "
-        f"SIDE_ENGAGEMENT_POINTERS in this test in sync)"
+def test_side_engagement_row_omits_owner_machine_paths():
+    row = next(
+        line for line in _registry_text().splitlines()
+        if "Side engagements" in line
     )
+    assert "private inventory" in row
+    assert not re.search(r"[A-Za-z]:[\\/]", row)
 
 
-def test_registry_never_points_at_the_never_migrated_[HISTORY-REDACTED]_module():
-    """Regression pin (runs EVERYWHERE, incl. hosted CI): docs/ssot.md and .graphifyignore both
-    claimed `[HISTORY-REDACTED]/ssot.py` was the Qatar DC SSOT; `git log --all` shows that path was never
-    tracked here, and it exists nowhere on this machine (verified 2026-07-06 -- it never migrated
-    off the old laptop). Neither pointer file may claim it again. If the module is ever genuinely
-    restored, repoint the row AND retire this pin."""
-    for path, label in ((REGISTRY, "docs/ssot.md"), (GRAPHIFY_IGNORE, ".graphifyignore")):
-        txt = path.read_text(encoding="utf-8")
-        assert "[HISTORY-REDACTED]/ssot.py" not in txt, (
-            f"{label} points at [HISTORY-REDACTED]/ssot.py again -- that module never existed in this repo; "
-            f"either it was truly restored (then update this pin) or the 2026-07-06 rot is back"
-        )
+def test_graphify_ignore_uses_a_generic_private_engagement_pattern():
+    txt = GRAPHIFY_IGNORE.read_text(encoding="utf-8")
+    assert "*_DC_Design/" in txt
+
+
+# --------------------------------------------------------- the reconcile guard must cover EVERY band
+def test_every_lifecycle_band_the_producer_emits_has_a_raw_basis_guard():
+    """`ssot._LIFECYCLE_BANDS` is the map from summary field -> the band reconcile() re-derives from
+    `lifecycle_risk.per_device`. It listed four of the producer's FIVE bands; "Unknown" was missing.
+
+    That omission was the worst possible one: `n_unknown` IS a registered CANONICAL_FACT, so it is
+    published, cited and rendered as a headline -- but with no entry here it had NO raw-basis guard
+    at all. The one canonical fact whose entire job is to say "not determined" was the only lifecycle
+    fact nothing verified.
+
+    This asserts COMPLETENESS against the producer's own vocabulary rather than a hand-kept list, so
+    a new band added upstream cannot land here unguarded.
+    """
+    from cisco_toolkit import ssot
+    from cisco_toolkit.analyze import _LIFECYCLE_BAND_RANK
+    guarded = set(ssot._LIFECYCLE_BANDS.values())
+    produced = set(_LIFECYCLE_BAND_RANK)
+    assert produced - guarded == set(), (
+        f"lifecycle band(s) with no reconcile guard: {sorted(produced - guarded)}")
+    assert guarded - produced == set(), (
+        f"reconcile guards a band the producer cannot emit: {sorted(guarded - produced)}")
+    # every guarded field must also be a canonical fact or the guard has no published value to check
+    assert "n_unknown" in ssot.CANONICAL_FACTS
+
+
+def _lc_snapshot(**summary):
+    return {"lifecycle_risk": {"summary": dict(n_devices=3, **summary),
+                               "per_device": [{"host": "a", "band": "Past-LDoS"},
+                                              {"host": "b", "band": "Unknown"},
+                                              {"host": "c", "band": "Unknown"}]}}
+
+
+def test_reconcile_catches_a_falsified_n_unknown():
+    """Measured before the fix: mutating summary.n_unknown from 2 to 99 returned reconcile() == []
+    (silently accepted) while the same mutation to n_past_ldos was caught."""
+    from cisco_toolkit import ssot
+    assert ssot.reconcile(_lc_snapshot(n_past_ldos=1, n_unknown=2)) == [], "the truthful snapshot must be clean"
+    v = ssot.reconcile(_lc_snapshot(n_past_ldos=1, n_unknown=99))
+    assert v and any("n_unknown" in s for s in v), f"a falsified n_unknown was accepted: {v}"
+    # NON-VACUITY: the sibling guard still works and the truthful case still passes, so this is not
+    # an always-fire check.
+    v2 = ssot.reconcile(_lc_snapshot(n_past_ldos=99, n_unknown=2))
+    assert v2 and any("n_past_ldos" in s for s in v2), v2

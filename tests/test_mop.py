@@ -4,6 +4,7 @@ one-section-per-wave structure, the change-overview reconciliation, the reuse of
 plan as the post-cutover checks, the blocker surfacing, and the fail-soft path."""
 import json
 import os
+import re
 import sys
 
 import pytest
@@ -98,6 +99,25 @@ def _all_text(doc):
         for row in t.rows:
             parts.extend(c.text for c in row.cells)
     return "\n".join(parts)
+
+
+def _row_values(doc, label, col=1):
+    """The `col`-th cell of every table row whose FIRST cell is exactly `label`, in document order.
+
+    WHY THIS EXISTS (mutation-proved, 2026-07-28). A whole-document `assert "[NOT OBSERVED]" in
+    text` cannot tell a rendered abstention ROW from the boilerplate paragraph that merely
+    EXPLAINS the convention. mop.py quotes the marker verbatim in the BLUF intro, in the
+    pre-implementation-checklist intro and in the terms-and-conventions section, so the token
+    appears eleven times in a completely unmodified MOP — before any coverage-honesty fixture
+    strips a single fact. Three tests here asserted exactly that and stayed green while the row
+    each of them named silently degraded. Look up the row."""
+    out = []
+    for t in doc.tables:
+        for row in t.rows:
+            cells = [c.text.strip() for c in row.cells]
+            if cells and cells[0] == label and len(cells) > col:
+                out.append(cells[col])
+    return out
 
 
 def test_mop_has_one_section_per_wave(tmp_path):
@@ -500,7 +520,7 @@ def test_mop_silent_on_evpn_when_not_applicable(tmp_path):
 
 def test_mop_check_counts_sum_to_group_ssot_across_subwaves():
     """[audit-2 #3] a coupled group's fail/warn check counts must SUM across its sub-waves to the group SSOT, not
-    be share-with-floor double-counted ([HISTORY-REDACTED] Group 1's true 3/4 rendered 7/7 across 7 sub-waves). Each check is
+    be share-with-floor double-counted (Meridian Group 1's true 3/4 rendered 7/7 across 7 sub-waves). Each check is
     attributed to the ONE sub-wave owning its canonical member switch."""
     from cisco_toolkit.mop import _join_group_records
     readiness = {"G1": {"group": "G1", "switches": ["swA", "swB", "swC", "swD"], "endpoints": 40,
@@ -549,13 +569,48 @@ def test_mop_bluf_present_and_carries_wave_and_gate(tmp_path):
     assert bluf_i < co_i, (bluf_i, co_i)
 
 
+def test_bluf_blocker_count_matches_the_section_it_cross_references(tmp_path):
+    """One label, two numbers: the BLUF's 'Open blockers gating the change' counted migration-
+    readiness FAIL checks while §1's Blockers column and each wave's §x.2 'Blockers to clear' are
+    built from remediation_plan + Critical/High punch-list — and the BLUF pointed the approver at
+    §x.2, the section that contradicted it. The discriminating fixture has 2 blockers and 1 failed
+    readiness check, so a regression to the old source renders 1 where §1 totals 2."""
+    out = str(tmp_path / "m_blockers.docx")
+    write_mop_docx(out, _snap(), "Unit Test Fleet")
+    d = Document(out)
+    # the BLUF row (structural: the row itself, not a substring anywhere in the document)
+    row = next(r for t in d.tables for r in t.rows
+               if r.cells[0].text.strip().startswith("Open blockers"))
+    detail = row.cells[1].text
+    n_bluf = int(re.match(r"\s*(\d+)\s+Critical/High blocker", detail).group(1))
+    # §1's overview table, the other renderer of the same set
+    ov = next(t for t in d.tables if "Blockers" in [c.text.strip() for c in t.rows[0].cells])
+    col = [c.text.strip() for c in ov.rows[0].cells].index("Blockers")
+    n_overview = sum(int(r.cells[col].text) for r in ov.rows[1:])
+    assert n_bluf == n_overview == 2, (detail, n_overview)
+    # the readiness-FAIL count is still reported — under its OWN label, never as "blockers"
+    assert "1 migration-readiness check(s) FAIL" in detail
+    assert n_bluf != 1, "the fixture must discriminate the two sets"
+    # and the cross-reference now points at a section that agrees with it
+    assert "Blockers-to-clear subsection" in detail or "Blockers-to-clear" in detail
+
+
 def test_mop_bluf_window_estimate_is_coverage_honest(tmp_path):
     """The window estimate is a derived planning figure, not a collected fact — it must be labelled as an
-    estimate to confirm with the change owner, never presented as an authoritative collected number."""
+    estimate to confirm with the change owner, never presented as an authoritative collected number.
+
+    NON-VACUITY (mutation-proved): the old whole-document form found "estimate" in the row's own
+    LABEL ("Maintenance window (estimate)") and "confirm with the change owner" in the per-wave
+    rollback-trigger table, so gutting `_window_estimate()` down to a bare "2-4 hours per
+    maintenance window." — the derived figure stated as an authoritative number, which is the one
+    thing this test names — left it GREEN. Assert the row's VALUE."""
     out = str(tmp_path / "m.docx")
     write_mop_docx(out, _snap(), "Unit Test Fleet")
-    text = _all_text(Document(out))
-    assert "estimate" in text.lower() and "confirm with the change owner" in text.lower()
+    est = _row_values(Document(out), "Maintenance window (estimate)")
+    assert len(est) == 1, f"the BLUF window row moved or duplicated: {est}"
+    low = est[0].lower()
+    assert "estimate" in low and "confirm with the change owner" in low, (
+        f"the window figure reads as a collected number, not a planning estimate: {est[0]!r}")
 
 
 # ---- DE-01 P1: per-step quantified rollback triggers -----------------------------------------
@@ -616,11 +671,21 @@ def test_mop_checklist_evidence_gates_oob_from_snapshot(tmp_path):
     }
     out = str(tmp_path / "m.docx")
     write_mop_docx(out, snap, "Unit Test Fleet")
-    text = _all_text(Document(out))
+    d = Document(out)
+    # NON-VACUITY (mutation-proved): `"[NOT OBSERVED]" in _all_text(doc)` is true of EVERY MOP —
+    # the checklist's own intro quotes the convention verbatim — so replacing this row's abstention
+    # with "Confirm OOB reachability before the window." (i.e. assume it) left the test GREEN while
+    # the precondition stopped declaring the blind spot. Assert the ROW, per wave.
+    oob = _row_values(d, "Out-of-band / console access to every device in scope", col=2)
+    assert len(oob) == 2, f"expected one OOB precondition per wave, got {len(oob)}: {oob}"
     # wave 1 (distA) has mgmt-port evidence -> the OOB precondition cites it
-    assert "mgmt0" in text or "10.99.0.5" in text
+    assert "mgmt0" in oob[0] or "10.99.0.5" in oob[0], oob[0]
+    assert "[NOT OBSERVED]" not in oob[0], "an evidenced wave must not abstain"
     # wave 2 (acc1) has NO mgmt-port evidence -> coverage-honest not-observed marker
-    assert "[NOT OBSERVED]" in text
+    assert oob[1].startswith("[NOT OBSERVED]"), (
+        f"wave 2 has no management-port evidence but its OOB precondition does not abstain — "
+        f"the window would open on an assumed-reachable console path: {oob[1]!r}")
+    assert "do NOT assume" in oob[1]
 
 
 def test_mop_checklist_tac_preopen_for_high_risk_wave(tmp_path):
@@ -681,15 +746,28 @@ def test_mop_bluf_not_assessable_when_evidence_absent(tmp_path):
     snap["executive_brief"] = {}                                                             # drop top_gating
     out = str(tmp_path / "m.docx")
     write_mop_docx(out, snap, "Unit Test Fleet")
-    text = _all_text(Document(out))
-    assert "[NOT OBSERVED]" in text
+    d = Document(out)
+    # NON-VACUITY (mutation-proved): `"[NOT OBSERVED]" in _all_text(doc)` is satisfied by the
+    # BLUF's own intro paragraph, which quotes the convention, in EVERY MOP — the token is present
+    # 11 times before this test strips anything. Changing _write_bluf's `_v` fallback to a silent
+    # em-dash (the classic false-health blank) left it GREEN. Assert the two rows by name.
+    for label in ("Fleet-level recommendation", "Top gating item to clear first"):
+        assert _row_values(d, label) == ["[NOT OBSERVED]"], (
+            f"the BLUF's {label!r} row does not declare itself unassessable; got "
+            f"{_row_values(d, label)!r}")
+    # POSITIVE CONTROL: when the snapshot DOES publish them, the same rows carry the fact — so the
+    # assertion above is about abstention, not about the rows being empty in every document.
+    full = str(tmp_path / "full.docx")
+    write_mop_docx(full, _snap(), "Unit Test Fleet")
+    rec, = _row_values(Document(full), "Fleet-level recommendation")
+    assert rec == "Cut the dual-homed core first, then the single-homed access edge."
     # even with no recommendation the structural gate facts (wave count) still render
-    assert "2 wave(s)" in text
+    assert "2 wave(s)" in _all_text(d)
 
 
 # ---- EVPN gating: rollback triggers cite the evpn abort conditions only when EVPN is the target
 def test_mop_rollback_triggers_surface_evpn_abort_conditions_when_applicable(tmp_path):
-    """[HISTORY-REDACTED] specificity: when the target fabric is NX-OS VXLAN-EVPN, the quantified rollback triggers
+    """Reference-profile specificity: when the target fabric is NX-OS VXLAN-EVPN, the quantified rollback triggers
     surface the primary-source EVPN abort conditions (gateway-MAC black-hole, L2 loop, control-plane not
     Established). Gated: a non-EVPN MOP does not."""
     snap = _snap()
@@ -704,11 +782,31 @@ def test_mop_rollback_triggers_surface_evpn_abort_conditions_when_applicable(tmp
 
 def test_mop_rollback_triggers_silent_on_evpn_when_not_the_target(tmp_path):
     """Refutation / gate: a non-EVPN MOP's rollback triggers do NOT reference the EVPN-specific abort
-    conditions (they are gated on the target fabric)."""
+    conditions (they are gated on the target fabric).
+
+    NON-VACUITY (mutation-proved, 2026-07-28). This refuted two tokens the rollback-trigger block
+    never emits: "DAG MAC" appears nowhere in any rendered MOP (it lives in evpn_migration.py), and
+    "Anycast" comes from a DIFFERENT gated block (the §2.2 guardrail section). Ungating the trigger
+    block itself — mop.py's `if evpn_on:` inside the rollback-trigger builder, set to `if True:` —
+    added a fabricated "EVPN cutover abort (target = NX-OS VXLAN-EVPN)" trigger to every non-EVPN
+    MOP and this test stayed GREEN. Refute the strings the block ACTUALLY renders."""
     out = str(tmp_path / "m.docx")
     write_mop_docx(out, _snap(), "Unit Test Fleet")   # _snap() has no evpn_migration
     text = _all_text(Document(out))
-    assert "Anycast" not in text and "DAG MAC" not in text
+    for token in ("EVPN cutover abort", "target = NX-OS VXLAN-EVPN", "BRKDCN-2951",
+                  "gateway-MAC mismatch", "Anycast"):
+        assert token not in text, (
+            f"a non-EVPN MOP surfaced the EVPN-gated string {token!r} — the trigger set is no "
+            f"longer gated on the target fabric")
+    # ...and the same tokens ARE present once EVPN is the target, so the refutation above is
+    # discriminating rather than naming strings nothing ever emits (which is what it used to do).
+    ev = _snap()
+    ev["design_blueprint"] = {"evpn_migration": _evpn_mig()}
+    out2 = str(tmp_path / "evpn.docx")
+    write_mop_docx(out2, ev, "Unit Test Fleet")
+    evpn_text = _all_text(Document(out2))
+    for token in ("EVPN cutover abort", "target = NX-OS VXLAN-EVPN", "BRKDCN-2951"):
+        assert token in evpn_text, f"{token!r} is refuted above but nothing ever emits it"
 
 
 def test_mop_subwave_strategy_and_split_are_slice_scoped(tmp_path):

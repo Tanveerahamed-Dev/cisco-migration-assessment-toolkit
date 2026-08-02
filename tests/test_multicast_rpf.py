@@ -5,12 +5,13 @@ An (S,G) source-tree entry with 'Incoming interface: Null' AND a NON-ZERO RPF ne
 entry (locally-joined / well-known / SSM groups on NX-OS), and an (S,G) whose 'RPF nbr' is 0.0.0.0 -- per Cisco,
 THIS router is the source (a local source / PIM register / SPT-pending), a normal Null IIF, not a failure. A naive
 'Null IIF' detector cries wolf on every such benign entry; the coverage-honest one fires ONLY on (S,G)+Null+
-non-zero-RPF. This is PROVEN against the real [HISTORY-REDACTED] fleet: 36 benign (*,G)-Null entries and 0 (S,G)-Null, so the
+non-zero-RPF. This is PROVEN against the real Meridian reference fleet: 36 benign (*,G)-Null entries and 0 (S,G)-Null, so the
 detector is silent there. Covers parse_mroute_entries (NX-OS + IOS), build_mroute (the (S,G)-only filter), the
 _signals extraction, _d_mcast_rpf_failure, the KB principle and the pim-class registry entry. The mroute text is
 grounded in real NX-OS 'show ip mroute' output."""
 import os
 import sys
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -48,7 +49,7 @@ _SG_NULL = _HEALTHY.replace(
 _SG_NULL_LOCAL = _HEALTHY.replace(
     "Incoming interface: Ethernet1/1, RPF nbr: 10.203.0.1",
     "Incoming interface: Null, RPF nbr: 0.0.0.0")
-# Only (*,G) Null entries (the dominant [HISTORY-REDACTED] pattern -- 36 of them) -> must STAY SILENT (no cry-wolf).
+# Only (*,G) Null entries (the dominant Meridian pattern -- 36 of them) -> must STAY SILENT (no cry-wolf).
 _STAR_NULL_ONLY = """\
 IP Multicast Routing Table for VRF "default"
 
@@ -78,16 +79,27 @@ IP Multicast Routing Table
 
 
 def _snap(*mroute_texts):
-    """Build snap['mroute'] exactly as build_mroute does (the (S,G)-Null filter)."""
+    """snap['mroute'] built by the REAL producer — cisco_toolkit.build.build_mroute — from the raw
+    capture text, exactly as a collection run does.
+
+    NON-VACUITY (mutation-proved, 2026-07-28). This helper used to RE-IMPLEMENT the
+    (S,G)+Null+non-zero-RPF filter inline, "exactly as build_mroute does". That made every detector
+    test below agree with the TEST's copy of the rule instead of the shipped one: deleting the
+    local-source exclusion from `build.build_mroute` — which turns every real
+    (S,G)+Null+'RPF nbr 0.0.0.0' local-source entry into a fabricated High RPF blackhole, the exact
+    cry-wolf `test_silent_on_sg_null_local_source` exists to prevent — left this entire file GREEN.
+    The one test that did drive the real builder never fed it the local-source fixture.
+
+    Feeding the real producer costs a temp file and closes the gap for all six detector tests."""
     mr = {}
-    for i, t in enumerate(mroute_texts):
-        entries = parse.parse_mroute_entries(t)
-        if not entries:
-            continue
-        rpf = [{"source": e["source"], "group": e["group"], "oil_count": e["oil_count"]}
-               for e in entries if e["source"] != "*" and str(e["iif"]).lower() == "null"
-               and str(e.get("rpf_nbr", "")).strip() not in ("", "0.0.0.0")]   # exclude local-source (RPF 0.0.0.0)
-        mr[f"rtr{i + 1}"] = {"n_entries": len(entries), "rpf_failures": rpf}
+    with tempfile.TemporaryDirectory() as td:
+        for i, t in enumerate(mroute_texts):
+            path = os.path.join(td, f"show_ip_mroute_{i}.txt")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(t)
+            built = build.build_mroute({"show ip mroute": path})
+            if built:                       # {} for a non-mroute device — same skip as before
+                mr[f"rtr{i + 1}"] = built
     return {"mroute": mr}
 
 
@@ -151,7 +163,7 @@ def test_fires_on_ios_sg_null():
 
 # ----------------------------------------------------------------------------- detector: SILENT (no cry-wolf)
 def test_silent_on_star_g_null_only():
-    # THE coverage-honesty case: a table of (*,G) Null entries (the 36-benign [HISTORY-REDACTED] pattern) must NOT fire
+    # THE coverage-honesty case: a table of (*,G) Null entries (the 36-benign Meridian pattern) must NOT fire
     assert _fire(_snap(_STAR_NULL_ONLY)) is None
 
 

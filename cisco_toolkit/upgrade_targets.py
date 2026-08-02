@@ -2,7 +2,7 @@
 
 This module closes the Phase-B loop the KEV-remediation deliverables mark **parameter-pending**
 (`docs/security/kev-remediation-nrfu-2026-07-07.md` UP-1/UP-2; `…-mop-2026-07-07.md` §6 `TARGET_RELEASE`).
-Given the signed intel feed's per-CVE ``fixed`` releases (from ``research_lane`` ⟶ :mod:`cisco_toolkit.intel_feed`),
+Given the hash-checked intel feed's per-CVE ``fixed`` releases (from ``research_lane`` ⟶ :mod:`cisco_toolkit.intel_feed`),
 the device roster (``devices[host].sw_version`` + the exposure groups in
 ``docs/security/kev-exposure-2026-07-07-devices.json``), and the CVE→exposure-group mapping (grounded in the
 verified finding), it emits per-device ``{host, current, target, needs_upgrade}`` rows.
@@ -182,15 +182,22 @@ def compare_same_train(a: CiscoVersion, b: CiscoVersion) -> Optional[int]:
 def choose_target(current: Any, fixed: List[Any], *, platform_hint: Optional[str] = None) -> Dict[str, Any]:
     """Decide the upgrade target for ONE device against ONE CVE's ``fixed`` list.
 
-    Returns ``{current, target, needs_upgrade, reason, same_train_fixes, cross_train_fixes}`` where
-    ``needs_upgrade`` ∈ ``{True, False, MANUAL_VERIFY, TARGET_PENDING}``:
+    Returns ``{current, target, needs_upgrade, reason, same_train_fixes, cross_train_fixes,
+    unparsed_fixes}`` where ``needs_upgrade`` ∈ ``{True, False, MANUAL_VERIFY, TARGET_PENDING}``:
 
     * ``True``  — current is behind the (single) same-train fix; ``target`` = that fix.
     * ``False`` — current already >= the (single) same-train fix; ``target`` = the met fix (for the record).
     * ``MANUAL_VERIFY`` — current unparseable; OR fixes exist but none is on the device's train (a migration);
       OR **>= 2 distinct fixed releases land on the device's own train** (ambiguous which is required — a MIN
-      would under-target and leave it vulnerable, a MAX could force a needless upgrade, so neither is asserted).
+      would under-target and leave it vulnerable, a MAX could force a needless upgrade, so neither is asserted);
+      OR **any entry of the same ``fixed`` list is unrecognized** — it could be a same-train release ABOVE the
+      one we can read, and asserting the readable one would ship a remediation MOP whose TARGET_RELEASE is
+      still vulnerable. That is the module contract stated at the top of this file ("Any release string the
+      parser does not recognize -> MANUAL-VERIFY"), applied to the ``fixed`` list and not only to ``current``.
     * ``TARGET_PENDING`` — no (parseable) fixed release supplied at all.
+
+    Every unrecognized entry is DISCLOSED in ``unparsed_fixes`` (and named in ``reason``) — it is never
+    silently dropped just because a sibling entry parsed.
     """
     cur = parse_version(current, platform_hint=platform_hint)
     fixed_list = [f for f in (fixed or []) if f]
@@ -201,7 +208,7 @@ def choose_target(current: Any, fixed: List[Any], *, platform_hint: Optional[str
                     f"current release {str(current)!r} not recognized by the comparator -- verify by hand",
                     )
     parsed_fixes = [(f, parse_version(f, platform_hint=platform_hint)) for f in fixed_list]
-    unparsed = [f for f, pv in parsed_fixes if pv is None]
+    unparsed = [str(f) for f, pv in parsed_fixes if pv is None]
     same_by_norm = {pv.normalized: pv for _, pv in parsed_fixes if pv is not None and pv.same_train(cur)}
     same_norms = sorted(same_by_norm)
     cross_train = sorted({pv.normalized for _, pv in parsed_fixes if pv is not None and not pv.same_train(cur)})
@@ -210,8 +217,21 @@ def choose_target(current: Any, fixed: List[Any], *, platform_hint: Optional[str
         # Fixes exist but land on other trains (or none parsed) -> a migration / hand check, never a guess.
         why = ("no fix on the device's train -- the published fix is a different train (migration is a "
                "platform/design decision, not a mechanical upgrade)") if cross_train else \
-              ("no fixed release could be parsed" + (f" ({', '.join(map(str, unparsed))})" if unparsed else ""))
-        return _row(current, None, MANUAL_VERIFY, why, same_train=[], cross_train=cross_train)
+              ("no fixed release could be parsed" + (f" ({', '.join(unparsed)})" if unparsed else ""))
+        return _row(current, None, MANUAL_VERIFY, why, same_train=[], cross_train=cross_train,
+                    unparsed=unparsed)
+
+    if unparsed:
+        # An entry of the SAME fixed list the comparator cannot read. It may well be a release on THIS
+        # device's train and ABOVE the one that parsed (the openVuln feed mixes prose-y and per-platform
+        # forms), so asserting the readable fix as the target would ship a TARGET_RELEASE that is still
+        # vulnerable -- and the earlier code discarded it silently the moment any sibling parsed, which
+        # also defeated the >=2-same-train-fixes ambiguity guard below. Fail closed, and NAME it.
+        return _row(current, None, MANUAL_VERIFY,
+                    f"{len(unparsed)} fixed release(s) not recognized by the comparator "
+                    f"({', '.join(unparsed)}) alongside same-train fix(es) ({', '.join(same_norms)}) -- "
+                    f"an unread entry could be a higher fix on this train; verify by hand",
+                    same_train=same_norms, cross_train=cross_train, unparsed=unparsed)
 
     if len(same_by_norm) > 1:
         # >=2 DISTINCT fixed releases on the device's own train (e.g. a CVE re-referenced by an amended
@@ -233,10 +253,12 @@ def choose_target(current: Any, fixed: List[Any], *, platform_hint: Optional[str
 
 
 def _row(current: Any, target: Optional[str], needs: Any, reason: str,
-         same_train: Optional[List[str]] = None, cross_train: Optional[List[str]] = None) -> Dict[str, Any]:
+         same_train: Optional[List[str]] = None, cross_train: Optional[List[str]] = None,
+         unparsed: Optional[List[str]] = None) -> Dict[str, Any]:
     return {"current": (str(current) if current not in (None, "") else None), "target": target,
             "needs_upgrade": needs, "reason": reason,
-            "same_train_fixes": same_train or [], "cross_train_fixes": cross_train or []}
+            "same_train_fixes": same_train or [], "cross_train_fixes": cross_train or [],
+            "unparsed_fixes": unparsed or []}
 
 
 def _merge_host_decision(decisions: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -264,7 +286,8 @@ def _merge_host_decision(decisions: List[Dict[str, Any]]) -> Dict[str, Any]:
     return _row(current, best.normalized, bool(needs),
                 "aggregate of applicable CVEs (target clears the highest same-train first-fix)",
                 same_train=sorted({s for d in decisions for s in d["same_train_fixes"]}),
-                cross_train=sorted({s for d in decisions for s in d["cross_train_fixes"]}))
+                cross_train=sorted({s for d in decisions for s in d["cross_train_fixes"]}),
+                unparsed=sorted({u for d in decisions for u in d.get("unparsed_fixes") or []}))
 
 
 # =====================================================================================================
@@ -307,7 +330,8 @@ def _fixed_by_cve(advisories: List[Dict[str, Any]]) -> Dict[str, List[str]]:
 
 def build_upgrade_targets(advisories: List[Dict[str, Any]], device_versions: Dict[str, Dict[str, Any]],
                           device_groups: Dict[str, Any], *,
-                          cve_map: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
+                          cve_map: Optional[Dict[str, Dict[str, Any]]] = None,
+                          feed_refusals: Optional[List[str]] = None) -> Dict[str, Any]:
     """Join the feed's per-CVE ``fixed`` releases to each affected device's current release.
 
     * ``advisories`` — verified feed entries (from :func:`cisco_toolkit.intel_feed.load_feeds`); ``fixed`` used.
@@ -365,6 +389,7 @@ def build_upgrade_targets(advisories: List[Dict[str, Any]], device_versions: Dic
             "needs_upgrade": merged["needs_upgrade"], "reason": merged["reason"],
             "cves": sorted(per_host_cves[host]),
             "same_train_fixes": merged["same_train_fixes"], "cross_train_fixes": merged["cross_train_fixes"],
+            "unparsed_fixes": merged.get("unparsed_fixes") or [],   # never silently dropped intel
         })
     rows.sort(key=lambda r: (_needs_rank(r["needs_upgrade"]), r["host"]))
 
@@ -383,7 +408,9 @@ def build_upgrade_targets(advisories: List[Dict[str, Any]], device_versions: Dic
         "not_applicable": {h: sorted(cves) for h, cves in sorted(na_hosts.items())},
         "version_unknown": {h: sorted(cves) for h, cves in sorted(version_unknown.items())},
         "unknown_platform": sorted(unknown_platform),
-        "note": _coverage_note(summary, cve_map),
+        "note": _coverage_note(summary, cve_map, feed_refusals),
+        # Surfaced, never swallowed: a feed the intake REFUSED is not a feed that was absent.
+        "feed_refusals": list(feed_refusals or ()),
     }
     return {"rows": rows, "summary": summary, "coverage": coverage}
 
@@ -392,8 +419,20 @@ def _needs_rank(needs: Any) -> int:
     return {True: 0, MANUAL_VERIFY: 1, TARGET_PENDING: 2, False: 3}.get(needs, 4)
 
 
-def _coverage_note(summary: Dict[str, Any], cve_map: Dict[str, Any]) -> str:
+def _coverage_note(summary: Dict[str, Any], cve_map: Dict[str, Any],
+                   feed_refusals: Optional[List[str]] = None) -> str:
     if not summary["cves_with_fixed"]:
+        # A REFUSED feed and an ABSENT feed produce the same empty advisory list, and this note used
+        # to describe both as "the sweep has not run" — so a refused critical-RCE advisory read as a
+        # lane nobody had wired yet. Say which one actually happened; the operator's next action is
+        # completely different (fix the feed vs run the sweep).
+        if feed_refusals:
+            return ("no CVE carries a fixed-version because the intake REFUSED "
+                    f"{len(feed_refusals)} feed(s) -- this is NOT an unrun sweep, and the advisories "
+                    "in those feeds were never assessed: "
+                    + "; ".join(feed_refusals[:3])
+                    + ("; ..." if len(feed_refusals) > 3 else "")
+                    + ". Every affected device is TARGET-PENDING, not 'already patched'.")
         return ("no CVE carries a fixed-version yet -- the credential-gated Cisco PSIRT/openVuln sweep "
                 "(P5) has not run; every affected device is TARGET-PENDING, not 'already patched'.")
     parts = [f"{summary['needs_upgrade']} need upgrade", f"{summary['already_current']} already current",
@@ -492,7 +531,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     devices-json ``replace_upgrade_train`` inline versions (the coverage the committed repo can reproduce)."""
     import json
     import sys
-    from cisco_toolkit.intel_feed import load_feeds
+    from cisco_toolkit.intel_feed import engagement_identifiers, load_feeds
 
     argv = list(sys.argv[1:] if argv is None else argv)
     try:
@@ -509,24 +548,39 @@ def main(argv: Optional[List[str]] = None) -> int:
     snap_path = next((a for a in argv if not a.startswith("-")
                       and a not in (intel_dir, dev_json)), None)
 
-    advisories = load_feeds(intel_dir).get("advisories", [])
     try:
-        groups = json.load(open(dev_json, encoding="utf-8"))
+        with open(dev_json, encoding="utf-8") as handle:
+            groups = json.load(handle)
     except Exception as e:
         print(f"could not read device roster {dev_json!r}: {e!r}")
         return 2
 
     if snap_path:
         try:
-            snap = json.load(open(snap_path, encoding="utf-8"))
+            with open(snap_path, encoding="utf-8") as handle:
+                snap = json.load(handle)
             device_versions = device_versions_from_snapshot(snap)
         except Exception as e:
             print(f"could not read snapshot {snap_path!r}: {e!r}")
             return 2
     else:
+        snap = None
         device_versions = device_versions_from_devices_json(groups)
 
-    result = build_upgrade_targets(advisories, device_versions, groups)
+    denylist = engagement_identifiers(groups, snap)
+    # Keep the REFUSALS, not just the advisories. Discarding them made a refused feed
+    # indistinguishable from an absent one, and the renderer says "the credential-gated Cisco
+    # PSIRT/openVuln sweep (P5) has not run" — so a refused critical-RCE advisory was reported as a
+    # lane that was never wired. `self_healing.advisory_remediation` already surfaces `[REFUSED]`
+    # lines; this was the single exit that dropped them.
+    _feeds = load_feeds(intel_dir, forbidden=denylist, require_forbidden=True)
+    advisories = _feeds.get("advisories", [])
+    feed_refusals = [
+        f"{r.get('feed', '?')}: {r.get('reason', 'refused')}"
+        for r in (_feeds.get("refused") or [])
+    ]
+    result = build_upgrade_targets(advisories, device_versions, groups,
+                                   feed_refusals=feed_refusals)
     print(json.dumps(result, indent=2, sort_keys=True) if as_json else render(result))
     return 0
 

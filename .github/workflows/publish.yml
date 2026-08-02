@@ -1,49 +1,131 @@
-name: Publish to PyPI
-
-# Build the sdist + wheel and upload them to PyPI via TRUSTED PUBLISHING (OIDC — no API token is
-# stored anywhere). See RELEASING.md for the one-time PyPI setup this requires.
-#
-# Triggers:
-#   * workflow_dispatch — a manual, intentional publish from the Actions tab. This is the default,
-#     safe path: publishing to PyPI is irreversible (a version can't be re-uploaded), so it is opt-in
-#     per run rather than firing automatically on every tag.
-#   * release: published — also fires if you publish a GitHub Release through the web UI.
-#
-# IMPORTANT: nothing is published until the trusted publisher is configured on PyPI (one-time). Until
-# then the upload step fails cleanly and nothing leaves the runner — adding this workflow publishes
-# nothing on its own.
+name: Publish verified release to PyPI
 
 on:
   workflow_dispatch:
-  release:
-    types: [published]
+    inputs:
+      tag:
+        description: "Existing verified GitHub Release tag (for example v3.31.0)"
+        required: true
+        type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: pypi-${{ inputs.tag }}
+  cancel-in-progress: false
+
 jobs:
   pypi-publish:
-    name: Build + publish to PyPI
+    name: Promote exact GitHub Release assets
     runs-on: ubuntu-latest
-    # The 'pypi' environment is what the PyPI trusted-publisher config references; it can also carry
-    # GitHub environment protection rules (e.g. a required reviewer) for an extra approval gate.
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
     environment:
       name: pypi
       url: https://pypi.org/p/cisco-migration-assessment-toolkit
     permissions:
-      id-token: write          # OIDC token for PyPI trusted publishing (no stored secret/API token)
+      contents: read
+      id-token: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      - name: Capture the immutable tagged-source identity
+        id: source
+        run: |
+          echo "commit=$(git rev-parse 'HEAD^{commit}')" >> "$GITHUB_OUTPUT"
+          echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
-      - name: Build sdist + wheel
+      - name: Prove toolchain setup did not change the tagged source
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+      - name: Verify annotated tag, project version, commit, and main ancestry
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: >-
+          python .github/scripts/verify_release.py
+          --tag "${RELEASE_TAG}"
+          --commit HEAD
+          --base origin/main
+      - name: Prove release validation did not change the tagged source
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+      - name: Verify the tagged tracked-tree privacy boundary
+        run: python .github/scripts/verify_repository_privacy.py
+      - name: Prove privacy validation did not change the tagged source
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+      - name: Download the exact wheel and source archive from the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
-          python -m pip install --upgrade build
-          python -m build
-      - name: Validate distribution metadata
+          mkdir -p dist "${RUNNER_TEMP}/release-proof"
+          gh release download "${RELEASE_TAG}" \
+            --pattern "*.whl" \
+            --pattern "*.tar.gz" \
+            --dir dist
+          gh release download "${RELEASE_TAG}" \
+            --pattern "dist-verification.json" \
+            --dir "${RUNNER_TEMP}/release-proof"
+      - name: Prove asset download did not change the tagged source
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+          --allow-untracked-prefix dist
+      - name: Install the exact archive validator
+        run: python -m pip install "twine==6.2.0"
+      - name: Prove tool installation did not change the tagged source
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+          --allow-untracked-prefix dist
+      # From PR #506. Their branch rebuilt the distribution here and audited that; rebuilding at
+      # publish time would publish bytes that nothing verified, so the rebuild is NOT merged -- this
+      # job downloads the tagged release's own archives. The audit is merged and pointed at those
+      # downloaded bytes, which is strictly better: it inspects the member list of the artifact that
+      # is actually about to be published, not of a local rebuild of it.
+      - name: Audit downloaded distribution contents (no client evidence)
+        run: python tools/audit_wheel.py dist
+      - name: Prove the content audit did not change the tagged source
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+          --allow-untracked-prefix dist
+      - name: Validate downloaded release archives
         run: |
-          python -m pip install --upgrade twine
-          python -m twine check dist/*
-      - name: Publish to PyPI (trusted publishing)
-        uses: pypa/gh-action-pypi-publish@release/v1
+          python -m twine check dist/*.whl dist/*.tar.gz
+          python -m cisco_toolkit.distribution_verify dist \
+            --source-commit "${{ steps.source.outputs.commit }}" \
+            --source-tree "${{ steps.source.outputs.tree }}" \
+            --expected-json "${RUNNER_TEMP}/release-proof/dist-verification.json"
+      - name: Final immutable-tagged-source proof before publication
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+          --allow-untracked-prefix dist
+      - name: Reverify the exact archive bytes immediately before publication
+        run: >-
+          python -m cisco_toolkit.distribution_verify dist
+          --source-commit "${{ steps.source.outputs.commit }}"
+          --source-tree "${{ steps.source.outputs.tree }}"
+          --expected-json "${RUNNER_TEMP}/release-proof/dist-verification.json"
+      - name: Publish exact assets with trusted publishing and attestations
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        with:
+          packages-dir: dist/
+          attestations: true

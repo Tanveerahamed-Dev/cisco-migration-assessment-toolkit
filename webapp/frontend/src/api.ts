@@ -14,8 +14,48 @@ export interface Summary {
   };
   readiness: Record<"READY" | "CAUTION" | "NOT READY", number>;
   keystones: Array<Record<string, any>>;
-  lifecycle: { past_eos?: number | string; near_eos?: number | string; past_ldos?: number | string };
+  lifecycle: LifecycleSummary;
+  verification?: SnapshotVerification;
   sections: Array<{ key: string; label: string; count: number }>;
+}
+
+/** Hardware-lifecycle (EoX) census as projected by webapp/backend/summary.py::_lifecycle.
+ *
+ *  COVERAGE-HONESTY CONTRACT (audit U1-1): `past_eos`/`near_eos`/`past_ldos` are the RISK rollups —
+ *  all three being 0 does NOT mean the fleet is supported, it can equally mean nothing was assessed.
+ *  `unknown` / `coverage_gap` are the other half of that fact and must be rendered wherever the
+ *  rollups are: an all-Unknown fleet used to serialise byte-identically to an all-Active one.
+ *  Every count may be `""` when the engine published no figure — treat "" as UNKNOWN, never as 0. */
+export interface LifecycleSummary {
+  past_eos?: number | string;
+  near_eos?: number | string;
+  past_ldos?: number | string;
+  active?: number | string;
+  /** Assets whose support state could NOT be determined (no EoX match). A gap, never a clean result. */
+  unknown?: number;
+  n_devices?: number;
+  assessed?: number;
+  /** The FULL engine band census, so a band this client does not know by name still reaches the UI. */
+  by_band?: Record<string, number>;
+  /** Which census keys were classified as not-assessed buckets (e.g. ["Unknown"]). */
+  not_assessed_bands?: string[];
+  coverage_gap?: boolean;
+}
+
+export interface SnapshotVerification {
+  contract_version: number;
+  origin?: string;
+  integrity_status: "verified" | "failed" | "unknown";
+  status: "verified" | "partial" | "unverified";
+  label: string;
+  verified: boolean;
+  coverage_honest: boolean;
+  reasons: string[];
+  failed_phases: string[];
+  missing_authorities: string[];
+  non_authoritative_authorities: string[];
+  integrity_failed_authorities: string[];
+  integrity_unknown_authorities: string[];
 }
 
 export interface SnapshotMeta {
@@ -183,6 +223,7 @@ export interface IngestReport {
   devices_json: "bundled" | "synthesized";
   engine_seconds: number;
   engine_log_tail: string;
+  verification: SnapshotVerification;
 }
 
 export interface ExecutionMeta {
@@ -446,22 +487,74 @@ export interface CableMap {
   summary: { n_nodes: number; n_cables: number; n_tiers: number; op: Record<CableOp, number> };
 }
 
+/** A failed API call, carrying the HTTP status so a caller can tell the backend's guard responses
+ *  apart instead of collapsing them all into one opaque string (audit FE-11). The hardened backend
+ *  answers 403 (cross-site write / compute-heavy GET refused), 413 (declared body over the JSON
+ *  ceiling), 422 (a per-field length cap), 409 (the run/wave is already closed) and 503 + Retry-After
+ *  (the generation-concurrency cap shed the request) — a 503 shed is transient and worth retrying,
+ *  a 404 is not, and nothing downstream could distinguish them from `new Error(detail)`.
+ *  `.message` is unchanged for the plain-string `detail` case, which is every hand-written
+ *  HTTPException in webapp/backend/app.py. */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly retryAfter: number | null;
+  constructor(message: string, status: number, retryAfter: number | null = null) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.retryAfter = retryAfter;
+  }
+  /** The generation cap (503 + Retry-After) and a transient upstream — safe to offer a retry. */
+  get retryable(): boolean {
+    return this.status === 503 || this.status === 429;
+  }
+}
+
+/** FastAPI's RequestValidationError body is `{"detail": [{loc, msg, type}, ...]}`, NOT a string —
+ *  the per-field caps (_LEN_NOTE / _LEN_NAME / _LEN_TOKEN in app.py) all reject through it. Raw
+ *  JSON.stringify put `[{"type":"string_too_long","loc":["body","note"],…}]` in the war-room toast,
+ *  which tells an engineer nothing about which field to shorten. */
+function detailToMessage(detail: unknown): string | null {
+  if (typeof detail === "string") return detail || null;
+  if (Array.isArray(detail)) {
+    const parts = detail
+      .map((d: any) => {
+        if (typeof d === "string") return d;
+        const loc = Array.isArray(d?.loc) ? d.loc.filter((x: unknown) => x !== "body").join(".") : "";
+        const m = typeof d?.msg === "string" ? d.msg : "";
+        return loc && m ? `${loc}: ${m}` : m || loc || null;
+      })
+      .filter(Boolean);
+    return parts.length ? parts.join("; ") : null;
+  }
+  if (detail && typeof detail === "object") return JSON.stringify(detail);
+  return null;
+}
+
 async function j<T>(r: Response): Promise<T> {
   if (!r.ok) {
     let msg = `${r.status} ${r.statusText}`;
     try {
       const b = await r.json();
-      if (b?.detail) msg = typeof b.detail === "string" ? b.detail : JSON.stringify(b.detail);
+      const d = detailToMessage(b?.detail);
+      if (d) msg = d;
     } catch {
       /* ignore */
     }
-    throw new Error(msg);
+    const ra = Number(r.headers?.get?.("retry-after"));
+    throw new ApiError(msg, r.status, Number.isFinite(ra) && ra > 0 ? ra : null);
   }
   return (r.status === 204 ? (null as T) : await r.json()) as T;
 }
 
 export const api = {
   health: () => fetch("/api/health").then((r) => j<{ status: string; sample_available: boolean }>(r)),
+  authenticate: (token: string) =>
+    fetch("/api/session", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    }).then((r) => j<null>(r)),
+  logout: () => fetch("/api/session", { method: "DELETE" }).then((r) => j<null>(r)),
   meta: () => fetch("/api/meta").then((r) => j<Meta>(r)),
 
   listCampaigns: () => fetch("/api/campaigns").then((r) => j<Campaign[]>(r)),

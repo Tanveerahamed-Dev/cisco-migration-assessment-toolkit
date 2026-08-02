@@ -3,6 +3,7 @@ constants. Leaf layer: depends only on `re` + `math`. Extracted verbatim from
 COLLECT_PARSE_V3_23_0.py in PHASE 2.7 step 1 (behaviour byte-identical)."""
 import math
 import re
+import sys
 from typing import List
 
 IFACE_TOKEN_RE = re.compile(
@@ -55,6 +56,39 @@ def is_trunk_mode(mode) -> bool:
     predicates diverged substring-vs-exact)."""
     return "trunk" in str(mode or "").lower()
 
+
+# ---- BPDU-Guard token decision (cross-module SSOT audit 2026-07-28) -------------------------------
+# The PRODUCER's vocabulary for `stp_bpduguard` is exactly {"Enable", "Disable", ""}: parse.py's
+# parse_run_config_interfaces writes "Enable"/"Disable", build.py promotes a global
+# `spanning-tree portfast bpduguard default` to "Enable", and "" means the run-config channel never
+# landed for that port -- NOT ASSESSED, never "off".
+# Both consumers hand-rolled their own token set and NEITHER matched it, in opposite directions:
+# archreview L2-2 asked `v not in ("no","disabled","off","false","-","--")`, and "disable" is not in
+# that set, so an explicitly DISABLED edge port counted as GUARDED (6 such ports on the Meridian reference fleet);
+# design_advisor asked `v in ("enable","enabled","true","on")` and counted the same ports UNGUARDED.
+# Same field, same snapshot, opposite verdicts -- and archreview's direction was the false-health one.
+# Same class as is_trunk_mode above (PR-#396). Three-state on purpose so no caller can collapse "no
+# evidence" into "off" (Law 3): True = protected, False = protection off, None = not assessable.
+_BPDUGUARD_ON = {"enable", "enabled", "true", "on", "yes", "1"}
+_BPDUGUARD_OFF = {"disable", "disabled", "false", "off", "no", "0", "-", "--", "none"}
+
+
+def bpduguard_state(value):
+    """ONE owner for the 'is BPDU Guard on for this port' token decision.
+
+    Returns ``True`` (protected), ``False`` (explicitly not protected) or ``None`` (no evidence --
+    the field was never populated, or carries a token that proves neither state). A caller counting
+    "protected" must test ``is True``; a caller counting an OBSERVED gap must test ``is False``;
+    ``None`` belongs in a not-assessed bucket, never in either verdict."""
+    s = str(value if value is not None else "").strip().lower()
+    if not s:
+        return None                                     # never collected -> not assessed, never "off"
+    if s in _BPDUGUARD_OFF or s.startswith("no ") or "disable" in s:
+        return False
+    if s in _BPDUGUARD_ON or "enable" in s:
+        return True
+    return None                                         # an unknown token proves neither state
+
 # Characters that abort XML serialization (python-docx / openpyxl both serialize to XML): the C0 control chars
 # XML 1.0 forbids -- 0x00-0x08, 0x0B-0x0C, 0x0E-0x1F (tab 0x09 / newline 0x0A / CR 0x0D stay legal) -- plus the
 # U+FFFE / U+FFFF noncharacters and the lone surrogates U+D800-U+DFFF. Device-derived free-text (a CDP/LLDP
@@ -64,6 +98,33 @@ def is_trunk_mode(mode) -> bool:
 _XML_ILLEGAL_RE = re.compile(
     "[\x00-\x08\x0b\x0c\x0e-\x1f" + chr(0xD800) + "-" + chr(0xDFFF) + chr(0xFFFE) + chr(0xFFFF) + "]")
 
+# The largest magnitude openpyxl can hand to the XLSX writer: it converts every numeric cell through a
+# C double, so an int beyond this raises OverflowError at wb.save() (see xml_safe).
+_FLOAT_MAX = sys.float_info.max
+
+
+def is_finite_num(v) -> bool:
+    """True for a number that float arithmetic and cell rendering can both survive.
+
+    THE predicate to filter a device-derived numeric leaf on -- and specifically the correct
+    replacement for the `isinstance(v, (int, float)) and math.isfinite(v)` idiom, which is itself
+    unsafe: `json.loads` accepts an integer literal of unbounded precision, and
+    ``math.isfinite(10**400)`` raises ``OverflowError: int too large to convert to float`` BEFORE it
+    can return False. So the guard written to reject the JSON `Infinity` crashed on the JSON huge int
+    -- the same class it was added to close, one input away.
+
+    The int bound is therefore tested by INTEGER comparison against the float64 max, never by
+    converting. ``bool`` is excluded: it is an int subclass, and a True/False where a count belongs is
+    not an observed number (callers that legitimately count bools test them explicitly).
+
+    Companion to :func:`_as_num`, which COERCES; this one FILTERS, for the sites that must keep the
+    value's original type (a mean over scores, a set of renderable cells)."""
+    if isinstance(v, bool):
+        return False
+    if isinstance(v, int):
+        return -_FLOAT_MAX <= v <= _FLOAT_MAX
+    return isinstance(v, float) and math.isfinite(v)
+
 
 def xml_safe(value):
     """Strip the characters that make XML serialization raise, so one bad byte in device-derived text cannot abort
@@ -72,11 +133,34 @@ def xml_safe(value):
     set) is the exception: it can only reach here if a compute placed one in a directly-rendered cell, where openpyxl
     would raise ValueError -- which excel._run_phase catches PER SHEET, silently dropping every row after it (a
     coverage-honesty false all-clear). Disclose it as a typed placeholder instead of passing it through to crash.
-    Canonical, shared by the excel + docx generators (excel._xls_sanitize delegates here)."""
+    Canonical, shared by the excel + docx generators (excel._xls_sanitize delegates here).
+
+    NUMERIC out-of-domain values are the second exception, and they are the JSON-snapshot twin of the
+    container case (crash-safety fuzz, 2026-07-28). `json.loads` accepts the bare `Infinity` / `-Infinity`
+    / `NaN` tokens and integer literals of unbounded precision, so an untrusted snapshot -- a `--no-collect`
+    re-analysis file, a webapp upload, a foreign-tool export -- puts either straight into a rendered cell:
+
+      * an int outside the float64 range (e.g. ``10**400``) raises ``OverflowError: int too large to
+        convert to float`` inside ``wb.save()``, i.e. AFTER every sheet is built, aborting the ONE
+        deliverable produced unconditionally (there is no ``--no-excel``);
+      * ``inf`` / ``-inf`` / ``nan`` are WORSE than a crash: openpyxl saves them without complaint and
+        Excel reads the cell back as EMPTY. The number silently disappears from the delivered workbook
+        with no disclosure -- 'not observed' masquerading as 'nothing to report', the exact false-health
+        class the coverage-honesty doctrine forbids.
+
+    Both degrade to the same typed placeholder the container case uses, so the value is VISIBLY
+    unrenderable rather than absent. ``bool`` is checked before ``int`` (it is a subclass) and every
+    in-range int/float still passes through byte-identically, so well-formed output is unchanged."""
     if isinstance(value, str):
         return _XML_ILLEGAL_RE.sub("", value)
     if isinstance(value, (dict, list, tuple, set)):
         return "[unrenderable %s]" % type(value).__name__
+    if isinstance(value, bool):                       # bool is an int subclass -- renders natively
+        return value
+    if isinstance(value, float) and not math.isfinite(value):
+        return "[unrenderable %s]" % value            # -> '[unrenderable inf]' / '[unrenderable nan]'
+    if isinstance(value, int) and not -_FLOAT_MAX <= value <= _FLOAT_MAX:
+        return "[unrenderable number: %d digits]" % len(str(abs(value)))
     return value
 
 
@@ -202,3 +286,55 @@ def _split_macs(s: str) -> List[str]:
     # NEW-V3.23.21 (PHASE 2.7 step 11): pure MAC-list splitter, shared by the VLAN
     # census (excel) + compute_move_groups / build_network_model (analyze).
     return [t for t in re.split(r"[,\s;]+", s or "") if t]
+
+
+#: Separators a client or site name is re-spelt with once it becomes an identifier.
+#:
+#: ASCII-only was a NAMED SUBSET of "any separator". Measured: denylist ``ACME BANK`` caught
+#: ``ACME-BANK`` and ``ACME_BANK`` but NOT ``ACME–BANK`` (U+2013 EN DASH) — and an en dash is what
+#: autocorrect produces, what Word paste carries, and what a wrapped terminal emits. NFKC
+#: normalisation does NOT fix this one: U+2013 has no compatibility decomposition, so it survives
+#: normalisation unchanged. It has to be in the separator class itself.
+#:
+#: Included, each because it has been seen standing between the two halves of a real client name:
+#: the Unicode dash/hyphen block (U+2010–U+2015, incl. non-breaking hyphen and en/em dash), MINUS
+#: SIGN, FULLWIDTH HYPHEN-MINUS, SOFT HYPHEN, the zero-width format characters (ZWSP/ZWNJ/ZWJ, WORD
+#: JOINER, ZWNBSP) which render as nothing at all, MIDDLE DOT, and FULLWIDTH LOW LINE. ``\s``
+#: already covers NBSP for str patterns, so it is not repeated here.
+FORBIDDEN_TOKEN_SEPARATORS = (
+    r"[\s._\-"
+    r"­"              # SOFT HYPHEN — invisible unless the line wraps
+    r"‐-―"       # HYPHEN, NON-BREAKING HYPHEN, FIGURE/EN/EM DASH, HORIZONTAL BAR
+    r"−－"        # MINUS SIGN, FULLWIDTH HYPHEN-MINUS
+    r"​-‍⁠﻿"   # ZWSP, ZWNJ, ZWJ, WORD JOINER, ZWNBSP — render as nothing
+    r"·＿"        # MIDDLE DOT, FULLWIDTH LOW LINE
+    r"]"
+)
+
+
+def forbidden_token_pattern(tok: str):
+    """Compile ONE forbidden identifier token into the pattern catching its spellings, or None.
+
+    The SINGLE owner of this matching rule (SSOT Law 1). It has two consumers on opposite sides of
+    the same gate, and they used to disagree: `research_lane.sanitize` REDACTS with it on the
+    producing side, and `cisco_toolkit.intel_feed.verify_feed` REFUSES with it on the consuming
+    side. Both previously did a literal match, so both were blind to the same two shapes — which
+    meant the consumer-side gate could not catch what the producer-side gate had missed, and a feed
+    signed ``sanitized: true`` with an EMPTY redaction list passed straight through.
+
+    * **Whitespace-padded token.** ``--forbidden "Acme, SiteA"`` — a space after the comma, the way
+      anyone types a list — splits to ``("Acme", " SiteA")``, and a literal match on ``" SiteA"``
+      demands a leading space, so ``SiteA-CORE-01`` never matches. ``Acme`` having worked makes the
+      run look correct. Tokens are stripped.
+    * **Multi-word token.** The operator knows the CLIENT's name ("Acme Bank"); what is written in
+      a note is the DEVICE's — ``ACME-BANK-CORE-01``, ``acme_bank_core``, ``acme-bank.example.com``,
+      ``AcmeBankCore01``. Word runs are joined by ``[\\s._-]*`` so the separator an identifier
+      happens to use, or no separator at all, cannot smuggle the name through.
+
+    Returns None for a token that is empty or all separators: an empty pattern matches at every
+    position and would otherwise replace the entire text with ``[redacted]``.
+    """
+    parts = [re.escape(p) for p in re.split(FORBIDDEN_TOKEN_SEPARATORS + "+", (tok or "").strip()) if p]
+    if not parts:
+        return None
+    return re.compile((FORBIDDEN_TOKEN_SEPARATORS + "*").join(parts), re.IGNORECASE)

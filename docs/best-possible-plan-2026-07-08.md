@@ -115,8 +115,8 @@ better **strategy**; keep its spine:
   uncollected device WITHOUT a fleet-total token - but that is structurally unlikely: the engine has no
   collected data for the 50, so it cannot emit per-device health for them (UNKNOWN by construction). Auditor:
   `scratchpad/audit_phantom_health.py` (throwaway analysis tool, not committed).
-- **Net:** section 2 #4 complete across BOTH text (5b) and binary (here). The [HISTORY-REDACTED]-fleet AUTOFILLED deliverable
-  set is phantom-health-clean. (The `[HISTORY-REDACTED]_*` DC files are a different engagement/fleet - out of scope; they
+- **Net:** section 2 #4 complete across BOTH text (5b) and binary (here). The Meridian reference fleet AUTOFILLED deliverable
+  set is phantom-health-clean. (The `Reference_*` DC files are a different engagement/fleet - out of scope; they
   carry their own QA. Both sets are gitignored generated outputs, present on disk but never committed.)
 
 ## 5d. Frontier #2 (Order 1) — the readiness-FREEZE mechanism built + shadow-validated 2026-07-08
@@ -127,7 +127,7 @@ better **strategy**; keep its spine:
   NAMES every uncollected device as a blind spot, and HASHES the prediction (sha256) so a committed cert
   cannot be retrofitted after the outcome is known. Reuses `precert._stamp` provenance — plan §3.2's "small
   precise extension" (+~115 lines, 7 tests, precert suite 25/25 green).
-- **Shadow-validated on the [HISTORY-REDACTED] snapshot:** verdict NOT READY (Group 1; 52 CAUTION, 0 READY of 53), coverage
+- **Shadow-validated on the Meridian reference snapshot:** verdict NOT READY (Group 1; 52 CAUTION, 0 READY of 53), coverage
   253/303 with all 50 uncollected named, `prediction_hash sha256:ea6f2048...`. Tagged `mode=shadow` — it
   validates the mechanism and is explicitly NOT a REAL calibration input (0 REAL unchanged; nothing fabricated;
   the shadow cert artifact is gitignored, not committed).

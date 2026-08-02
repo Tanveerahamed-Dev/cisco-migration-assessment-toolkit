@@ -40,6 +40,123 @@ _CONF_UNKNOWN = "Unknown"
 _SEV_ORDER = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
 
 
+def _dossier_coverage(d) -> tuple:
+    """(n_na, n_axes, thin) for one device-dossier row — how much of its risk band rests on evidence.
+
+    MIRROR of the canonical rule in cisco_toolkit/excel.py::dossier_coverage. It is duplicated rather
+    than imported because excel.py pulls in openpyxl + analyze + parse, and this module must stay a thin
+    presentation layer; the duplication is caught by EXECUTION, not by hope --
+    tests/test_runbook.py::test_dossier_coverage_mirrors_the_canonical_rule drives this function over
+    excel.DOSSIER_COVERAGE_CASES and fails the moment the two disagree.
+
+    Why it exists: compute_device_dossiers ABSTAINS on an axis it has no evidence for (state 'na') and an
+    abstention is weighted ZERO in the exposure score, so an asset whose EoL / software / control-plane /
+    log / CIS / hygiene / drift / QoS axes were ALL un-assessed scores risk_index 0 -> band 'Low' ->
+    "No stacked risk — routine migration handling." That is a collection gap rendered as a clean bill of
+    health. FAIL-CLOSED on a missing census: no census means no denominator, so coverage is itself NOT
+    ASSESSED (thin=True), never 'fine'."""
+    dd = d if isinstance(d, dict) else {}
+    ax = dd.get("exposures")
+    axes = [e for e in ax if isinstance(e, dict)] if isinstance(ax, list) else []
+    n_axes = len(axes)
+    n_na = sum(1 for e in axes if e.get("state") == "na")
+    if not n_axes:                                    # no axis census published -> fall back to the count
+        try:
+            n_na = max(0, int(dd.get("n_na") or 0))
+        except (TypeError, ValueError):
+            n_na = 0
+        return n_na, 0, True                          # unknown denominator -> NOT ASSESSED, never "fine"
+    return n_na, n_axes, n_na * 2 >= n_axes
+
+
+def _coverage_cell(d) -> str:
+    """The per-asset coverage cell: how many risk axes were NOT ASSESSED, and whether the band therefore
+    rests on absent evidence. Never renders an empty/blank cell — absence has to be legible."""
+    n_na, n_axes, thin = _dossier_coverage(d)
+    cell = (f"{n_na} of {n_axes} NOT ASSESSED" if n_axes
+            else f"axis census ABSENT — coverage NOT ASSESSED ({n_na} recorded not-assessed)")
+    return cell + (" — band computed on absent evidence" if thin else "")
+
+
+def _av_authority(mi) -> str:
+    """The authority qualifier that must travel with any broadcast/AV (on-air) multicast count.
+
+    review r9 F2. compute_multicast_intelligence classifies a group as on-air from the offline registry's
+    CURATED media semantics and publishes the basis alongside it (`summary.n_av_groups_authoritative`,
+    per-group `on_air_authoritative`). On the shipped pack that count is ZERO -- every multicast row is
+    curated -- so a headline reading "44 broadcast/AV group(s)" with no qualifier presents a curated
+    judgement in the same voice as an IANA-assigned fact, and that same flag is what escalates a
+    mac-alias finding from Medium to High. FAIL-CLOSED: a snapshot that carries no authority census at
+    all reads NOT ASSESSED, never 'authoritative'."""
+    s = _as_dict(_as_dict(mi).get("summary"))
+    if "n_av_groups_authoritative" not in s:
+        return (" — on-air classification authority NOT ASSESSED in this snapshot; treat the "
+                "broadcast/AV label as curated, not authoritative")
+    n_auth = _as_num(s.get("n_av_groups_authoritative"))
+    n_av = _as_num(s.get("n_av_groups"))
+    if n_auth <= 0:
+        return (" — NONE of them classified on-air by an authoritative source: the broadcast/AV label is "
+                "a CURATED offline-registry classification, not a measurement")
+    if n_auth > n_av:
+        # `n_av_groups_authoritative` and `n_av_groups` are published independently, so "N of M" is
+        # only meaningful when N <= M. Unchecked, an incoherent snapshot renders "7 of 3", and a
+        # reader has no way to tell that from a real ratio. Disclose the incoherence instead.
+        return (f" — census INCOHERENT: {n_auth:g} classification(s) reported as authoritative out of "
+                f"{n_av:g} on-air group(s); the authority split cannot be stated for this snapshot")
+    return (f" — {n_auth:g} of {n_av:g} on-air classification(s) rest on an authoritative source; the "
+            "remainder are CURATED, not measurements")
+
+
+def _integrity_failures(snap: dict) -> list:
+    s = snap if isinstance(snap, dict) else {}
+    ai = _as_dict(s.get("assessment_integrity"))
+    failed = ai.get("failed_phases")
+    failures = [str(x) for x in failed] if isinstance(failed, list) else ([str(failed)] if failed else [])
+    for key, value in ai.items():
+        if key not in ("failed_phases", "n_violations") and \
+                str(value).strip().lower() in ("failed", "compute_failed", "unavailable", "error"):
+            failures.append(f"{key}: {value}")
+    for key, value in s.items():
+        if isinstance(value, dict) and value.get("_unavailable"):
+            failures.append(f"{key}: unavailable")
+    return list(dict.fromkeys(failures))
+
+
+def _phase_failed(failures, *tokens) -> bool:
+    def _key(value) -> str:
+        return "".join(ch for ch in str(value).lower() if ch.isalnum())
+    return any(any(_key(token) in _key(item) for token in tokens) for item in failures)
+
+
+def _disclose(doc, total, shown, noun, where="", note=""):
+    """Emit the family's display-cap disclosure when a table/block list renders only the first
+    `shown` of `total` records — the house rule every writer follows (`excel._xls_cell_value`
+    states it; mop.py §x.2 and html.py's Findings-Delta column were fixed to it).
+
+    An UNDISCLOSED cap is the silent-truncation bug class: the reader takes the rendered rows for
+    the whole population, and this document states the FULL totals in §1's metric register and in
+    each section's own lead-in sentence — so a capped list makes the runbook contradict itself
+    (§6.2 rendered 8 blocks under a §1 headline of 407 Critical/High). Shown + hidden always
+    reconcile to the real total. Emits nothing when nothing was dropped; returns the hidden count."""
+    try:
+        hidden = max(0, int(total) - int(shown))
+    except (TypeError, ValueError):        # fail-soft like every other read here
+        return 0
+    if hidden:
+        doc.add_paragraph(f"…and {hidden} further {noun} not shown ({shown} of {total} rendered)"
+                          + (f" — see the workbook's '{where}' sheet." if where else ".")
+                          + (f" {note}" if note else ""))
+    return hidden
+
+
+def _join_cap(items, n, sep="; "):
+    """Inline join bounded to `n` items WITH the family's trailing '(+N more)' marker — the
+    subnet-reachability pattern in excel.py and html.py's device-list column. A bare `[:n]` join
+    reads as the complete set."""
+    vals = [str(x) for x in items]
+    return sep.join(vals[:n]) + (f" (+{len(vals) - n} more)" if len(vals) > n else "")
+
+
 def _endpoint_census(snap: dict):
     """Derive endpoint counts the SAME way the workbook does (access ports carrying a host MAC) so the
     runbook reconciles to it. Returns (total, per_vlan Counter, per_switch Counter). Trunk MAC-table
@@ -110,6 +227,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
     snap_dict = _clean(snap_dict if isinstance(snap_dict, dict) else {})
     if not isinstance(snap_dict.get("executive_brief"), dict):    # a truthy non-dict slips '(... or {}).get' (L2)
         snap_dict["executive_brief"] = {}
+    integrity_failures = _integrity_failures(snap_dict)
     label = _xls_sanitize(label) if isinstance(label, str) else (str(label) if label is not None else "")
 
     from cisco_toolkit.brand_tokens import DOC_NAVY_RGB
@@ -215,32 +333,65 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
     add_excellence_front(doc, snap_dict)
     # Deliverable Excellence (DE-01): consolidated Inputs-Required register (Law 9).
     add_inputs_required(doc, snap_dict)
+    if integrity_failures:
+        p = doc.add_paragraph()
+        r0 = p.add_run("ASSESSMENT INTEGRITY - UNVERIFIED: ")
+        r0.bold = True
+        r0.font.color.rgb = RGBColor(0xB0, 0x2A, 0x1E)
+        p.add_run(
+            f"{len(integrity_failures)} phase/sentinel failure(s) were recorded ("
+            + "; ".join(integrity_failures)
+            + "). Empty fallback sections are not clean results. Any affected zero count or empty "
+              "register below is an abstention until the failed phase is repaired and the runbook regenerated.")
     # ===== 1. Assessment Header & Executive Summary =====
     doc.add_heading("1. Assessment Header & Executive Summary", level=1)
     _scale = _as_dict(_as_dict(snap_dict.get("executive_brief")).get("scale"))
     _ep_canon = _scale.get("n_endpoints"); _vl_canon = _scale.get("n_vlans")
+    # Coverage-honesty on the headline register: each of these three rows is a COUNT over a snapshot
+    # section, and an absent section counts 0 — which renders as a measured all-clear ("0 bridge
+    # links", "0 / 0 cross-layer findings") on the runbook's own front page. Absence of the analysis
+    # is not absence of the exposure, so an unpublished axis says so (same doctrine as §6.1's
+    # single-gateway abstention and §6.10's syslog "no evidence either way").
+    _NOBS = "[NOT OBSERVED]"
+    def _link_v(value):
+        return value if link_centrality else _NOBS
+
     table(["Metric", "Value"], [
         ("Devices in scope", n_dev),
-        ("Inter-switch links (CDP/LLDP-derived; Inferred-high)", n_links),
-        ("Bridge links (single points of fabric partition)", len(bridges)),
+        ("Inter-switch links (CDP/LLDP-derived; Inferred-high)", _link_v(n_links)),
+        ("Bridge links (single points of fabric partition)", _link_v(len(bridges))),
         ("Evidenced endpoints (canonical assessment scale)", _ep_canon if isinstance(_ep_canon, int) else ep_total),
         ("Endpoints — access-port host MACs at snapshot (superset of canonical)", ep_total),
         ("Production VLANs (canonical assessment scale)", _vl_canon if isinstance(_vl_canon, int) else len(ep_per_vlan)),
         ("VLANs carrying endpoints (subset)", len(ep_per_vlan)),
         ("Gateways (SVIs) observed", len(gw)),
-        ("Migration move groups", len(move_groups)),
+        ("Migration move groups",
+         _NOBS if _phase_failed(integrity_failures, "move groups") else len(move_groups)),
         ("Health bands (Critical/Poor/Fair/Good/Excellent)",
-         f"{bands.get('Critical',0)} / {bands.get('Poor',0)} / {bands.get('Fair',0)} / "
-         f"{bands.get('Good',0)} / {bands.get('Excellent',0)}"),
-        ("Cross-layer findings (Critical / High)", f"{len(crit_cl)} / {len(high_cl)}"),
-        ("Punch-list items", len(punchlist)),
+         (_NOBS if _phase_failed(integrity_failures, "health score") else
+          f"{bands.get('Critical',0)} / {bands.get('Poor',0)} / {bands.get('Fair',0)} / "
+          f"{bands.get('Good',0)} / {bands.get('Excellent',0)}")),
+        ("Cross-layer findings (Critical / High)",
+         f"{len(crit_cl)} / {len(high_cl)}" if cross_layer else _NOBS),
+        ("Punch-list items",
+         _NOBS if _phase_failed(integrity_failures, "punch-list", "punchlist") else len(punchlist)),
     ], widths=[4.8, 2.0])
+    # …and the same discipline on the gating SENTENCE, which is the one line a war-room reader takes
+    # away. With the analyses absent it used to read "0 Critical cross-layer single-point(s) of
+    # failure and 0 bridge link(s) must be resolved ... 0 of 0 move group(s) are NOT READY" — a
+    # complete all-clear manufactured entirely from missing sections.
+    _cl_txt = (f"{len(crit_cl)} Critical cross-layer single-point(s) of failure" if cross_layer else
+               "Critical cross-layer single-point(s) of failure [NOT OBSERVED — no cross-layer "
+               "analysis in this snapshot; absence of the analysis is not absence of the exposure]")
+    _br_txt = (f"{len(bridges)} bridge link(s)" if link_centrality else
+               "bridge link(s) [NOT OBSERVED — no link-centrality analysis in this snapshot]")
+    _rd_txt = (f"{sum(1 for r in mr if r.get('readiness') == 'NOT READY')} of {len(mr)} move group(s) "
+               "are NOT READY on the pre-migration checklist." if mr else
+               "Migration readiness was NOT computed for this snapshot, so no move group can be "
+               "called ready — treat every group as no-go until the pre-migration checklist is run.")
     p = doc.add_paragraph()
     _label_run(p, "Top gating decisions:",
-               f"{len(crit_cl)} Critical cross-layer single-point(s) of failure and {len(bridges)} "
-               f"bridge link(s) must be resolved or risk-accepted before cutover. "
-               f"{sum(1 for r in mr if r.get('readiness') == 'NOT READY')} of {len(mr)} move group(s) "
-               f"are NOT READY on the pre-migration checklist.")
+               f"{_cl_txt} and {_br_txt} must be resolved or risk-accepted before cutover. {_rd_txt}")
 
     # cross-axis migration brief (NEW-V3.23.120)
     eb = snap_dict.get("executive_brief") or {}
@@ -248,7 +399,8 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         _label_run(doc.add_paragraph(), "Migration brief:", eb.get("posture_statement", ""))
         tg = _as_list(eb.get("top_gating"))
         if tg:
-            _label_run(doc.add_paragraph(), "Address first:", "; ".join(tg[:6]))
+            # '(+N more)': a bare [:6] join presented a 9-item gating list as the whole of "address first".
+            _label_run(doc.add_paragraph(), "Address first:", _join_cap(tg, 6))
         table(["Axis", "Severity", "Headline"],
               [[a.get("axis"), a.get("severity"), a.get("headline")] for a in _R(eb.get("axes"))],
               widths=[1.8, 0.9, 4.0])
@@ -320,6 +472,9 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
               [[g.get("group") or "(group)", g.get("switches"), g.get("dual_homed_pct"),
                 g.get("hard_cutover"), g.get("recommended_scenario"), g.get("rationale")]
                for g in pg[:12]], widths=[1.6, 0.9, 1.1, 1.1, 1.4, 3.4])
+        _disclose(doc, len(pg), 12, "move-group scenario row(s)", "Migration Scenarios",
+                  "Every group needs a chosen scenario before its wave is scheduled — an unlisted "
+                  "group is unplanned, not scenario-free.")
 
     # ===== 4. Platform Intelligence =====
     doc.add_heading("4. Platform Intelligence", level=1)
@@ -329,6 +484,8 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
     table(["Model / PID", "Count"],
           sorted(([m or "unknown", c] for m, c in model_mix.items()), key=lambda r: -r[1])[:15],
           widths=[4.5, 1.5])
+    _disclose(doc, len(model_mix), 15, "model/PID row(s)", "Switch Inventory",
+              "The hidden models are the long tail the hardware refresh and spares plan still has to cover.")
     # EoL / environmental flags surfaced from capacity + device fields
     env_flags = [(d.get("hostname", h), d.get("ps_status", ""), d.get("fan_status", ""),
                   d.get("temperature_status", ""))
@@ -359,9 +516,16 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
     doc.add_heading("5. Topology & Current State", level=1)
     p = doc.add_paragraph()
     _label_run(p, "Confidence:",
-               f"{_CONF_HIGH}. {n_links} inter-switch links reconstructed from CDP/LLDP. "
-               f"{len(bridges)} are bridges (their loss partitions the fabric). Off-scan links are "
-               f"{_CONF_UNKNOWN}.")
+               (f"{_CONF_HIGH}. {n_links} inter-switch links reconstructed from CDP/LLDP. "
+                f"{len(bridges)} are bridges (their loss partitions the fabric). Off-scan links are "
+                f"{_CONF_UNKNOWN}."
+                if link_centrality else
+                # an Inferred-high confidence label asserted over ZERO reconstructed links claimed a
+                # structural conclusion the snapshot never carried
+                f"{_CONF_UNKNOWN}. No link-centrality analysis is present in this snapshot, so the "
+                "inter-switch link and bridge (fabric-partition) counts are [NOT OBSERVED] — not "
+                "zero. Re-run the assessment with the current engine before treating this fabric as "
+                "having no chokepoints."))
     if bridges:
         doc.add_paragraph("Chokepoint links (ranked by structural blast radius; live fault state is "
                           "Unknown until validated):")
@@ -370,6 +534,9 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                 b.get("betweenness"), b.get("pairs_cut")] for b in
                sorted(bridges, key=lambda r: -_as_num(r.get("pairs_cut")))[:12]],
               widths=[0.6, 4.4, 1.2, 1.6])
+        _disclose(doc, len(bridges), 12, "bridge link(s)", "Link Centrality",
+                  f"§1's metric register and the confidence line above both count all {len(bridges)} — "
+                  "each is a single point of fabric partition, so the unlisted ones gate cutover too.")
 
     # ===== 6. L1-L4 Findings (the gateway premise + evidence finding blocks) =====
     doc.add_heading("6. L1–L4 Findings", level=1)
@@ -384,16 +551,50 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
     if gw_rows:
         table(["VLAN", "SVI IP (Confirmed)", "Owner (Confirmed)", "FHRP (Inferred-high)", "L3 risk"],
               gw_rows, widths=[0.8, 1.8, 2.6, 1.5, 1.5])
+        _disclose(doc, len(gw), 25, "gateway SVI record(s)", "SVI Gateway",
+                  "The register is sorted risk-first, so the flagged VLANs are the ones rendered; "
+                  "the FHRP counts below are computed over ALL records, not the 25 listed.")
     # No real FHRP. The parser writes the literal "none" (truthy) when no HSRP/VRRP/GLBP exists, so a
     # bare `not fhrp.strip()` counted ZERO single-gateway gateways for an all-"none" fleet — the inverse
     # of the truth. Mirror the engine's canonical `(fhrp or "none") == "none"` no-FHRP gate.
     n_no_fhrp = sum(1 for g in gw if (g.get("fhrp", "none") or "none") == "none")
     doc.add_paragraph(
-        f"{n_no_fhrp} of {len(gw)} gateways have no FHRP peer in scope — single-gateway exposure. "
+        f"{n_no_fhrp} of {len(gw)} gateways have no FHRP peer in scope (counted per gateway SVI "
+        "record — a VLAN served by two switches contributes two rows). "
         "Any VLAN whose gateway is off-scan is gated as Unknown in §12.")
+    # …and that total is NOT the single-gateway count. The producer (excel.write_l3_forwarding_sheet)
+    # emits TWO distinct risks: 'single-gateway' when the VLAN has <=1 gateway AT ALL, and 'no-FHRP'
+    # when it has two or more gateways but no FHRP protocol. Labelling the merged no-FHRP total
+    # "single-gateway exposure" reported the highest-severity availability exposure many times larger
+    # than archreview RES-2 and the design document's §2.4 — both of which read the risk field — while
+    # this runbook claims its numbers reconcile to the workbook. Read the same owner they read, and
+    # ABSTAIN when the register carries no risk classification (0 must never render as clean).
+    risked = [g for g in gw if str(g.get("risk") or "").strip()]
+    if risked:
+        n_single_gw = sum(1 for g in risked if "single-gateway" in str(g.get("risk")))
+        doc.add_paragraph(
+            f"Of those, {n_single_gw} carry the SINGLE-GATEWAY risk — the VLAN has no second gateway "
+            "in scope at all, the highest-severity availability exposure a VLAN can hold (the same "
+            "count the Architecture Review's RES-2 and the design document's §2.4 report from this "
+            "snapshot). The remainder have a redundant gateway but no FHRP protocol configured — a "
+            "different, lesser condition; do not merge the two.")
+    elif gw:
+        doc.add_paragraph(
+            "This snapshot's gateway register carries no L3-risk classification, so the "
+            "single-gateway subset of the gateways above cannot be counted from this evidence — "
+            "no-FHRP and single-gateway are distinct conditions and only the risk field separates "
+            "them. Re-run the assessment with the current engine before treating the count above as "
+            "a single-gateway exposure figure.")
 
     doc.add_heading("6.2 Material cross-layer findings", level=2)
-    for f in sorted(cross_layer, key=lambda f: _SEV_ORDER.get(f.get("severity"), 9))[:8]:
+    # The cap stays (8 evidence-disciplined blocks is a readable section) but it must DISCLOSE, because
+    # §1's metric register states the FULL Critical/High cross-layer population two pages earlier. On the
+    # 303-device production snapshot §1 reads "3 / 404" while this section rendered 3 Critical + 5 High and
+    # dropped 399 High findings with no marker at all — a headline the reader cannot reconcile with the
+    # list beneath it, and the reader's only cue that anything is missing. Rank, render, then reconcile.
+    _CL_CAP = 8
+    _cl_ranked = sorted(cross_layer, key=lambda f: _SEV_ORDER.get(f.get("severity"), 9))
+    for f in _cl_ranked[:_CL_CAP]:
         hosts = ", ".join(str(_h) for _h in _as_list(f.get("hosts"))) or "—"
         finding_block(
             f.get("title", f.get("id", "Cross-layer finding")),
@@ -410,6 +611,15 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
             next_validation="Confirm the second path/gateway on the live devices before the wave that "
                             "moves this element.",
             remediation=f.get("recommendation", ""))
+    if len(_cl_ranked) > _CL_CAP:
+        _shown_ch = sum(1 for f in _cl_ranked[:_CL_CAP] if f.get("severity") in ("Critical", "High"))
+        doc.add_paragraph(
+            f"…and {len(_cl_ranked) - _CL_CAP} further cross-layer finding(s) are NOT rendered as blocks "
+            f"above: the {_CL_CAP} highest-severity of {len(_cl_ranked)} are shown, covering {_shown_ch} of "
+            f"the {len(crit_cl) + len(high_cl)} Critical/High finding(s) that §1's metric register counts "
+            f"({len(crit_cl)} Critical / {len(high_cl)} High). The unshown findings are not lower-risk by "
+            "omission — read the workbook's 'Cross-Layer Analysis' sheet for the complete list before "
+            "treating this section as the full cross-layer exposure.")
 
     drift = _R(snap_dict.get("operational_drift"))
     if drift:
@@ -457,6 +667,8 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
               [[r.get("host"), r.get("destination_count"), r.get("reachable_count"),
                 ", ".join(f"{k}:{v}" for k, v in _as_dict(r.get("reachable_sources")).items()),
                 r.get("default_next_hop", "")] for r in top], widths=[3.0, 1.1, 1.1, 2.4, 1.4])
+        _disclose(doc, n_l3, 12, "L3 device(s)", "Subnet Reachability",
+                  f"The sentence above counts all {n_l3}; the table ranks by subnets terminated + reachable.")
         mg = _R(si.get("move_groups"))
         if mg:
             doc.add_paragraph("Per move-group source↔destination (local subnets move with the group; "
@@ -464,6 +676,9 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
             table(["Move group", "Switches", "Local subnets", "Remote subnets to preserve"],
                   [[m.get("group") or "(group)", m.get("switches"), m.get("local_count"),
                     m.get("remote_count")] for m in mg[:12]], widths=[2.0, 1.0, 1.4, 2.2])
+            _disclose(doc, len(mg), 12, "move-group subnet row(s)", "Subnet Reachability",
+                      "A group missing here still has remote subnets that must stay reachable across "
+                      "its cutover.")
 
     fpaths = _R(_as_dict(flow_paths).get("flows"))
     if fpaths:
@@ -491,11 +706,29 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
             f"[{', '.join(by_proto)}], {n_high} High. Each observed state is a fact (read from the "
             f"device); the likely cause is Inferred per Cisco doctrine ({_CONF_UNKNOWN} until validated "
             "live). Fix these before the affected switches are cut over.")
+        # Budget the two parts SEPARATELY — the identical fix §6.3's _why_next already carries. The old
+        # single (likely_cause + remediation)[:200] slice cut from the END, so it ate the REMEDIATION,
+        # the only actionable half of the cell, and cut mid-word with no marker: on the 303-device
+        # production snapshot 10 of 84 rows exceeded 200 chars and lost 44–79 characters, e.g. the cell
+        # ended "…check the" having dropped " peer port-channel and any `lacp min-links`." shorten()
+        # cuts at a word boundary and shows an ellipsis, and per-part budgets keep both halves present.
+        def _cause_fix(r: dict) -> str:
+            why = str(r.get("likely_cause", "") or "")
+            fix = str(r.get("remediation", "") or "")
+            if why:
+                why = textwrap.shorten(why, width=200, placeholder=" …")
+            if fix:
+                fix = textwrap.shorten(fix, width=200, placeholder=" …")
+            return (why + ("  →  " + fix if fix else "")).strip()
+
+        _pi_ranked = sorted(pintel, key=lambda r: _SEV_ORDER.get(r.get("severity"), 9))
         table(["Severity", "Switch", "Protocol", "State", "Likely cause (Inferred) → Remediation"],
               [[r.get("severity", ""), r.get("switch", ""), r.get("protocol", ""), r.get("state", ""),
-                (r.get("likely_cause", "") + "  →  " + r.get("remediation", "")).strip()[:200]]
-               for r in sorted(pintel, key=lambda r: _SEV_ORDER.get(r.get("severity"), 9))[:18]],
+                _cause_fix(r)] for r in _pi_ranked[:18]],
               widths=[0.9, 2.0, 1.1, 0.7, 4.3])
+        _disclose(doc, len(pintel), 18, "abnormal control-plane state(s)", "Protocol Intelligence",
+                  f"The paragraph above counts all {len(pintel)}; each one is to be fixed before its "
+                  "switch is cut over, including the unlisted ones.")
 
     sm = _as_dict(snap_dict.get("service_map"))
     svcs = _R(sm.get("services"))
@@ -512,9 +745,13 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                   [[s.get("port"), s.get("proto"), s.get("service"), s.get("category"),
                     s.get("refs"), s.get("host_count")] for s in svcs[:15]],
                   widths=[0.8, 0.8, 1.7, 1.4, 1.0, 1.0])
+        # media-fabric intelligence (NEW-V3.23.115) — read up here because the broadcast/AV headline
+        # below needs its authority census (see _av_authority).
+        mi = _as_dict(snap_dict.get("multicast_intelligence"))
         groups = _R(mc.get("classified_groups"))
         bcast = [g for g in groups if g.get("broadcast")]
-        gnote = (f" {len(groups)} multicast group(s) classified ({len(bcast)} broadcast/AV)." if groups
+        gnote = (f" {len(groups)} multicast group(s) classified ({len(bcast)} broadcast/AV"
+                 f"{_av_authority(mi)})." if groups
                  else f" Per-group (S,G)/IGMP classification {_CONF_UNKNOWN} until re-collection.")
         doc.add_paragraph(
             f"Multicast: {mc.get('active_interfaces', 0)} interface(s) across "
@@ -545,15 +782,28 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                               f"({len(queriers)} querier records; {_CONF_CONFIRMED}); VLANs without a querier "
                               f"risk multicast flooding/pruning.")
         # media-fabric intelligence (NEW-V3.23.115): MAC-aliasing / querier coverage / PTP tree
-        mi = _as_dict(snap_dict.get("multicast_intelligence"))
         aliases = _R(mi.get("mac_aliases"))
         if aliases:
+            # review r9 F2: the on-air / Broadcast-AV flag is what raises a mac-alias finding from Medium
+            # to High, and it is a CURATED classification from the offline registry, not a measurement.
+            # Render the flag with its authority, never the flag alone.
+            def _alias_line(a: dict) -> str:
+                line = (f"{a.get('mac')} ← "
+                        f"{', '.join(str(_g) for _g in _as_list(a.get('groups')))}")
+                if a.get("has_av"):
+                    line += (" [on-air/Broadcast-AV — "
+                             + ("authoritative registry semantics" if a.get("has_av_authoritative")
+                                else "CURATED classification, NOT an authoritative source")
+                             + "; this flag is what raises the finding to High]")
+                return line
+
             doc.add_paragraph(
                 f"Multicast MAC-address aliasing ({_CONF_CONFIRMED}, RFC 4541): {len(aliases)} case(s) where "
                 "groups collapse to one L2 MAC (IPv4 multicast is 32:1 into Ethernet MACs) so a MAC-level switch "
-                "forwards them together — " + "; ".join(f"{a.get('mac')} ← {', '.join(str(_g) for _g in _as_list(a.get('groups')))}"
-                                                        for a in aliases[:4])
-                + ". Re-address one of each overlapping pair (or use IGMPv3 SSM end-to-end) before the cutover.")
+                "forwards them together — " + "; ".join(_alias_line(a) for a in aliases[:4])
+                + ". The overlap itself is arithmetic on the observed group addresses ("
+                + _CONF_CONFIRMED + "); the on-air classification is not. "
+                + "Re-address one of each overlapping pair (or use IGMPv3 SSM end-to-end) before the cutover.")
         gaps = _as_list(_as_dict(mi.get("querier")).get("gap_vlans"))
         if gaps:
             doc.add_paragraph(
@@ -636,6 +886,9 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                     e.get("migration_note") or ("media-adjacent" if e.get("media") else "")]
                    for e in edges[:15]],
                   widths=[1.9, 1.9, 0.7, 1.4, 2.6])
+            _disclose(doc, len(edges), 15, "dependency edge(s)", "Application Intelligence",
+                      f"The paragraph above counts all {len(edges)}; an unlisted coupling still means "
+                      "those two domains cannot be cut over in isolation.")
         # 6.7.2 recommended cutover order (NEW-V3.23.114)
         cutover = _R(appi.get("cutover_order"))
         if cutover:
@@ -708,12 +961,15 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                 f"{ssum.get('crit_0_2', 0)} critical (severity 0–2), {ssum.get('err_3', 0)} error "
                 f"(severity 3), {ssum.get('n_detections', 0)} operational detection(s). The log buffer "
                 "is a bounded recent window, so counts are floors, not totals.")
+            _sy_dets = _R(si.get("detections"))
             srows = [[d.get("host"), d.get("label"), d.get("severity"), d.get("count", 0),
                       d.get("recommendation")]
-                     for d in _R(si.get("detections"))[:20]]
+                     for d in _sy_dets[:20]]
             if srows:
                 table(["Device", "Finding", "Severity", "Count", "Recommendation"],
                       srows, widths=[1.4, 1.5, 0.8, 0.6, 3.7])
+                _disclose(doc, len(_sy_dets), 20, "operational detection(s)", "Syslog Intelligence",
+                          "The paragraph above states the full detection count from this same axis.")
             else:
                 doc.add_paragraph("No operational detections in the collected logs.")
             if ssum.get("n_not_collected"):
@@ -740,11 +996,14 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                 f"{qsum.get('n_voice_ports', 0)} voice-VLAN port(s); "
                 f"{qsum.get('n_findings', 0)} finding(s). This is the configured posture — live "
                 "queue counters are out of scope for an offline assessment.")
+            _qa_find = _R(qa.get("findings"))
             qrows = [[f.get("host"), f.get("label"), f.get("severity"), f.get("recommendation")]
-                     for f in _R(qa.get("findings"))[:15]]
+                     for f in _qa_find[:15]]
             if qrows:
                 table(["Device", "Finding", "Severity", "Recommendation"],
                       qrows, widths=[1.3, 2.0, 0.8, 3.9])
+                _disclose(doc, len(_qa_find), 15, "QoS finding(s)", "QoS Audit",
+                          "The paragraph above states the full finding count from this same axis.")
             else:
                 doc.add_paragraph("No QoS findings on the assessable devices.")
             if qsum.get("n_not_assessable"):
@@ -764,14 +1023,17 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
             "cautious software-train lifecycle classification. This is screening, NOT a "
             "vulnerability scan — validate every running release with the Cisco PSIRT Software "
             "Checker before drawing release-level conclusions.")
+        _sr_find = _R(sr.get("findings"))
         rrows = []
-        for f in _R(sr.get("findings"))[:15]:
+        for f in _sr_find[:15]:
             adv = "; ".join(f"{a.get('cve')}" for a in _as_list(f.get("advisories"))) or "—"
             rrows.append([f.get("host"), f.get("surface"), f.get("severity"), adv,
                           f.get("recommendation")])
         if rrows:
             table(["Device", "Exposed surface", "Severity", "Advisory", "Recommendation"],
                   rrows, widths=[1.1, 1.7, 0.7, 1.1, 3.4])
+            _disclose(doc, len(_sr_find), 15, "exposed advisory surface(s)", "Software Risk",
+                      "An unlisted surface is an unscreened one, not a closed one.")
         else:
             doc.add_paragraph("No exposed advisory surfaces on the config-assessable devices."
                               if rsum.get("n_config_assessable") else
@@ -779,15 +1041,19 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         tb = _as_dict(rsum.get("train_bands"))
         worst = [b for b in ("Replace/Upgrade", "Verify EoL") if tb.get(b)]
         if worst:
+            _worst_dev = [d for d in _R(sr.get("per_device"))
+                          if d.get("train_band") in ("Replace/Upgrade", "Verify EoL")]
             wrows = [[d.get("host"), d.get("platform"), d.get("sw_version"), d.get("train"),
                       d.get("train_band")]
-                     for d in _R(sr.get("per_device"))
-                     if d.get("train_band") in ("Replace/Upgrade", "Verify EoL")][:12]
+                     for d in _worst_dev[:12]]
             doc.add_paragraph(
                 "Software trains needing lifecycle attention (band = curated train-level "
                 "knowledge; exact dates live in Cisco's published EoL notices):")
             table(["Device", "Platform", "Version", "Train", "Band"],
                   wrows, widths=[1.4, 1.0, 1.6, 2.0, 2.0])
+            _disclose(doc, len(_worst_dev), 12, "device(s) on a Replace/Upgrade or Verify-EoL train",
+                      "Software Risk",
+                      "The upgrade programme is sized by the full count, not by the rows listed here.")
         if rsum.get("n_config_not_assessable"):
             doc.add_paragraph(
                 f"{rsum.get('n_config_not_assessable', 0)} device(s) had no full running-config "
@@ -864,19 +1130,28 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         table(["Class", "Endpoints"], [[k, v] for k, v in cls_c.most_common()], widths=[3.0, 1.5])
         doc.add_paragraph("Top vendors:")
         table(["Vendor", "Endpoints"], [[k, v] for k, v in ven_c.most_common(12)], widths=[4.5, 1.5])
+        # Unlike §7's two "Top …" tables — whose populations ARE stated in the sentence above them
+        # ("across N VLAN(s) and M switch(es)"), so a reader can reconcile a 12-row ranking — the
+        # vendor spread is stated NOWHERE else in the document: 12 of 105 vendors on the production
+        # snapshot, with no figure the reader could reconcile against.
+        _disclose(doc, len(ven_c), 12, "vendor(s)", "Endpoint Intelligence",
+                  "Endpoint-class planning is sized by the full vendor spread, not the top twelve.")
 
     # ===== 8. Shared Infrastructure & Consolidation =====
     doc.add_heading("8. Shared Infrastructure & Consolidation", level=1)
     cap = _R(snap_dict.get("capacity"))
     # HON-runbook-drop-1: exclude devices whose active-port count was never observed (port_util can read 0.0
     # from absent evidence) so an unmeasured switch can't top the "most spare / consolidate first" list.
-    low_util = sorted([c for c in cap if isinstance(c.get("port_util"), (int, float))
-                       and str(c.get("active_ports", "")).strip().isdigit()],
-                      key=lambda c: c.get("port_util") or 0)[:10]
+    _cap_measured = [c for c in cap if isinstance(c.get("port_util"), (int, float))
+                     and str(c.get("active_ports", "")).strip().isdigit()]
+    low_util = sorted(_cap_measured, key=lambda c: c.get("port_util") or 0)[:10]
     doc.add_paragraph("Spare port capacity (consolidation candidates — lowest port utilisation):")
     table(["Switch", "Model", "Active/Total", "Port util %"],
           [[c.get("hostname"), c.get("model"), f"{c.get('active_ports')}/{c.get('total_ports')}",
             c.get("port_util")] for c in low_util], widths=[3.2, 2.2, 1.2, 1.2])
+    _disclose(doc, len(_cap_measured), 10, "switch(es) with a measured port utilisation", "Capacity",
+              "The consolidation business case is sized from the full measured set, not from these "
+              "ten — more switches may sit below the threshold you choose.")
     dep = _as_dict(snap_dict.get("endpoint_dependencies"))
     clusters = _R(dep.get("clusters"))
     dual = _R(dep.get("dual_homed"))
@@ -894,6 +1169,9 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                   [[c.get("endpoint_class"), c.get("vendor"), c.get("count"), c.get("switches"),
                     c.get("vlans"), "YES" if c.get("spans_groups") else "no"] for c in clusters[:12]],
                   widths=[1.7, 2.4, 1.0, 0.9, 0.8, 1.4])
+            _disclose(doc, len(clusters), 12, "cohesive unit(s)", "Endpoint Dependencies",
+                      "An unlisted cluster can still span move-groups — check the sheet before "
+                      "sequencing a wave around this table.")
         if dual:
             split = sum(1 for d in dual if d.get("split_across_groups"))
             doc.add_paragraph(
@@ -906,6 +1184,9 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                   [[a.get("vlan"), a.get("dominant"), a.get("total"),
                     ", ".join(f"{k} ({v})" for k, v in _as_dict(a.get("classes")).items())]
                    for a in affinity[:12]], widths=[0.9, 2.0, 1.0, 3.5])
+            _disclose(doc, len(affinity), 12, "VLAN(s)", "Endpoint Dependencies",
+                      "The lead-in says 'each VLAN' — it is every VLAN in the sheet, not only the "
+                      "rows rendered here.")
 
     # ===== 9. Migration Dependency & Move Groups =====
     doc.add_heading("9. Migration Dependency & Move Groups", level=1)
@@ -916,15 +1197,33 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         "Move Groups and Migration Readiness sheets.")
     ws_by_group = {w.get("group"): w for w in ws}
     mg_rows = []
+    unsequenced = []
     for r in mr:
         g = r.get("group", "")
-        w = ws_by_group.get(g, {})
+        w = ws_by_group.get(g)
+        # `ws_by_group.get(g, {})` turned a group with NO sequencing record into "0 make-before-break /
+        # 0 hard cutover / 0 at-risk endpoints" — under an intro that says single-homed switches take
+        # an outage, that reads as "this group needs no maintenance window". The homing split is the
+        # ONE fact that decides whether a window and an outage are needed, so an absent record abstains.
+        if w is None:
+            unsequenced.append(g)
+            mg_rows.append([g, len(_as_list(r.get("switches"))), r.get("endpoints", 0),
+                            r.get("readiness", ""), "[NOT OBSERVED]", "[NOT OBSERVED]",
+                            "[NOT OBSERVED]"])
+            continue
         mg_rows.append([g, len(_as_list(r.get("switches"))), r.get("endpoints", 0),
                         r.get("readiness", ""), len(_as_list(w.get("make_before_break"))),
                         len(_as_list(w.get("hard_cutover"))), w.get("hard_cutover_endpoints", 0)])
     if mg_rows:
         table(["Group", "Switches", "Endpoints", "Readiness", "Make-before-break",
                "Hard cutover", "At-risk endpoints"], mg_rows, widths=[1.4, 1.0, 1.0, 1.3, 1.4, 1.1, 1.2])
+    if unsequenced:
+        doc.add_paragraph(
+            f"{len(unsequenced)} group(s) carry no wave-sequencing record ({', '.join(str(g) for g in unsequenced[:8])}"
+            + (" …" if len(unsequenced) > 8 else "") + "), so their dual-homed / single-homed split is "
+            f"{_CONF_UNKNOWN}: the make-before-break, hard-cutover and at-risk-endpoint columns above "
+            "are [NOT OBSERVED], NOT zero. Do not plan those groups as outage-free — re-run the "
+            "assessment (or confirm homing per switch) before scheduling their windows.")
 
     # ===== 10. Risk Register (behaviour-based blast radius) =====
     doc.add_heading("10. Risk Register", level=1)
@@ -940,6 +1239,9 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
     if fi_rows:
         table(["Switch (remove/migrate)", "Severity", "VLANs", "Stranded eps", "Hard",
                "Backup-covered", "FHRP-covered"], fi_rows, widths=[3.0, 1.0, 0.8, 1.1, 0.8, 1.2, 1.2])
+        _disclose(doc, len(failure_impact), 15, "switch blast-radius row(s)", "Failure Impact",
+                  "This is the Risk Register: the simulation covers every in-scope switch, and the "
+                  "rows below the cut still strand endpoints when they move.")
 
     # NEW-V3.23.174: §10.1 -- the per-asset compound-risk register (compute_device_dossiers).
     # The structural table above answers "who depends on this box"; the register answers the
@@ -950,19 +1252,57 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         doc.add_heading("10.1 Per-asset compound risk (the Device Risk Register)", level=2)
         dsum = _as_dict(dossiers.get("summary"))
         dbands = _as_dict(dsum.get("bands"))
+        # review r9 F1: the register rendered `risk_band` with NO coverage qualification, so an asset
+        # whose axes were never assessed ("Low", index 0, verdict "No stacked risk") read exactly like a
+        # genuinely clean one. Disclose the census fleet-wide here and per asset in the table below --
+        # the same disclosure the workbook's Device Risk Register sheet already carries.
+        _cov = [_dossier_coverage(d) for d in dd_rows]
+        _n_na_tot = sum(na for na, _ax, _t in _cov)
+        _n_ax_tot = sum(ax for _na, ax, _t in _cov)
+        _n_half = sum(1 for _na, ax, thin in _cov if thin and ax)
+        _n_nocensus = sum(1 for _na, ax, _t in _cov if not ax)
+        _gap = ""
+        if _n_ax_tot:
+            _gap += (f" COVERAGE: {_n_na_tot} of {_n_ax_tot} risk axes fleet-wide were NOT ASSESSED "
+                     "(per-asset column 'Coverage' below).")
+        if _n_nocensus:
+            _gap += (f" {_n_nocensus} asset(s) published NO risk-axis census at all — for those rows how much "
+                     "of the band rests on evidence is itself NOT ASSESSED, so they are treated as "
+                     "un-evidenced, never as clean.")
+        if _n_half or dbands.get("Unassessed", 0):
+            _gap += (f" {dbands.get('Unassessed', 0)} asset(s) banded Unassessed and {_n_half} asset(s) have "
+                     "HALF OR MORE of their risk axes NOT ASSESSED — an abstaining axis scores ZERO "
+                     "exposure, so those rows can band 'Low' on absent evidence. Read the Coverage column "
+                     "before treating a Low row as clean; not assessed is a collection gap, never a clean "
+                     "result.")
         doc.add_paragraph(
             f"{dbands.get('Severe', 0)} Severe and {dbands.get('Elevated', 0)} Elevated of "
             f"{dsum.get('n_devices', 0)} asset(s); {dsum.get('n_compound', 0)} compound pattern(s). "
             "Risk index = topology impact (1–10) × stacked exposure (0–10) per asset -- "
             "independent risks coinciding on one box outrank any single finding. An axis without "
-            "evidence is 'not assessed', never scored.")
-        table(["Asset", "Band", "Index", "Impact × exposure", "Compound", "Engineer's verdict"],
+            "evidence is 'not assessed', never scored." + _gap)
+        # The verdict is the engineer's summary judgement on the asset; a bare [:220] cut it mid-word
+        # with no marker (3 of 303 rows on the production snapshot). shorten() cuts at a word boundary
+        # and shows an ellipsis — the same treatment §6.3 and §6.5 give their prose cells.
+        def _verdict(d: dict) -> str:
+            v = str(d.get("verdict") or "")
+            return textwrap.shorten(v, width=220, placeholder=" …") if v else ""
+
+        table(["Asset", "Band", "Index", "Impact × exposure", "Compound", "Coverage", "Engineer's verdict"],
               [[d.get("host"), d.get("risk_band"), d.get("risk_index"),
                 f"{d.get('impact_score')} × {d.get('exposure_score')}",
                 ", ".join(c.get("code", "") for c in _as_list(d.get("compound"))) or "—",
-                (d.get("verdict") or "")[:220]]
+                _coverage_cell(d),
+                _verdict(d)]
                for d in dd_rows[:15]],
-              widths=[1.5, 0.9, 0.7, 1.2, 1.1, 3.7])
+              widths=[1.3, 0.8, 0.6, 1.1, 0.9, 1.8, 2.8])
+        # Same self-contradiction as §6.2: the paragraph above states the FULL banded population
+        # (production snapshot: 250 Severe of 303 assets) while the register renders 15 rows — and
+        # because per_device is ranked risk-first, all 15 are Severe, so the omission is invisible.
+        _disclose(doc, len(dd_rows), 15, "asset(s)", "Device Risk Register",
+                  f"The paragraph above counts the full population ({dbands.get('Severe', 0)} Severe / "
+                  f"{dbands.get('Elevated', 0)} Elevated of {dsum.get('n_devices', len(dd_rows))}); the "
+                  "register is ranked risk-first, so the unlisted assets are lower-index — not unassessed.")
         comp = [(d.get("host"), c) for d in dd_rows
                 for c in _as_list(d.get("compound")) if isinstance(c, dict)]
         if comp:
@@ -971,6 +1311,8 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                 doc.add_paragraph(
                     f"{c.get('code', '')} {c.get('title', '')} — {host}: {c.get('basis', '')}",
                     style="List Bullet")
+            _disclose(doc, len(comp), 10, "compound pattern(s)", "Device Risk Register",
+                      "The paragraph above states the full compound-pattern count for this fleet.")
 
     # ===== 11. Validation & Rollback Logic =====
     doc.add_heading("11. Validation & Rollback Logic", level=1)

@@ -31,7 +31,16 @@ def waves_from_snapshot(snap: dict | None) -> List[str]:
     rows = (snap or {}).get("migration_readiness")
     if not isinstance(rows, list):
         rows = []
-    return [str(r.get("group")) for r in rows if isinstance(r, dict) and r.get("group")]
+    waves: List[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("group"):
+            continue
+        wave = str(row["group"])
+        if wave not in seen:
+            seen.add(wave)
+            waves.append(wave)
+    return waves
 
 
 def _is_go(cell: Any) -> bool:

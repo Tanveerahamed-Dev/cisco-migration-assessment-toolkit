@@ -1,7 +1,23 @@
+## Active repository-review handoff
+
+Before continuing the repository-wide hardening review on
+`review/whole-repo-2026-07-28`, read
+**`docs/review-hardening-handoff-2026-07-30.md` in full**. It is the current,
+loss-preserving checkpoint: exact baseline, protected backups, completed lane
+evidence, unresolved cross-lane defects, prohibited destructive actions, and
+the ordered continuation plan. Status (2026-08-02): **repository-wide CI GREEN
+(its §13.9) and the HISTORY REWRITE DONE (its §13.11 — origin marker-free on
+every branch and tag; old shas translate via the preserved commit-map)**, but
+still **not a release**: the master-reference Codex-side deploy tail (§13.10),
+the PR #507 review/merge (successor to auto-closed #506), and the carried
+questions remain open. Use **`/resume-review`** to run the guarded
+continuation protocol; its first action is the read-only checkpoint integrity
+check at `.claude/scripts/verify-review-handoff.ps1`.
+
 ## graphify
 
 This project has a knowledge graph at graphify-out/ (~9.5k nodes as of 2026-07-27 — `graphify-out/GRAPH_REPORT.md` header is the authoritative count and this figure is only a cache of it, so re-read the header rather than trusting this line; after the 2026-07-03 de-pollution that also
-excluded untracked scratch + side-engagement dirs — `ds-bundle/`+`.ds-sync/` (design-sync output), `[HISTORY-REDACTED]_DC_Design/`,
+excluded untracked scratch + side-engagement dirs — `ds-bundle/`+`.ds-sync/` (design-sync output), `*_DC_Design/`,
 `compass_artifact_*`, `scratch_*` — which had diluted it ~27%; the earlier 2026-06-25 pass excluded the stale `_ref/`
 engine copy + the graph's own `graphify-out/` dumps — see `.graphifyignore`). The live graph is
 **AST-only / no-egress** (the offline `update` re-extract): it is reproducible on an air-gapped host and contains

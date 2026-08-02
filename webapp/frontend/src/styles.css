@@ -317,6 +317,116 @@ label.field span { display: block; font-size: 12px; color: var(--text-dim); marg
   }
 }
 
+.verification-badge {
+  align-items: center;
+  border: 1px solid color-mix(in srgb, var(--text-faint) 45%, transparent);
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 700;
+  gap: 5px;
+  letter-spacing: .02em;
+  line-height: 1;
+  padding: 5px 8px;
+  white-space: nowrap;
+}
+
+.verification-badge.verification-verified {
+  background: color-mix(in srgb, var(--ok) 13%, transparent);
+  border-color: color-mix(in srgb, var(--ok) 48%, transparent);
+  color: var(--ok);
+}
+
+.verification-badge.verification-partial {
+  background: color-mix(in srgb, var(--watch) 14%, transparent);
+  border-color: color-mix(in srgb, var(--watch) 55%, transparent);
+  color: var(--watch);
+}
+
+.verification-badge.verification-unverified {
+  background: color-mix(in srgb, var(--crit) 11%, transparent);
+  border-color: color-mix(in srgb, var(--crit) 48%, transparent);
+  color: var(--crit);
+}
+
+.verification-warning {
+  align-items: start;
+  background:
+    linear-gradient(125deg, color-mix(in srgb, var(--watch) 13%, var(--surface)), var(--surface));
+  border: 1px solid color-mix(in srgb, var(--watch) 52%, transparent);
+  border-left: 5px solid var(--watch);
+  border-radius: var(--radius);
+  display: grid;
+  gap: 12px 24px;
+  grid-template-columns: minmax(220px, .9fr) minmax(280px, 1.4fr);
+  margin-bottom: 16px;
+  padding: 16px 18px;
+}
+
+.verification-warning.verification-unverified {
+  background:
+    linear-gradient(125deg, color-mix(in srgb, var(--crit) 10%, var(--surface)), var(--surface));
+  border-color: color-mix(in srgb, var(--crit) 45%, transparent);
+  border-left-color: var(--crit);
+}
+
+.verification-warning strong {
+  color: var(--text);
+  font-size: 16px;
+}
+
+.verification-warning p,
+.verification-warning ul {
+  color: var(--text-dim);
+  font-size: 12.5px;
+  line-height: 1.55;
+  margin: 5px 0 0;
+}
+
+.verification-warning ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+@media (max-width: 760px) {
+  .verification-warning {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Token-mode sign-in gate. The bearer is exchanged for an HttpOnly same-site cookie, so the
+   shipped SPA's ordinary fetches, downloads, and explorer iframe all use the same browser session. */
+.auth-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--bg, #080b12) 88%, transparent);
+  backdrop-filter: blur(8px);
+}
+.auth-card {
+  width: min(440px, 100%);
+  display: grid;
+  gap: 14px;
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.auth-card h2,
+.auth-card p { margin: 0; }
+.auth-card input {
+  width: 100%;
+  box-sizing: border-box;
+}
+.auth-error {
+  color: var(--sev-Critical, #ff6b6b);
+  font-size: 0.9rem;
+}
+
 /* V3.23.181 — depth & glass refresh. Additive layer (token-driven) that frosts the chrome and adds
    layered elevation + accent glow, matching the explorer. No transitions added here, so the
    reduced-motion strip below still governs all motion. */

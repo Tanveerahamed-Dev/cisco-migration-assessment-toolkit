@@ -35,7 +35,7 @@ def test_build_network_model_skips_no_ip_svi_gateway():
 def test_wave_sequencing_uncollected_is_unknown_homing_not_single_homed():
     """[#7 HIGH] compute_wave_sequencing classified a switch single-homed (hard cutover) when its topology
     adjacency was empty -- but a NEVER-COLLECTED device has empty adjacency from absence of evidence, not from
-    being single-homed. 50 uncollected [HISTORY-REDACTED] devices were labeled 'single-homed -> hard cutover'. Uncollected ->
+    being single-homed. 50 uncollected Meridian devices were labeled 'single-homed -> hard cutover'. Uncollected ->
     homing UNKNOWN."""
     from cisco_toolkit import analyze
     from cisco_toolkit.model import InterfaceData

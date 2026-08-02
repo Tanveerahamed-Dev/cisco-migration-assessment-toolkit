@@ -6,8 +6,8 @@ or how the evidence arrives — while never breaking the prime doctrine: **cover
 observed, genuinely-broken state; "not observed" is never "healthy").*
 
 Status: **foundation reconciled against code (2026-06-24); breadth waves grounded in the deep-research marathon.**
-Baseline: **778 engine tests green**, canonical [HISTORY-REDACTED] fleet steady (the universality additions are coverage-honest
-and silent on [HISTORY-REDACTED]).
+Baseline: **778 engine tests green**, canonical Meridian reference fleet steady (the universality additions are coverage-honest
+and silent on Meridian).
 
 ---
 
@@ -81,7 +81,7 @@ reconciled against the current `_d_*` inventory):
 | **VXLAN-EVPN** | NVE-peer / EVPN-RR / VNI down; `_d_vpc_health` | **FEX** resilience; **vPC consistency-parameters** (split-brain PKL-on-peerlink, Type-1/2 mismatch); **anycast-gateway** consistency |
 | **FHRP** | presence, split-brain, resilience (no-track / no-preempt) | **election** (equal-priority), **tracking-wired** proof (`show track` subscriber), **peer-consistency** (v1/v2, VIP, timers, auth) |
 | **IPv6** | DAD duplicate; OSPFv3/BGP adjacency | **silent-FHS** (IPv6 up at access edge, zero RA-guard/DHCP-guard/ND-inspection — the headline IPv6 gap); non-/64 hygiene |
-| **Multicast** | PIM RP resilience; **RPF integrity ✅** ((S,G) Null IIF — #1 mcast outage; coverage-honest, excludes the benign (\*,G)-Null case, proven on [HISTORY-REDACTED]'s 36 such entries) | **MSDP** liveness, **mrouter-aware** querier-gap |
+| **Multicast** | PIM RP resilience; **RPF integrity ✅** ((S,G) Null IIF — #1 mcast outage; coverage-honest, excludes the benign (\*,G)-Null case, proven on Meridian's 36 such entries) | **MSDP** liveness, **mrouter-aware** querier-gap |
 | **SP/MPLS** | LDP / VPNv4 / L2VPN session down | **RD/RT integrity** (VPNv4/v6/EVPN), **SR SRGB** homogeneity, **TI-LFA** coverage (RFC 9855) |
 | **SD-Access** | LISP session partition; CTS env-data | **fabric roles** (edge/border/CP), **CP/border redundancy**, **fabric MTU 9100**, **SGACL enforcement-counters** |
 | **QoS run-state** | egress queue/policer drops | **marking** (RFC 4594/medianet), **unbounded LLQ** (priority w/o police), **conditional-trust** at phone edge, **PTP run-state** role |
@@ -107,7 +107,7 @@ Any new vendor / class / channel ships as a **vertical slice** that obeys the sa
    *fires-on-broken* **and** *silent-on-clean* test, plus the fuzz/robustness gate.
 4. **One source of truth.** Publish a single `snap[axis]`; register it in `_ARCH_COVERAGE_REGISTRY`; every surface
    READS it. No client-side re-derivation.
-5. **Non-disruptive.** The canonical [HISTORY-REDACTED] fleet's decision count is unchanged (the addition is silent on evidence
+5. **Non-disruptive.** The canonical Meridian reference fleet's decision count is unchanged (the addition is silent on evidence
    it didn't collect — proven each slice).
 
 ---
@@ -204,8 +204,8 @@ coverage-honest **detector layer stays vendor-agnostic** regardless of how the e
   single-homed ports); **silent** on healthy, on the transient `connecting` bring-up, and on `disabled`
   (absence of MLAG is never a finding).
 - **Verified:** `tests/test_arista.py` 15/15; **full suite 793 green** (incl. the global emit-invariant + all
-  three coverage count-locks); golden diff = **+18 lines, arista-only** (purely additive); the real **[HISTORY-REDACTED] fleet
-  steady at 42 decisions** with `arista` *not-observed* (zero [HISTORY-REDACTED] MLAG evidence → 0 new [HISTORY-REDACTED] decisions).
+  three coverage count-locks); golden diff = **+18 lines, arista-only** (purely additive); the real **Meridian reference fleet
+  steady at 42 decisions** with `arista` *not-observed* (zero Meridian MLAG evidence → 0 new Meridian decisions).
 - **Coverage now: 24 architecture classes (20 ssh + 4 json).** The next vendor is mechanical — same slice
   template + the documented count-lock map (`multi-vendor-foundation.md`).
 
@@ -220,7 +220,7 @@ coverage-honest **detector layer stays vendor-agnostic** regardless of how the e
 | **4 ✅ seeded** | Cloud JSON channel — **AWS security-group exposure ✅** (Azure/GCP exposure + AZ-spread SPOF + reachability remain) | L | med | **domain universality proven (on-prem + cloud)** |
 | **5** | Class-depth backlog (vPC/FHRP/IPv6-FHS/RPF/SR/SDA/QoS) | L (parallel) | low | senior-grade depth per class |
 
-Each wave is independent, coverage-honest, and non-disruptive to the canonical [HISTORY-REDACTED] fleet (additive axes are
+Each wave is independent, coverage-honest, and non-disruptive to the canonical Meridian reference fleet (additive axes are
 `not-observed` on evidence that doesn't carry them). Vendor/channel breadth (Waves 1–4) is the "universal"
 headline; class depth (Wave 5) runs as the steady parallel backlog.
 

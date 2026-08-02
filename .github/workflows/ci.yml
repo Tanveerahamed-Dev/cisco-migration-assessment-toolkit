@@ -1,12 +1,5 @@
 name: CI
 
-# Runs the same quality gates the project already enforces by hand on every PR —
-# ruff lint + the full pytest suite (which includes the golden snapshot/Excel-schema
-# contract) — automatically on each push to main and on every pull request. mypy runs
-# as a non-gating report (the repo keeps an intentional report-only typing baseline;
-# see mypy.ini). No live network is touched: the suite is fully offline (--no-collect
-# / synthetic fixtures), so the deliverables are exercised end to end without SSH.
-
 on:
   push:
     branches: [main]
@@ -16,130 +9,310 @@ on:
 permissions:
   contents: read
 
-# Cancel superseded runs on the same ref so a rapid push sequence doesn't queue stale jobs.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-# Runner fleet toggle: the repo variable CI_RUNNER (Settings → Secrets and variables → Actions →
-# Variables) reroutes every job to the self-hosted pool when set to "self-hosted" ($0 metered
-# minutes — the pool is the registered runners on the dev box), and falls back to GitHub-hosted
-# runners when unset/empty. Job NAMES still derive from the matrix values, so the 10 required
-# branch-protection contexts (e.g. "Tests · py3.12 · ubuntu-latest") stay byte-identical under
-# either fleet — flipping the variable never wedges the merge gate.
-
+# Every third-party action is pinned to an immutable commit. Pull-request code runs only
+# on GitHub-hosted, ephemeral runners; repository variables cannot redirect it to a
+# persistent machine with local credentials or state.
 jobs:
   lint:
     name: Ruff lint
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
           cache: pip
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install -r requirements-dev.txt
-      - name: ruff check (E4/E7/E9/F — config in ruff.toml)
+      - run: python -m pip install -e ".[dev]"
+      - name: Ruff correctness rules
         run: python -m ruff check .
+      - name: Tracked-tree privacy boundary
+        run: python .github/scripts/verify_repository_privacy.py
 
   test:
     name: Tests · py${{ matrix.python-version }} · ${{ matrix.os }}
-    runs-on: ${{ vars.CI_RUNNER || matrix.os }}
+    runs-on: ${{ matrix.os }}
     strategy:
-      # Don't let one version/OS failing cancel the rest — we want the full grid of results.
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        # Floor (README states 3.8+; 3.10 is the realistic modern floor for the deps) through
-        # 3.14, the interpreter the project is actively developed on.
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
-        # Also run one job on Windows (the primary dev OS) so path / line-ending / encoding
-        # regressions surface on the platform the goldens were generated on.
         include:
           - os: windows-latest
             python-version: "3.12"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - run: python -m pip install --upgrade pip
-      # Runtime deps (netmiko/openpyxl + optional python-docx so the runbook path is exercised)
-      # plus the dev/test deps (pytest/ruff/mypy).
-      - name: Install dependencies
-        run: python -m pip install -r requirements.txt -r requirements-dev.txt
-      - name: Run test suite (incl. golden snapshot + Excel-schema contract)
+      - name: Install complete runtime and test dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Run the complete default suite
         run: python -m pytest
 
   typecheck:
     name: mypy
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
           cache: pip
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install -r requirements-dev.txt
-      # GATED: these modules are fully type-clean today and must STAY clean — a regression here fails
-      # CI. Grow this list as more modules are brought to zero mypy errors (incremental typing strategy;
-      # the heavy dynamic modules — analyze/excel/build — remain in the non-gating report below).
-      - name: mypy (gated — type-clean modules must stay clean)
+      - run: python -m pip install -e ".[dev]"
+      - name: mypy gated modules
         run: >-
           python -m mypy
           cisco_toolkit/__init__.py cisco_toolkit/cmdio.py cisco_toolkit/eoldb.py
           cisco_toolkit/model.py cisco_toolkit/ouidb.py cisco_toolkit/portdb.py
           cisco_toolkit/protocol_kb.py cisco_toolkit/textutils.py
-      # NON-GATING: full-project report (the documented dynamic-typing baseline in mypy.ini). Printed
-      # for visibility; continue-on-error keeps the check GREEN. It replaces the previous `|| true`,
-      # a bashism that fails to parse under PowerShell 5.1 — the default step shell on the self-hosted
-      # Windows fleet. Tighten by promoting modules to the gated step.
-      - name: mypy (full report — non-gating)
+      - name: mypy full-project report
         continue-on-error: true
         run: python -m mypy cisco_toolkit COLLECT_PARSE_V3_23_0.py
 
   coverage:
     name: Coverage
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
           cache: pip
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install -r requirements.txt -r requirements-dev.txt
-      # GATED at 85% (measured 91% with the wider surface; headroom covers the ubuntu/Windows
-      # platform-branch delta). The surface now includes the ENTRY MODULE (Plan A / Move-0.2,
-      # measured 73%) via [tool.coverage.run] source_pkgs in pyproject.toml — pytest-cov's
-      # --cov=<pkg> overrides `source` but leaves source_pkgs intact (do NOT use the
-      # --cov=<file>.py path form: it crashes pytest-cov on this stack; pinned by
-      # tests/test_ci_gates.py). The module is exercised in-process by
-      # tests/test_pipeline_inprocess.py driving main(). Lift the floor as coverage rises.
-      - name: pytest with coverage (fail under 85%; entry module via source_pkgs)
-        run: python -m pytest --cov=cisco_toolkit --cov-report=term-missing:skip-covered --cov-fail-under=85
+      - run: python -m pip install -e ".[dev]"
+      - name: Coverage gate
+        run: >-
+          python -m pytest
+          --cov=cisco_toolkit
+          --cov-report=term-missing:skip-covered
+          --cov-fail-under=85
+
+  dependency-audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: webapp/frontend/package-lock.json
+      - run: python -m pip install --upgrade pip
+      - name: Install audited Python environment
+        run: python -m pip install -e ".[dev]" "pip-audit>=2.9,<3"
+      # The audit's subject is the DEPENDENCY CLOSURE, so the unpublishable project itself is
+      # uninstalled first. Both flag-level attempts failed, each measured on a real run (2026-08-02):
+      #   --strict                  -> "Dependency not found on PyPI: cisco-migration-assessment-
+      #                                toolkit" is FATAL (the project is private; PyPI can never
+      #                                know it) — the gate could not pass as written.
+      #   --strict --skip-editable  -> "distribution marked as editable" is ALSO fatal, because
+      #                                --strict's definition is "fail on ANY skip" — the two flags
+      #                                compose against each other by design.
+      # Uninstalling the project leaves exactly the dependency set in the environment, fully audited
+      # under undiluted --strict: no skips, no not-found, and a real CVE in any dependency still
+      # fails the job. The project's own code is what every other job tests.
+      # --ignore-vuln PYSEC-2026-2858 is a NAMED, dated suppression with no admissible fix, not a
+      # loosening — every other advisory remains fatal. The gate's first successful execution
+      # (2026-08-02, after the uninstall fix below) found paramiko 4.0.0 flagged for permitting
+      # SHA-1 in rsakey.py. Verified against primary sources the same day: the fix exists only in
+      # paramiko 5.0.0, and netmiko — the SSH engine this tool is built on — caps `paramiko<5.0`
+      # in its LATEST release (4.7.0), so the fixed version is unresolvable without abandoning
+      # netmiko. Severity supports waiting: CVSS AV:A/AC:H/I:L — adjacent network, high attack
+      # complexity, low integrity impact. RE-EVALUATE whenever netmiko releases: the moment its cap
+      # admits paramiko>=5, delete this flag and bump instead.
+      - name: Audit installed Python dependencies
+        run: |
+          python -m pip uninstall --yes cisco-migration-assessment-toolkit
+          python -m pip_audit --strict --ignore-vuln PYSEC-2026-2858
+      - name: Install locked frontend dependencies
+        working-directory: webapp/frontend
+        run: npm ci
+      - name: Audit frontend dependencies
+        working-directory: webapp/frontend
+        run: npm audit --audit-level=high
 
   package:
-    name: Package build + install
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    name: Distribution contract
+    runs-on: ubuntu-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Capture the immutable source identity
+        id: source
+        run: |
+          echo "commit=$(git rev-parse 'HEAD^{commit}')" >> "$GITHUB_OUTPUT"
+          echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
           cache: pip
-      - run: python -m pip install --upgrade pip
-      # Build the wheel and install it (NON-editable) so packaging regressions — a missing data file in
-      # package-data, a broken entry point, an unbuildable project — fail CI rather than surfacing only
-      # when someone tries to install.
-      - name: Build + install the wheel
-        run: python -m pip install .
-      - name: Smoke-test the console entry point
-        run: cisco-assess --help
-      - name: Smoke-test that the gzipped KB data shipped in the wheel
-        run: python -c "from cisco_toolkit import portdb; assert portdb.service_for_port(443) is not None; print('packaged KB data loads from the installed wheel')"
-      - name: Smoke-test that the explorer template shipped in the wheel
-        run: python -c "import cisco_toolkit, os; p=os.path.join(os.path.dirname(cisco_toolkit.__file__),'blast_radius_explorer.html'); assert os.path.isfile(p), p; print('explorer template shipped in the wheel:', os.path.getsize(p), 'bytes')"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: webapp/frontend/package-lock.json
+      - name: Prove toolchain setup did not change the source
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+      - name: Rebuild the bundled AssessHub SPA
+        working-directory: webapp/frontend
+        run: |
+          npm ci
+          npm test
+          npm run build
+      # The separate decision named in the previous revision of this comment has now been TAKEN:
+      # `webapp/frontend/dist/` is TRACKED (2026-08-02), pinned `-text` in .gitattributes so the bytes
+      # survive round-tripping. That makes this step mean what its name says for the first time — the
+      # rebuild is byte-compared against the committed bundle, so a build that does not reproduce it
+      # shows up here as a MODIFIED TRACKED FILE and fails.
+      #
+      # Why it matters: without tracking, `distribution_verify --require-source-binding` exits 3 with
+      # "5 shipped archive member(s) are outside the claimed commit" — index.html plus the four
+      # content-hashed assets ship in the wheel bound to nothing. Tracking them is what makes the
+      # release source-bound.
+      #
+      # The dist allow-listing is deliberately GONE (tracked paths are not untracked paths, so it is
+      # now a no-op that would only mask an unexpected build output). node_modules stays.
+      #
+      # FIRST RUN IS THE REAL TEST: these bytes were built on Windows and this job rebuilds on
+      # ubuntu/node-20. Two consecutive builds were verified byte-identical on the authoring machine,
+      # but CROSS-PLATFORM reproduction — including Vite's content-hashed filenames — is unproven
+      # until this step runs. If it fails, the honest reading is that the bundle is not reproducible
+      # across platforms, and the fix is a pinned/containerised build, NOT re-adding the allowlist.
+      - name: Prove the SPA build reproduced the immutable source
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+          --allow-untracked-prefix webapp/frontend/node_modules
+      - name: Install the exact distribution toolchain
+        run: python -m pip install "build==1.5.0" "twine==6.2.0"
+      - name: Prove tool installation did not change the source
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+          --allow-untracked-prefix webapp/frontend/node_modules
+      - name: Build exactly one wheel and one source archive
+        run: python -m build --sdist --wheel --outdir dist
+      - name: Prove the archive build did not change the source
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+          --allow-untracked-prefix webapp/frontend/node_modules
+          --allow-untracked-prefix build
+          --allow-untracked-prefix cisco_migration_assessment_toolkit.egg-info
+          --allow-untracked-prefix dist
+      - name: Validate archive metadata
+        run: python -m twine check dist/*
+      - name: Prove metadata validation did not change the source
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+          --allow-untracked-prefix webapp/frontend/node_modules
+          --allow-untracked-prefix build
+          --allow-untracked-prefix cisco_migration_assessment_toolkit.egg-info
+          --allow-untracked-prefix dist
+      - name: Verify runtime completeness, metadata, hashes, and privacy boundary
+        run: >-
+          python -m cisco_toolkit.distribution_verify dist
+          --source-commit "${{ steps.source.outputs.commit }}"
+          --source-tree "${{ steps.source.outputs.tree }}"
+          --json-out dist/dist-verification.json
+      - name: Prove distribution verification did not change the source
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+          --allow-untracked-prefix webapp/frontend/node_modules
+          --allow-untracked-prefix build
+          --allow-untracked-prefix cisco_migration_assessment_toolkit.egg-info
+          --allow-untracked-prefix dist
+      # From PR #506 (security: protect client evidence and audit release artifacts). This is the one
+      # control that branch had and this job did not: it inspects the archives' MEMBER LIST for client
+      # evidence and for required assets, which distribution_verify does not do in those terms. Its
+      # sibling steps there (install the wheel, smoke the entry point / KB / explorer template) are
+      # deliberately NOT merged -- the steps below already do all of that and more, installing with
+      # --force-reinstall and running `assesshub --selftest` plus the scoped registry-authority checks.
+      # Placed BEFORE the install and the preservation so a client-evidence leak stops the job at the
+      # cheapest point rather than after an artifact has been installed and preserved.
+      - name: Audit distribution contents (no client evidence / required assets present)
+        run: python tools/audit_wheel.py dist
+      - name: Prove the content audit did not change the source
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+          --allow-untracked-prefix webapp/frontend/node_modules
+          --allow-untracked-prefix build
+          --allow-untracked-prefix cisco_migration_assessment_toolkit.egg-info
+          --allow-untracked-prefix dist
+      - name: Install the wheel non-editably
+        run: python -m pip install --force-reinstall dist/*.whl
+      - name: Prove wheel installation did not change the source
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+          --allow-untracked-prefix webapp/frontend/node_modules
+          --allow-untracked-prefix build
+          --allow-untracked-prefix cisco_migration_assessment_toolkit.egg-info
+          --allow-untracked-prefix dist
+      - name: Smoke-test installed entry points and authoritative registries
+        working-directory: ${{ runner.temp }}
+        run: |
+          cisco-assess --help
+          assesshub --selftest
+          # Routed through registry_integrity.pack_is_usable — the ONE owner of this question.
+          # This line used to carry its own inline conjunction with a comment saying "keep in step
+          # with COLLECT_PARSE and serve.py; there are four consumers" — the hand-sync instruction
+          # that guarantees drift, and it drifted: when the owner learnt to distinguish
+          # CANNOT-CHECK-HERE (wheel installs ship without reference-data/official-sources/**) from
+          # CHECKED-AND-FAILED, the three Python consumers followed and THIS copy, living in YAML
+          # where a grep for Python callers never looked, kept failing a healthy wheel — the
+          # selftest above printed PASS 9/9 and this very next line exited 1 on the same facts
+          # (proven on run 30744547871). A duplicated predicate in a workflow file is still a
+          # duplicated predicate. Degraded installs are disclosed, not silently passed.
+          python -c "import sys; from cisco_toolkit import ouidb, portdb, registry_integrity as R; pairs = (('oui', ouidb.registry_health()), ('port', portdb.registry_health())); bad = [(n, h) for n, h in pairs if not R.pack_is_usable(h)]; [print(f'{n}: usable on bytes + build provenance; retained official sources not present in this install form (repo/sdist only)') for n, h in pairs if h.get('official_sources_available') is False and not bad]; sys.exit('registry pack unusable: %r' % (bad,)) if bad else None"
+      - name: Final immutable-source proof before preserving archives
+        run: >-
+          python .github/scripts/verify_checkout_immutable.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+          --allow-untracked-prefix webapp/frontend/node_modules
+          --allow-untracked-prefix build
+          --allow-untracked-prefix cisco_migration_assessment_toolkit.egg-info
+          --allow-untracked-prefix dist
+      - name: Reverify the exact archive bytes immediately before preservation
+        run: >-
+          python -m cisco_toolkit.distribution_verify dist
+          --source-commit "${{ steps.source.outputs.commit }}"
+          --source-tree "${{ steps.source.outputs.tree }}"
+          --expected-json dist/dist-verification.json
+      - name: Preserve the verified distributions
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: distributions-${{ github.sha }}
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+            dist/dist-verification.json
+          if-no-files-found: error
+          retention-days: 14

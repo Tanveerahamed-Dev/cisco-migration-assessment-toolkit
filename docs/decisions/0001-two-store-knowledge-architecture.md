@@ -46,13 +46,15 @@ a **sanitized vault digest** may cross vault→repo for recall, subject to all o
 1. **Digest, not pages** — only distilled, generic domain facts (concepts/patterns/vendor quirks), never a
    raw note, never client-adjacent material.
 2. **Rule-3 sanitized at the boundary** — passed through `research_lane/sanitize.py` (forbidden-token / IP /
-   email scrub) with a recorded proof-of-scrub, exactly like the intel feed; the crossing artifact is
-   **signed** (the `intel_feed.build_feed` contract) and the repo **verifies** it before use.
+   email scrub) with a recorded redaction audit, exactly like the intel feed; the crossing artifact is
+   **SHA-256 hash-sealed** (the `intel_feed.build_feed` contract) and the repo **verifies** it before use.
+   The digest is unkeyed and declares `authentication: none`: this establishes corruption evidence, not
+   producer identity.
 3. **Read-only + additive** — the repo consumes it; it never writes back to the vault, and the digest is
    supplementary to graph+docs (recall degrades gracefully to graph+docs if the digest is absent).
-4. **Produced in the fenced lane** — the vault read + sanitize + sign happens in a network/vault-connected
+4. **Produced in the fenced lane** — the vault read + sanitize + hash-seal happens in a network/vault-connected
    worktree (like the research lane), never from an air-gapped repo session. The air-gapped repo only ever
-   reads the frozen, signed, sanitized digest — its no-egress invariant is unchanged.
+   reads the frozen, hash-sealed, sanitized digest — its no-egress invariant is unchanged.
 
 ### Ollama vault-digest RAG — planned (D4); **since installed — see status update below**
 The digest is retrieved locally via **Ollama** (zero-egress, offline embeddings/LLM) so recall needs no

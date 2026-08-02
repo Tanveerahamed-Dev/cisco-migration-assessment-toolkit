@@ -405,8 +405,8 @@ def _arch_fire_snap():
     """A snapshot seeded to trigger EVERY universal-architecture detector at once (NX-OS VXLAN-EVPN
     overlay, CoPP, MPLS LDP/L3VPN/L2VPN, LISP, CTS, DMVPN, BFD, IPv6 DAD/routing, IPsec, APIC/ACI,
     Catalyst SD-WAN, firewall HA + capacity, Cisco ISE, Cisco FMC, storm-control, QoS-runtime, FHRP detail/
-    state). These detectors read architecture axes the [HISTORY-REDACTED] estate doesn't run (so they are coverage-honest-
-    SILENT on [HISTORY-REDACTED]); this fixture proves each emits its decision when present, so the emit-invariant covers all 36.
+    state). These detectors read architecture axes the Meridian reference estate doesn't run (so they are coverage-honest-
+    SILENT on Meridian); this fixture proves each emits its decision when present, so the emit-invariant covers all 36.
     Verified: fires all 36 KB-backed universal-arch detectors."""
     return {
         "overlay": {"leaf1": {"nve_peers": [{"interface": "nve1", "peer_ip": "10.0.0.2", "state": "Down", "learn_type": "CP"}],
@@ -469,6 +469,12 @@ def _arch_fire_snap():
                                   "drop_pkts": 1840521, "output_pkts": 24817400, "police_drop_pkts": 0}]},
         "fhrp_detail": {"core1": [{"ifname": "Vlan10", "group": "10", "state": "Active", "preempt": True, "track": []}]},
         "fhrp": [{"vid": 10, "issues": ["split-brain"], "members": [{"host": "a"}, {"host": "b"}]}],
+        # Access-edge port-security: a secured port err-disabled by a violation -> _d_port_security_errdisable
+        # (principle security-l2-access-edge-suite). This axis IS in _ARCH_COVERAGE_REGISTRY ("port_security",
+        # ssh channel) but was missing from this "every architecture axis" fixture, so the emit-invariant below
+        # could not see the detector -- which is why design_kb._NOT_YET_AUTO_DETECTED kept demoting a principle
+        # the advisor has emitted since the detector landed (review 2026-07-28 #79).
+        "port_security": {"a1": {"Gi0/10": {"port_status": "Secure-shutdown", "last_src": "0011.2233.4455"}}},
     }
 
 
@@ -494,7 +500,7 @@ def test_every_engine_actionable_principle_is_emitted():
     that principle's trigger. If a principle claims engine-actionability the advisor can't deliver
     (or a new detector goes un-wired), this fails -- the design brain may not overstate its coverage."""
     # the universal-architecture detectors (ACI/VXLAN-EVPN/MPLS/SD-WAN/LISP/...) fire ONLY when that
-    # architecture's collected state is present, so they are coverage-honest-silent on an [HISTORY-REDACTED]-style switch
+    # architecture's collected state is present, so they are coverage-honest-silent on an reference-style switch
     # fleet. Union the maximal switch snapshot with _arch_fire_snap (which seeds every architecture axis)
     # so the invariant exercises the FULL engine_actionable set, including those 36 principles.
     emitted = {d["id"] for d in compute_design_blueprint(_maximal_snap())["decisions"]}  # no requirements -> needs-requirement too
@@ -610,7 +616,7 @@ def test_target_state_is_evidence_grounded_and_requirement_gated():
 
 
 def test_media_timing_fabric_dimension_is_evidence_gated():
-    """Broadcast media fabric (the [HISTORY-REDACTED] estate): PTP-capable switches with no operational/redundant grandmaster
+    """Broadcast media fabric (the Meridian reference estate): PTP-capable switches with no operational/redundant grandmaster
     plus AV multicast groups surface a 'Media / timing fabric' target-state dimension grounded in SMPTE ST
     2059-2. Refutation: with no PTP/AV evidence the dimension must NOT appear (no fabricated media plane for a
     non-broadcast estate). Its driver principle is real KB doctrine and honestly engine_actionable=False."""
@@ -631,6 +637,45 @@ def test_media_timing_fabric_dimension_is_evidence_gated():
     # refutation: base snapshot (no ptp clocks, no AV groups) -> no media dimension
     assert not any(d["area"] == "Media / timing fabric"
                    for d in compute_target_state(_snap())["dimensions"])
+
+
+def test_blueprint_carries_the_on_air_classification_basis_end_to_end():
+    """r9 EXIT B/C, at the BLUEPRINT level -- the object design.py actually renders.
+
+    `analyze.compute_multicast_intelligence` classifies a group on-air from the offline registry's CURATED
+    media semantics (on the shipped pack NOTHING is authoritative), and that same flag escalates a MAC-alias
+    risk to High. Two design_advisor sentences are built on it: the "Media / timing fabric" dimension detail
+    (design.py:895-899 renders it verbatim under a column headed "Current (observed)") and the multicast
+    decision's evidence summary (design.py:765 / :774, and build_design_traceability's `evidence` cell).
+    Both must disclose the basis. Fixture from the REAL producer -- no hand-shaped authority fields."""
+    from cisco_toolkit import analyze, design
+    sm = analyze.compute_service_map({}, {}, igmp_groups=["224.0.1.129", "239.128.1.129"])
+    mi = analyze.compute_multicast_intelligence(sm, {})
+    assert mi["summary"]["n_av_groups"] == 1 and mi["summary"]["n_av_groups_authoritative"] == 0
+    snap = _snap(multicast_intelligence=mi)
+    bp = compute_design_blueprint(snap)
+
+    dim = {d["area"]: d for d in bp["target_state"]["dimensions"]}.get("Media / timing fabric")
+    assert dim, "an AV multicast estate must still raise the dimension"
+    assert "CURATED offline-registry classification, not a measurement" in dim["current"], dim["current"]
+    assert dim["confidence"] == "Curated-classification", dim   # not "Observed" -- it rests on a classification
+
+    dec = next(d for d in bp["decisions"] if d["id"] == "multicast-security-and-l2-edge")
+    assert dec["priority"] == "High"                            # disclosure, NOT re-scoring
+    assert "CURATED offline-registry semantics, NOT an authoritative source" in dec["evidence"]["summary"]
+
+    # the traceability matrix (design.py:203 -- a real renderer) now carries the basis in its evidence cell
+    row = next(r for r in design.build_design_traceability({"design_blueprint": bp})
+               if r["decision"] == dec["title"])
+    assert "High ONLY because a member group is classified Broadcast-AV" in row["evidence"], row
+    assert "multicast_intelligence.mac_aliases[].has_av_authoritative" in row["fields"], row
+
+    # NON-VACUITY: the base fleet (no multicast estate at all) gains neither the dimension nor a caveat --
+    # no decision anywhere in the blueprint acquires the on-air qualifier it has not earned.
+    base = compute_design_blueprint(_snap())
+    assert not any(d["area"] == "Media / timing fabric" for d in base["target_state"]["dimensions"])
+    assert not any("Broadcast-AV" in (d.get("evidence") or {}).get("summary", "")
+                   for d in base["decisions"]), "a fleet with no media estate must not be caveated"
 
 
 def test_target_state_replacement_bom_and_segmentation_plan():
@@ -941,7 +986,7 @@ def test_addressing_plan_has_census_vlans_when_needs_requirement():
     Every surface (explorer needs-requirement block, webapp IP plan section) should be able to
     display 'N census VLANs total; M have no access port/SVI and will need manual sizing' as a
     context-setting disclosure, even before the engineer provides an address space. Refutes the
-    early-return bug that omitted both fields and caused the live [HISTORY-REDACTED] addressing_plan to show
+    early-return bug that omitted both fields and caused the live Meridian addressing_plan to show
     n_census_vlans: None and n_unsizable: None."""
     snap = _snap()
     ap = compute_design_blueprint(snap)["target_state"]["addressing_plan"]
@@ -1923,7 +1968,7 @@ def test_d_nve_peer_health_flags_down_vtep():
 def test_d_fhrp_resilience_flags_untracked_or_no_preempt_active_gateways():
     """Universality (FHRP): an ACTIVE gateway with no interface tracking (black-holes on uplink loss) or
     no preempt (non-deterministic primary) fires _d_fhrp_resilience; a clean active gateway and an absent
-    fhrp_detail axis are silent. [HISTORY-REDACTED] runs no FHRP -> first health check proven on a non-[HISTORY-REDACTED] architecture."""
+    fhrp_detail axis are silent. Meridian runs no FHRP -> first health check proven on a non-Meridian architecture."""
     import cisco_toolkit.design_advisor as da
     fragile = {"fhrp_detail": {"core1": [
         {"ifname": "Vlan10", "group": "10", "state": "Active", "preempt": True, "track": []},               # no tracking
@@ -1944,7 +1989,7 @@ def test_d_fhrp_resilience_flags_untracked_or_no_preempt_active_gateways():
 def test_d_fhrp_state_fires_on_broken_not_absent_fhrp():
     """DET-fhrp-state-01: broken-but-PRESENT FHRP (split-brain / mixed protocol / mismatched group|VIP) fires
     _d_fhrp_state; pure FHRP-ABSENCE ('no FHRP') does NOT (that is _d_fhrp's Critical domain). Coverage-honest
-    -- on a fleet running no FHRP at all (e.g. [HISTORY-REDACTED]) this correctly stays silent."""
+    -- on a fleet running no FHRP at all (e.g. Meridian) this correctly stays silent."""
     import cisco_toolkit.design_advisor as da
     broken = {"fhrp": [
         {"vid": 10, "issues": ["two active routers (a, b) — split-brain"], "members": [{"host": "a"}, {"host": "b"}]},
@@ -1962,7 +2007,7 @@ def test_d_fhrp_state_fires_on_broken_not_absent_fhrp():
 
 # ===================================================================== DC-fabric corpus enrichment
 # The design brain learns the modern DC target vocabulary (EVPN/VXLAN leaf-spine, Multi-Site, DCI,
-# active-active, cloud/SDDC, L4-L7 services) mined from the [HISTORY-REDACTED] reference corpus + the real [HISTORY-REDACTED] SDD.
+# active-active, cloud/SDDC, L4-L7 services) mined from the fictional Meridian reference corpus and SDD.
 # Coverage-honest: the L1-L4 assessment collects no fabric/cloud state, so these are DOCTRINE the HLD
 # §4.4 catalogue + design-chat cite -- NOT auto-emitted decisions -- EXCEPT the Multi-Site-vs-stretched
 # choice, which (like the other DC-fabric choices) is a requirement-gated open decision.
@@ -2047,30 +2092,29 @@ def test_dc_multisite_choice_is_requirement_gated():
     assert _DC_CORPUS_ACTIONABLE in {p["id"] for p in design_kb.engine_actionable()}
 
 
-def test_[HISTORY-REDACTED]_engagement_profile_rightsizes_to_the_real_target():
-    """The SDD-derived [HISTORY-REDACTED] engagement register (requirements.[HISTORY-REDACTED].json, grounded in the human-authored
-    Solution Design) right-sizes the blueprint so it concretely recommends the real target: the DC-fabric +
-    Multi-Site choices flip to recommended (growth supplied), defense-in-depth flips (data_classification
-    supplied), and effective_priority is computed -- while the un-supplied keys stay honest open questions."""
-    import os
-    from cisco_toolkit.design_advisor import load_requirements
-    path = os.path.join(os.path.dirname(__file__), "..", "requirements.[HISTORY-REDACTED].json")
-    reg = load_requirements(path)
-    assert reg.get("growth_horizon") and reg.get("data_classification"), "[HISTORY-REDACTED] register must carry growth + zones"
+def test_reference_engagement_profile_rightsizes_to_the_target():
+    """A fictional reference-engagement register right-sizes the blueprint so it concretely recommends the
+    DC-fabric + Multi-Site choices (growth supplied) and defense in depth (data classification supplied), while
+    keys absent from the register stay honest open questions."""
+    reg = {
+        "growth_horizon": "3 years; two sites; +60% east-west traffic",
+        "data_classification": ["regulated", "corporate", "guest", "industrial"],
+    }
+    assert reg.get("growth_horizon") and reg.get("data_classification")
     assert "convergence_budget_ms" not in reg and "address_space" not in reg, \
-        "[HISTORY-REDACTED] register must NOT fabricate a convergence budget or supernet the SDD does not state"
+        "the reference register must not fabricate an unstated convergence budget or supernet"
     bp = compute_design_blueprint(_snap(), requirements=reg)
     by = {d["id"]: d for d in bp["decisions"]}
     for pid in ("dc-three-tier-vs-collapsed-core", "dc-spine-leaf-evpn-vs-collapsed",
                 _DC_CORPUS_ACTIONABLE, "security-defense-in-depth-segmentation"):
-        assert by[pid]["status"] == "recommended", f"{pid} must flip to recommended under the [HISTORY-REDACTED] register"
+        assert by[pid]["status"] == "recommended", f"{pid} must flip to recommended under the reference register"
     assert all("effective_priority" in d for d in bp["decisions"])
     assert bp["requirements_model"]["provided"] is True
 
 
 # ============================================================ evidence-grounded actionable detectors
 # Two NEW actionable detectors over already-collected evidence (a follow-up to the doctrine enrichment),
-# grounded + refutation-verified against the real [HISTORY-REDACTED] snapshot: (1) rapid-PVST at high VLAN scale -> MST,
+# grounded + refutation-verified against the real Meridian reference snapshot: (1) rapid-PVST at high VLAN scale -> MST,
 # (2) on-air-critical application tiers left L3-exposed -> macro-segment. Both must stay coverage-honest.
 _ACTIONABLE_NEW = {
     "dc-stp-mst-instance-scale": "dc-switching",
@@ -2135,7 +2179,7 @@ def test_oncritical_segmentation_exposure_detector_evidence_gated():
 
 # ===================================================== net-new evidence-grounded design detectors (v2)
 # Five MORE actionable detectors over already-collected-but-unused evidence axes, grounded + refutation-
-# verified against the real [HISTORY-REDACTED] snapshot: addressing overlaps (renumber-before-merge), physical-layer
+# verified against the real Meridian reference snapshot: addressing overlaps (renumber-before-merge), physical-layer
 # faults (remediate-before-cutover), port/PoE capacity headroom, dual-homing/cluster preservation across
 # the migration, and native-VLAN-1 on inter-switch trunks (VLAN-hopping). All coverage-honest: each reads
 # a populated snapshot axis and DISAPPEARS when that evidence is absent (proven below by refutation).
@@ -2538,7 +2582,7 @@ def test_single_gateway_spof_reconciles_to_l3_forwarding_evidence():
     """[multi-domain audit #5 cross-artifact] MULTI-gateway no-FHRP VLANs must NOT be labelled 'single gateway /
     single-homed SPOF'. The single-gateway SPOF count must reconcile to the per-VLAN gateway evidence
     (l3_forwarding's 'single-gateway' rows), not the larger no-FHRP count -- the design doc contradicted its own
-    table (52 vs 22 on [HISTORY-REDACTED])."""
+    table (52 vs 22 on Meridian)."""
     import cisco_toolkit.design_advisor as da
     snap = {"fhrp": [{"vid": v, "issues": ["no fhrp"]} for v in (10, 20, 30)],
             "l3_forwarding": [
@@ -2556,7 +2600,7 @@ def test_single_gateway_spof_reconciles_to_l3_forwarding_evidence():
 
 def test_gateway_resilience_single_gw_and_no_fhrp_are_disjoint_populations():
     """[audit-2 #16/#12/#13] single-gateway SPOFs and no-FHRP multi-gateway VLANs are DISJOINT (a single-gateway
-    VLAN has no FHRP entry). The blueprint must total them (74 on [HISTORY-REDACTED]), NOT claim 22 is a subset of 52; and the
+    VLAN has no FHRP entry). The blueprint must total them (74 on Meridian), NOT claim 22 is a subset of 52; and the
     detector + availability penalty must fire on EITHER kind (a single-gateway-only fleet must not read healthy)."""
     import cisco_toolkit.design_advisor as da
     snap = {"fhrp": [{"vid": 10, "issues": ["no fhrp"]}, {"vid": 11, "issues": ["no fhrp"]}],
@@ -2616,3 +2660,192 @@ def test_scorecard_coverage_caps_all_absence_inferred_axes():
     for axis in ("convergence", "security", "cost", "scalability", "modularity", "simplicity"):
         assert clean[axis] != blind[axis], f"{axis} reads identical blind vs clean"   # score and/or evidence differ
         assert blind[axis][0] <= 2 and "NOT collected" in blind[axis][1]              # capped + discloses the gap
+
+
+# ---------------------------------------------------------------- deep pass 2026-07-28 (review round 2)
+def test_segmentation_plan_absent_axis_is_unassessed_not_single_global_vrf():
+    """[#39 sibling] `target_state.segmentation_plan.observed` is published VERBATIM as HLD 5.2
+    "Target segmentation -- Observed:". It read an ABSENT segmentation block as the positive assertion
+    "a single global VRF -- L3-unsegmented" -- the same defect #39 fixed in sig['single_vrf'] and the
+    scorecard, on the one surface the fix missed (the scorecard says "not-collected VRF" while this said
+    "L3-unsegmented" off the SAME snapshot). Tri-state: single / multiple / not-observed."""
+    from cisco_toolkit.design_advisor import _segmentation_plan, _scorecard, _signals
+    snap = {"l3_forwarding": [{"switch": "sw1", "vlan": 10, "svi_ip": "10.0.10.1/24"},
+                              {"switch": "sw1", "vlan": 20, "svi_ip": "10.0.20.1/24"}]}   # NO segmentation key
+    obs = _segmentation_plan(snap, {})["observed"]
+    assert "single global VRF" not in obs and "L3-unsegmented" not in obs, obs
+    assert "did NOT observe" in obs and "UNASSESSED" in obs, obs
+    # ... and it agrees with the scorecard, which reads the same tri-state off the same snapshot
+    scal = [a for a in _scorecard(snap, _signals(snap)) if a["axis"] == "scalability"][0]
+    assert "not-collected VRF" in scal["evidence"]
+    # refutation: a REAL single-VRF observation still says so, and a multi-VRF estate is unchanged
+    assert "a single global VRF -- L3-unsegmented." in _segmentation_plan(
+        {"segmentation": {"vrfs": [{"vrf": "(global)"}]}}, {})["observed"]
+    assert "2 VRFs -- partially segmented." in _segmentation_plan(
+        {"segmentation": {"vrfs": [{"vrf": "a"}, {"vrf": "b"}]}}, {})["observed"]
+
+
+def test_lifecycle_undetermined_band_is_not_carried_forward_as_supported():
+    """[#50 sibling] compute_lifecycle_risk emits band 'Unknown' ("Unknown model -- verify on Cisco's EoL
+    portal") for every device whose model it could NOT match. The target state derived the carry-forward
+    figure by SUBTRACTION (assessed - eol - near), so an UNDETERMINED support status was rendered as a
+    "fully-supported asset(s) forward" -- absence as health, in the procurement line, in the same dimension
+    whose rationale says coverage gaps are unknowns not health. retain must be counted POSITIVELY and the
+    undetermined residue disclosed; the four buckets must partition the lifecycle census exactly."""
+    from cisco_toolkit.design_advisor import compute_target_state, _signals
+    snap = {"lifecycle_risk": {"per_device": [
+        {"host": "a", "band": "Past-LDoS", "model": "WS-C4948E"},
+        {"host": "b", "band": "Unknown", "model": "(unknown)"},
+        {"host": "c", "band": "Unknown", "model": "(unknown)"},
+        {"host": "d", "band": "Unknown", "model": "(unknown)"},
+        {"host": "e", "band": "Active", "model": "C9300"}]}}
+    sig = _signals(snap)
+    assert sig["lifecycle_supported"] == 1 and sig["lifecycle_unknown"] == 3
+    assert sig["eol"] + sig["near"] + sig["lifecycle_supported"] + sig["lifecycle_unknown"] \
+        == sig["lifecycle_assessed"]                                     # the buckets PARTITION the census
+    assert sorted(sig["lifecycle_unknown_hosts"]) == ["b", "c", "d"]
+    dim = [d for d in compute_target_state(snap)["dimensions"]
+           if d["area"].startswith("Hardware")][0]
+    assert "carry ~1 fully-supported" in dim["target"], dim["target"]     # NOT ~4
+    assert "UNDETERMINED lifecycle band" in dim["target"] and "UNDETERMINED band" in dim["current"]
+    # refutation: a fully-determined census renders exactly as before -- no undetermined disclosure at all
+    det = {"lifecycle_risk": {"per_device": [{"host": "a", "band": "Past-LDoS"},
+                                             {"host": "b", "band": "Near-LDoS"},
+                                             {"host": "c", "band": "Active"}]}}
+    dim2 = [d for d in compute_target_state(det)["dimensions"] if d["area"].startswith("Hardware")][0]
+    assert "carry ~1 fully-supported" in dim2["target"] and "UNDETERMINED" not in dim2["target"]
+    assert "UNDETERMINED" not in dim2["current"]
+
+
+def test_fhrp_decision_names_the_single_gateway_switches():
+    """A fleet whose gateway gap is entirely single-gateway SPOFs (no no-FHRP VLANs -- the shipped
+    sample-fleet shape) published a CRITICAL fhrp decision with an EMPTY evidence.devices: the explorer
+    spotlight (POS[evidence.devices[0]]) silently no-ops and the design-driven NRFU item names no device to
+    verify. The host is on the very row the signal reads (l3_forwarding[].switch)."""
+    from cisco_toolkit.design_advisor import (_d_fhrp, _signals, compute_design_nrfu,
+                                              compute_design_blueprint)
+    snap = {"l3_forwarding": [{"switch": "dist1", "vlan": 10, "risk": "single-gateway SVI"},
+                              {"switch": "dist2", "vlan": 20, "risk": "single-gateway SVI"}]}
+    sig = _signals(snap)
+    assert sig["no_fhrp"] == 0 and sig["single_gw"] == 2                  # single-gateway ONLY
+    d = _d_fhrp(snap, sig)
+    assert d["priority"] == "Critical" and d["evidence"]["devices"] == ["dist1", "dist2"]
+    assert "l3_forwarding[].switch" in d["evidence"]["fields"]            # the claim cites what it read
+    item = [i for i in compute_design_nrfu(compute_design_blueprint(snap))["items"]
+            if i["decision_id"] == "fhrp-first-hop-gateway-redundancy"][0]
+    assert item["devices"] == ["dist1", "dist2"]
+    # refutation: the no-FHRP hosts are still carried when THAT population is the one that fired
+    snap2 = {"fhrp": [{"vid": 10, "issues": ["2 gateways but no FHRP"],
+                       "members": [{"host": "distA"}, {"host": "distB"}]}]}
+    assert _d_fhrp(snap2, _signals(snap2))["evidence"]["devices"] == ["distA", "distB"]
+
+
+def test_oncrit_segmentation_never_substitutes_an_unreported_acl_coverage():
+    """[stratum-16 shape] the fail-soft 0.0 / 0 coercions on segmentation.summary.gateway_acl_coverage /
+    n_gateways are CRASH guards, not observations -- but the decision rendered them verbatim as
+    "gateway-ACL coverage is 0% across 0 gateway(s)", i.e. the WORST possible measured value (no gateway
+    anywhere has an ACL), from a snapshot that measured neither. It also contradicted its own sentence
+    (0 gateways beside 2 exposed domains that each list gateways)."""
+    from cisco_toolkit.design_advisor import _d_oncrit_seg, _signals
+    doms = [{"domain": "Media", "tier": "On-air critical", "isolated": False, "gateways": 3},
+            {"domain": "Studio", "tier": "On-air critical", "isolated": False, "gateways": 2}]
+    bare = {"segmentation": {"summary": {"n_oncrit_exposed": 2}, "domains": doms}}
+    s = _d_oncrit_seg(bare, _signals(bare))["evidence"]["summary"]
+    assert "coverage is 0%" not in s and "0 gateway(s)" not in s, s
+    assert "NOT REPORTED" in s and "not observed as 0%" in s, s
+    # refutation A: a REAL measured 0% still reads as an observed 0% (this is not a blanket suppression)
+    real0 = {"segmentation": {"summary": {"n_oncrit_exposed": 2, "gateway_acl_coverage": 0.0,
+                                          "n_gateways": 40}, "domains": doms}}
+    s0 = _d_oncrit_seg(real0, _signals(real0))["evidence"]["summary"]
+    assert "coverage is 0% across 40 gateway(s)" in s0, s0
+    # refutation B: a normal measured coverage is unchanged
+    ok = {"segmentation": {"summary": {"n_oncrit_exposed": 1, "gateway_acl_coverage": 55.0,
+                                       "n_gateways": 20}, "domains": doms[:1]}}
+    assert "coverage is 55% across 20 gateway(s)" in _d_oncrit_seg(ok, _signals(ok))["evidence"]["summary"]
+
+
+def test_absent_session_state_is_not_an_observed_down_session():
+    """[#38 shape, four arms] EVPN / NVE-VNI / VPNv4 / IPv6-BGP compared `state != "Established"|"up"` with
+    NO empty guard, while their immediate siblings (nve_peers, LDP, OSPFv3) DO exclude "" -- three spellings
+    of one predicate in one function, two of them reading a MISSING state as an observed down session and
+    publishing a High "the overlay control plane is dark" decision from evidence never collected.
+    (parse_mpls_ldp_neighbors' documented shape is literally state:"" when no 'State:' line was seen.)"""
+    from cisco_toolkit.design_advisor import _signals, compute_design_blueprint
+    absent = {"overlay": {"c1": {"evpn_neighbors": [{"neighbor": "10.0.0.1"}],
+                                 "nve_vni": [{"vni": 50000}],
+                                 "nve_peers": [{"peer_ip": "10.0.0.2"}]}},
+              "mpls": {"c1": {"vpnv4_neighbors": [{"neighbor": "10.0.0.3"}],
+                              "ldp_neighbors": [{"peer": "10.0.0.4", "state": ""}]}},
+              "ipv6_routing": {"c1": {"bgp_ipv6_neighbors": [{"neighbor": "2001:db8::1"}],
+                                      "ospfv3_neighbors": [{"neighbor_id": "1.1.1.1"}]}}}
+    sig = _signals(absent)
+    for k in ("evpn_down", "nve_vni_down", "nve_peers_down", "mpls_vpnv4_down", "mpls_ldp_down",
+              "ipv6_bgp_down", "ipv6_ospfv3_stuck"):
+        assert sig[k] == [], f"{k} fired on an ABSENT state: {sig[k]}"
+    fired = {d["id"] for d in compute_design_blueprint(absent)["decisions"]}
+    for pid in ("vxlan-evpn-control-plane-down", "vxlan-nve-vni-down", "mpls-l3vpn-vpnv4-down",
+                "ipv6-routing-adjacency-down"):
+        assert pid not in fired, pid
+    # refutation: an OBSERVED broken state still fires every arm
+    bad = {"overlay": {"c1": {"evpn_neighbors": [{"neighbor": "10.0.0.1", "state": "Idle"}],
+                              "nve_vni": [{"vni": 50000, "state": "Down"}]}},
+           "mpls": {"c1": {"vpnv4_neighbors": [{"neighbor": "10.0.0.3", "state": "Idle"}]}},
+           "ipv6_routing": {"c1": {"bgp_ipv6_neighbors": [{"neighbor": "2001:db8::1", "state": "Active"}]}}}
+    sb = _signals(bad)
+    assert sb["evpn_down"] and sb["nve_vni_down"] and sb["mpls_vpnv4_down"] and sb["ipv6_bgp_down"]
+
+
+def test_wave_plan_survives_mixed_type_switch_names():
+    """[audit-7 leaf-poison class] the bin-pack tie-breaker sorted on the BARE first switch name across
+    groups, so two equal-size groups whose names are of different types ("switches": [10, 20] vs ["a","b"]
+    -- the exact shape _skey's docstring names) raised TypeError: '<' not supported between 'str' and 'int',
+    aborting the whole blueprint (a 500 on the unwrapped /design + /architecture_coverage)."""
+    from cisco_toolkit.design_advisor import _wave_plan, compute_design_blueprint
+    wp = _wave_plan({"move_groups": [{"switches": [10, 20]}, {"switches": ["a", "b"]}]})
+    assert wp["n_move_groups"] == 2 and sum(w["n_switches"] for w in wp["waves"]) == 4
+    assert compute_design_blueprint({"move_groups": [{"switches": [10, 20]},
+                                                     {"switches": ["a", "b"]}]})["target_state"]["wave_plan"]
+    # refutation: an all-string estate keeps its exact previous ordering (largest first, then name)
+    wp2 = _wave_plan({"move_groups": [{"switches": ["b1", "b2"]}, {"switches": ["a1"]}]})
+    assert wp2["waves"][0]["switches"] == ["b1", "b2", "a1"]
+
+
+def _bom_for(bands):
+    from cisco_toolkit.design_advisor import _replacement_bom
+    return _replacement_bom({"lifecycle_risk": {"per_device": [{"band": b, "model": m}
+                                                               for b, m in bands]}})
+
+
+def test_replacement_bom_lists_UNDETERMINED_platforms_instead_of_omitting_the_section():
+    """An unbandable platform is not a supportable one, and §5.1 vanished entirely for a fleet of them.
+
+    `_replacement_bom` bucketed `past-ldos` -> replace and the refresh bands -> refresh, and Unknown
+    fell through BOTH. `design.py` gates the "5.1 Replacement Bill of Materials" heading on
+    `n_replace or n_refresh`, so a fleet whose every platform was unmatched by the offline EoX KB
+    produced two empty lists and NO SECTION AT ALL — indistinguishable, to the reader, from a fleet
+    that genuinely needs no procurement.
+
+    An omitted section is the quietest form of absence-as-health: there is nothing on the page to
+    disagree with. These are deliberately NOT counted as replace-now — nothing observed says they are
+    past support — but they must be visible and resolvable.
+    """
+    b = _bom_for([("Unknown", "WS-C6509-E"), ("Unknown", "WS-C6509-E"), ("Unknown", "WS-C3560-48PS")])
+    assert b["n_undetermined"] == 3, b
+    assert b["n_replace"] == 0 and b["n_refresh"] == 0, "undetermined must not be costed as replace"
+    assert ["WS-C6509-E", 2] in b["undetermined"], b["undetermined"]
+    assert "undetermined" in (b.get("note") or "").lower()
+    # the §5.1 heading gate in design.py
+    assert b["n_replace"] or b["n_refresh"] or b["n_undetermined"], "section would still be omitted"
+
+
+def test_replacement_bom_still_omits_the_section_for_a_genuinely_clean_fleet():
+    """Non-vacuity: a fully-assessed Active fleet must not gain an empty procurement section."""
+    b = _bom_for([("Active", "C9300-48P"), ("Active", "C9300-48P")])
+    assert not (b["n_replace"] or b["n_refresh"] or b["n_undetermined"]), b
+
+
+def test_replacement_bom_keeps_real_replacements_separate_from_undetermined():
+    """A real past-LDoS asset must still be costed, and not be diluted by the coverage bucket."""
+    b = _bom_for([("Past-LDoS", "WS-C2960-24TT-L"), ("Unknown", "WS-C6509-E")])
+    assert b["n_replace"] == 1 and b["n_undetermined"] == 1, b
+    assert ["WS-C2960-24TT-L", 1] in b["replace_now"]

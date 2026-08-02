@@ -3,7 +3,7 @@
 The lifecycle bands and the "Snapshot captured" cover date must anchor to WHEN THE EVIDENCE WAS
 COLLECTED, not the wall-clock day the pipeline happens to (re)run. Otherwise a "frozen" assessment
 silently re-classifies devices against today's calendar -- the Nexus-5600 LDoS boundary (2026-04-30)
-alone flips 15 [HISTORY-REDACTED] devices Near->Past in a single day -- and every regenerated cover claims the network
+alone flips 15 Meridian devices Near->Past in a single day -- and every regenerated cover claims the network
 was sampled on a day nothing was actually collected.
 """
 import os
@@ -59,20 +59,28 @@ def test_derive_collected_at_unparseable_is_flagged(tmp_path):
 # --- compute_lifecycle_risk: bands depend ONLY on the passed asof, which it echoes back (provenance) ---
 
 def test_lifecycle_asof_is_returned_and_pinned():
-    devs = {"nx1": {"model": "N5K-C5672UP", "sw_version": "7.3(0)N1(1)"}}  # Nexus 5600, ldos 2026-04-30
-    r = compute_lifecycle_risk(devs, asof="2026-06-13")
-    assert r["asof"] == "2026-06-13"
-    assert r["summary"]["asof"] == "2026-06-13"
-    assert r["summary"]["by_band"].get("Past-LDoS") == 1  # Jun-13 is past the Apr-30 LDoS
+    # Catalyst 3650 LDoS 2026-10-31 is copied from Cisco EOL13617.
+    devs = {"sw1": {"model": "WS-C3650-48P", "sw_version": "16.12.10"}}
+    r = compute_lifecycle_risk(devs, asof="2026-11-13")
+    assert r["asof"] == "2026-11-13"
+    assert r["summary"]["asof"] == "2026-11-13"
+    assert r["summary"]["by_band"].get("Past-LDoS") == 1
 
 
 def test_lifecycle_boundary_drift_guard():
-    """The Nexus-5600 LDoS boundary flips Near->Past across ONE calendar day -- exactly why asof must be
+    """The Catalyst-3650 LDoS boundary flips Near->Past across ONE calendar day -- exactly why asof must be
     pinned to collection time rather than wall-clock-at-regen. Locks the boundary so a refactor can't
     silently neutralise the sensitivity."""
-    devs = {f"nx{i}": {"model": "N5K-C5672UP", "sw_version": "7.3"} for i in range(3)}
-    on_boundary = compute_lifecycle_risk(devs, asof="2026-04-30")["summary"]["by_band"]
-    day_after = compute_lifecycle_risk(devs, asof="2026-05-01")["summary"]["by_band"]
+    devs = {
+        f"sw{i}": {"model": "WS-C3650-48P", "sw_version": "16.12"}
+        for i in range(3)
+    }
+    on_boundary = compute_lifecycle_risk(devs, asof="2026-10-31")["summary"][
+        "by_band"
+    ]
+    day_after = compute_lifecycle_risk(devs, asof="2026-11-01")["summary"][
+        "by_band"
+    ]
     assert on_boundary.get("Past-LDoS", 0) == 0   # exactly on LDoS, strict '>' -> not yet past
     assert day_after.get("Past-LDoS", 0) == 3     # one day later, all past
     assert on_boundary != day_after

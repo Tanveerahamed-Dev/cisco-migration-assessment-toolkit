@@ -174,7 +174,14 @@ function WaveCard({ w, i }: { w: CutoverWave; i: number }) {
 /* Existing war-room runs over this plan + the entry point to start a new one. */
 function ExecutionRuns({ snapId }: { snapId: number }) {
   const navigate = useNavigate();
-  const { data: runs, reload } = useAsync(() => api.listExecutions(snapId), [snapId]);
+  // audit FE-14: this destructured `data` + `reload` only, so a failed GET
+  // /api/snapshots/{id}/executions (a 403 from the cross-site guard, the endpoint's own 404
+  // "Snapshot not found", a dropped connection) left `runs === null` and the chip list below simply
+  // did not render — identical to the honest "no runs yet" state. The engineer sees a bare "Start
+  // execution run" button, concludes nothing is open for this snapshot, and opens a SECOND war room
+  // over a cutover another operator already has live. Same class as the Snapshot page's FE-2/FE-3:
+  // an absence claimed out of a request that failed. `loading` is read for the same reason.
+  const { data: runs, error: listError, loading: listLoading, reload } = useAsync(() => api.listExecutions(snapId), [snapId]);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const start = () => {
@@ -200,6 +207,20 @@ function ExecutionRuns({ snapId }: { snapId: number }) {
         </span>
       </div>
       {error && <div style={{ color: "var(--crit)", fontSize: 12.5, marginTop: 8 }}>Could not start the run: {error}</div>}
+      {listError && (
+        <div className="panel" role="status" style={{ borderColor: "var(--risk)", padding: "8px 12px", marginTop: 10 }}>
+          <b style={{ color: "var(--risk)" }}>Existing runs could not be listed.</b>{" "}
+          <span className="dim" style={{ fontSize: 12.5 }}>
+            {listError} — this is <b>not evidence that no run is open</b> for this snapshot. Reload
+            before starting a new one; two live war rooms over one cutover produce two conflicting
+            as-executed records.
+          </span>{" "}
+          <button className="btn ghost" style={{ padding: "2px 9px", fontSize: 11 }} onClick={reload}>Retry</button>
+        </div>
+      )}
+      {listLoading && !runs && !listError && (
+        <div className="faint" style={{ fontSize: 11.5, marginTop: 8 }}>Checking for existing runs…</div>
+      )}
       {(runs || []).length > 0 && (
         <div className="row-flex" style={{ marginTop: 10 }}>
           {(runs || []).map((r) => (

@@ -161,6 +161,14 @@ function WaveRunCard({ w, waveState, live, act }: {
   const nDone = w.steps.filter((s) => s.status !== "pending").length;
   const nPass = w.checks.filter((c) => c.result === "pass").length;
   const nFail = w.checks.filter((c) => c.result === "fail").length;
+  // audit FE-13: the counter below read `nFail ? crit : ok`, so a wave whose validation checks were
+  // ALL still pending (nPass = nFail = 0) rendered in exactly the green a wave that passed every
+  // check does. That is "not observed" wearing the colour of "healthy" on the one strip an engineer
+  // scans right before pressing "✓ Complete wave" — and colour was the only signal, so a colour-blind
+  // reader had none at all. Green now means VERIFIED (every check recorded, none failed); anything
+  // unrecorded is neutral AND named in the label.
+  const nPending = w.checks.filter((c) => c.result === "pending").length;
+  const checkTone = nFail ? "var(--crit)" : nPending || !nPass ? "var(--text-faint)" : "var(--ok)";
 
   return (
     <div className="wave-card" style={{ ["--gc" as any]: WAVE_STATE_COLOR[waveState] || "var(--border)" }}>
@@ -176,7 +184,7 @@ function WaveRunCard({ w, waveState, live, act }: {
         </span>
         <span className="wmeta">
           <span><span className="num">{nDone}/{w.steps.length}</span><span className="lbl">steps</span></span>
-          <span><span className="num" style={{ color: nFail ? "var(--crit)" : "var(--ok)" }}>{nPass}✓ {nFail}✗</span><span className="lbl">checks</span></span>
+          <span><span className="num" style={{ color: checkTone }}>{nPass}✓ {nFail}✗</span><span className="lbl">checks{nPending ? ` · ${nPending} unrecorded` : ""}</span></span>
           <span><span className="num" style={{ color: w.est_window_minutes ? "var(--risk)" : "var(--ok)" }}>{w.est_window_label}</span><span className="lbl">planned window</span></span>
         </span>
       </div>
@@ -325,10 +333,21 @@ export default function ExecutionPage() {
     // Predict the verdict the backend will derive: a rolled-back wave dominates PARTIAL.
     const rolledBack = ex.waves.some((w) => w.closeout.decision === "ROLLED BACK");
     const predicted = rolledBack ? "ROLLED BACK" : "PARTIALLY IMPLEMENTED";
+    // audit FE-10: the warning used to key on `open` alone — waves with NO decision. But the backend
+    // (webapp/backend/execution.py :: _derive_outcome) is
+    //     `if not decisions or any(d != "COMPLETE" for d in decisions): return OUTCOME_PARTIAL`
+    // so a wave closed out DEFERRED (or ROLLED BACK) also forces PARTIALLY IMPLEMENTED while
+    // leaving `open === 0`. That combination hit the unconditional "the outcome is derived for the
+    // PIR" wording, which warns of nothing — the engineer signs off expecting SUCCESSFUL and the
+    // PIR reads PARTIALLY IMPLEMENTED. Count every wave that will NOT satisfy the backend's
+    // COMPLETE test, not just the un-closed ones.
+    const notComplete = ex.waves.filter((w) => w.closeout.decision !== "COMPLETE").length;
     const msg = status === "aborted"
       ? "Abort this run? The record is kept and the PIR will show ABORTED."
       : open ? `${open} wave(s) are not closed out — finishing now derives a ${predicted} outcome. Finish anyway?`
-        : "Finish this run? It becomes read-only and the outcome is derived for the PIR.";
+        : notComplete
+          ? `${notComplete} wave(s) closed out as something other than COMPLETE — finishing now derives a ${predicted} outcome. Finish anyway?`
+          : "Finish this run? It becomes read-only and the outcome is derived for the PIR.";
     if (!window.confirm(msg)) return;
     apply(() => api.execFinish(eid, status, "", operator));
   };
@@ -379,9 +398,12 @@ export default function ExecutionPage() {
           <div className="lbl"><b><CountUp value={p.pct} />%</b> · {p.n_steps_done} of {p.n_steps} steps done{p.n_steps_skipped ? ` · ${p.n_steps_skipped} skipped` : ""}</div>
         </div>
         <div className="execstat">
-          <b style={{ color: "var(--ok)" }}>{p.checks.pass}✓</b>
+          {/* audit FE-13 (run scope): same rule as the per-wave counter — `0✓ 0✗` in green reads as
+              "no failures", when it is really "nothing recorded". The server already publishes the
+              pending count in progress.checks, so name it rather than re-deriving one here. */}
+          <b style={{ color: p.checks.pass && !p.checks.pending ? "var(--ok)" : "var(--text-faint)" }}>{p.checks.pass}✓</b>
           <b style={{ color: p.checks.fail ? "var(--crit)" : "var(--text-faint)" }}>{p.checks.fail}✗</b>
-          <span className="lbl">validation</span>
+          <span className="lbl">validation{p.checks.pending ? ` · ${p.checks.pending} pending` : ""}</span>
         </div>
         <div className="execstat">
           <b style={{ color: p.n_deviations ? "var(--risk)" : "var(--text-faint)" }}><CountUp value={p.n_deviations} /></b>

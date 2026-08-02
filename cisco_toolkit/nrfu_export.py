@@ -64,6 +64,15 @@ def _as_dict(v) -> dict:
     return v if isinstance(v, dict) else {}
 
 
+def _as_list(v) -> list:
+    """The list twin of _as_dict. `x or []` guards None/empty but keeps a TRUTHY non-list (a bare
+    `5`/`True`, or the `float('inf')` json.loads makes of a bare JSON `Infinity`), and the next
+    `for ... in` raises `TypeError: 'float' object is not iterable` -- aborting the whole NRFU pack
+    for one malformed leaf. A malformed list-shaped block reads as absent (its cases abstain), never
+    a crash."""
+    return v if isinstance(v, list) else []
+
+
 def _fld(rec, name: str) -> str:
     """Field access tolerant of both the snapshot's dict-shaped interface records and live
     InterfaceData objects (and of sparse snapshots, where empty fields are omitted entirely)."""
@@ -123,7 +132,7 @@ def compute_nrfu_commands(snap: Optional[dict] = None) -> dict:
     # cases under "(unscheduled)" so nothing is silently skipped (coverage-honesty).
     wave_of: Dict[str, str] = {}
     for gi, g in enumerate(move_groups, 1):
-        for h in (g.get("switches") or []) if isinstance(g, dict) else []:
+        for h in _as_list(g.get("switches")) if isinstance(g, dict) else []:
             wave_of.setdefault(str(h), f"Group {gi}")
     wave_hosts: Dict[str, List[str]] = {}
     for h in hosts:
@@ -232,7 +241,7 @@ def compute_nrfu_commands(snap: Optional[dict] = None) -> dict:
             for proto, cmd, verb in (("ospf", "show ip ospf neighbor", "in FULL"),
                                      ("eigrp", "show ip eigrp neighbors", "present"),
                                      ("bgp", "show ip bgp summary", "Established")):
-                peers = sorted({str(n.get("neighbor")) for n in (nb.get(proto) or [])
+                peers = sorted({str(n.get("neighbor")) for n in _as_list(nb.get(proto))
                                 if isinstance(n, dict) and n.get("neighbor")})
                 if peers:
                     case(h, 2, "per-site", cmd,
@@ -283,7 +292,7 @@ def compute_nrfu_commands(snap: Optional[dict] = None) -> dict:
         for dom in domains:
             if not isinstance(dom, dict):
                 continue
-            touch = sorted({str(x) for x in (dom.get("switches") or [])} & wave_set)
+            touch = sorted({str(x) for x in _as_list(dom.get("switches"))} & wave_set)
             if not touch:
                 continue
             name = str(dom.get("domain") or dom.get("id") or "application domain")
@@ -311,7 +320,17 @@ def compute_nrfu_commands(snap: Optional[dict] = None) -> dict:
 
 
 def _safe_name(s) -> str:
-    return re.sub(r"[^A-Za-z0-9._-]+", "_", str(s)).strip("_") or "unnamed"
+    """One path COMPONENT from untrusted snapshot text. The whitelist rewrites every separator
+    (`/`, `\\`, `:`) to `_`, but it KEEPS `.` — and `.`/`..` are themselves path components, so
+    `_safe_name("..")` returned `".."` and `os.path.join(out_dir, "..")` resolved to the PARENT of
+    `--out`: a crafted `wave_id` wrote the command pack outside the directory the operator named.
+    write_nrfu_pack already treats snap['nrfu_commands'] as possibly tampered (it refuses non-read-only
+    command text); the path components need the same treatment. An all-dot name is never a real wave
+    or host, so it degrades to the same 'unnamed' sentinel an empty name already used."""
+    n = re.sub(r"[^A-Za-z0-9._-]+", "_", str(s)).strip("_")
+    if not n or set(n) <= {"."}:          # "", ".", "..", "..." -> traversal / self-reference
+        return "unnamed"
+    return n
 
 
 def write_nrfu_pack(snap: Optional[dict] = None, out_dir: str = ".") -> List[str]:
@@ -325,9 +344,9 @@ def write_nrfu_pack(snap: Optional[dict] = None, out_dir: str = ".") -> List[str
     if not (isinstance(nc, dict) and isinstance(nc.get("waves"), list)):
         nc = compute_nrfu_commands(s)
     written: List[str] = []
-    for w in nc.get("waves") or []:
+    for w in _as_list(nc.get("waves")):
         wdir = os.path.join(out_dir, _safe_name(w.get("wave_id", "wave")))
-        for dev in w.get("devices") or []:
+        for dev in _as_list(w.get("devices")):
             host = str(dev.get("host") or "device")
             os.makedirs(wdir, exist_ok=True)
             lines = [f"! NRFU verification commands — wave {w.get('wave_id')} — device {host} "
@@ -335,7 +354,7 @@ def write_nrfu_pack(snap: Optional[dict] = None, out_dir: str = ".") -> List[str
                      f"! {NRFU_BANNER}",
                      "! READ-ONLY: show/ping/traceroute class only; '!' lines are comments.",
                      ""]
-            for c in dev.get("cases") or []:
+            for c in _as_list(dev.get("cases")):
                 # belt-and-braces vs a tampered pre-published snap['nrfu_commands']: comment fields
                 # are re-collapsed to one line, and a command that is not a single-line
                 # show/ping/traceroute is REFUSED into a comment — never an executable line.

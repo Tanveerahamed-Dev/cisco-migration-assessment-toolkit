@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Link, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import Landing from "./pages/Landing";
 import Dashboard from "./pages/Dashboard";
@@ -8,7 +8,7 @@ import ExecutionPage from "./pages/Execution";
 import AboutPage from "./pages/About";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useViewTransition } from "./components/ui";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import type { AppIdentity } from "./api";
 
 function useTheme() {
@@ -62,24 +62,70 @@ export default function App() {
   }, [location, shown, run]);
 
   const [app, setApp] = useState<AppIdentity | null>(null);
+  const [authRequired, setAuthRequired] = useState(false);
+  const [token, setToken] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [authGeneration, setAuthGeneration] = useState(0);
+
+  const applyIdentity = (identity: AppIdentity | null) => {
+    setApp(identity);
+    if (identity?.name) document.title = `${identity.name} — Network Migration Assessment`;
+  };
+
   useEffect(() => {
-    // Fire-and-forget: an unreachable API leaves the fallback brand (the SPA still renders).
+    // An unreachable API leaves the fallback brand. A 401 means token mode is active, so expose
+    // the shipped browser-session exchange rather than leaving every route permanently broken.
     api.meta()
-      .then((m) => {
-        setApp(m.app ?? null);
-        if (m.app?.name) document.title = `${m.app.name} — Network Migration Assessment`;
-      })
-      .catch(() => {});
+      .then((m) => applyIdentity(m.app ?? null))
+      .catch((error) => {
+        if (error instanceof ApiError && error.status === 401) setAuthRequired(true);
+      });
   }, []);
+
+  async function signIn(event: FormEvent) {
+    event.preventDefault();
+    setAuthError("");
+    try {
+      await api.authenticate(token);
+      // Prove the HttpOnly cookie is usable before dismissing the gate.
+      const meta = await api.meta();
+      applyIdentity(meta.app ?? null);
+      setToken("");
+      setAuthRequired(false);
+      // Pages may have mounted and received their own 401 before the meta probe exposed the
+      // sign-in gate. Remount the routed page so every data request retries with the new cookie.
+      setAuthGeneration((generation) => generation + 1);
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Authentication failed.");
+    }
+  }
+
   return (
     <>
       <TopBar app={app} />
+      {authRequired && (
+        <div className="auth-overlay">
+          <form className="auth-card" role="dialog" aria-modal="true"
+                aria-labelledby="auth-title" onSubmit={signIn}>
+            <h2 id="auth-title">Atlas sign-in</h2>
+            <p className="muted">
+              This server requires its ASSESSHUB_TOKEN. The token is exchanged for an HttpOnly
+              same-site browser session and is not saved in local storage.
+            </p>
+            <label htmlFor="atlas-token">API token</label>
+            <input id="atlas-token" type="password" value={token} autoFocus autoComplete="off"
+                   onChange={(event) => setToken(event.target.value)} />
+            {authError && <div className="auth-error" role="alert">{authError}</div>}
+            <button className="btn primary" type="submit" disabled={!token}>Sign in</button>
+          </form>
+        </div>
+      )}
       {/* WEBAP-01: a render crash in any one route/panel must degrade to a recoverable card, not white-screen
           the whole SPA. The boundary is keyed by pathname so navigating (the TopBar nav lives ABOVE it) remounts
           it fresh and clears a prior error. Keyed to `shown` (the LAGGED pathname), never `location` directly —
           keying to `location` would remount the boundary, and destroy the outgoing page, before the view
           transition below gets to snapshot it, silently defeating the whole mechanism. */}
-      <ErrorBoundary key={shown.pathname}>
+      <ErrorBoundary key={`${shown.pathname}:${authGeneration}`}>
         <Routes location={shown}>
           <Route path="/" element={<Landing />} />
           <Route path="/campaigns" element={<Dashboard />} />

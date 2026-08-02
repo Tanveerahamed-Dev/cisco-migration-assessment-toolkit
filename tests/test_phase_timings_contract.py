@@ -138,14 +138,32 @@ def test_any_non_success_ok_value_is_treated_as_failure(tmp_path, ok_value):
         ing._assert_redaction_phases_ran(Path(str(xlsx)), engine_output="")
 
 
-def test_an_absent_sidecar_is_tolerated(tmp_path):
-    """The one case that must NOT refuse: the sidecar's write is fail-soft in the engine, so its
-    absence proves nothing and the stderr arm carries the run alone."""
+def test_an_absent_sidecar_now_REFUSES(tmp_path):
+    """Absence is anomalous, because the producer no longer writes this ledger fail-soft.
+
+    This test used to assert the opposite, and the reasoning was sound at the time: *"the sidecar's
+    write is fail-soft in the engine, so its absence proves nothing."* Under that producer,
+    refusing on absence would have blocked good deliveries whose write merely failed — so
+    tolerance was correct, and the consumer's later hardening to "the MANDATORY phase ledger"
+    left the two sides contradicting each other.
+
+    The producer was fixed rather than the consumer relaxed (COLLECT_PARSE_V3_23_0.py records a
+    MANDATORY failure when the ledger cannot be written). Absence therefore now means the run
+    genuinely failed to leave its evidence, which is the only reading under which refusing is not a
+    false alarm. The alternative — restoring tolerance — would have re-admitted the exact
+    silent-degrade this guard exists to close: a redaction phase that never ran being
+    indistinguishable from one that ran clean.
+    """
     from pathlib import Path
 
     xlsx = tmp_path / "Assessment.xlsx"
     xlsx.write_bytes(b"xlsx")
-    ing._assert_redaction_phases_ran(Path(str(xlsx)), engine_output="")   # must not raise
+    with pytest.raises(ing.EngineRunError) as e:
+        ing._assert_redaction_phases_ran(Path(str(xlsx)), engine_output="")
+    assert "ledger is absent" in str(e.value)
+    # It must refuse HONESTLY: unverifiable, not "the redaction failed". The distinction is what a
+    # field engineer acts on — re-run and check, versus do not send.
+    assert "COULD NOT BE VERIFIED" in str(e.value)
 
 
 # ── the parser's own defensive branches ────────────────────────────────────────────────────────

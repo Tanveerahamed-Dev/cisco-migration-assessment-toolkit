@@ -126,7 +126,7 @@ def test_analyze_reexported_and_functional(cp):
     assert len(links) == 1 and links[0]["confirmation"] == "Both ends"
     # FQDN regression: a scanned host advertised over CDP by its domain-qualified id must
     # resolve to its short scanned hostname in b_host - otherwise the diagram / Topology
-    # Links sheet split it into a duplicate node (real-world bug: '*.broadcast.[HISTORY-REDACTED]' ids).
+    # Links sheet split it into a duplicate node (real-world bug: '*.broadcast.example.net' ids).
     fq = {
         "core1": {"Te1/1/1": ID(port="Te1/1/1", cdp_neighbor="acc1.example.com",
                                 neighbor_port="Te1/49", endpoint_type="Switch")},
@@ -388,15 +388,18 @@ def test_redact_snapshot_pseudonymizes_consistently():
     assert acl["src"]["wild"] == "0.0.0.255" and acl["dst"]["wild"] == "0.0.0.255"
     # consistent: the same MAC on two ports maps to the same pseudonym
     assert ifs["Gi1/0/1"]["end_host_mac"] == ifs["Gi1/0/2"]["end_host_mac"]
-    # subnet preserved: two hosts in one /24 keep the same redacted /24, distinct host octets
+    # subnet grouping is preserved in the synthetic network marker, with distinct host markers
     a, b = ifs["Gi1/0/1"]["end_host_ip"], ifs["Gi1/0/2"]["end_host_ip"]
-    assert a.rsplit(".", 1)[0] == b.rsplit(".", 1)[0] and a != b
+    assert a.split("-h", 1)[0] == b.split("-h", 1)[0] and a != b
     # an IP embedded in free text is redacted too, but the surrounding words survive
     hb = ifs["Vlan10"]["hsrp_behavior"]
     assert "10.0.10.1" not in hb and hb.startswith("HSRP grp10 active vIP ")
     # the same serial in two fields maps consistently; hostnames are kept; input not mutated
     dev = r["devices"]["core1"]
-    assert dev["serial_number"] == dev["chassis_serial"] and dev["serial_number"].startswith("SN")
+    assert (
+        dev["serial_number"] == dev["chassis_serial"]
+        and dev["serial_number"].startswith("serial-")
+    )
     assert "core1" in r["interfaces"]
     assert snap["interfaces"]["core1"]["Gi1/0/1"]["end_host_ip"] == "10.0.10.5"
 

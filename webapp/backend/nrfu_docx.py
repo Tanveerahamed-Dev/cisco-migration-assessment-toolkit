@@ -49,6 +49,17 @@ def write_nrfu_docx(output_path: str, snap_dict: Dict[str, Any], label: str) -> 
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Pt
 
+    from cisco_toolkit.textutils import xml_safe, xml_safe_deep
+
+    # Deep-sanitize ALL device-derived text up front, exactly like the engine writers (design/crd/
+    # archreview/engagement). `add_table` sanitizes every cell, but this writer also emits device text on
+    # DIRECT paragraph paths that bypass the table helper (the §2 "Phase II tests by category" join reads
+    # `validation_plan` categories straight from the snapshot), and one U+FFFE/U+FFFF/lone surrogate/C0
+    # control char there still aborts `doc.save()` with "All strings must be XML compatible" — a 500 that
+    # repeats on every later read of a snapshot the upload path stores verbatim (stored DoS, see docx_style).
+    snap_dict = xml_safe_deep(snap_dict if isinstance(snap_dict, dict) else {})
+    label = xml_safe(label) if isinstance(label, str) else (str(label) if label is not None else "")
+
     doc = new_document()
 
     def table(headers: List[str], rows: List[List[Any]], widths: List[float] | None = None):
@@ -179,19 +190,37 @@ def write_nrfu_docx(output_path: str, snap_dict: Dict[str, Any], label: str) -> 
     if needs:
         limits.append(f"{len(needs)} target-state design area(s) still need a requirement before they can be "
                       "designed and acceptance-tested — see the design blueprint's open questions.")
+    # EX-nrfu-004: which RECOMMENDED decisions actually have a derived acceptance test. `phase_by` is keyed
+    # on presence, so a decision absent from design_nrfu is UNCOVERED — it must never render as "Tested".
+    # str() on both sides together (an unhashable decision_id/id in a malformed upload would 500 the dict
+    # build and the lookup alike; stringifying only one side would stop well-formed lookups resolving).
+    phase_by = {str(i.get("decision_id")): i.get("phase", "") for i in nrfu_items}
+    uncovered = [d for d in rec if str(d.get("id")) not in phase_by]
+    if uncovered:
+        limits.append(f"{len(uncovered)} recommended design decision(s) have NO acceptance test derived in "
+                      "the design NRFU — they are NOT validated by this plan; derive test cases (or record "
+                      "an explicit waiver) before sign-off.")
     if rec or needs or limits:
         doc.add_heading("2.1 Design-decision coverage & scope limits", level=2)
         doc.add_paragraph(
-            "Traceability back to the assessment's target-state design: each RECOMMENDED design decision is "
-            "covered by an acceptance test in the phase shown; a decision that still needs a requirement is "
-            "not yet testable and is an explicit coverage boundary, not a silent gap.")
+            "Traceability back to the assessment's target-state design: a RECOMMENDED design decision reads "
+            "'Tested' ONLY where the design NRFU actually derived an acceptance test for it, in the phase "
+            "shown; a decision with no derived test, and one that still needs a requirement, are explicit "
+            "coverage boundaries listed below — never a silent gap.")
         if rec or needs:
-            # str() on BOTH the comprehension key and the lookup key: an unhashable decision_id / id
-            # (a list/dict in a malformed upload) would 500 the dict build and the .get() alike. Both
-            # sides must be stringified together or well-formed lookups would stop resolving.
-            phase_by = {str(i.get("decision_id")): i.get("phase", "") for i in nrfu_items}
-            trace = [(d.get("title", d.get("id", "")), d.get("priority", ""),
-                      "Tested — " + (phase_by.get(str(d.get("id"))) or "post-cutover-functional")) for d in rec]
+            # EX-nrfu-004: the coverage column is driven by ACTUAL PRESENCE in design_nrfu. It previously
+            # printed "Tested — " + (phase or "post-cutover-functional") UNCONDITIONALLY, so a decision with
+            # no design_nrfu item read as covered and a test lead signed the ATP believing it had test cases
+            # it does not — the exact silent gap the paragraph above promises never happens. `phase_by` may
+            # legitimately hold "" (an item that states no phase); that is still COVERED, just unphased, so
+            # the branch keys on `in phase_by`, never on the phase's truthiness.
+            def _coverage(d: Dict[str, Any]) -> str:
+                key = str(d.get("id"))
+                if key not in phase_by:
+                    return "NOT COVERED — no acceptance test derived for this decision"
+                return "Tested — " + (str(phase_by[key]).strip() or "phase not stated in the design NRFU")
+
+            trace = [(d.get("title", d.get("id", "")), d.get("priority", ""), _coverage(d)) for d in rec]
             trace += [(d.get("title", d.get("id", "")), d.get("priority", ""),
                        "Not testable until the requirement is supplied") for d in needs]
             table(["Target-state design decision", "Priority", "NRFU coverage"], trace[:40],

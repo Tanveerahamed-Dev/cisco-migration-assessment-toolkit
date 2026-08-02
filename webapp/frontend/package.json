@@ -3,7 +3,10 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "AssessHub — web cockpit for the Cisco Migration-Assessment engine.",
+  "description": "AssessHub \u2014 web cockpit for the Cisco Migration-Assessment engine.",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -p tsconfig.json && vite build",
@@ -18,7 +21,7 @@
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "react-force-graph-3d": "^1.29.1",
-    "react-router-dom": "6.28.0",
+    "react-router-dom": "6.30.4",
     "three": "^0.169.0"
   },
   "devDependencies": {
@@ -33,7 +36,7 @@
     "@vitest/coverage-v8": "^4.1.10",
     "jsdom": "^29.1.1",
     "typescript": "5.7.2",
-    "vite": "6.0.7",
+    "vite": "6.4.3",
     "vitest": "^4.1.10"
   }
 }

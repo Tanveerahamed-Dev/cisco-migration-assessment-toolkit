@@ -5,6 +5,14 @@ body, navy headings, "Light Grid Accent 1" banded tables). The helpers lived as 
 copies — pir_docx's column-width fix never reached the other two — so the style layer now lives here
 once. python-docx stays an optional dependency: nothing here imports it at module load; helpers
 import it inside the call, exactly like the writers themselves.
+
+Every string these helpers write is routed through ``cisco_toolkit.textutils.xml_safe``, exactly like
+the engine twin ``cisco_toolkit.docmeta.add_table`` / ``_kv``. Device free-text is collected with
+``errors='ignore'``, which passes valid-UTF-8 C0 control chars, U+FFFE/U+FFFF noncharacters and lone
+surrogates straight through — and ONE of them anywhere in a cell makes ``doc.save()`` raise
+``ValueError: All strings must be XML compatible``. On this surface that is not a crash, it is a STORED
+denial of service: the snapshot is persisted verbatim, so ``GET /api/snapshots/{id}/deliverable/nrfu``
+(and /cutover, and the PIR export) then returns HTTP 500 for that snapshot permanently.
 """
 
 from __future__ import annotations
@@ -34,12 +42,20 @@ def new_document() -> Any:
     return doc
 
 
+def safe(value: Any) -> Any:
+    """``cisco_toolkit.textutils.xml_safe``, imported inside the call like the docx imports above
+    (the engine's sys.path bootstrap runs in `backend.engine`, which the writers import first)."""
+    from cisco_toolkit.textutils import xml_safe
+
+    return xml_safe(value)
+
+
 def kv(p: Any, label_text: str, value: str, color: tuple = NAVY) -> None:
     """Bold coloured label + plain value on an existing paragraph."""
-    r = p.add_run(label_text)
+    r = p.add_run(safe(label_text))
     r.bold = True
     r.font.color.rgb = ink(color)
-    p.add_run(" " + (value if value else "—"))
+    p.add_run(" " + (safe(value) if value else "—"))
 
 
 def add_table(doc: Any, headers: List[str], rows: List[List[Any]],
@@ -56,14 +72,14 @@ def add_table(doc: Any, headers: List[str], rows: List[List[Any]],
     t.style = "Light Grid Accent 1"
     for i, hd in enumerate(headers):
         cell = t.rows[0].cells[i]
-        cell.text = str(hd)
+        cell.text = safe(str(hd))     # sanitize: one XML-illegal char in any cell aborts the whole .docx
         for para in cell.paragraphs:
             for run in para.runs:
                 run.bold = True
     for row in rows:
         cells = t.add_row().cells
         for i, v in enumerate(row):
-            cells[i].text = "" if v is None else str(v)
+            cells[i].text = "" if v is None else safe(str(v))
     if widths:
         t.autofit = False
         for i, w in enumerate(widths):

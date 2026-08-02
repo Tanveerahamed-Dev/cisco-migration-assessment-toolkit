@@ -1,6 +1,7 @@
 # AssessHub generated / local artifacts
 frontend/node_modules/
-frontend/dist/
+# The production SPA is a shipped runtime asset. Keep it versioned so wheels and
+# sdists built without Node are complete and byte-reviewable.
 frontend/.vite/
 *.tsbuildinfo
 data/              # local SQLite store (assesshub.db)

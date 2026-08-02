@@ -20,6 +20,8 @@ import os
 import threading
 from typing import Dict, List
 
+from .input_custody import read_text as read_custodied_text
+
 logger = logging.getLogger(__name__)
 
 _CISCO_ERRORS = (
@@ -342,10 +344,10 @@ def _record_yield(fn, args, result, error: bool) -> None:
 def _load_cmd_output(cmd_to_file: Dict[str, str], *cmd_variants: str) -> str:
     for cmd in cmd_variants:
         p = cmd_to_file.get(cmd)
-        if p and os.path.isfile(p):
+        if p:
             try:
-                with open(p, "r", encoding="utf-8", errors="ignore") as f:
-                    content = f.read()
+                content = read_custodied_text(
+                    p, encoding="utf-8", errors="ignore")
                 stripped = content.strip()
                 if not stripped: continue
                 first_chunk = stripped[:200].lower()
@@ -377,11 +379,11 @@ def cmd_capture_state(cmd_to_file: Dict[str, str], *cmd_variants: str) -> str:
     rank = {"missing": 0, "error": 1, "empty": 2, "usable": 3}
     for cmd in cmd_variants:
         p = cmd_to_file.get(cmd)
-        if not p or not os.path.isfile(p):
+        if not p:
             continue
         try:
-            with open(p, "r", encoding="utf-8", errors="ignore") as f:
-                content = f.read()
+            content = read_custodied_text(
+                p, encoding="utf-8", errors="ignore")
         except Exception:
             continue
         stripped = content.strip()

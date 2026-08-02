@@ -14,7 +14,7 @@
   during render (child effects fire before parent effects — an effect would be too late) and serves the
   synthetic payloads in `.design-sync/providers/sample-data.ts`; wraps children in `MemoryRouter`
   because CutoverPlanner uses `useNavigate`/`Link` (throws outside a Router).
-- **Sample data is 100% fictional** (Meridian fleet, TEST-NET IPs). Never regenerate it from real [HISTORY-REDACTED]
+- **Sample data is 100% fictional** (Meridian fleet, TEST-NET IPs). Never regenerate it from real Meridian Media
   snapshots — client-confidential data must not be uploaded to claude.ai (no-egress doctrine).
 - `componentSrcMap` enumerates all 16 components explicitly; because the map is non-empty, the converter's
   src content-scan never runs, so pages (`Dashboard`, `Landing`, …) and `App` need no `null` exclusions.
@@ -66,14 +66,14 @@
   `.design-sync/.cache/upload-manifest.txt` (88 files; dot-files + `_screenshots/` stay local; `tokens/` +
   `guidelines/` are empty dirs — nothing to upload from them).
 - ✅ **2026-07-02 UPLOADED — first sync COMPLETE.** The user switched authorization to a claude.ai account WITH
-  a subscription (owner display name "taha") holding a manually-created EMPTY design-system project named
+  a subscription (the authorized subscription account) holding a manually-created EMPTY design-system project named
   **"Design System"**; user explicitly chose to sync into it instead of creating "AssessHub". Pinned
   `projectId=81dfe070-906d-445b-a821-1d100a3e969d` in config BEFORE uploading; incremental path (empty project):
   sentinel → 86 content files (22 base+previews, 64 component files) → reconciliation (0 orphans) → sentinel
   re-arm → `_ds_sync.json` LAST; post-upload `list_files` = 88 files, exact match with the local manifest.
   `report_validate` sent {total:16, bad:1 (triaged deliberate ErrorBoundary throw), thin:0, variantsIdentical:0,
   iterations:1}. URL: https://claude.ai/design/p/81dfe070-906d-445b-a821-1d100a3e969d
-  ⚠️ **Future syncs: `/design-login` must bind the "taha" account** — the original abidblaze485 account never got
+  ⚠️ **Future syncs: `/design-login` must bind the authorized subscription account** — the original free-tier account never got
   a subscription and 403s on create. The pin is by UUID, so renaming the project in the web UI is safe.
   `webapp/frontend/src/pages/Snapshot.tsx` changed after the verdict but is NOT in the bundle graph (no DS
   source imports `pages/` — verified by grep at upload time).
@@ -226,7 +226,7 @@
 - **Verification anchor**: LIVE since 2026-07-02 — the project holds `_ds_sync.json`. Re-syncs: fetch it to
   `.design-sync/.cache/remote-sync.json` and run the driver with `--remote` so unchanged components skip
   re-verification.
-- Never regenerate sample data from real [HISTORY-REDACTED] snapshots (no-egress; the file ships to claude.ai).
+- Never regenerate sample data from real Meridian snapshots (no-egress; the file ships to claude.ai).
 - **A "changed" component can be a LINE-ENDING phantom — always ask what MOVED before uploading** (2026-07-24).
   `sourceHashes` are byte-wise, so CRLF-vs-LF alone flips a component to "changed" with identical text. Triage
   in one command before touching the live project — if the LF-normalized hash equals the LIVE hash, it is

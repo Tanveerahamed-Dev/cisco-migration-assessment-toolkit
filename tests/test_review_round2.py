@@ -44,10 +44,10 @@ def test_near_ldos_band_compares_unrounded_delta():
     Day of Support, so support still exists ON that date; test_lifecycle_boundary_drift_guard locks the strict
     `>`). years_to_ldos was ROUNDED before the <= 1.0 band test, so a device genuinely ~1.05 yr from LDoS
     rounded to 1.0 and fell into Near-LDoS (the band ~18 days too wide). The band must use the UNROUNDED
-    delta. (Catalyst 3850 LDoS = 2026-10-31.)"""
+    delta. (Catalyst 3650 confirmed LDoS = 2026-10-31, Cisco EOL13617.)"""
     def band(asof):
         return analyze.compute_lifecycle_risk(
-            {"sw1": {"model": "WS-C3850-48P"}}, asof=asof)["per_device"][0]["band"]
+            {"sw1": {"model": "WS-C3650-48P"}}, asof=asof)["per_device"][0]["band"]
     assert band("2025-10-13") != "Near-LDoS"     # ~1.05 yr out: was Near via rounding (1.0), now Past-EoS
     assert band("2026-06-01") == "Near-LDoS"      # genuinely within 1 yr still Near
     assert band("2026-10-31") == "Near-LDoS"      # LDoS day: last supported day -> Near, not yet Past (strict >)
@@ -70,8 +70,8 @@ def test_offline_registries_warn_on_load_failure_then_degrade(caplog):
         assert ports == {} and mcast == []                               # tolerant degrade, no crash
         assert all(v == {} for v in tables.values())
         msgs = " ".join(r.getMessage() for r in caplog.records)
-        assert "portdb: could not load" in msgs                          # surfaced, not silent
-        assert "ouidb: could not load" in msgs
+        assert "portdb: rejected non-authoritative registry" in msgs     # surfaced, not silent
+        assert "ouidb: rejected non-authoritative registry" in msgs
     finally:                                                              # MUST restore or poison the suite
         portdb._DATA = p_orig; portdb._registry.cache_clear()
         ouidb._DATA = o_orig; ouidb._registry.cache_clear(); ouidb.vendor_for_mac.cache_clear()

@@ -62,9 +62,9 @@ Findings from today's audit. None of these are in any existing planning doc.
 | # | Finding | Action |
 |---|---|---|
 | S1 | **`devices.json` holds one shared cleartext SSH credential for all 303 devices** (verified: 1 distinct username, 1 distinct password, `password_env` used by 0 entries) — sitting unencrypted in `Desktop\Enhancements` on both C: and the D: copy | Convert to `password_env`/`$CISCO_PASS` (the engine's documented default since v3.24.0); **rotate the fleet credential** (it has lived in plaintext on ≥2 machines); delete or scrub the D:\ duplicate |
-| S2 | Working tree holds identifiable client evidence: 2 collection dirs (304 device dirs; 106 configs with `snmp-server community`, tacacs/radius `key 7` lines), 64 MB snapshot, 19.5 MB explorer, `topology.dot/.mmd` with real `*.broadcast.[HISTORY-REDACTED]` hostnames, [HISTORY-REDACTED] BOQ w/ a real Cisco sales order | Verified all are gitignored and **never committed** (`git log --all` sweep clean). Keep it that way; run `--redact-collection` once the [HISTORY-REDACTED] analysis is final; consider BitLocker on this laptop (client data at rest) |
-| S3 | `requirements.[HISTORY-REDACTED].json` (names the [HISTORY-REDACTED] engagement + SDD architecture) and `CHAT_SUMMARY.md` ARE tracked and pushed to GitHub | **Verify the GitHub repo is Private** (Settings → visibility). If it was ever public, treat S1's credential as burned regardless of rotation |
-| S4 | `~$[HISTORY-REDACTED]_BOQ.xlsx` (Excel owner-lock, leaks last-editor identity) is untracked and NOT matched by the `[HISTORY-REDACTED]_*` gitignore rule (leading `~$`) | Add `~$*` to `.gitignore` |
+| S2 | Working tree holds identifiable client evidence: 2 collection dirs (304 device dirs; 106 configs with `snmp-server community`, tacacs/radius `key 7` lines), 64 MB snapshot, 19.5 MB explorer, `topology.dot/.mmd` with real `*.broadcast.example.net` hostnames, Reference BOQ w/ a real Cisco sales order | Verified all are gitignored and **never committed** (`git log --all` sweep clean). Keep it that way; run `--redact-collection` once the Meridian analysis is final; consider BitLocker on this laptop (client data at rest) |
+| S3 | A client-specific requirements register and chat summary were historically tracked and pushed to GitHub | Remove them from the current tree, keep only ignored private backups, and treat any history rewrite as a separate explicitly approved operation |
+| S4 | `~$Reference_BOQ.xlsx` (Excel owner-lock, leaks last-editor identity) is untracked and NOT matched by the `Reference_*` gitignore rule (leading `~$`) | Add `~$*` to `.gitignore` |
 | S5 | One documented egress incident: `raw/example_com.md` (graphify web-capture test) + `.gstack/browse-audit.jsonl` (headless-browser side-project use) | Benign, but delete `raw/` and note the lesson: the no-egress doctrine held for the *product*; keep tool egress out of the repo workspace |
 
 ### 2.2 Repo hygiene
@@ -74,7 +74,7 @@ Findings from today's audit. None of these are in any existing planning doc.
 | H2 | 15 dead local branches (worktree-*, claude/*, feat/plan-a-tier2 — all verified content-on-main) + `.claude/worktrees/` (~146 MB of full repo copies) | Delete branches; prune worktrees |
 | H3 | Repo-root `blast_radius_explorer.html` is **2 releases stale** (12 modes, no 3D) vs the canonical `cisco_toolkit/` copy — a wrong-file-edit trap (`html.py:778-781` prefers the package copy) | Delete the root copy from disk (it is gitignored; the engine falls back correctly) |
 | H4 | `CLAUDE.md` stale facts: "385 tests" (reality ~1,388 defs), "~5147 nodes" (now 5,409), "29 architecture classes" (registry says 40 detectors / 23 classes — the docs themselves disagree) | Update counts once; where a count has a mechanical SSOT (registry, pytest), state the *pointer*, not the number — per your own SSOT law |
-| H5 | `graphify-out/.graphify_python` pins the OLD laptop's interpreter (`C:\Users\[HISTORY-REDACTED]\...`); python isn't installed here yet | Re-pin after §5.1 bootstrap; then `python -m graphify update .` (respect the shrink guard — no `--force`) |
+| H5 | `graphify-out/.graphify_python` may pin an OLD laptop's interpreter (`C:\Users\<operator>\...`); python isn't installed here yet | Re-pin after §5.1 bootstrap; then `python -m graphify update .` (respect the shrink guard — no `--force`) |
 | H6 | Stale `cisco_migration_assessment_toolkit.egg-info` (3.23.142) | Regenerated on next `pip install -e .` — no action beyond §5.1 |
 | H7 | `webapp/frontend/dist` is committed and can silently go stale vs `src/` (nothing pins build freshness) | Add a CI check (dist build hash vs source) or stop committing dist and build in CI |
 
@@ -111,12 +111,12 @@ built HTML, click all 14 modes, assert 0 console errors — automating the manua
 errors" ritual your changelog performs every release.
 
 ### 3.3 Real-line fixtures — kill the false-health bug-class at its root *(effort S+M)*
-- **K2 `PARSER_EXAMPLES` registry**: lift the real [HISTORY-REDACTED] lines already in `tests/test_audit5_parse_fidelity.py`
+- **K2 `PARSER_EXAMPLES` registry**: lift the real Meridian lines already in `tests/test_audit5_parse_fidelity.py`
   into a per-parser registry + one test that replays every parser against its committed real line.
 - **Redacted real-world golden**: promote one redacted real capture to a golden so member-down /
   uncollected-in-group / ACL-verdict paths are exercised by *real* structure.
 - *Enrichments from research:* (a) **genieparser's repo is Apache-2.0 and contains thousands of real
-  show-command fixtures** — harvest per-command real lines for platforms the [HISTORY-REDACTED] fleet lacks; (b) **containerlab
+  show-command fixtures** — harvest per-command real lines for platforms the Meridian reference fleet lacks; (b) **containerlab
   v0.76 (healthy, Nokia-backed) as a fixture factory** — cat9kv/n9kv images generate fresh real output for new
   parser work (dev/CI only, Linux/WSL2); (c) keep ntc-templates strictly as the CI referee (its silent-partial-
   success failure mode is the opposite of the honesty doctrine — verified unchanged in 9.1.0).
@@ -126,7 +126,7 @@ MTU/jumbo-blackhole verdict along the FIB path · return-path/RPF asymmetry verd
 · H2 `for_each` assertion grammar · `zonematrix.py` (stays **blocked** on fib #19 multi-VRF — data-gated).
 *Sequencing note:* do MTU first — the EVPN research is unambiguous that a 1500-byte underlay "drops VXLAN
 silently and mimics random loss," which makes the MTU verdict the single most engagement-relevant missing check
-for the [HISTORY-REDACTED] target fabric.
+for the reference target fabric.
 
 ### 3.5 Coverage-honesty as a queryable schema (Tier 3 — the moat, deepened)
 J1 per-detector `{healthy_value, threshold, cited_fields}` descriptors · J3 `describe_schema(snap)` census ·
@@ -146,7 +146,7 @@ crd Constraints/Out-of-scope). Research against Cisco AS standards adds these **
 4. **NDFC 4.1-era alignment** in ops/LLD: brownfield-import rules (Preserve-Config, fabric-template values that
    must match existing: ASN/underlay/replication/vPC domains/resource ranges), config-compliance discipline
    (no out-of-band CLI once managed), change-control tickets, NDI pre-change/delta hooks. **Directly serves the
-   [HISTORY-REDACTED] engagement** (NDFC-managed NX-OS EVPN Multi-Site per `requirements.[HISTORY-REDACTED].json`).
+   reference engagement** (NDFC-managed NX-OS EVPN Multi-Site per the fictionalized requirements profile).
 5. **Closure artifacts**: as-built regeneration (post-cutover re-collection diffed against LLD intent), exception
    report, lessons-learned, bake-period monitoring plan — how AS formally closes engagements.
 
@@ -159,8 +159,7 @@ capacity headroom columns · then breadth only when a client needs it (OpenConfi
 collection-profiles, PAN-OS/F5/Aruba).
 
 ### 3.8 DATA-GATED (unchanged; flag for the next field access)
-Collect the **50 uncollected DS/CS cores** — still the single biggest evidence unlock (redundancy on the [HISTORY-REDACTED]
-fleet is UNKNOWN; every uplink points at an uncollected tier) · fib #19 multi-VRF · O(N³) perf validation at
+Collect the **50 uncollected DS/CS cores** — still the single biggest evidence unlock (redundancy on the Meridian reference fleet is UNKNOWN; every uplink points at an uncollected tier) · fib #19 multi-VRF · O(N³) perf validation at
 600/1000 via `tests/perf_scale.py` · port-security NX-OS un-blinding · BGP received-prefix depth.
 
 ---
@@ -252,7 +251,7 @@ winget install Obsidian.Obsidian           # §5.2
 git config --global user.name  "Tanveerahamed-Dev"
 git config --global user.email "150244631+Tanveerahamed-Dev@users.noreply.github.com"
 gh auth login
-cd C:\Users\[HISTORY-REDACTED]\Desktop\Enhancements
+cd C:\Workspace\Enhancements
 python -m pip install -e ".[dev,docx,pptx,mcp]" && pip install -r webapp/requirements.txt
 python -m pytest -q                        # expect ~1,390+ green — the proof this machine is engagement-ready
 # graphify: reinstall the tool, fix graphify-out/.graphify_python, then: python -m graphify update .

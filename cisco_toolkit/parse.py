@@ -118,6 +118,24 @@ def _nxos_route_source(token: str) -> str:
     return t
 
 
+# IOS / IOS-XE prints a TWO-TOKEN route code for every sub-typed protocol -- 'O IA' (OSPF inter-area),
+# 'O E1'/'O E2' (OSPF external), 'O N1'/'O N2' (OSPF NSSA external), 'D EX' (EIGRP external),
+# 'i L1'/'i L2'/'i ia'/'i su' (IS-IS level / inter-area / summary). A regex demanding a SINGLE code token
+# matched none of them, so the route was dropped from the RIB *and* its next-hop was then grafted onto the
+# PREVIOUS prefix by the `if current:` continuation branch as a phantom ECMP sibling inheriting the wrong
+# source: on any IOS/IOS-XE box every OSPF inter-area/external, EIGRP external and IS-IS route was silently
+# absent while the table read complete (review #25). The primary code also allows a LOWERCASE letter
+# ('i' IS-IS, 'o' ODR, 'l' LISP, 'a' application), and the optional second token is restricted to the
+# documented legend sub-codes so no prose/legend line can match.
+_ROUTE_SUBCODES = ("IA", "EX", "N1", "N2", "E1", "E2", "L1", "L2", "ia", "su")
+# Of those, only these carry the SOURCE distinction (the IS-IS L1/L2/ia/su are levels, not sources -- an
+# 'i L1' route's source is plain 'isis', and mapping 'su' through code_map would mis-read it as 'static').
+_ROUTE_SOURCE_SUBCODES = ("IA", "EX", "N1", "N2", "E1", "E2")
+_ROUTE_CODE_RE = re.compile(
+    r"^([A-Za-z][A-Za-z0-9\*]*)(?:\s+(" + "|".join(_ROUTE_SUBCODES) + r"))?\s+"
+    r"(\d+\.\d+\.\d+\.\d+/\d+|\d+\.\d+\.\d+\.\d+\s*/\s*\d+)")
+
+
 def parse_ip_routes(output: str) -> Dict[str, Dict[str, object]]:
     routes: Dict[str, Dict[str, object]] = {}
     if not output:
@@ -135,10 +153,13 @@ def parse_ip_routes(output: str) -> Dict[str, Dict[str, object]]:
         s = line.strip()
         if not s or s.lower().startswith(('gateway of last resort','codes:','route source','is variably subnetted','is subnetted')):
             continue
-        m = re.match(r"^([A-Z][A-Z0-9\*]*)\s+(\d+\.\d+\.\d+\.\d+/\d+|\d+\.\d+\.\d+\.\d+\s*/\s*\d+)", s)
+        m = _ROUTE_CODE_RE.match(s)
         if m:
-            code = m.group(1)
-            prefix = m.group(2).replace(' ', '')
+            sub = m.group(2) or ''
+            code = (m.group(1) + ' ' + sub).strip()        # keep the raw two-token code ('O IA', 'D EX')
+            src = (code_map[sub] if sub in _ROUTE_SOURCE_SUBCODES
+                   else code_map.get(m.group(1), m.group(1).lower()))
+            prefix = m.group(3).replace(' ', '')
             nh = ''
             out_intf = ''
             mvia = re.search(r"via\s+(\d+\.\d+\.\d+\.\d+)", s, re.IGNORECASE)
@@ -148,7 +169,7 @@ def parse_ip_routes(output: str) -> Dict[str, Dict[str, object]]:
             if mint and not re.match(r"^\d+\.\d+\.\d+\.\d+$", mint.group(1)):
                 out_intf = normalize_ifname(mint.group(1))
             routes.setdefault(prefix, {'entries': []})
-            entry = {'prefix': prefix, 'code': code, 'source': code_map.get(code, code.lower()), 'next_hop': nh, 'out_intf': out_intf, 'raw': s}
+            entry = {'prefix': prefix, 'code': code, 'source': src, 'next_hop': nh, 'out_intf': out_intf, 'raw': s}
             routes[prefix]['entries'].append(entry)
             current = prefix
             current_entry = entry
@@ -579,7 +600,14 @@ def parse_storm_control(output: str) -> list:
 # 'show policy-map interface' RUNTIME statistics regexes (egress queue/policer drops). Validated against
 # Cisco's genieparser golden corpus + IOS-XE/NX-OS QoS guides. The drops line is identical for bandwidth and
 # priority (LLQ) classes on modern IOS-XE; priority/policer context is tracked by the line-driven state machine.
-_PM_IFACE_RE   = re.compile(r"^([A-Za-z][\w./-]*\d[\w./-]*)\s*$")
+# The obvious spelling `[\w./-]*\d[\w./-]*` puts a `\d` BETWEEN two unbounded runs of a class that
+# already CONTAINS `\d`, so a long digit run that cannot complete the match backtracks QUADRATICALLY
+# (measured: 4k chars 0.29s, 8k 1.16s, 16k 4.42s -- each doubling quadruples it). Same ReDoS class as
+# the three unbounded IPv6 runs fixed elsewhere in this module, and `show policy-map interface` is one
+# of the largest captures the engine ingests. One linear run plus an explicit digit test is EXACTLY
+# equivalent (\d is a subset of \w, hence of the class, and the first char is already a letter) and O(n).
+_PM_IFACE_RE   = re.compile(r"^([A-Za-z][\w./-]*)\s*$")
+_PM_IFACE_DIGIT_RE = re.compile(r"\d")
 _PM_SVCPOL_RE  = re.compile(r"^Service-policy\s+(?:\((?P<kind>[^)]*)\)\s+)?(?P<dir>input|output)\s*:\s*(?P<name>\S+)",
                             re.IGNORECASE)
 _PM_CLASS_RE   = re.compile(r"^Class-map(?:\s+\((?P<kind>[^)]*)\))?\s*:\s*(?P<name>\S+)", re.IGNORECASE)
@@ -623,7 +651,8 @@ def parse_policymap_drops(output: str) -> list:
         if not s:
             continue
         mi = _PM_IFACE_RE.match(s)
-        if mi and not s.lower().startswith(("class-map", "service-policy", "police", "queueing",
+        if mi and _PM_IFACE_DIGIT_RE.search(mi.group(1)) \
+                and not s.lower().startswith(("class-map", "service-policy", "police", "queueing",
                                             "queue", "match", "priority", "bandwidth", "exceeded",
                                             "conformed", "violated")):
             _flush(); cur = None; in_police = False; nx_queuing = False
@@ -813,8 +842,14 @@ def _parse_bgp_summary_rows(output: str) -> list:
     4-byte asdot AS) makes IOS/NX-OS WRAP the State/PfxRcd onto a continuation line; rows are stitched back
     (head line + following numeric continuation) so a wrapped DOWN peer is never read as Established and IPv6
     peers are not dropped. Tolerant; never raises."""
-    # a neighbor row STARTS with an IPv4 or IPv6 address as its first token (then optionally a %zone-id)
-    head = re.compile(r"^(\d+\.\d+\.\d+\.\d+|[0-9A-Fa-f:]*:[0-9A-Fa-f:]+)(?:%\S+)?(?:\s|$)")
+    # a neighbor row STARTS with an IPv4 or IPv6 address as its first token (then optionally a %zone-id).
+    # The IPv6 run is LENGTH-BOUNDED, as `parse_bgp_summary` documents at the top of this module: the old
+    # `[0-9A-Fa-f:]*:[0-9A-Fa-f:]+` put two adjacent unbounded quantifiers either side of a `:` they both
+    # match, so a long garbled all-hex/colon line backtracked quadratically (ReDoS). The fix had been
+    # applied to that one branch and not to this SHARED one, which parse_evpn_summary /
+    # parse_bgp_vpnv4_summary / parse_bgp_ipv6_summary all route through (review #84). A leading `::` is
+    # still matched (the first hextet may be empty); 4+1+44 chars covers the 45-char RFC maximum.
+    head = re.compile(r"^(\d+\.\d+\.\d+\.\d+|[0-9A-Fa-f]{0,4}:[0-9A-Fa-f:]{1,44})(?:%\S+)?(?:\s|$)")
     out = []
     cur = None
 
@@ -1110,7 +1145,7 @@ def parse_bfd_neighbors(output: str) -> list:
     out = []
     if hdr_idx < 0 or "state" not in cols or "neighaddr" not in cols:
         return out
-    ip_re = re.compile(r"^(?:\d+\.\d+\.\d+\.\d+|[0-9A-Fa-f:]+:[0-9A-Fa-f:]+)$")
+    ip_re = re.compile(r"^(?:\d+\.\d+\.\d+\.\d+|[0-9A-Fa-f]{0,4}:[0-9A-Fa-f:]{1,44})$")   # bounded: ReDoS (#84)
     for raw in lines[hdr_idx + 1:]:
         s = raw.strip()
         if not s or set(s) <= {"-"}:
@@ -1417,6 +1452,29 @@ def parse_asa_resource_usage(output: str) -> list:
 
 
 # --- Cisco ISE (Identity Services Engine) -- JSON controller-REST channel -------------------------------
+_ISE_NODE_KEYS = ("hostname", "fqdn", "name", "roles", "services", "nodeStatus",
+                  "primaryPapNode", "papNode", "nodeServiceTypes", "inDeployment")
+
+
+def _ise_error_envelope(obj) -> bool:
+    """True when this ISE JSON is an ERROR/exception envelope rather than deployment data. ERS answers a
+    failed auth / permission / validation with {"ERSResponse": {..., "messages": [{"type": "ERROR", ...}],
+    "link": {...}}} and the Open API with {"error": {...}} -- both single-key dicts carrying NO node.
+    Reading one as a node fabricated a phantom, empty-hostname deployment node; `build_ise` then saw a
+    truthy node list, SKIPPED its ERS fallback, and the three ISE detectors (which gate on >= 2 nodes)
+    went silent -- an ISE that was never successfully read rendered as an OBSERVED healthy single-node
+    standalone (review #37). Refuse it outright, as `_fmc_items` refuses the empty-list envelope."""
+    if not isinstance(obj, dict):
+        return False
+    if any(obj.get(k) for k in ("error", "errors", "errorCode")):   # truthy: an EMPTY errors list beside
+        return True                                                 # real data is not an error envelope
+    for v in obj.values():                                 # a wrapped {..: {messages:[{type: ERROR}]}}
+        if isinstance(v, dict) and isinstance(v.get("messages"), list) and any(
+                isinstance(m, dict) and "error" in str(m.get("type", "")).lower() for m in v["messages"]):
+            return True
+    return False
+
+
 def _ise_rows(obj) -> list:
     """Extract the list of node dicts from ANY ISE node envelope: Open API {"response":[...]|{...}} (list or
     single), the ERS list {"SearchResult":{"resources":[...]}}, the consolidated {"resources":[...]} the
@@ -1424,6 +1482,8 @@ def _ise_rows(obj) -> list:
     top-level ARRAY is deliberately refused (no documented ISE endpoint returns one). Tolerant; never raises."""
     if not isinstance(obj, dict):                          # a bare top-level ARRAY is NOT a documented ISE
         return []                                          # shape -- refuse it (assuming it fabricates nodes)
+    if _ise_error_envelope(obj):                           # an ERROR body carries no node -- never a finding
+        return []
     if isinstance(obj.get("response"), list):
         return obj["response"]                              # Open API list
     if isinstance(obj.get("response"), dict):
@@ -1435,11 +1495,13 @@ def _ise_rows(obj) -> list:
         return obj["resources"]                            # consolidated ERS per-id details
     if len(obj) == 1:                                       # a single resource wrapped one level
         v = next(iter(obj.values()))
-        if isinstance(v, dict):
+        # ...but ONLY when the wrapped dict actually looks like a node. Accepting ANY single-key dict
+        # turned every ISE operation/error envelope into a phantom node (review #37) -- the same treatment
+        # `_fmc_items` applies to its single-object front door.
+        if isinstance(v, dict) and any(k in v for k in _ISE_NODE_KEYS):
             return [v]
-    _node_keys = ("hostname", "fqdn", "name", "roles", "services", "nodeStatus",
-                  "primaryPapNode", "papNode", "nodeServiceTypes", "inDeployment")
-    return [obj] if any(k in obj for k in _node_keys) else []   # a bare node dict (only if it looks like one)
+        return []
+    return [obj] if any(k in obj for k in _ISE_NODE_KEYS) else []  # a bare node dict (if it looks like one)
 
 
 def _ise_node(r: dict) -> dict:
@@ -2055,7 +2117,7 @@ def parse_nve_peers(output: str) -> list:
     and IOS-XE 'Interface VNI Type(L2/L3CP) Peer-IP RMAC/Num_RTs eVNI state flags uptime' (column 2 is the VNI,
     the IP is column 4). [] when the device runs no NVE/VXLAN. Tolerant; never raises."""
     out = []
-    ip = r"(?:\d+\.\d+\.\d+\.\d+|[0-9A-Fa-f:]*:[0-9A-Fa-f:]+)"
+    ip = r"(?:\d+\.\d+\.\d+\.\d+|[0-9A-Fa-f]{0,4}:[0-9A-Fa-f:]{1,44})"   # bounded IPv6 run: ReDoS (#84)
     for raw in (output or "").splitlines():
         # NX-OS: 'Interface Peer-IP State [LearnType] ...' -- the peer IP is the 2nd token
         m = re.match(r"^\s*(nve\d+)\s+(" + ip + r")\s+(\w+)(?:\s+(\w+))?", raw, re.IGNORECASE)
@@ -2075,7 +2137,7 @@ def parse_hsrp_detail(output: str) -> Dict[tuple, dict]:
     """Full 'show standby [all]' DETAIL -> {(ifname, group): {state, priority, cfg_priority, preempt,
     preempt_delay, vip, vmac, hello, hold, standby_ip, track:[{obj,decrement}], version}}. The brief
     parser (parse_hsrp_summary) keeps only state+VIP; this captures the fields a senior FHRP audit needs
-    -- election (priority/preempt), failure-awareness (tracking) -- the [HISTORY-REDACTED] fleet (no FHRP) never exercised.
+    -- election (priority/preempt), failure-awareness (tracking) -- the Meridian reference fleet (no FHRP) never exercised.
     Tolerant: {} on empty / non-detail input; never raises."""
     res: Dict[tuple, dict] = {}
     cur = None
@@ -2768,13 +2830,19 @@ def parse_run_config_interfaces(output: str) -> Dict[str, Dict[str, str]]:
             if ma:
                 if ma.group(2).lower() == "in":  res[current]["acl_in"]  = ma.group(1)
                 else:                            res[current]["acl_out"] = ma.group(1)
+        # A NEGATED line is the deliberate opt-out an operator writes to switch the protection OFF (most
+        # often to override a global 'spanning-tree portfast bpduguard default'). Without the `no `-prefix
+        # guard, 'no spanning-tree bpduguard enable' matched the "enable" substring and an unprotected
+        # access edge read as HARDENED; the old compensating `low.endswith("no")` was dead code (no config
+        # line ends with "no"). The rootguard sibling below always carried this guard (review #33).
         if "spanning-tree bpduguard" in low:
-            if "enable" in low:                         res[current]["bpduguard"] = "Enable"
-            elif "disable" in low or low.endswith("no"): res[current]["bpduguard"] = "Disable"
+            if low.startswith("no "):                   res[current]["bpduguard"] = "Disable"
+            elif "enable" in low:                       res[current]["bpduguard"] = "Enable"
+            elif "disable" in low:                      res[current]["bpduguard"] = "Disable"
         if "spanning-tree guard root" in low:
             res[current]["rootguard"] = "Disable" if low.startswith("no ") else "Enable"
         if "spanning-tree portfast" in low and "disable" not in low:
-            res[current]["portfast"] = "Enable"
+            res[current]["portfast"] = "Disable" if low.startswith("no ") else "Enable"
         if "channel-group" in low and "mode" in low:
             cm = re.search(r"channel-group\s+(\d+)\s+mode\s+(\S+)", low)
             if cm:
@@ -3539,8 +3607,15 @@ def parse_vtp_status(output: str) -> str:
     for line in output.splitlines():
         m = re.search(r"(?:vtp\s+domain\s+name|domain name)\s*:?\s*(.+)$", line.strip(), re.IGNORECASE)
         if m:
-            val = m.group(1).strip()
-            if val and val.lower() not in ("not configured", "none", "null"):
+            # A switch with NO VTP domain prints the label with an EMPTY value ('VTP Domain Name    :').
+            # `\s*:?\s*(.+)` cannot match that with the colon consumed as a separator, so the engine
+            # BACKTRACKS the optional `:?` out and captures the colon ITSELF -- every VTP-less switch
+            # reported its VTP domain as ':'. That is a phantom domain: the workbook's VTP Domain column
+            # (and the current/neighbour VTP fields the domain-mismatch review reads) then showed a
+            # configured VTP domain on a factory-default / VTP-transparent switch. Drop any leftover
+            # separator and require the value to carry at least one real word character.
+            val = m.group(1).strip().lstrip(":").strip()
+            if val and re.search(r"\w", val) and val.lower() not in ("not configured", "none", "null"):
                 return val
     return ""
 
@@ -3729,9 +3804,14 @@ def parse_ptp_clock(output: str) -> dict:
     device type with >=1 active PTP port) from one where `show ptp clock` reports Device Type=Unknown
     / 0 ports / no parent -- i.e. PTP is available but the switch is NOT in an active timing hierarchy
     (PTP would be flowing as plain multicast, not boundary-clocked -- a real ST 2110/AES67 finding).
-    `locked` is inferred from a small offset-from-master (|offset| < 1us) when present."""
+    `locked` is inferred from a small offset-from-master (|offset| < 1us) when present.
+    Tolerant; never raises."""
+    # `(output or "")` BEFORE the first dereference: the old `output.lower()` ran ahead of the `if not
+    # output` guard, so parse_ptp_clock(None) raised AttributeError and broke the module-wide "tolerant;
+    # never raises" contract every sibling honours (review #83).
+    output = output or ""
     low = output.lower()
-    if not output or "ptp" not in low:
+    if "ptp" not in low:
         return {}
     # an NX-OS error/deprecation banner ('% Unavailable command (deprecated by show ptp local-clock)',
     # '% Invalid command') mentions 'ptp' but carries NO clock data -- don't read it as a real PTP clock, or a
@@ -3772,7 +3852,7 @@ def parse_ptp_clock(output: str) -> dict:
     # operational = a real boundary/transparent clock. A known device type that is NOT explicitly
     # 0-port (num_ports unparsed/None is treated as unknown, NOT dormant -- so a known clock on a
     # platform whose output omits the port count is not false-flagged), OR positive sync evidence
-    # (a grandmaster identity or a measured offset). The [HISTORY-REDACTED] case (Device Type Unknown / 0 ports /
+    # (a grandmaster identity or a measured offset). The Meridian case (Device Type Unknown / 0 ports /
     # no parent) stays correctly dormant.
     dt = r["device_type"].lower()
     r["operational"] = bool((dt and dt != "unknown" and r["num_ports"] != 0)
@@ -3996,7 +4076,20 @@ def parse_show_environment_power(output: str) -> Dict[str, object]:
         # PS status rows: lines starting with slot number or PS label
         if re.match(r"^\s*\d[AB]?\s+\S", line) or re.match(r"^\s*[Pp][Ss]\d?\s", line):
             if "ok" in low:                               ps_list.append("OK")
-            elif "fail" in low:                           ps_list.append("FAIL")
+            # 'fail' is NOT the only broken-supply word Cisco prints, and a row matching NONE of these
+            # branches was dropped ENTIRELY -- contributing neither a status NOR a PSU to num_ps. So a
+            # chassis with one 'Ok' and one 'Faulty' supply reported num_ps=1 / ps_status='OK': a dead
+            # PSU rendered as a healthy single-corded box, and design_advisor's lost-redundancy signal
+            # (num_ps > 1 AND 'fail' in ps_status) could never fire. IOS/IOS-XE print 'Faulty' (whose
+            # 'fault' stem does NOT contain 'fail') and 'No Input Power'; NX-OS prints 'Shutdown'. Same
+            # broken-state vocabulary the sibling parse_show_environment already applies to its own
+            # Power-Supply table. Word-anchored so a PID/serial that merely CONTAINS the letters
+            # (e.g. a serial ending 'FAULT1') can never flag a supply. Deliberately NOT a catch-all
+            # 'anything unrecognised -> UNKNOWN': the same '<digit> <token>' row shape also matches the
+            # NX-OS per-MODULE power-allocation table ('1  N9K-C9372PX  345  28.75 ... Powered-Up'),
+            # so a blanket branch would count line cards as power supplies (a redundancy cry-wolf).
+            elif "fail" in low or re.search(r"\b(?:fault\w*|shut\s?down|no input power)\b", low):
+                ps_list.append("FAIL")
             elif "absent" in low or "not present" in low: ps_list.append("ABSENT")
     if r["total_capacity_w"] and r["total_drawn_w"] and not r["total_remaining_w"]:
         try:
@@ -4015,6 +4108,14 @@ def parse_show_environment_power(output: str) -> Dict[str, object]:
     # flagged single-PSU (cry-wolf). ps_status_list keeps the per-row statuses for display.
     r["num_ps"] = len(ps_list)
     return r
+
+
+def _env_not_applicable(token: str) -> bool:
+    """True for the 'this sensor is not monitored / not fitted' placeholders Cisco prints in an environment
+    status column ('n.a.', 'n/a', '--', 'none', 'not present'). Distinguished from an UNRECOGNISED status
+    word, which is a real reading this parser cannot classify and must therefore surface as Unknown."""
+    t = str(token or "").strip().lower().rstrip(".")
+    return t in ("", "n.a", "n/a", "na", "-", "--", "---", "none", "not present", "absent", "n.a.")
 
 
 def parse_show_environment(output: str) -> Dict[str, str]:
@@ -4054,7 +4155,10 @@ def parse_show_environment(output: str) -> Dict[str, str]:
             elif _st == "absent":                           fan_states.append("Absent")
         # Catalyst 'Fantray : Good' (4948E) / 'Fantray 1 : ... status : Good' (4500-X) - only a
         # line that actually carries a health word (skips 'removal timeout', 'consumed by').
-        if "fantray" in low and re.search(r"\b(good|ok|failed|fail|fault|bad)\b", low):
+        # 'fault' must be a PREFIX match, not \bfault\b: the real failed-state word IOS prints is
+        # 'Faulty', whose trailing 'y' defeats the word boundary, so 'Fantray : Faulty' matched no
+        # health word at all and the failed tray was dropped from fan_states entirely (review #36).
+        if "fantray" in low and re.search(r"\b(good|ok|fail\w*|fault\w*|bad)\b", low):
             if "good" in low or re.search(r"\bok\b", low):        fan_states.append("OK")
             elif "fail" in low or "fault" in low or "bad" in low: fan_states.append("Failed")
         # Catalyst Power-Supply table row: 'PS1  PWR-C49E-300AC-R  AC 300W  good  good  n.a.'
@@ -4067,10 +4171,19 @@ def parse_show_environment(output: str) -> Dict[str, str]:
                 n_ps += 1
                 ps_tok  = cols[watt_idx + 1].lower() if watt_idx + 1 < len(cols) else ""
                 fan_tok = cols[watt_idx + 2].lower() if watt_idx + 2 < len(cols) else ""
+                # Coverage-honest classification of BOTH status columns. The PS-fan branch used to omit
+                # 'bad' (which its own sibling one line up treats as FAIL), and any word outside the
+                # recognised vocabulary was dropped from the list ENTIRELY -- after which a surviving
+                # healthy PSU's OK became the whole chassis verdict. An unrecognised word is not health;
+                # it is UNKNOWN, and it must reach the caller (review #36).
                 if "good" in ps_tok or "ok" in ps_tok:                    ps_states.append("OK")
                 elif "fail" in ps_tok or "fault" in ps_tok or "bad" in ps_tok: ps_states.append("FAIL")
+                elif _env_not_applicable(ps_tok):                         pass
+                elif ps_tok:                                              ps_states.append("UNKNOWN")
                 if "good" in fan_tok or "ok" in fan_tok:                  fan_states.append("OK")
-                elif "fail" in fan_tok or "fault" in fan_tok:             fan_states.append("Failed")
+                elif "fail" in fan_tok or "fault" in fan_tok or "bad" in fan_tok: fan_states.append("Failed")
+                elif _env_not_applicable(fan_tok):                        pass
+                elif fan_tok:                                             fan_states.append("Unknown")
             elif any(t in low for t in ("absent", "not present", "none")):
                 n_ps += 1; ps_states.append("ABSENT")
         if re.match(r"^\s*\d+\s+\S", low) and any(k in low for k in ("inlet","outlet","sensor")):
@@ -4095,6 +4208,17 @@ def parse_show_environment(output: str) -> Dict[str, str]:
     def _worst(states: List[str]) -> str:
         if "Critical" in states or "Failed" in states: return "Critical/Failed"
         if "Warning"  in states: return "Warning"
+        # 'Absent' outranks 'OK' for the same reason 'Unknown' does. The NX-OS fan-table branch above
+        # APPENDS 'Absent' for a not-fitted tray, but _worst had no branch for it, so it silently ranked
+        # below 'OK': a chassis reporting 'Fan1 ok / Fan2 absent' returned fan_status 'OK' and the missing
+        # tray (a cooling + redundancy loss) was invisible to every consumer -- the same
+        # absence-reads-as-health class review #36 closed for the PSU/fantray columns, left open one
+        # ranking function away.
+        if "Absent"   in states: return "Absent"
+        # 'Unknown' outranks 'OK': a sensor whose status word this parser does not recognise is NOT
+        # evidence of health, and letting a healthy sibling's OK stand as the chassis verdict is exactly
+        # the absence-reads-as-health class the doctrine forbids (review #36).
+        if "Unknown"  in states: return "Unknown"
         if "OK"       in states: return "OK"
         return ""
     r["fan_status"]         = _worst(fan_states)
@@ -4117,7 +4241,7 @@ def parse_show_module_count(output: str) -> int:
 def parse_show_interface_counters(output: str) -> Dict[str, Dict[str, object]]:
     """Per-interface error/health counters from IOS 'show interfaces' or NX-OS
     'show interface'. Tolerant across both; unknown values stay blank. Returns
-    {port: {oper, input_errors, crc, output_drops, last_input, last_output}}."""
+    {port: {oper, line_protocol, input_errors, crc, output_drops, last_input, last_output}}."""
     res: Dict[str, Dict[str, object]] = {}
     cur = None
     buf: List[str] = []
@@ -4126,11 +4250,21 @@ def parse_show_interface_counters(output: str) -> Dict[str, Dict[str, object]]:
         if not name or not lines:
             return
         text = "\n".join(lines)
-        rec: Dict[str, object] = {"oper": "", "input_errors": "", "crc": "",
+        rec: Dict[str, object] = {"oper": "", "line_protocol": "", "input_errors": "", "crc": "",
                                   "output_errors": "", "late_collisions": "", "runts": "", "giants": "",
                                   "output_drops": "", "last_input": "", "last_output": ""}
         mhdr = re.match(r"^\S+\s+is\s+([A-Za-z ]+?)(?:,|$)", lines[0])
         if mhdr: rec["oper"] = mhdr.group(1).strip()
+        # The header carries TWO states: '<if> is <link>, line protocol is <proto> (<reason>)'. Capturing
+        # only the LINK word recorded oper='up' for an up / line-protocol-DOWN port -- byte-identical to a
+        # healthy one. On a ROUTER there is no 'show interface status' to override it (excel.py's Physical
+        # Health falls back to this field), so a dead WAN link rendered as up (review #34). Keep the raw
+        # protocol word AND fold it into `oper`, which is the field every consumer reads as the verdict.
+        mproto = re.search(r"line\s+protocol\s+is\s+([A-Za-z-]+)", lines[0], re.IGNORECASE)
+        if mproto:
+            rec["line_protocol"] = mproto.group(1).lower()
+            if rec["line_protocol"] != "up" and str(rec["oper"]).strip().lower() == "up":
+                rec["oper"] = "down (line protocol %s)" % rec["line_protocol"]
         m = re.search(r"(\d+)\s+input error", text)
         if m: rec["input_errors"] = int(m.group(1))
         m = re.search(r"(\d+)\s+CRC", text)
@@ -4207,9 +4341,16 @@ def parse_auth_sessions(output: str) -> Dict[str, Dict[str, str]]:
         mt = re.search(r"\b(dot1x|mab|webauth)\b", line, re.IGNORECASE)
         if mt: method = mt.group(1).lower()
         status = ""
-        ms = re.search(r"\b(Authz?|Authc|Authorized|Authenticated|Unauth\w*|Running|Idle|No[- ]?resp\w*)\b",
+        # The Status column is TWO words on real IOS/IOS-XE ('Authz Success' / 'Authz Failed' / 'Authc
+        # Success' / 'Authc Failed'). With the bare `Authz?` token FIRST in the alternation the match
+        # stopped at 'Authz' and a FAILED authorization became byte-identical to a successful one in the
+        # workbook's 802.1X Status column -- no other field carries the distinction, so no downstream
+        # detector could recover it (review #35). Longest/most specific forms first; the bare tokens
+        # remain as the last resort for the IOS-XE 16.x brief ('Auth' / 'Unauth').
+        ms = re.search(r"\b((?:Authz|Authc)\s+(?:Success|Failed)|Authorized|Authenticated|Unauth\w*|"
+                       r"No[- ]?resp\w*|Running|Idle|Authz|Authc|Auth)\b",
                        line, re.IGNORECASE)
-        if ms: status = ms.group(1)
+        if ms: status = re.sub(r"\s+", " ", ms.group(1)).strip()
         if method or mac or status:
             res[port] = {"method": method, "status": status, "mac": mac}
     return res

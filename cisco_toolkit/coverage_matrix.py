@@ -18,8 +18,15 @@ abstention state (`not_collected` / `partial` / `unverified` / `unparsed` / `not
 from collections import Counter
 from typing import Any, Dict, List
 
-# capture-integrity statuses, worst first (mirrors capture_integrity's own severity ordering)
-_CAPTURE_WORST = ("error", "incomplete", "unverified_prompt", "empty")
+# capture-integrity statuses, worst first — IMPORTED from the owner, not restated (Law 1). This was a
+# hand-written tuple ("error", "incomplete", "unverified_prompt", "empty") and had drifted twice: it
+# never learned `unreadable` (the owner's WORST status, so an unreadable capture ranked as unknown =
+# least severe and `_worst_capture` cited a lesser `empty` finding instead), and it ordered `empty` and
+# `unverified_prompt` the opposite way round from the owner. A matrix whose whole job is coverage
+# honesty was quoting the wrong evidence for the blind spot it reported.
+from cisco_toolkit.capture_integrity import STATUS_ORDER as _CAPTURE_STATUS_ORDER
+
+_CAPTURE_WORST = tuple(sorted(_CAPTURE_STATUS_ORDER, key=_CAPTURE_STATUS_ORDER.get))
 
 _AXIS_ORDER = ("collection", "capture", "parse")
 
@@ -93,7 +100,12 @@ def compute_coverage_matrix(snap: Dict[str, Any]) -> Dict[str, Any]:
     # --- capture axis: any non-ok capture finding for the host -> unverified (worst); else covered
     ci_by_host: Dict[str, list] = {}
     for f in _l(_d(snap.get("capture_integrity")).get("findings")):
-        if isinstance(f, dict) and f.get("host"):
+        # isinstance(str): the host is used as a dict KEY here and matched against `devices` below, so an
+        # unhashable dict/list leaf (a malformed / foreign-tool snapshot) raised
+        # `TypeError: unhashable type: 'list'`. A non-str can never match an inventory hostname anyway,
+        # so dropping it loses nothing -- and the host it would have flagged still reads 'covered' from
+        # its own axis rather than the whole matrix failing to build.
+        if isinstance(f, dict) and isinstance(f.get("host"), str) and f["host"]:
             ci_by_host.setdefault(f["host"], []).append(f)
     for host in devices:
         if host in not_collected:                             # never reached -> nothing to verify (never a fake 'covered')
@@ -125,7 +137,11 @@ def compute_coverage_matrix(snap: Dict[str, Any]) -> Dict[str, Any]:
     for ev in _l(_d(snap.get("parse_yield")).get("events")):
         if not isinstance(ev, dict):
             continue
-        if ev.get("error") or ev.get("parser") not in MAY_BE_EMPTY_PARSERS:
+        # `x not in <frozenset>` HASHES x, so an unhashable dict/list `parser` raised TypeError here.
+        # A non-str parser name can never be in the exemption set -> treat it as suspect (the
+        # coverage-honest direction: an unreadable parse event is never silently exempted).
+        _p = ev.get("parser")
+        if ev.get("error") or not isinstance(_p, str) or _p not in MAY_BE_EMPTY_PARSERS:
             raw = ev.get("device")
             if not isinstance(raw, str):
                 continue

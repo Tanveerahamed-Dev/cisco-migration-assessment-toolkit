@@ -130,7 +130,7 @@ def test_design_scale_reads_canonical_executive_brief(tmp_path):
 
 def test_design_fhrp_candidates_not_mislabeled_as_configured_groups(tmp_path):
     """FHRP false-redundancy class: snap['fhrp'] is the set of MULTI-GATEWAY VLANs (FHRP candidates),
-    most/all WITHOUT a configured first-hop-redundancy protocol (every member fhrp=False — the [HISTORY-REDACTED] shape).
+    most/all WITHOUT a configured first-hop-redundancy protocol (every member fhrp=False — the Meridian shape).
     The §2.4 resilience table must NOT label them 'FHRP gateway groups' (which reads as 'N FHRP groups
     protect the gateways'); it labels them candidates and surfaces the honest count actually running
     FHRP (0 here), so the design doc can never imply redundancy that is not configured."""
@@ -205,6 +205,36 @@ def test_design_bom_aggregates_by_model(tmp_path):
     assert models == {"N9K-C93180YC", "C9300-48T", "WS-C2960X-48FPD-L"}
 
 
+def test_collected_vs_inventoried_is_reconciled_in_scope_inventory_and_bom(tmp_path):
+    """§1 'Devices in scope' reads the canonical INVENTORIED count while §3.1, §3.4 (BoM) and §3.5
+    all iterate snap['devices'] — the hosts that COLLECTED. On a 303/253 fleet the BoM totalled 253
+    chassis and went to procurement 50 short, with nothing in the document naming the gap. Both
+    counts must appear, and every table over the narrower population must declare which one it
+    covers (absence is never zero)."""
+    snap = _snap()
+    n_collected = len(snap["devices"])
+    snap["executive_brief"]["scale"] = {"n_devices": n_collected + 50, "n_vlans": 3}
+    out = str(tmp_path / "d_scope.docx")
+    write_design_doc_docx(out, snap, "Unit Test Fleet")
+    d = Document(out)
+    text = _all_text(d)
+    # §1 still reads the canonical inventoried count (SSOT) AND now names the enumerated population
+    assert str(n_collected + 50) in text
+    assert "50 inventoried device(s) did NOT collect" in text
+    # the BoM totals the collected population and says so where procurement will read it
+    bom = next(t for t in d.tables if t.rows[0].cells[0].text == "Model"
+               and t.rows[0].cells[1].text == "Qty")
+    assert sum(int(r.cells[1].text) for r in bom.rows[1:]) == n_collected
+    assert "DO NOT ORDER FROM THIS TABLE UNRECONCILED" in text
+    assert text.count("Scope reconciliation:") >= 3          # 3.1 inventory, 3.4 BoM, 3.5 software
+    assert f"out of {n_collected + 50} inventoried device(s) in scope" in text
+    # a fleet where every inventoried device collected carries no gap note (no cry-wolf)
+    snap["executive_brief"]["scale"] = {"n_devices": n_collected, "n_vlans": 3}
+    out2 = str(tmp_path / "d_full.docx")
+    write_design_doc_docx(out2, snap, "Unit Test Fleet")
+    assert "Scope reconciliation:" not in _all_text(Document(out2))
+
+
 def test_design_doc_renders_w37_traceability_matrix(tmp_path):
     """[W3-7] the generated As-Built .docx carries the §4.5 traceability matrix when recommended decisions exist --
     each traced to its CCDE principle id + published citation + the snapshot source fields."""
@@ -219,7 +249,7 @@ def test_design_doc_renders_w37_traceability_matrix(tmp_path):
          "axes": ["security"]},
     ]}
     out = str(tmp_path / "trace.docx")
-    write_design_doc_docx(out, snap, "[HISTORY-REDACTED]")
+    write_design_doc_docx(out, snap, "Meridian")
     doc = Document(out)
     assert any("Design traceability matrix" in p.text for p in doc.paragraphs)   # the §4.5 section renders
     cells = [c.text for t in doc.tables for row in t.rows for c in row.cells]
@@ -573,7 +603,7 @@ def test_design_doc_survives_xml_illegal_chars(tmp_path):
     snap["interfaces"]["core1"]["Po1"]["cdp_neighbor"] = "dist1" + bad     # direct topology text
     snap["devices"]["core1"]["model"] = "N9K" + bad                       # inventory TABLE cell (docmeta)
     out = str(tmp_path / "d.docx")
-    write_design_doc_docx(out, snap, "[HISTORY-REDACTED]" + bad)                          # must NOT raise
+    write_design_doc_docx(out, snap, "Meridian" + bad)                          # must NOT raise
     assert os.path.exists(out)
     Document(out)                                                         # and be a valid, openable .docx
 
@@ -646,6 +676,7 @@ _ALL_DESIGN_SECTIONS = [
     "devices", "interfaces", "l3_forwarding", "routing_neighbors", "stp_roots", "redistribution",
     "fhrp", "capacity", "lifecycle_risk", "vpc", "failure_impact", "punchlist", "subnet_intelligence",
     "service_map", "executive_brief", "design_blueprint", "qos_audit", "endpoint_identity",
+    "multicast_intelligence",   # §2.5 on-air authority census (mi.get("summary") / mi.get("groups"))
 ]
 _DESIGN_POISONS = [5, "x", [1, 2], {"k": 1}]
 
@@ -713,6 +744,12 @@ def _rich_design_snap():
                                    "category": "Broadcast-AV"}],
             "igmp_queriers": [{"switch": "sw1", "vlan": "10"}],
             "ptp": {"sw1": {"operational": True}}}},
+        # §2.5's on-air authority census, in the shape compute_multicast_intelligence publishes it.
+        "multicast_intelligence": {
+            "groups": [{"group": "224.0.1.129", "name": "PTP-primary", "category": "Broadcast-AV",
+                        "on_air": True, "on_air_authoritative": False,
+                        "semantics_authoritative": False, "overlay_status": "curated-only"}],
+            "summary": {"n_groups": 1, "n_av_groups": 1, "n_av_groups_authoritative": 0}},
         "qos_audit": {
             "summary": {"n_devices": 1, "n_assessable": 1, "modes": {"trust-dscp": 1},
                         "n_voice_ports": 3},
@@ -815,6 +852,11 @@ _NESTED_DESIGN_POISON_PATHS = [
     "service_map.multicast.classified_groups.0",                  # per-element g.get(...)
     "service_map.multicast.igmp_queriers",                        # len(queriers)
     "service_map.multicast.ptp",                                  # ptp.values() / len(ptp)
+    # --- multicast_intelligence.* (§2.5 classification-basis column + census note) ---
+    "multicast_intelligence",                                     # mi.get("summary") / mi.get("groups")
+    "multicast_intelligence.summary",                             # `"n_av..." in s` / s.get(...)
+    "multicast_intelligence.groups",                              # `for g in groups`
+    "multicast_intelligence.groups.0",                            # per-element g.get(...)
     # --- qos_audit.* (§2.7) ---
     "qos_audit.summary",                                          # qsum.get("n_devices")
     "qos_audit.summary.modes",                                    # qmodes.items()
@@ -885,6 +927,8 @@ def test_rich_design_snap_reaches_every_nested_guard_site(tmp_path):
         "Two-tier campus, single-gateway exposure",   # bp.summary.headline           (§1)
         "PTP-primary",                                # multicast.classified_groups   (§2.5)
         "1 IGMP-snooping querier",                    # multicast.igmp_queriers len() (§2.5)
+        "CURATED — unverified",                       # multicast_intelligence.groups  (§2.5 basis cell)
+        "NONE of them classified on-air",             # multicast_intelligence.summary (§2.5 census note)
         "1 of 1 device(s) report an operational",     # multicast.ptp values()/len()  (§2.5)
         "1 device(s) trust-dscp",                     # qos_audit.summary.modes       (§2.7)
         "no ingress marking",                         # qos_audit.findings            (§2.7)
@@ -969,3 +1013,252 @@ def test_design_nonstr_risk_coercion_keeps_single_gateway_tally(tmp_path):
     txt = "\n".join(p.text for p in Document(str(out)).paragraphs)
     txt += "\n".join(c.text for t in Document(str(out)).tables for r in t.rows for c in r.cells)
     assert "2" in txt, "the single-gateway tally (2) must survive the str() coercion"
+
+
+_BOM_HEADING = "5.1 Replacement Bill of Materials"
+
+
+def _hld_text_for_bands(tmp_path, per_device):
+    from cisco_toolkit.design_advisor import compute_design_blueprint
+    snap = _snap()
+    snap["lifecycle_risk"] = {"per_device": per_device}
+    snap["design_blueprint"] = compute_design_blueprint(snap)
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "Unit Test Fleet")
+    return _all_text(Document(out))
+
+
+def test_hld_bom_section_appears_for_an_entirely_UNDETERMINED_fleet(tmp_path):
+    """Absence-as-health at document level: §5.1 used to VANISH when nothing could be banded.
+
+    `_replacement_bom` bucketed only `past-ldos` -> replace_now and the refresh bands -> refresh_soon.
+    `Unknown` -- a platform the offline EoX KB could not match -- fell through both, so a fleet of
+    unmatched platforms produced n_replace=0 and n_refresh=0, the §5.1 gate was false, and the whole
+    procurement section was OMITTED. The reader could not tell that from a fleet needing no
+    procurement at all: an omitted section leaves nothing on the page to disagree with.
+
+    Asserted at DOCUMENT level, not on the bucket dict, because the producer's new key is inert
+    unless the consumer's heading gate and row builder both carry it through.
+    """
+    text = _hld_text_for_bands(tmp_path, [
+        {"host": "a", "band": "Unknown", "model": "WS-C6509-E"},
+        {"host": "b", "band": "Unknown", "model": "WS-C6509-E"},
+        {"host": "c", "band": "Unknown", "model": "WS-C3560-48PS"}])
+    assert _BOM_HEADING in text, "the procurement section is omitted for an all-undetermined fleet"
+    assert "WS-C6509-E" in text and "WS-C3560-48PS" in text, "undetermined models not listed"
+    assert "could NOT be banded" in text, "the reason for the gap is not disclosed"
+    assert "UNDETERMINED — resolve before procurement" in text, "rows not labelled as undetermined"
+
+
+def test_hld_bom_section_stays_absent_for_a_fully_assessed_clean_fleet(tmp_path):
+    """Non-vacuity: the heading gate must still be a gate, not always-true.
+
+    Keyed on the §5.1 HEADING rather than the word "UNDETERMINED", which occurs elsewhere in the
+    document -- asserting on the bare word would pass here for the wrong reason.
+    """
+    text = _hld_text_for_bands(tmp_path, [{"host": "a", "band": "Active", "model": "C9300-48P"}])
+    assert _BOM_HEADING not in text, "an empty procurement section was rendered for a clean fleet"
+
+
+def test_hld_bom_keeps_real_replacements_leading_the_undetermined_rows(tmp_path):
+    """A real past-LDoS asset must still be costed and named; the coverage bucket must not absorb it."""
+    text = _hld_text_for_bands(tmp_path, [
+        {"host": "a", "band": "Past-LDoS", "model": "WS-C4948E"},
+        {"host": "b", "band": "Unknown", "model": "WS-C6509-E"}])
+    assert _BOM_HEADING in text and "WS-C4948E" in text and "WS-C6509-E" in text
+    assert "1 asset(s) at end-of-support to replace" in text, "the real replacement was miscounted"
+    assert "A further 1 asset(s) could NOT be banded" in text
+
+
+# =====================================================================================================
+# §2.5 multicast classification AUTHORITY (review r9 EXIT E).
+#
+# analyze.compute_multicast_intelligence classifies a group as on-air / broadcast-AV from the offline
+# port registry's CURATED media semantics. On the SHIPPED pack the authoritative on-air count is ZERO --
+# every multicast row is curated -- and that same curated flag ESCALATES a mac-alias finding from Medium
+# to High (analyze.py:2774). The HLD's §2.5 table rendered (group, name, category) with no authority
+# column and no note, so a curated hint reached the reader in the same voice as an IANA-assigned fact.
+#
+# These pin the DISCLOSURE (not a re-scoring): the group ADDRESS + its observed activity are evidence,
+# the NAME/CATEGORY are registry semantics, and the per-group basis + the fleet census say which.
+# =====================================================================================================
+_BASIS_HEADER = "Classification basis"
+_BASIS_NOTE_LEAD = "Classification basis — the Group address and its observed multicast activity"
+
+
+def _real_multicast_snap(groups=("224.0.1.129", "239.1.1.1", "239.255.255.250"), authoritative=()):
+    """A snapshot whose multicast sections come from the REAL producers, not a hand-shaped dict.
+
+    `compute_service_map(igmp_groups=...)` classifies the addresses through the SHIPPED offline port
+    registry (so `classified_groups` carries the registry's own authority labels verbatim), and
+    `compute_multicast_intelligence` derives the per-group `on_air_authoritative` + the
+    `summary.n_av_groups_authoritative` census from it. `authoritative` names the addresses whose
+    registry semantics are flipped to authoritative BEFORE the intelligence pass runs, so the census is
+    still computed by the producer -- that is the only way to obtain the authoritative fleet the shipped
+    pack cannot produce (every multicast row in it is curated)."""
+    from cisco_toolkit.analyze import compute_multicast_intelligence, compute_service_map
+    sm = compute_service_map({}, {}, igmp_groups=list(groups))
+    mc = sm["multicast"]
+    for g in mc["classified_groups"]:
+        if g.get("group") in authoritative:
+            g["semantics_authoritative"] = True
+            g["semantics_source"] = "IANA multicast-addresses registry"
+    mc["active_switch_count"], mc["active_interfaces"] = 2, 4
+    mc["igmp_queriers"] = [{"switch": "core1", "vlan": "10", "querier": "10.0.10.1"}]
+    mc["ptp"] = {"core1": {"operational": True}}
+    return {"devices": {"core1": {"hostname": "core1", "model": "C9300-48T", "platform": "ios"}},
+            "service_map": sm,
+            "multicast_intelligence": compute_multicast_intelligence(sm)}
+
+
+def _design_text(snap, tmp_path, name="d.docx"):
+    out = str(tmp_path / name)
+    write_design_doc_docx(out, snap, "Multicast Fleet")
+    return _all_text(Document(out))
+
+
+def test_design_multicast_table_discloses_the_curated_classification_basis(tmp_path):
+    """Shipped-pack reality: every classified group is CURATED, so the §2.5 table must say so per row
+    and the note must state the fleet census. Pre-fix the table was (Group, Name, Category) only, and
+    the words 'CURATED' / 'Classification basis' appeared nowhere in the document."""
+    snap = _real_multicast_snap()
+    # The producer's own verdict, asserted first so this test cannot pass against a changed fixture.
+    assert snap["multicast_intelligence"]["summary"]["n_av_groups_authoritative"] == 0
+    assert snap["multicast_intelligence"]["summary"]["n_av_groups"] == 1
+    text = _design_text(snap, tmp_path)
+    assert _BASIS_HEADER in text, "§2.5 still renders (group, name, category) with no authority column"
+    assert "CURATED — unverified" in text, "a curated classification is not labelled as curated"
+    assert _BASIS_NOTE_LEAD in text, "the address-vs-semantics distinction is not stated"
+    assert ("NONE of them classified on-air by an authoritative source: the broadcast/AV label is a "
+            "CURATED offline-registry classification, not a measurement") in text, \
+        "the zero-authoritative census is not disclosed in the wording runbook.py already uses"
+    assert "224.0.1.129" in text and "PTP-primary" in text     # the row itself still renders
+
+
+def test_design_multicast_unmatched_group_is_labelled_unclassified_not_curated(tmp_path):
+    """239.1.1.1 has NO registry entry (overlay_status 'unclassified'), so its generic Name/Category are
+    not a curation anybody performed. Labelling it 'CURATED' would claim a judgement that never
+    happened; it must read UNCLASSIFIED."""
+    snap = _real_multicast_snap()
+    by_group = {g["group"]: g for g in snap["multicast_intelligence"]["groups"]}
+    assert by_group["239.1.1.1"]["overlay_status"] == "unclassified"      # producer's verdict
+    assert by_group["239.255.255.250"]["overlay_status"] == "curated-only"
+    text = _design_text(snap, tmp_path)
+    assert "UNCLASSIFIED — no registry match" in text
+    assert "CURATED — unverified" in text            # ...and the curated-only row is still CURATED
+
+
+def test_design_multicast_basis_is_not_assessed_when_the_census_is_absent(tmp_path):
+    """FAIL-CLOSED. An older snapshot carries classified_groups but no `multicast_intelligence` at all.
+    Absent must read NOT ASSESSED -- never 'authoritative', never silently omitted, never coerced to the
+    (assertive) CURATED verdict by a key-presence guard plus a falsy default."""
+    snap = _real_multicast_snap()
+    snap.pop("multicast_intelligence")
+    text = _design_text(snap, tmp_path)
+    assert "NOT ASSESSED" in text
+    assert ("on-air classification authority NOT ASSESSED in this snapshot; treat the broadcast/AV "
+            "label as curated, not authoritative") in text
+    assert "AUTHORITATIVE (registry source)" not in text, "an absent census was rendered as authority"
+
+
+def test_design_multicast_basis_is_not_assessed_when_a_group_has_no_authority_keys(tmp_path):
+    """Per-GROUP fail-closed: the census exists, but this group's record predates the authority keys.
+    It must degrade to NOT ASSESSED on its own row while its siblings keep their real verdict."""
+    snap = _real_multicast_snap()
+    for g in snap["multicast_intelligence"]["groups"]:
+        if g["group"] == "224.0.1.129":
+            g.pop("on_air_authoritative")
+            g.pop("semantics_authoritative")
+    text = _design_text(snap, tmp_path)
+    assert "NOT ASSESSED" in text                     # the stripped row
+    assert "CURATED — unverified" in text        # ...siblings unaffected
+
+
+@pytest.mark.parametrize("bad", ["unknown", "false", {}, [], 1, 0, None])
+def test_design_multicast_basis_fails_closed_on_a_malformed_authority_flag(tmp_path, bad):
+    """The OTHER fail-open direction. A bare truthiness read of a malformed flag ("unknown", a dict, a
+    list) reports AUTHORITATIVE — the worst error available here. The producer publishes real booleans,
+    so a non-bool is UNUSABLE, and an unusable verdict is NOT ASSESSED, not a verdict."""
+    snap = _real_multicast_snap()
+    for g in snap["multicast_intelligence"]["groups"]:
+        if g["group"] == "224.0.1.129":
+            g["on_air_authoritative"] = bad
+            g["semantics_authoritative"] = bad
+    text = _design_text(snap, tmp_path)
+    assert "AUTHORITATIVE (registry source)" not in text, f"{bad!r} was read as authority"
+    assert "NOT ASSESSED" in text, f"{bad!r} did not degrade to NOT ASSESSED"
+
+
+def test_design_multicast_authoritative_fleet_does_NOT_acquire_the_caveat(tmp_path):
+    """NON-VACUITY 1. A fleet whose on-air classification IS authoritative must be reported as such --
+    the disclosure is not an unconditional string bolted onto every document."""
+    snap = _real_multicast_snap(authoritative=("224.0.1.129",))
+    s = snap["multicast_intelligence"]["summary"]
+    assert (s["n_av_groups"], s["n_av_groups_authoritative"]) == (1, 1)   # producer's verdict
+    text = _design_text(snap, tmp_path)
+    assert "AUTHORITATIVE (registry source)" in text
+    assert "1 of 1 on-air classification(s) rest on an authoritative source" in text
+    assert "NONE of them classified on-air by an authoritative source" not in text
+    assert "authority NOT ASSESSED in this snapshot" not in text
+
+
+def test_design_fleet_with_no_media_estate_gains_no_multicast_caveat(tmp_path):
+    """NON-VACUITY 2. A fabric with no multicast at all still gets the existing fallback sentence and
+    NO classification-basis text -- the caveat may not leak into a document that classifies nothing."""
+    snap = {"devices": {"sw1": {"hostname": "sw1", "model": "C9300-48T"}},
+            "service_map": {"multicast": {"active_interfaces": 0, "active_switch_count": 0,
+                                          "classified_groups": [], "igmp_queriers": [], "ptp": {}}}}
+    text = _design_text(snap, tmp_path)
+    assert "No multicast/PTP activity was classified" in text
+    for token in (_BASIS_HEADER, _BASIS_NOTE_LEAD, "CURATED — unverified",
+                  "AUTHORITATIVE (registry source)", "UNCLASSIFIED — no registry match"):
+        assert token not in text, f"a non-media fabric acquired multicast authority text: {token!r}"
+
+
+def test_design_multicast_incoherent_census_refuses_to_state_a_ratio(tmp_path):
+    """authoritative > total is incoherent (the two counts are published independently). Rendering
+    '7 of 3' is indistinguishable from a real ratio, so the incoherence is disclosed instead -- the same
+    check runbook.py carries because an earlier fix printed a NEGATIVE count into a client workbook."""
+    snap = _real_multicast_snap()
+    snap["multicast_intelligence"]["summary"].update(n_av_groups=3, n_av_groups_authoritative=7)
+    text = _design_text(snap, tmp_path)
+    assert "census INCOHERENT: 7 classification(s) reported as authoritative out of 3 on-air group(s)" in text
+    assert "7 of 3" not in text
+
+
+def test_av_authority_mirrors_the_runbook_wording():
+    """design._av_authority is a deliberate MIRROR of runbook._av_authority (documented in both
+    docstrings). Drive both over one case table so a divergence fails here instead of shipping two
+    different authority claims about the same fact in one deliverable set."""
+    from cisco_toolkit.design import _av_authority as design_av
+    from cisco_toolkit.runbook import _av_authority as runbook_av
+    cases = [
+        None, {}, 5, "x", {"summary": 5}, {"summary": {}},
+        {"summary": {"n_av_groups": 3, "n_av_groups_authoritative": 0}},
+        {"summary": {"n_av_groups": 3, "n_av_groups_authoritative": 2}},
+        {"summary": {"n_av_groups": 3, "n_av_groups_authoritative": 3}},
+        {"summary": {"n_av_groups": 3, "n_av_groups_authoritative": 7}},
+        {"summary": {"n_av_groups": 3, "n_av_groups_authoritative": None}},
+        {"summary": {"n_av_groups": 3, "n_av_groups_authoritative": "lots"}},
+        {"summary": {"n_av_groups": 3, "n_av_groups_authoritative": -4}},
+        {"summary": {"n_av_groups": None, "n_av_groups_authoritative": 2}},
+    ]
+    for case in cases:
+        assert design_av(case) == runbook_av(case), f"wording diverged on {case!r}"
+    # ...and the table is not vacuous: the branches really do produce different strings.
+    assert len({runbook_av(c) for c in cases}) >= 4
+
+
+@pytest.mark.parametrize("bad", _DESIGN_POISONS + [None])
+def test_design_multicast_authority_tolerates_a_malformed_census(tmp_path, bad):
+    """A malformed `multicast_intelligence` (or a malformed `groups` list inside it) must degrade to
+    NOT ASSESSED and still emit an openable document -- never claim authority, never crash."""
+    import os
+    snap = _real_multicast_snap()
+    snap["multicast_intelligence"] = bad
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "Poison")
+    assert os.path.exists(out)
+    text = _all_text(Document(out))
+    assert "AUTHORITATIVE (registry source)" not in text
+    assert "NOT ASSESSED" in text

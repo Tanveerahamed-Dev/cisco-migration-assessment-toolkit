@@ -122,7 +122,7 @@ def test_flat_l2_design_flow_grounds_its_vlan_citation():
     """[regression — W3-2 follow-up] The flat-L2 design decision (dc-restrict-vlan-span-routed-access) must cite
     RESOLVABLE snapshot paths. It previously also cited `vlan_inventory` -- a COMPUTED count (analyze.vlan_inventory,
     injected into executive_brief.scale.n_vlans), NOT a snapshot key -- so the grounding verifier flagged the flow
-    ungrounded (dangling=['vlan_inventory']) on the real [HISTORY-REDACTED] snapshot. The same claim is already backed by the
+    ungrounded (dangling=['vlan_inventory']) on the real Meridian reference snapshot. The same claim is already backed by the
     resolvable executive_brief.scale.n_vlans (the count) + segmentation.vrfs (the single-VRF span), so the dangling
     computed-value reference must be gone. Drives the REAL detector through the REAL pipeline, so re-introducing the
     bad citation regresses HERE (a direct guard on the format-fidelity / SSOT-drift defect class)."""
@@ -194,7 +194,7 @@ def test_flow_keys_are_unique(result):
 
 
 def test_flow_keys_unique_despite_repeated_cross_layer_ids():
-    """Cross-layer CL-xx ids REPEAT — a real [HISTORY-REDACTED] snapshot has 303 findings all id='CL-02'. The flow key must
+    """Cross-layer CL-xx ids REPEAT — a real Meridian reference snapshot has 303 findings all id='CL-02'. The flow key must
     therefore be index-based, not id-based, or React/the UI sees duplicate keys. Locks that regression."""
     snap = {"devices": {"a": {}, "b": {}, "c": {}},
             "cross_layer": [{"id": "CL-02", "severity": "High", "title": f"box{c}: only L2 transit",

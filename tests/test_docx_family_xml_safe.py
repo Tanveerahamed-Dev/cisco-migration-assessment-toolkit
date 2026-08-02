@@ -41,6 +41,6 @@ def _poison_snap():
 def test_docx_generator_survives_xml_illegal_chars(mod, fn, tmp_path):
     f = getattr(importlib.import_module("cisco_toolkit." + mod), fn)
     out = str(tmp_path / f"{mod}.docx")
-    f(out, _poison_snap(), "[HISTORY-REDACTED]" + chr(0xFFFF))   # must not raise
+    f(out, _poison_snap(), "Meridian" + chr(0xFFFF))   # must not raise
     assert os.path.exists(out)
     Document(out)                                # and be a valid, openable .docx

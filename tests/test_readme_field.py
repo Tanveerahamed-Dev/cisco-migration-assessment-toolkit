@@ -15,6 +15,59 @@ GUIDE = ROOT / "portable" / "README-FIELD.txt"
 
 _ADD_ARG = re.compile(r"""add_argument\(\s*['"](--[a-z][a-z0-9-]*)""")
 _FLAG = re.compile(r"--[a-z][a-z0-9-]*")
+_ATLAS = re.compile(r"Atlas\.exe\b.*")
+
+
+def _atlas_commands():
+    """(lineno, command-text, flags) for every `Atlas.exe …` invocation the guide shows —
+    wherever on the line it sits.
+
+    NON-VACUITY (mutation-proved 2026-07-28). The per-surface checks below used to anchor on
+    ``line.strip().startswith("Atlas.exe ")``. The guide writes two of its five commands
+    mid-sentence ("2. Run:  Atlas.exe --selftest", "Afterwards run  Atlas.exe --selftest
+    once."), so those were invisible — and because the guide shows no ``--run-engine`` command
+    at all, ``test_every_engine_command_uses_only_engine_flags`` iterated ZERO lines: no change
+    to the guide or to the engine's argparse surface could make it fail. Rewriting a guide line
+    to hand the server-only ``--redact-folder`` to ``--run-engine`` — verbatim the failure that
+    test's docstring claims to catch — left all eleven tests in this file GREEN."""
+    out = []
+    for n, line in enumerate(GUIDE.read_text(encoding="ascii").splitlines(), 1):
+        m = _ATLAS.search(line)
+        if not m:
+            continue
+        cmd = m.group(0).strip()
+        flags = set(_FLAG.findall(cmd))
+        if flags:                       # a bare "Double-click Atlas.exe" names no surface
+            out.append((n, cmd, flags))
+    return out
+
+
+def test_the_command_scan_sees_every_invocation_the_guide_shows():
+    """Guard the guard: the two per-surface checks are LOOPS, and an empty loop passes both
+    while proving nothing. Reconcile the scanner against a raw text sweep so an anchoring bug
+    can never quietly make them inert again."""
+    lines = GUIDE.read_text(encoding="ascii").splitlines()
+    raw = {n for n, line in enumerate(lines, 1)
+           if "Atlas.exe" in line and _FLAG.search(line[line.index("Atlas.exe"):])}
+    found = {n for n, _c, _f in _atlas_commands()}
+    assert found == raw, (
+        f"the Atlas.exe command scan misses invocations the guide shows on line(s) "
+        f"{sorted(raw - found)} — the per-surface checks below would skip them silently")
+    assert len(found) >= 5, (
+        f"only {len(found)} Atlas.exe command(s) found; the guide documents the selftest, the "
+        f"redaction run and the two manifest-verification forms. If it really lost them, the "
+        f"per-surface reconciliation below has nothing left to check.")
+
+
+def test_every_atlas_command_is_routed_to_exactly_one_surface():
+    """The engine-surface check has no live subject today (the guide shows no `--run-engine`
+    command), so on its own it is inert. This makes the inertness SAFE rather than silent:
+    every command the guide shows is accounted for by one of the two surface checks, so a new
+    engine command cannot appear unreconciled."""
+    cmds = _atlas_commands()
+    engine = [c for c in cmds if "--run-engine" in c[2]]
+    app = [c for c in cmds if "--run-engine" not in c[2]]
+    assert len(engine) + len(app) == len(cmds) and cmds
 
 
 def test_field_guide_is_ascii_only():
@@ -66,41 +119,42 @@ def test_every_quoted_app_message_is_really_printed():
 def test_every_engine_command_uses_only_engine_flags():
     """Per-SURFACE check. The union test below proves a flag exists *somewhere*; it would pass a
     line that hands a server-only flag to the engine (or drops the --run-engine sentinel), which
-    fails at runtime. Each `Atlas.exe --run-engine …` line must be all-engine flags."""
+    fails at runtime. Each `Atlas.exe --run-engine …` command must be all-engine flags."""
     engine_flags = set(_ADD_ARG.findall(
         (ROOT / "COLLECT_PARSE_V3_23_0.py").read_text(encoding="utf-8", errors="replace")))
-    for line in GUIDE.read_text(encoding="ascii").splitlines():
-        s = line.strip()
-        if not s.startswith("Atlas.exe --run-engine"):
+    for n, cmd, used in _atlas_commands():
+        if "--run-engine" not in used:
             continue
-        used = set(_FLAG.findall(s)) - {"--run-engine"}
-        unknown = used - engine_flags
-        assert not unknown, f"engine command names non-engine flags {sorted(unknown)}: {s}"
+        unknown = used - {"--run-engine"} - engine_flags
+        assert not unknown, \
+            f"line {n}: engine command names non-engine flags {sorted(unknown)}: {cmd}"
 
 
 def test_every_app_command_uses_only_app_flags():
-    """The mirror of the engine check: an `Atlas.exe …` line WITHOUT the --run-engine sentinel is
-    the app's own surface, so an engine-only flag there dies at argparse. Without this, only one
-    direction of the two-surface confusion was guarded."""
+    """The mirror of the engine check: an `Atlas.exe …` command WITHOUT the --run-engine sentinel
+    is the app's own surface, so an engine-only flag there dies at argparse. Without this, only
+    one direction of the two-surface confusion was guarded."""
     app_flags = set(_ADD_ARG.findall(
         (ROOT / "webapp" / "backend" / "serve.py").read_text(encoding="utf-8")))
-    for line in GUIDE.read_text(encoding="ascii").splitlines():
-        s = line.strip()
-        if not s.startswith("Atlas.exe ") or "--run-engine" in s:
+    checked = 0
+    for n, cmd, used in _atlas_commands():
+        if "--run-engine" in used:
             continue
-        unknown = set(_FLAG.findall(s)) - app_flags
-        assert not unknown, f"app command names non-app flags {sorted(unknown)}: {s}"
+        checked += 1
+        unknown = used - app_flags
+        assert not unknown, f"line {n}: app command names non-app flags {sorted(unknown)}: {cmd}"
+    assert checked, "no app-surface command was checked — this loop went inert"
 
 
 def test_commands_are_copy_pasteable_on_one_line():
     """A command wrapped across indented continuation lines pastes into cmd.exe as several
     commands, the trailing ones garbage."""
     lines = GUIDE.read_text(encoding="ascii").splitlines()
-    for i, line in enumerate(lines):
-        if line.strip().startswith("Atlas.exe ") and i + 1 < len(lines):
-            nxt = lines[i + 1]
+    for n, cmd, _flags in _atlas_commands():
+        if n < len(lines):
+            nxt = lines[n]              # `n` is 1-based, so lines[n] is the NEXT line
             assert not (nxt.startswith("            ") and nxt.strip().startswith("--")), \
-                f"command continues onto line {i + 2} — join it: {line.strip()[:60]}"
+                f"command continues onto line {n + 1} — join it: {cmd[:60]}"
 
 
 def test_every_flag_the_guide_names_exists_in_a_shipped_argparse():
@@ -172,7 +226,7 @@ def test_the_draft_status_row_really_reaches_a_rendered_document(tmp_path):
     from cisco_toolkit import design
 
     out = tmp_path / "d.docx"
-    design.write_design_doc_docx(str(out), {"devices": {"SW1": {"model": "C9300"}}}, "[HISTORY-REDACTED]")
+    design.write_design_doc_docx(str(out), {"devices": {"SW1": {"model": "C9300"}}}, "Meridian")
     text = "\n".join(c.text for t in docx.Document(str(out)).tables
                      for r in t.rows for c in r.cells)
     assert "Status" in text, "the Document Control table lost its Status row"
@@ -206,3 +260,32 @@ def test_the_guide_does_not_promise_the_whole_folder_is_safe():
     assert "unredacted" in flat, (
         "the guide must say the STALE case can be UNREDACTED, not only that it may name "
         "another client")
+
+
+def test_the_guide_does_not_promise_total_redaction_verification():
+    """The REDACTION section's opening paragraph is where the engineer forms their mental model,
+    BEFORE they run anything — so an over-broad verification claim there outranks the accurate
+    paragraph fifteen lines further down.
+
+    It used to read "if anything is still unredacted it FAILS and says so rather than handing you a
+    file that looks safe". The code checks exactly two things (serve.run_redaction, and it prints
+    them): that the engine's redaction phases RAN, and that no private RFC 1918 address survives in
+    the SNAPSHOT. MACs, serials, public/IPv6 addresses and the workbook's own cells are not
+    inspected, and hostnames are kept BY DESIGN. serve.py already carries this lesson in a comment
+    ("certified roughly three times what the code inspects") — it had been applied to the console
+    output but not to the one document the engineer has on site.
+
+    Whitespace-NORMALISED, per this file's own hard-wrap lesson: a negative assertion on raw text
+    silently stops matching when the banned sentence comes back wrapped one word differently."""
+    flat = " ".join(GUIDE.read_text(encoding="ascii").split()).lower()
+    assert "still unredacted it fails" not in flat, (
+        "README-FIELD claims the redaction check catches anything unredacted. It checks two things: "
+        "that the engine's redaction phases ran, and that no private address survives in the "
+        "snapshot. Scope the claim or the engineer sends a set believing it was fully verified.")
+    assert "narrower" in flat, (
+        "the guide must say up front that the verification is narrower than it sounds - that "
+        "sentence is what sends the engineer to the WHAT REDACTION DOES NOT REMOVE section")
+    # ...and the section it points at must still carry the two facts that make it worth reading.
+    assert "kept on purpose" in flat, "the guide lost the hostnames-are-kept disclosure"
+    assert "does not certify every field of every file" in flat, (
+        "the guide lost the scope of what Atlas actually verifies")

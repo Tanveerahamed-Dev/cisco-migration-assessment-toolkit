@@ -11,7 +11,7 @@ crd -> runbook -> engagement -> deck over several audit waves -- is a UNIFIED gu
   1. a producer-side internal-consistency invariant (cisco_toolkit.ssot.reconcile) that proves
      every published canonical value still matches its raw-evidence derivation, and
   2. a cross-surface behavioural lock that renders the lifecycle/scale deliverables from a
-     fixture carrying the exact [HISTORY-REDACTED] trap values (n_past_ldos=152, n_past_eos=0) and asserts each
+     fixture carrying the exact Meridian trap values (n_past_ldos=152, n_past_eos=0) and asserts each
      surface headlines the past-SUPPORT population (152), never the conflated sibling (0).
 
 Together they convert "re-find the drift by hand every wave" into "CI catches it the moment it
@@ -156,7 +156,7 @@ def test_reconcile_and_summary_survive_a_malformed_summary_block(snap):
     viol = ssot.reconcile(snap)                     # must not raise
     assert viol == [], viol                          # malformed block is skipped, never invented drift
     s = ssot.summary(snap)                            # must not raise -- the exact add_excellence_front call site
-    assert set(s) == {"verified", "n_facts", "n_violations"}
+    assert set(s) == {"verified", "n_facts", "n_checked", "n_violations"}
     assert s["n_violations"] == 0
     assert isinstance(s["n_facts"], int) and s["n_facts"] >= 0   # coverage-honest: no fabricated fact
 
@@ -207,7 +207,7 @@ def test_reconcile_and_summary_survive_any_poisoned_section(section, poison):
     viol = ssot.reconcile(snap)                        # must not raise
     assert viol == [], (section, poison, viol)         # coverage-honest: malformed section skipped
     s = ssot.summary(snap)                             # must not raise
-    assert set(s) == {"verified", "n_facts", "n_violations"}
+    assert set(s) == {"verified", "n_facts", "n_checked", "n_violations"}
     assert s["n_violations"] == 0 and isinstance(s["n_facts"], int) and s["n_facts"] >= 0
 
 
@@ -317,11 +317,15 @@ def test_summary_counts_only_published_facts():
     """Coverage-honest: n_facts counts canonical facts actually published, not a constant. An empty
     snapshot publishes none."""
     assert ssot.summary({})["n_facts"] == 0
-    assert ssot.summary({})["verified"] is True   # nothing published -> nothing to contradict
+    # Nothing published AND nothing reconciled -> NOT "verified". An empty violation list is not a
+    # pass: every check in reconcile() is gated on its raw basis being present, so a snapshot with no
+    # raw evidence returns [] having verified nothing. `verified` therefore requires n_checked > 0.
+    assert ssot.summary({})["verified"] is False
+    assert ssot.summary({})["n_checked"] == 0
 
 
 # --------------------------------------------------------------------------------------------
-# Cross-surface behavioural lock: render the deliverables from the [HISTORY-REDACTED] trap fixture and assert
+# Cross-surface behavioural lock: render the deliverables from the Meridian trap fixture and assert
 # each surface reads the canonical past-support population, not the conflated sibling.
 # --------------------------------------------------------------------------------------------
 docx = pytest.importorskip("docx")  # the render tests below need python-docx
@@ -330,7 +334,7 @@ from docx import Document  # noqa: E402
 
 def _trap_render_snap():
     """Union of the maintained per-deliverable fixtures (so each renderer has the keys it reads),
-    with the canonical SSOT blocks overridden to the exact [HISTORY-REDACTED] trap values: the past-support
+    with the canonical SSOT blocks overridden to the exact Meridian trap values: the past-support
     population is n_past_ldos=152 while the conflated sibling n_past_eos=0. A surface that reads
     the wrong field renders 0 / omits the headline, so 152 vanishing from its output is the
     discriminator."""
@@ -509,3 +513,198 @@ def test_add_excellence_front_survives_any_poisoned_section(section, poison):
     text = _all_text(doc)
     assert "At a Glance" in text                                  # front matter rendered despite the poison
     assert "self-verified against the raw evidence" not in text   # coverage-honest: no fabricated badge
+
+
+# --------------------------------------------------------------------------------------------
+# Unit discipline on the client-facing self-verification badge (cross-module audit 2026-07-28).
+# ssot.summary returns TWO counts that are not the same unit: n_facts = canonical facts PUBLISHED,
+# n_checked = reconcile CHECKS that RAN. Several facts carry more than one independent basis
+# (n_devices reconciles against BOTH len(health_scores) and collection_completeness.summary.
+# inventory) and reconcile also verifies non-canonical siblings (lifecycle_risk.summary.by_band),
+# so n_checked > n_facts is the NORMAL case. docmeta.add_excellence_front rendered them as
+# "{n_checked} of {n_facts} headline figures self-verified" -> "20 of 14" shipped into all seven
+# DOCX deliverables: a trust badge claiming more figures verified than the snapshot publishes.
+# --------------------------------------------------------------------------------------------
+
+def test_n_checked_and_n_facts_are_different_units():
+    """The two counts must not be assumed comparable: on a fully-reconciling snapshot the CHECK
+    count exceeds the published-FACT count, so any 'X of Y' frame over them is arithmetically
+    false."""
+    s = ssot.summary(_consistent_snap())
+    assert s["verified"] is True and s["n_violations"] == 0
+    assert s["n_checked"] > s["n_facts"], (
+        "fixture no longer exercises the multi-check case this guard exists for -- "
+        "n_checked=%s n_facts=%s" % (s["n_checked"], s["n_facts"]))
+
+
+def _ssot_line(text):
+    for line in text.splitlines():
+        if "Single source of truth" in line:
+            return line
+    return ""
+
+
+def test_excellence_badge_never_claims_more_figures_than_published():
+    """The rendered badge must not assert a bigger population than the snapshot publishes.
+
+    Fails on the pre-fix render ("20 of 14 headline figures self-verified"): the number in the
+    'headline figures' slot has to be n_facts, and no 'X of Y' on that line may have X > Y."""
+    import re as _re
+    from cisco_toolkit.docmeta import add_excellence_front
+    snap = _consistent_snap()
+    s = ssot.summary(snap)
+    doc = Document()
+    add_excellence_front(doc, snap)
+    line = _ssot_line(_all_text(doc))
+    assert line, "the single-source-of-truth badge did not render"
+
+    # 1. the population named as 'headline figures' is the PUBLISHED fact count, not the check count
+    m = _re.search(r"(\d+)\s+headline figures self-verified", line)
+    assert m, "self-verification badge phrase missing from: %r" % (line,)
+    assert int(m.group(1)) == s["n_facts"], (
+        "badge names %s headline figures but the snapshot publishes %s (n_checked=%s) -- line: %r"
+        % (m.group(1), s["n_facts"], s["n_checked"], line))
+
+    # 2. structural: nothing on that line may claim 'X of Y' with X > Y, whatever the wording
+    for a, b in _re.findall(r"(\d+)\s+of\s+(\d+)", line):
+        assert int(a) <= int(b), "badge claims %s of %s -- more than the whole: %r" % (a, b, line)
+
+    # 3. the check count is still disclosed (it is real evidence; the fix relabels, never drops it)
+    assert str(s["n_checked"]) in line, "the reconcile-check count was dropped from: %r" % (line,)
+
+
+def test_excellence_badge_keeps_the_L1_rendered_citation_guard_passing():
+    """eval_harness._check_citations_rendered is the L1 lock on this badge; the relabel must keep
+    it PASSING (and it must be reading the fact count, not whatever number happens to lead)."""
+    import dataclasses
+    from cisco_toolkit import eval_harness
+    from cisco_toolkit.docmeta import add_excellence_front
+    snap = _consistent_snap()
+    doc = Document()
+    add_excellence_front(doc, snap)
+    res = eval_harness._check_citations_rendered(snap, _all_text(doc))
+    assert [dataclasses.asdict(r)["status"] for r in res] == ["pass"], [dataclasses.asdict(r) for r in res]
+
+
+# --------------------------------------------------------------------------------------------
+# Segmentation posture: ONE owner (analyze.compute_segmentation -> snap['segmentation']), read by
+# design/crd/archreview through ssot.segmentation_facts. Before this, each re-derived its own from
+# snap['interfaces'] and counted every non-default VRF on the box -- including management/keepalive
+# VRFs that carry no gateway SVI -- as a "VRF in use". On the Meridian reference fleet that rendered "4 VRF(s) in
+# use" (archreview SEC-2) and "4 non-default VRF(s)" (design 2.6) beside the runbook's "1 VRF(s)
+# across 231 gateway SVI(s)" and the design doc's OWN "202 VLAN(s) across a single global VRF".
+# --------------------------------------------------------------------------------------------
+
+def _flat_fabric_snap():
+    """A FLAT gateway tier (every SVI in the global table, no gateway ACL) that nonetheless has
+    management VRFs configured on non-SVI ports -- the exact Meridian shape."""
+    ifaces = {"sw1": {"mgmt0": {"vrf": "management"}, "Vlan99": {"vrf": "Mgmt-vrf"}}}
+    for i in range(8):
+        ifaces["sw1"]["Vlan%d" % (i + 1)] = {"svi_ip": "10.0.%d.1" % i}
+    return {
+        "interfaces": ifaces,
+        "segmentation": {
+            "summary": {"n_vrfs": 1, "flat": True, "gateway_acl_coverage": 0.0,
+                        "n_gateways": 8, "n_oncrit_exposed": 0, "global_only": True},
+            "gateway_acl": {"n_gateways": 8, "n_with_acl": 0, "coverage_pct": 0.0},
+            "vrfs": [{"vrf": "(global)", "gateway_count": 8}],
+        },
+    }
+
+
+def test_segmentation_facts_separates_gateway_vrfs_from_configured_elsewhere():
+    """The accessor answers BOTH questions, each under its own name, and agrees with the owner."""
+    f = ssot.segmentation_facts(_flat_fabric_snap())
+    assert f["source"] == "segmentation"
+    assert f["n_gateways"] == 8 and f["n_with_acl"] == 0 and f["flat"] is True
+    # the owner's '(global)' bucket is NOT a VRF -- reading it as one turns a flat fabric segmented
+    assert f["gateway_vrfs"] == []
+    assert f["n_gateway_vrfs"] == 1                        # one bucket (the global table) = the owner's basis
+    assert f["other_vrfs"] == ["Mgmt-vrf", "management"]   # real, but they segment no user traffic
+
+
+def test_segmentation_facts_falls_back_coverage_honestly():
+    """No published block -> derive with the owner's own predicate and SAY so; nothing at all ->
+    None, never a fabricated 0."""
+    snap = _flat_fabric_snap()
+    snap.pop("segmentation")
+    f = ssot.segmentation_facts(snap)
+    assert f["source"] == "derived" and f["n_gateways"] == 8 and f["gateway_vrfs"] == []
+    empty = ssot.segmentation_facts({})
+    assert empty["source"] == "unavailable"
+    assert empty["n_gateways"] is None and empty["n_with_acl"] is None and empty["flat"] is None
+
+
+@pytest.mark.parametrize("poison", (5, "x", [1], {"a": 1}, True))
+def test_segmentation_facts_is_total_on_poisoned_input(poison):
+    """Same totality contract as the rest of this module: a truthy non-dict section never raises."""
+    for key in ("segmentation", "interfaces"):
+        snap = _flat_fabric_snap()
+        snap[key] = poison
+        ssot.segmentation_facts(snap)      # must not raise
+
+
+def test_flat_fabric_is_not_downgraded_by_a_management_vrf():
+    """archreview SEC-2 must grade the GATEWAY tier. 4 gateway-less management VRFs made the old
+    `not vrfs` test False, moving a fabric the owner calls FLAT from 'deviation' to 'advisory /
+    partial enforcement' -- and the advisory verdict carries twice the conformance weight."""
+    from cisco_toolkit.archreview import compute_architecture_review
+    ar = compute_architecture_review(_flat_fabric_snap())
+    sec2 = next(c for c in ar["checks"] if c["id"] == "SEC-2")
+    assert sec2["verdict"] == "deviation", sec2
+    # and the observed text must reconcile with the owner, not contradict it
+    assert "No gateway SVI sits in a non-default VRF" in sec2["observed"]
+    assert "management" in sec2["observed"]     # the management VRFs are disclosed, not dropped
+
+
+def test_design_and_archreview_agree_with_the_segmentation_owner():
+    """Cross-surface lock: the recomputing surfaces must report the OWNER's gateway-VRF answer, not
+    their own. Before the fix design said '4 non-default VRF(s)' and archreview '4 VRF(s) in use'
+    where the owner (and the runbook, which reads it) said 1 bucket / 0 non-default."""
+    from cisco_toolkit import crd, design
+    snap = _flat_fabric_snap()
+    owner = ssot.segmentation_facts(snap)
+    assert owner["gateway_vrfs"] == []
+    gw_vrfs, other_vrfs, n_acl, n_gw = design._segmentation_facts(snap)
+    assert gw_vrfs == owner["gateway_vrfs"] and other_vrfs == owner["other_vrfs"]
+    assert (n_acl, n_gw) == (owner["n_with_acl"], owner["n_gateways"])
+    ev = crd._evidence_facts(snap)
+    assert ev["gw_vrfs"] == owner["gateway_vrfs"] and ev["other_vrfs"] == owner["other_vrfs"]
+    assert ev["n_acl_svis"] == owner["n_with_acl"] and ev["n_seg_gateways"] == owner["n_gateways"]
+
+
+def test_single_gateway_vlan_count_is_one_derivation_across_the_three_surfaces():
+    """runbook 6.1 states in prose that its single-gateway figure is 'the same count the Architecture
+    Review's RES-2 and the design document's 2.4 report from this snapshot'. RES-2 and
+    design_advisor.sig['single_gw'] count DISTINCT VLANs; design 2.4 counted l3_forwarding ROWS.
+    Equal on a clean snapshot (one single-gateway VLAN has one gateway row) but not by construction:
+    a merged / re-analysed / uploaded snapshot carrying the same VLAN twice split them, with the
+    document that cross-references the other two being the one that was wrong."""
+    from cisco_toolkit import archreview, design, design_advisor
+    # VLAN 10 appears twice (the shaped input); VLAN 20 once. Distinct VLANs = 2, rows = 3.
+    l3f = [{"switch": "a", "vlan": 10, "risk": "single-gateway", "fhrp": "none"},
+           {"switch": "b", "vlan": 10, "risk": "single-gateway", "fhrp": "none"},
+           {"switch": "c", "vlan": 20, "risk": "single-gateway", "fhrp": "none"}]
+    snap = {"devices": {"a": {}, "b": {}, "c": {}}, "l3_forwarding": l3f}
+    assert design_advisor._signals(snap)["single_gw"] == 2
+    res2 = next(c for c in archreview.compute_architecture_review(snap)["checks"] if c["id"] == "RES-2")
+    assert "10, 20" in res2["observed"]                     # RES-2 names the two VLANs, not three rows
+    # and the rendered design 2.4 row must carry the SAME 2 (pre-fix: 3, the row tally)
+    assert "Single-gateway VLANs (no FHRP peer) | 2" in _render_design_text(snap), \
+        _render_design_text(snap)
+    assert design is not None                               # (import kept explicit for the reader)
+
+
+def _render_design_text(snap):
+    """Render the design doc and return its paragraphs + table rows as 'cell | cell' lines."""
+    import tempfile
+    from cisco_toolkit import design
+    with tempfile.TemporaryDirectory() as td:
+        out = td + "/design.docx"
+        design.write_design_doc_docx(out, snap, "T")
+        d = Document(out)
+        lines = [p.text for p in d.paragraphs]
+        for t in d.tables:
+            for row in t.rows:
+                lines.append(" | ".join(c.text.replace("\n", " ") for c in row.cells))
+    return "\n".join(lines)

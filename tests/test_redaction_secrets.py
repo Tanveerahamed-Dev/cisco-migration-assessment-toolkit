@@ -123,7 +123,7 @@ def test_secret_scrub_preserves_acl_wildcard_and_ip_redaction():
     acl = r["acls"]["core1"]["PROTECT"][0]
     assert acl["src"]["wild"] == "0.0.0.255"          # mask preserved
     assert acl["src"]["ip"] != "10.0.10.0"            # IP still pseudonymized
-    assert r["devices"]["core1"]["serial_number"].startswith("SN")
+    assert r["devices"]["core1"]["serial_number"].startswith("serial-")
     assert "FOC1234X" not in json.dumps(r)
 
 
@@ -156,22 +156,22 @@ def test_json_value_and_vendor_secrets_are_redacted():
 def test_controller_and_inventory_serials_are_redacted():
     """HTML_-02: ACI fabric-node 'serial' (parse_aci_fabric_nodes -> snap['aci'].nodes) and the power-supply
     'ps_serials' LIST (parse_show_inventory) reach the snapshot under key names that were not in the serial-key
-    set, so they leaked verbatim under --redact. Both must now be pseudonymized to SNxxxx."""
+    set, so they leaked verbatim under --redact. Both must now use explicit synthetic serial markers."""
     snap = {"aci": {"apic1": {"nodes": [{"name": "leaf-101", "serial": "FDO12345REAL"}]}},
             "inventory": {"sw1": {"ps_serials": ["POW1111SECRET", "POW2222SECRET"]}}}
     r = html.redact_snapshot(snap)
     blob = json.dumps(r)
     for s in ("FDO12345REAL", "POW1111SECRET", "POW2222SECRET"):
         assert s not in blob, f"serial leaked under --redact: {s}"
-    assert r["aci"]["apic1"]["nodes"][0]["serial"].startswith("SN")
-    assert all(v.startswith("SN") for v in r["inventory"]["sw1"]["ps_serials"])
+    assert r["aci"]["apic1"]["nodes"][0]["serial"].startswith("serial-")
+    assert all(v.startswith("serial-") for v in r["inventory"]["sw1"]["ps_serials"])
 
 
 def test_ipv6_addresses_are_pseudonymized():
     """HTML_-01: redact_snapshot pseudonymized IPv4 dotted-quad ONLY -- IPv6 (global, link-local, ::-compressed,
     embedded in descriptions) passed through --redact untouched, breaking the share-safe contract for any
-    dual-stack / IPv6 fleet. Every IPv6 textual form must be remapped to an fd00::/8 ULA pseudonym, consistently,
-    WITHOUT corrupting MAC remap (a colon-MAC has neither 7 colons nor a '::') or IPv4 remap."""
+    dual-stack / IPv6 fleet. Every IPv6 textual form must be remapped to an explicit synthetic marker,
+    consistently, WITHOUT corrupting MAC remap or IPv4 remap."""
     snap = {"a": "2001:db8:10::1", "b": "2001:DB8:10::/64", "c": "FE80::200:FF:FE00:10",
             "d": "neighbor 2001:db8:10::1 remote-as 65001",
             "mixed": "host ip 10.20.30.40 mac 00:11:22:33:44:55 v6 2001:db8:abcd::99"}
@@ -181,7 +181,9 @@ def test_ipv6_addresses_are_pseudonymized():
         assert leak.lower() not in blob.lower(), f"IPv6 survived --redact: {leak}"
     assert "00:11:22:33:44:55" not in blob          # MAC still redacted (no IPv6/MAC collision)
     assert "10.20.30.40" not in blob                # IPv4 still redacted
-    assert r["a"].startswith("fd00:")               # consistent ULA pseudonym
+    assert r["a"].startswith("v6-") and r["a"].endswith(
+        ".assesshub-redacted.invalid"
+    )
     assert r["a"] == r["d"].split()[1]              # same address -> same pseudonym across fields
 
 
@@ -245,7 +247,10 @@ def test_redact_collected_inplace_pseudonymizes_workbook_dataclasses():
                      d.end_host_mac, d.svi_ip, d.current_switch_serial])
     for real in ("CAT1852S14M", "FOC1949S411", "10.200.200.1", "0000.5e00.0108", "aabb.ccdd.eeff", "aabb:ccdd:eeff"):
         assert real not in blob, f"real value {real!r} leaked after redaction"
-    assert dp.serial_number.startswith("SN") and d.current_switch_serial.startswith("SN")
+    assert (
+        dp.serial_number.startswith("serial-")
+        and d.current_switch_serial.startswith("serial-")
+    )
     assert dp.model == "WS-C4948E-F"          # non-PII fields preserved (model is not an IP/MAC/serial)
     assert dp.hostname == "AAS13-BC"          # hostnames kept (topology survives), same as redact_snapshot
 
@@ -284,11 +289,202 @@ def test_redact_cdp_neighbor_chassis_serial():
         "devices": {"AS01": {"serial_number": "FOC1830R1QS"}},
         "interfaces": {"AS01": {"Te1/1/3": {
             "port": "Te1/1/3",
-            "cdp_neighbor": "DS03-BC-CA05R52-AJDOH.broadcast.[HISTORY-REDACTED](FOC1830R1QS)"}}},
+            "cdp_neighbor": "MERIDIAN-SW-192.broadcast.example.net(FOC1830R1QS)"}}},
     }
     r = html.redact_snapshot(snap)
     cdp = r["interfaces"]["AS01"]["Te1/1/3"]["cdp_neighbor"]
     assert "FOC1830R1QS" not in json.dumps(r), "real chassis serial leaked via cdp_neighbor"
-    assert cdp.startswith("DS03-BC-CA05R52-AJDOH.broadcast.[HISTORY-REDACTED](")   # hostname kept (topology survives)
+    assert cdp.startswith("MERIDIAN-SW-192.broadcast.example.net(")   # hostname kept (topology survives)
     sn = r["devices"]["AS01"]["serial_number"]
-    assert sn.startswith("SN") and sn in cdp                          # same serial -> same pseudonym both places
+    assert sn.startswith("serial-") and sn in cdp
+
+
+# ── W1/F2: the raw-capture scrub covered ONE extension, not the class ───────────
+# `redact_collection_dir` (the producer), `redaction_verify.verify_collection_secret_scrub` (the
+# "independent" verifier) and `ingest._count_txt_captures` (the census) all tested
+# `endswith(".txt")`. Three matchers that agree with each other are one matcher, and
+# `ingest._find_collection_root` only requires ONE `show_*.txt` per device dir -- so a folder
+# holding `show_version.txt` PLUS `backup-config.cfg` / `show_tech-support.log` was fully accepted
+# and the extra two were never scrubbed, never scanned and never counted, under a run that printed
+# "Raw captures (--redact-collection): SCRUBBED" and exited 0.
+_CAPTURE_SECRETS = (
+    "enable secret 5 $1$abc$W1SuperSecretHash\n"
+    "snmp-server community W1PublicSecret123 RO\n"
+    "username admin password 7 070C285F4D06\n"
+)
+_CAPTURE_LITERALS = ("W1SuperSecretHash", "W1PublicSecret123", "070C285F4D06")
+
+
+def test_the_raw_capture_scrub_covers_the_class_not_one_extension(tmp_path):
+    """Run through the REAL producer, not a re-implementation of its selector.
+
+    Non-vacuity is built in: the fixture plants the SAME three secret literals in every file, so
+    the .txt column proves the scrub genuinely runs while the .cfg / .log / extensionless columns
+    prove it is no longer name-gated. A `.json` controller dump is deliberately NOT rewritten (the
+    deny-list is a grammar over line-oriented config text and mutating a serialised document is how
+    a capture stops parsing) -- and that exclusion is DISCLOSED by the verifier below rather than
+    passed off as coverage."""
+    dev = tmp_path / "core1"
+    dev.mkdir()
+    for name in ("show_version.txt", "backup-config.cfg", "show_tech-support.log",
+                 "running-config", "vendor.CFG"):
+        (dev / name).write_text("hostname CORE-1\n" + _CAPTURE_SECRETS, encoding="utf-8")
+    (dev / "api_dump.json").write_text(
+        json.dumps({"cfg": "snmp-server community W1PublicSecret123 RO"}), encoding="utf-8")
+    binary = dev / "capture.pcap"
+    binary.write_bytes(b"\xd4\xc3\xb2\xa1\x00\x00enable secret 5 W1SuperSecretHash\x00\x00")
+    binary_before = binary.read_bytes()
+
+    scanned, changed = html.redact_collection_dir(str(tmp_path))
+
+    for name in ("show_version.txt", "backup-config.cfg", "show_tech-support.log",
+                 "running-config", "vendor.CFG"):
+        body = (dev / name).read_text(encoding="utf-8")
+        for secret in _CAPTURE_LITERALS:
+            assert secret not in body, f"{name} kept cleartext {secret} after the scrub"
+        assert html._REDACT_PLACEHOLDER in body, f"{name} was not actually scrubbed"
+        assert "hostname CORE-1" in body, f"{name} lost non-secret context"
+    assert (scanned, changed) == (5, 5), (scanned, changed)
+    # A genuinely binary file is neither rewritten nor counted -- "did not protect it" must not
+    # inflate the coverage number it reports.
+    assert binary.read_bytes() == binary_before, "a binary capture was rewritten"
+
+
+def test_the_verifier_does_not_reuse_the_producers_selector(tmp_path):
+    """The postcondition must fail where the producer failed, or it is the same matcher twice.
+
+    Fed the pre-scrub bytes the producer would have skipped, the independent verifier must REFUSE;
+    fed the post-scrub bytes it must certify. Both directions, because a verifier that always
+    raises proves as little as one that never does."""
+    from webapp.backend import redaction_verify as rv
+
+    dev = tmp_path / "core1"
+    dev.mkdir()
+    (dev / "show_version.txt").write_text("Cisco IOS XE Software\n", encoding="utf-8")
+    (dev / "backup-config.cfg").write_text(_CAPTURE_SECRETS, encoding="utf-8")
+    try:
+        rv.verify_collection_secret_scrub(tmp_path)
+    except rv.RedactionVerificationError as exc:
+        assert "residue" in str(exc) and "backup-config.cfg" in str(exc), str(exc)
+    else:                                            # pragma: no cover - the pre-fix behaviour
+        raise AssertionError("the verifier certified a .cfg holding cleartext credentials")
+
+    html.redact_collection_dir(str(tmp_path))
+    proof = rv.verify_collection_secret_scrub(tmp_path)
+    assert proof["files"] == 2, proof            # BOTH captures are inside the proof, not just .txt
+    assert proof["uncovered"] == []
+
+
+def test_a_proof_over_nothing_refuses_instead_of_reading_as_clean(tmp_path):
+    """The empty-set corollary. A tree with no capture returned `{"files": 0}` = success, and the
+    caller's `proof["files"] != census` equality was `0 != 0`, so certifying NOTHING passed every
+    gate identically to certifying everything."""
+    from webapp.backend import redaction_verify as rv
+
+    dev = tmp_path / "core1"
+    dev.mkdir()
+    (dev / "_capture_meta.json").write_text("{}", encoding="utf-8")
+    try:
+        rv.verify_collection_secret_scrub(tmp_path)
+    except rv.RedactionVerificationError as exc:
+        assert "certified NOTHING" in str(exc), str(exc)
+        assert "_capture_meta.json" in str(exc), "the skipped file must be named, not implied"
+    else:                                            # pragma: no cover - the pre-fix behaviour
+        raise AssertionError("an empty proof was returned as a success")
+
+    # Non-vacuity: one real capture beside it and the same tree certifies -- while still DISCLOSING
+    # the file it did not look at.
+    (dev / "show_version.txt").write_text("Cisco IOS XE Software\n", encoding="utf-8")
+    proof = rv.verify_collection_secret_scrub(tmp_path)
+    assert proof["files"] == 1
+    assert [row["file"] for row in proof["uncovered"]] == ["core1/_capture_meta.json"]
+
+
+def test_the_producer_and_the_verifier_exclude_exactly_the_same_set():
+    """The verifier deliberately does NOT import the producer, so the rule is stated twice — and
+    two statements of one rule is the defect shape this whole fix exists to remove.
+
+    They may not share code, but they must agree, and a drift has to break a test rather than open
+    a hole: a suffix the producer stops scrubbing while the verifier still scans it turns every run
+    into a false residue alarm, and the reverse ships an unscrubbed capture under a clean proof."""
+    from webapp.backend import redaction_verify as rv
+
+    producer = set(html._REDACT_SKIP_CAPTURE_SUFFIXES)
+    assert producer == set(rv._STRUCTURED_CAPTURE_SUFFIXES), (
+        "the scrub and its verifier disagree about what a raw capture is: "
+        f"producer-only={sorted(producer - set(rv._STRUCTURED_CAPTURE_SUFFIXES))}, "
+        f"verifier-only={sorted(set(rv._STRUCTURED_CAPTURE_SUFFIXES) - producer)}")
+    assert html._REDACT_SCRUB_TEMP_SUFFIX == rv._SCRUB_TEMP_SUFFIX
+    # ...and both really do reject every one of them, rather than merely naming them.
+    for suffix in sorted(producer):
+        assert not html._is_raw_capture("show_running-config" + suffix), suffix
+        assert rv.is_uncoverable_capture("show_running-config" + suffix), suffix
+    # Non-vacuity: the shapes the class is FOR are still captures on both sides.
+    for name in ("show_version.txt", "backup-config.cfg", "show_tech-support.log",
+                 "running-config", "device.out"):
+        assert html._is_raw_capture(name), name
+        assert rv.is_uncoverable_capture(name) == "", name
+
+
+def test_the_producer_restates_the_owners_suffix_PRIMITIVE_not_a_lookalike():
+    """Agreeing on the suffix SET is not enough — the two must extract the suffix the same way.
+
+    ``is_uncoverable_capture`` is the owner of this rule and computes ``Path(name).suffix``. The
+    producer restated it as ``os.path.splitext(name)[1]`` under a comment asserting the two were
+    byte-for-byte identical. They are not — on the interpreter that shipped the bug ``splitext``
+    skipped EVERY leading dot of the basename while ``suffix`` skipped only the first, so
+    ``..json`` was a capture to one and a structured document to the other; the producer rewrote
+    it in place until it stopped parsing, and the run then died reconciling the two counts. The
+    set-equality test above passes either way, which is why this one exists.
+
+    WHICH restatement is wrong is a property of the standard library, not of this repo, and it
+    moves: 3.14 aligned ``os.path.splitext`` and ``PurePath.suffix`` on leading-dot runs, retiring
+    that particular divergence. So the anti-tautology guard below is stated over the CLASS of
+    plausible restatements rather than over one named function: the corpus has to be able to catch
+    a wrong restatement, and it is the OWNER's answer the producer must reproduce."""
+    import os
+    from pathlib import Path
+
+    # generated from the axes that make a suffix ambiguous, not a list of remembered examples
+    names = sorted({dots + stem + tail
+                    for dots in ("", ".", "..", "...")
+                    for stem in ("", "show_run", "a.b", "CFG", "café")
+                    for tail in ("", ".", ".txt", ".json", ".JSON", ".redacting", ".yml",
+                                 ".html", ".tar.gz")} - {"", ".", ".."})
+
+    mismatched = [n for n in names if html._capture_suffix(n) != Path(n).suffix.casefold()]
+    assert mismatched == [], (
+        "the producer's suffix primitive has drifted from the owner's on "
+        f"{len(mismatched)} name(s): {ascii(mismatched[:12])}")
+
+    # ANTI-TAUTOLOGY: the assertion above is only meaningful while the corpus still contains names
+    # a WRONG restatement reads differently. Each lookalike below is a real restatement that has
+    # either shipped here or is the obvious next one to write; at least one of them must still
+    # classify a corpus name differently from the owner, or this corpus has stopped covering the
+    # class. (No single lookalike is named in the assertion: `os.path.splitext` diverged on
+    # <=3.13 and agrees on 3.14+, and pinning THAT would pin an interpreter, not a property.)
+    skip = set(html._REDACT_SKIP_CAPTURE_SUFFIXES) | {html._REDACT_SCRUB_TEMP_SUFFIX}
+
+    def owner_says_capture(n: str) -> bool:
+        return Path(n).suffix.casefold() not in skip
+
+    lookalikes = {
+        "str.endswith(<the owner's suffix set>)":
+            lambda n: not n.casefold().endswith(tuple(sorted(skip))),
+        "os.path.splitext(n)[1]":
+            lambda n: os.path.splitext(n)[1].casefold() not in skip,
+        "n.rpartition('.')[2]":
+            lambda n: ("." + n.rpartition(".")[2]).casefold() not in skip,
+    }
+    divergent = {label: [n for n in names if fn(n) != owner_says_capture(n)]
+                 for label, fn in lookalikes.items()}
+    assert any(divergent.values()), (
+        "the corpus no longer discriminates ANY plausible restatement of the suffix rule, so the "
+        "parity assertion above proves nothing: " + ascii(sorted(lookalikes)))
+
+    # ...and on every name a lookalike gets wrong — the only names that can catch this — the
+    # producer answers the OWNER's way. Derived from the owner primitive in this same process, so
+    # a stdlib change moves both sides of the comparison together.
+    for label, diverging in divergent.items():
+        for n in diverging:
+            assert html._is_raw_capture(n) == owner_says_capture(n), (label, ascii(n))

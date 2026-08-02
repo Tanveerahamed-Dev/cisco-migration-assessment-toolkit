@@ -218,10 +218,24 @@ def _derive_outcome(state: Dict[str, Any], status: str) -> str:
     decisions = [w["closeout"]["decision"] for w in state["waves"]]
     if any(d == "ROLLED BACK" for d in decisions):
         return OUTCOME_ROLLED_BACK
-    if any(d != "COMPLETE" for d in decisions):
+    # `not decisions` first: over an EMPTY wave list both `any()` guards are vacuously False, so a run
+    # with zero waves fell through to SUCCESSFUL and the PIR printed "Outcome: SUCCESSFUL" in green as its
+    # title-page verdict over its own "0 of 0 wave(s) completed" body (pir_docx). Every other branch here
+    # requires positive evidence; this one required none. Nothing was implemented, so the honest outcome
+    # is PARTIALLY IMPLEMENTED — the same verdict as a run whose waves did not all close COMPLETE.
+    if not decisions or any(d != "COMPLETE" for d in decisions):
         return OUTCOME_PARTIAL
-    failed = any(c["result"] == "fail" for w in state["waves"] for c in w["checks"])
-    skipped = any(s["status"] == "skipped" for w in state["waves"] for s in w["steps"])
+    # A signed closeout is not evidence that the frozen run-of-show and validations actually
+    # happened. Every wave needs positive required work, and every item must be actioned, before
+    # either the execution response or its PIR may call the run successful.
+    if any(not w.get("steps") or not w.get("checks") for w in state["waves"]):
+        return OUTCOME_PARTIAL
+    if any(s.get("status") == "pending" for w in state["waves"] for s in w["steps"]):
+        return OUTCOME_PARTIAL
+    if any(c.get("result") == "pending" for w in state["waves"] for c in w["checks"]):
+        return OUTCOME_PARTIAL
+    failed = any(c.get("result") != "pass" for w in state["waves"] for c in w["checks"])
+    skipped = any(s.get("status") != "done" for w in state["waves"] for s in w["steps"])
     deviations = any(e["kind"] == "deviation" for e in state["events"])
     if failed or skipped or deviations:
         return OUTCOME_DEVIATIONS
@@ -237,6 +251,21 @@ def finish(state: Dict[str, Any], status: str, note: str, by: str) -> None:
     state["outcome"] = _derive_outcome(state, status)
     _log(state, "finish", f"Run {status} — outcome: {state['outcome']}"
          + (f" — {note.strip()}" if note.strip() else ""), "", by)
+
+
+def with_current_outcome(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a read view whose finished outcome uses the current evidence rules.
+
+    Older rows may have persisted ``SUCCESSFUL`` under the former closeout-only rule. Reads and
+    PIR exports must not keep publishing that stale verdict after the authority rule is fixed.
+    """
+    status = state.get("status")
+    if status not in ("completed", "aborted"):
+        return state
+    current = _derive_outcome(state, status)
+    if state.get("outcome") == current:
+        return state
+    return {**state, "outcome": current}
 
 
 def _wave_state(w: Dict[str, Any]) -> str:
@@ -296,4 +325,5 @@ def _planned_window(state: Dict[str, Any]) -> int:
 
 def with_progress(execution_id: int, snapshot_id: int, state: Dict[str, Any]) -> Dict[str, Any]:
     """The API shape: the state plus its identifiers and the derived progress block."""
+    state = with_current_outcome(state)
     return {"id": execution_id, "snapshot_id": snapshot_id, **state, "progress": progress(state)}

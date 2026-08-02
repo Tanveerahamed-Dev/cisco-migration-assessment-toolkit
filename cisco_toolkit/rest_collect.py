@@ -261,6 +261,12 @@ ISE_ENDPOINTS = {
     "api/v1/deployment/node": "/api/v1/deployment/node",
 }
 
+# Hard ceiling on ERS node-list pages (review #66). ERS pages at 20 resources by default, so 200 pages
+# is ~4,000 nodes -- orders of magnitude above the largest real ISE deployment (a 2.x/3.x cube tops out
+# in the dozens). Reaching it means the controller is looping us, not that the census is that big; the
+# collector stops and SAYS the census may be truncated rather than pretending completeness.
+_ERS_MAX_PAGES = 200
+
 
 def collect_ise(base_url: str, username: str, password: str, out_dir: str, verify_tls: bool = True) -> list:
     """Read-only Cisco ISE (Identity Services Engine) collection via BOTH the Open API (HTTPS/443) and ERS
@@ -291,7 +297,14 @@ def collect_ise(base_url: str, username: str, password: str, out_dir: str, verif
     # truncated the node census on a large deployment (audit-5 #16).
     resources: list = []
     nxt = f"{ers_base}/ers/config/node"
-    while nxt:
+    # TERMINATION (review 2026-07-28 #66): nextPage.href comes from the controller RESPONSE BODY, so a
+    # self-referential (or cyclic) link -- a bug, a proxy, or a hostile response -- turned `while nxt:`
+    # into an UNBOUNDED authenticated GET loop hammering a production ISE PAN, with no visited-set and
+    # no page cap. The same-origin guard below is a credential-leak control and does NOT stop this: a
+    # self-link is same-origin by definition. The FMC sibling (_fmc_get_all_pages) already carries both
+    # guards; mirror them here.
+    visited = {nxt}
+    while nxt and len(visited) <= _ERS_MAX_PAGES:
         sr = _get_json(opener, nxt, headers=headers)
         # SearchResult / nextPage must be dicts before we .get() through them: a truthy non-dict (a scalar/list
         # in a malformed or spoofed ERS envelope) slips past `or {}` and raises AttributeError -> aborts the
@@ -320,6 +333,15 @@ def collect_ise(base_url: str, username: str, password: str, out_dir: str, verif
             if _off_origin:
                 logger.warning("  [ISE] refusing off-host ERS pagination link: %s", _safe_url(nxt))
                 nxt = None
+            elif nxt in visited:
+                logger.warning("  [ISE] ERS pagination link revisits a page already fetched (%s) — "
+                               "stopping to avoid an unbounded GET loop against the PAN", _safe_url(nxt))
+                nxt = None
+            else:
+                visited.add(nxt)
+    if nxt:                     # left the loop on the page cap, not on the end of the list
+        logger.warning("  [ISE] ERS node pagination stopped at the %d-page cap — the node census may be "
+                       "TRUNCATED (reporting what was read; not claiming it is complete)", _ERS_MAX_PAGES)
     if resources:
         ers_nodes = []
         for res in resources:
@@ -457,6 +479,51 @@ def collect_fmc(base_url: str, username: str, password: str, out_dir: str, verif
     return written
 
 
+# --- CLI credential resolution (review 2026-07-28 #57) ---------------------------------------------------
+# The password of a production APIC / vManage / ISE / FMC read-only account must not have to be typed on a
+# command line: argv is world-readable in the process table (`ps -ef`, Task Manager / WMI Win32_Process),
+# lands verbatim in shell history, and is captured by EDR/telemetry process-creation events. The SSH
+# collector already solved this (load_devices: entry -> `password_env` -> $CISCO_PASS -> getpass); this is
+# the same chain for the REST front door. `--password` stays ACCEPTED so existing scripted callers keep
+# working, but it is no longer REQUIRED and using it warns.
+_REST_PASS_ENV = "CISCO_REST_PASS"
+_SSH_PASS_ENV = "CISCO_PASS"                       # the SSH collector's global, reused so one engagement
+                                                   # variable covers both channels
+
+
+def resolve_cli_password(password=None, password_env=None, *, allow_prompt=True) -> str:
+    """Resolve the controller credential WITHOUT requiring it on argv. Chain, first hit wins:
+
+    1. an explicit ``--password`` (back-compatible; warns that argv is not a secret channel),
+    2. ``--password-env VAR`` -> ``os.environ[VAR]``,
+    3. ``$CISCO_REST_PASS``, then ``$CISCO_PASS`` (the SSH collector's variable),
+    4. a ``getpass`` prompt, only on an interactive TTY and only when ``allow_prompt``.
+
+    Returns "" when nothing resolves -- the caller must REFUSE rather than attempt a blank-credential
+    login (a failed auth against a production controller can trip account lockout)."""
+    if password:
+        logger.warning("  [rest] --password was passed on the command line: it is visible in the process "
+                       "table and the shell history. Prefer --password-env VAR, $%s/$%s, or the "
+                       "interactive prompt.", _REST_PASS_ENV, _SSH_PASS_ENV)
+        return password
+    if password_env:
+        pw = os.environ.get(password_env, "")
+        if pw:
+            return pw
+        logger.warning("  [rest] --password-env %s is set but that variable is empty/unset", password_env)
+    for var in (_REST_PASS_ENV, _SSH_PASS_ENV):
+        pw = os.environ.get(var, "")
+        if pw:
+            logger.info("  [rest] credential taken from $%s", var)
+            return pw
+    if allow_prompt:
+        import getpass
+        import sys
+        if sys.stdin.isatty():
+            return getpass.getpass("  read-only REST password: ")
+    return ""
+
+
 if __name__ == "__main__":                                           # opt-in CLI; never runs on import
     import argparse
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -467,12 +534,21 @@ if __name__ == "__main__":                                           # opt-in CL
     p.add_argument("fabric", choices=["apic", "vmanage", "ise", "fmc"])
     p.add_argument("--url", required=True, help="https://<controller>")
     p.add_argument("--user", required=True)
-    p.add_argument("--password", required=True, help="read-only RBAC account; used once for login, never stored")
+    p.add_argument("--password", help="DISCOURAGED: argv is visible in the process table and shell history. "
+                                      "Prefer --password-env, $CISCO_REST_PASS/$CISCO_PASS, or the prompt.")
+    p.add_argument("--password-env", metavar="VAR",
+                   help=f"read the password from environment variable VAR (default chain: "
+                        f"${_REST_PASS_ENV}, ${_SSH_PASS_ENV}, then an interactive prompt)")
     p.add_argument("--out-dir", required=True, help="the controller's device directory under the collection dir")
     p.add_argument("--insecure", action="store_true", help="disable TLS verification (lab/sandbox self-signed cert only)")
     a = p.parse_args()
+    _pw = resolve_cli_password(a.password, a.password_env)
+    if not _pw:
+        p.error(f"no password resolved: pass --password-env VAR, set ${_REST_PASS_ENV} or ${_SSH_PASS_ENV}, "
+                f"or run interactively to be prompted (refusing to attempt a blank-credential login against "
+                f"a production controller -- a failed auth can trip account lockout)")
     fn = {"apic": collect_apic, "vmanage": collect_vmanage, "ise": collect_ise, "fmc": collect_fmc}[a.fabric]
-    files = fn(a.url, a.user, a.password, a.out_dir, verify_tls=not a.insecure)
+    files = fn(a.url, a.user, _pw, a.out_dir, verify_tls=not a.insecure)
     print(f"wrote {len(files)} export file(s):")
     for f in files:
         print("  " + f)

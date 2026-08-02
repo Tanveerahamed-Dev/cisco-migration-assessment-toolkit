@@ -344,11 +344,20 @@ def test_upload_and_compare(client):
     assert cmp.status_code == 200
     assert "verdict" in cmp.json()
     assert "schema_compat" in cmp.json()          # P3-E2: the diff surfaces its schema-compat verdict
+    binding = cmp.json()["provenance"]["source_binding"]
+    assert binding["before"]["source"] == "persisted snapshots.snapshot_json blob"
+    assert binding["after"]["source"] == "persisted snapshots.snapshot_json blob"
+    assert binding["before"]["sha256"].startswith("sha256:")
+    assert binding["after"]["sha256"].startswith("sha256:")
 
     trend = client.get(f"/api/campaigns/{cid}/trend")
     assert trend.status_code == 200
     assert len(trend.json()["timeline"]) == 2
     assert "schema_compat" in trend.json()        # P3-E2: the trend surfaces its schema-compat verdict
+    trend_bindings = trend.json()["provenance"]["source_bindings"]
+    assert len(trend_bindings) == 2
+    assert all(b["source"] == "persisted snapshots.snapshot_json blob"
+               and b["sha256"].startswith("sha256:") for b in trend_bindings)
 
 
 def test_engine_diff_surfaces_schema_compat_status():
@@ -359,11 +368,13 @@ def test_engine_diff_surfaces_schema_compat_status():
     mism = engine.snapshot_delta({"script_version": "V3.23.0", "devices": {}},
                                  {"script_version": "V9.9.9", "devices": {}})
     assert mism["schema_compat"]["status"] == "mismatch"
+    assert mism["verdict"] == "INDETERMINATE"
     assert mism["schema_compat"]["message"].isascii()
     ok = engine.snapshot_delta({"script_version": "V3.23.0"}, {"script_version": "V3.23.0"})
     assert ok["schema_compat"]["status"] == "ok"
     trend = engine.campaign_trend([{"script_version": "V3.23.0"}, {"script_version": "V9.9.9"}])
     assert trend["schema_compat"]["status"] == "mismatch"
+    assert trend["verdict"] == "INDETERMINATE"
 
 
 def test_graph_endpoint(client):
@@ -1267,6 +1278,19 @@ def test_execution_outcome_vocabulary(client):
 
     def close_all(eid, ex, decision):
         for w in ex["waves"]:
+            if decision == "COMPLETE":
+                for index, step in enumerate(w["steps"]):
+                    if step["status"] == "pending":
+                        ex = client.post(
+                            f"/api/executions/{eid}/step",
+                            json={"wave": w["group"], "index": index, "status": "done"},
+                        ).json()
+                for index, check in enumerate(w["checks"]):
+                    if check["result"] == "pending":
+                        ex = client.post(
+                            f"/api/executions/{eid}/check",
+                            json={"wave": w["group"], "index": index, "result": "pass"},
+                        ).json()
             ex = client.post(f"/api/executions/{eid}/closeout",
                              json={"wave": w["group"], "decision": decision}).json()
         return ex
@@ -1742,3 +1766,688 @@ def test_section_device_dossiers_recomputes_stale_unassessed(client):
     assert data["summary"]["bands"].get("Unassessed", 0) >= 1            # blind device surfaced, not silently 'Low'
     blind = next(d for d in data["per_device"] if d["host"] == "blind1")
     assert blind["risk_band"] == "Unassessed" and "routine" not in blind["verdict"].lower()
+
+
+# ── whole-repo review, 2026-07-28 ───────────────────────────────────────────────────
+_XML_POISON = chr(0xFFFF) + chr(0xFFFE) + chr(0xD800) + "\x0b\x1f"   # noncharacters + lone surrogate + C0
+
+
+def test_a_nonfinite_number_is_refused_at_upload_not_stored(client):
+    """[FUZZ-19 — stored denial of service] `json.loads` accepts the bare `Infinity`/`-Infinity`/`NaN`
+    tokens, which JSON itself does not define. Such a value survived the upload, sqlite persisted it
+    (json.dumps defaults to allow_nan=True), and every later read materialised a non-finite float —
+    at which point Starlette's JSONResponse.render calls json.dumps(allow_nan=False) and raises "Out
+    of range float values are not JSON compliant". One poisoned leaf therefore made
+    /snapshots/{id} and its sections answer HTTP 500 PERMANENTLY, with no way to clear it from the UI.
+
+    Refused at the ingest boundary rather than sanitised: coercing to null would invent a value the
+    uploader never sent, and guarding per read route means every route added later re-inherits it."""
+    cid = client.post("/api/campaigns", json={"name": "nonfinite"}).json()["id"]
+    body = ('{"devices":{"h":{}},"interfaces":{"h":{"Gi1":{}}},'
+            '"health_scores":[{"switch":"h","band":"Good","score":Infinity}]}')
+
+    r = client.post(f"/api/campaigns/{cid}/snapshots",
+                    files={"file": ("s.json", body.encode(), "application/json")},
+                    data={"label": "poison"})
+    assert r.status_code == 400, f"a non-finite number was accepted (HTTP {r.status_code})"
+    assert "non-finite" in r.text, f"the refusal must name the cause, got {r.text[:200]}"
+
+    # ...and nothing was persisted, so no later read can 500 on it.
+    snaps = client.get(f"/api/campaigns/{cid}").json().get("snapshots") or []
+    assert snaps == [], f"the poisoned snapshot was stored despite the refusal: {snaps}"
+
+    # Calibration: a well-formed snapshot still uploads and still reads back cleanly. Without this
+    # the test would pass just as well against a route that rejected every upload.
+    good = ('{"devices":{"h":{}},"interfaces":{"h":{"Gi1":{}}},'
+            '"health_scores":[{"switch":"h","band":"Good","score":90}]}')
+    ok = client.post(f"/api/campaigns/{cid}/snapshots",
+                     files={"file": ("s.json", good.encode(), "application/json")},
+                     data={"label": "clean"})
+    assert ok.status_code == 201, ok.text
+    assert client.get(f"/api/snapshots/{ok.json()['id']}").status_code == 200
+
+
+def test_web_layer_docx_survives_xml_illegal_device_text(client):
+    """[#80 — stored DoS on Atlas's one door] Device free-text is collected with errors='ignore', which
+    passes valid-UTF-8 C0 control chars, U+FFFE/U+FFFF noncharacters and lone surrogates straight through.
+    The web-layer table helper wrote raw `str(v)` into DOCX cells with no `xml_safe()` (its engine twin
+    `cisco_toolkit.docmeta.add_table` sanitizes), so `doc.save()` raised and the deliverable route returned
+    HTTP 500 for that snapshot PERMANENTLY — the snapshot is stored verbatim, so every later download 500s
+    too. tests/test_docx_family_xml_safe.py parametrizes only the seven ENGINE writers, so that guard was
+    green while this hole was live. Drives the real ASGI app end to end: upload, then download twice."""
+    import io
+    import json
+
+    pytest.importorskip("docx")
+    from docx import Document
+
+    bad = _XML_POISON
+    cid = client.post("/api/campaigns", json={"name": "xmlpoison"}).json()["id"]
+    snap = {
+        "devices": {"core1": {"model": "N9K" + bad, "hostname": "core1" + bad}},
+        "lifecycle_risk": {"per_device": [{"host": "core1" + bad, "model": "C9300" + bad,
+                                           "sw_version": "17.9" + bad, "band": "Past EoS"}]},
+        # a DIRECT-paragraph path too (§2 "Phase II tests by category" joins raw snapshot categories),
+        # which sanitizing only the table helper would not cover
+        "validation_plan": {"items": [{"device": "core1" + bad, "category": "FHRP" + bad,
+                                       "severity": "High", "check": "hsrp" + bad,
+                                       "command": "show standby" + bad, "expect": "Active" + bad}]},
+        "service_map": {"services": [{"service": "dns" + bad, "category": "core" + bad,
+                                      "port": "53", "proto": "udp"}]},
+    }
+    # ensure_ascii so the poison travels as \uXXXX escapes; json.loads restores the raw chars server-side
+    raw = json.dumps(snap, ensure_ascii=True).encode("ascii")
+    sid = client.post(f"/api/campaigns/{cid}/snapshots",
+                      files={"file": ("s.json", raw, "application/json")},
+                      data={"label": "poison"}).json()["id"]
+
+    r = client.get(f"/api/snapshots/{sid}/deliverable/nrfu")
+    if r.status_code == 503:
+        pytest.skip("python-docx not installed on this runner")
+    assert r.status_code == 200, r.text          # was 500: "All strings must be XML compatible"
+    doc = Document(io.BytesIO(r.content))        # and a valid, openable .docx
+    cells = [c.text for t in doc.tables for row in t.rows for c in row.cells]
+    assert any("C9300" in c for c in cells)      # device text still renders, only the bad bytes are stripped
+    assert not any(ch in c for c in cells for ch in bad)
+    # permanence: the snapshot is stored, so a second read must not 500 either
+    assert client.get(f"/api/snapshots/{sid}/deliverable/nrfu").status_code == 200
+
+
+def test_the_other_two_web_writers_also_survive_xml_illegal_device_text(tmp_path):
+    """[#80, residual] Sanitizing the shared table/kv helper is necessary but NOT sufficient: both
+    remaining web-layer writers put device-derived text on DIRECT paths that bypass it. §3 of each
+    renders `doc.add_heading(f"Wave {order} — {group}")`, reading the move-group name straight from
+    the snapshot, so one lone surrogate still aborted `doc.save()` — and because the upload path
+    stores the snapshot verbatim, the 500 repeated on every later read. The engine writers deep-
+    sanitize at their entry for exactly this reason; these two now do the same.
+
+    Called directly rather than through the route, so this fails on the WRITER even where the HTTP
+    layer would mask it (503 without python-docx, or a route-level guard added later)."""
+    pytest.importorskip("docx")
+    from backend import cutover_docx, execution, pir_docx
+
+    bad = _XML_POISON
+    # Waves come from top-level `wave_sequencing`, and §3's direct add_heading only runs per wave --
+    # a fixture that builds ZERO waves skips the very path under test and passes either way. Assert
+    # the precondition so this can never silently become vacuous again.
+    snap = {"devices": {"core1" + bad: {}},
+            "wave_sequencing": [{"group": "wave-a" + bad,
+                                 "make_before_break": ["core1" + bad],
+                                 "hard_cutover": [], "hard_cutover_endpoints": 1}]}
+    from backend import cutover
+    assert cutover.build_plan(snap)["waves"], "precondition: the fixture must build at least one wave"
+
+    cut = tmp_path / "c.docx"
+    cutover_docx.write_cutover_docx(str(cut), snap, "label" + bad)
+    assert cut.stat().st_size > 0, "cutover writer produced nothing"
+
+    state = execution.start_run(snap, "label" + bad, operator="op" + bad)
+    assert state["waves"], "precondition: the run must carry a wave for §3 to render"
+    execution.finish(state, "completed", "note" + bad, "by" + bad)
+    pir = tmp_path / "p.docx"
+    pir_docx.write_pir_docx(str(pir), state, "label" + bad)
+    assert pir.stat().st_size > 0, "pir writer produced nothing"
+
+
+def test_docx_style_add_table_sanitizes_like_its_engine_twin():
+    """[#80, unit] The shared web-layer style helper is the structural fix point — cutover_docx, nrfu_docx
+    and pir_docx all render their tables through it, so the sanitize is pinned at the helper rather than at
+    one writer's entry, and a new web-layer writer inherits it."""
+    import io
+
+    pytest.importorskip("docx")
+    from backend.docx_style import add_table, kv, new_document
+
+    doc = new_document()
+    t = add_table(doc, ["H" + _XML_POISON], [["v" + _XML_POISON], [None]])
+    kv(doc.add_paragraph(), "L" + _XML_POISON + ":", "v" + _XML_POISON)
+    assert t.rows[0].cells[0].text == "H"
+    assert t.rows[1].cells[0].text == "v"
+    doc.save(io.BytesIO())        # the operation that used to raise ValueError / UnicodeEncodeError
+
+
+def test_nrfu_coverage_column_requires_a_derived_test(tmp_path):
+    """[#23 / EX-nrfu-004] §2.1 printed "Tested — <phase or default>" UNCONDITIONALLY, so a RECOMMENDED
+    decision with no `design_nrfu` item read as covered — while the prose two lines above promises that a
+    gap is "an explicit coverage boundary, not a silent gap". A test lead signs the ATP believing a
+    decision has test cases it does not. Discriminating fixture: two recommended decisions, only ONE of
+    which has a design_nrfu item."""
+    pytest.importorskip("docx")
+    from docx import Document
+
+    from backend.nrfu_docx import write_nrfu_docx
+    snap = {
+        "devices": {"a": {}}, "executive_brief": {"scale": {"n_devices": 1}},
+        "lifecycle_risk": {"per_device": []}, "validation_plan": {"items": []},
+        "service_map": {"services": []}, "application_intelligence": {"domains": []},
+        "design_blueprint": {"decisions": [
+            {"id": "covered-decision", "title": "Covered decision", "priority": "High",
+             "status": "recommended"},
+            {"id": "uncovered-decision", "title": "Uncovered decision", "priority": "Critical",
+             "status": "recommended"}]},
+        "design_nrfu": {"items": [{"decision_id": "covered-decision", "phase": "pre-cutover"}]},
+    }
+    out = str(tmp_path / "nrfu_cov.docx")
+    write_nrfu_docx(out, snap, "Coverage Fleet")
+    d = Document(out)
+    rows = [[c.text for c in r.cells] for t in d.tables for r in t.rows]
+    covered = next(r for r in rows if r and r[0] == "Covered decision")
+    uncovered = next(r for r in rows if r and r[0] == "Uncovered decision")
+    assert covered[2] == "Tested — pre-cutover"
+    assert "Tested" not in uncovered[2] and "NOT COVERED" in uncovered[2]
+    # and the gap is disclosed as a scope limit, not left to the table alone
+    text = "\n".join(p.text for p in d.paragraphs)
+    assert "1 recommended design decision(s) have NO acceptance test" in text
+
+
+def test_execution_outcome_needs_positive_evidence_of_completion():
+    """[#22] `_derive_outcome` fell through to SUCCESSFUL on a run with ZERO waves, because
+    `any(d == "ROLLED BACK")` and `any(d != "COMPLETE")` are both vacuously False over an empty list.
+    `pir_docx` then renders "Outcome: SUCCESSFUL" in green as the title-page verdict over a record whose
+    own body says "0 of 0 wave(s) completed". Every other branch of this function requires positive
+    evidence; this one required none."""
+    from backend import execution
+
+    empty = {"waves": [], "events": [], "status": "in_progress"}
+    assert execution._derive_outcome(empty, "completed") == execution.OUTCOME_PARTIAL
+    assert execution._derive_outcome(empty, "aborted") == execution.OUTCOME_ABORTED
+    # A closeout signature over no required work is not positive evidence.
+    hollow = {"waves": [{"closeout": {"decision": "COMPLETE"}, "checks": [], "steps": []}],
+              "events": [], "status": "in_progress"}
+    assert execution._derive_outcome(hollow, "completed") == execution.OUTCOME_PARTIAL
+    # A wave with every required item positively actioned remains successful.
+    ok = {"waves": [{"closeout": {"decision": "COMPLETE"},
+                     "checks": [{"result": "pass"}], "steps": [{"status": "done"}]}],
+          "events": [], "status": "in_progress"}
+    assert execution._derive_outcome(ok, "completed") == execution.OUTCOME_SUCCESS
+
+
+def test_cutover_move_group_zero_endpoints_is_not_masked():
+    """[#54 `or`-masks-zero] `_int(mg.get("endpoints")) or hard_ep` replaced a move group's genuine 0
+    endpoints with the hard-cutover figure. The value is an SSOT headline (fleet_summary['n_endpoints'])
+    AND the final tie-break of the pilot-first wave ordering, so the masked 0 both overstates the fleet
+    and mis-ranks the run-of-show. `storage.add_snapshot` documents the same guard as `is not None`."""
+    from backend import cutover
+
+    snap = {
+        "devices": {"sw1": {}},
+        "wave_sequencing": [{"group": "G1", "make_before_break": [], "hard_cutover": ["sw1"],
+                             "hard_cutover_endpoints": 42}],
+        "move_groups": [{"group": "G1", "switches": ["sw1"], "endpoints": 0}],
+    }
+    plan = cutover.build_plan(snap)
+    assert plan["waves"][0]["endpoints"] == 0                 # was 42 (hard_ep) via `or`
+    assert plan["waves"][0]["hard_cutover_endpoints"] == 42   # the distinct count is unchanged
+
+    # an ABSENT / unparseable move-group count still falls back to hard_ep (presence, not truthiness)
+    for bad in ({}, {"endpoints": None}, {"endpoints": "n/a"}):
+        s = dict(snap, move_groups=[{"group": "G1", "switches": ["sw1"], **bad}])
+        assert cutover.build_plan(s)["waves"][0]["endpoints"] == 42, bad
+
+
+# --------------------------------------------------------------- row-id range bound
+# A snapshot/campaign/execution id is a SQLite rowid: a signed 64-bit INTEGER. Anything outside that
+# range cannot name a row, and sqlite3 refuses to BIND it with `OverflowError: Python int too large
+# to convert to SQLite INTEGER`. Nothing caught it, so a 31-digit id returned HTTP 500 + a
+# server-side traceback on EVERY id-taking route instead of a clean refusal.
+_OVER_ROW_ID = 10 ** 30
+
+
+def _routes_with_row_id(app):
+    """Every (methods, path) in the REAL app whose path template carries an id parameter."""
+    from fastapi.routing import APIRoute
+
+    out = []
+    for r in app.routes:
+        if not isinstance(r, APIRoute):
+            continue
+        ids = [f.name for f in r.dependant.path_params if f.name.endswith("_id")]
+        if ids:
+            out.append((sorted(m for m in r.methods if m != "HEAD"), r.path, ids))
+    return out
+
+
+def test_out_of_range_row_id_never_500s_on_any_route(client):
+    """[BE-1] Reproduced BEFORE the fix on all 25 id-taking routes: `GET /api/snapshots/10**30`
+    answered `500 Internal Server Error` (sqlite3 OverflowError at bind time), and so did the
+    POST/DELETE siblings and `POST /api/compare`'s two BODY ids. Every one must now refuse cleanly.
+
+    Driven off the app's OWN route table, not a hand-written path list, so a route added later is
+    exercised automatically rather than quietly inheriting the crash."""
+    seen = 0
+    for methods, path, ids in _routes_with_row_id(client.app):
+        url = path
+        for name in ids:
+            url = url.replace("{%s}" % name, str(_OVER_ROW_ID))
+        url = url.replace("{name}", "devices").replace("{kind}", "design")
+        for m in methods:
+            r = client.request(m, url, json={} if m in ("POST", "PUT", "PATCH") else None)
+            assert r.status_code < 500, f"{m} {url} -> {r.status_code} {r.text[:200]}"
+            assert r.status_code == 422, f"{m} {url} -> {r.status_code}"
+            seen += 1
+    assert seen >= 25, f"only exercised {seen} id routes — the enumeration went stale"
+
+    # the two BODY ids take the same bound
+    assert client.post("/api/compare",
+                       json={"old_id": _OVER_ROW_ID, "new_id": 1}).status_code == 422
+    assert client.post("/api/compare",
+                       json={"old_id": 1, "new_id": _OVER_ROW_ID}).status_code == 422
+
+    # BOUNDARY: the largest representable rowid is still a normal 404, not a validation error —
+    # the bound must reject only what SQLite genuinely cannot store.
+    assert client.get(f"/api/snapshots/{2 ** 63 - 1}").status_code == 404
+    assert client.get(f"/api/snapshots/{-(2 ** 63)}").status_code == 404
+    assert client.get(f"/api/snapshots/{2 ** 63}").status_code == 422
+    assert client.get(f"/api/snapshots/{-(2 ** 63) - 1}").status_code == 422
+
+
+def test_every_row_id_param_is_range_bounded(client):
+    """[BE-1, guard COMPLETENESS] The bound is a property of the CLASS 'parameter that names a
+    SQLite row', not of the routes we happened to think of — this repo's recurring failure is a
+    guard applied to a named subset. Enumerate every int id parameter the app declares (path AND
+    body) and fail if one carries no ge/le, so the next sibling route cannot re-open the 500."""
+    import annotated_types
+    from fastapi.routing import APIRoute
+
+    def bounds(field):
+        md = list(getattr(field.field_info, "metadata", None) or [])
+        return ({type(m) for m in md} & {annotated_types.Ge, annotated_types.Le})
+
+    unbounded = []
+    for r in client.app.routes:
+        if not isinstance(r, APIRoute):
+            continue
+        for f in r.dependant.path_params:
+            if f.name.endswith("_id") and len(bounds(f)) != 2:
+                unbounded.append(f"path {r.path}:{f.name}")
+    # body ids live inside the Pydantic models, not on the dependant
+    from backend.app import CompareIn
+
+    for name, fi in CompareIn.model_fields.items():
+        if name.endswith("_id"):
+            kinds = {type(m) for m in (fi.metadata or [])}
+            if not ({annotated_types.Ge, annotated_types.Le} <= kinds):
+                unbounded.append(f"body CompareIn.{name}")
+    assert not unbounded, f"id parameters with no SQLite-INTEGER bound: {unbounded}"
+
+
+# ------------------------------------------------- cutover verdict over zero waves
+def test_cutover_verdict_is_not_go_when_no_waves_were_derived(client):
+    """[BE-2] Vacuous truth, the exact twin of execution._derive_outcome's `not decisions` branch:
+    the fleet roll-up seeded `fleet_gate = GATE_GO` and refined it in a loop over the waves, so an
+    EMPTY wave list left the seed untouched and the plan published `"verdict": "GO"` for a snapshot
+    from which nothing was derived. cutover_docx then printed "Cutover posture: GO" in GREEN on the
+    title page, directly above its own "No migration waves were derived from this snapshot" body
+    line. 'Not observed' must never render as 'healthy' (CLAUDE.md guardrail 3)."""
+    import io
+    import json as _json
+
+    cid = client.post("/api/campaigns", json={"name": "unassessed"}).json()["id"]
+    up = client.post(f"/api/campaigns/{cid}/snapshots",
+                     files={"file": ("m.json", _json.dumps({"devices": {}}).encode(),
+                                     "application/json")},
+                     data={"label": "no-waves"})
+    assert up.status_code == 201, up.text
+    sid = up.json()["id"]
+
+    s = client.get(f"/api/snapshots/{sid}/cutover").json()["summary"]
+    assert s["n_waves"] == 0
+    assert s["verdict"] != "GO"
+    from backend import cutover
+
+    assert s["verdict"] == cutover.GATE_NOT_ASSESSED
+    # the prose must agree with the badge, not footnote it
+    assert "not a clean bill of health" in s["statement"].lower()
+
+    # and the DOCX title page carries the same word (it reads summary['verdict'] directly)
+    r = client.get(f"/api/snapshots/{sid}/deliverable/cutover")
+    if r.status_code == 503:
+        pytest.skip("python-docx not installed on this runner")
+    import zipfile
+
+    with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+        xml = z.read("word/document.xml").decode("utf-8", "replace")
+    assert "Cutover posture: GO" not in xml
+    assert f"Cutover posture: {cutover.GATE_NOT_ASSESSED}" in xml
+
+    # NOT a blanket demotion: an assessed fleet's verdict is unchanged, and the token is
+    # fleet-level only — no WAVE may ever carry it (it is deliberately absent from _GATE_RANK).
+    real = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    plan = client.get(f"/api/snapshots/{real}/cutover").json()
+    assert plan["summary"]["verdict"] in ("GO", "CONDITIONAL GO", "NO-GO")
+    assert plan["waves"]
+    assert all(w["gate"] != cutover.GATE_NOT_ASSESSED for w in plan["waves"])
+
+
+def test_start_execution_loses_the_snapshot_mid_request(client):
+    """[BE-4] `POST /snapshots/{id}/executions` reads the snapshot, builds the plan (seconds, off
+    the lock), then INSERTs. A delete landing in that window makes the executions.snapshot_id
+    foreign key refuse the insert, and the raw sqlite3.IntegrityError escaped as HTTP 500 + a
+    traceback — in the war room, at the moment a run is being started. `_mutate_execution` already
+    maps the mirror-image race (save into a deleted run) to 404; this is its start-side sibling.
+
+    The window is driven for real, not simulated at the store API: get_snapshot returns a genuine
+    snapshot for an id whose row no longer exists, which is exactly what a concurrent DELETE leaves
+    behind."""
+    real = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    store = client.app.state.store
+    snap = store.get_snapshot(real)
+    vanished = real + 9999                       # an id with no row, as after a delete
+    orig = store.get_snapshot
+    store.get_snapshot = lambda sid: (snap if sid == vanished else orig(sid))
+    try:
+        r = client.post(f"/api/snapshots/{vanished}/executions", json={"label": "race"})
+    finally:
+        store.get_snapshot = orig
+    assert r.status_code == 404, f"{r.status_code} {r.text[:200]}"
+    assert "not found" in r.json()["detail"].lower()
+    # nothing partial was persisted for the vanished snapshot
+    assert store.count_executions(vanished) == 0
+    # and the ordinary start still works
+    assert client.post(f"/api/snapshots/{real}/executions", json={}).status_code == 201
+
+import re  # noqa: E402  (U1-1 source ratchet below)
+
+
+# --------------------------------------------------------------------------- #
+# U1-1 — the API discarded n_unknown, so the browser could not disclose the gap
+# --------------------------------------------------------------------------- #
+def _life(**bands):
+    """A lifecycle_risk section in the shape compute_lifecycle_risk() emits (analyze.py: `summary` carries
+    by_band plus the named rollups)."""
+    return {"lifecycle_risk": {"summary": {
+        "n_devices": sum(bands.values()), "by_band": dict(bands),
+        "n_past_ldos": bands.get("Past-LDoS", 0), "n_near": bands.get("Near-LDoS", 0),
+        "n_past_eos": bands.get("Past-EoS", 0), "n_active": bands.get("Active", 0),
+        "n_unknown": bands.get("Unknown", 0)}, "per_device": []}}
+
+
+def test_summarize_lifecycle_distinguishes_unassessed_from_healthy():
+    """[U1-1 CRITICAL false-health] summarize() projected only past_eos / near_eos / past_ldos, so a fleet
+    on which NOTHING could be lifecycle-assessed serialised byte-identically to a fully-assessed all-Active
+    fleet, and the browser was structurally incapable of disclosing the gap.
+
+    Measured pre-fix:
+        all-Unknown (12) -> {"past_eos":0,"near_eos":0,"past_ldos":0}
+        all-Active  (12) -> {"past_eos":0,"near_eos":0,"past_ldos":0}     # identical
+    """
+    from backend.summary import summarize
+    blind = summarize(_life(Unknown=12))["lifecycle"]
+    clean = summarize(_life(Active=12))["lifecycle"]
+
+    assert blind != clean, (
+        "an all-Unknown fleet still projects identically to a fully-assessed all-Active one: "
+        f"{blind!r}")
+    assert blind["unknown"] == 12 and blind["coverage_gap"] is True and blind["assessed"] == 0, blind
+    assert blind["by_band"] == {"Unknown": 12} and blind["not_assessed_bands"] == ["Unknown"], blind
+
+    # NON-VACUITY: the assessed fleet must NOT acquire the gap disclosure, or the flag is always-on.
+    assert clean["unknown"] == 0 and clean["coverage_gap"] is False and clean["assessed"] == 12, clean
+    assert clean["not_assessed_bands"] == [], clean
+
+    # the risk rollups still reconcile with the engine, unchanged
+    mixed = summarize(_life(**{"Past-LDoS": 1, "Unknown": 11}))["lifecycle"]
+    assert mixed["past_ldos"] == 1 and mixed["unknown"] == 11 and mixed["assessed"] == 1, mixed
+
+
+def test_summarize_lifecycle_not_assessed_is_the_complement_of_the_assessed_vocabulary():
+    """[r8 F4] The gap classifier must be a PROPERTY, not a longer list of spellings.
+
+    The previous test tried "Undetermined" / "Not assessed" / "Insufficient Data" / "n/a" /
+    "NOT-OBSERVED" -- every one of which was a literal alternative already written into the classifier's
+    regex, so it only proved the regex matched itself. The most likely FUTURE band is precisely the one
+    nobody wrote down, and under a spelling list that one fell through to "assessed" and was banked as
+    health. The classifier is now the COMPLEMENT of the engine's known-good vocabulary, so this asserts
+    the property over band names the classifier cannot possibly have anticipated: pseudo-random tokens,
+    non-Latin text, punctuation, and names that merely CONTAIN a good band's spelling."""
+    import random
+    import string
+    from backend.summary import summarize
+
+    rnd = random.Random(20260801)                      # deterministic, but written by nobody
+    unanticipated = ["".join(rnd.choice(string.ascii_letters) for _ in range(9)) for _ in range(25)]
+    unanticipated += [
+        "Kategorie unbekannt", "未評価", "???", "band-7", "TBD_2031",
+        "Past-LDoS-ish", "Not Active", "Active-Pending-Review", "Superseded", "EoX-lookup-timeout",
+    ]
+    for band in unanticipated:
+        out = summarize({"lifecycle_risk": {"summary": {"by_band": {band: 7, "Active": 1},
+                                                        "n_devices": 8}}})["lifecycle"]
+        assert out["unknown"] == 7, f"{band!r} was silently counted as assessed: {out!r}"
+        assert out["coverage_gap"] is True and out["not_assessed_bands"] == [band], f"{band!r}: {out!r}"
+
+    # NON-VACUITY, and the inverse property: a band the ENGINE really does assess is NOT swept into the
+    # gap bucket, whatever its casing/padding.
+    for band in ("Active", "Past-EoS", "Past-LDoS", "Near-LDoS", " past-eos ", "ACTIVE"):
+        out = summarize({"lifecycle_risk": {"summary": {"by_band": {band: 7}, "n_devices": 7}}})["lifecycle"]
+        assert out["unknown"] == 0 and out["coverage_gap"] is False, f"{band!r}: {out!r}"
+
+
+def test_summarize_lifecycle_vocabulary_reconciles_with_the_engine_that_owns_it():
+    """SSOT ratchet for the test above. The projection's assessed-band vocabulary is a CACHE of the
+    engine's (cisco_toolkit.analyze::_LIFECYCLE_BAND_RANK); if the engine ever adds or renames a band,
+    this fails and forces a coverage decision instead of letting the new band drift into either bucket
+    unnoticed. Only "Unknown" is the engine's own not-assessed band."""
+    from cisco_toolkit.analyze import _LIFECYCLE_BAND_RANK
+    from backend.summary import _ASSESSED_BANDS
+
+    engine_bands = {b.strip().lower() for b in _LIFECYCLE_BAND_RANK}
+    assert "unknown" in engine_bands, _LIFECYCLE_BAND_RANK
+    assert _ASSESSED_BANDS == engine_bands - {"unknown"}, (
+        "webapp/backend/summary.py::_ASSESSED_BANDS no longer matches the engine's lifecycle band "
+        f"vocabulary: projection={sorted(_ASSESSED_BANDS)} engine={sorted(engine_bands)}")
+
+
+def test_summarize_lifecycle_reads_the_unknown_count_from_the_field_that_owns_it():
+    """[r8 F2/F3] `lifecycle_risk.summary.n_unknown` is the OWNER of "how many assets could not be
+    lifecycle-assessed" (docs/ssot.md). The previous revision read it ONLY when `by_band` was empty and
+    otherwise RE-DERIVED the count by classifying band-name strings -- so an engine that publishes an
+    explicit n_unknown alongside a census that does not itself carry an un-assessed band had its own
+    figure DISCARDED, and four un-assessed devices vanished from the API.
+
+    Measured pre-fix on the first case below: unknown=0, coverage_gap=False (the engine said 4)."""
+    from backend.summary import summarize
+
+    owned = summarize({"lifecycle_risk": {"summary": {
+        "by_band": {"Active": 8}, "n_unknown": 4, "n_devices": 12}}})["lifecycle"]
+    assert owned["unknown"] == 4, f"the engine's own n_unknown was discarded: {owned!r}"
+    assert owned["coverage_gap"] is True and owned["assessed"] == 8, owned
+    assert owned["unknown_source"] == "lifecycle_risk.summary.n_unknown", owned
+    assert owned["unknown_reported"] == 4, owned
+
+    # The FALLBACK is labelled as such: no owner field -> the classification, and the projection says so
+    # rather than passing a derived number off as the engine's. (This is also the branch whose
+    # `if not by_band and not n_unknown:` follow-up line was dead code -- the ternary above it already
+    # handled it, so it could never change anything.)
+    derived = summarize({"lifecycle_risk": {"summary": {
+        "by_band": {"Active": 8, "Unknown": 4}, "n_devices": 12}}})["lifecycle"]
+    assert derived["unknown"] == 4 and derived["unknown_reported"] == "", derived
+    assert derived["unknown_source"].startswith("derived:by_band"), derived
+
+    # FAIL CLOSED where the two disagree in the dangerous direction: the owner under-reports relative to
+    # its OWN census (a newer engine emitting a band this projection has never seen). Disclose the larger
+    # gap and cite both figures -- never the smaller number.
+    raised = summarize({"lifecycle_risk": {"summary": {
+        "by_band": {"Active": 5, "Quantum-Undecided": 7}, "n_unknown": 0,
+        "n_devices": 12}}})["lifecycle"]
+    assert raised["unknown"] == 7 and raised["coverage_gap"] is True, raised
+    assert raised["unknown_reported"] == 0 and "RAISED to 7" in raised["unknown_source"], raised
+    assert raised["not_assessed_bands"] == ["Quantum-Undecided"], raised
+
+
+def test_summarize_lifecycle_with_no_basis_to_count_is_not_measured_not_clean():
+    """[r8 F6, backend half] A lifecycle section that publishes the risk ROLLUPS but neither a band
+    census nor `n_unknown` gives no basis at all for counting un-assessed assets. `unknown` is then 0
+    because nothing was measured, NOT because nothing is wrong -- and pre-fix that 0 set
+    coverage_gap=False, i.e. the projection asserted full coverage it had never measured."""
+    from backend.summary import summarize
+
+    blind = summarize({"lifecycle_risk": {"summary": {
+        "n_past_ldos": 152, "n_past_eos": 0, "n_near": 61}}})["lifecycle"]
+    assert blind["coverage_measured"] is False, blind
+    assert blind["coverage_gap"] is True, (
+        "a lifecycle section with no census and no n_unknown reported FULL coverage: " + repr(blind))
+    # the rollups it DID publish still reconcile with the engine, unchanged
+    assert blind["past_ldos"] == 152 and blind["near_eos"] == 61 and blind["past_eos"] == 0, blind
+    # `assessed` must not claim the fleet either: with nothing measured there is no assessed count
+    assert blind["assessed"] == 0, blind
+
+    # NON-VACUITY: publishing EITHER basis is enough to be "measured", and a measured-clean census must
+    # NOT acquire the gap, or the flag is always-on and means nothing.
+    for basis in ({"by_band": {"Active": 12}, "n_devices": 12},
+                  {"n_unknown": 0, "n_devices": 12}):
+        out = summarize({"lifecycle_risk": {"summary": basis}})["lifecycle"]
+        assert out["coverage_measured"] is True and out["coverage_gap"] is False, (basis, out)
+
+
+def test_summarize_lifecycle_still_degrades_on_a_malformed_census():
+    """summarize() runs on EVERY upload and on every snapshot read, so a hostile/malformed lifecycle
+    section must degrade rather than 500."""
+    from backend.summary import summarize
+    for bad in ({"by_band": "not a dict", "n_unknown": "3"},
+                {"by_band": {"Unknown": None, "Active": [1, 2]}},
+                {"by_band": {"Unknown": -5}, "n_devices": "x"}):
+        out = summarize({"lifecycle_risk": {"summary": bad}})["lifecycle"]
+        assert isinstance(out["unknown"], int) and out["unknown"] >= 0, (bad, out)
+        assert isinstance(out["by_band"], dict), (bad, out)
+
+
+def test_snapshot_page_does_not_gate_the_lifecycle_line_on_a_truthy_count():
+    """[U1-1, the compounding front-end half] Snapshot.tsx rendered the ONLY lifecycle text on the page as
+    `{eol ? ` . ${eol} past-EoS` : ""}` where `eol = s.lifecycle?.past_eos`. 0 is falsy in JS, so the line
+    vanished exactly when the count was a measured zero AND when everything was un-assessed.
+
+    This is a SOURCE ratchet (the behavioural half lives in the vitest suite, which this lane does not
+    own). Its non-vacuity is asserted directly: the pre-fix expression is shown to be detectable by the
+    same check, so a revert cannot pass silently."""
+    src = (Path(__file__).resolve().parents[2] / "webapp" / "frontend" / "src"
+           / "pages" / "Snapshot.tsx").read_text(encoding="utf-8")
+    # comments QUOTE the defect verbatim (that is how the history stays readable) -- strip them so the
+    # ratchet reads live CODE only, or documenting the bug would itself trip the guard.
+    code = re.sub(r"//[^\n]*", "", re.sub(r"/\*.*?\*/", "", src, flags=re.S))
+
+    prefix_shape = re.compile(r"\{\s*eol\s*\?")
+    assert not prefix_shape.search(code), (
+        "Snapshot.tsx still gates the lifecycle line on the truthiness of a COUNT — a measured 0 "
+        "erases the line, and an all-Unknown fleet renders as a clean one")
+    # NON-VACUITY: the check can actually see that shape.
+    assert prefix_shape.search('x{eol ? " past-EoS" : ""}y'), "the ratchet cannot detect its own target"
+
+    # the replacement must actually render the coverage gap, not merely drop the ternary
+    assert "LifecycleNote" in src, "the lifecycle line was removed rather than made coverage-honest"
+    assert "EoL NOT ASSESSED" in src, "Snapshot.tsx never discloses the un-assessed lifecycle count"
+    # ... and it must be wired into BOTH branches of the readiness hint (enumerate every exit).
+    assert src.count("<LifecycleNote lc={lc} />") == 2, (
+        "only some of the sites that used to render the lifecycle text were converted")
+
+
+# --------------------------------------------------------------------------------------------------- #
+# r8 F6, front-end half — EXECUTED, not grepped
+# --------------------------------------------------------------------------------------------------- #
+# The lifecycle line's gap predicate lives in Snapshot.tsx. A source ratchet over that file can only
+# prove a phrase is present; it cannot prove the predicate BEHAVES. `lifecycleGapDisclosed` was pulled
+# out of LifecycleNote's JSX precisely so it is a pure function with no React/DOM dependency: extract it
+# from the real file, strip its TypeScript annotations, and run it under node. If the strip is wrong node
+# throws and this fails loudly; if the extraction grabbed the wrong text the table below disagrees.
+import json          # noqa: E402
+import shutil        # noqa: E402
+import subprocess    # noqa: E402
+
+_NODE = shutil.which("node")
+_SNAPSHOT_TSX = (Path(__file__).resolve().parents[2] / "webapp" / "frontend" / "src"
+                 / "pages" / "Snapshot.tsx")
+
+
+def _tsx_fn_as_js(name):
+    """`function <name>(...)` out of Snapshot.tsx, with its TypeScript annotations removed."""
+    src = _SNAPSHOT_TSX.read_text(encoding="utf-8")
+    m = re.search(r"^function %s\(.*?^\}" % re.escape(name), src, re.S | re.M)
+    assert m, "Snapshot.tsx no longer declares a top-level `function %s(`" % name
+    body = m.group(0)
+    head, _, rest = body.partition("{")            # the signature is annotation-only (no braces in it)
+    assert "{" not in head, "%s's signature grew a brace - the strip below is no longer safe" % name
+    head = re.sub(r":\s*[^,)]+", "", head)         # param annotations AND the trailing return type
+    stripped = head + "{" + rest
+    assert ": " not in stripped.split("{", 1)[0], "a type annotation survived: %r" % (stripped,)
+    return stripped
+
+
+def _run_tsx_predicate(name, calls):
+    """Run the extracted predicate over `calls` (a list of argument lists) under node.
+
+    JSON has no `undefined`: a null in `calls` is mapped back to `undefined` in the driver, which is
+    what an older backend omitting the flag actually delivers to this predicate."""
+    js = _tsx_fn_as_js(name)
+    driver = (js + "\nconst A=" + json.dumps(calls) + ";"
+              + "\nprocess.stdout.write(JSON.stringify("
+              + "A.map(a=>!!%s(...a.map(x=>x===null?undefined:x)))));" % name)
+    proc = subprocess.run([_NODE, "-e", driver], capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, "node run of the extracted %s failed:\n%s" % (name, proc.stderr[:2000])
+    return json.loads(proc.stdout)
+
+
+@pytest.mark.skipif(not _NODE, reason="node is not available")
+def test_snapshot_lifecycle_line_discloses_a_section_that_measured_nothing():
+    """[r8 F6] Silence-as-health. With every rollup the engine's "" (not measured) and unknown 0,
+    LifecycleNote rendered NOTHING - indistinguishable from a fully-assessed, fully-clean fleet.
+
+    Arguments are (coverage_gap, unknown, hasFigures); null == the flag is ABSENT (an older backend).
+    Measured pre-fix the predicate was `counted || coverage_gap === true`, which returns FALSE for the
+    two no-measurement rows below."""
+    table = [
+        ([None, 0, False], True,  "no flag and no figures -> silence is not a result"),
+        ([True, 0, False], True,  "backend's fail-closed verdict with nothing measured"),
+        ([True, 0, True],  True,  "backend's verdict still wins when rollups ARE present"),
+        ([False, 4, True], True,  "a counted un-assessed population always discloses"),
+        ([False, 0, True], False, "measured, nothing un-assessed -> NO disclosure (non-vacuity)"),
+        ([None, 0, True],  False, "pre-flag backend that DID publish figures -> unchanged behaviour"),
+    ]
+    got = _run_tsx_predicate("lifecycleGapDisclosed", [a for a, _e, _w in table])
+    for (args, expected, why), actual in zip(table, got):
+        assert actual is expected, "%r -> %r, expected %r (%s)" % (args, actual, expected, why)
+
+    # NON-VACUITY of the table: it must contain both verdicts, or "the predicate agrees" is empty.
+    assert {e for _a, e, _w in table} == {True, False}, table
+
+    # ... and the predicate must actually be WIRED into the rendered line, not merely present.
+    src = _SNAPSHOT_TSX.read_text(encoding="utf-8")
+    code = re.sub(r"//[^\n]*", "", re.sub(r"/\*.*?\*/", "", src, flags=re.S))
+    assert "lifecycleGapDisclosed(lc.coverage_gap" in code, (
+        "LifecycleNote no longer computes its gap through the predicate this test executes")
+
+
+def test_lifecycle_coverage_is_keyed_on_a_USABLE_owner_value_not_on_key_presence():
+    """A malformed `n_unknown` was accepted as a measurement of zero.
+
+    `_lifecycle` decided "was this measured?" with `"n_unknown" in lr` and read the value through
+    `_int0`, which maps null / a string / a dict / a negative / a bool to 0. So a lifecycle section
+    carrying `n_unknown: null` reported coverage_measured=True and unknown=0 -- "assessed, nothing
+    undetermined" -- off a section that had measured nothing. That is the same zero-means-not-measured
+    false-health this projection exists to close, one layer further in, and it was introduced by the
+    fix for the outer layer.
+
+    Key PRESENCE is not evidence; a usable VALUE is. An unusable one is no basis at all.
+    """
+    from webapp.backend.summary import _lifecycle
+
+    for label, value in (("null", None), ("string", "lots"), ("dict", {}),
+                         ("negative", -1), ("bool", True), ("list", [])):
+        got = _lifecycle({"n_devices": 10, "n_unknown": value})
+        assert got["coverage_measured"] is False, f"a {label} n_unknown was treated as measured"
+        assert got["coverage_gap"] is True, f"a {label} n_unknown did not raise a coverage gap"
+
+    absent = _lifecycle({"n_devices": 10})
+    assert absent["coverage_measured"] is False and absent["coverage_gap"] is True
+
+    # NON-VACUITY, both directions. An honest zero is the ONE case that may report no gap -- otherwise
+    # the projection is permanently alarmed and tells the reader nothing; and an honest count must
+    # still be read from the owner rather than fabricated.
+    honest_zero = _lifecycle({"n_devices": 10, "n_unknown": 0})
+    assert honest_zero["coverage_measured"] is True and honest_zero["coverage_gap"] is False, honest_zero
+    honest_three = _lifecycle({"n_devices": 10, "n_unknown": 3})
+    assert honest_three["unknown"] == 3 and honest_three["coverage_gap"] is True
+    assert "n_unknown" in str(honest_three["unknown_source"]), "the owner is no longer cited"
+
+    # the by_band fallback must still work when the owner field is genuinely absent
+    fallback = _lifecycle({"n_devices": 10, "by_band": {"Active": 7, "Unknown": 3}})
+    assert fallback["coverage_measured"] is True and fallback["unknown"] == 3

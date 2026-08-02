@@ -106,6 +106,39 @@ def test_required_mtu_missing_hop_is_abstention_not_a_jumbo_flag():
     assert all(not (h["host"] == "R2" and h["out_intf"] == "Vlan2") for h in t["jumbo_blackhole"])
 
 
+def test_required_mtu_uniformly_too_narrow_path_is_not_reported_uniform():
+    """review #32: mtu_verdict was computed purely from the SPREAD of observed MTUs, so the bottleneck
+    branch (mtu_min < mtu_max) could not fire on the shape that matters most — EVERY hop below the
+    requirement, which is exactly the 1500-byte underlay that silently drops VXLAN. It reported the clean
+    one-word 'uniform' while jumbo_blackhole listed every hop on the path."""
+    snap = _snap_uniform()
+    for host in ("R1", "R2"):
+        for port in snap["interfaces"][host]:
+            snap["interfaces"][host][port]["mtu"] = "1500"          # uniformly narrow: no spread at all
+    t = fib.trace_fib_path(snap, "10.1.1.5", "10.2.2.9", required_mtu=1550)
+    assert t["reached"] is True and t["mtu_min"] == 1500
+    assert len(t["jumbo_blackhole"]) == 2                            # both traced hops are under 1550
+    assert t["mtu_verdict"] != "uniform"
+    assert t["mtu_verdict"].startswith("below_required")
+    assert "1550" in t["mtu_verdict"]                                # names the requirement it fails
+    # control: the same uniform path with a requirement it MEETS is still the clean 'uniform'
+    assert fib.trace_fib_path(_snap_uniform(), "10.1.1.5", "10.2.2.9",
+                              required_mtu=1550)["mtu_verdict"] == "uniform"
+    # control: no requirement supplied -> nothing to violate, the spread verdict stands
+    assert fib.trace_fib_path(snap, "10.1.1.5", "10.2.2.9")["mtu_verdict"] == "uniform"
+
+
+def test_required_mtu_violation_keeps_disclosing_uncollected_hops():
+    """A PROVEN below-required hop outranks the unobserved-hop abstention (it is measured, not inferred),
+    but the blind spots must still be disclosed in the same verdict — never traded away for the headline."""
+    snap = _snap_missing_mtu()                       # R2's Vlan2 MTU not collected; R1's hops are 9216
+    snap["interfaces"]["R1"]["Gi0/1"]["mtu"] = "1500"
+    t = fib.trace_fib_path(snap, "10.1.1.5", "10.2.2.9", required_mtu=9216)
+    assert t["mtu_verdict"].startswith("below_required")
+    assert "MTU not collected on 1 of" in t["mtu_verdict"]
+    assert {"host": "R2", "out_intf": "Vlan2"} in t["mtu_unobserved_hops"]
+
+
 def test_mtu_verdict_indeterminate_when_trace_does_not_reach():
     """If the trace itself is a lower bound / drop (no reached path), the MTU verdict abstains too -- there is no
     proven path to audit."""
@@ -230,8 +263,12 @@ def test_bidirectional_carries_mtu_dimension_on_each_direction():
 
 # =============================================== OPTIONAL: ECMP multipath-consistency ===
 def _ecmp_snap(mtu_a="9216", mtu_b="9216", acl_a_in="", acl_b_in=""):
-    """R1 installs TWO equal-cost OSPF legs to 10.9.9.0/24 (via Gi0/1 and Gi0/2). The two egress interfaces'
-    MTU / ACL are parameterized so a test can make the legs agree or diverge."""
+    """R1 installs TWO equal-cost OSPF legs to 10.9.9.0/24 (via Gi0/1 -> R2 and Gi0/2 -> R3). The two egress
+    interfaces' MTU / ACL are parameterized so a test can make the legs agree or diverge.
+
+    BOTH next-hop routers are collected and BOTH deliver the dst — without them the legs' FORWARDING is
+    unresolved and a 'consistent' verdict would be certifying a dimension it never checked (review #27:
+    ecmp_consistency compared only egress MTU and ACL names, never whether each leg forwards at all)."""
     return {
         "routes": {
             "R1": [{"prefix": "10.0.1.0/24", "next_hop": "", "out_intf": "Vlan1", "source": "connected"},
@@ -239,6 +276,10 @@ def _ecmp_snap(mtu_a="9216", mtu_b="9216", acl_a_in="", acl_b_in=""):
                    {"prefix": "10.0.13.0/30", "next_hop": "", "out_intf": "Gi0/2", "source": "connected"},
                    {"prefix": "10.9.9.0/24", "next_hop": "10.0.12.2", "out_intf": "Gi0/1", "source": "ospf"},
                    {"prefix": "10.9.9.0/24", "next_hop": "10.0.13.3", "out_intf": "Gi0/2", "source": "ospf"}],
+            "R2": [{"prefix": "10.0.12.0/30", "next_hop": "", "out_intf": "Gi0/1", "source": "connected"},
+                   {"prefix": "10.9.9.0/24", "next_hop": "", "out_intf": "Vlan99", "source": "connected"}],
+            "R3": [{"prefix": "10.0.13.0/30", "next_hop": "", "out_intf": "Gi0/1", "source": "connected"},
+                   {"prefix": "10.9.9.0/24", "next_hop": "", "out_intf": "Vlan99", "source": "connected"}],
         },
         "interfaces": {
             "R1": {"Gi0/1": {"port": "Gi0/1", "mtu": mtu_a, "acl_in": acl_a_in},
@@ -307,3 +348,30 @@ def test_ecmp_indeterminate_when_a_leg_mtu_is_uncollected():
 def test_ecmp_total_on_bad_input():
     r = fib.ecmp_consistency(None, "1.1.1.1", "2.2.2.2")
     assert r["verdict"] == "INDETERMINATE" and r["leg_count"] == 0
+
+
+# --- review #27: the forwarding dimension (a leg that agrees on MTU/ACL and still blackholes) ---------
+
+def test_ecmp_inconsistent_when_one_leg_definitively_blackholes():
+    """The legs are IDENTICAL on egress MTU and ACL — and one of them discards the flow (R3 summarises
+    10.9.9.0/24 to Null0). Comparing only MTU/ACL names read that as 'consistent' while ~50% of the flows
+    that hash onto Gi0/2 were dropped. The proven forwarding divergence must NAME the leg."""
+    snap = _ecmp_snap()
+    snap["routes"]["R3"] = [{"prefix": "10.0.13.0/30", "next_hop": "", "out_intf": "Gi0/1", "source": "connected"},
+                            {"prefix": "10.9.9.0/24", "next_hop": "", "out_intf": "Null0", "source": "static"}]
+    r = fib.ecmp_consistency(snap, "10.0.1.5", "10.9.9.5")
+    assert r["mtu_divergence"] == [] and r["acl_divergence"] == []      # the two old dimensions see nothing
+    assert r["verdict"] == "inconsistent"
+    assert [d["out_intf"] for d in r["forwarding_divergence"]] == ["Gi0/2"]
+    assert r["forwarding_divergence"][0]["leg_status"] == "computed:unreachable"
+
+
+def test_ecmp_indeterminate_when_a_leg_forwarding_is_unresolved():
+    """A leg whose next-hop router was never collected proves nothing about that leg — it must not read
+    'consistent' by omission (the same absence-is-not-health rule the MTU/interface blind spots follow)."""
+    snap = _ecmp_snap()
+    del snap["routes"]["R3"]                                  # Gi0/2's next hop is now behind nobody collected
+    r = fib.ecmp_consistency(snap, "10.0.1.5", "10.9.9.5")
+    assert r["verdict"] == "INDETERMINATE"
+    assert [d["out_intf"] for d in r["forwarding_unresolved_legs"]] == ["Gi0/2"]
+    assert r["forwarding_divergence"] == []                   # unresolved is NOT a proven drop

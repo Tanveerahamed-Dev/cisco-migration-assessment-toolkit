@@ -101,10 +101,49 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     # gap that let the n_past_eos/n_past_ldos conflation slip surface-by-surface. See ssot.reconcile.
     from cisco_toolkit import ssot
     assert ssot.reconcile(snap) == [], f"engine published SSOT-inconsistent facts: {ssot.reconcile(snap)}"
-    # The runtime self-check stamped at assembly must agree: a healthy run raises no integrity alarm
-    # (audit -> None) and therefore leaves no assessment_integrity field (cf. test_pipeline_failopen).
+    # The runtime SSOT self-check and independent data-authority gates are clean:
+    # OUI/port packs chain to retained hash-pinned IEEE/IANA inputs, while every
+    # represented EoL scope is bound to an exact Cisco bulletin.
     assert ssot.audit(snap) is None, f"healthy run raised a false SSOT integrity alarm: {ssot.audit(snap)}"
-    assert "assessment_integrity" not in snap, "a clean SSOT run must not stamp assessment_integrity"
+    failed_phases = set(
+        (snap.get("assessment_integrity") or {}).get("failed_phases") or []
+    )
+    assert "OUI registry authority" not in failed_phases
+    assert "EoL knowledge-base authority" not in failed_phases
+    # SCOPED AUTHORITY (handoff 5.2). The combined port pack holds source-authoritative IANA
+    # assignments PLUS explicitly non-authoritative curated semantics/multicast scopes, so its
+    # whole-pack flag is correctly False. This used to assert the phase FAILED -- pinning the
+    # defect as intended behaviour: an intact pack whose IANA source chain verified was reported
+    # as a dead registry, which also broke both Atlas self-tests.
+    #
+    # A pack is usable when it is INTACT and its OFFICIAL component is source-proven. It does not
+    # need universal authority over every curated row, and the honest per-component labels below
+    # must survive -- the phase passing is not permission to call curated hints official.
+    assert "Port registry authority" not in failed_phases, (
+        "the port pack is integrity-verified with a proven IANA source chain; failing the phase "
+        "on its whole-pack flag treats an honestly-mixed pack as a dead registry"
+    )
+    assert set(snap["data_authorities"]) == {"oui", "ports", "eol"}
+    oui_health = snap["data_authorities"]["oui"]
+    assert oui_health["integrity_verified"] is True
+    assert oui_health["source_authoritative"] is True
+    assert oui_health["authoritative"] is True
+    assert oui_health["source_fresh"] is True
+    port_health = snap["data_authorities"]["ports"]
+    assert port_health["integrity_verified"] is True
+    assert port_health["source_authoritative"] is False
+    assert port_health["official_source_authoritative"] is True
+    assert port_health["curated_overlay_authoritative"] is False
+    assert port_health["curated_multicast_authoritative"] is False
+    assert port_health["authoritative"] is False
+    assert port_health["source_fresh"] is True
+    eol_health = snap["data_authorities"]["eol"]
+    assert eol_health["schema_verified"] is True
+    assert eol_health["integrity_verified"] is True
+    assert eol_health["source_authoritative"] is True
+    assert eol_health["authoritative"] is True
+    assert eol_health["source_fresh"] is True
+    assert eol_health["unresolved_reference_rows"] == 0
     # The positive self-verification badge the dashboards render must be published and pass on a
     # healthy run (executive_brief.ssot, from ssot.summary; golden-excluded with executive_brief).
     _ssot_badge = (snap.get("executive_brief") or {}).get("ssot")
@@ -151,7 +190,7 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
         "published design_blueprint must equal the canonical recompute (with the same requirements register)"
     # UNIVERSALITY (FHRP): the fixture's core1 has an untracked active HSRP gateway. The engine must PUBLISH
     # per-device FHRP detail and ASSESS it end-to-end -- the blueprint carries the FHRP-resilience decision.
-    # [HISTORY-REDACTED] ran zero FHRP, so this is the first architecture coverage proven on a non-[HISTORY-REDACTED] environment.
+    # Meridian ran zero FHRP, so this is the first architecture coverage proven on a non-Meridian environment.
     assert isinstance(snap.get("fhrp_detail"), dict) and snap["fhrp_detail"].get("core1"), \
         "snapshot must publish per-device FHRP detail (build_fhrp_detail -> parse_hsrp_detail)"
     assert any(d.get("id") == "fhrp-resilience-tracking-and-preempt" for d in _bp.get("decisions", [])), \
@@ -307,7 +346,7 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     # -> _d_arista_mlag_degraded FIRES end-to-end. This is the FIRST NON-CISCO vendor axis -- the engine now
     # assesses a non-Cisco platform's core redundancy construct (MLAG, the analogue of Cisco vPC) through the
     # same parse->build->signal->detect->coverage pipeline. A healthy / transient / 'disabled' domain stays
-    # silent (proved in tests/test_arista.py). Coverage-honest on [HISTORY-REDACTED]: the all-Cisco fleet has no MLAG -> silent.
+    # silent (proved in tests/test_arista.py). Coverage-honest on Meridian: the all-Cisco fleet has no MLAG -> silent.
     assert isinstance(snap.get("arista"), dict) and snap["arista"].get("core2", {}).get("mlag"), \
         "snapshot must publish per-device Arista MLAG state (build_arista -> parse_arista_mlag, the first non-Cisco vendor axis)"
     assert any(d.get("id") == "arista-mlag-domain-degraded" for d in _bp.get("decisions", [])), \
@@ -316,7 +355,7 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     # Juniper SRX chassis cluster ('show chassis cluster status | display json'). RG0's secondary is at PRIORITY
     # 0 (configured but not ready to accept traffic) -> _d_junos_chassis_cluster_degraded FIRES end-to-end. This
     # proves the vendor-adapter pattern generalises beyond Arista: a different NOS, a different deeply-nested
-    # JSON dialect, the same coverage-honest contract. Silent on [HISTORY-REDACTED] (the all-Cisco fleet runs no SRX cluster).
+    # JSON dialect, the same coverage-honest contract. Silent on Meridian (the all-Cisco fleet runs no SRX cluster).
     assert isinstance(snap.get("juniper"), dict) and snap["juniper"].get("core2", {}).get("chassis_cluster"), \
         "snapshot must publish per-device Juniper chassis-cluster state (build_juniper -> parse_junos_chassis_cluster, the second non-Cisco vendor axis)"
     assert any(d.get("id") == "junos-chassis-cluster-ha-degraded" for d in _bp.get("decisions", [])), \
@@ -324,7 +363,7 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     # UNIVERSALITY (PUBLIC CLOUD -- AWS, the FIRST cloud-domain axis): core1 ALSO stands in as an AWS account
     # ('aws ec2 describe-security-groups'). sg-0bastion opens SSH(22) to 0.0.0.0/0 -> _d_cloud_sg_open_ingress
     # FIRES (CIS 5.2); sg-0pubweb's 443-to-world stays silent (no cry-wolf). This proves the engine extends
-    # beyond on-prem multi-vendor to PUBLIC CLOUD via the same offline JSON pattern. Silent on [HISTORY-REDACTED] (no cloud export).
+    # beyond on-prem multi-vendor to PUBLIC CLOUD via the same offline JSON pattern. Silent on Meridian (no cloud export).
     assert isinstance(snap.get("cloud"), dict) and snap["cloud"].get("core1", {}).get("security_groups"), \
         "snapshot must publish per-account cloud state (build_cloud -> parse_aws_security_groups, the first cloud-domain axis)"
     assert any(d.get("id") == "cloud-security-group-open-ingress" for d in _bp.get("decisions", [])), \
@@ -332,7 +371,7 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     # UNIVERSALITY (MULTI-VENDOR -- Fortinet FortiGate, the THIRD non-Cisco vendor): core2 ALSO stands in as a
     # FortiGate HA cluster ('get system ha status'). The secondary is OUT-OF-SYNC (a config-checksum mismatch ->
     # the standby holds a divergent ruleset) -> _d_fortigate_ha_degraded FIRES. Three vendors now assess their
-    # firewall/HA construct through the same coverage-honest pipeline. Silent on [HISTORY-REDACTED] (no FortiGate captures).
+    # firewall/HA construct through the same coverage-honest pipeline. Silent on Meridian (no FortiGate captures).
     assert isinstance(snap.get("fortigate"), dict) and snap["fortigate"].get("core2", {}).get("ha"), \
         "snapshot must publish per-device FortiGate HA state (build_fortigate -> parse_fortigate_ha_status, the third non-Cisco vendor axis)"
     assert any(d.get("id") == "fortigate-ha-cluster-out-of-sync" for d in _bp.get("decisions", [])), \

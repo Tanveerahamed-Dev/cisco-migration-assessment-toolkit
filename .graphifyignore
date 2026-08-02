@@ -4,6 +4,7 @@
 # e.g. webapp/sample_data/build_sample.py — still gets scanned.)
 tests/golden/*.json
 webapp/sample_data/*.json
+reference-data/official-sources/**/*.csv
 
 # 2026-06-25 graph audit: stale duplicate engine copy + the graph's own output dumps were
 # polluting ~30% of nodes (root cause of duplicate god-nodes / ambiguous path matches).
@@ -21,16 +22,23 @@ graphify-out/memory/
 # 2026-07-03 audit: untracked scratch + side-engagement dirs were diluting the graph ~27% (~1.9k
 # of 6.9k nodes) and outranking real engine symbols in queries. None is repo SOURCE:
 #   ds-bundle/ + .ds-sync/  = AssessHub design-sync OUTPUT bundle (the real webapp source is webapp/)
-#   [HISTORY-REDACTED]_DC_Design/       = Qatar DC side-engagement deliverables (engagement record: see docs/ssot.md)
+#   *_DC_Design/            = private side-engagement deliverables (ownership: see docs/ssot.md)
 #   compass_artifact_*.md   = deep-research artifact dumps
 #   scratch_* / CHAT_SUMMARY = working scratch;  _verify_nrfu.py = a root scratch NRFU probe
 # (The graph's own graphify-out/ dumps are already excluded above.)
 ds-bundle/
 .ds-sync/
 .gstack/
-[HISTORY-REDACTED]_DC_Design/
+*_DC_Design/
 compass_artifact_*.md
 scratch_*.js
 scratch_*.txt
 CHAT_SUMMARY.md
 _verify_nrfu.py
+
+# The master-reference site is authored source, but its installed packages and
+# generated preview/build state are not repository architecture.
+master-reference/node_modules/
+master-reference/.vinext/
+master-reference/.wrangler/
+master-reference/dist/

@@ -35,7 +35,40 @@ from pathlib import Path
 import pytest
 
 from cisco_toolkit import intel_feed, recall
-from test_ssot_registry import ROOT, _main_checkout_root, _registry_text
+from test_ssot_registry import ROOT, _registry_text
+
+
+def _main_checkout_root() -> Path:
+    """The MAIN checkout root, resolved from any worktree.
+
+    Vault digests are UNTRACKED, so they exist only in the main checkout — a linked worktree under
+    `.claude/worktrees/` carries none (the same `graphify-out/` trap; mirrors
+    `.claude/hooks/session-brief.sh :: _main_root`). `git rev-parse --git-common-dir` yields the
+    main `.git` from any worktree, and plain `.git` (relative) in the main checkout itself.
+    Fail-open to ROOT: this resolver only decides WHERE to look for an artifact whose absence is
+    already a documented skip, so a git failure must not turn an observability gap into a hard error.
+
+    Defined here rather than imported. It previously lived in `test_ssot_registry.py` beside the
+    side-engagement guards and was removed with them during privacy sanitization — but the resolver
+    itself is generic and carries no private path: only its former callers did. Leaving the import
+    behind broke collection of this module, which pytest reports as a COLLECTION ERROR that aborts
+    the entire run (`Interrupted: 1 error during collection`), not as one failing test. Restoring
+    the helper into `test_ssot_registry.py` would have re-created a cross-module coupling whose only
+    surviving consumer is this file.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            cwd=ROOT, capture_output=True, text=True, timeout=30, check=True,
+        ).stdout.strip()
+        git_dir = Path(out)
+        if not git_dir.is_absolute():
+            git_dir = (ROOT / git_dir).resolve()
+        if git_dir.name == ".git" and git_dir.parent.is_dir():
+            return git_dir.parent
+    except Exception:
+        pass
+    return ROOT
 
 # Store locations come from their owner modules (a second hardcoding of "where feeds live" would
 # itself be the drift this file polices). os.path.join gives the platform separator; git pathspecs

@@ -20,7 +20,7 @@ never conflate a sibling field. This module is the one place that
 
 The recurring drift class this exists to kill (it cost several audit waves to find by hand, one
 surface at a time across crd/runbook/engagement/deck): a surface reads
-``lifecycle_risk.summary.n_past_eos`` (0 on the [HISTORY-REDACTED] fleet) where it means the *past-support*
+``lifecycle_risk.summary.n_past_eos`` (0 on the Meridian reference fleet) where it means the *past-support*
 population, which is ``n_past_ldos`` (152) -- silently dropping 152 end-of-support devices into a
 false "healthy" reading. The near-twin: ``len(devices)`` / ``len(health_scores)`` used as a
 reported device count instead of ``executive_brief.scale.n_devices``.
@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import math
 from typing import Any, Dict, List, Optional
+from .textutils import is_finite_num   # shared finite-number filter (rejects Infinity/NaN AND the huge int)
 
 # Canonical facts: name -> (dotted snapshot path of the published value, one-line concept).
 # The dotted path is the SINGLE authoritative source; anything else reporting the same concept
@@ -49,6 +50,11 @@ CANONICAL_FACTS: Dict[str, tuple] = {
     "n_past_eos":         ("lifecycle_risk.summary.n_past_eos",   "devices past end-of-sale but NOT yet past LDoS (a different, smaller set)"),
     "n_near":             ("lifecycle_risk.summary.n_near",       "devices within 1yr of LDoS (Near-LDoS band)"),
     "n_active":           ("lifecycle_risk.summary.n_active",     "devices in active support (Active band)"),
+    # The COVERAGE slot. Without it there was no canonical way to say "not determined", and every
+    # consumer of n_past_ldos rendered a bare 0 for a fleet nothing had assessed — including the
+    # "At a Glance" front matter of every deliverable. A band count that omits Unknown is not a
+    # partition of the fleet, and the omission reads as health.
+    "n_unknown":          ("lifecycle_risk.summary.n_unknown",    "devices whose support state was NOT determined (no EoX bulletin matched the platform) — absence of a finding, never a clean result"),
     "n_design_decisions": ("design_blueprint.summary.n_decisions","ranked target-state design decisions"),
 }
 
@@ -62,11 +68,21 @@ _HEALTH_BAND_POOR = "Poor"
 # as the worst health band, and the avg-health mean excludes it too.
 _HEALTH_BAND_ORDER = ("Critical", "Poor", "Fair", "Good", "Excellent")
 _HEALTH_BAND_NOT_SCORED = "Insufficient Data"
+# EVERY band analyze.compute_lifecycle_risk can emit (analyze._LIFECYCLE_BAND_RANK is the producer's
+# vocabulary: Past-LDoS / Near-LDoS / Past-EoS / Active / Unknown) mapped to the summary field that
+# counts it. "Unknown" was the one omission, and it was the worst possible one: n_unknown is a
+# registered CANONICAL_FACT, so it is published, cited and rendered -- but with no entry here it had
+# NO raw-basis guard, and reconcile() silently accepted any value. Measured: mutating
+# summary.n_unknown from 2 to 99 returned reconcile() == [] while the same mutation to n_past_ldos
+# was caught. The one canonical fact whose whole job is to say "not determined" was the only
+# lifecycle fact nothing verified. Completeness against the producer's vocabulary is asserted by
+# tests/test_ssot_registry.py -- a new band cannot be added upstream without a guard here.
 _LIFECYCLE_BANDS = {
     "n_past_ldos": "Past-LDoS",
     "n_past_eos": "Past-EoS",
     "n_near": "Near-LDoS",
     "n_active": "Active",
+    "n_unknown": "Unknown",
 }
 
 
@@ -195,7 +211,7 @@ def abstention_reason(snap: Dict[str, Any], subject: str, device: str = None) ->
 # ---------------------------------------------------------------------------------------------
 # schema census (J3): a snapshot self-describes what it actually SAW -- the SuzieQ `describe`
 # analog. For EVERY top-level snapshot section, project the coverage-honest 3-state token onto a
-# queryable coverage map, so an access-only collection (e.g. the [HISTORY-REDACTED] fleet, where a whole
+# queryable coverage map, so an access-only collection (e.g. the Meridian reference fleet, where a whole
 # distribution/core tier is UN-collected) reports exactly what was seen vs what is a blind spot,
 # instead of a rendered "filler" output whose real cause is an uncollected tier, not a code bug.
 # ---------------------------------------------------------------------------------------------
@@ -313,7 +329,119 @@ def compute_fact_lineage(snap: Dict[str, Any]) -> Dict[str, Any]:
     return {"schema": FACT_LINEAGE_SCHEMA, "facts": facts}
 
 
-def reconcile(snap: Dict[str, Any]) -> List[str]:
+# ---------------------------------------------------------------------------------------------
+# Segmentation posture (Law 1 accessor). The L3 gateway tier's segmentation facts have ONE owner --
+# ``analyze.compute_segmentation`` -> ``snap['segmentation']`` -- but three deliverables
+# (design/crd/archreview) each re-derived their own from ``snap['interfaces']`` and asked a
+# *different* question while using the owner's label: they counted every non-default VRF configured
+# ANYWHERE (mgmt0's management VRF, a vPC keepalive VRF) as a "VRF in use", where the owner counts
+# only the VRF buckets that actually CARRY a gateway SVI. On the Meridian reference fleet that reads 4 vs 1 for the
+# same phrase, in the same deliverable set, off the same snapshot -- and it flipped archreview's
+# SEC-2 gate off the owner's `flat` verdict. This accessor is the one place both questions are
+# answered, each under its own name.
+# ---------------------------------------------------------------------------------------------
+
+def _is_svi_port(name: Any) -> bool:
+    """True for an SVI port name -- the owner's own predicate, ``^Vlan\\d+$`` (case-insensitive),
+    expressed without a regex so this module stays dependency-light."""
+    s = str(name or "")
+    return s[:4].lower() == "vlan" and s[4:].isdigit()
+
+
+# The names that are NOT a separate routing table: the device's own default/global VRF, plus
+# '(global)' -- the synthetic bucket label analyze.compute_segmentation gives the unsegmented
+# gateways in `segmentation.vrfs`. Reading that label as a real VRF would turn a flat fabric into a
+# 1-VRF "segmented" one at the first read of the owner's own block.
+_GLOBAL_VRF_NAMES = ("default", "global", "(global)")
+
+
+def _is_nondefault_vrf(vrf: str) -> bool:
+    """A VRF name that actually separates a routing table (the shared default/global names are not)."""
+    return bool(vrf) and vrf.lower() not in _GLOBAL_VRF_NAMES
+
+
+def segmentation_facts(snap: Dict[str, Any]) -> Dict[str, Any]:
+    """The L3 segmentation posture, read from its one owner (``snap['segmentation']``).
+
+    Returns ``{n_gateways, n_with_acl, coverage_pct, n_gateway_vrfs, gateway_vrfs, other_vrfs,
+    flat, source}``:
+
+    * ``n_gateways`` / ``n_with_acl`` / ``coverage_pct`` -- the gateway-SVI ACL posture
+      (``segmentation.gateway_acl``).
+    * ``n_gateway_vrfs`` -- how many VRF *buckets* carry a gateway SVI, counting the global table as
+      one (``segmentation.summary.n_vrfs``). This is NOT "how many VRFs are configured".
+    * ``gateway_vrfs`` -- the NON-global VRF names among those; empty on a flat fabric. This is the
+      figure a segmentation claim must be graded on.
+    * ``other_vrfs`` -- non-default VRFs configured somewhere on the fleet that carry NO gateway SVI
+      (management / keepalive VRFs). A DIFFERENT fact, named separately: they segment no user
+      traffic, so counting them as "VRFs in use" reads a flat fabric as partially segmented.
+    * ``flat`` -- the owner's verdict: gateways exist, none in a non-global VRF, none with an ACL.
+
+    Coverage-honest: with ``snap['segmentation']`` absent the gateway figures are DERIVED from
+    ``snap['interfaces']`` using the owner's own predicate and ``source`` reads ``derived``; with
+    neither available the counts are ``None`` (never a fabricated 0) and ``flat`` is ``None``.
+    ``other_vrfs`` is always interface-derived -- the owner publishes no such list. Total on bad
+    input; derives only, never mutates.
+    """
+    snap = snap if isinstance(snap, dict) else {}
+    seg = _as_dict(snap.get("segmentation"))
+    ssum = _as_dict(seg.get("summary"))
+    gacl = _as_dict(seg.get("gateway_acl"))
+
+    # One pass over the interfaces: every non-default VRF seen anywhere, plus the gateway-scoped
+    # derivation (the fallback, and the source of `other_vrfs` in every case).
+    all_vrfs: set = set()
+    gw_buckets: set = set()
+    n_gw_derived = n_acl_derived = 0
+    for _host, ports in _as_dict(snap.get("interfaces")).items():
+        for pname, pdet in _as_dict(ports).items():
+            pdet = _as_dict(pdet)
+            vrf = str(pdet.get("vrf") or "").strip()
+            nondefault = _is_nondefault_vrf(vrf)
+            if nondefault:
+                all_vrfs.add(vrf)
+            if _is_svi_port(pname) and str(pdet.get("svi_ip") or "").strip():
+                n_gw_derived += 1
+                gw_buckets.add(vrf if nondefault else "(global)")
+                if str(pdet.get("acl_in") or "").strip() or str(pdet.get("acl_out") or "").strip():
+                    n_acl_derived += 1
+
+    published = _as_int(gacl.get("n_gateways"))
+    if published is None:
+        published = _as_int(ssum.get("n_gateways"))
+    from_owner = published is not None
+    source = "segmentation" if from_owner else ("derived" if n_gw_derived else "unavailable")
+
+    if from_owner:
+        n_gateways = published
+        n_with_acl = _as_int(gacl.get("n_with_acl"))
+        n_gateway_vrfs = _as_int(ssum.get("n_vrfs"))
+        # the owner's per-VRF gateway census; '(global)' is the unsegmented bucket, never a real VRF
+        gateway_vrfs = sorted({str(r.get("vrf")) for r in _as_list(seg.get("vrfs"))
+                               if isinstance(r, dict) and _is_nondefault_vrf(str(r.get("vrf") or "").strip())})
+        if not _as_list(seg.get("vrfs")):
+            gateway_vrfs = sorted(b for b in gw_buckets if b != "(global)")
+    else:
+        n_gateways = n_gw_derived or None
+        n_with_acl = n_acl_derived if n_gw_derived else None
+        n_gateway_vrfs = len(gw_buckets) or None
+        gateway_vrfs = sorted(b for b in gw_buckets if b != "(global)")
+
+    pct = gacl.get("coverage_pct") if from_owner else None
+    if not isinstance(pct, (int, float)) or isinstance(pct, bool):
+        pct = (round(100.0 * n_with_acl / n_gateways, 1)
+               if (n_gateways and isinstance(n_with_acl, int)) else None)
+
+    flat = ssum.get("flat")
+    if not isinstance(flat, bool):
+        flat = (bool(n_gateways) and not gateway_vrfs and n_with_acl == 0) if n_gateways else None
+
+    return {"n_gateways": n_gateways, "n_with_acl": n_with_acl, "coverage_pct": pct,
+            "n_gateway_vrfs": n_gateway_vrfs, "gateway_vrfs": gateway_vrfs,
+            "other_vrfs": sorted(all_vrfs - set(gateway_vrfs)), "flat": flat, "source": source}
+
+
+def reconcile(snap: Dict[str, Any], _ran: Optional[List[str]] = None) -> List[str]:
     """Return human-readable SSOT violations: a published canonical value that disagrees with an
     independent derivation from the raw evidence. Empty list == every published fact reconciles.
 
@@ -321,6 +449,14 @@ def reconcile(snap: Dict[str, Any]) -> List[str]:
     minimal snapshot whose ``executive_brief.scale`` is ``None``) is SKIPPED, not flagged -- the
     guard fires only when both the published value AND its raw basis are present, so it never
     invents a violation from absent evidence.
+
+    That skipping is why an empty return is NOT by itself a pass. Every check here is gated on its
+    raw basis being present, so a snapshot that publishes all the canonical blocks but carries none
+    of the raw arrays reconciles NOTHING and returns ``[]`` -- indistinguishable, from the return
+    value alone, from a snapshot that reconciled everything. ``_ran`` is the out-parameter that
+    closes that: pass a list and it receives the name of every check that ACTUALLY executed, so a
+    caller can tell "verified, all clean" from "verified nothing". :func:`summary` uses it; nothing
+    else needs to, which is why it stays private rather than changing the return type.
     """
     violations: List[str] = []
     # Every published summary block is coerced via _as_dict, NOT `_dotted(...) or {}`: `or {}` keeps a
@@ -341,7 +477,9 @@ def reconcile(snap: Dict[str, Any]) -> List[str]:
     def check(name: str, published: Any, derived: Any, basis: str) -> None:
         pi, di = _as_int(published), _as_int(derived)
         if pi is None or di is None:
-            return  # not both present -> coverage-honest skip
+            return  # not both present -> coverage-honest skip (and NOT counted as a check that ran)
+        if _ran is not None:
+            _ran.append(name)
         if pi != di:
             violations.append(f"{name}={pi} but {basis}={di}")
 
@@ -398,9 +536,13 @@ def reconcile(snap: Dict[str, Any]) -> List[str]:
         # self-verified facts, so both must be reconciled too (mirroring compute_executive_brief
         # exactly -> no tolerance, no false positives). The mean excludes "Insufficient Data" scores.
         if "avg_health" in posture:
+            # is_finite_num, not `isinstance(...) and math.isfinite(...)`: that idiom rejects the JSON
+            # Infinity/NaN correctly but CRASHES on the other value json.loads accepts -- an integer
+            # literal of unbounded precision, on which math.isfinite() itself raises OverflowError
+            # before it can return False. reconcile() runs inside docmeta.add_excellence_front, so
+            # that aborted EVERY deliverable in the docx family over one health score.
             scored = [h.get("score") for h in health
-                      if isinstance(h, dict) and isinstance(h.get("score"), (int, float))
-                      and math.isfinite(h.get("score"))   # a JSON Infinity/NaN score would make round(mean) raise
+                      if isinstance(h, dict) and is_finite_num(h.get("score"))
                       and h.get("band") != _HEALTH_BAND_NOT_SCORED]
             if scored:
                 check("executive_brief.posture.avg_health", posture.get("avg_health"),
@@ -474,15 +616,28 @@ def summary(snap: Dict[str, Any]) -> Dict[str, Any]:
     client-facing trust signal ("N headline facts self-verified against the raw evidence") without
     re-running any check itself.
 
-    Returns ``{"verified": bool, "n_facts": int, "n_violations": int}``. ``verified`` is True iff
-    every published canonical fact reconciles. ``n_facts`` counts the canonical facts actually
-    published (None facts -- unpublished blocks -- are not counted, so the signal is coverage-honest
-    about how much was assessable).
+    Returns ``{"verified": bool, "n_facts": int, "n_checked": int, "n_violations": int}``.
+    ``n_facts`` counts the canonical facts actually PUBLISHED; ``n_checked`` counts the ones actually
+    RECONCILED against raw evidence. Those are different numbers and the difference is the whole
+    point: every check in :func:`reconcile` is gated on its raw basis being present, so a snapshot
+    that publishes all 14 canonical blocks but carries no ``health_scores`` / ``endpoint_identity`` /
+    ``lifecycle_risk.per_device`` / ``collection_completeness`` reconciles NOTHING and still had
+    ``n_facts == 14`` with an empty violation list.
+
+    ``verified`` therefore requires ``n_checked > 0`` as well as a clean run. Without that it was
+    True for a snapshot nothing had been verified against, and this dict is the basis of a
+    CLIENT-FACING claim -- ``docmeta.add_excellence_front`` stamps "N headline figures self-verified
+    against the raw evidence -- every number in this document reconciles to one source" into every
+    DOCX deliverable, and the explorer renders the same badge. A self-verification layer asserting a
+    reconciliation it never performed is the failure this whole module exists to prevent, sitting at
+    the top of the trust chain.
     """
     facts = canonical_facts(snap)
-    violations = reconcile(snap)
+    ran: List[str] = []
+    violations = reconcile(snap, _ran=ran)
     return {
-        "verified": not violations,
+        "verified": bool(ran) and not violations,
         "n_facts": sum(1 for value in facts.values() if value is not None),
+        "n_checked": len(ran),
         "n_violations": len(violations),
     }

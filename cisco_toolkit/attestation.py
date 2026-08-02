@@ -19,9 +19,50 @@ No I/O beyond reading this package's own source files; no network; no new depend
 import ast
 import importlib
 import importlib.util
+import ipaddress
 import os
 import re
 from datetime import datetime, timezone
+
+def loopback_only(hostport: str, *, env_var: str = "OLLAMA_HOST") -> str:
+    """Return ``hostport`` if it names a LOOPBACK endpoint; raise ``ValueError`` otherwise.
+
+    ADR-0001 Amendment 1 carves out exactly one exception to the no-egress doctrine: a **local**
+    Ollama on 127.0.0.1, on the grounds that on-host compute is not egress. That reasoning holds only
+    while the endpoint really is on-host. The three helpers read their endpoint from ``$OLLAMA_HOST``
+    — Ollama's own standard variable, so it is plausibly already set in a shell profile — and built
+    ``f"http://{OLLAMA_HOST}/api/chat"`` from it with no validation, so a single
+    ``OLLAMA_HOST=ollama.corp.example:11434`` silently turned the carve-out into real egress. The
+    payloads make that serious: the retrieval judge posts excerpts from a corpus built out of every
+    git-tracked ``*.py``/``*.md`` plus verified vault-digest entries.
+
+    Deliberately does NOT resolve names: a DNS lookup for an attacker- or misconfiguration-supplied
+    host is itself a network round trip, and resolving would let a hostname that happens to map to
+    127.0.0.1 today point elsewhere tomorrow. An IP literal, or the exact name ``localhost``, only.
+    """
+    host = (hostport or "").strip()
+    if host.startswith("["):                                   # [::1]:11434
+        host = host[1:].split("]", 1)[0]
+    elif host.count(":") == 1:                                 # host:port (never a bare IPv6)
+        host = host.split(":", 1)[0]
+    host = host.strip()
+    if host.lower() == "localhost":
+        return hostport
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError as e:
+        raise ValueError(
+            f"{env_var}={hostport!r} is not a loopback endpoint. The local-inference carve-out "
+            f"(ADR-0001 Amendment 1) permits ON-HOST compute only, so this must be an IP literal on "
+            f"127.0.0.0/8 or ::1, or the name 'localhost'. Cloud/remote LLM calls stay forbidden."
+        ) from e
+    if not ip.is_loopback:
+        raise ValueError(
+            f"{env_var}={hostport!r} points OFF-HOST ({ip}). That is egress, which this repo's "
+            f"no-egress doctrine forbids; the ADR-0001 Amendment 1 carve-out covers a local Ollama "
+            f"on 127.0.0.1 only.")
+    return hostport
+
 
 ATTESTATION_SCHEMA = "attestation/1"
 
@@ -37,11 +78,54 @@ CLAIM_IDS = ("read_only_command_surface", "no_egress_import_graph",
 # controller-REST GET paths (api/ FMC, ers/ ISE, dataservice/ vManage). A write verb
 # (config/set/execute/reload/request/aws ec2 authorize-/create-/delete-, a POST-only REST
 # path, ...) matches none of these.
+#
+# NECESSARY BUT NOT SUFFICIENT — always go through is_read_only_command() below. This regex
+# constrains only the FIRST WORD, and `.match()` anchors at the start, so on its own it accepts
+# `show running-config | redirect bootflash:x` (NX-OS WRITES that file), `show run | tftp://host/x`
+# (ships the config off the box) and `show version ; reload`. A read verb with a write tacked onto
+# it is precisely the string this claim exists to reject.
 READ_ONLY_CMD = re.compile(
     r"^(show|display|get|dir|ping|moquery)\b"          # SSH/CLI read verbs (incl. ACI moquery over SSH)
     r"|^aws ec2 describe-"                              # AWS read-only describe (never authorize/create/delete)
     r"|^(api/|ers/|dataservice/)",                     # controller-REST GET paths (FMC / ISE / vManage)
 )
+
+# Anything that can chain, redirect, substitute or line-break a second command out of a read verb.
+# netmiko writes the string to the channel verbatim, so an embedded newline is a second command
+# typed at the exec prompt.
+_CLI_CHAIN = re.compile(r"[\r\n;&`$><\\]")
+# A pipe is legal on IOS/NX-OS only as an OUTPUT FILTER. redirect/tee/append and any URL sink write
+# or egress, so the stage list is a closed allowlist, not a denylist.
+_PIPE_FILTER_OK = re.compile(
+    r"^(section|include|exclude|begin|grep|egrep|count|json|xml|no-more|last|head|diff|sort|uniq|in)\b")
+_REST_PREFIXES = ("api/", "ers/", "dataservice/")
+
+
+def is_read_only_command(cmd, *, extra_verbs: tuple = ()) -> bool:
+    """True when the WHOLE string is read-only — the check this module's claim is built on.
+
+    Deliberately re-derived here rather than imported from the collector: attestation is the
+    verifier, and a verifier that borrows the proposer's own gate can only ever agree with it
+    (proposer != verifier). The two implementations are independent by design, so a weakening of
+    one is caught by the other.
+
+    `extra_verbs` widens ONLY the verb list, never the whole-string safety below — it exists so a
+    surface with a legitimately broader read vocabulary (the NRFU service phase also issues
+    `traceroute`) composes with this owner instead of copying the grammar and drifting from it.
+    """
+    s = str(cmd).strip()
+    ok_verb = bool(READ_ONLY_CMD.match(s))
+    if not ok_verb and extra_verbs:
+        ok_verb = bool(re.match(r"^(%s)\b" % "|".join(re.escape(v) for v in extra_verbs), s))
+    if not ok_verb:
+        return False
+    if s.startswith(_REST_PREFIXES):
+        # A REST path is handed to an HTTP client, not a shell: `?` and `&` are legitimate query
+        # syntax there. Only a header-injection break matters.
+        return not re.search(r"[\r\n]", s)
+    if _CLI_CHAIN.search(s):
+        return False
+    return all(_PIPE_FILTER_OK.match(seg.strip()) for seg in s.split("|")[1:])
 
 # Direct network-egress libraries: none of these may be imported (at ANY nesting depth) by
 # the offline analysis -> deliverable pipeline. Shared with the doctrine test.
@@ -60,8 +144,26 @@ LLM_IMPORTS = frozenset({
 #   walk; its own floor (GET-only except the single login POST) is the third claim.
 # - data/gen_port_registry.py is a dev-only data-pack generator (urllib to IANA), not
 #   import-reachable from the runtime pipeline — a documented exception, disclosed in detail.
+# Both are keyed by the path RELATIVE to the scanned package root (posix separators), because
+# the walk is recursive: a bare basename would exempt a same-named file in ANY subpackage.
+# (Until this was fixed the walk was top-level only, so `gen_port_registry.py` — one directory
+# down — was never scanned and its exception was DEAD CODE: the panel published "0 network-library
+# imports" over a file that fetches iana.org. :func:`_claim_no_egress` now NAMES what it exempted
+# and reports an exception that matched nothing, so the exemption cannot go dead again unnoticed.)
 NO_EGRESS_EXCLUDE = frozenset({"rest_collect.py"})
-NO_EGRESS_EXCEPTIONS = frozenset({"gen_port_registry.py"})
+# EMPTY, and that is the strong form of this claim rather than a gap in it.
+#
+# This set held "data/gen_port_registry.py" for as long as that generator fetched iana.org over
+# `urllib.request`. It no longer imports urllib at all, so the exemption named a file that could no
+# longer offend — a STALE CHARTER, which `_claim_no_egress` below is built to detect and report
+# ("declared exception(s) that matched nothing"). Measured before removing it: `scan_imports` over
+# the package walks 72 files, reaches `data/gen_port_registry.py`, and returns `offenders={}`.
+#
+# With the set empty the published Trust & Sovereignty claim reads "no documented exception was
+# needed" instead of carrying a caveat that no longer applies. If any file here ever imports a
+# network library again it lands in `unexplained` and the claim goes VIOLATED — which is the
+# fail-closed direction, and the reason removing a dead exception costs nothing.
+NO_EGRESS_EXCEPTIONS: frozenset = frozenset()
 
 _COLLECTOR_MODULE = "COLLECT_PARSE_V3_23_0"
 
@@ -84,27 +186,38 @@ def imported_names(tree):
 
 
 def _iter_py(dirpath, exclude=frozenset()):
-    for name in sorted(os.listdir(dirpath)):
-        if name.endswith(".py") and name not in exclude:
-            yield os.path.join(dirpath, name)
+    """Every .py under `dirpath` at ANY depth, as (relpath, abspath) with posix relpaths.
+
+    RECURSIVE by construction: a top-level-only walk cannot see a subpackage, and this walk is
+    the evidence behind a client-facing claim — a module the walk never opened must never be
+    counted as one it cleared. `exclude` holds relpaths (charter exclusions)."""
+    for root, dirs, files in os.walk(dirpath):
+        dirs[:] = sorted(d for d in dirs if d != "__pycache__" and not d.startswith("."))
+        for name in sorted(files):
+            if not name.endswith(".py"):
+                continue
+            path = os.path.join(root, name)
+            rel = os.path.relpath(path, dirpath).replace(os.sep, "/")
+            if rel in exclude:
+                continue
+            yield rel, path
 
 
-def scan_imports(dirpath, banned, exclude=frozenset(), exceptions=frozenset()):
-    """AST import-walk over every top-level .py in dirpath -> (n_scanned, offenders) where
-    offenders maps basename -> sorted banned imports found. `exceptions` are documented
-    exceptions dropped AFTER the scan (so they stay visible in the code, not the verdict)."""
+def scan_imports(dirpath, banned, exclude=frozenset()):
+    """AST import-walk over every .py under dirpath (any depth) -> (n_scanned, offenders) where
+    offenders maps the posix RELPATH -> sorted banned imports found. Documented exceptions are
+    NOT applied here: the caller subtracts them so the claim can NAME what it exempted (an
+    exception silently absorbed inside the scan is how the last one went dead)."""
     offenders = {}
     n = 0
-    for path in _iter_py(dirpath, exclude):
+    for rel, path in _iter_py(dirpath, exclude):
         n += 1
         src = open(path, encoding="utf-8", errors="replace").read()
         tree = ast.parse(src, filename=path)
         bad = sorted({name for name in imported_names(tree)
                       if any(name == b or name.startswith(b + ".") for b in banned)})
         if bad:
-            offenders[os.path.basename(path)] = bad
-    for exc in exceptions:
-        offenders.pop(exc, None)
+            offenders[rel] = bad
     return n, offenders
 
 
@@ -114,9 +227,11 @@ def _claim(cid, method, result, detail):
 
 # ------------------------------------------------------------------ claims ---
 def _claim_read_only(collector_module):
-    method = ("re-derive over every COMMANDS_* registry of the collector: each command must "
-              "match the read-only grammar (show/display/get/dir/ping/moquery | aws ec2 "
-              "describe- | api|ers|dataservice REST GET paths)")
+    method = ("re-derive over every COMMANDS_* registry of the collector: the WHOLE of each command "
+              "must be read-only — a read verb (show/display/get/dir/ping/moquery | aws ec2 "
+              "describe- | api|ers|dataservice REST GET paths) AND no way to chain, redirect or "
+              "substitute a second command out of it (no CR/LF ; & ` $ > < \\, and every pipe stage "
+              "an output filter, never redirect/tee/append or a URL sink)")
     cid = "read_only_command_surface"
     try:
         mod = importlib.import_module(collector_module)
@@ -131,7 +246,7 @@ def _claim_read_only(collector_module):
                       "an empty surface proves nothing (refusing a vacuous pass)")
     offenders = {}
     for rname, cmds in regs.items():
-        bad = [str(c) for c in cmds if not READ_ONLY_CMD.match(str(c).strip())]
+        bad = [str(c) for c in cmds if not is_read_only_command(c)]
         if bad:
             offenders[rname] = bad
     if offenders:
@@ -142,29 +257,49 @@ def _claim_read_only(collector_module):
 
 
 def _claim_no_egress(toolkit_dir):
-    method = ("AST import-walk (any nesting depth, lazy imports included) over the analysis "
-              "package for network libraries; charter exclusion: rest_collect.py (the opt-in "
-              "REST collector, covered by its own GET-only claim); documented dev-only "
-              "exception: gen_port_registry.py (data-pack generator, not pipeline-reachable)")
+    # Built FROM the live sets, never restated alongside them. This paragraph previously named
+    # `data/gen_port_registry.py` as a documented exception in prose while NO_EGRESS_EXCEPTIONS had
+    # been emptied, so the published claim contradicted itself: METHOD announced an exception that
+    # DETAIL simultaneously reported as "no documented exception was needed". Worse, the test that
+    # checks exclusions are DISCLOSED was satisfied by the stale prose alone, so it pinned the
+    # contradiction in place instead of catching it. A duplicated fact is a cache; derive it.
+    _exclude_txt = (", ".join(sorted(NO_EGRESS_EXCLUDE)) or "none")
+    _except_txt = (", ".join(sorted(NO_EGRESS_EXCEPTIONS))
+                   or "none — the package is clean without subtracting anything")
+    method = ("RECURSIVE AST import-walk (every subpackage, any nesting depth, lazy imports "
+              "included) over the analysis package for network libraries; charter exclusion(s): "
+              f"{_exclude_txt} (the opt-in REST collector is covered by its own GET-only claim); "
+              f"documented exception(s), subtracted AFTER the scan and named in the result: "
+              f"{_except_txt}")
     cid = "no_egress_import_graph"
     if not os.path.isdir(toolkit_dir):
         return _claim(cid, method, NOT_EVALUATED,
                       f"analysis-package source tree not available at {toolkit_dir!r} "
                       "(installed without sources?) — cannot walk the import graph")
     try:
-        n, offenders = scan_imports(toolkit_dir, NETWORK_IMPORTS,
-                                    exclude=NO_EGRESS_EXCLUDE, exceptions=NO_EGRESS_EXCEPTIONS)
+        n, offenders = scan_imports(toolkit_dir, NETWORK_IMPORTS, exclude=NO_EGRESS_EXCLUDE)
     except (OSError, SyntaxError, ValueError) as e:
         return _claim(cid, method, NOT_EVALUATED, f"source walk failed: {e!r}")
     if n == 0:
         return _claim(cid, method, NOT_EVALUATED,
                       f"no python sources found under {toolkit_dir!r} — nothing was proven")
-    if offenders:
+    # Documented exceptions are subtracted HERE, and disclosed: what was exempted (with the
+    # import that made it an offender) and any declared exception that matched NOTHING — a
+    # never-firing exception means either the walk cannot see the file or the charter is stale.
+    exempt = {rel: bad for rel, bad in offenders.items() if rel in NO_EGRESS_EXCEPTIONS}
+    unexplained = {rel: bad for rel, bad in offenders.items() if rel not in NO_EGRESS_EXCEPTIONS}
+    stale = sorted(e for e in NO_EGRESS_EXCEPTIONS if e not in offenders)
+    if unexplained:
         return _claim(cid, method, VIOLATED,
-                      f"network-egress import(s) in the offline analysis pipeline: {offenders}")
+                      f"network-egress import(s) in the offline analysis pipeline: {unexplained}")
+    exempt_txt = ("; documented exception(s) applied: "
+                  + ", ".join(f"{rel} -> {','.join(bad)}" for rel, bad in sorted(exempt.items()))
+                  if exempt else "; no documented exception was needed")
+    stale_txt = (f"; declared exception(s) that matched nothing (stale charter?): {stale}"
+                 if stale else "")
     return _claim(cid, method, HOLDS,
-                  f"0 network-library imports across {n} analysis modules (excluded by "
-                  "charter: rest_collect.py; documented exception: gen_port_registry.py)")
+                  f"0 unexplained network-library imports across {n} analysis modules "
+                  f"(recursive walk; excluded by charter: rest_collect.py{exempt_txt}{stale_txt})")
 
 
 def _claim_rest_get_only(rest_path):

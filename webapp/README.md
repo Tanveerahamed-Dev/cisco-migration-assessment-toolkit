@@ -117,15 +117,24 @@ cd webapp/frontend && npm install && npm run build && cd ../..
 
 # 3) serve everything on http://127.0.0.1:8000 — the one door (auto-opens the browser)
 python -m webapp.backend.serve
-#    …or the same thing by hand:
-python -m uvicorn backend.app:app --app-dir webapp --port 8000
+#    For a factory-driven local Uvicorn process (serve.py remains the production entry):
+python -m uvicorn backend.app:create_default_app --factory --app-dir webapp --port 8000
 ```
 
 Once pip-installed with the web layer (`pip install -e .[webapp]`), the same entry is the
 `assesshub` console command. `python -m webapp.backend.serve --selftest` verifies the assets that
-otherwise degrade *silently* when missing (explorer template, OUI/port KBs, docx/pptx extras,
+otherwise degrade *silently* when missing (explorer template, authoritative OUI/port packs with
+their manifested row counts/provenance, docx/pptx extras,
 frontend dist, engine entry, DB dir) and exits non-zero on any failure — run it before a field
 engagement.
+
+`assesshub --verify-manifest <path>` re-checks a transferred run manifest and every listed
+artifact byte by default. Use `--metadata-only` only when the manifest was deliberately separated
+from its artifact set; the output states that bytes were skipped. Engine runs already perform the
+same full verification immediately after writing the manifest, while this receiver-side command
+detects damage introduced later in storage or transfer. The hash chain is corruption-evident, not
+producer authentication: retain the full `chain_root` out of band and pass `--expect-root <root>`
+when identity to a particular run matters.
 
 Open <http://127.0.0.1:8000>, click **“Open a sample fleet”**, and explore — the sample is the
 bundled demo snapshot, no live network needed.
@@ -144,25 +153,30 @@ locked down by default:
   even though the socket is loopback. Trust an extra same-host name (e.g. a reverse-proxy
   vhost) with `ASSESSHUB_ALLOWED_HOSTS=host1,host2`. (Token mode is Host-agnostic — the
   Bearer credential, which a rebound page cannot forge, is the authority there.)
-- **Any non-local access needs a token** — set `ASSESSHUB_TOKEN=<secret>` on the server
-  and send `Authorization: Bearer <secret>`; once set, the token is required on every
-  `/api` route (only the `/api/health` liveness probe stays open). Add trusted extra UI
-  origins with `ASSESSHUB_CORS_ORIGINS=https://host1,https://host2` if you reverse-proxy.
+- **Any non-local access needs a token and TLS** — set `ASSESSHUB_TOKEN=<secret>` and start
+  `assesshub --host <address> --ssl-certfile cert.pem --ssl-keyfile key.pem`. Plain-HTTP bearer
+  access from a non-loopback client is refused. The shipped SPA prompts for the token once and
+  exchanges it for an HttpOnly, SameSite=Strict browser session, so downloads and the explorer
+  iframe work without putting the token in browser storage. Non-browser clients can continue to
+  send `Authorization: Bearer <secret>` on every request. Only `/api/health` stays open. Add
+  trusted extra UI origins with `ASSESSHUB_CORS_ORIGINS=https://host1,https://host2` if needed.
 - The embedded explorer renders in a **sandboxed iframe without `allow-same-origin`**, so
   even its own scripts cannot reach this app's API or storage.
 
-### Dev mode (hot reload)
+### Dev mode
 
-One command runs both servers (FastAPI autoreload + Vite HMR) and stops both on Ctrl+C:
+One command runs both servers and stops their complete process trees on Ctrl+C. Vite keeps HMR;
+FastAPI auto-reloads on POSIX. Windows deliberately runs one Uvicorn process so a reloader child
+cannot survive teardown:
 
 ```bash
-python webapp/dev.py        # API :8000 (autoreload) + UI :5173 (HMR, proxies /api -> :8000)
+python webapp/dev.py        # API :8000 + UI :5173 (HMR, proxies /api -> :8000)
 ```
 
 Or run them in two terminals yourself:
 
 ```bash
-python -m uvicorn backend.app:app --app-dir webapp --port 8000 --reload
+python -m uvicorn backend.app:create_default_app --factory --app-dir webapp --port 8000 --reload
 cd webapp/frontend && npm run dev          # http://localhost:5173
 ```
 

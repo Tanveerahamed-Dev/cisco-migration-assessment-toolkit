@@ -207,6 +207,39 @@ def test_fhrp_single_member_abstains():
     assert "single member" in g30["reason"].lower()
 
 
+def test_json_infinity_priority_degrades_instead_of_crashing():
+    """`json.loads` accepts the bare JSON `Infinity` as `float('inf')`, and `int(float('inf'))`
+    raises OverflowError — which `_int_or`'s `(TypeError, ValueError)` pair did NOT catch, so one
+    poisoned bridge_priority / FHRP priority crashed the whole L2 failover twin (reachable from the
+    read-only MCP failover tools and every cutover_sim dry-run step). Every sibling coercer in this
+    repo lists OverflowError; this one did not. The field must degrade — and on the STP side the
+    degraded value is None, which the caller reads as 'not collected' and ABSTAINS on rather than
+    fabricating a winner."""
+    import json
+
+    assert failover._int_or(float("inf"), None) is None
+    assert failover._int_or(float("-inf"), -1) == -1
+    assert failover._int_or(float("nan"), None) is None          # NaN still rejected (ValueError)
+    assert failover._int_or(8192, None) == 8192                  # a good value still coerces
+
+    stp = _stp_snap()
+    stp["stp_roots"]["dist2"]["10"]["bridge_priority"] = json.loads("Infinity")
+    rows = failover.compute_stp_failover(stp, ["core1"])         # must not raise
+    v10 = next(r for r in rows if r["vlan"] == "10")
+    assert v10["indeterminate"] is True and v10["new_root"] is None
+    assert "without a collected bridge priority" in v10["reason"] and "dist2" in v10["reason"]
+
+    fh = _fhrp_snap()
+    fh["fhrp_detail"]["core2"][0]["priority"] = json.loads("Infinity")
+    g10 = next(r for r in failover.compute_fhrp_failover(fh, ["core1"]) if r["group"] == "10")
+    assert g10["new_active"] == "core2" and g10["new_active_priority"] is None   # unknown, not fabricated
+
+    # and the orchestrator (the surface both MCP tools and cutover_sim call) survives end to end
+    both = {"stp_roots": stp["stp_roots"], "fhrp_detail": fh["fhrp_detail"]}
+    out = failover.compute_failover_twin(both, [{"type": "node", "id": "core1"}])
+    assert out["schema"] == "failover_twin/1" and out["summary"]["n_indeterminate"] >= 1
+
+
 def test_fhrp_vip_stranded_when_no_survivor():
     # fail BOTH members of group 10 -> the VIP is stranded, flagged (not a clean takeover, not indeterminate)
     snap = _fhrp_snap()

@@ -20,8 +20,9 @@ the slow chain-of-thought block that makes small models time out on a CPU host.
 **Hardware note (measured):** an 8B model swaps on a 16 GB CPU-only host (~7 min/call, timeouts); ``qwen3:4b``
 fits with headroom (~80 s/call). The default reflects that.
 
-**Graceful + hermetic.** If Ollama is not listening, :func:`run_baseline` returns ``{ok: False, reason}`` and
-never hangs or raises. The parser and prompt builder are pure and unit-tested; the Ollama call is injectable,
+**Graceful + hermetic.** If Ollama is not listening — **or is listening but any call fails** (the model was
+never pulled, so every ``/api/chat`` 404s) — :func:`run_baseline` returns ``{ok: False, reason}`` and never
+hangs or raises. The parser and prompt builder are pure and unit-tested; the Ollama call is injectable,
 so the test suite never requires a running model.
 
 Usage: ``python ollama_judge.py qwen3:4b``  →  prints the judge's measured localized TNR over the panel.
@@ -30,8 +31,8 @@ scorecard (P0-6a: the row :func:`cisco_toolkit.scorecard.latest_judge_baseline` 
 ``--runs N`` runs the whole panel N times and records the WORST run (specificity failure outranks any
 TNR; then lowest localized TNR) with the per-run spread in the notes — the P1-3 stability protocol
 (rung 2's 0.4 was refuted by a same-config rerun; a single flattering run must never promote). ``--think``
-turns the qwen3 thinking mode on for the run. Ollama down → nothing is appended (signal_absent — a
-measurement row is never fabricated).
+turns the qwen3 thinking mode on for the run. Ollama down — or up but not answering (a failed CALL, not just
+a failed socket probe) → nothing is appended (signal_absent — a measurement row is never fabricated).
 """
 from __future__ import annotations
 
@@ -44,9 +45,39 @@ from typing import Any, Callable, Dict, List, Optional
 
 from cisco_toolkit import defect_panel as P
 from cisco_toolkit import scorecard as SCD
+from cisco_toolkit.attestation import loopback_only as _loopback_only
 
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "127.0.0.1:11434")
+#: Validated at import: the local-inference carve-out is only a carve-out while the endpoint is
+#: genuinely on-host. See cisco_toolkit.attestation.loopback_only.
+OLLAMA_HOST = _loopback_only(os.environ.get("OLLAMA_HOST", "127.0.0.1:11434"))
 DEFAULT_MODEL = os.environ.get("OLLAMA_JUDGE_MODEL", "qwen3:4b")   # 8b swaps on a 16GB CPU host; 4b fits
+
+
+def _no_redirect_opener():
+    """A urllib opener that REFUSES redirects — the second half of the loopback pin.
+
+    :func:`cisco_toolkit.attestation.loopback_only` pins the FIRST hop only. ``urlopen`` follows a
+    301/302/303 through the default ``HTTPRedirectHandler``, so anything answering on
+    127.0.0.1:11434 that is not Ollama — a local LiteLLM/AI-gateway shim on the standard port is the
+    realistic one — could reply ``Location: http://ollama.corp.example/…`` and urllib would open a
+    connection to that host and hand its body back as the model's answer. Measured, not theorised:
+    with a faked transport, all three helpers opened ``ollama.corp.example`` on the second hop and
+    returned the remote body as a verdict. That is egress the no-egress doctrine forbids, and here it
+    also lets an off-host party dictate a scorecard measurement.
+
+    A refusal, not a re-validation of the new URL: a local Ollama has no reason to redirect, so any
+    redirect is already the anomaly."""
+    import urllib.error
+    import urllib.request
+
+    class _Refuse(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            raise urllib.error.URLError(
+                f"refusing an HTTP {code} redirect from the local Ollama endpoint to {newurl!r}: "
+                f"the ADR-0001 Amendment 1 carve-out covers ON-HOST compute only, and following a "
+                f"redirect would leave loopback (no-egress doctrine).")
+
+    return urllib.request.build_opener(_Refuse)
 
 
 def _listening(hostport: str = OLLAMA_HOST, *, timeout: float = 0.4) -> bool:
@@ -203,7 +234,7 @@ def _chat(model: str, prompt: str, *, timeout: int = 420, fmt: Optional[Dict[str
         f"http://{OLLAMA_HOST}/api/chat",
         data=json.dumps(body).encode("utf-8"),
         headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:     # noqa: S310 (localhost, opt-in)
+    with _no_redirect_opener().open(req, timeout=timeout) as r:  # noqa: S310 (localhost, opt-in)
         obj = json.load(r)
     return str((obj.get("message") or {}).get("content", "") or "")
 
@@ -220,7 +251,16 @@ def run_baseline(model: str = DEFAULT_MODEL, ids: Optional[List[str]] = None, *,
     rejects it has none, so its panel rejections are worthless), ``rejection_rate`` (did it catch the bad
     work at all — the veto signal), and ``localized_tnr`` (did it catch AND correctly name the defect). The
     clean control is measured FIRST and on purpose: a high ``rejection_rate`` means nothing unless
-    ``approves_clean`` is True (the 'rejects everything' trap this harness must not fall into)."""
+    ``approves_clean`` is True (the 'rejects everything' trap this harness must not fall into).
+
+    **A failed CALL is signal_absent, never a verdict** (2026-07-28). The ``_listening`` pre-check only
+    proves a socket accepted a connection: with the model not pulled, every ``/api/chat`` 404s while the
+    probe still says True. Turning that exception into the string ``"(judge error: …)"`` and handing it to
+    :func:`parse_verdict` made a judge that NEVER ANSWERED into a full measurement — free text with no
+    reject token parses APPROVE, so ``approves_clean`` was satisfied by zero successful calls and
+    ``judge_tnr=0.0`` was recorded over a panel nobody judged (and a TLS error carrying the word 'failed'
+    parsed the other way, inflating the rejection rate). Any call that raises now aborts the run with
+    ``{ok: False, reason}`` — the same signal_absent path as Ollama being down, so nothing is appended."""
     probe = listening if listening is not None else _listening
     if not probe(host):
         return {"ok": False, "reason": f"Ollama not listening on {host} — pull the model and start Ollama"}
@@ -231,8 +271,10 @@ def run_baseline(model: str = DEFAULT_MODEL, ids: Optional[List[str]] = None, *,
     # judge that rejects everything is exposed rather than flattering its rejection_rate.
     try:
         clean_raw = do_chat(build_prompt(P.render_text(P.good_deliverable()), classes))
-    except Exception as ex:
-        clean_raw = f"(judge error: {ex})"
+    except Exception as ex:                                    # the judge never answered -> no measurement
+        return {"ok": False, "reason": f"judge call FAILED on the clean control ({type(ex).__name__}: {ex})"
+                                       f" — {host} accepted a socket but returned no verdict; signal_absent,"
+                                       f" nothing is measured (is the model pulled?)"}
     approves_clean = parse_verdict(clean_raw)["verdict"] == "APPROVE"
     ids = list(ids) if ids is not None else list(P.text_visible_ids())
     panel = P.build_panel(ids)
@@ -241,8 +283,11 @@ def run_baseline(model: str = DEFAULT_MODEL, ids: Optional[List[str]] = None, *,
     for e in panel:
         try:
             raw = do_chat(build_prompt(e["text"], classes))
-        except Exception as ex:                                # a judge error = defect not caught (APPROVE)
-            raw = f"(judge error: {ex})"
+        except Exception as ex:                                # an unjudged defect makes the panel partial
+            return {"ok": False,
+                    "reason": f"judge call FAILED on {e['defect_id']} ({type(ex).__name__}: {ex}) — the "
+                              f"panel is incomplete, so no TNR is computed; signal_absent, nothing is "
+                              f"measured"}
         v = parse_verdict(raw)
         verdicts.append({"defect_id": e["defect_id"], "verdict": v["verdict"],
                          "defect_class": v["defect_class"]})

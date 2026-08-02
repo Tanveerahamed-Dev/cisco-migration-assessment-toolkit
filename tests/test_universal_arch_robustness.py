@@ -142,15 +142,37 @@ def test_rest_collect_fail_soft_on_broken_transport(monkeypatch, tmp_path):
     assert len(files) == 1
 
 
+def _files_left_on_disk(root):
+    """Every file the collector actually LEFT in its output directory — deliberately not its
+    return value. Scanning the returned list is what made the credential guard below vacuous: it
+    can only inspect files the collector already chose to tell us about, so the realistic leak —
+    a session / credential-cache sidecar written beside the exports and not returned — is
+    invisible to it. Proven by mutation (2026-07-28): adding a `json.dump({"pwd": password})` to
+    `out_dir/session.json` inside `collect_apic`, without appending it to `written`, left the old
+    assertion GREEN while the plaintext password sat in the collection folder."""
+    return [os.path.join(dirpath, name)
+            for dirpath, _dirnames, filenames in os.walk(root) for name in filenames]
+
+
 def test_rest_collect_never_persists_the_password(monkeypatch, tmp_path):
-    """Safety contract: the credential is used once for login and never written to any export file."""
+    """Safety contract: the credential is used once for login and is never written to ANY file the
+    collector leaves behind — asserted over the whole output DIRECTORY (bytes, and the filenames
+    too), because a collection folder is what gets handed to an offline re-analysis or shared."""
     monkeypatch.setattr(rest_collect, "_post", lambda *a, **k: type("R", (), {"read": lambda s: b"OK"})())
     monkeypatch.setattr(rest_collect, "_get_text", lambda *a, **k: "TOK")
     monkeypatch.setattr(rest_collect, "_get_json",
                         lambda opener, url, **k: {"imdata": [{"x": {"attributes": {"k": "v"}}}], "data": [{"k": "v"}]})
     secret = "SUPER-SECRET-PW-9999"
-    out = str(tmp_path / "apic")
-    files = rest_collect.collect_apic("https://x", "user", secret, out)
-    files += rest_collect.collect_vmanage("https://x", "user", secret, str(tmp_path / "vm"))
-    for p in files:
-        assert secret not in open(p, encoding="utf-8").read(), f"password leaked into {p}"
+    apic_dir, vm_dir = str(tmp_path / "apic"), str(tmp_path / "vm")
+    returned = rest_collect.collect_apic("https://x", "user", secret, apic_dir)
+    returned += rest_collect.collect_vmanage("https://x", "user", secret, vm_dir)
+    on_disk = _files_left_on_disk(apic_dir) + _files_left_on_disk(vm_dir)
+
+    # Non-vacuity: both collections really ran, and the directory walk really sees what they wrote
+    # (an empty out_dir would satisfy every assertion below).
+    assert returned, "neither collector wrote anything — the guard would pass over an empty run"
+    assert {os.path.abspath(p) for p in returned} <= {os.path.abspath(p) for p in on_disk}
+
+    for p in on_disk:
+        assert secret.encode() not in open(p, "rb").read(), f"password leaked into {p}"
+        assert secret not in os.path.basename(p), f"password leaked into the FILENAME {p}"

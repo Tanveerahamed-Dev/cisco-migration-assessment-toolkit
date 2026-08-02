@@ -50,11 +50,38 @@ def _int(v: Any, default: int = 0) -> int:
         return default
 
 
+def _int_or_none(v: Any) -> Optional[int]:
+    """``_int`` that preserves ABSENT / unparseable as ``None`` instead of collapsing it onto 0.
+
+    Needed wherever a genuine 0 is a real published count and a fallback must fire ONLY when the field
+    is missing: ``_int(x) or fallback`` silently replaces a reported 0 with the fallback (this project's
+    ``or``-masks-zero class — ``storage.add_snapshot`` documents the same guard as ``is not None`` for the
+    canonical n_devices)."""
+    try:
+        return int(v)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def _as_dict(v: Any) -> Dict[str, Any]:
     """Coerce a snapshot section/sub-section to a dict. A truthy NON-dict (an int/str/list in a malformed or
     hostile upload) would otherwise survive `... or {}` and 500 the very next `.get`/`.items()` -- a stored
     DoS on /cutover, which reads these straight from the snapshot. Returning {} degrades gracefully."""
     return v if isinstance(v, dict) else {}
+
+
+def _hkey(v: Any) -> Any:
+    """A HASHABLE form of a snapshot LEAF used as a dict-lookup key (see summary._hkey, the twin).
+
+    _as_dict guards a section's SHAPE; this guards the leaf inside a row. `_SEV_RANK.get(severity)`
+    hashes its argument, so a dict/list `severity` raises `TypeError: unhashable type` -- an unhandled
+    500. Hashable values pass through UNCHANGED (real labels keep their exact rank and sort order);
+    only the unhashable poison is stringified, which matches no rank and degrades to 99 (unknown)."""
+    try:
+        hash(v)
+        return v
+    except TypeError:
+        return str(v)
 
 
 def _as_hosts(v: Any) -> Set[str]:
@@ -75,6 +102,14 @@ GATE_GO = "GO"
 GATE_COND = "CONDITIONAL GO"
 GATE_NOGO = "NO-GO"
 _GATE_RANK = {GATE_GO: 0, GATE_COND: 1, GATE_NOGO: 2}
+
+#: FLEET-level only, never a wave gate (so it is deliberately absent from _GATE_RANK, which ranks
+#: waves): there were no waves to gate, so no posture was measured. Coverage honesty — "not observed"
+#: must not read as "healthy" (CLAUDE.md guardrail 3), the same distinction archreview draws with
+#: `not-assessable` and device_dossiers with the `Unassessed` band. Consumers that colour a gate token
+#: degrade to NEUTRAL on an unknown one by construction (`cutover_docx._GATE_INK.get(v, _NAVY)`, and
+#: the SPA's `gateColor` -> `var(--gate-NOTASSESSED, var(--text-faint))`), which is the right rendering.
+GATE_NOT_ASSESSED = "NOT ASSESSED"
 
 
 def _rows(snap: Dict[str, Any], key: str) -> List[Dict[str, Any]]:
@@ -232,7 +267,10 @@ def _wave_remediation(switches: Set[str], rem_by_device: Dict[str, Any]) -> List
                     "severity": it.get("severity", ""),
                     "why": it.get("why", ""),
                 })
-    out.sort(key=lambda r: _SEV_RANK.get(r.get("severity", ""), 99))
+    # _hkey: an unhashable dict/list `severity` leaf makes _SEV_RANK.get() raise
+    # `TypeError: unhashable type` -- an unhandled 500 on /cutover and /executions, and the
+    # snapshot is STORED so it re-crashes on every later read (same class as summary._keystones).
+    out.sort(key=lambda r: _SEV_RANK.get(_hkey(r.get("severity", "")), 99))
     return out
 
 
@@ -254,7 +292,10 @@ def _wave_validation(group: str, val_by_wave: Dict[str, Any]) -> List[Dict[str, 
                 "command": it.get("command", ""),
                 "expect": it.get("expect", ""),
             })
-    out.sort(key=lambda r: _SEV_RANK.get(r.get("severity", ""), 99))
+    # _hkey: an unhashable dict/list `severity` leaf makes _SEV_RANK.get() raise
+    # `TypeError: unhashable type` -- an unhandled 500 on /cutover and /executions, and the
+    # snapshot is STORED so it re-crashes on every later read (same class as summary._keystones).
+    out.sort(key=lambda r: _SEV_RANK.get(_hkey(r.get("severity", "")), 99))
     return out
 
 
@@ -349,7 +390,12 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
         mg = _match_move_group(switches, move_groups)
 
         hard_ep = _int(seq.get("hard_cutover_endpoints"))
-        endpoints = _int(mg.get("endpoints")) or hard_ep
+        # PRESENCE, not truthiness: a move group that genuinely reports 0 endpoints is a real count, and
+        # `_int(...) or hard_ep` silently adopted the hard-cutover figure instead. This value is an SSOT
+        # headline (it feeds fleet_summary['n_endpoints']) AND the final tie-break of the pilot-first wave
+        # ordering below, so a masked 0 both overstates the fleet and mis-ranks the run-of-show.
+        mg_endpoints = _int_or_none(mg.get("endpoints"))
+        endpoints = mg_endpoints if mg_endpoints is not None else hard_ep
         n_fail = _int((readiness or {}).get("n_fail"))
         n_warn = _int((readiness or {}).get("n_warn"))
 
@@ -401,8 +447,17 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
     for i, w in enumerate(waves, start=1):
         w["order"] = i
 
-    # Fleet roll-up.
-    fleet_gate = GATE_GO
+    # Fleet roll-up = the worst wave gate. VACUOUS-TRUTH GUARD (the exact twin of
+    # execution._derive_outcome's `not decisions` branch): over an EMPTY wave list the loop below
+    # never executes, so the GATE_GO seed survived untouched and the plan published
+    # `"verdict": "GO"` for a snapshot from which NOTHING was derived — cutover_docx then printed
+    # "Cutover posture: GO" in green (_GATE_INK) on the title page, directly above its own body line
+    # "No migration waves were derived from this snapshot", and the SPA drew the same GO badge. Every
+    # other branch here requires positive evidence (a wave that was actually gated); this one
+    # required none. Reproduced end to end through GET /api/snapshots/{id}/cutover on an uploaded
+    # {"devices": {}}. The seed is now the honest token when there is nothing to roll up; with waves
+    # present it is GATE_GO exactly as before, so no assessed fleet's verdict moves.
+    fleet_gate = GATE_GO if waves else GATE_NOT_ASSESSED
     for w in waves:
         if _GATE_RANK[w["gate"]] > _GATE_RANK[fleet_gate]:
             fleet_gate = w["gate"]
@@ -454,7 +509,12 @@ def _fleet_statement(verdict: str, waves: List[Dict[str, Any]], n_mbb: int, n_ha
     n_blind = sum(_int(w.get("n_blind")) for w in waves)
     parts = [f"Cutover posture: {verdict}."]
     if not waves:
-        return "No migration waves were derived from this snapshot."
+        # Lead with the posture here too. The old wording named only the cause ("no waves"), so a
+        # reader who saw the green GO headline above it read this line as a footnote to a passing
+        # plan rather than as the reason the plan has no verdict at all.
+        return (f"Cutover posture: {verdict} — no migration waves were derived from this snapshot, "
+                f"so no cutover posture was assessed. This is an ABSENCE of assessment, not a "
+                f"clean bill of health.")
     if n_blind:
         parts.append(f"{n_blind} device(s) were NOT assessed (collection incomplete) -- they cannot be certified "
                      f"ready, so their wave(s) are gated CONDITIONAL pending collection and this posture is a LOWER "

@@ -13,7 +13,10 @@
 #     never `git push`, never a merge, never bypassPermissions.
 #   * PREFLIGHT-GATED — runs `cisco_toolkit.clock --preflight` first (3-fail breaker + 30m
 #     cooldown + daily-spend ceiling, D5/D13). NO-GO -> stand down, exit 0, spend $0.
-#   * FAIL-OPEN — any error stands down; it never wedges anything and never spends on error.
+#   * FAIL-OPEN on every STAND-DOWN — NO-GO preflight, unarmed --live, missing CLI, and an
+#     unauthenticated 'skipped' run all exit 0 and spend $0. But a run that ACTUALLY RAN AND
+#     FAILED exits 1, so a scheduler (whose only health signal is the exit status) cannot
+#     report a broken unattended pass as success.
 #
 # USAGE:
 #   bash .claude/hooks/nightly-run.sh            # DRY-RUN (default): print the plan, spend $0
@@ -36,7 +39,15 @@
 # =============================================================================================
 set -u
 cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" 2>/dev/null || exit 0
-PY=$(command -v python || command -v python3 || echo python)
+# Resolve an interpreter that RUNS — `command -v python` succeeds for the Microsoft Store stub,
+# which exits 9009. Fail-open behaviour is unchanged; it is just no longer reached first.
+PY=""
+for _c in python python3; do _p=$(command -v "$_c" 2>/dev/null) || continue
+  if "$_p" -c "import sys" >/dev/null 2>&1; then PY="$_p"; break; fi; done
+if [ -z "$PY" ] && command -v py >/dev/null 2>&1; then
+  for _v in -3.12 -3; do _p=$(py "$_v" -c "import sys; print(sys.executable)" 2>/dev/null) || continue
+    if [ -n "$_p" ] && [ -x "$_p" ]; then PY="$_p"; break; fi; done; fi
+[ -z "$PY" ] && PY=python
 
 MODE="dry-run"
 for a in "$@"; do
@@ -59,7 +70,13 @@ fi
 if [ "${ASNE_NIGHTLY_NO_BRIEF:-}" = "1" ]; then
   BRIEF="(briefing assembly skipped: ASNE_NIGHTLY_NO_BRIEF=1)"
 else
-  BRIEF=$(bash .claude/hooks/morning-briefing.sh 2>/dev/null || echo "(briefing assembler produced nothing)")
+  # Test the OUTPUT, not the exit status. This was `... || echo "(produced nothing)"`, which
+  # could NEVER fire: morning-briefing.sh is fail-open and always exits 0, so a dead assembler
+  # set BRIEF="" and this job shipped an EMPTY payload to the model, unattended, with the
+  # prompt still announcing a "briefing payload" below it. Measured 2026-07-29: with the
+  # assembler degraded, the `||` arm did not run and len(BRIEF) was 0.
+  BRIEF=$(bash .claude/hooks/morning-briefing.sh 2>/dev/null)
+  [ -n "$BRIEF" ] || BRIEF="(briefing assembler produced nothing — payload is EMPTY, treat every metric below as UNMEASURED)"
 fi
 
 # 2b) Agent-system self-check (Phase 4) — local, free, no egress. RED leads the briefing.
@@ -178,4 +195,13 @@ if [ "$OUTCOME" = "ok" ]; then
   printf '%s' "$RAW" | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("result",""))' 2>/dev/null || true
 fi
 echo "[nightly] outcome=$OUTCOME  cost=\$$COST  turns=$TURNS"
+# A run that RAN AND FAILED exits NON-ZERO. This script is documented above for Windows Task
+# Scheduler, whose only health signal is the exit status — exiting 0 on outcome=fail reported
+# every failed unattended run as "Last Run Result 0x0" with nobody watching, which is the
+# absence-rendered-as-health class this repo treats as a defect. Measured 2026-07-29 with a
+# stubbed CLI: outcome=fail and outcome=unparseable both exited 0.
+# Fail-open still holds everywhere it is load-bearing: a NO-GO preflight, an unarmed --live,
+# a missing CLI and a 'skipped' (unauthenticated) run all still exit 0 — none of those is a
+# failure, and none of them spends. Only a real, executed failure is red.
+[ "$OUTCOME" = "fail" ] && exit 1
 exit 0

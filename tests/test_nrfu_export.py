@@ -8,6 +8,7 @@ this is the full NRFU/ATP certification pack."""
 import os
 import re
 
+from cisco_toolkit.attestation import is_read_only_command as _is_read_only_command
 from cisco_toolkit.excel import NRFU_COMMANDS_SHEET_NAME, write_nrfu_commands_sheet
 from cisco_toolkit.nrfu_export import (
     NOT_OBSERVED,
@@ -16,17 +17,29 @@ from cisco_toolkit.nrfu_export import (
     write_nrfu_pack,
 )
 
-# READ-ONLY grammar, re-derived from tests/test_readonly_and_no_egress.py (_READ_ONLY_CMD) — the same
-# verb-anchored allow-list the collection registries are held to. Extended HERE (test-local, the
-# doctrine test is untouched) for the two read-only diagnostics the NRFU service phase legitimately
-# issues: ping (already a doctrine read verb) and traceroute. A write verb (configure/set/reload/
-# clear/debug ...) matches none of these branches and fails the guard.
-_READ_ONLY_CMD = re.compile(
-    r"^(show|display|get|dir|ping|moquery)\b"          # SSH/CLI read verbs (doctrine grammar)
-    r"|^aws ec2 describe-"                              # AWS read-only describe (doctrine grammar)
-    r"|^(api/|ers/|dataservice/)"                      # controller-REST GET paths (doctrine grammar)
-    r"|^traceroute\b",                                 # NRFU extension: the 2nd read-only diagnostic
-)
+# READ-ONLY grammar. This used to be a re-derived COPY of the doctrine regex, which meant three
+# spellings of one rule across the repo — and when the doctrine gate was strengthened to inspect the
+# WHOLE string (a read verb with `| redirect`, `; reload` or an embedded newline tacked onto it is a
+# WRITE), the copy here kept the old verb-only behaviour. These lines are the ones an engineer
+# actually executes during NRFU, so it was the worst place to hold the weaker rule.
+#
+# Now composed from the single owner, cisco_toolkit.attestation.is_read_only_command, widened only by
+# the NRFU service phase's legitimately broader read vocabulary: `traceroute` (ping is already a
+# doctrine read verb). `extra_verbs` widens the VERB list and nothing else — the whole-string safety
+# still applies, so `traceroute 10.0.0.1 ; reload` is still rejected.
+_NRFU_EXTRA_VERBS = ("traceroute",)
+
+# NRFU pack lines are a TEMPLATE, so an angle-bracket slot the engineer fills in by hand
+# (`ping <representative 'Media' application endpoint>`) is documentation, not shell redirection.
+# The doctrine gate rightly forbids bare `<`/`>` — on NX-OS `show version > bootflash:x` genuinely
+# WRITES — so erase the balanced placeholders first and apply the check to what remains. Erasing
+# rather than skipping the line keeps the rest of the string under the gate: `show run | redirect
+# <path>` still collapses to `show run | redirect ` and is still rejected on its pipe stage.
+_PLACEHOLDER = re.compile(r"<[^<>]*>")
+
+
+def _read_only(line) -> bool:
+    return _is_read_only_command(_PLACEHOLDER.sub("", str(line)), extra_verbs=_NRFU_EXTRA_VERBS)
 
 _CASE_ID = re.compile(r"^NRFU-W\d+-P[1-4]-\d{3}$")
 
@@ -241,7 +254,7 @@ def test_every_emitted_command_is_read_only():
     out = compute_nrfu_commands(_snap())
     bad = [c["command"] for _w, _h, c in _all_cases(out)
            if "\n" in c["command"] or "\r" in c["command"]           # single-line IS part of read-only:
-           or not _READ_ONLY_CMD.match(c["command"].strip())]       # a 2nd physical line is a 2nd command
+           or not _read_only(c["command"])]                           # a 2nd physical line is a 2nd command
     assert not bad, f"NON-read-only command(s) emitted in the NRFU pack: {bad}"
     # sanity: the guard is not vacuous — the pack actually contains commands of both classes
     cmds = [c["command"] for _w, _h, c in _all_cases(out)]
@@ -274,7 +287,7 @@ def test_pack_writer_file_layout_and_content(tmp_path):
             line = line.strip()
             if not line or line.startswith("!"):
                 continue
-            assert _READ_ONLY_CMD.match(line), f"non-read-only line in {p}: {line}"
+            assert _read_only(line), f"non-read-only line in {p}: {line}"
     # the pack writer also works from a snapshot that already publishes nrfu_commands (SSOT reuse)
     snap["nrfu_commands"] = compute_nrfu_commands(snap)
     written2 = write_nrfu_pack(snap, str(tmp_path / "again"))
@@ -289,7 +302,7 @@ def _assert_pack_executable_lines_readonly(root):
         for line in open(p, encoding="utf-8").read().splitlines():
             if not line.strip() or line.startswith("!"):
                 continue
-            assert _READ_ONLY_CMD.match(line), f"executable non-read-only line in {p}: {line!r}"
+            assert _read_only(line), f"executable non-read-only line in {p}: {line!r}"
             assert line.split()[0].lower() not in ("configure", "conf", "reload", "clear", "no")
 
 
@@ -324,6 +337,33 @@ def test_hostile_newline_values_cannot_inject_executable_lines(tmp_path):
     body = open(os.path.join(str(tmp_path), "tampered", "Group_1", "dist1.txt"),
                 encoding="utf-8").read()
     assert "[REFUSED — not a read-only command] configure terminal" in body
+
+
+def test_wave_id_cannot_escape_the_output_directory(tmp_path):
+    """Same untrusted-snapshot class as the newline test above, on the PATH instead of the command
+    text: `_safe_name`'s whitelist rewrites every separator but KEEPS '.', so `_safe_name("..")`
+    returned '..' and `os.path.join(out_dir, "..")` resolved to the parent of --out — a crafted
+    wave_id (or host) wrote the pack outside the directory the operator named."""
+    from cisco_toolkit.nrfu_export import _safe_name
+
+    for hostile in ("..", ".", "...", "../..", r"..\..", "", "   ", "/", "___"):
+        got = _safe_name(hostile)
+        assert got == "unnamed" or (os.sep not in got and got not in (".", "..")), (hostile, got)
+    assert _safe_name("Group 1") == "Group_1"          # ordinary names are untouched
+    assert _safe_name("sw1.corp.example") == "sw1.corp.example"
+
+    out = tmp_path / "out"
+    out.mkdir()
+    snap = {"nrfu_commands": {"waves": [
+        {"wave_id": "..", "devices": [{"host": "..", "platform_dialect": "ios",
+         "cases": [{"id": "NRFU-W1-P1-001", "phase": 1, "scope": "per-site",
+                    "command": "show version", "expected": "x", "source_key": "y"}]}]}]}}
+    written = write_nrfu_pack(snap, str(out))
+    assert written
+    root = os.path.realpath(str(out))
+    for p in written:
+        assert os.path.realpath(p).startswith(root + os.sep), f"escaped --out: {p}"
+    assert os.listdir(str(tmp_path)) == ["out"], "a file landed beside --out"
 
 
 # --------------------------------------------------------------------------- sheet writer ---

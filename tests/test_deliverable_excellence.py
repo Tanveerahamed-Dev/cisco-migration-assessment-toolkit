@@ -80,7 +80,7 @@ def _all_text(doc) -> str:
 def test_every_deliverable_carries_the_excellence_sections(mod, fn, tmp_path):
     writer = getattr(importlib.import_module("cisco_toolkit." + mod), fn)
     out = str(tmp_path / f"{mod}.docx")
-    writer(out, _snap(), "[HISTORY-REDACTED]")
+    writer(out, _snap(), "Meridian")
     txt = _all_text(Document(out))
     missing = [s for s in REQUIRED_SECTIONS if s not in txt]
     assert not missing, f"{mod} deliverable is missing excellence section(s): {missing}"
@@ -92,6 +92,6 @@ def test_every_deliverable_shows_the_single_source_of_truth_signal(mod, fn, tmp_
     reads canonical facts rather than recounting."""
     writer = getattr(importlib.import_module("cisco_toolkit." + mod), fn)
     out = str(tmp_path / f"{mod}.docx")
-    writer(out, _snap(), "[HISTORY-REDACTED]")
+    writer(out, _snap(), "Meridian")
     txt = _all_text(Document(out))
     assert "Single source of truth" in txt, f"{mod} deliverable does not show the SSOT trust signal"

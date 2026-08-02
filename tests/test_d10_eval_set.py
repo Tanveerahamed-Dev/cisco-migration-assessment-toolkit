@@ -36,7 +36,14 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 # These fixtures are FROZEN at registration (owner doc §7: commit before running, never adjust
 # after). P2-2 pool judging appends to a SEPARATE pooled-qrels file. Editing any of the three files
 # must update its pin here in the same reviewed diff — that visibility IS the seal's second half.
-EVAL_SET_SHA256 = "2477125eb6d282437ba4fe96ff6b5bff49de16465fd65616f4c12dd234cf51f1"
+# Re-sealed 2026-07-31 under explicit user authorization, per the procedure this seal's own docstring
+# prescribes ("a legitimate revision must change file AND pin in one reviewed diff"). The revision:
+# M-02/M-06/M-10 declared `main() -calls-> write_mop_docx()` / `write_design_doc_docx()`, but
+# COLLECT_PARSE_V3_23_0.py:4083 passes those writers to `_emit_artifact` as callable ARGUMENTS and
+# never calls them directly. The graph models that correctly as `indirect_call` (already a member of
+# REFERENCE_RELATIONS); the declarations were stale, not the graph. Only the relation label changed —
+# same source, same target, same file, three edges.
+EVAL_SET_SHA256 = "831ef64e71d1e85f70c669c2b7943aa64f647d021d6604379777dc5a3efdf257"
 ANCHORS_SHA256 = "72e81d6310ce7d748331ee5854935d3599073d860eae29651448d7a4823dfb9e"
 ANCHOR_KEY_SHA256 = "10b6851be7f16112d0d592b956417d266a127dedf144d3c10875c51a40657359"
 

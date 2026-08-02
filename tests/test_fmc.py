@@ -27,13 +27,13 @@ def _wrap(items):
 
 
 _DEVS_HEALTHY = _wrap([
-    {"name": "[HISTORY-REDACTED]-FTD-01", "hostName": "10.1.1.10", "model": "FTDv", "sw_version": "7.2.5",
+    {"name": "MERIDIAN-FTD-01", "hostName": "10.1.1.10", "model": "FTDv", "sw_version": "7.2.5",
      "isConnected": True, "healthStatus": "green", "deploymentStatus": "DEPLOYED"},
 ])
 _DEVS_BAD = _wrap([
-    {"name": "[HISTORY-REDACTED]-FTD-01", "hostName": "10.1.1.10", "model": "FTDv", "sw_version": "7.2.5",
+    {"name": "MERIDIAN-FTD-01", "hostName": "10.1.1.10", "model": "FTDv", "sw_version": "7.2.5",
      "isConnected": True, "healthStatus": "green", "deploymentStatus": "DEPLOYED"},
-    {"name": "[HISTORY-REDACTED]-FTD-99", "hostName": "10.1.1.99", "model": "FTDv", "sw_version": "7.2.5",
+    {"name": "MERIDIAN-FTD-99", "hostName": "10.1.1.99", "model": "FTDv", "sw_version": "7.2.5",
      "isConnected": False, "healthStatus": "red", "deploymentStatus": "WARNING"},
 ])
 _HA_HEALTHY = _wrap([{"name": "HA-Edge", "primaryStatus": {"currentStatus": "Active"},
@@ -43,7 +43,7 @@ _HA_FAILED = _wrap([{"name": "HA-Edge", "primaryStatus": {"currentStatus": "Acti
 # 'Disabled' = operator-suspended HA (intentional) -> must stay silent (the headline cry-wolf correction).
 _HA_DISABLED = _wrap([{"name": "HA-Edge", "primaryStatus": {"currentStatus": "Active"},
                        "secondaryStatus": {"currentStatus": "Disabled"}}])
-_DEP_PENDING = _wrap([{"name": "[HISTORY-REDACTED]-FTD-03", "canBeDeployed": True, "upToDate": False, "device": {"name": "[HISTORY-REDACTED]-FTD-03"}}])
+_DEP_PENDING = _wrap([{"name": "MERIDIAN-FTD-03", "canBeDeployed": True, "upToDate": False, "device": {"name": "MERIDIAN-FTD-03"}}])
 _DEP_EMPTY = _wrap([])
 # REAL empty shape: an FMC list endpoint with nothing to return can answer with a paging/links envelope that
 # OMITS 'items' entirely (not {"items":[]}). The self-authored {"items":[]} fixture hid this; a clean fleet in
@@ -92,7 +92,7 @@ def _snap(devices=None, ha=None, dep=None, mgr=None, sv=None, host="FMC-01"):
 def test_parse_fmc_devices_unwraps_items():
     d = parse.parse_fmc_devices(_DEVS_BAD)
     assert len(d) == 2
-    bad = [x for x in d if x["name"] == "[HISTORY-REDACTED]-FTD-99"][0]
+    bad = [x for x in d if x["name"] == "MERIDIAN-FTD-99"][0]
     assert bad["is_connected"] is False and bad["health_status"] == "red"
 
 
@@ -142,7 +142,7 @@ def test_ftd_ha_degraded_silent_on_disabled_intentional_suspend():
 def test_device_disconnected_fires():
     snap = _snap(devices=_DEVS_BAD)
     d = da._d_fmc_device_disconnected(snap, da._signals(snap))
-    assert d is not None and "[HISTORY-REDACTED]-FTD-99" in str(d["evidence"]["summary"])
+    assert d is not None and "MERIDIAN-FTD-99" in str(d["evidence"]["summary"])
 
 
 def test_device_disconnected_silent_on_healthy():

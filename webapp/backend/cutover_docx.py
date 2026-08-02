@@ -41,6 +41,17 @@ def write_cutover_docx(output_path: str, snap_dict: Dict[str, Any], label: str) 
     # Engine-shared AS-style furniture; imported here (not at module level) because cisco_toolkit
     # only resolves after the `from . import engine` sys.path bootstrap has run.
     from cisco_toolkit.docmeta import add_acceptance, add_document_control
+    from cisco_toolkit.textutils import xml_safe, xml_safe_deep
+
+    # Deep-sanitize up front, exactly like write_nrfu_docx and the engine writers. `add_table`/`kv`
+    # now sanitize every cell, but this writer also puts device-derived text on DIRECT paths that
+    # bypass those helpers — §3's `doc.add_heading(f"Wave {order} — {group}")` reads the move-group
+    # name straight from the snapshot. One U+FFFE / U+FFFF / lone surrogate / C0 control character
+    # there still aborts `doc.save()` with "All strings must be XML compatible", and because the
+    # upload path stores the snapshot VERBATIM the 500 repeats on every later read of it — a stored
+    # DoS on the one door Atlas serves in the field, not a one-off error.
+    snap_dict = xml_safe_deep(snap_dict if isinstance(snap_dict, dict) else {})
+    label = xml_safe(label) if isinstance(label, str) else (str(label) if label is not None else "")
 
     plan = cutover.build_plan(snap_dict)
     summary = plan["summary"]

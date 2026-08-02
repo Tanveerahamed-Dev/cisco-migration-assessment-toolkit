@@ -418,3 +418,194 @@ def test_spa_catchall_refuses_path_traversal(tmp_path, monkeypatch):
         r = c.get("/%2e%2e/secret.txt")                                    # traversal to the sibling secret
         assert "TOP-SECRET" not in r.text and "SPA-SHELL" in r.text        # contained -> index.html, not the file
         assert "TOP-SECRET" not in c.get("/%2e%2e%2f%2e%2e%2fsecret.txt").text  # deeper encoded traversal too
+
+
+# ── whole-repo review, 2026-07-28 ───────────────────────────────────────────────────
+def _raw_asgi_get(app, path, headers, client_peer):
+    """Drive the ASGI app with a hand-built scope, so `client` can be ABSENT — the shape a
+    Unix-domain-socket bind and several ASGI adapters/proxies produce. TestClient cannot express it:
+    it always stamps ('testclient', 50000) into the scope."""
+    import anyio
+
+    scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.1"},
+             "http_version": "1.1", "method": "GET", "path": path, "raw_path": path.encode(),
+             "query_string": b"", "root_path": "", "scheme": "http", "server": ("testserver", 80),
+             "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()]}
+    if client_peer is not None:
+        scope["client"] = client_peer
+    seen = {}
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(msg):
+        if msg["type"] == "http.response.start":
+            seen["status"] = msg["status"]
+
+    anyio.run(lambda: app(scope, receive, send))
+    return seen["status"]
+
+
+def test_unknown_asgi_peer_is_not_loopback(tmp_path, monkeypatch):
+    """[#59-adjacent / #58] `_client_is_loopback`'s docstring promised "deliberately conservative: a peer
+    with a non-loopback IP is NOT loopback" — but the UNKNOWN case failed OPEN (`if host is None ...:
+    return True`). `request.client` is None for a Unix-domain-socket bind and several ASGI adapters and
+    proxies, so in no-token mode a request through such a deployment satisfied the loopback half of the
+    access guard, leaving only the Host allowlist — a value the client picks for itself. Unknown position
+    is not local position: it must fail CLOSED."""
+    monkeypatch.delenv("ASSESSHUB_TOKEN", raising=False)
+    monkeypatch.delenv("ASSESSHUB_ALLOWED_HOSTS", raising=False)
+    a = create_app(db_path=str(tmp_path / "peer.db"))
+    hdrs = {"host": "localhost"}                       # the Host guard is satisfied; only the peer differs
+    assert _raw_asgi_get(a, "/api/campaigns", hdrs, ("127.0.0.1", 5000)) == 200   # genuine loopback: served
+    assert _raw_asgi_get(a, "/api/campaigns", hdrs, ("203.0.113.9", 5000)) == 403  # remote: refused
+    assert _raw_asgi_get(a, "/api/campaigns", hdrs, None) == 403                  # UNKNOWN: was 200
+
+
+def test_asgi_test_harness_peer_is_not_a_production_bypass(tmp_path, monkeypatch):
+    """[#58] The hardcoded `host == "testclient"` allowance shipped in production code. It is not
+    unreachable-by-construction: uvicorn's proxy-headers middleware copies X-Forwarded-For into
+    scope["client"] VERBATIM without checking it parses as an IP, so an operator who widens
+    forwarded_allow_ips would let a remote caller name itself "testclient". It is now honoured only
+    while the process is executing a pytest test."""
+    monkeypatch.delenv("ASSESSHUB_TOKEN", raising=False)
+    monkeypatch.delenv("ASSESSHUB_ALLOWED_HOSTS", raising=False)
+    a = create_app(db_path=str(tmp_path / "harness.db"))
+    hdrs = {"host": "localhost"}
+    assert _raw_asgi_get(a, "/api/campaigns", hdrs, ("testclient", 50000)) == 200   # under pytest
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)                        # simulate production
+    assert app_module._under_pytest() is False
+    assert _raw_asgi_get(a, "/api/campaigns", hdrs, ("testclient", 50000)) == 403
+
+
+# --- unbounded stored strings / unbounded request bodies (#61) ----------------------
+def test_every_write_model_caps_its_strings():
+    """[#61] `GateIn` carried `max_length` caps with a comment naming the exact vector — "stored
+    verbatim, echoed by every board fetch and rendered into a DOCX table cell". EVERY sibling write
+    model has the identical properties, and none had a cap. Assert the CLASS (a new write model must
+    inherit the rule), not a hand-listed subset."""
+    from pydantic import BaseModel
+
+    models = [m for m in vars(app_module).values()
+              if isinstance(m, type) and issubclass(m, BaseModel) and m is not BaseModel]
+    assert len(models) >= 9, [m.__name__ for m in models]
+    for model in models:
+        for name, field in model.model_fields.items():
+            if field.annotation is not str:
+                continue
+            caps = [getattr(m, "max_length", None) for m in field.metadata]
+            assert any(c for c in caps), f"{model.__name__}.{name} accepts an unbounded string"
+
+
+def test_unbounded_write_field_is_rejected(client):
+    """[#61] End-to-end: an over-long value on a sibling write model is refused (422) instead of being
+    stored verbatim and echoed back by every later fetch."""
+    over = "A" * 5000
+    assert client.post("/api/campaigns", json={"name": over}).status_code == 422
+    cid = client.post("/api/campaigns", json={"name": "ok"}).json()["id"]
+    assert client.get("/api/campaigns").json()[0]["name"] == "ok"
+    sid = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    ex = client.post(f"/api/snapshots/{sid}/executions", json={"label": over})
+    assert ex.status_code == 422
+    eid = client.post(f"/api/snapshots/{sid}/executions", json={"label": "run"}).json()["id"]
+    assert client.post(f"/api/executions/{eid}/event",
+                       json={"kind": "note", "text": over}).status_code == 422
+    assert cid  # campaign creation itself still works
+
+
+def test_oversized_json_body_is_refused_before_it_is_parsed(client):
+    """[#61] The per-field caps only fire AFTER Starlette has buffered the whole body and json.loads has
+    materialised it, so a single huge JSON body was still a memory spike on an unauthenticated loopback
+    POST. The declared Content-Length is refused up front with 413. Multipart is exempt — the upload
+    routes do their own chunked read against the (much larger) archive limit."""
+    r = client.post("/api/campaigns", json={"name": "x", "description": "B" * (2 * 1024 * 1024)})
+    assert r.status_code == 413, r.status_code
+    assert "limit" in r.json()["detail"]
+    # the exemption still holds: a multipart snapshot upload well over the JSON cap is accepted
+    import json as _json
+    cid = client.post("/api/campaigns", json={"name": "big-upload"}).json()["id"]
+    blob = _json.dumps({"devices": {f"sw{i}": {"model": "C9300", "serial": "S" * 200}
+                                    for i in range(5000)}}).encode()
+    assert len(blob) > app_module._max_json_body_bytes()
+    up = client.post(f"/api/campaigns/{cid}/snapshots",
+                     files={"file": ("s.json", blob, "application/json")})
+    assert up.status_code == 201, up.text
+
+
+# --- generated deliverables must not linger in %TEMP% (#62) -------------------------
+def test_send_file_deletes_the_temp_deliverable_before_returning(tmp_path):
+    """[#62] `_send_file` used to delete the generated temp file only from a Starlette BackgroundTask,
+    which runs after the body is fully sent — so a client disconnect mid-download, or a killed process
+    (the normal way a USB-stick field app ends), left a fully-rendered UNREDACTED client deliverable
+    (hostnames, IPs, serials, parsed configs) in the OS temp dir permanently. There must be no path
+    through this function that returns while the file is still on disk."""
+    import os as _os
+
+    p = tmp_path / "assesshub_probe.docx"
+    p.write_bytes(b"UNREDACTED CLIENT DELIVERABLE")
+    resp = app_module._send_file(str(p), "application/octet-stream", "Meridian reference fleet/2026", "_mop.docx",
+                                 headers={"X-Gate-Status": "pending:design"})
+    assert not _os.path.exists(p), "the rendered deliverable survived the response construction"
+    assert resp.body == b"UNREDACTED CLIENT DELIVERABLE"          # bytes are unchanged
+    assert resp.headers["x-gate-status"] == "pending:design"      # out-of-band notes survive
+    assert 'filename="Meridian_reference_fleet_2026_mop.docx"' in resp.headers["content-disposition"]
+
+
+def test_downloaded_deliverable_leaves_no_temp_file(client, tmp_path, monkeypatch):
+    """[#62] End-to-end over the real routes: after a deliverable and a PIR download, the temp dir holds
+    no `assesshub_*` residue. Pinned with a private TMPDIR so the assertion is exact rather than a
+    best-effort scan of a shared %TEMP%."""
+    import tempfile as _tempfile
+
+    private = tmp_path / "tmp"
+    private.mkdir()
+    for var in ("TMPDIR", "TEMP", "TMP"):
+        monkeypatch.setenv(var, str(private))
+    monkeypatch.setattr(_tempfile, "tempdir", None)
+    sid = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    r = client.get(f"/api/snapshots/{sid}/deliverable/mop")
+    if r.status_code == 503:
+        pytest.skip("python-docx not installed on this runner")
+    assert r.status_code == 200
+    eid = client.post(f"/api/snapshots/{sid}/executions", json={}).json()["id"]
+    assert client.get(f"/api/executions/{eid}/report").status_code == 200
+    assert list(private.glob("assesshub_*")) == [], "a rendered client deliverable was left in %TEMP%"
+
+
+# ------------------------------------- OpenAPI / docs routes (guard COMPLETENESS)
+# The access guard's reach was written as the path PREFIX "/api/", but FastAPI also generates
+# /openapi.json, /docs, /docs/oauth2-redirect and /redoc — routes that describe THIS API and do not
+# live under /api/. They were therefore outside the guard entirely. Measured before the fix: with
+# ASSESSHUB_TOKEN set, `GET /openapi.json` returned 200 and the complete route + request-model schema
+# to a caller sending no Bearer; from a NON-loopback peer on a zero-token instance it also returned
+# 200 while /api/campaigns returned 403. Same class as every other finding in this file — a guard
+# stated as a named subset rather than as the structural property it was meant to express.
+def _doc_paths(app):
+    """From the app's own attributes, exactly like the guard: a renamed docs_url stays covered."""
+    return [p for p in (app.openapi_url, app.docs_url, app.redoc_url,
+                        app.swagger_ui_oauth2_redirect_url) if p]
+
+
+def test_openapi_and_docs_require_the_token(client, monkeypatch):
+    monkeypatch.setenv("ASSESSHUB_TOKEN", "s3cret-token")
+    paths = _doc_paths(client.app)
+    assert len(paths) == 4, paths          # the enumeration must not go silently empty
+    for p in paths:
+        assert client.get(p).status_code == 401, p
+        assert client.get(
+            p, headers={"Authorization": "Bearer s3cret-token"}).status_code == 200, p
+
+
+def test_openapi_and_docs_are_loopback_only_without_a_token(client, monkeypatch):
+    """No token -> the API schema is client-adjacent metadata and follows /api's network rule."""
+    monkeypatch.setattr(app_module, "_client_is_loopback", lambda request: False)
+    for p in _doc_paths(client.app):
+        assert client.get(p).status_code == 403, p
+    assert client.get("/api/health").status_code == 200      # liveness stays open
+
+
+def test_zero_token_loopback_dev_flow_still_serves_the_docs(client):
+    """The default developer posture is untouched — the guard adds a network/auth condition, it
+    does not switch the documentation off."""
+    for p in _doc_paths(client.app):
+        assert client.get(p).status_code == 200, p

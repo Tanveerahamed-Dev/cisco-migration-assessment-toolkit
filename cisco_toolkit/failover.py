@@ -51,9 +51,20 @@ def _as_failure_list(failures: Any) -> List[dict]:
 
 
 def _int_or(v: Any, default: int) -> int:
+    """Fail-soft int coercion for an untrusted snapshot leaf (bridge_priority, FHRP priority).
+
+    OverflowError is NOT optional here: `json.loads` accepts the bare JSON `Infinity`/`-Infinity` as
+    `float('inf')`, and `int(float('inf'))` raises OverflowError — which the plain
+    `(TypeError, ValueError)` pair MISSES, so one poisoned priority crashed the whole L2 failover
+    twin (reachable from the two read-only MCP failover tools and from every cutover_sim dry-run
+    step) instead of degrading that one field. Every sibling coercer in the repo (textutils._as_num,
+    ssot, mop, design_advisor, engagement, execution, pir_docx, cutover) lists it; this one did not.
+    NaN still coerces via ValueError. A rejected value returns `default` verbatim — for
+    bridge_priority that default is None, which the caller reads as 'not collected' and ABSTAINS on,
+    so a poisoned priority can never be laundered into a fabricated re-election winner."""
     try:
         return int(v)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 

@@ -146,8 +146,8 @@ def build_fhrp_detail(cmd_to_file: Dict[str, str]) -> list:
     """Full first-hop-redundancy state for THIS device from 'show standby [all]' DETAIL (parse_hsrp_detail):
     [{ifname, group, state, priority, cfg_priority, preempt, preempt_delay, vip, vmac, standby_ip, track}].
     [] when the device runs no HSRP. The brief form (interface hsrp_behavior) keeps only state+VIP; this
-    carries the election / preempt / tracking fields a senior FHRP audit needs (the [HISTORY-REDACTED] fleet ran no FHRP,
-    so this is the first capability proven on a non-[HISTORY-REDACTED] environment). Fail-soft via _safe_parse."""
+    carries the election / preempt / tracking fields a senior FHRP audit needs (the Meridian reference fleet ran no FHRP,
+    so this is the first capability proven on a non-Meridian environment). Fail-soft via _safe_parse."""
     d = _safe_parse(parse_hsrp_detail, _load_cmd_output(cmd_to_file, "show standby all", "show standby")) or {}
     return [{"ifname": k[0], "group": k[1], **v} for k, v in d.items()]
 
@@ -435,7 +435,7 @@ def build_mroute(cmd_to_file: Dict[str, str]) -> dict:
     group, oil_count}]}, or {} when no mroute table. rpf_failures lists ONLY the (S,G) source-tree entries with
     a Null incoming (RPF) interface AND a NON-ZERO RPF neighbour -- the genuinely anomalous blackhole. TWO benign
     Null-IIF classes are deliberately excluded so the detector cannot cry wolf:
-      * (*,G) shared-tree entries (locally-joined / well-known / SSM groups -- 36 of them across the [HISTORY-REDACTED] fleet); and
+      * (*,G) shared-tree entries (locally-joined / well-known / SSM groups -- 36 of them across the Meridian reference fleet); and
       * an (S,G) whose 'RPF nbr' is 0.0.0.0, which per Cisco means THIS router is the source (a local source / PIM
         register / SPT-pending) -- a normal, expected Null IIF, NOT an RPF failure (a real RPF failure shows a valid
         mismatched interface or dropped packets, never (S,G)+Null+RPF-0.0.0.0).
@@ -517,12 +517,22 @@ def build_pim(cmd_to_file: Dict[str, str]) -> dict:
     }
 
 
+# A running-config line (stripped, lower-cased) that ENDS the interface block build_ipv6_fhs is walking:
+# the `!` stanza separator, `end`, or the header of another top-level stanza. The three `... policy <NAME>`
+# forms are listed explicitly because they are the GLOBAL first-hop-security policy DEFINITIONS, whose
+# headers are prefix-identical to the per-interface attach commands.
+_FHS_BLOCK_END_RE = (r"^(?:!|end$|vlan configuration\b|ipv6 (?:nd raguard|dhcp guard|snooping) policy\b"
+                     r"|router\s|line\s|control-plane\b|vrf definition\b|class-map\s|policy-map\s)")
+
+
 def build_ipv6_fhs(cmd_to_file: Dict[str, str]) -> dict:
     """IPv6 first-hop-security posture for THIS device, fusing the dedicated FHS show-commands
     ('show ipv6 nd raguard policy', 'show ipv6 dhcp guard policy') with the already-collected
     'show running-config' (the most reliable, platform-agnostic evidence of dual-stack + per-interface
-    attachment). {} when the device shows no IPv6 at all -> a pure-IPv4 device contributes nothing and the
-    detector never cries wolf over it. Fail-soft via _safe_parse."""
+    attachment). Only an ATTACHMENT counts: the global `ipv6 nd raguard policy <NAME>` / `ipv6 dhcp guard
+    policy <NAME>` stanzas merely DEFINE a policy and protect nothing until attached to an interface or a
+    `vlan configuration` block. {} when the device shows no IPv6 at all -> a pure-IPv4 device contributes
+    nothing and the detector never cries wolf over it. Fail-soft via _safe_parse."""
     rag = _safe_parse(parse_ipv6_raguard_policy,
                       _load_cmd_output(cmd_to_file, "show ipv6 nd raguard policy")) or []
     dhg = _safe_parse(parse_ipv6_dhcp_guard_policy,
@@ -532,29 +542,52 @@ def build_ipv6_fhs(cmd_to_file: Dict[str, str]) -> dict:
     ipv6_svi_vlans: List[int] = []
     ra_if: Set[str] = set()
     dhg_if: Set[str] = set()
+    ra_vlan_cfg = False
+    dhg_vlan_cfg = False
     cur_if = ""
+    cur_scope = ""          # "iface" | "vlan" (vlan-configuration mode) | "" (global / another stanza)
     cur_is_svi = False
     cur_has_v6 = False
     for raw in run.splitlines():
         m = re.match(r"^\s*interface\s+(\S+)", raw, re.IGNORECASE)
         if m:
             cur_if = normalize_ifname(m.group(1))
+            cur_scope = "iface"
             cur_is_svi = bool(re.match(r"^(Vlan|Vl)\d+$", m.group(1), re.IGNORECASE))
             cur_has_v6 = False
             continue
-        if not cur_if:
-            continue
         low = raw.strip().lower()
-        if low.startswith("ipv6 address ") and "autoconfig" not in low:
-            if cur_is_svi and not cur_has_v6:
-                mvid = re.match(r"^(?:Vlan|Vl)(\d+)$", cur_if, re.IGNORECASE)
-                if mvid:
-                    ipv6_svi_vlans.append(int(mvid.group(1)))
-                cur_has_v6 = True
-        if re.match(r"^ipv6 nd raguard\b", low):
-            ra_if.add(cur_if)
-        if re.match(r"^ipv6 dhcp guard\b", low):
-            dhg_if.add(cur_if)
+        if not low:
+            continue
+        # END of the interface block. `cur_if` was previously never cleared, so every later GLOBAL line was
+        # credited to whatever interface happened to be seen last -- and `ipv6 nd raguard policy <NAME>` /
+        # `ipv6 dhcp guard policy <NAME>` are the global policy-DEFINITION stanza HEADERS, which match the
+        # attach patterns below. A box that DEFINES both policies and attaches NEITHER therefore reported
+        # first-hop security in place on a real interface while being wide open to rogue RA / rogue DHCPv6
+        # (absence rendered as health). Matched on the STRIPPED line, so an indentation-stripped capture
+        # behaves identically to a normal one; `!` is the universal IOS/NX-OS stanza separator.
+        if re.match(_FHS_BLOCK_END_RE, low):
+            cur_if = ""
+            cur_scope = "vlan" if low.startswith("vlan configuration") else ""
+            continue
+        if cur_scope == "iface":
+            if low.startswith("ipv6 address ") and "autoconfig" not in low:
+                if cur_is_svi and not cur_has_v6:
+                    mvid = re.match(r"^(?:Vlan|Vl)(\d+)$", cur_if, re.IGNORECASE)
+                    if mvid:
+                        ipv6_svi_vlans.append(int(mvid.group(1)))
+                    cur_has_v6 = True
+            if re.match(r"^ipv6 nd raguard\b", low):
+                ra_if.add(cur_if)
+            if re.match(r"^ipv6 dhcp guard\b", low):
+                dhg_if.add(cur_if)
+        elif cur_scope == "vlan":
+            # `vlan configuration <ids>` + `ipv6 dhcp guard attach-policy X` is a real VLAN-wide attachment:
+            # it protects, but it names no interface -- credit PRESENCE, never a fabricated iface list.
+            if re.match(r"^ipv6 nd raguard\b", low):
+                ra_vlan_cfg = True
+            if re.match(r"^ipv6 dhcp guard\b", low):
+                dhg_vlan_cfg = True
 
     for pol in rag:
         for t in pol.get("targets", []):
@@ -570,8 +603,8 @@ def build_ipv6_fhs(cmd_to_file: Dict[str, str]) -> dict:
     ra_vlan_attached = any(t.get("type") == "VLAN" for p in rag for t in p.get("targets", []))
     dhg_vlan_attached = any(t.get("type") == "VLAN" for p in dhg for t in p.get("targets", []))
 
-    ra_present = bool(ra_if) or ra_vlan_attached
-    dhg_present = bool(dhg_if) or dhg_vlan_attached
+    ra_present = bool(ra_if) or ra_vlan_attached or ra_vlan_cfg
+    dhg_present = bool(dhg_if) or dhg_vlan_attached or dhg_vlan_cfg
     dualstack = bool(ipv6_svi_vlans)
 
     if not dualstack and not ra_present and not dhg_present and not ra_policy_names and not dhg_policy_names:
@@ -634,6 +667,12 @@ _INFRA_PLATFORM_RE = re.compile(
     r"(\bnexus|\bcatalyst|\bn[0-9]k\b|\bc9[0-9]{3}|\bc3[0-9]{3}|\bc2[0-9]{3}|\bws-c[23456]|"
     r"\basr[0-9]|\bisr[0-9]|\bcsr[0-9]|\bncs[- ]?[0-9]|\bcisco[ -][0-9]{4}\b)", re.IGNORECASE)
 
+# The literal strings a device prints INSTEAD of a capability advertisement. These mean "the TLV was
+# absent", i.e. NO capabilities -- not "these are the capabilities". Lower-cased before the lookup.
+# ('not advertised' is the same NX-OS/IOS-XE sentinel parse_neighbors_lldp already screens out of a
+# neighbour's System Name, so the class is known to the codebase; it was just not applied here.)
+_NO_CAPS_SENTINELS = {"not advertised", "n/a", "na", "null", "none", "-", "--"}
+
 
 def _neighbor_is_infra(rec: Dict[str, str]) -> bool:
     """Classify a CDP/LLDP neighbour record (parse_neighbors_detail) as INFRASTRUCTURE (a switch/router in
@@ -648,6 +687,16 @@ def _neighbor_is_infra(rec: Dict[str, str]) -> bool:
     A neighbour with neither an infra capability nor an infra platform is treated as NON-infra."""
     caps = (rec.get("capabilities") or "").strip()
     proto = (rec.get("proto") or "cdp").lower()
+    # An LLDP capability TLV is OPTIONAL, and both IOS-XE and NX-OS render a missing one as literal
+    # TEXT rather than an empty field ('not advertised' on 395 of the 838 LLDP neighbour records in
+    # the Meridian collection; 'null' / 'N/A' elsewhere). Treating that text as a real advertisement made
+    # the `if caps:` branch authoritative and SKIPPED the platform fallback the docstring above
+    # promises for exactly this case -- so a neighbour that advertised NO capabilities could never
+    # be classified infra no matter which switch/router family it named, and dropped silently out
+    # of build_undocumented_neighbors (i.e. out of the shadow-infrastructure reconciliation, where
+    # a missing candidate reads as 'no undocumented infrastructure found').
+    if caps.lower() in _NO_CAPS_SENTINELS:
+        caps = ""
     if caps:
         if proto == "lldp":
             tokens = {t.strip().upper() for t in re.split(r"[,\s]+", caps) if t.strip()}
@@ -1033,7 +1082,12 @@ def detect_cross_device_dual_connections(all_interfaces: Dict[str, Dict[str, Int
                 mac_locations.setdefault(mac, []).append((hostname, p))
     for mac, locs in mac_locations.items():
         unique = list({(h,p) for h,p in locs})
-        if len(unique) > 1:
+        # CROSS-DEVICE means two DIFFERENT hostnames. Keying on (hostname, port) alone flagged a MAC seen
+        # twice on ONE switch -- and step 7 of build_interfaces MANUFACTURES exactly that duplicate, copying
+        # end_host_mac between a port-channel and each of its physical members. A single-homed endpoint
+        # behind one switch's LAG then reported dual_connection='Yes': a redundancy claim with no second
+        # home, which HIDES the single point of failure during move-group planning.
+        if len({h for h, _ in unique}) > 1:
             for hostname, p in unique:
                 if p in all_interfaces.get(hostname, {}):
                     all_interfaces[hostname][p].dual_connection = "Yes"
@@ -1086,7 +1140,17 @@ def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
                                "show running-config | section ^interface")
     run_iface  = _safe_parse(parse_run_config_interfaces, run_out)
     global_run = _load_cmd_output(cmd_to_file, "show running-config")
-    global_bdg = bool(re.search(r"spanning-tree portfast bpduguard default", global_run, re.IGNORECASE))
+    # IOS-XE 16.x+ renamed the PortFast keyword: the global default is `spanning-tree portfast EDGE
+    # bpduguard default` there, and the classic form on older IOS/IOS-XE. Matching only the classic
+    # spelling read the newer platforms as "no global BPDU-Guard default" while the evidence was in
+    # the collected running-config saying the opposite -- so every access port on those boxes carried
+    # an EMPTY stp_bpduguard, which design_advisor/archreview both classify as NOT ASSESSED
+    # ("BPDU Guard state was not captured"). Collected-and-protected therefore rendered as
+    # not-observed; and on a box that also sets bpduguard on one interface explicitly, the
+    # per-host `_bpdu_seen` gate flips and the rest of its ports become an OBSERVED unguarded gap
+    # that does not exist. Measured on the Meridian collection: 25 devices / 647 access ports.
+    global_bdg = bool(re.search(r"spanning-tree\s+portfast\s+(?:edge\s+)?bpduguard\s+default",
+                                global_run, re.IGNORECASE))
     if global_bdg:
         logger.info(f"  [STP] Global portfast bpduguard default enabled on {hostname}")
     for p, v in run_iface.items():
@@ -1254,8 +1318,17 @@ def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
             if not interfaces[local].end_host_ip:
                 interfaces[local].end_host_ip = mgmt_ip
             interfaces[local].neighbor_switch_ip = mgmt_ip
-        if interfaces[local].endpoint_type == 'Switch' or (device_id and re.search(r'(sw|switch|n9k|n7k|c9k|catalyst|nexus)', device_id, re.IGNORECASE)):
-            interfaces[local].neighbor_switch_vtp_domain = switch_identity.get('vtp_domain', '')
+        # `neighbor_switch_vtp_domain` used to be filled with switch_identity['vtp_domain'] -- THIS
+        # switch's own domain, copied onto a column that claims to describe the NEIGHBOUR. It sits
+        # beside `current_switch_vtp_domain`, which step 12 sets from the same value, so the pair was
+        # identical by construction on every inter-switch link (367 of 367 rows on the Meridian collection):
+        # a reader comparing the two columns to spot a VTP-domain mismatch could only ever conclude
+        # "every trunk agrees" -- a health claim manufactured from a self-copy, never observed.
+        # The neighbour's real domain IS advertised ('show cdp neighbors detail' carries a
+        # `VTP Management Domain[ Name]:` line, and the Meridian captures show it genuinely differing
+        # between neighbours), but extracting it belongs to parse.parse_neighbors_cdp -- the owner of
+        # that block format -- not to this join layer. Until it is parsed there, the honest value is
+        # "not observed": an empty column cannot be misread as a match.
         mloc = re.search(r"(rack\s*\d+|r\d+)\s*[-_ ]*\s*(u\d+)?", device_id, re.IGNORECASE)
         if mloc: interfaces[local].endpoint_location = mloc.group(0).strip()
         if local in dual_ports: interfaces[local].dual_connection = "Yes"
@@ -1279,8 +1352,15 @@ def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
         d.current_switch_serial = switch_identity.get('serial_number', '')
         d.current_switch_ip = switch_identity.get('mgmt_ip', '')
         d.current_switch_vtp_domain = switch_identity.get('vtp_domain', '')
-        if d.endpoint_type == 'Switch' and not d.neighbor_switch_serial:
-            d.neighbor_switch_serial = d.cdp_neighbor
+        # `neighbor_switch_serial` used to be filled with d.cdp_neighbor -- the neighbour's HOSTNAME,
+        # written into a column labelled "Neighbor Switch Serial" (581 rows on the Meridian collection where
+        # the two were byte-identical). No serial was ever observed; CDP only embeds one in the
+        # `Device ID: host(FOC1912R0XH)` form, which parse_neighbors_cdp keeps verbatim inside
+        # device_id rather than splitting out. A hostname in a serial column is a fabricated
+        # identifier at the asset-reconciliation step (and --redact's _REDACT_SERIAL_KEYS then
+        # pseudonymised those hostnames to SNxxxx while keeping hostnames everywhere else). The
+        # neighbour's name is already published in its OWN column (`cdp_neighbor`), so leaving this
+        # one empty loses nothing real and stops the column asserting evidence that does not exist.
         # Per-SVI subnet enrichment: among the routes whose outgoing interface is THIS SVI,
         # choose the SVI's CONNECTED subnet as primary -- preferring the prefix that actually
         # contains the SVI's own configured IP -- so a coexisting /32 host route or a
@@ -1293,7 +1373,17 @@ def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
                         svi_routes.append(e)
 
             def _contains_svi_ip(prefix: str) -> bool:
-                ipv = (d.svi_ip or '').split()[0].split('/')[0]
+                # `''.split()` is [], so the old `.split()[0]` raised IndexError for an SVI with NO
+                # configured address -- and this runs inside a sort KEY, so the exception escapes
+                # build_interfaces and (under the default multi-worker parse) the whole device is
+                # dropped with a logged "[FAIL] Parse exception", leaving it in the snapshot with
+                # ZERO interfaces: absence rendered as "this switch has no ports". Reachable whenever
+                # the run-config channel did not land (TACACS command-authorization denying
+                # `show running-config` is screened as an error by _load_cmd_output, so svi_ip is
+                # empty on every SVI) while `show ip route` DID -- and equally for a real SVI with no
+                # IPv4 address (unnumbered / DHCP / v6-only) that a static route exits by interface.
+                _svi_tok = (d.svi_ip or '').split()
+                ipv = _svi_tok[0].split('/')[0] if _svi_tok else ''
                 if not ipv or not prefix:
                     return False
                 try:

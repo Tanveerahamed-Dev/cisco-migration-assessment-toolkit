@@ -20,7 +20,10 @@ fixture ``_meta.corpus_contract.required`` union — the recorded contract lists
 its own qrels cite ``webapp/backend/*.py``, so the harness indexes tracked-wide rather than
 glob-narrow) ⊕ the provenance-VERIFIED vault digest when one exists locally (entry ids
 ``digest:<id>``). Digest presence/absence is RECORDED per run and configs are never pooled across
-corpus configs — a digest-absent run certifies the degraded graph+docs mode only (A2).
+corpus configs — a digest-absent run certifies the degraded graph+docs mode only (A2). That rule is
+MECHANICAL, not prose: every pooled qrel row is stamped with :func:`corpus_config_id` and
+:func:`load_pooled_qrels` keeps only the rows minted under the running config (the rest are dropped
+and counted into the results record).
 
 **Judge gate first** (§6): the 15 sealed anchors run through the local-Ollama judge BEFORE any
 scoring — dual-prompt (neutral + adversarial), take-the-MIN, two independent passes; the gate
@@ -40,7 +43,10 @@ by construction, so rank metrics are undefined on them — they are excluded fro
 aggregates and reported as the over-retrieval diagnostic (§2: docs retrieved for unanswerable
 queries; lower is better). ``Hole@k`` = fraction of a query's top-k docs unseen by any annotation
 (authored ∪ pooled qrels), meaned over answerable queries — the §3 pool-bias diagnostic, with the
-§7 validity bar ``Hole@10`` ≤ its pre-registered maximum. The paired t-test (scipy, pre-registered)
+§7 validity bar ``Hole@10`` ≤ its pre-registered maximum. The bar is measured against annotation
+that is INDEPENDENT of the run being judged (authored fixtures ⊕ pooled grades from earlier runs of
+the same corpus config); a run that also re-pools then measures against its own fresh grades cannot
+fail the bar, so it would certify nothing. The post-pool residual is reported alongside it. The paired t-test (scipy, pre-registered)
 runs on per-query MRR@5 (A vs B) over answerable queries; Cohen's d is the PAIRED dz =
 mean(diff)/sd(diff) (the owner's corrected §7 power note is for exactly this statistic).
 
@@ -52,7 +58,7 @@ grades take precedence over pooled ones on any overlap.
 **Fences.** This module stays inside the no-egress attestation (:mod:`cisco_toolkit.attestation`):
 no ``socket``/``urllib`` at any depth — ALL Ollama I/O lives in the root-level subprocess helper
 ``ollama_retrieval_judge.py`` (the ``ollama_recall.py`` idiom), which this module invokes with a
-pairs file and reads JSON back from. ``rank_bm25`` / ``pytrec_eval`` / ``scipy`` (the ``[eval]``
+pairs file (written OUTSIDE the repo — see :func:`invoke_judge_helper`) and reads JSON back from. ``rank_bm25`` / ``pytrec_eval`` / ``scipy`` (the ``[eval]``
 extra, P2-0b) are imported lazily so the engine never requires them; the judge helper reuses this
 module's PURE prompt/schema/scoring functions so there is one implementation of the gate logic and
 the hermetic tests never need a model.
@@ -68,6 +74,7 @@ import json
 import math
 import os
 import subprocess
+import tempfile
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from cisco_toolkit.d10_eval_set import (
@@ -233,10 +240,45 @@ def authored_qrels(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, int]]:
             for r in rows}
 
 
-def load_pooled_qrels(path: str) -> Dict[str, Dict[str, int]]:
-    """The SEPARATE pool-judgment file (append-only; the frozen fixtures are never edited)."""
+DIGEST_ABSENT_CONFIG = "digest:absent"
+
+
+def corpus_config_id(digest_status: Optional[Dict[str, Any]]) -> str:
+    """The DEC-006 A2 corpus-config IDENTITY of a run: ``digest:absent``, or ``digest:<sha12>`` over
+    the accepted digest files' SHA-256s when the digest lane is present. Stamped on every pooled qrel
+    row so "configs are never pooled across corpus configs" is enforced by the loader instead of by
+    prose (the A2 rule the module docstring states). A digest that :func:`digest_lane_status` REFUSED
+    contributes nothing to the corpus, so it contributes nothing to the identity either."""
+    import hashlib
+    st = digest_status or {}
+    if not st.get("present"):
+        return DIGEST_ABSENT_CONFIG
+    shas = sorted(str(f.get("file_sha256") or "")
+                  for f in (st.get("files") or []) if f.get("entries"))
+    return "digest:" + hashlib.sha256("|".join(shas).encode("utf-8")).hexdigest()[:12]
+
+
+def load_pooled_qrels(path: str, *, corpus_config: Optional[str] = None,
+                      stats: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, int]]:
+    """The SEPARATE pool-judgment file (append-only; the frozen fixtures are never edited).
+
+    ``corpus_config`` ENFORCES the DEC-006 A2 no-cross-config-pooling rule (2026-07-28): rows are
+    persisted with their ``judge``/``date``/``corpus_config`` provenance, and this loader used to
+    read qid/doc/grade only — so grades minted by a run WITH the vault digest present silently
+    became the qrels a later digest-ABSENT run scored itself against, exactly what A2 forbids and
+    what ``render_markdown`` could not show (it surfaces only the CURRENT run's digest status).
+    Pass the current run's :func:`corpus_config_id` to keep only rows minted under it; rows from
+    another config — and legacy rows carrying no config at all — are DROPPED and counted. ``stats``
+    (an optional dict) receives the provenance summary: loaded / excluded counts, the excluded
+    config ids, the judge models and the date span."""
     out: Dict[str, Dict[str, int]] = {}
+    counts: Dict[str, Any] = {"loaded": 0, "excluded_other_config": 0, "excluded_unknown_config": 0}
+    excluded_cfgs: set = set()
+    judges: set = set()
+    dates: List[str] = []
     if not os.path.exists(path):
+        if stats is not None:
+            stats.update({**counts, "excluded_configs": [], "judges": [], "dates": []})
         return out
     with open(path, encoding="utf-8") as f:
         for line in f:
@@ -246,7 +288,21 @@ def load_pooled_qrels(path: str) -> Dict[str, Dict[str, int]]:
             row = json.loads(line)
             if "_meta" in row:
                 continue
+            cfg = str(row.get("corpus_config") or "")
+            if corpus_config is not None and cfg != corpus_config:
+                counts["excluded_unknown_config" if not cfg else "excluded_other_config"] += 1
+                excluded_cfgs.add(cfg or "(unrecorded)")
+                continue
+            counts["loaded"] += 1
+            if row.get("judge"):
+                judges.add(str(row["judge"]))
+            if row.get("date"):
+                dates.append(str(row["date"]))
             out.setdefault(str(row["qid"]), {})[str(row["doc"])] = int(row["grade"])
+    if stats is not None:
+        stats.update({**counts, "excluded_configs": sorted(excluded_cfgs),
+                      "judges": sorted(judges),
+                      "dates": [min(dates), max(dates)] if dates else []})
     return out
 
 
@@ -511,14 +567,23 @@ def invoke_judge_helper(pairs: List[Dict[str, Any]], *, root: str, passes: int =
     ``{"ok": False, "reason": …}`` — signal_absent honesty, never a fabricated grade. The default
     timeout is I/O headroom sized to the MEASURED v2 per-call latency on the CPU host (~70–90 s/call
     × 60 gate calls ≈ the old 5400 s wall — a timeout mid-protocol kills the measurement without
-    shaping any grade, so the ceiling errs generous); pool runs pass their own budget if needed."""
+    shaping any grade, so the ceiling errs generous); pool runs pass their own budget if needed.
+
+    **The payload never touches the repo** (2026-07-28). It carries full document excerpts — including
+    vault-digest entries when the digest lane is present — and it used to be written to the FIXED path
+    ``docs/quality/.d10-judge-pairs.tmp.json``: inside a git-TRACKED directory, matched by no
+    ``.gitignore`` rule, and removed only by the ``finally`` below, which a hard kill during the
+    6-hour timeout window never reaches. One later ``git add -A`` then commits vault-derived text into
+    the pushable repo, defeating the two-store boundary's only mechanical enforcement (ADR-0001). It
+    now goes to a per-run ``tempfile.mkstemp`` file in the system temp dir (0600, unique name — which
+    also stops two concurrent runs from overwriting each other's pairs)."""
     helper = os.path.join(root, JUDGE_HELPER)
     if not os.path.exists(helper):
         return {"ok": False, "reason": f"judge helper missing: {helper}"}
     payload = json.dumps({"pairs": pairs, "passes": passes})
-    tmp = os.path.join(root, "docs", "quality", ".d10-judge-pairs.tmp.json")
+    fd, tmp = tempfile.mkstemp(prefix="d10-judge-pairs-", suffix=".json")
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(payload)
         out = subprocess.run(["python", helper, "--pairs", tmp], cwd=root,
                              capture_output=True, text=True, timeout=timeout)
@@ -615,19 +680,25 @@ def judge_pool(pool: List[Tuple[str, str]], rows: List[Dict[str, Any]], corpus: 
 
 
 def append_pooled_qrels(grades: Dict[Tuple[str, str], int], *, root: str, model: str,
-                        date: str, path: str = POOLED_QRELS_PATH) -> int:
+                        date: str, corpus_config: str,
+                        path: str = POOLED_QRELS_PATH) -> int:
     """Append pool judgments — with provenance — to the SEPARATE pooled-qrels file. Never touches
-    the frozen fixtures. Returns rows written."""
+    the frozen fixtures. Returns rows written.
+
+    ``corpus_config`` (:func:`corpus_config_id`) is REQUIRED, not defaulted: an unlabelled row is
+    exactly the row a later run of a different corpus config would wrongly score itself against
+    (DEC-006 A2). Dedupe is per-config for the same reason — an existing grade minted under another
+    corpus must not suppress this config's own judgment of that (qid, doc)."""
     p = os.path.join(root, path)
     os.makedirs(os.path.dirname(p), exist_ok=True)
-    existing = load_pooled_qrels(p)
+    existing = load_pooled_qrels(p, corpus_config=corpus_config)
     n = 0
     with open(p, "a", encoding="utf-8") as f:
         for (qid, doc), grade in sorted(grades.items()):
             if doc in existing.get(qid, {}):
                 continue
             f.write(json.dumps({"qid": qid, "doc": doc, "grade": int(grade),
-                                "judge": model, "date": date,
+                                "judge": model, "date": date, "corpus_config": corpus_config,
                                 "source": "P2-2 pool judging (screened judge; dual-prompt MIN)"},
                                ensure_ascii=False) + "\n")
             n += 1
@@ -682,20 +753,27 @@ def run_eval(root: Optional[str] = None, *, out_dir: Optional[str] = None,
 
     authored = authored_qrels(rows)
     pooled_path = os.path.join(root, POOLED_QRELS_PATH)
+    corpus_config = corpus_config_id(corpus_env.get("digest"))     # DEC-006 A2 identity of THIS run
+    pooled_provenance: Dict[str, Any] = {}
+    # The annotation this run INHERITED — authored fixtures ⊕ pooled grades minted by EARLIER runs
+    # of the SAME corpus config. Everything the §7 validity bar is allowed to lean on lives here.
+    independent = merge_qrels(authored,
+                              load_pooled_qrels(pooled_path, corpus_config=corpus_config,
+                                                stats=pooled_provenance))
     pool_appended = 0
     if judge_valid:
-        judged_now = merge_qrels(authored, load_pooled_qrels(pooled_path))
-        pool = pool_unjudged(runs, judged_now, rows)
+        pool = pool_unjudged(runs, independent, rows)
         if pool:
             pj = judge_pool(pool, rows, corpus, rubric, root=root, invoke=judge_invoke)
             if pj.get("ok"):
                 pool_appended = append_pooled_qrels(
-                    pj["grades"], root=root, model=str(pj.get("model")), date=date)
+                    pj["grades"], root=root, model=str(pj.get("model")), date=date,
+                    corpus_config=corpus_config)
             else:
                 judge_valid = False
                 gate = dict(gate, status="failed",
                             reason=f"pool judging lost the judge mid-run: {pj.get('reason')}")
-    merged = merge_qrels(authored, load_pooled_qrels(pooled_path))
+    merged = merge_qrels(authored, load_pooled_qrels(pooled_path, corpus_config=corpus_config))
 
     strata_of = {str(r["qid"]): str(r["stratum"]) for r in rows}
     scoreable_strata = list(ANSWERABLE_STRATA) if judge_valid else ["identifier"]
@@ -723,7 +801,16 @@ def run_eval(root: Optional[str] = None, *, out_dir: Optional[str] = None,
 
     overall = (paired_stats(per_q[CONFIG_A], per_q[CONFIG_B], qids_scoreable)
                if judge_valid else None)
-    holes = {c: hole_at_k(runs[c], merged, qids_scoreable) for c in CONFIGS}
+    # §7 validity bar, measured against annotation this run did NOT mint (2026-07-28). Measuring it
+    # against `merged` made it vacuous for the very strata it protects: pool_unjudged pools each
+    # config's top-10 and hole_at_k measures the same top-10, so every doc that could have been a
+    # hole had just been annotated by this run — Hole@10 ≈ 0 by construction, holes_ok always True,
+    # and the pre-registered bm25_earns_place verdict always allowed to issue. The bar now asks the
+    # question §3 defines ("fraction of top-k unseen by ANNOTATORS") and §7's remedy assumes: a run
+    # whose systems retrieve documents nobody had judged is INVALID — re-pool (which this run just
+    # did) and re-run, so the scores rest on grades that existed before the systems were measured.
+    holes = {c: hole_at_k(runs[c], independent, qids_scoreable) for c in CONFIGS}
+    holes_residual = {c: hole_at_k(runs[c], merged, qids_scoreable) for c in CONFIGS}
     hole_max = float(thresholds["validity_gate"]["hole_at_10_max"])
     holes_ok = all(h <= hole_max for h in holes.values())
 
@@ -733,8 +820,13 @@ def run_eval(root: Optional[str] = None, *, out_dir: Optional[str] = None,
     results: Dict[str, Any] = {
         "run_status": run_status, "date": date, "environment": env,
         "judge_gate": gate, "pooled_rows_appended": pool_appended,
+        "corpus_config": corpus_config, "pooled_qrels_provenance": pooled_provenance,
         "hole@10": {**{c: round(holes[c], 4) for c in CONFIGS},
-                    "max_allowed": hole_max, "valid": holes_ok},
+                    "max_allowed": hole_max, "valid": holes_ok,
+                    "measured_against": "authored qrels ⊕ pooled grades that existed BEFORE this "
+                                        "run (same corpus config) — never this run's own pool",
+                    "residual_after_this_run_pooled":
+                        {c: round(holes_residual[c], 4) for c in CONFIGS}},
         "strata": table, "overall": overall,
         "verdicts": {"bm25_earns_place": (bm25_verdict(overall, thresholds)
                                           if judge_valid and holes_ok and overall else
@@ -832,10 +924,29 @@ def render_markdown(results: Dict[str, Any]) -> str:
                   f"Δ {_fmt(overall.get('delta'))} · p {_fmt(overall.get('p_value'))} · "
                   f"dz {_fmt(overall.get('cohens_dz'))}"]
     hole = results.get("hole@10", {})
+    resid = hole.get("residual_after_this_run_pooled", {})
+    prov = results.get("pooled_qrels_provenance", {})
     lines += ["",
               "**Hole@10 validity:** " + ", ".join(f"{c}: {_fmt(hole.get(c))}" for c in CONFIGS)
               + f" (bar ≤ {hole.get('max_allowed')}) → "
-              + ("VALID" if hole.get("valid") else "INVALID — re-pool per §7"),
+              + ("VALID" if hole.get("valid") else
+                 f"INVALID — re-pool per §7 (this run appended "
+                 f"{results.get('pooled_rows_appended')} pooled grade(s); re-run to score against "
+                 f"annotation it did not mint)"),
+              f"- measured against: {hole.get('measured_against')}",
+              "- residual after this run's own pooling: "
+              + ", ".join(f"{c}: {_fmt(resid.get(c))}" for c in CONFIGS)
+              + " (reported for transparency; ~0 by construction on the pooled strata, which is "
+                "why it cannot be the bar)",
+              f"- corpus config (DEC-006 A2): `{results.get('corpus_config')}` · pooled qrels used: "
+              f"{prov.get('loaded', 0)}"
+              + (f", EXCLUDED {prov.get('excluded_other_config', 0)} row(s) from other corpus "
+                 f"config(s) {prov.get('excluded_configs')} and "
+                 f"{prov.get('excluded_unknown_config', 0)} unlabelled row(s)"
+                 if (prov.get("excluded_other_config") or prov.get("excluded_unknown_config"))
+                 else " (no cross-config rows present)")
+              + (f" · judges: {prov.get('judges')} · dates: {prov.get('dates')}"
+                 if prov.get("judges") or prov.get("dates") else ""),
               "", "## Pre-registered verdicts (§7 — bars read from the thresholds file)", ""]
     v = results.get("verdicts", {})
     bm = v.get("bm25_earns_place", {})

@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -49,6 +51,40 @@ EXE = DIST / f"{exe_name()}.exe"
 def _run(cmd: list, timeout: int, **kw) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace",
                           stdin=subprocess.DEVNULL, timeout=timeout, **kw)
+
+
+def expected_release() -> str:
+    """What the built bundle must report, read through the SAME owner the app reads it from
+    (``serve._release_version`` -> ``pyproject.toml``), so there is one source of truth for it."""
+    from webapp.backend.serve import _release_version
+
+    return _release_version()
+
+
+def version_gap(stdout: str, expected: str) -> str:
+    """Why ``Atlas.exe --version`` does NOT prove the bundle reports the checkout release, or "".
+
+    The step's docstring has always claimed it proves "the checkout release (never stale pip
+    metadata)"; the check was ``"Atlas" not in stdout``, which every possible output of
+    ``serve._version_line()`` satisfies — including ``Atlas - release unpackaged - engine schema N``,
+    which is EXACTLY what a frozen bundle prints when ``pyproject.toml`` did not land in it
+    (``_release_version`` then falls through to dist metadata, absent in a frozen build).
+
+    So ``pyproject.toml`` was the one bundled asset whose absence degrades silently into a wrong
+    version, and nothing caught it: ``missing_data_sources`` only proves the SOURCE exists on the
+    build box, and ``--selftest`` checks the KB packs, the explorer template, docx/pptx, the dist
+    and the engine entry — not this. The build would print "[ok] bundle verified" and every stick cut
+    from it would misreport its own version, which is the field's first question in any bug report.
+    """
+    if "Atlas" not in stdout:
+        return "the output does not name the app at all"
+    if not expected:
+        return "could not read the expected release from the checkout (pyproject.toml)"
+    if expected not in stdout:
+        return (f"reports {stdout.strip()!r}, not the checkout release {expected!r} — pyproject.toml "
+                f"is missing from the bundle, so serve._release_version fell back to dist metadata "
+                f"(stale) or 'unpackaged'")
+    return ""
 
 
 def build() -> None:
@@ -90,8 +126,9 @@ def smoke(port: int) -> None:
         print("[smoke 2/4] --version")
         p = _run([str(EXE), "--version"], timeout=120)
         print(f"    {p.stdout.strip()}")
-        if p.returncode != 0 or "Atlas" not in p.stdout:
-            raise SystemExit(f"--version FAILED (exit {p.returncode}): {p.stdout!r} {p.stderr!r}")
+        gap = version_gap(p.stdout, expected_release()) if p.returncode == 0 else "non-zero exit"
+        if gap:
+            raise SystemExit(f"--version FAILED (exit {p.returncode}): {gap}\n{p.stderr!r}")
 
         print("[smoke 3/4] --run-engine --help (frozen engine-child dispatch)")
         p = _run([str(EXE), "--run-engine", "--help"], timeout=180)
@@ -100,9 +137,13 @@ def smoke(port: int) -> None:
         print("    engine argparse reached (usage: cisco-assess …)")
 
         print(f"[smoke 4/4] serve + HTTP probes on 127.0.0.1:{port}")
+        instance_nonce = secrets.token_urlsafe(24)
+        child_env = dict(os.environ)
+        child_env["ASSESSHUB_INSTANCE_NONCE"] = instance_nonce
         srv = subprocess.Popen([str(EXE), "--no-browser", "--port", str(port), "--db", db],
                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                               stderr=subprocess.STDOUT, encoding="utf-8", errors="replace")
+                               stderr=subprocess.STDOUT, encoding="utf-8", errors="replace",
+                               env=child_env)
         try:
             base = f"http://127.0.0.1:{port}"
             deadline = time.monotonic() + 60
@@ -113,8 +154,14 @@ def smoke(port: int) -> None:
                     raise SystemExit(f"server exited early (code {srv.returncode}):\n{out[-1200:]}")
                 try:
                     with urllib.request.urlopen(base + "/api/health", timeout=3) as r:
-                        if r.status == 200:
+                        health = json.load(r)
+                        if (r.status == 200
+                                and health.get("instance_nonce") == instance_nonce
+                                and srv.poll() is None):
                             break
+                        last_err = RuntimeError(
+                            "health response did not identify the spawned Atlas child")
+                        time.sleep(0.5)
                 except (urllib.error.URLError, OSError) as e:  # not up yet
                     last_err = e
                     time.sleep(0.5)

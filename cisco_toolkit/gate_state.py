@@ -522,39 +522,32 @@ def _locked_update(path: str, apply, require_existing: bool = False):
     replaced by a row asserting an override of approvals nobody could still see. Refuse instead; the
     file is evidence and its disappearance is not something a write should paper over.
 
-    A sidecar this call CREATED is removed when the update raises, so a refusal leaves the directory
-    exactly as it found it. Without that, a re-bind refusal or a corrupt-audit refusal dropped a
-    0-byte ``<ledger>.lock`` into a ledger's folder the operation had just declined to touch — small,
-    but this module's whole posture is that a refusal changes nothing.
+    The ``<ledger>.lock`` sidecar is deliberately NOT removed on the refusal path, and that is a
+    correctness requirement rather than an omission. The sidecar IS the mutual-exclusion token, and a
+    caller cannot establish that it created one: ``_open_lock_fd`` opens with ``O_CREAT`` (not
+    ``O_EXCL``), so two writers that both sampled "not present" before the lock both believe they did.
+    Unlinking on that belief is unsafe on POSIX, where ``flock`` binds to the open file description
+    and unlink is unconditional — writer B keeps its lock on the now-orphaned inode while writer C's
+    ``O_CREAT`` makes a NEW inode and locks it uncontended, so both run the read-modify-write at once
+    and the lost update this function exists to close comes back. (Windows only escapes by accident:
+    ``os.remove`` raises EACCES while any handle is open.) A leftover sidecar is inert by design — see
+    ``LOCK_SUFFIX`` — so it is gitignored instead; trading a real serialisation guarantee for a tidy
+    directory listing is not a trade this module makes.
     """
-    sidecar = path + LOCK_SUFFIX
-    sidecar_pre_existed = os.path.exists(sidecar)
-    try:
-        with _ledger_lock(path):
-            store = _read_ledger(path)
-            existed = store is not None
-            if require_existing and not existed:
-                raise GateStateError(
-                    f"gate-state store {path} disappeared between this run's read and its write -- "
-                    f"refusing to re-create it, which would resurrect an EMPTY ledger holding only "
-                    f"this row and silently discard whatever approvals it had. Restore the file (or "
-                    f"its backup) and re-run.")
-            if store is None:
-                store = _new_store()
-            result = apply(store, existed)
-            save_store(path, store)
-        return result
-    except BaseException:
-        # A refusal must leave the directory as it found it. Only remove a sidecar THIS call created
-        # (never one that was already there, which another writer may be holding), and never let the
-        # cleanup mask the real error. BaseException so a KeyboardInterrupt/SIGTERM tidies up too --
-        # the lock is already released and the fd closed by _ledger_lock's own finally.
-        if not sidecar_pre_existed:
-            try:
-                os.remove(sidecar)
-            except OSError:                      # pragma: no cover - best-effort; a held sidecar stays
-                pass
-        raise
+    with _ledger_lock(path):
+        store = _read_ledger(path)
+        existed = store is not None
+        if require_existing and not existed:
+            raise GateStateError(
+                f"gate-state store {path} disappeared between this run's read and its write -- "
+                f"refusing to re-create it, which would resurrect an EMPTY ledger holding only "
+                f"this row and silently discard whatever approvals it had. Restore the file (or "
+                f"its backup) and re-run.")
+        if store is None:
+            store = _new_store()
+        result = apply(store, existed)
+        save_store(path, store)
+    return result
 
 
 #: A read or a rename can lose a race with the OTHER operation on the ledger, so both retry briefly.
@@ -562,7 +555,47 @@ def _locked_update(path: str, apply, require_existing: bool = False):
 #: sleeps covers it without any caller waiting perceptibly. NOT the lock timeout — this exists because
 #: ``load_store`` is deliberately UNLOCKED, so a reader can always collide with a writer's rename.
 _RACE_RETRIES = 6
+#: FIRST backoff, then doubled per attempt with jitter -- not a fixed sleep. A constant 5 ms retried
+#: 6 times covers only ~25 ms AND beats in lockstep with a writer that is itself renaming on a tight
+#: loop: every retry can land in the same busy window, so the attempts are correlated rather than
+#: independent and the extra tries buy almost nothing. Measured: with the fixed backoff this module's
+#: own race test still refused a HEALTHY ledger in roughly 2 of 8 full-suite runs at 14-way
+#: concurrency, while passing in isolation every time.
+#: Doubling (5/10/20/40/80 ms) widens the covered window to ~155 ms with the SAME attempt count, and
+#: the jitter de-synchronises the reader from the writer's cycle. Deliberately NOT a bigger retry
+#: count: the defect was the SHAPE of the wait, not its budget, and raising a threshold to green a
+#: gate is the move this repo's doctrine forbids. Still bounded and still fail-CLOSED at the end --
+#: an unreadable ledger after the full budget is refused, exactly as before.
 _RACE_BACKOFF_S = 0.005
+_RACE_BACKOFF_MAX_S = 0.080
+
+#: errnos meaning the ledger is genuinely NOT THERE, as opposed to "there but I could not look at it".
+_ABSENT_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR, errno.ENAMETOOLONG})
+
+
+def _ledger_absent(path: str) -> bool:
+    """True ONLY when the ledger is genuinely not there. Absence is the one fail-OPEN answer in this
+    module, so it must be established, never merely assumed from a failed look.
+
+    ``os.path.exists`` cannot do this job: it swallows EVERY OSError from ``stat`` and answers False,
+    so it reports a healthy ledger as absent whenever the file is momentarily un-stattable — EACCES
+    during a writer's ``os.replace`` (the SAME 1.41%-of-reads race ``_read_ledger``'s retry loop
+    exists for), a dropped SMB share, a re-enumerating USB volume, a delete-pending handle held by an
+    AV scanner. All of those are routine on the ADR-0004 field platform. Measured before this
+    function existed: with only ``os.path.exists`` answering False for a present 256-byte ledger bound
+    to ACME-2026, ``enforce('design')`` returned ``ungated``/proceed=True — the gated deliverable
+    generated with ZERO approvals — and the next ``record_decision`` then reported SUCCESS while
+    overwriting the file with a fresh store, destroying the ADR-0006 binding and the audit trail.
+
+    Anything that is not a definite "no such file" is therefore treated as PRESENT, which routes the
+    caller into the retry/fail-closed path instead of the brownfield one. Erring this way costs at
+    worst a spurious refusal on a genuinely broken path; erring the other way ungates the engagement.
+    """
+    try:
+        os.stat(path)
+    except OSError as e:
+        return e.errno in _ABSENT_ERRNOS
+    return False
 
 
 def _read_ledger(path: str) -> Optional[dict]:
@@ -580,9 +613,15 @@ def _read_ledger(path: str) -> Optional[dict]:
     change on a retry, so those still fail closed immediately — delaying the honest "this ledger is
     corrupt" answer would be strictly worse. If the OSError outlasts the window it still raises: a
     genuinely unreadable ledger must stay unreadable.
+
+    ABSENCE is decided by ``_ledger_absent``, NOT by ``os.path.exists`` — see there for why that
+    distinction is the difference between a refusal and a silently ungated run.
     """
-    if not os.path.exists(path):
+    if _ledger_absent(path):
         return None
+    # Present-but-inaccessible falls through to the retrying open() below: it either succeeds on a
+    # later attempt (the os.replace race) or raises GateStateError, i.e. fails CLOSED. It must never
+    # return None, which is the ungated/brownfield answer.
     last: Optional[OSError] = None
     for attempt in range(_RACE_RETRIES):
         try:
@@ -591,7 +630,13 @@ def _read_ledger(path: str) -> Optional[dict]:
         except OSError as e:                       # lost the race with a writer's rename, or real
             last = e
             if attempt < _RACE_RETRIES - 1:
-                time.sleep(_RACE_BACKOFF_S)
+                # exponential + jitter; see _RACE_BACKOFF_S. The jitter is derived from the monotonic
+                # clock rather than `random` so this module keeps its deterministic import surface and
+                # adds no dependency -- any de-correlation from the writer's cycle will do, it does not
+                # need to be cryptographic.
+                _base = min(_RACE_BACKOFF_S * (2 ** attempt), _RACE_BACKOFF_MAX_S)
+                _jitter = _base * 0.5 * ((time.monotonic() * 1000.0) % 1.0)
+                time.sleep(_base + _jitter)
                 continue
             raise GateStateError(f"unreadable gate-state store {path}: {e}") from e
         # RecursionError is included because it is a property of the FILE, not a bug here, and this
@@ -693,7 +738,14 @@ def save_store(path: str, store: dict) -> None:
                 # transient reader (an editor, an AV scan) must still surface, loudly, to the caller.
                 if attempt == _RACE_RETRIES - 1:
                     raise
-                time.sleep(_RACE_BACKOFF_S)
+                # Same exponential + jitter as the READ path (see _RACE_BACKOFF_S). This side had the
+                # identical fixed-5 ms pathology: ~25 ms total against a reader that can legitimately
+                # hold the destination for ~12 ms, which is marginal the moment the scheduler is busy,
+                # and a constant sleep keeps the writer beating in lockstep with that reader. Fixing
+                # only the read half left the mirror defect live -- the two are one defect with two
+                # exits, and this repo's every-exit rule applies to its own internals too.
+                _base = min(_RACE_BACKOFF_S * (2 ** attempt), _RACE_BACKOFF_MAX_S)
+                time.sleep(_base + _base * 0.5 * ((time.monotonic() * 1000.0) % 1.0))
         promoted = True
     finally:
         if not promoted:
@@ -939,9 +991,20 @@ def record_decision(gate: str, decision: str, root: str = ".",
                 raise GateStateError(owner_err)
         store.setdefault("gates", {})[gate] = rec
 
+    # A ledger that is THERE NOW must still be there when the write lands. Creating one is legitimate
+    # ONLY as first-use enrolment; a file that vanishes inside this call is not an enrolment, it is an
+    # engagement's history disappearing — and re-creating it would bind a fresh EMPTY store to
+    # whatever THIS run declared, destroying the approvals it held and asserting an ownership nobody
+    # granted. Reproduced: a ledger bound to GLOBEX-2026 with a signed assessment_approved came back
+    # bound to ACME-2026 holding one row, and the call returned SUCCESS. The `not existed` arm of
+    # `_apply` cannot catch it either, because that arm BINDS rather than verifying (there is nothing
+    # to verify against once the file is gone), so the ownership refusal never runs. Deciding this
+    # from the pre-call state is what keeps genuine enrolment working while closing the resurrection.
+    require_existing = not _ledger_absent(path)
     _append_audit(path, {"at": _now(), "who": who,
                          "event": "approve" if decision == "approved" else "revoke",
-                         "gate": gate, "note": note}, mutate=_apply)
+                         "gate": gate, "note": note}, mutate=_apply,
+                  require_existing=require_existing)
     return rec
 
 
@@ -980,7 +1043,13 @@ def bind_engagement(engagement: str, root: str = ".", by: Optional[str] = None) 
         store[ENGAGEMENT_KEY] = ident
         entry["note"] = "re-affirmed" if bound is not None else "initial binding"
 
-    _append_audit(path, entry, mutate=_apply)
+    # Same reasoning as record_decision: a ledger present before this call must still be present when
+    # the write lands. Here the resurrection is doubly wrong — `_apply` reads `bound` off the fresh
+    # `_new_store()`, gets None, so BOTH the re-bind refusal and the note are computed as if this were
+    # a first enrolment. Reproduced: re-binding a vanished ACME-2026 ledger to GLOBEX-2026 returned
+    # success and wrote an audit row whose note reads "initial binding" — a statement the DEC-003
+    # weekly review cannot tell apart from a genuine first binding.
+    _append_audit(path, entry, mutate=_apply, require_existing=not _ledger_absent(path))
     return ident
 
 
@@ -1097,6 +1166,23 @@ def enforce(generator: str, override_reason: Optional[str] = None,
                      "--override-gate cannot bypass an unreadable ledger", generator, e)
         return _emit(GateVerdict(generator, "unreadable", False, store=store_path(root), detail=str(e)))
     if store is None:
+        # A run that DECLARES an engagement cannot be answered by proximity. There is no ledger here
+        # to confirm the declaration against, so this is a mis-set --gate-root at least as often as it
+        # is a genuine brownfield engagement -- and until now the ordering made the gate MORE
+        # permissive the LESS evidence it had: a PRESENT but unbound ledger refuses non-overridably
+        # (ownership_unbound), while NO ledger at all proceeded and generated the document with zero
+        # approvals. The module docstring names this exact scenario (--gate-root D:/Engagements when
+        # the engagement is D:/Engagements/ACME) and says the ownership model closes it; this is what
+        # closes it. Declaring NOTHING still proceeds ungated, so the historical behaviour is intact.
+        declared = (engagement or "").strip()
+        if declared:
+            detail = (f"this run declares engagement {declared!r}, but there is no gate ledger at "
+                      f"{path} to confirm that against -- refusing rather than proceeding UNGATED, "
+                      f"which would generate the {generator} with no approvals at all. Check "
+                      f"--gate-root, or enrol this engagement with: python -m "
+                      f"cisco_toolkit.gate_state bind {declared}")
+            logger.error("[GATE REFUSED] %s: %s", generator, detail)
+            return _emit(GateVerdict(generator, "ownership_unbound", False, store=path, detail=detail))
         logger.warning("[gate] no gate-state store at %s -- %s generation proceeds UNGATED "
                        "(brownfield). Activate PPDIOO gate enforcement with: "
                        "python -m cisco_toolkit.gate_state approve <gate>", path, generator)
@@ -1135,20 +1221,34 @@ def enforce(generator: str, override_reason: Optional[str] = None,
                            detail="upstream approvals present", engagement=bound))
     if override_reason is not None and override_reason.strip():
         actor = who or _whoami()
-        # NOT wrapped in _record_refusal's tolerant OSError handling, and deliberately so: do not
-        # "make this consistent" later. A refusal has already withheld the deliverable, so a failed
-        # write costs only bookkeeping and degrades to recorded=False. An override is the opposite —
-        # the audit line is the ONLY thing that makes proceeding past a missing approval legitimate,
-        # so if it cannot be written the run must not quietly generate the document anyway. Letting
-        # the OSError propagate is the fail-closed choice.
+        # NOT wrapped in _record_refusal's tolerant handling, and deliberately so: do not "make this
+        # consistent" later. A refusal has already withheld the deliverable, so a failed write costs
+        # only bookkeeping and degrades to recorded=False. An override is the opposite — the audit
+        # line is the ONLY thing that makes proceeding past a missing approval legitimate, so if it
+        # cannot be written the run must not quietly generate the document anyway.
         # require_existing for the same reason: this override was decided FROM a ledger read moments
         # ago, so if that file has since vanished, re-creating it would resurrect an EMPTY ledger
-        # whose only content is a row claiming an override of approvals nobody can still see. The
-        # raised GateStateError then correctly withholds the document instead of generating it
-        # against evidence that no longer exists.
-        _append_audit(path, {"at": _now(), "who": actor, "event": "override",
-                             "generator": generator, "missing": missing,
-                             "reason": override_reason.strip()}, require_existing=True)
+        # whose only content is a row claiming an override of approvals nobody can still see.
+        #
+        # Fail closed as a VERDICT, not as an escaping exception. Letting it propagate was the wrong
+        # shape for the same fail-closed intent: this is the ONE exit that skipped `_emit`, so
+        # `verdicts()` held no row for a gate that HAD been decided — the invisible-refusal class the
+        # whole _VERDICTS mechanism exists to close, on the one run with the least surviving evidence.
+        # It also aborted far more than "the document": the sole engine caller wraps neither gate call
+        # (COLLECT_PARSE_V3_23_0.main), so the raise killed the MOP gate, CRD, engagement, archreview,
+        # ops handbook, runbook, deck and explorer, plus the run-manifest chain-of-custody seal and
+        # the --redact-collection scrub. Withhold THIS deliverable, seal the verdict, let the rest run.
+        try:
+            _append_audit(path, {"at": _now(), "who": actor, "event": "override",
+                                 "generator": generator, "missing": missing,
+                                 "reason": override_reason.strip()}, require_existing=True)
+        except (OSError, GateStateError, RecursionError) as e:
+            detail = (f"--override-gate could NOT be recorded ({type(e).__name__}: {e}) -- refusing "
+                      f"to generate the {generator}, because an override with no audit line is "
+                      f"exactly the unaudited bypass the override mechanism exists to prevent")
+            logger.error("[GATE REFUSED] %s: %s", generator, detail)
+            return _emit(GateVerdict(generator, "pending", False, missing=tuple(missing),
+                               recorded=False, store=path, detail=detail, engagement=bound))
         logger.warning("[GATE OVERRIDDEN] %s generated despite missing approval(s) %s -- "
                        "who=%s reason=%r (audit line appended to %s)",
                        generator, ", ".join(missing), actor, override_reason.strip(), path)
@@ -1221,6 +1321,12 @@ def pending_approvals(generator: str, root: str = ".",
                                        f"unknown; treat approvals as UNCONFIRMED.")
         out["store"] = path
         if store is None:
+            # Same ordering fix as enforce(): a DECLARED engagement cannot be answered "no ledger for
+            # this engagement" by a function that has not confirmed which engagement this folder is.
+            if declared:
+                return _done("ownership_unbound",
+                             f"no gate ledger here at all, so this location cannot be confirmed to "
+                             f"govern {declared} -- approvals UNCONFIRMED (NOT the same as ungated).")
             return _done("ungated", "no gate ledger for this engagement -- approvals are not "
                                     "tracked here; this deliverable is unreviewed by default.")
         bound = engagement_of(store)

@@ -69,6 +69,43 @@ def test_update_replaces_app_wholesale_but_never_touches_data(tmp_path):
     assert "data\\ preserved" in p.stdout
 
 
+def test_a_data_dir_in_the_SOURCE_never_overwrites_the_sticks_evidence(tmp_path):
+    """The /MIR exclusion protecting `data\\` was pinned on the DESTINATION path only, so it could not
+    match a SOURCE `data\\`. That directory exists on the build box the moment anyone double-clicks
+    the built `dist\\Atlas\\Atlas.exe` to smoke-check it — the frozen app defaults its store to
+    `<exe dir>\\data\\assesshub.db` and writes boot backups beside it. The next `make_stick.ps1` then
+    mirrored the DEV BOX's store over the field store and PURGED `data\\backups\\`, under the
+    script's own '[ok] ... data\\ preserved - client evidence untouched' line.
+
+    The sibling test above cannot see this: its source bundle has no `data\\`, which is exactly the
+    condition under which the destination-only exclusion works."""
+    src = _fake_bundle(tmp_path)
+    dest = tmp_path / "stick"
+    dest.mkdir()
+    assert _run("-Dest", str(dest), "-Source", str(src)).returncode == 0
+    target = dest / "Atlas"
+
+    # the stick has been to a client site
+    (target / "data" / "backups").mkdir(parents=True)
+    (target / "data" / "assesshub.db").write_bytes(b"CLIENT EVIDENCE")
+    (target / "data" / "backups" / "b1.db").write_bytes(b"FIELD BACKUP")
+    # ...and the bundle was launched in place on the build box, so the SOURCE now has a store too
+    (src / "data" / "backups").mkdir(parents=True)
+    (src / "data" / "assesshub.db").write_bytes(b"DEV BOX STORE")
+    (src / "Atlas.exe").write_bytes(b"MZ fake exe v2")
+
+    p = _run("-Dest", str(dest), "-Source", str(src))
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert (target / "Atlas.exe").read_bytes() == b"MZ fake exe v2", "the app must still update"
+    assert (target / "data" / "assesshub.db").read_bytes() == b"CLIENT EVIDENCE", \
+        "the dev box's store overwrote the field evidence the script says it preserved"
+    assert (target / "data" / "backups" / "b1.db").read_bytes() == b"FIELD BACKUP", \
+        "/MIR purged the rotating backups under data\\"
+    # the KB packs that live BELOW _internal must still be mirrored — a name-based '/XD data' would
+    # have suppressed those too, which is why the exclusion is path-pinned rather than by name
+    assert (target / "_internal" / "cisco_toolkit" / "data" / "oui_registry.tsv.gz").is_file()
+
+
 def test_missing_bundle_fails_loud_with_build_hint(tmp_path):
     p = _run("-Dest", str(tmp_path), "-Source", str(tmp_path / "never-built"))
     assert p.returncode == 1

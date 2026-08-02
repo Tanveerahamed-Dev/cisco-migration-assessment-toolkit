@@ -9,6 +9,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 from cisco_toolkit import manifest as m
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -181,15 +183,15 @@ def test_artifact_check_catches_altered_and_missing_deliverables(tmp_path, capsy
     (tmp_path / "wb.xlsx").write_bytes(b"workbook-bytes")
     man = _man({"wb.xlsx": m.artifact_sha256(b"workbook-bytes"), "gone.html": "0" * 64})
     path = _write(tmp_path, "d.run_manifest.json", man)
-    assert m.main(["verify", path]) == 0                     # chain alone is clean
-    capsys.readouterr()
-    assert m.main(["verify", path, "--artifacts"]) == 4       # ...but a listed file is absent
+    assert m.main(["verify", path]) == 4                     # safe default checks the files
     out = capsys.readouterr().out
     assert "[MISSING] gone.html" in out
     assert "[MISMATCH] wb.xlsx" not in out                    # that one really does match
+    assert m.main(["verify", path, "--metadata-only"]) == 0   # explicit custody-scope opt-out
+    assert "NOT checked" in capsys.readouterr().out
 
     (tmp_path / "wb.xlsx").write_bytes(b"workbook-bytes-EDITED")
-    assert m.main(["verify", path, "--artifacts"]) == 4
+    assert m.main(["verify", path]) == 4
     assert "[MISMATCH] wb.xlsx" in capsys.readouterr().out
 
 
@@ -247,17 +249,26 @@ def test_gutted_manifest_does_not_verify_clean(tmp_path, capsys):
     """`verify_manifest({})` is (True, []) — with no chain and no chain_root there is nothing to
     contradict, so the LIBRARY reports clean. Passed through, that makes the emptiest possible file
     the easiest one to "verify": strip the chain and an auditor reads OK. Absence is not health."""
-    for i, man in enumerate(({}, {"tool": "cisco-assess"}, {"chain": [], "chain_root": m.GENESIS})):
-        assert m.verify_manifest(man)[0] in (True, False)             # library semantics unchanged
+    # `x in (True, False)` — what this used to assert — is true of every bool (and of 0/1), so the
+    # "library semantics unchanged" half pinned nothing at all: verify_manifest could flip either
+    # way on any of these and the line stayed green. Pin the actual per-case answer, because it is
+    # the PREMISE of the test: the library says clean, so the refusal has to come from the CLI.
+    for i, (man, lib_ok) in enumerate((({}, True),
+                                       ({"tool": "cisco-assess"}, True),
+                                       ({"chain": [], "chain_root": m.GENESIS}, False))):
+        assert m.verify_manifest(man)[0] is lib_ok, (
+            f"library semantics moved for {man!r} — if verify_manifest now refuses an empty "
+            f"manifest itself, this test's premise (the CLI is the only backstop) is stale")
         assert m.main(["verify", _write(tmp_path, f"gutted{i}.json", man)]) == 4
         assert "nothing sealed here" in capsys.readouterr().out
 
 
-def test_artifact_check_is_opt_in(tmp_path):
-    """Deliverables get split across shares; a plain `verify` must answer only 'does the ledger
-    reconcile', or every routine check would fail for a reason that is not tampering."""
+def test_artifact_check_is_safe_by_default_with_explicit_metadata_only_opt_out(tmp_path):
+    """A plain verification means custody of the delivered files, not merely metadata consistency."""
     man = _man({"never-delivered.docx": "0" * 64})
-    assert m.main(["verify", _write(tmp_path, "e.run_manifest.json", man)]) == 0
+    path = _write(tmp_path, "e.run_manifest.json", man)
+    assert m.main(["verify", path]) == 4
+    assert m.main(["verify", path, "--metadata-only"]) == 0
 
 
 # --- adversarial-refuter regressions ---------------------------------------------------------------
@@ -309,7 +320,7 @@ def test_a_manifest_predating_artifact_sealing_says_so(tmp_path, capsys):
     old = json.loads(json.dumps(man))
     old["chain"] = [r for r in old["chain"] if r.get("stage") != m.SEAL_ARTIFACTS]
     old["chain_root"] = old["chain"][-1]["sha256"]          # re-rooted, internally consistent
-    assert m.main(["verify", _write(tmp_path, "old.json", old)]) == 0
+    assert m.main(["verify", _write(tmp_path, "old.json", old), "--metadata-only"]) == 0
     assert "predates artifact sealing" in capsys.readouterr().out
 
 
@@ -352,7 +363,19 @@ def test_windows_device_names_and_nul_bytes_are_refused(tmp_path):
     produced, certified as delivered. An embedded NUL byte instead raised ValueError, which the
     `except OSError` did not catch, crashing the CLI."""
     empty = tmp_path / "empty"; empty.mkdir()
-    devices = {n: m.artifact_sha256(b"") for n in ("NUL", "CON", "com1", "LPT1", "nul.txt")}
+    devices = {
+        n: m.artifact_sha256(b"")
+        for n in (
+            "NUL",
+            "CON",
+            "com1",
+            "LPT1",
+            "nul.txt",
+            "report.xlsx.",
+            "report.xlsx ",
+            "report\n.xlsx",
+        )
+    }
     man = m.build_manifest({}, devices, [{"s": "a"}])
     res = m.verify_file(_write(tmp_path, "dev.json", man), artifacts_dir=str(empty))
     assert res["ok"] is False
@@ -363,6 +386,28 @@ def test_windows_device_names_and_nul_bytes_are_refused(tmp_path):
     assert res["ok"] is False and res["artifacts"][0]["state"] == "INVALID"
 
 
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        ("Report.xlsx", "report.xlsx"),
+        ("Caf\u00e9.docx", "Cafe\u0301.docx"),
+        ("Report.pptx", "\uff32\uff45\uff50\uff4f\uff52\uff54.pptx"),
+    ],
+)
+def test_portable_artifact_name_aliases_are_refused(left, right, tmp_path):
+    man = m.build_manifest(
+        {},
+        {left: m.artifact_sha256(b"x"), right: m.artifact_sha256(b"x")},
+        [{"stage": "deliver"}],
+    )
+    result = m.verify_file(
+        _write(tmp_path, "aliases.run_manifest.json", man),
+        metadata_only=True,
+    )
+    assert result["ok"] is False
+    assert "collide under portable Unicode/Windows normalization" in result["reason"]
+
+
 def test_a_bom_prefixed_manifest_is_not_a_false_alarm(tmp_path):
     """A manifest that merely passed through a Windows tool acquires a UTF-8 BOM. Rejecting that
     untampered file as unreadable is a false alarm at a client site - the expensive direction."""
@@ -370,3 +415,119 @@ def test_a_bom_prefixed_manifest_is_not_a_false_alarm(tmp_path):
     p = tmp_path / "bom.run_manifest.json"
     p.write_bytes(b"\xef\xbb\xbf" + json.dumps(man).encode("utf-8"))
     assert m.verify_file(str(p))["ok"] is True
+
+
+def test_artifact_symlink_is_refused_without_hashing_its_target(tmp_path):
+    outside = tmp_path / "outside-secret.bin"
+    outside.write_bytes(b"sensitive outside bytes")
+    deliveries = tmp_path / "deliveries"
+    deliveries.mkdir()
+    link = deliveries / "report.xlsx"
+    try:
+        link.symlink_to(outside)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlinks unavailable on this host: {exc}")
+
+    man = m.build_manifest(
+        {},
+        {"report.xlsx": m.artifact_sha256(outside.read_bytes())},
+        [{"stage": "deliver"}],
+    )
+    path = _write(tmp_path, "linked.run_manifest.json", man)
+    result = m.verify_file(path, artifacts_dir=str(deliveries))
+    assert result["ok"] is False
+    assert result["artifacts"] == [{"name": "report.xlsx", "state": "INVALID"}]
+
+
+def test_windows_reparse_attribute_is_refused_before_open(tmp_path, monkeypatch):
+    """Exercise the Windows junction/reparse guard even when the test host cannot create symlinks."""
+    artifact = tmp_path / "junction-shaped.xlsx"
+    artifact.write_bytes(b"must not be opened")
+    marker = 0x400
+    monkeypatch.setattr(m.stat, "FILE_ATTRIBUTE_REPARSE_POINT", marker, raising=False)
+
+    class ReparseStat:
+        st_mode = m.stat.S_IFREG | 0o600
+        st_file_attributes = marker
+        st_dev = 1
+        st_ino = 2
+        st_size = artifact.stat().st_size
+
+    monkeypatch.setattr(m.os, "lstat", lambda _path: ReparseStat())
+
+    def opened_anyway(*_args, **_kwargs):
+        pytest.fail("a reparse-point artifact was opened before it was refused")
+
+    monkeypatch.setattr(m.os, "open", opened_anyway)
+    with pytest.raises(ValueError, match="regular non-link"):
+        m._open_regular_no_follow(str(artifact))
+
+
+def test_manifest_and_artifact_size_limits_fail_before_unbounded_reads(tmp_path, monkeypatch):
+    artifact = tmp_path / "large.bin"
+    artifact.write_bytes(b"x" * 32)
+    man = m.build_manifest(
+        {},
+        {"large.bin": m.artifact_sha256(artifact.read_bytes())},
+        [{"stage": "deliver"}],
+    )
+    path = _write(tmp_path, "bounded.run_manifest.json", man)
+
+    monkeypatch.setattr(m, "_MAX_ARTIFACT_BYTES", 16)
+    result = m.verify_file(path, artifacts_dir=str(tmp_path))
+    assert result["ok"] is False
+    assert result["artifacts"][0]["state"] == "OVERSIZE"
+
+    monkeypatch.setattr(m, "_MAX_MANIFEST_BYTES", 16)
+    refused = m.verify_file(path, artifacts_dir=str(tmp_path))
+    assert refused["ok"] is False
+    assert "limit" in refused["reason"]
+    assert refused["artifacts"] == []
+
+
+def test_manifest_strict_json_rejects_duplicate_keys(tmp_path):
+    path = tmp_path / "duplicate.run_manifest.json"
+    path.write_text('{"chain":[],"chain":[],"chain_root":"' + ("0" * 64) + '"}', encoding="utf-8")
+    result = m.verify_file(str(path), metadata_only=True)
+    assert result["ok"] is False
+    assert "duplicate JSON key" in result["reason"]
+
+
+def test_all_metadata_is_sealed_not_only_a_fixed_allowlist(tmp_path):
+    meta = {
+        "schema_version": "3.23.0",
+        "inputs": [{"role": "devices_file", "sha256": "a" * 64}],
+        "raw_evidence": {"root_sha256": "b" * 64, "n_files": 17},
+        "redaction": {"requested": True, "status": "completed"},
+        "abstention_ledger": {"vpc": "not_collected"},
+        "future_provenance_field": {"owner": "source"},
+    }
+    man = m.build_manifest(meta, {}, [{"stage": "collect"}])
+    sealed = m._sealed_metadata(man["chain"])
+    assert sealed == man["metadata"]
+    assert sealed["inputs"] == meta["inputs"]
+    assert sealed["raw_evidence"] == meta["raw_evidence"]
+    assert sealed["future_provenance_field"] == {"owner": "source"}
+
+    edited = json.loads(json.dumps(man))
+    edited["metadata"]["raw_evidence"]["n_files"] = 0
+    res = m.verify_file(_write(tmp_path, "edited-meta.json", edited), metadata_only=True)
+    assert res["ok"] is False
+    assert "METADATA ALTERED" in res["reason"]
+
+
+def test_rich_artifact_record_is_sealed_and_verified(tmp_path):
+    body = b"plain evidence sidecar"
+    (tmp_path / "sidecar.txt").write_bytes(body)
+    man = m.build_manifest(
+        {"schema_version": "3.23.0"},
+        {"sidecar.txt": {"sha256": m.artifact_sha256(body), "size": len(body),
+                         "kind": "file", "source": "current-run registry"}},
+        [{"stage": "deliver"}],
+    )
+    assert man["artifacts"][0]["kind"] == "file"
+    assert man["artifacts"][0]["size"] == len(body)
+    path = _write(tmp_path, "rich.run_manifest.json", man)
+    result = m.verify_file(path)
+    assert result["ok"] is True
+    assert result["artifacts"] == [{"name": "sidecar.txt", "state": "ok"}]

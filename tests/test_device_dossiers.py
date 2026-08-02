@@ -51,7 +51,7 @@ def test_fully_unassessed_device_is_not_a_clean_bill_of_health():
     """Coverage-honesty: a device with NO collected evidence (health band 'Insufficient Data', every
     risk axis n/a, no risk/watch signal) must NOT be labeled 'No stacked risk — routine migration
     handling' / Low — that reads a collection GAP as a clean assessment (the exact false-health the
-    doctrine forbids). It gets a distinct 'Unassessed' band + an honest verdict. On [HISTORY-REDACTED] this is the 50
+    doctrine forbids). It gets a distinct 'Unassessed' band + an honest verdict. On Meridian this is the 50
     not-collected devices. Distinct from the assessed-clean case above (band 'Excellent', Health=ok)."""
     dd = compute_device_dossiers(
         health_scores=[{"switch": "darkbox", "score": None, "band": "Insufficient Data",

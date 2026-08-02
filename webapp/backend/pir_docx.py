@@ -62,6 +62,17 @@ def write_pir_docx(output_path: str, state: Dict[str, Any], snapshot_label: str)
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Pt
 
+    from cisco_toolkit.textutils import xml_safe, xml_safe_deep
+
+    # Same reasoning as cutover_docx: §3 emits the move-group name through a DIRECT
+    # `doc.add_heading(f"Wave {order} — {group}")` that bypasses the sanitizing table/kv helpers, and
+    # the run state carries operator-typed notes and device-derived labels verbatim. One XML-illegal
+    # character aborts `doc.save()`, and the record it is stored in does not change — so the PIR
+    # export 500s permanently for that run.
+    state = xml_safe_deep(state if isinstance(state, dict) else {})
+    snapshot_label = (xml_safe(snapshot_label) if isinstance(snapshot_label, str)
+                      else (str(snapshot_label) if snapshot_label is not None else ""))
+
     doc = new_document()
 
     def table(headers: List[str], rows: List[List[Any]], widths: List[float] | None = None):

@@ -1,0 +1,44 @@
+name: Master reference
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "master-reference/**"
+      - ".github/workflows/master-reference-ci.yml"
+  pull_request:
+    paths:
+      - "master-reference/**"
+      - ".github/workflows/master-reference-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: master-reference-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Static reference contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24.18.0"
+          cache: npm
+          cache-dependency-path: master-reference/package-lock.json
+      - name: Install the locked dependency graph
+        working-directory: master-reference
+        run: npm ci --ignore-scripts
+      - name: Type-check, build, and verify rendered content
+        working-directory: master-reference
+        run: npm test
+      - name: Lint correctness, accessibility, and framework contracts
+        working-directory: master-reference
+        run: npm run lint
+      - name: Audit the complete build dependency graph
+        working-directory: master-reference
+        run: npm audit --audit-level=high

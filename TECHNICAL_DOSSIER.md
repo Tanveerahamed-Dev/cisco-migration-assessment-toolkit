@@ -35,7 +35,6 @@
 | `pyproject.toml` | 7,265 | PEP 517/518 build config, all dependency groups, tool settings |
 | `requirements.txt` | 631 | Runtime dependencies |
 | `requirements-dev.txt` | 661 | Dev/test dependencies |
-| `requirements.[HISTORY-REDACTED].json` | 2,294 | Structured dependency manifest (JSON format) |
 | `requirements.sample.json` | 1,275 | Example device requirements JSON |
 | `conftest.py` | 1,669 | Root pytest fixtures and shared test setup |
 | `pytest.ini` | 303 | Test runner configuration |

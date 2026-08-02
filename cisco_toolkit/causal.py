@@ -16,9 +16,9 @@ Nothing here re-computes a finding: each row renders the engine's own output. Pu
 """
 from __future__ import annotations
 
-import math
 import re
 from typing import Any, Dict, List, Optional, Tuple
+from .textutils import is_finite_num   # shared finite-number filter (rejects Infinity/NaN AND the huge int)
 
 # 4-level semantic severity ramp: (CSS colour token, rank). Low/Info map to a real token (no "--neutral").
 _SEV: Dict[str, Tuple[str, int]] = {
@@ -215,8 +215,12 @@ def compute_causal_flows(snap: Optional[dict]) -> Dict[str, Any]:
         ev = _as_dict(d.get("evidence"))
         devs = _as_list(ev.get("devices"))
         hosts = [h for h in devs if in_model(h)][:8]
-        _c = ev.get("count")    # require FINITE: int(inf)->OverflowError, int(nan)->ValueError would 500 the route
-        cnt = int(_c) if isinstance(_c, (int, float)) and not isinstance(_c, bool) and math.isfinite(_c) else None
+        # require FINITE: int(inf)->OverflowError, int(nan)->ValueError would 500 the route -- and the
+        # `isinstance(...) and math.isfinite(...)` spelling of that guard CRASHED on the third JSON
+        # value it should have rejected, an unbounded-precision int literal, because math.isfinite()
+        # converts to float before it can answer. is_finite_num tests the int bound by comparison.
+        _c = ev.get("count")
+        cnt = int(_c) if is_finite_num(_c) else None
         # BLAST = the affected-DEVICE count (what a blast-radius badge means). The metric `cnt` counts whatever
         # the decision is about -- ports / VLANs / member-legs / trunks / root-elections / move-groups -- and
         # stays in the TITLE with its own unit; labelling `cnt` as 'device(s)' was a LIVE mislabel (e.g. a chip

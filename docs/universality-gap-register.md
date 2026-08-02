@@ -215,7 +215,7 @@ Source:  wave (36 agents, 12 architecture classes; engine-coverage audit @ file:
   ↳  — Capture both IOS ('show standby ...') and NX-OS ('show hsrp ...') dialects, and the full VRRP/GLBP forms — brief-only loses priority/preempt
 - **[fixture/M]** FHRP detail fixtures: synthetic 'show standby all' (priority+preempt+track+auth+timers, v1 and v2), 'show vrrp all' (owner-255 + v3 IPv4/IPv6 dialect + legacy v2 'vrrp ip'), 'show glbp' (AVG + N forwa  
   ↳  — Mutation-proof every join-based check: a fixture where two peers disagree must turn a detector RED, and a one-peer-collected fixture must yi
-- **[fixture/M]** Detector unit tests: assert _d_fhrp_election/_tracking/_peer_consistency/_authentication/_vpc_alignment fire on the broken fixtures and stay SILENT (0) on a clean peer-pair (mirroring how the [HISTORY-REDACTED] fleet  
+- **[fixture/M]** Detector unit tests: assert _d_fhrp_election/_tracking/_peer_consistency/_authentication/_vpc_alignment fire on the broken fixtures and stay SILENT (0) on a clean peer-pair (mirroring how the Meridian reference fleet
   ↳  — Coverage-honest + counterexample-driven: every new detector must have a fires-on-broken AND silent-on-clean test, and the 'none'-truthy fals
 
 ### IPv6 / dual-stack — absent (8 P1)

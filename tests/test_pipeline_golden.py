@@ -64,6 +64,12 @@ def _run_pipeline(tmp_path, out_xlsx=None, extra_args=None):
     with open(snap_path, encoding="utf-8") as f:
         snap = json.load(f)
     snap.pop("generated_at", None)            # volatile: wall-clock timestamp
+    # Registry source_age_days advances continuously even though the pinned
+    # retrieval timestamp and freshness decision are the stable contract.
+    # Keep those trust fields frozen; exclude only the derived live age.
+    for health in (snap.get("data_authorities") or {}).values():
+        if isinstance(health, dict):
+            health.pop("source_age_days", None)
     # collection-time provenance: now() on a live run, dir-stamp/mtime on --no-collect -> volatile like
     # generated_at; exclude it (its consumer lifecycle_risk is already excluded below). (provenance R2-1-01)
     snap.pop("collected_at", None)
@@ -178,8 +184,34 @@ def _golden(name, produced):
     return None
 
 
-def test_snapshot_matches_golden(tmp_path):
-    snap, _xlsx = _run_pipeline(tmp_path)
+@pytest.fixture(scope="module")
+def golden_run(tmp_path_factory):
+    """ONE real pipeline run, shared by the tests that only READ its artifacts.
+
+    Seven tests here invoked `_run_pipeline` with identical arguments at ~30 s each — ~210 s, most of
+    this file and a large share of the whole suite. They produce byte-identical output by
+    construction, so running it seven times measured the same thing seven times.
+
+    ONLY the zero-argument callers share this. `test_import_inventory_reconcile`,
+    `test_optin_engines_emit_keys_and_sheets` and `test_missing_output_directory_is_created` pass
+    different arguments and keep their own runs.
+
+    Sharing is safe here, verified rather than assumed — the hazard is a test that MUTATES the shared
+    artifacts, which is exactly what made three `test_phase_timings_contract` tests look like a
+    staleness defect (see the handoff's §5.13/§6.1). The two tamper tests below LOOK like mutators;
+    they are not. Each writes a SEPARATE `tampered.run_manifest.json` and leaves the produced
+    manifest untouched. The other five are pure reads (golden compare, sheet schema,
+    `load_workbook(read_only=True)`, manifest reads).
+
+    If you add a test here that writes to the run's own output, give it its own `_run_pipeline`
+    rather than widening this fixture — a shared artifact mutated by one test is a defect the others
+    inherit silently.
+    """
+    return _run_pipeline(tmp_path_factory.mktemp("golden"))
+
+
+def test_snapshot_matches_golden(golden_run):
+    snap, _xlsx = golden_run
     golden = _golden("snapshot.json", snap)
     if golden is None:
         return
@@ -189,8 +221,8 @@ def test_snapshot_matches_golden(tmp_path):
         assert snap[key] == golden[key], f"snapshot section '{key}' changed vs golden"
 
 
-def test_excel_sheet_schema_matches_golden(tmp_path):
-    _snap, xlsx = _run_pipeline(tmp_path)
+def test_excel_sheet_schema_matches_golden(golden_run):
+    _snap, xlsx = golden_run
     schema = _sheet_schema(xlsx)
     golden = _golden("sheet_schema.json", schema)
     if golden is None:
@@ -200,13 +232,13 @@ def test_excel_sheet_schema_matches_golden(tmp_path):
         assert schema[sheet] == header, f"header row of sheet '{sheet}' changed"
 
 
-def test_move_group_endpoint_label_is_honest_per_switch_mac_sum(tmp_path):
+def test_move_group_endpoint_label_is_honest_per_switch_mac_sum(golden_run):
     """B3 (audit fix): move_groups[].endpoints is the per-SWITCH sum of learned MACs (an endpoint seen on
     N of the group's switches counts N times), so a large L2-coupled group can EXCEED the distinct fleet
     endpoint total (executive_brief.scale.n_endpoints / Endpoint Census). The workbook must label it as a
     per-switch MAC sum -- never the bare 'Endpoints'/'endpoint(s)' -- so it cannot be misread as a
     competing fleet endpoint total. Refutes the relabel silently reverting."""
-    _snap, xlsx = _run_pipeline(tmp_path)
+    _snap, xlsx = golden_run
     wb = load_workbook(xlsx, read_only=True)
     try:
         mg_hdr = [c.value for c in next(wb["Move Groups"].iter_rows(min_row=1, max_row=1))]
@@ -222,11 +254,11 @@ def test_move_group_endpoint_label_is_honest_per_switch_mac_sum(tmp_path):
         wb.close()
 
 
-def test_run_manifest_emitted_and_sealed(tmp_path):
+def test_run_manifest_emitted_and_sealed(golden_run):
     """roadmap D2: the pipeline emits a sealed run-manifest (chain-of-custody) next to the workbook —
     a hash-chained step ledger + per-artifact sha256 + chain_root that verify_manifest() reconciles."""
     from cisco_toolkit import manifest as M
-    _snap, xlsx = _run_pipeline(tmp_path)
+    _snap, xlsx = golden_run
     man_path = os.path.splitext(xlsx)[0] + ".run_manifest.json"
     assert os.path.isfile(man_path), "run_manifest.json was not produced"
     with open(man_path, encoding="utf-8") as f:
@@ -240,7 +272,7 @@ def test_run_manifest_emitted_and_sealed(tmp_path):
     assert "abstention_ledger" in man        # coverage-honest provenance is part of the seal
 
 
-def test_shipped_verify_verb_passes_the_real_pipeline_manifest(tmp_path, capsys):
+def test_shipped_verify_verb_passes_the_real_pipeline_manifest(golden_run, capsys):
     """The CI check on the seal. The test above calls the library function; this runs the command an
     AUDITOR actually has — `python -m cisco_toolkit.manifest verify` — against a manifest the real
     pipeline produced, not a hand-built fixture. A verb that only ever sees synthetic manifests can
@@ -250,7 +282,7 @@ def test_shipped_verify_verb_passes_the_real_pipeline_manifest(tmp_path, capsys)
     Also proves the artifact hashes reconcile against the deliverables ON DISK, which is the actual
     chain-of-custody question ("is this the workbook that was sealed?") and which no test covered."""
     from cisco_toolkit import manifest as M
-    _snap, xlsx = _run_pipeline(tmp_path)
+    _snap, xlsx = golden_run
     man_path = os.path.splitext(xlsx)[0] + ".run_manifest.json"
 
     assert M.main(["verify", man_path]) == 0, capsys.readouterr().out
@@ -260,11 +292,11 @@ def test_shipped_verify_verb_passes_the_real_pipeline_manifest(tmp_path, capsys)
     assert "hash to the seal" in capsys.readouterr().out
 
 
-def test_shipped_verify_verb_rejects_a_tampered_pipeline_manifest(tmp_path, capsys):
+def test_shipped_verify_verb_rejects_a_tampered_pipeline_manifest(golden_run, tmp_path, capsys):
     """Non-vacuity for the check above: prove the exit code moves. Two independent edits an auditor
     must catch — a rewritten step, and a deliverable swapped after the run."""
     from cisco_toolkit import manifest as M
-    _snap, xlsx = _run_pipeline(tmp_path)
+    _snap, xlsx = golden_run
     man_path = os.path.splitext(xlsx)[0] + ".run_manifest.json"
     with open(man_path, encoding="utf-8") as f:
         man = json.load(f)
@@ -278,10 +310,12 @@ def test_shipped_verify_verb_rejects_a_tampered_pipeline_manifest(tmp_path, caps
     assert M.main(["verify", tampered]) == 4
     assert "INTEGRITY" in capsys.readouterr().out
 
-    # (2) leave the ledger alone, swap a delivered file — caught only by --artifacts
+    # (2) leave the ledger alone, swap a delivered file — caught by safe-default byte verification
     with open(xlsx, "ab") as f:
         f.write(b"\n<appended after sealing>")
-    assert M.main(["verify", man_path]) == 0, "the ledger itself is untouched, so plain verify passes"
+    assert M.main(["verify", man_path]) == 4
+    assert "[MISMATCH]" in capsys.readouterr().out
+    assert M.main(["verify", man_path, "--metadata-only"]) == 0
     capsys.readouterr()
     assert M.main(["verify", man_path, "--artifacts"]) == 4
     assert "[MISMATCH]" in capsys.readouterr().out
@@ -304,10 +338,10 @@ def test_import_inventory_reconcile(tmp_path):
         wb.close()
 
 
-def test_default_run_optin_engines_absent_but_capture_integrity_present(tmp_path):
+def test_default_run_optin_engines_absent_but_capture_integrity_present(golden_run):
     """Opt-in engines (reconcile / what-if / path-intents / assert-pack) add nothing on a default run, so the
     golden stays untouched; the always-on capture-integrity key + sheet ARE present."""
-    snap, xlsx = _run_pipeline(tmp_path)
+    snap, xlsx = golden_run
     for key in ("external_reconcile", "whatif", "path_intents", "state_assertions"):
         assert key not in snap, f"{key} must be opt-in / absent by default"
     assert "capture_integrity" in snap            # always-on

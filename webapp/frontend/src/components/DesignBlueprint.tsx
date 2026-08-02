@@ -212,6 +212,20 @@ function ArchitectureCoveragePanel({ snapId }: { snapId: number }) {
   );
 }
 
+// Long target-state tables render at most ROW_CAP rows. A cap that TRUNCATES SILENTLY is a coverage
+// lie, not just a display choice: an engineer reads a 40-row IP plan as the whole plan and provisions
+// from it. Every capped table therefore discloses the remainder (the house idiom already used by
+// CausalFlow's "…and N more" and CutoverPlanner's "+N more in the … deliverable").
+const ROW_CAP = 40;
+function Capped({ shown, total, where }: { shown: number; total: number; where: string }) {
+  if (total <= shown) return null;
+  return (
+    <div className="faint" style={{ fontSize: 11, marginTop: 4 }}>
+      Showing <b>{shown}</b> of <b>{total}</b> — {total - shown} more row(s) in {where}.
+    </div>
+  );
+}
+
 function TargetState({ ts }: { ts: DesignTargetState }) {
   const bom = ts.replacement_bom, ap = ts.addressing_plan, wp = ts.wave_plan, sp = ts.segmentation_plan, amg = ts.aci_move_groups;
   return (
@@ -248,7 +262,9 @@ function TargetState({ ts }: { ts: DesignTargetState }) {
       )}
       {ap && (
         <>
-          <div style={{ fontSize: 13, fontWeight: 700, margin: "12px 0 6px" }}>Net-new IP plan</div>
+          <div style={{ fontSize: 13, fontWeight: 700, margin: "12px 0 6px" }}>
+            Net-new IP plan{ap.status === "candidate" && ap.subnets ? ` · ${ap.subnets.length} subnet(s)` : ""}
+          </div>
           {ap.status === "candidate" && ap.subnets ? (
             <>
               {ap.zones && ap.zones.length > 0 && (
@@ -256,7 +272,8 @@ function TargetState({ ts }: { ts: DesignTargetState }) {
                   <tbody>{ap.zones.map((z) => <tr key={z.zone}><td>{z.zone}</td><td className="mono">{z.summary}</td><td className="num">{z.n_vlans}</td></tr>)}</tbody></table>
               )}
               <table className="tbl" style={{ marginTop: 6 }}><thead><tr><th className="num">VLAN</th><th className="num">Hosts</th><th>Subnet</th></tr></thead>
-                <tbody>{ap.subnets.slice(0, 40).map((sn) => <tr key={sn.vlan}><td className="num">{sn.vlan}</td><td className="num">{sn.hosts}</td><td className="mono">{sn.subnet}{sn.note ? ` · ${sn.note}` : ""}</td></tr>)}</tbody></table>
+                <tbody>{ap.subnets.slice(0, ROW_CAP).map((sn) => <tr key={sn.vlan}><td className="num">{sn.vlan}</td><td className="num">{sn.hosts}</td><td className="mono">{sn.subnet}{sn.note ? ` · ${sn.note}` : ""}</td></tr>)}</tbody></table>
+              <Capped shown={Math.min(ROW_CAP, ap.subnets.length)} total={ap.subnets.length} where="the HLD/LLD document" />
               <div className="faint" style={{ fontSize: 11, marginTop: 4 }}>{ap.note}</div>
             </>
           ) : (
@@ -312,7 +329,8 @@ function TargetState({ ts }: { ts: DesignTargetState }) {
           <div style={{ fontSize: 13, fontWeight: 700, margin: "12px 0 6px" }}>Migration waves · {wp.n_waves}</div>
           <div className="faint" style={{ fontSize: 11, marginBottom: 4 }}>{wp.n_move_groups} move-group(s), largest {wp.largest_group} · cap {wp.wave_cap}. {wp.note}</div>
           <table className="tbl"><thead><tr><th className="num">Wave</th><th>Kind</th><th className="num">Switches</th></tr></thead>
-            <tbody>{wp.waves.slice(0, 40).map((w) => <tr key={w.wave}><td className="num">{w.wave}</td><td>{w.kind}</td><td className="num">{w.n_switches}</td></tr>)}</tbody></table>
+            <tbody>{wp.waves.slice(0, ROW_CAP).map((w) => <tr key={w.wave}><td className="num">{w.wave}</td><td>{w.kind}</td><td className="num">{w.n_switches}</td></tr>)}</tbody></table>
+          <Capped shown={Math.min(ROW_CAP, wp.waves.length)} total={wp.waves.length} where="the HLD/LLD document" />
         </>
       )}
       {amg && amg.groups && amg.groups.length > 0 && (
@@ -320,10 +338,11 @@ function TargetState({ ts }: { ts: DesignTargetState }) {
           <div style={{ fontSize: 13, fontWeight: 700, margin: "12px 0 6px" }}>ACI move-groups · {amg.n_tenants}</div>
           <div className="faint" style={{ fontSize: 11, marginBottom: 4 }}>{amg.n_epgs} EPG(s) · {amg.n_segmentation_gaps} segmentation gap(s). {amg.note}</div>
           <table className="tbl"><thead><tr><th>Tenant</th><th className="num">EPGs</th><th className="num">VRFs</th><th className="num">BDs</th><th>Segmentation</th></tr></thead>
-            <tbody>{amg.groups.slice(0, 40).map((g) => (
+            <tbody>{amg.groups.slice(0, ROW_CAP).map((g) => (
               <tr key={g.tenant}><td>{g.tenant}</td><td className="num">{g.n_epgs}</td><td className="num">{g.n_vrfs}</td><td className="num">{g.n_bds}</td>
                 <td style={{ color: g.segmentation_gap ? "var(--crit)" : undefined }}>{g.segmentation_gap ? `⚠ unenforced: ${g.unenforced_vrfs.join(", ")}` : "enforced"}</td></tr>
             ))}</tbody></table>
+          <Capped shown={Math.min(ROW_CAP, amg.groups.length)} total={amg.groups.length} where="the HLD/LLD document" />
         </>
       )}
     </div>

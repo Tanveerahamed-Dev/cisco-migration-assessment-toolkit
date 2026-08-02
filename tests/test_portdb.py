@@ -4,21 +4,50 @@ from cisco_toolkit import portdb
 
 
 def test_service_for_port_curated_overlay():
-    # routing / control-plane
-    assert portdb.service_for_port(179, "tcp")["service"] == "BGP"
-    assert portdb.service_for_port(179, "tcp")["category"] == "Routing"
-    assert portdb.service_for_port(3784, "udp")["service"] == "BFD-control"
-    # broadcast / pro-AV are flagged
+    # IANA owns the assignment; the repository overlay is separately labelled.
+    bgp = portdb.service_for_port(179, "tcp")
+    assert bgp["service"] == "bgp"
+    assert bgp["overlay_service"] == "BGP"
+    assert bgp["category"] == "Routing"
+    assert bgp["assignment_authoritative"] is True
+    assert bgp["semantics_authoritative"] is False
+    assert portdb.service_for_port(3784, "udp")["service"] == "bfd-control"
+    # Curated broadcast / pro-AV semantics remain useful but non-authoritative.
     ptp = portdb.service_for_port(319, "udp")
     assert ptp["category"] == "Broadcast-AV" and ptp["broadcast"] is True
-    assert portdb.service_for_port(4440, "udp")["service"] == "Dante-audio"
+    dante = portdb.service_for_port(4440, "udp")
+    assert dante["service"] == "Dante-audio"
+    assert dante["assignment_authoritative"] is False
     assert portdb.is_broadcast_av_port(5004, "udp") is True
     # storage / OT
     assert portdb.service_for_port(3260, "tcp")["category"] == "Storage"
     assert portdb.service_for_port(502, "tcp")["category"] == "OT-ICS"
-    # the only L4 ports this fleet's ACLs reference resolve to friendly names
-    assert portdb.service_for_port(67, "udp")["service"] == "DHCP-server"
-    assert portdb.service_for_port(68, "udp")["service"] == "DHCP-client"
+    # Friendly overlay labels do not replace official BOOTP assignments.
+    assert portdb.service_for_port(67, "udp")["service"] == "bootps"
+    assert portdb.service_for_port(67, "udp")["overlay_service"] == "DHCP-server"
+    assert portdb.service_for_port(68, "udp")["service"] == "bootpc"
+    assert portdb.service_for_port(68, "udp")["overlay_service"] == "DHCP-client"
+
+
+def test_iana_aliases_and_overlay_collisions_are_preserved_without_overwrite():
+    http = portdb.service_for_port(80, "tcp")
+    assert http["service"] == "http"
+    assert http["aliases"] == ["www", "www-http"]
+    assert http["alias_records"] == [
+        {"service": "www", "description": "World Wide Web HTTP"},
+        {"service": "www-http", "description": "World Wide Web HTTP"},
+    ]
+
+    collision = portdb.service_for_port(4444, "udp")
+    assert collision["service"] == "krb524"
+    assert collision["aliases"] == ["nv-video"]
+    assert collision["overlay_service"] == "Dante-audio"
+    assert collision["overlay_status"] == "conflict-suppressed"
+    assert collision["category"] == ""
+    assert collision["broadcast"] is False
+    assert collision["source_authoritative"] is True
+    assert portdb.service_for_port(4455, "udp")["service"] == "prchat-user"
+    assert portdb.service_for_port(8800, "udp")["service"] == "sunwebadmin"
 
 
 def test_service_for_port_iana_long_tail_and_unknown():
@@ -35,9 +64,13 @@ def test_classify_multicast_longest_prefix():
     assert portdb.classify_multicast("224.0.0.5")["group"] == "OSPF-AllSPF"
     assert portdb.classify_multicast("224.0.1.129")["group"] == "PTP-primary"
     assert portdb.classify_multicast("224.0.1.129")["broadcast"] is True
-    # Dante / admin-scoped ranges
-    assert portdb.classify_multicast("239.254.1.2")["group"] == "Dante"
-    assert portdb.classify_multicast("239.10.20.30")["group"] == "admin-scoped"
+    assert portdb.classify_multicast("224.0.1.129")[
+        "source_authoritative"
+    ] is False
+    # No generic SSM, admin-scoped, or undocumented Dante claim is retained.
+    assert portdb.classify_multicast("232.1.2.3") is None
+    assert portdb.classify_multicast("239.254.1.2") is None
+    assert portdb.classify_multicast("239.10.20.30") is None
     # not multicast / junk
     assert portdb.classify_multicast("10.0.0.1") is None
     assert portdb.classify_multicast("garbage") is None

@@ -162,6 +162,33 @@ def test_multiple_distinct_same_train_fixes_is_manual_verify_not_min():
     assert set(d["same_train_fixes"]) == {"17.9.2", "17.9.6"}
 
 
+def test_unparseable_entry_in_a_fixed_list_is_never_silently_dropped():
+    """C2 regression (review 2026-07-28 #26): an entry the comparator cannot read VANISHED the moment a
+    sibling entry parsed onto the device's train. A CVE fixed on 17.9.6 — spelled 'Cisco IOS XE 17.9.6' by
+    the feed — shipped TARGET_RELEASE 17.9.4, a release that is STILL VULNERABLE, and nothing in the row,
+    the reason or same_train_fixes disclosed the dropped release. It also defeated the >=2-same-train-fixes
+    ambiguity guard, because only one fix was left to count. Fail closed and NAME the unread entry."""
+    d = choose_target("17.9.2", ["17.9.4", "Cisco IOS XE 17.9.6"], platform_hint="ios-xe")
+    assert d["needs_upgrade"] == MANUAL_VERIFY and d["target"] is None     # NOT 17.9.4 (still vulnerable)
+    assert d["unparsed_fixes"] == ["Cisco IOS XE 17.9.6"]
+    assert "Cisco IOS XE 17.9.6" in d["reason"]
+    # and it survives the per-host merge + the join, into the row an engineer actually reads
+    res = UT.build_upgrade_targets(
+        [{"id": "CVE-2023-20198", "fixed": ["17.9.4", "Cisco IOS XE 17.9.6"]}],
+        {"H": {"sw_version": "17.9.2", "platform": "ios-xe"}}, {"http_server_flagged": ["H"]},
+        cve_map={"CVE-2023-20198": {"group": "http_server_flagged", "applies_to": ("ios", "ios-xe"),
+                                    "surface": "web"}})
+    row = next(r for r in res["rows"] if r["host"] == "H")
+    assert row["needs_upgrade"] == MANUAL_VERIFY and row["target"] is None
+    assert row["unparsed_fixes"] == ["Cisco IOS XE 17.9.6"]
+
+
+def test_a_fully_parseable_fixed_list_still_yields_a_confident_target():
+    """The fail-closed gate must not swallow the confident cases it is not about."""
+    d = choose_target("17.9.1", ["17.9.4a"], platform_hint="ios-xe")
+    assert d["needs_upgrade"] is True and d["target"] == "17.9.4a" and d["unparsed_fixes"] == []
+
+
 def test_multiple_same_train_fixes_never_reports_false_current():
     # device between two listed fixes must NOT be called "already current" while a higher fix exists
     d = choose_target("17.9.4", ["17.9.6", "17.9.2"], platform_hint="ios-xe")
@@ -194,16 +221,16 @@ def test_merge_any_manual_verify_makes_host_manual_verify():
 
 def test_device_versions_from_devices_json_parses_inline_versions():
     groups = {"replace_upgrade_train": [
-        "10GSW01-BC-CA11F17 [NX-OS 6.x 6.0(2)N2(3)]",
-        "AS01-BC-CA01RA13-CXDOH [IOS XE 3.x 03.06.06E]",
-        "DS-VSS-AVID-CAR05-R37-AJDOH [IOS XE 3.x 03.11.03a.E]",
+        "MERIDIAN-SW-001 [NX-OS 6.x 6.0(2)N2(3)]",
+        "MERIDIAN-SW-051 [IOS XE 3.x 03.06.06E]",
+        "MERIDIAN-SW-STORAGE-179 [IOS XE 3.x 03.11.03a.E]",
     ]}
     dv = UT.device_versions_from_devices_json(groups)
-    assert dv["10GSW01-BC-CA11F17"]["sw_version"] == "6.0(2)N2(3)"
-    assert dv["10GSW01-BC-CA11F17"]["platform"] == "nxos"
-    assert dv["AS01-BC-CA01RA13-CXDOH"]["sw_version"] == "03.06.06E"
-    assert dv["AS01-BC-CA01RA13-CXDOH"]["platform"] == "ios-xe"    # "IOS XE 3.x" label → ios-xe, not classic ios
-    assert dv["DS-VSS-AVID-CAR05-R37-AJDOH"]["sw_version"] == "03.11.03a.E"
+    assert dv["MERIDIAN-SW-001"]["sw_version"] == "6.0(2)N2(3)"
+    assert dv["MERIDIAN-SW-001"]["platform"] == "nxos"
+    assert dv["MERIDIAN-SW-051"]["sw_version"] == "03.06.06E"
+    assert dv["MERIDIAN-SW-051"]["platform"] == "ios-xe"    # "IOS XE 3.x" label → ios-xe, not classic ios
+    assert dv["MERIDIAN-SW-STORAGE-179"]["sw_version"] == "03.11.03a.E"
 
 
 def test_device_versions_from_snapshot():
@@ -329,7 +356,7 @@ def test_end_to_end_psirt_pipeline(tmp_path):
     d.mkdir()
     (d / "feed-2026-07-07.jsonl").write_text(IF.build_feed(entries, generated="2026-07-07"), encoding="utf-8")
     loaded = IF.load_feeds(str(d))
-    assert loaded["advisories"], "signed feed should round-trip through the provenance gate"
+    assert loaded["advisories"], "hash-sealed feed should round-trip through the intake gate"
 
     cve_map = {"CVE-2023-20198": {"group": "http_server_flagged", "applies_to": ("ios-xe",), "surface": "web"},
                "CVE-XXXX-NXOS": {"group": "smart_install_flagged", "applies_to": ("nxos",), "surface": "nx"}}

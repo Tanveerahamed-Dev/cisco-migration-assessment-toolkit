@@ -355,3 +355,178 @@ def test_each_tool_call_returns_its_pure_function_output(rich):
     for name, args, expected in cases:
         got = _reassemble(asyncio.run(server.call_tool(name, args)), expected)
         assert got == expected, f"tool {name!r} returned {got!r} != its pure output {expected!r}"
+
+
+# --- the socket transports are a listener, not "no egress" (finding #56) ---------------
+# `--transport sse|streamable-http` serves the ENTIRE snapshot -- hostnames, mgmt IPs via
+# search_devices, punch-list findings, blast radius -- with no authentication, while the
+# module docstring said "never hits the network" and the CLI help said "offline, no egress".
+# The bind address is the only control there is, so it must be THIS module's pin (the
+# installed mcp defaults to loopback, but that is the dependency's promise, not ours).
+
+def test_build_server_pins_the_listener_host_itself(monkeypatch):
+    pytest.importorskip("mcp")
+    import mcp.server.fastmcp as F
+    seen = {}
+
+    class _FakeFastMCP:
+        def __init__(self, name=None, **kw):
+            seen.update({"name": name}, **kw)
+
+        def tool(self, *a, **k):
+            return lambda fn: fn
+
+    monkeypatch.setattr(F, "FastMCP", _FakeFastMCP)
+    M.build_server({}, name="probe")
+    assert seen.get("host") == M.LISTEN_HOST == "127.0.0.1", (
+        "build_server must pass the bind host explicitly -- inheriting the mcp package's "
+        f"default leaves an unauthenticated snapshot server one dependency default away "
+        f"from 0.0.0.0 (got {seen!r})")
+    assert seen.get("port") == M.LISTEN_PORT
+
+
+def test_cli_help_stops_claiming_no_egress_for_socket_transports(capsys):
+    with pytest.raises(SystemExit):
+        M.main(["--help"])
+    text = capsys.readouterr().out
+    assert "UNAUTHENTICATED" in text                     # the exposure is stated, not implied
+    assert "offline, no egress)" not in text             # the old unqualified claim is gone
+    assert M.LISTEN_HOST in text                         # ...and the bind is disclosed
+    assert "UNAUTHENTICATED" in M.__doc__ or "no authentication" in M.__doc__
+
+
+def test_socket_transport_refuses_a_non_loopback_fastmcp_host(monkeypatch, tmp_path):
+    """A FASTMCP_HOST pointing off-host states an intent this server must never honour: it has
+    no auth, so it says so and exits instead of silently binding loopback anyway.
+
+    `build_server` is faked for the WHOLE test on purpose: without the guard this path reaches
+    `server.run(transport='sse')`, which really does start a listener (that is the finding).
+    """
+    pytest.importorskip("mcp")
+    snap = tmp_path / "s.json"
+    snap.write_text("{}", encoding="utf-8")
+    calls = {}
+    monkeypatch.setattr(M, "build_server", lambda s, name=None: type(
+        "S", (), {"run": lambda self, transport=None: calls.setdefault("transport", transport)})())
+    monkeypatch.setenv("FASTMCP_HOST", "0.0.0.0")
+    with pytest.raises(SystemExit) as ex:
+        M.main([str(snap), "--transport", "sse"])
+    assert "refusing to serve the snapshot off-host" in str(ex.value)
+    assert calls == {}                                  # never reached the listener
+    monkeypatch.setenv("FASTMCP_HOST", "127.0.0.1")     # a loopback value is accepted (no exit here)
+    M.main([str(snap), "--transport", "sse"])
+    assert calls["transport"] == "sse"
+
+
+# ===========================================================================================
+# review r9 F1 — the assistant's dossier exits published a bare `risk_band`. The band is
+# computed with an ABSTAINING axis weighted at ZERO exposure, so an asset whose axes were
+# never collected bands 'Low' with the verdict "No stacked risk". search_devices already
+# refuses to FABRICATE a band when there are no dossiers; the same honesty is owed when the
+# band EXISTS but rests on mostly-unassessed axes.
+# ===========================================================================================
+
+def _real_dossier_snapshot(assessed: bool):
+    """A snapshot section built by the REAL producer (analyze.compute_device_dossiers), never a
+    hand-shaped dict — a fixture in the shape the reader expects only proves the reader agrees
+    with itself. assessed=False -> 8 of 11 axes abstain -> band 'Low', index 0."""
+    from cisco_toolkit.analyze import compute_device_dossiers
+    if not assessed:
+        dd = compute_device_dossiers(
+            health_scores=[{"switch": "sw0", "score": 70, "band": "Good", "role": "access"}],
+            failure_impact=[{"host": "sw0", "stranded": 40, "vlans_impacted": 2}],
+            lifecycle_risk={"per_device": [{"host": "sw0", "band": "Unknown"}]})
+    else:
+        dd = compute_device_dossiers(
+            health_scores=[{"switch": "sw0", "score": 92, "band": "Excellent", "role": "access"}],
+            failure_impact=[{"host": "sw0", "stranded": 4, "vlans_impacted": 1}],
+            lifecycle_risk={"per_device": [{"host": "sw0", "band": "Active", "model": "C9300"}]},
+            software_risk={"per_device": [{"host": "sw0", "band": "OK", "n_findings": 0}]},
+            security={"sw0": {"checks": [{"id": "x", "status": "pass"}]}},
+            config_hygiene={"sw0": {"findings": []}})
+    return {"devices": {"sw0": {"hostname": "sw0"}}, "device_dossiers": dd,
+            "health_scores": [{"switch": "sw0", "band": dd["per_device"][0]["health_band"]}],
+            "interfaces": {}}
+
+
+def test_dossier_coverage_mirrors_the_canonical_rule():
+    """mcp_server.dossier_coverage is a MIRROR of cisco_toolkit/excel.py::dossier_coverage (this
+    data layer is deliberately stdlib-only, so it cannot import it). Drift is caught by EXECUTION
+    over the canonical case table, not by a comment."""
+    from cisco_toolkit.excel import DOSSIER_COVERAGE_CASES, dossier_coverage
+
+    thins = {k for k, v in DOSSIER_COVERAGE_CASES.items() if v[1][2]}
+    assert thins and (set(DOSSIER_COVERAGE_CASES) - thins)      # NON-VACUITY: both verdicts present
+    for label, (row, expected) in DOSSIER_COVERAGE_CASES.items():
+        assert list(M.dossier_coverage(row)) == list(expected), label
+        assert list(M.dossier_coverage(row)) == list(dossier_coverage(row)), label
+
+
+def test_list_devices_qualifies_a_band_that_rests_on_unassessed_axes():
+    """review r9 F1. `list_devices` returned host/.../risk_band/verdict, so an assistant asked to
+    list the fleet saw 'sw0 ... Low ... No stacked risk' with nothing to say 8 of its 11 risk axes
+    were never assessed. Pre-fix the row had no n_na, no n_axes and no basis at all."""
+    snap = _real_dossier_snapshot(assessed=False)
+    row0 = snap["device_dossiers"]["per_device"][0]
+    assert row0["risk_band"] == "Low" and row0["n_na"] == 8      # the defect's precondition
+    row = M.list_devices(snap)[0]
+    assert row["risk_band"] == "Low"                            # the engine's band is NEVER re-derived
+    assert (row["n_na"], row["n_axes"], row["coverage_thin"]) == (8, 11, True)
+    assert "8 of 11 risk axes NOT ASSESSED" in row["risk_band_basis"]
+    assert "rests on absent evidence" in row["risk_band_basis"]
+
+
+def test_list_devices_assessed_asset_is_not_flagged():
+    """NON-VACUITY: an asset whose axes WERE assessed (5 of 11 na) still states its census but is
+    NOT declared un-evidenced — otherwise the qualifier carries no information."""
+    snap = _real_dossier_snapshot(assessed=True)
+    row = M.list_devices(snap)[0]
+    assert (row["n_na"], row["n_axes"], row["coverage_thin"]) == (5, 11, False)
+    assert row["risk_band_basis"] == "5 of 11 risk axes NOT ASSESSED"
+    assert "absent evidence" not in row["risk_band_basis"]
+
+
+def test_search_devices_posture_carries_the_band_basis():
+    """The `posture` string is the sentence an assistant quotes. It read
+    'health: Good; risk: Low' for an asset whose axes were never assessed."""
+    snap = _real_dossier_snapshot(assessed=False)
+    hit = M.search_devices(snap, "sw0")["matches"][0]
+    assert hit["risk_band"] == "Low"
+    assert "risk: Low (" in hit["posture"] and "8 of 11 risk axes NOT ASSESSED" in hit["posture"]
+    assert "rests on absent evidence" in hit["risk_band_basis"]
+
+    clean = M.search_devices(_real_dossier_snapshot(assessed=True), "sw0")["matches"][0]
+    assert "absent evidence" not in clean["posture"]             # NON-VACUITY
+
+
+def test_search_devices_still_refuses_to_fabricate_a_band_without_dossiers():
+    """Regression guard on the behaviour that was already right: no dossiers -> risk_band None,
+    posture 'not-assessed', and NO basis string invented for a band that does not exist."""
+    snap = {"devices": {"sw0": {"hostname": "sw0"}},
+            "health_scores": [{"switch": "sw0", "band": "Good"}], "interfaces": {}}
+    hit = M.search_devices(snap, "sw0")["matches"][0]
+    assert hit["risk_band"] is None and hit["risk_band_basis"] is None
+    assert "risk: not-assessed" in hit["posture"]
+
+
+def test_device_detail_carries_the_basis_and_never_mutates_the_snapshot():
+    """device_detail hands the assistant the whole dossier row; the qualifier travels with it, and
+    the returned dict is a COPY so the loaded snapshot is not poisoned for later reads."""
+    snap = _real_dossier_snapshot(assessed=False)
+    row = M.device_detail(snap, "SW0")
+    assert row["host"] == "sw0"
+    assert "8 of 11 risk axes NOT ASSESSED" in row["risk_band_basis"]
+    assert "risk_band_basis" not in snap["device_dossiers"]["per_device"][0]
+
+
+def test_band_basis_fails_closed_when_the_axis_census_is_absent():
+    """An OLDER snapshot with no `exposures` census has no denominator, so how much of the band
+    rests on evidence is itself NOT ASSESSED. It must never read as a clean 0-of-0."""
+    snap = {"devices": {"sw0": {"hostname": "sw0"}}, "interfaces": {}, "health_scores": [],
+            "device_dossiers": {"per_device": [
+                {"host": "sw0", "risk_band": "Low", "risk_index": 0, "verdict": "No stacked risk."}]}}
+    row = M.list_devices(snap)[0]
+    assert row["coverage_thin"] is True and row["n_axes"] == 0
+    assert "coverage NOT ASSESSED" in row["risk_band_basis"]
+    assert "not evidence of health" in row["risk_band_basis"]
+    assert "coverage NOT ASSESSED" in M.search_devices(snap, "sw0")["matches"][0]["posture"]

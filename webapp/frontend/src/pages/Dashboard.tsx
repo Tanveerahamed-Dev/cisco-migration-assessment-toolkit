@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, bandColor, Campaign } from "../api";
 import { ErrorBox, Loading, SegBar, useAsync, useToast } from "../components/ui";
+import { VerificationBadge } from "../components/VerificationStatus";
 
 function PostureStrip({ c }: { c: Campaign }) {
   const s = c.latest_summary;
@@ -9,7 +10,10 @@ function PostureStrip({ c }: { c: Campaign }) {
   return (
     <div style={{ marginTop: 14 }}>
       <div className="row-flex" style={{ justifyContent: "space-between", marginBottom: 8 }}>
-        <span className="faint" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".5px" }}>Latest posture</span>
+        <span className="row-flex" style={{ gap: 8 }}>
+          <span className="faint" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".5px" }}>Latest posture</span>
+          <VerificationBadge value={s.verification} compact />
+        </span>
         <span className="dim" style={{ fontSize: 12 }}>
           {s.n_switches} switches · avg {typeof s.avg_health === "number" ? s.avg_health : (s.avg_health || "—")}/100 · {s.punchlist.crit_high} crit/high
         </span>

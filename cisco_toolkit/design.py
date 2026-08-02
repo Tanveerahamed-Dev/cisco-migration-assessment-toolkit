@@ -23,16 +23,142 @@ from collections import Counter, defaultdict
 from datetime import datetime
 
 from cisco_toolkit.analyze import vlan_inventory
+# The overlay-status sentinel for a multicast group the offline registry had NO entry for. Imported from
+# its OWNER rather than re-spelled here, so the §2.5 classification-basis cell cannot drift from the
+# producer that stamps it (analyze._mcast_authority).
+from cisco_toolkit.analyze import _UNCLASSIFIED_OVERLAY_STATUS as _MC_UNCLASSIFIED
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_inputs_required, add_table, add_toc
 # The family's shared falsy-guard coercers (archreview/deck import the same pair): `x or {}` / `x or []`
 # substitutes only for FALSY values, so a TRUTHY non-dict/non-list survives and crashes the next deref.
 from cisco_toolkit.docmeta import as_dict as _as_dict
 from cisco_toolkit.docmeta import as_list as _as_list
 from cisco_toolkit.textutils import _as_num, xml_safe, xml_safe_deep
+from cisco_toolkit import ssot as _ssot_mod   # Law 1 accessors (canonical facts + segmentation posture)
 
 logger = logging.getLogger(__name__)
 
 _LC_BAND_RANK = {"Past-LDoS": 0, "Past-EoS": 1, "Near-LDoS": 2, "Active": 3, "Unknown": 4}
+
+
+def _capped_join(items, cap: int, sep: str = ", ") -> str:
+    """Join at most `cap` items and DISCLOSE the remainder with the house `(+N more)` marker.
+
+    The family rule (stated in `excel.py :: _xls_cell_value`, applied in `html.py`'s device-list column
+    and `mop.py` §x.2): a display cap must name what it dropped, so what is SHOWN plus what is HIDDEN
+    reconciles to the total the reader is given elsewhere in the same document. A silently shortened
+    list in an HLD/LLD becomes a design that omits what was cut — §2.1 printed a Count of 187 beside
+    30 device names, and §3.3 promised 'the build facts a re-implementation must reproduce' while
+    dropping a 34-uplink switch's last 20 uplinks without a mark."""
+    vals = [str(x) for x in items]
+    if len(vals) <= cap:
+        return sep.join(vals)
+    return sep.join(vals[:cap]) + f" (+{len(vals) - cap} more)"
+
+
+def _integrity_failures(snap: dict) -> list:
+    """All assessment failures a design reader must treat as unavailable, never as empty/clean."""
+    s = snap if isinstance(snap, dict) else {}
+    ai = _as_dict(s.get("assessment_integrity"))
+    failed = ai.get("failed_phases")
+    failures = [str(x) for x in failed] if isinstance(failed, list) else ([str(failed)] if failed else [])
+    for key, value in ai.items():
+        if key not in ("failed_phases", "n_violations") and \
+                str(value).strip().lower() in ("failed", "compute_failed", "unavailable", "error"):
+            failures.append(f"{key}: {value}")
+    for key, value in s.items():
+        if isinstance(value, dict) and value.get("_unavailable"):
+            failures.append(f"{key}: unavailable")
+    return list(dict.fromkeys(failures))
+
+
+def _phase_failed(failures, *tokens) -> bool:
+    def _key(value) -> str:
+        return "".join(ch for ch in str(value).lower() if ch.isalnum())
+    return any(any(_key(token) in _key(item) for token in tokens) for item in failures)
+
+
+def _av_authority(mi) -> str:
+    """The authority qualifier that must travel with any broadcast/AV (on-air) multicast count.
+
+    MIRROR of `cisco_toolkit/runbook.py::_av_authority` — the already-reviewed wording for this
+    qualifier. It is duplicated rather than imported because runbook.py is a peer presentation module
+    (importing one deliverable writer from another couples their optional-python-docx import paths);
+    the duplication is caught by EXECUTION, not by hope —
+    tests/test_design.py::test_av_authority_mirrors_the_runbook_wording drives BOTH implementations
+    over one case table and fails the moment they disagree.
+
+    Why it exists: analyze.compute_multicast_intelligence classifies a group as on-air from the offline
+    registry's CURATED media semantics and publishes the basis alongside it
+    (`summary.n_av_groups_authoritative`, per-group `on_air_authoritative`). On the shipped port pack
+    that count is ZERO — every multicast row is curated — so an HLD that names "44 broadcast/AV
+    group(s)" with no qualifier presents a curated judgement in the same voice as an IANA-assigned
+    fact, and that same flag is what escalates a mac-alias finding from Medium to High
+    (analyze.py:2774). FAIL-CLOSED: a snapshot carrying no authority census at all reads NOT ASSESSED,
+    never 'authoritative'."""
+    s = _as_dict(_as_dict(mi).get("summary"))
+    if "n_av_groups_authoritative" not in s:
+        return (" — on-air classification authority NOT ASSESSED in this snapshot; treat the "
+                "broadcast/AV label as curated, not authoritative")
+    n_auth = _as_num(s.get("n_av_groups_authoritative"))
+    n_av = _as_num(s.get("n_av_groups"))
+    if n_auth <= 0:
+        return (" — NONE of them classified on-air by an authoritative source: the broadcast/AV label is "
+                "a CURATED offline-registry classification, not a measurement")
+    if n_auth > n_av:
+        # `n_av_groups_authoritative` and `n_av_groups` are published independently, so "N of M" is
+        # only meaningful when N <= M. Unchecked, an incoherent snapshot renders "7 of 3", and a
+        # reader has no way to tell that from a real ratio. Disclose the incoherence instead.
+        return (f" — census INCOHERENT: {n_auth:g} classification(s) reported as authoritative out of "
+                f"{n_av:g} on-air group(s); the authority split cannot be stated for this snapshot")
+    return (f" — {n_auth:g} of {n_av:g} on-air classification(s) rest on an authoritative source; the "
+            "remainder are CURATED, not measurements")
+
+
+# The per-group classification-basis cell. `service_map.multicast.classified_groups` (what §2.5 renders)
+# carries the group ADDRESS — collected evidence — beside a NAME and CATEGORY that are the offline
+# registry's semantics. `multicast_intelligence.groups` is the only place the per-group authority verdict
+# is published, so the basis is looked up there BY ADDRESS.
+_AV_BASIS_AUTHORITATIVE = "AUTHORITATIVE (registry source)"
+_AV_BASIS_CURATED = "CURATED — unverified"
+_AV_BASIS_UNCLASSIFIED = "UNCLASSIFIED — no registry match"
+_AV_BASIS_NOT_ASSESSED = "NOT ASSESSED"
+
+
+def _mcast_authority_index(mi) -> dict:
+    """group address -> classification-basis cell, from ``multicast_intelligence.groups``.
+
+    A group ABSENT from the index (an older snapshot with no multicast_intelligence at all, a group the
+    intelligence pass never saw, or a record whose authority keys are missing OR unusable) has NO
+    verdict, and the caller renders NOT ASSESSED for it.
+
+    Keyed on whether the authority value is USABLE, never on key-presence plus a coercion. Both failure
+    directions are real: an ABSENT key coerced to False would be reported as the (assertive) 'CURATED'
+    verdict — 'we did not assess this' and 'we assessed this and it is curated' are different claims —
+    and a MALFORMED truthy value ("unknown", {}, a list) coerced by bare truthiness would be reported as
+    AUTHORITATIVE, which is the worse error. The producer publishes these as real booleans
+    (analyze.compute_multicast_intelligence), so anything that is not a bool is unusable, not a verdict."""
+    def _flag(rec, key):
+        v = rec.get(key, None)
+        return v if isinstance(v, bool) else None      # non-bool (or absent) = no usable verdict
+
+    out: dict = {}
+    for g in (_as_dict(x) for x in _as_list(_as_dict(mi).get("groups"))):
+        key = str(g.get("group") or "").strip()
+        if not key:
+            continue
+        on_air_auth, sem_auth = _flag(g, "on_air_authoritative"), _flag(g, "semantics_authoritative")
+        if on_air_auth is None and sem_auth is None:
+            continue                       # no usable authority verdict for this group -> NOT ASSESSED
+        if on_air_auth or sem_auth:
+            out[key] = _AV_BASIS_AUTHORITATIVE
+        elif str(g.get("overlay_status") or "") == _MC_UNCLASSIFIED:
+            # The registry had NO entry for this address, so there is no curation to report either --
+            # its Name/Category are the generic fallback, not a classification anybody made. Saying
+            # "CURATED" here would claim a judgement that was never rendered.
+            out[key] = _AV_BASIS_UNCLASSIFIED
+        else:
+            out[key] = _AV_BASIS_CURATED
+    return out
 
 
 def _bom_rows(disposition: str, seq) -> list:
@@ -65,26 +191,20 @@ def _vlan_inventory(snap: dict):
 
 
 def _segmentation_facts(snap: dict):
-    """Derive a segmentation posture directly from the interfaces (known shape), so the section is
-    accurate regardless of the segmentation compute's internal layout: the set of non-default VRFs in
-    use, and the count of SVIs carrying an ingress/egress ACL. Returns (vrfs:set, n_acl_svis:int,
-    n_svis:int)."""
-    vrfs: set = set()
-    n_acl_svis = 0
-    n_svis = 0
-    _ifaces = snap.get("interfaces")
-    for host, ports in (_ifaces if isinstance(_ifaces, dict) else {}).items():
-        for p, d in (ports if isinstance(ports, dict) else {}).items():
-            if not isinstance(d, dict):
-                continue   # a truthy non-dict port-detail slips `or {}` and crashes d.get() (same class)
-            vrf = str(d.get("vrf") or "").strip()   # str()-coerce a wrong-typed device leaf before .strip() (audit-6 #3 class)
-            if vrf and vrf.lower() not in ("default", "global"):
-                vrfs.add(vrf)
-            if re.match(r"^Vlan\d+$", p, re.IGNORECASE) and (d.get("svi_ip") or ""):
-                n_svis += 1
-                if str(d.get("acl_in") or "").strip() or str(d.get("acl_out") or "").strip():
-                    n_acl_svis += 1
-    return vrfs, n_acl_svis, n_svis
+    """The segmentation posture, read from its ONE owner via ``ssot.segmentation_facts`` (which falls
+    back to the same interface derivation this used to do inline, for pre-``segmentation`` snapshots).
+
+    Returns ``(gw_vrfs:list, other_vrfs:list, n_acl_svis:int, n_svis:int)`` — note the VRF answer is
+    now SPLIT, because the old single ``vrfs`` set conflated two different facts under one label:
+    VRFs that actually CARRY a gateway SVI (what a segmentation claim rests on — the owner's
+    ``segmentation.summary.n_vrfs`` basis) versus non-default VRFs configured anywhere on the box
+    (mgmt0's management VRF, a vPC keepalive VRF), which segment no user traffic. On the Meridian reference fleet the
+    old count rendered "4 non-default VRF(s)" in §2.6 while §3/§4 of the SAME document reported
+    "202 VLAN(s) across a single global VRF", and the runbook reported "1 VRF(s) across 231 gateway
+    SVI(s)" — three answers to one question in one deliverable set."""
+    facts = _ssot_mod.segmentation_facts(snap)
+    return (list(facts.get("gateway_vrfs") or []), list(facts.get("other_vrfs") or []),
+            _as_num(facts.get("n_with_acl")), _as_num(facts.get("n_gateways")))
 
 
 def build_design_traceability(snap_dict: dict) -> list:
@@ -194,6 +314,11 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     # _as_dict; design.py was the asymmetric gap (multi-domain audit L4).
     _eb = snap.get("executive_brief"); eb = _eb if isinstance(_eb, dict) else {}
     _bp = snap.get("design_blueprint"); bp = _bp if isinstance(_bp, dict) else {}   # canonical design blueprint
+    integrity_failures = _integrity_failures(snap)
+    design_unavailable = bool(bp.get("_unavailable")) or _phase_failed(
+        integrity_failures, "design blueprint", "requirements")
+    punch_available = isinstance(snap.get("punchlist"), list) and not _phase_failed(
+        integrity_failures, "punch-list", "punchlist")
 
     lc_by_host = {}
     for r in _R(lifecycle.get("per_device")):   # _R: a truthy non-list -> [] AND dict rows only (r.get below)
@@ -212,7 +337,20 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     _sc = eb.get("scale"); _scale = _sc if isinstance(_sc, dict) else {}
     n_dev = _scale.get("n_devices") or len(devices)
     n_vlan = _scale.get("n_vlans") or len(vlans)
-    vrfs, n_acl_svis, n_svis = _segmentation_facts(snap)
+    # §1 reads the canonical INVENTORIED count, but every per-device enumeration below (§1 tier rows,
+    # §3.1 inventory, §3.4 Bill of Materials, §3.5 software plan) iterates snap['devices'] — the hosts
+    # that actually COLLECTED. On a 303-inventoried / 253-collected fleet the BoM totalled 253 chassis
+    # and went to procurement 50 short, with nothing in the document naming the gap. The two counts are
+    # different facts with different owners; render both and say which population each table covers
+    # (ops.py already does this on its title page). Never silently substitute one for the other.
+    n_enum = len(devices)                                   # what the enumerations below iterate
+    _n_uncollected = int(_as_num(n_dev, n_enum)) - n_enum    # fail-soft: a malformed scale -> 0 gap
+    _scope_note = (
+        f"Scope reconciliation: this table enumerates the {n_enum} device(s) that returned collected "
+        f"evidence, out of {n_dev} inventoried device(s) in scope (§1). The other {_n_uncollected} "
+        "did not collect — their contribution here is [NOT OBSERVED], not zero."
+    ) if _n_uncollected > 0 else ""
+    gw_vrfs, other_vrfs, n_acl_svis, n_svis = _segmentation_facts(snap)
 
     # ---- title page ----
     title = doc.add_paragraph(); title.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -260,6 +398,16 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     add_excellence_front(doc, snap_dict)
     # Deliverable Excellence (DE-01): consolidated Inputs-Required register (Law 9).
     add_inputs_required(doc, snap_dict)
+    if integrity_failures:
+        p = doc.add_paragraph()
+        r0 = p.add_run("ASSESSMENT INTEGRITY - UNVERIFIED: ")
+        r0.bold = True
+        r0.font.color.rgb = RGBColor(0xB0, 0x2A, 0x1E)
+        p.add_run(
+            f"{len(integrity_failures)} phase/sentinel failure(s) were recorded ("
+            + "; ".join(integrity_failures)
+            + "). Empty fallback sections are not treated as a clean design result. Repair the failed "
+              "analysis and regenerate before approving target-state decisions.")
     # ===== 1. Executive design summary =====
     doc.add_heading("1. Executive Design Summary", level=1)
     posture = eb.get("posture_statement") or (
@@ -279,12 +427,20 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
             "questions the design still needs answered.")
         mr.italic = True; mr.font.color.rgb = GREY
     table(["Design attribute", "As-built value"], [
-        ("Devices in scope", n_dev),
+        ("Devices in scope (inventoried)", n_dev),
+        ("…with collected evidence (the population §3.1 / §3.4 / §3.5 enumerate)",
+         f"{n_enum}" + (f" — {_n_uncollected} inventoried device(s) did NOT collect"
+                        if _n_uncollected > 0 else "")),
         ("L3 nodes (own an SVI or a routing adjacency)", len(l3_hosts)),
         ("L2-only access nodes", len(l2_hosts)),
         ("VLANs in use", n_vlan),
         ("Gateway SVIs", n_svis),
-        ("Routing VRFs (non-default)", len(vrfs) if vrfs else "0 (single global table)"),
+        # Two rows, not one: a VRF that carries no gateway SVI segments no user traffic, so folding it
+        # into a single "Routing VRFs" count contradicted §2.6/§4's "single global VRF" reading.
+        ("Routing VRFs carrying a gateway SVI",
+         len(gw_vrfs) if gw_vrfs else "0 (every gateway SVI is in the global table)"),
+        ("Other non-default VRFs configured (no gateway SVI)",
+         ", ".join(other_vrfs[:10]) if other_vrfs else "none"),
         ("Gateway SVIs with an ACL applied", f"{n_acl_svis} of {n_svis}"),
         ("Multi-gateway VLANs (FHRP candidates)", n_multi_gw),
         ("vPC / MLAG peerings", len([h for h, v in vpc.items() if v])),
@@ -298,18 +454,29 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         "Devices are tiered by their L3 participation recovered from the configuration: a node that owns "
         "a gateway SVI or forms a routing adjacency is treated as a core/distribution (L3) node; the "
         "remainder are L2 access nodes. This is an evidence-based tiering, not an assumption from naming.")
+    # The Count column states the true tier size, so the Devices cell must disclose its own cut or the
+    # row contradicts itself: on the 303-device fleet this printed "Access (L2-only) | 187 | <30 names>"
+    # and a reader building the access-tier work list from the cell was short 157 switches.
     table(["Tier", "Count", "Devices"], [
-        ("Core / Distribution (L3)", len(l3_hosts), ", ".join(sorted(l3_hosts)[:30]) or "—"),
-        ("Access (L2-only)", len(l2_hosts), ", ".join(sorted(l2_hosts)[:30]) or "—"),
+        ("Core / Distribution (L3)", len(l3_hosts), _capped_join(sorted(l3_hosts), 30) or "—"),
+        ("Access (L2-only)", len(l2_hosts), _capped_join(sorted(l2_hosts), 30) or "—"),
     ], widths=[2.2, 0.8, 4.0])
     # keystone devices (concentrated dependency) from failure_impact
-    keystones = sorted((r for r in failure_impact if isinstance(r, dict) and _as_num(r.get("stranded")) > 0),
-                       key=lambda r: -_as_num(r.get("stranded")))[:5]
+    keystones_all = [r for r in failure_impact if isinstance(r, dict) and _as_num(r.get("stranded")) > 0]
+    keystones = sorted(keystones_all, key=lambda r: -_as_num(r.get("stranded")))[:5]
     if keystones:
+        # Say "the N largest of M", not just the names: §2.4's "Keystone devices (strand endpoints if
+        # lost)" row states M (193 on the Meridian reference fleet) — an unqualified 5-device sentence reading "protect
+        # and sequence these first" is a headline the reader cannot reconcile with that row, and a
+        # migration sequenced off it protects 5 of 193.
         _label_run(doc.add_paragraph(), "Concentrated dependency:",
                    "the fabric leans on " + ", ".join(
                        f"{r.get('host')} ({r.get('stranded')} endpoints)" for r in keystones) +
-                   " — protect and sequence these first.")
+                   (f" — the {len(keystones)} largest of {len(keystones_all)} device(s) that strand "
+                    "endpoints if lost (§2.4 carries the full count); protect and sequence these "
+                    "first, then work the rest from the workbook's failure-impact evidence."
+                    if len(keystones_all) > len(keystones) else
+                    " — protect and sequence these first."))
 
     doc.add_heading("2.2 Layer-2 domain", level=2)
     root_count: Counter = Counter()
@@ -353,7 +520,14 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
             doc.add_paragraph(f"… and {len(l3f) - 40} more gateway(s); full register in the workbook.")
 
     doc.add_heading("2.4 Resilience & redundancy", level=2)
-    n_single_gw = sum(1 for r in l3f if "single-gateway" in str(r.get("risk") or ""))
+    # DISTINCT VLANs, not l3_forwarding ROWS. The row tally happened to equal the VLAN count on a
+    # clean snapshot (one single-gateway VLAN has, by construction, one gateway row), but the row is a
+    # (switch, VLAN) record, so a merged / re-analysed / uploaded snapshot carrying the same VLAN twice
+    # made this cell disagree with the two surfaces that already count VLANs -- archreview RES-2
+    # (`{str(r.get("vlan")) for r in l3f if "single-gateway" in ...}`) and design_advisor's
+    # sig["single_gw"] -- while runbook 6.1 states in prose that all three report "the same count".
+    # Same unit, one derivation (cross-module SSOT audit 2026-07-28).
+    n_single_gw = len({str(r.get("vlan")) for r in l3f if "single-gateway" in str(r.get("risk") or "")})
     # 'lacking/inconsistent' is the only row sourced from snap['fhrp'] (the problems-only consistency list);
     # n_multi_gw (candidates) and n_fhrp_cfg (running FHRP) are derived from l3_forwarding above so a cleanly
     # FHRP-redundant fabric is credited instead of misrepresented as 0-candidate / 0-FHRP.
@@ -364,8 +538,9 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         ("…lacking FHRP (missing / inconsistent)", n_fhrp_issue),
         ("Single-gateway VLANs (no FHRP peer)", n_single_gw),
         ("vPC / MLAG peerings", len([h for h, v in vpc.items() if v])),
-        ("Keystone devices (strand endpoints if lost)", len([r for r in failure_impact
-                                                             if isinstance(r, dict) and _as_num(r.get("stranded")) > 0])),
+        # ONE derivation, shared with §2.1's concentrated-dependency sentence (which now says "the 5
+        # largest of THIS number") — a recount here is a drift seam between two lines of one document.
+        ("Keystone devices (strand endpoints if lost)", len(keystones_all)),
     ], widths=[4.6, 2.2])
 
     doc.add_heading("2.5 Multicast & timing design", level=2)
@@ -376,10 +551,23 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     queriers = _as_list(mc.get("igmp_queriers"))
     ptp = _as_dict(mc.get("ptp"))
     ptp_active = sum(1 for v in ptp.values() if isinstance(v, dict) and v.get("operational"))
+    # The on-air / broadcast-AV authority census (analyze.compute_multicast_intelligence). Read up here
+    # because BOTH the headline sentence and the per-group table below have to carry it.
+    # `snap`, not `snap_dict`: the addresses this is keyed BY must have been through the same
+    # xml_safe_deep sanitisation as the addresses §2.5 renders, or a sanitised address would miss its
+    # own authority record and silently downgrade to NOT ASSESSED.
+    mcast_intel = _as_dict(snap.get("multicast_intelligence"))
+    av_basis = _mcast_authority_index(mcast_intel)
     # Render the section only when there is actual activity to report; a multicast dict that exists
     # but carries all-zero counts (a non-media fabric, or commands not collected) gets the fallback
     # instead of an all-zeros paragraph that reads as filler in a client deliverable.
-    if mc.get("active_switch_count") or mc.get("active_interfaces") or groups or queriers or ptp:
+    multicast_unavailable = _phase_failed(
+        integrity_failures, "multicast intelligence", "service map")
+    if multicast_unavailable:
+        doc.add_paragraph(
+            "UNVERIFIED - multicast/timing synthesis failed for this run. An empty activity set "
+            "is not evidence that multicast or PTP is absent; repair and regenerate.")
+    elif mc.get("active_switch_count") or mc.get("active_interfaces") or groups or queriers or ptp:
         doc.add_paragraph(
             f"Active multicast was observed on {mc.get('active_switch_count', 0)} switch(es) across "
             f"{mc.get('active_interfaces', 0)} interface(s); {len(groups)} group(s) were classified and "
@@ -388,19 +576,47 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
             "On a broadcast fabric these are the production media, Dante/AES67 and ST-2110/PTP flows; "
             "the migration design must preserve querier coverage and the PTP clock hierarchy.")
         if groups:
-            table(["Group", "Name", "Category"],
-                  [(g.get("group"), g.get("name") or "—", g.get("category") or "—")
+            # FOUR columns, not three. The Group ADDRESS (and the fact the fabric was observed carrying
+            # it) is collected evidence; the NAME and CATEGORY are the offline registry's semantics, and
+            # on the shipped pack every multicast row of that registry is CURATED — no authoritative
+            # source asserts a group is broadcast/AV. Rendered as (group, name, category) alone, an HLD
+            # states a curated hint in the same voice as an observed fact, and the same on-air flag is
+            # what escalates a mac-alias finding to High (analyze.py:2774). The basis column keeps the
+            # two apart per row; a group with no published authority verdict reads NOT ASSESSED (never
+            # "curated", which would itself be an assertion, and never blank).
+            table(["Group", "Name", "Category", "Classification basis"],
+                  [(g.get("group"), g.get("name") or "—", g.get("category") or "—",
+                    av_basis.get(str(g.get("group") or "").strip(), _AV_BASIS_NOT_ASSESSED))
                    for g in (_as_dict(x) for x in groups[:15])],   # per-element: a scalar row -> {} not g.get() crash
-                  widths=[1.6, 2.2, 1.8])
+                  widths=[1.5, 1.9, 1.5, 1.9])
+            doc.add_paragraph(
+                "Classification basis — the Group address and its observed multicast activity are "
+                "collected evidence; the Name and Category are the offline port-registry's media "
+                "semantics for that address, and are NOT a measurement of what the group actually "
+                "carries. On-air / broadcast-AV classification authority for the classified group(s)"
+                f"{_av_authority(mcast_intel)}. Confirm any group whose basis is CURATED, UNCLASSIFIED "
+                "or NOT ASSESSED with the customer before the design commits to preserving it as a "
+                "media flow.")
+            # The paragraph directly above states the FULL classified-group count (73 on the Meridian reference fleet);
+            # this table showed 15 of them with no mark, so the design "must preserve querier coverage"
+            # for a group list the reader has no way to know is 20% of the real one.
+            if len(groups) > 15:
+                doc.add_paragraph(
+                    f"…and {len(groups) - 15} further classified group(s) NOT listed above "
+                    f"({len(groups)} in total, the count stated in the paragraph above) — the "
+                    "migration design must preserve delivery for all of them; the full classification "
+                    "is in the workbook.")
     else:
         doc.add_paragraph("No multicast/PTP activity was classified in the collected output "
                           "(either not a media fabric, or the relevant show commands were not captured).")
 
     doc.add_heading("2.6 Segmentation & security posture", level=2)
     doc.add_paragraph(
-        ("The fabric uses a single global routing table (no non-default VRFs were observed); "
-         if not vrfs else
-         f"The fabric uses {len(vrfs)} non-default VRF(s): {', '.join(sorted(vrfs)[:10])}. ") +
+        ("Every gateway SVI is in the global routing table (no non-default VRF carries one). "
+         if not gw_vrfs else
+         f"{len(gw_vrfs)} non-default VRF(s) carry a gateway SVI: {', '.join(gw_vrfs[:10])}. ") +
+        (f"A further {len(other_vrfs)} non-default VRF(s) are configured ({', '.join(other_vrfs[:6])}) "
+         "but carry no gateway SVI, so they segment no user traffic. " if other_vrfs else "") +
         f"{n_acl_svis} of {n_svis} gateway SVIs carry an ingress/egress ACL. "
         "Where neither a dedicated VRF nor a gateway ACL is present, inter-VLAN traffic is openly "
         "routed — the migration is an opportunity to introduce intended segmentation.")
@@ -427,11 +643,21 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                 "where the observed configuration departs from that intent.")
             # _as_list: a truthy non-list 'findings' crashes the [:12] slice; _as_dict per element: a
             # scalar finding row crashes f.get(...).
+            _qfind = _as_list(qa.get("findings"))
             qrows = [(f.get("host"), f.get("label"), f.get("severity"))
-                     for f in (_as_dict(x) for x in _as_list(qa.get("findings"))[:12])]
+                     for f in (_as_dict(x) for x in _qfind[:12])]
             if qrows:
                 table(["Device", "Departure from leading practice", "Severity"],
                       qrows, widths=[1.6, 4.0, 1.0])
+                # The sentence above promises "the table below lists where the observed configuration
+                # departs from that intent" — a completeness claim. 18 findings against a 12-row cap
+                # meant six devices' QoS departures were absent from a document whose reader treats
+                # absence as conformance.
+                if len(_qfind) > 12:
+                    doc.add_paragraph(
+                        f"…and {len(_qfind) - 12} further QoS departure(s) NOT listed above "
+                        f"({len(_qfind)} in total) — the table is capped for length, not because the "
+                        "remaining devices conform; the full audit is in the workbook.")
             else:
                 doc.add_paragraph("No departures: the configured posture is consistent on every "
                                   "assessable device.")
@@ -453,6 +679,8 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                          d.get("sw_version") or "—", role, lc.get("band") or "—", ports))
     table(["Hostname", "Model", "Serial", "SW version", "Role", "EoL band", "Active/Total ports"],
           inv_rows, widths=[1.3, 1.3, 1.2, 0.9, 1.1, 0.9, 0.9])
+    if _scope_note:
+        _label_run(doc.add_paragraph(), "Coverage:", _scope_note, GREY)
 
     doc.add_heading("3.2 Addressing & VLAN plan", level=2)
     # vlan -> subnet from subnet_intelligence served_subnets; vlan -> gateway/fhrp from l3_forwarding
@@ -497,10 +725,14 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         if not (svis or uplinks or pos):
             continue
         doc.add_heading(h, level=3)
+        # These two lines ARE the build sheet ("the build facts a re-implementation must reproduce"),
+        # so an undisclosed cut here is a switch rebuilt without gateways / uplinks nobody knew were
+        # missing. Four devices in the rendered window of the 303-device fleet carry 15-18 trunk
+        # uplinks against the 14 cap; the fleet also holds three switches above the 12-SVI cap.
         if svis:
-            _label_run(doc.add_paragraph(), "Gateway SVIs:", "; ".join(sorted(svis)[:12]))
+            _label_run(doc.add_paragraph(), "Gateway SVIs:", _capped_join(sorted(svis), 12, "; "))
         if uplinks:
-            _label_run(doc.add_paragraph(), "Trunk uplinks:", ", ".join(sorted(uplinks)[:14]))
+            _label_run(doc.add_paragraph(), "Trunk uplinks:", _capped_join(sorted(uplinks), 14))
         if pos:
             _label_run(doc.add_paragraph(), "Port-channels:", ", ".join(sorted(set(pos))))
         shown += 1
@@ -520,6 +752,12 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     bom_rows = sorted(((m, v["count"], v["band"]) for m, v in by_model.items()),
                       key=lambda r: (-r[1], r[0]))
     table(["Model", "Qty", "Worst EoL band"], bom_rows, widths=[3.0, 1.0, 2.0])
+    if _scope_note:
+        # This list is handed to procurement: an unreconciled gap is an under-order, not a footnote.
+        _label_run(doc.add_paragraph(), "Coverage — DO NOT ORDER FROM THIS TABLE UNRECONCILED:",
+                   _scope_note + f" The quantities above total {sum(r[1] for r in bom_rows)} chassis "
+                   f"and are therefore a FLOOR: resolve the {_n_uncollected} uncollected device(s) "
+                   "before this becomes an order.", GREY)
 
     doc.add_heading("3.5 Software plan & recommendations", level=2)
     doc.add_paragraph(
@@ -546,23 +784,60 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         sw_rows.append((m, images, status, by_model[m]["band"]))
     table(["Model", "Images observed", "Status", "Worst EoL band"],
           sw_rows[:30], widths=[1.7, 2.2, 1.8, 1.0])
+    if _scope_note:
+        _label_run(doc.add_paragraph(), "Coverage:",
+                   _scope_note + " A 'Consistent' verdict therefore describes the collected "
+                   "devices only — an uncollected device can still be running a different image.",
+                   GREY)
     recs = []
     for m, cand in mixed[:8]:
         recs.append(f"{m}: consolidate to one image. The most widely deployed ({cand}) is the "
                     "standardization candidate; validate it against Cisco's published recommended "
                     "release for the platform before adoption.")
+    if len(mixed) > 8:
+        # 11 mixed-image models on the Meridian reference fleet against an 8-bullet cap: three models got no
+        # standardization recommendation at all in the section titled "recommendations".
+        recs.append(f"…and {len(mixed) - 8} further model(s) running MIXED images and not itemised "
+                    f"above ({len(mixed)} in total) — the table above carries each one's observed "
+                    "images and standardization candidate; every mixed model needs the same "
+                    "consolidation decision.")
     eol_models = sorted(m for m, v in by_model.items() if v["band"] in ("Past-EoS", "Past-LDoS"))
     if eol_models:
+        # `(+N more)`, not a bare cut: this sentence is a replacement scope statement, and §3.4's BoM
+        # note already warns the quantities are a FLOOR. 10 past-EoS/LDoS models, 8 shown.
         recs.append("Hardware past end-of-support gets replacement, not an image upgrade: "
-                    + ", ".join(eol_models[:8])
+                    + _capped_join(eol_models, 8)
+                    + (f" — {len(eol_models)} model(s) in total" if len(eol_models) > 8 else "")
                     + ". Plan these as new-platform builds in the target design (§4).")
-    if recs:
+    lifecycle_unavailable = _phase_failed(integrity_failures, "lifecycle risk")
+    if lifecycle_unavailable:
+        doc.add_paragraph(
+            "UNVERIFIED - lifecycle-risk synthesis failed for this run. No image-consistency or "
+            "end-of-support clearance is asserted from the empty fallback.")
+    elif recs:
         for r_ in recs:
             doc.add_paragraph(r_, style="List Bullet")
     else:
-        doc.add_paragraph(
-            "Software is consistent per platform and no past-end-of-support hardware was observed — "
-            "carry the current images forward as the minimum-version baseline for the target design.")
+        # "no past-end-of-support hardware was OBSERVED" is a statement about what the assessment
+        # SAW, and it is true even when it saw nothing — `by_model` bands only devices the offline
+        # EoX KB matched, so a fleet of entirely unmatched platforms produced no `eol_models` and
+        # this sentence licensed carrying their images forward. Disclose the undetermined population
+        # in the same paragraph; a design baseline built on unassessed hardware is the decision this
+        # sentence was quietly making for the reader. (handoff §7.23)
+        _unknown_models = sorted(m for m, v in by_model.items() if v.get("band") == "Unknown")
+        if _unknown_models:
+            doc.add_paragraph(
+                "Software is consistent per platform, and no past-end-of-support hardware was "
+                f"observed — but {len(_unknown_models)} platform(s) could not be assessed at all: "
+                + _capped_join(_unknown_models, 8)
+                + (f" — {len(_unknown_models)} model(s) in total" if len(_unknown_models) > 8 else "")
+                + ". No EoX bulletin in the offline KB matched them, so their support state is "
+                "UNDETERMINED, not clear. Resolve them against Cisco's EoX portal before adopting "
+                "the current images as the target baseline.")
+        else:
+            doc.add_paragraph(
+                "Software is consistent per platform and no past-end-of-support hardware was observed — "
+                "carry the current images forward as the minimum-version baseline for the target design.")
 
     # ===== 4. Target-state design recommendations =====
     doc.add_heading("4. Target-State Design Recommendations", level=1)
@@ -570,7 +845,12 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     # design_blueprint.decisions otherwise raised AttributeError on d.get(...) and aborted the WHOLE As-Built
     # Design Document, despite the 'never raised' contract -- design.py was the asymmetric gap vs the deck/CRD.
     decisions = [d for d in _as_list(bp.get("decisions")) if isinstance(d, dict)]
-    if decisions:
+    if design_unavailable:
+        doc.add_paragraph(
+            "UNVERIFIED - target-state design synthesis did not complete for this run. No statement "
+            "about the absence of design changes or gaps is made; repair the design/requirements "
+            "phase and regenerate this document.")
+    elif decisions:
         doc.add_paragraph(
             "The senior-design view: each target-state decision below is gated on collected evidence and "
             "traced to a network-design principle (CCDE doctrine) plus the trade-off axes it serves. This is "
@@ -606,6 +886,17 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                 _label_run(doc.add_paragraph(), "Evidence:", _as_dict(d.get("evidence")).get("summary"))
                 _label_run(doc.add_paragraph(), "CCDE principle:",
                            _as_dict(d.get("principle")).get("citation"), GREY)
+            # The §4.2 TABLE above lists every recommended decision, but the detail blocks — the
+            # recommended pattern, the alternatives weighed and the trade-offs, which appear NOWHERE
+            # else in this document — stop at 10. 30 recommended decisions on the Meridian reference fleet meant 20
+            # design decisions reached the customer as a one-line table row with no pattern to build.
+            if len(rec) > 10:
+                doc.add_paragraph(
+                    f"…and {len(rec) - 10} further recommended decision(s) listed in the table above "
+                    f"but NOT detailed here ({len(rec)} in total) — the detail blocks are capped at "
+                    "10 for length; the recommended pattern, alternatives and trade-offs for the "
+                    "remainder are in the design blueprint and the explorer's Design mode. The "
+                    "approval covers all of them, not only the 10 detailed.")
         else:
             doc.add_paragraph("No evidence-grounded target-state changes — the as-built design carries no "
                               "flagged gaps to redesign.")
@@ -669,7 +960,12 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
             "evidence and per-device scope are in the runbook and the Migration Punch-List workbook sheet.")
         sev_rank = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
         top = sorted(punchlist, key=lambda i: sev_rank.get(i.get("severity"), 5))[:12]
-        if top:
+        if not punch_available:
+            doc.add_paragraph(
+                "UNVERIFIED - the migration punch-list is missing or its computation failed. No "
+                "statement about the absence of redesign gaps is made; repair the punch-list phase "
+                "and regenerate this document.")
+        elif top:
             pl_rows = []
             for i in top:
                 # _as_list ONCE per row (mirrors deck.py): a truthy non-list 'devices' slips `or []` and
@@ -680,6 +976,16 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                                 + ("" if len(_devs) <= 4 else f" +{len(_devs) - 4}")))
             table(["Severity", "Category", "Design recommendation", "Devices"],
                   pl_rows, widths=[0.9, 1.3, 3.0, 1.6])
+            # This IS §4 when the snapshot carries no design blueprint (the state of tests/golden's
+            # 37-item punch-list): the whole target-state section is these rows, so a silent 12-row
+            # cut is a target design that inherits every gap it did not print. "Full evidence … in the
+            # runbook" points at where the DETAIL lives; it never said the list itself was short.
+            if len(punchlist) > 12:
+                doc.add_paragraph(
+                    f"…and {len(punchlist) - 12} further punch-list item(s) NOT listed above "
+                    f"({len(punchlist)} in total) — the table shows the 12 highest-severity items "
+                    "only. The target design must take a position on the full set; work it from the "
+                    "Migration Punch-List workbook sheet.")
         else:
             doc.add_paragraph("No punch-list items — the as-built design carries no flagged gaps to redesign.")
 
@@ -705,14 +1011,24 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
               widths=[1.2, 1.55, 1.95, 1.7, 0.9])
 
         bom = _as_dict(ts.get("replacement_bom"))
-        if bom.get("n_replace") or bom.get("n_refresh"):
+        # `n_undetermined` gates the heading too. Without it an all-Unknown fleet produced zero
+        # replace and zero refresh, §5.1 was omitted ENTIRELY, and the reader saw no procurement
+        # section at all — indistinguishable from a fleet that genuinely needs no procurement.
+        # An omitted section is the quietest form of absence-as-health: there is nothing to read.
+        if bom.get("n_replace") or bom.get("n_refresh") or bom.get("n_undetermined"):
             doc.add_heading("5.1 Replacement Bill of Materials (target procurement)", level=2)
             doc.add_paragraph(
                 f"{bom.get('n_replace', 0)} asset(s) at end-of-support to replace and "
                 f"{bom.get('n_refresh', 0)} approaching it to refresh, grouped by current model — the "
-                "procurement the target build requires. " + (bom.get("note") or ""))
+                "procurement the target build requires."
+                + (f" A further {bom.get('n_undetermined')} asset(s) could NOT be banded and are "
+                   "listed below for resolution; they are not costed here."
+                   if bom.get("n_undetermined") else "")
+                + " " + (bom.get("note") or ""))
             rows = (_bom_rows("Replace (past-LDoS)", bom.get("replace_now"))
-                    + _bom_rows("Refresh (near-LDoS / past-EoS)", bom.get("refresh_soon")))
+                    + _bom_rows("Refresh (near-LDoS / past-EoS)", bom.get("refresh_soon"))
+                    + _bom_rows("UNDETERMINED — resolve before procurement",
+                                bom.get("undetermined")))
             if rows:
                 table(["Disposition", "Current model", "Qty"], rows, widths=[1.9, 3.0, 0.9])
 
@@ -826,7 +1142,15 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                   sorted(vend.items(), key=lambda r: -r[1])[:8], widths=[3.2, 1.0])
             top_c = [(k, v) for k, v in sorted(cls.items(), key=lambda r: -r[1]) if k != "Unknown"][:8]
             if top_c:
-                table(["Device class", "Endpoints"], top_c, widths=[3.2, 1.0])
+                # "Top …", like the vendor table above it: the paragraph states n_known_cls (13 on the
+                # Meridian reference fleet) and this table showed 8 under a bare "Device class" header, so the
+                # access-edge port-profile design read as complete at 8 of 13 classes.
+                table(["Top device class", "Endpoints"], top_c, widths=[3.2, 1.0])
+                if n_known_cls > len(top_c):
+                    doc.add_paragraph(
+                        f"…and {n_known_cls - len(top_c)} further identified device class(es) not "
+                        f"shown ({n_known_cls} in total, the count stated above) — the access-edge "
+                        "design must accommodate every class, not only the largest by endpoint count.")
 
     # ---- closing acceptance gate (AS-style back matter) ----
     # Deliverable Excellence (DE-01): shared glossary before the sign-off gate.

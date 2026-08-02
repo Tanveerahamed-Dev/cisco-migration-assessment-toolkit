@@ -25,8 +25,45 @@ from cisco_toolkit.docmeta import SEV_RANK as _SEV_RANK
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_inputs_required, add_table, add_toc
 from cisco_toolkit.docmeta import as_dict as _as_dict, as_list as _as_list   # coerce truthy non-dict/list sections
 from cisco_toolkit.textutils import _as_num, xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5) + fail-soft numeric coercion
+from cisco_toolkit import ssot as _ssot_mod   # Law 1 accessors (canonical facts + segmentation posture)
 
 logger = logging.getLogger(__name__)
+
+
+def _av_authority(mi) -> str:
+    """The authority qualifier that must travel with any broadcast/AV (on-air) multicast count.
+
+    MIRROR of `cisco_toolkit/runbook.py::_av_authority` — the already-reviewed wording for this
+    qualifier — duplicated rather than imported so this generator stays a leaf presentation module
+    (runbook.py is a peer writer with its own optional-python-docx import path). The duplication is
+    caught by EXECUTION, not by hope:
+    tests/test_crd.py::test_crd_av_authority_mirrors_the_runbook_wording
+    drives both implementations over one case table and fails the moment they disagree.
+
+    Why a REQUIREMENTS document needs it: analyze.compute_multicast_intelligence classifies a group as
+    on-air from the offline registry's CURATED media semantics and publishes the basis alongside it
+    (`summary.n_av_groups_authoritative`, per-group `on_air_authoritative`). On the shipped port pack
+    that count is ZERO — every multicast row is curated. §4.3 is the row a requirements WORKSHOP signs
+    off, so a seeded requirement written against a curated classification and stated as though observed
+    becomes a contractual commitment to preserve something nobody measured. FAIL-CLOSED: a snapshot
+    carrying no authority census at all reads NOT ASSESSED, never 'authoritative'."""
+    s = _as_dict(_as_dict(mi).get("summary"))
+    if "n_av_groups_authoritative" not in s:
+        return (" — on-air classification authority NOT ASSESSED in this snapshot; treat the "
+                "broadcast/AV label as curated, not authoritative")
+    n_auth = _as_num(s.get("n_av_groups_authoritative"))
+    n_av = _as_num(s.get("n_av_groups"))
+    if n_auth <= 0:
+        return (" — NONE of them classified on-air by an authoritative source: the broadcast/AV label is "
+                "a CURATED offline-registry classification, not a measurement")
+    if n_auth > n_av:
+        # `n_av_groups_authoritative` and `n_av_groups` are published independently, so "N of M" is
+        # only meaningful when N <= M. Unchecked, an incoherent snapshot renders "7 of 3", and a
+        # reader has no way to tell that from a real ratio. Disclose the incoherence instead.
+        return (f" — census INCOHERENT: {n_auth:g} classification(s) reported as authoritative out of "
+                f"{n_av:g} on-air group(s); the authority split cannot be stated for this snapshot")
+    return (f" — {n_auth:g} of {n_av:g} on-air classification(s) rest on an authoritative source; the "
+            "remainder are CURATED, not measurements")
 
 
 def _evidence_facts(snap: dict) -> dict:
@@ -34,7 +71,6 @@ def _evidence_facts(snap: dict) -> dict:
     devices = _as_dict(snap.get("devices"))
     ifaces = _as_dict(snap.get("interfaces"))
     endpoints = 0
-    vrfs, n_acl_svis = set(), 0
     for host, ports in ifaces.items():
         for p, d in _as_dict(ports).items():
             # PER-PORT coercion, not `d or {}`: the container is guarded but a single truthy non-dict
@@ -45,11 +81,19 @@ def _evidence_facts(snap: dict) -> dict:
             # wrong-typed leaf (a truthy dict/list/number in an uploaded snapshot) would otherwise .strip() -> 500.
             if str(d.get("switchport_mode") or "").lower() == "access" and str(d.get("end_host_mac") or "").strip():
                 endpoints += 1
-            vrf = str(d.get("vrf") or "").strip()
-            if vrf and vrf.lower() not in ("default", "global"):
-                vrfs.add(vrf)
-            if (d.get("svi_ip") or "") and (str(d.get("acl_in") or "").strip() or str(d.get("acl_out") or "").strip()):
-                n_acl_svis += 1
+    # SSOT (Law 1): the segmentation posture has ONE owner (analyze.compute_segmentation ->
+    # snap['segmentation']), read via ssot.segmentation_facts. The inline recount this replaced asked a
+    # different question under the same label — it treated EVERY non-default VRF on the box (mgmt0's
+    # management VRF, a vPC keepalive VRF) as observed segmentation, so REQ-T-SEC-001 told the customer
+    # to "preserve the observed segmentation: VRF(s) Mgmt-vrf, VPC, management, mgmtVrf" on a fabric the
+    # owner reports FLAT (1 VRF bucket across 231 gateway SVIs) — a requirement written off a fact that
+    # segments no user traffic. It also counted an ACL on ANY port carrying an svi_ip, not just a VlanN
+    # SVI, so its numerator could exceed the design doc's and the archreview's for the same estate.
+    _segf = _ssot_mod.segmentation_facts(snap)
+    gw_vrfs = list(_segf.get("gateway_vrfs") or [])
+    other_vrfs = list(_segf.get("other_vrfs") or [])
+    n_acl_svis = _as_num(_segf.get("n_with_acl"))
+    n_seg_gateways = _as_num(_segf.get("n_gateways"))
     # Dual-homed endpoints: the CANONICAL redundancy-bearing count is the engine's
     # endpoint_dependencies.dual_homed (host MAC observed on two switches) — the SAME source the
     # design blueprint's preserve-dual-homed-endpoints decision reads — so the CRD and the HLD agree
@@ -100,8 +144,15 @@ def _evidence_facts(snap: dict) -> dict:
         # n_endpoints below + design.py's A5 canonical-first read — closes the recompute drift seam).
         "n_vlans": _eb_scale.get("n_vlans") or len(vlan_inventory(snap)),
         "endpoints": endpoints, "dual": dual, "protos": protos, "fhrp_vlans": fhrp_vlans,
-        "vrfs": sorted(vrfs), "n_acl_svis": n_acl_svis, "services": services,
-        "mcast": mc, "mcast_active": mcast_active, "lifecycle": lc, "coll": coll, "punch": punch,
+        # gateway-carrying VRFs vs configured-elsewhere VRFs: two DIFFERENT facts, kept apart (see above)
+        "gw_vrfs": gw_vrfs, "other_vrfs": other_vrfs,
+        "n_acl_svis": n_acl_svis, "n_seg_gateways": n_seg_gateways, "services": services,
+        "mcast": mc, "mcast_active": mcast_active,
+        # The on-air / broadcast-AV authority census (analyze.compute_multicast_intelligence). §4.3's
+        # seeded requirement names the classified-group COUNT, and that classification is the offline
+        # registry's CURATED media semantics — the census is what tells the workshop so.
+        "mcast_intel": _as_dict(snap.get("multicast_intelligence")),
+        "lifecycle": lc, "coll": coll, "punch": punch,
         "n_l3": len(l3f),
         # canonical endpoint scale (the published single source) with the access-port tally as fallback
         "n_endpoints": _eb_scale.get("n_endpoints") or endpoints,
@@ -290,8 +341,16 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
         ("Dual-homed endpoints (host MAC on two switches)", ev["dual"]),
         ("Routing protocols observed", ", ".join(ev["protos"]) or "none (pure L2 fleet)"),
         ("Gateway SVIs / FHRP-protected VLANs", f"{ev['n_l3']} / {len(ev['fhrp_vlans'])}"),
-        ("Non-default VRFs", ", ".join(ev["vrfs"]) or "none"),
-        ("Hardware past last-day-of-support (LDoS)", lc.get("n_past_ldos", "—")),
+        ("Non-default VRFs carrying a gateway SVI", ", ".join(ev["gw_vrfs"]) or "none (flat global table)"),
+        ("Other non-default VRFs (no gateway SVI — segment no user traffic)",
+         ", ".join(ev["other_vrfs"]) or "none"),
+        # An all-Unknown fleet counts 0 past-LDoS and printed a bare "0" here -- indistinguishable from
+        # a fleet verified to be fully supported. The workshop writes requirements against this table,
+        # so the undetermined population must ride in the same cell as the count it qualifies.
+        ("Hardware past last-day-of-support (LDoS)",
+         f"{lc.get('n_past_ldos', '—')}"
+         + (f" (+ {lc['n_unknown']} device(s) NOT ASSESSED — no EoX bulletin matched them; their "
+            "support state is undetermined, not clear)" if lc.get("n_unknown") else "")),
         ("Collection completeness", f"{coll.get('complete', '—')} complete / "
                                     f"{coll.get('partial', '—')} partial / "
                                     f"{coll.get('not_collected', '—')} not collected"),
@@ -302,6 +361,17 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
         table(["Severity", "Category", "Issue"],
               [(i.get("severity"), i.get("category") or "—", i.get("title") or "—")
                for i in ev["punch"][:8]], widths=[0.9, 1.4, 4.3])
+        # Disclose the cut, and say so in the sentence that assigns the work. "Take a position on"
+        # is the CRD's whole function: the workshop writes requirements against the issues printed
+        # here, and §2 states no punch-list total anywhere else, so 8 severity-ranked rows out of
+        # 1,805 (the Meridian reference fleet; 216 Critical + 916 High) read as the complete known-issue set and the
+        # requirements register silently inherits the other 1,797 as unaddressed.
+        if len(ev["punch"]) > 8:
+            doc.add_paragraph(
+                f"…and {len(ev['punch']) - 8} further punch-list item(s) NOT listed above "
+                f"({len(ev['punch'])} in total) — the table shows the 8 highest-severity items only. "
+                "The requirements must take a position on the full set (carry forward, remediate, or "
+                "explicitly risk-accept); work it from the Migration Punch-List workbook sheet.")
 
     # requirements-classification legend (BCP 14 / RFC 2119 + RFC 8174) — establishes the normative-keyword
     # convention before the first requirement table (N1/N8)
@@ -368,29 +438,75 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
         groups = _as_list(ev["mcast"].get("classified_groups"))
         g0 = _as_dict(groups[0]) if groups else {}
         gname = g0.get("name") or g0.get("group") or "the observed groups"
+        # The COUNT and the group ADDRESSES are observed; the classification that gives them a NAME and
+        # a Broadcast-AV category is the offline registry's CURATED media semantics (on the shipped pack
+        # NO multicast row has an authoritative source). This row is signed off in a requirements
+        # workshop, so an unqualified "preserve the N classified group(s)" turns an unverified hint into
+        # a contractual commitment — and the same on-air flag is what escalates a mac-alias finding from
+        # Medium to High (analyze.py:2774). State the basis in the requirement itself, where the
+        # customer confirms/amends it; the fix is DISCLOSURE, not a re-scoring.
+        _auth_note = _av_authority(ev.get("mcast_intel"))
         req_table([
             ("REQ-T-MC-001", f"Preserve multicast delivery for the {len(groups)} classified group(s) "
-                             f"(e.g. {gname}) including snooping/querier behaviour per VLAN.",
+                             f"(e.g. {gname}) including snooping/querier behaviour per VLAN. "
+                             "CLASSIFICATION BASIS: the group addresses and their multicast activity are "
+                             "OBSERVED; the group names/categories (including any broadcast/AV or on-air "
+                             "label) come from an offline registry, not from measurement"
+                             f"{_auth_note}. Confirm the real use of each group in the workshop before "
+                             "this row is accepted as a commitment.",
              "<owner>", "<H/M/L>", "<YES/AMEND>"),
         ])
 
-    if ev["vrfs"] or ev["n_acl_svis"]:
+    if ev["gw_vrfs"] or ev["n_acl_svis"] or ev["other_vrfs"]:
         doc.add_heading("4.4 Segmentation & security", level=2)
+        # "Preserve the observed segmentation" must name what actually segments USER traffic. A
+        # management/keepalive VRF carries no gateway SVI, so listing it here wrote a carry-forward
+        # requirement off a fabric the engine reports FLAT.
         req_table([
-            ("REQ-T-SEC-001", "Preserve the observed segmentation: VRF(s) "
-                              + (", ".join(ev["vrfs"]) or "—")
-                              + f"; {ev['n_acl_svis']} gateway SVI(s) carry ACLs that must be "
-                              "carried forward or consciously redesigned.",
+            ("REQ-T-SEC-001",
+             ("Preserve the observed segmentation: VRF(s) " + ", ".join(ev["gw_vrfs"])
+              if ev["gw_vrfs"] else
+              f"NO gateway SVI sits in a non-default VRF (all {ev['n_seg_gateways']} are in the global "
+              "table) — there is no VRF segmentation to preserve; the target must introduce it"
+              if ev["n_seg_gateways"] else
+              # coverage-honest: no gateway tier was observed, so neither verdict is assertable
+              "[NOT OBSERVED] — no gateway SVI was collected, so the L3 segmentation posture could "
+              "not be assessed (this is a blind spot, not a flat fabric)")
+             + f"; {ev['n_acl_svis']} gateway SVI(s) carry ACLs that must be "
+               "carried forward or consciously redesigned."
+             + (f" ({len(ev['other_vrfs'])} non-default VRF(s) — {', '.join(ev['other_vrfs'][:6])} — "
+                "exist but carry no gateway SVI; they are management/infrastructure separation, not "
+                "user-traffic segmentation.)" if ev["other_vrfs"] else ""),
              "<owner>", "<H/M/L>", "<YES/AMEND>"),
         ])
 
     if ev["services"]:
         doc.add_heading("4.5 Services & applications", level=2)
         cats = sorted({str(s.get("category") or "").strip() for s in ev["services"] if s.get("category")})
+        # A service CATEGORY is curated registry semantics, not an observation. The port pack is
+        # deliberately mixed and its curated rows are explicitly non-authoritative, so "the detected
+        # service categories" stated a curated classification as observed fact -- in the row a
+        # requirements WORKSHOP signs off, which turns it into a contractual commitment to preserve
+        # something nobody measured. Same class as REQ-T-MC-001; the ports the traffic was seen on ARE
+        # observed, the NAMES and CATEGORIES are not.
+        # FAIL-CLOSED: a service carrying no `semantics_authoritative` key at all is NOT ASSESSED,
+        # never assumed authoritative. Keyed on the value being a real bool, not on key presence.
+        _sem = [s.get("semantics_authoritative") for s in ev["services"]]
+        _known = [v for v in _sem if isinstance(v, bool)]
+        if not _known:
+            _cat_basis = (" The category labels are CURATED offline-registry semantics whose authority "
+                          "this snapshot does NOT publish — treat them as un-verified until confirmed.")
+        elif any(_known):
+            _cat_basis = (f" {sum(1 for v in _known if v)} of {len(_known)} category label(s) rest on an "
+                          "authoritative registry source; the remainder are CURATED, not measurements.")
+        else:
+            _cat_basis = (" NONE of the category labels rest on an authoritative source: they are CURATED "
+                          "offline-registry classifications, not measurements. The observed fact is the "
+                          "port/protocol seen in the ACLs, not the service NAME.")
         req_table([
             ("REQ-T-SVC-001", "End-to-end continuity for the detected service categories ("
                               + (", ".join(cats[:6]) or "see service map")
-                              + ") — each gets an NRFU end-to-end test.",
+                              + ") — each gets an NRFU end-to-end test." + _cat_basis,
              "<owner>", "<H/M/L>", "<YES/AMEND>"),
         ])
 
@@ -473,6 +589,25 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
         con_rows.append((f"CON-{_ci:03d}",
                          f"{_eos} device(s) are past end-of-sale (EoS) — plan the hardware refresh within "
                          "the vendor-support horizon.", "EVIDENCE (lifecycle risk)"))
+    # Neither count fires when the fleet was never banded -- both read 0 -- and the constraints register
+    # then carried NO hardware-lifecycle constraint at all, so the workshop wrote requirements as though
+    # refresh were a settled non-issue. An undetermined support state is a constraint on the design (it
+    # must be resolved before the BoM can be costed), not the absence of one.
+    #
+    # INDEPENDENT `if`, not chained to the two above. As an `elif` this fired only when the fleet had
+    # ZERO past-LDoS and ZERO past-EoS -- i.e. it covered the all-unbanded fleet and silently dropped
+    # the BROWNFIELD one, some gear banded and most not, which is the case this instrument is for.
+    # Measured: `1 Past-LDoS + 3 Unknown` disclosed in §2 and emitted NO §4 constraint. What was found
+    # and what could not be assessed are orthogonal facts; chaining them makes the second conditional
+    # on the first being absent.
+    if isinstance(_unk := ev["lifecycle"].get("n_unknown"), int) and _unk > 0:
+        _ci += 1
+        con_rows.append((f"CON-{_ci:03d}",
+                         f"{_unk} device(s) could NOT be lifecycle-banded — no "
+                         "EoX bulletin in the offline knowledge base matched them. Their support state "
+                         "is UNDETERMINED, not clear: resolve it against Cisco's published EoX data "
+                         "before the target BoM is costed or carried forward.",
+                         "COVERAGE GAP (lifecycle risk)"))
     if not (reg["provided"] and reg["constraints"]):
         # No register (or an empty constraints list): surface the standard engagement constraints as OPEN
         # QUESTIONS rather than asserting them — the coverage-honest default (mirrors §4's open questions).

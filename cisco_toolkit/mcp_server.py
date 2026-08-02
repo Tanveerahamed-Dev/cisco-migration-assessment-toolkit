@@ -7,8 +7,18 @@ failure blast-radius, topology chokepoints, architecture coverage, move-group re
 single-node what-if failure injection, the L2 failover twin (STP re-election + FHRP
 takeover, actuated with a target) and its target-free readiness rollup, and fleet /
 per-device health. It mirrors analysis the explorer / webapp already compute; it never
-SSHes, never writes, never hits the network. Input is a snapshot file the engine already
-produced.
+SSHes, never writes, and makes no OUTBOUND connection of any kind. Input is a snapshot
+file the engine already produced.
+
+**Transports (read this before using anything but the default).** `--transport stdio`
+(the default) is a pipe to the parent client: no socket, nothing to reach. `sse` and
+`streamable-http` make the server LISTEN, and every tool above answers over that socket
+with no authentication whatsoever -- hostnames, management IPs (search_devices), punch-list
+findings and blast radius. There is no token, no allowlist and no per-tool gate; the only
+control is the bind address, so this module PINS it to loopback itself (LISTEN_HOST) rather
+than inheriting the `mcp` package's default, and refuses a non-loopback `FASTMCP_HOST`.
+"Offline / no egress" describes the analysis, never the listener: on a shared host any
+local user or process can read the whole assessment.
 
 Design: the data layer (the module-level functions below) is PURE and stdlib-only -- it
 imports no `mcp`, so it is fully unit-testable without the optional dependency. The MCP
@@ -24,10 +34,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from typing import Any, Dict, List, Optional
 
 from . import failover, whatif
+from .attestation import loopback_only
+
+# The socket transports serve the ENTIRE snapshot unauthenticated, so the bind address is
+# this module's pin, not the `mcp` package's default. Loopback only; there is no flag to
+# widen it (a wider bind would need an auth story this server does not have).
+LISTEN_HOST = "127.0.0.1"
+LISTEN_PORT = 8000
+SOCKET_TRANSPORTS = ("sse", "streamable-http")
 
 # The tools this server registers, in a stable order. Kept module-level so the test can
 # assert the wired surface without importing `mcp`.
@@ -49,6 +68,50 @@ def _as_list(v: Any) -> List[Any]:
 
 def _pick(row: Dict[str, Any], keys) -> Dict[str, Any]:
     return {k: row.get(k) for k in keys}
+
+
+def dossier_coverage(d: Any) -> tuple:
+    """(n_na, n_axes, thin) for one device-dossier row -- how much of its risk band rests on evidence.
+
+    MIRROR of the canonical rule in cisco_toolkit/excel.py::dossier_coverage. It is duplicated rather
+    than imported because this data layer is deliberately PURE and stdlib-only (excel.py drags in
+    openpyxl + analyze + parse); the duplication is caught by EXECUTION, not by hope --
+    tests/test_mcp_server.py::test_dossier_coverage_mirrors_the_canonical_rule drives this function over
+    excel.DOSSIER_COVERAGE_CASES and fails the moment the two disagree.
+
+    Why the assistant needs it (review r9 F1): compute_device_dossiers ABSTAINS on an axis it has no
+    evidence for (state 'na') and an abstention is weighted ZERO exposure, so an asset whose EoL /
+    software / control-plane / log / CIS / hygiene / drift / QoS axes were ALL un-assessed scores
+    risk_index 0 -> risk_band 'Low' -> verdict "No stacked risk". Handing an assistant that bare band
+    lets it answer "is sw0 OK?" with "low risk" when the honest answer is "8 of its 11 risk axes were
+    never assessed". FAIL-CLOSED on a missing census: no denominator means coverage is itself NOT
+    ASSESSED (thin=True), never 'fine'."""
+    dd = d if isinstance(d, dict) else {}
+    ax = dd.get("exposures")
+    axes = [e for e in ax if isinstance(e, dict)] if isinstance(ax, list) else []
+    n_axes = len(axes)
+    n_na = sum(1 for e in axes if e.get("state") == "na")
+    if not n_axes:                                    # no axis census published -> fall back to the count
+        try:
+            n_na = max(0, int(dd.get("n_na") or 0))
+        except (TypeError, ValueError):
+            n_na = 0
+        return n_na, 0, True                          # unknown denominator -> NOT ASSESSED, never "fine"
+    return n_na, n_axes, n_na * 2 >= n_axes
+
+
+def risk_band_basis(d: Any) -> str:
+    """The sentence that must travel with a `risk_band` so the band is never read as a measurement when
+    it rests on axes that were never assessed. Never empty -- an assistant that sees no qualifier will
+    supply "healthy" on its own."""
+    n_na, n_axes, thin = dossier_coverage(d)
+    if not n_axes:
+        return (f"risk axis census ABSENT -- coverage NOT ASSESSED ({n_na} recorded not-assessed); the band "
+                "is not evidence of health")
+    if thin:
+        return (f"{n_na} of {n_axes} risk axes NOT ASSESSED -- an un-assessed axis scores ZERO exposure, so "
+                "this band rests on absent evidence, not on a clean result")
+    return f"{n_na} of {n_axes} risk axes NOT ASSESSED"
 
 
 def load_snapshot(path: str) -> Dict[str, Any]:
@@ -80,7 +143,19 @@ def list_devices(snap: Dict[str, Any]) -> List[Dict[str, Any]]:
     if per:
         cols = ("host", "model", "platform", "sw_version", "role", "wave",
                 "health_band", "eol_band", "risk_band", "verdict")
-        return [_pick(r, cols) for r in per if isinstance(r, dict)]
+        # review r9 F1: `risk_band` alone let an all-unassessed asset be listed as "Low" with the verdict
+        # "No stacked risk", indistinguishable from a genuinely clean one. Every row that carries the band
+        # carries its basis (this is the same qualification search_devices and the workbook publish).
+        out = []
+        for r in per:
+            if not isinstance(r, dict):
+                continue
+            row = _pick(r, cols)
+            n_na, n_axes, thin = dossier_coverage(r)
+            row.update({"n_na": n_na, "n_axes": n_axes, "coverage_thin": thin,
+                        "risk_band_basis": risk_band_basis(r)})
+            out.append(row)
+        return out
     # fallback for older snapshots without dossiers: derive from health_scores
     return [{"host": r.get("switch"), "role": r.get("role"),
              "health_band": r.get("band"), "score": r.get("score")}
@@ -93,7 +168,11 @@ def device_detail(snap: Dict[str, Any], host: str) -> Dict[str, Any]:
     want = str(host or "").strip().lower()
     for r in per:
         if isinstance(r, dict) and str(r.get("host", "")).lower() == want:
-            return r
+            # Shallow COPY, never the snapshot row itself: the qualifier is added for the caller, and
+            # mutating the loaded snapshot in place would poison every later read of the same object.
+            out = dict(r)
+            out["risk_band_basis"] = risk_band_basis(r)
+            return out
     available = [r.get("host") for r in per if isinstance(r, dict)][:40]
     return {"error": f"device not found: {host!r}", "available_hosts": available}
 
@@ -218,10 +297,18 @@ def search_devices(snap: Dict[str, Any], query: Any) -> Dict[str, Any]:
             continue
         health_band = dos.get("health_band") or health.get(hl, {}).get("band")
         risk_band = dos.get("risk_band") if dossiers else None    # no dossiers -> never fabricate a risk band
+        # review r9 F1: the same honesty one level deeper. A band that EXISTS can still rest on axes that
+        # were never assessed -- compute_device_dossiers weights an abstaining axis at ZERO exposure, so
+        # 8-of-11 not-assessed still bands 'Low'. Publishing the bare band let an assistant answer "is sw0
+        # OK?" with "low risk". The basis travels with the band, in the posture string the caller reads.
+        _basis = risk_band_basis(dos) if risk_band else ""
         matches.append({
             "host": host, "matched_on": matched_on,
             "health_band": health_band, "risk_band": risk_band,
-            "posture": f"health: {health_band or 'not-assessed'}; risk: {risk_band or 'not-assessed'}",
+            "risk_band_basis": _basis or None,
+            "posture": (f"health: {health_band or 'not-assessed'}; "
+                        f"risk: {risk_band or 'not-assessed'}"
+                        + (f" ({_basis})" if _basis else "")),
         })
     return {"available": True, "query": str(query), "n_matches": len(matches),
             "matches": matches[:100], "sources": sources}
@@ -370,12 +457,20 @@ _PURE = {
 
 # --- MCP wiring (lazy `mcp` import) ----------------------------------------------------
 
-def build_server(snap: Dict[str, Any], name: str = "cisco-assessment"):
+def build_server(snap: Dict[str, Any], name: str = "cisco-assessment",
+                 host: str = LISTEN_HOST, port: int = LISTEN_PORT):
     """Build a FastMCP server whose tools are bound to `snap`. Imports `mcp` lazily so the
-    base package never depends on it. Returns the FastMCP instance (call .run() to serve)."""
+    base package never depends on it. Returns the FastMCP instance (call .run() to serve).
+
+    `host`/`port` are passed EXPLICITLY (they matter only for the socket transports). The
+    installed `mcp` already defaults to 127.0.0.1 and its init kwargs outrank `FASTMCP_*`
+    env vars -- but that is the dependency's promise across `mcp>=1.28,<2`, not ours, and
+    the payload here is a whole assessment served without authentication. Pinning it here
+    makes the loopback bind this module's own guarantee, so a dependency default that
+    changes back to 0.0.0.0 (as older FastMCP shipped) cannot expose the snapshot."""
     from mcp.server.fastmcp import FastMCP  # optional dependency, resolved only here
 
-    server = FastMCP(name)
+    server = FastMCP(name, host=host, port=port)
     P = _PURE
 
     @server.tool()
@@ -456,11 +551,16 @@ def build_server(snap: Dict[str, Any], name: str = "cisco-assessment"):
 def main(argv: Optional[List[str]] = None) -> None:
     ap = argparse.ArgumentParser(
         prog="cisco-mcp-server",
-        description="Read-only MCP server over a produced cisco-assess snapshot.json (offline, no egress).")
+        description="Read-only MCP server over a produced cisco-assess snapshot.json. The ANALYSIS is "
+                    "offline (no SSH, no outbound call); the default stdio transport opens no socket. "
+                    "The sse / streamable-http transports LISTEN and serve the whole snapshot "
+                    f"UNAUTHENTICATED -- they are pinned to {LISTEN_HOST} and are not 'no egress'.")
     ap.add_argument("snapshot", help="path to a snapshot.json produced by cisco-assess")
     ap.add_argument("--name", default="cisco-assessment", help="server name advertised to the MCP client")
-    ap.add_argument("--transport", default="stdio", choices=["stdio", "sse", "streamable-http"],
-                    help="MCP transport (default: stdio)")
+    ap.add_argument("--transport", default="stdio", choices=["stdio", *SOCKET_TRANSPORTS],
+                    help=f"MCP transport (default: stdio -- a pipe, no socket). sse / streamable-http "
+                         f"open an UNAUTHENTICATED listener on {LISTEN_HOST}:{LISTEN_PORT} serving "
+                         f"hostnames, management IPs and findings to anything local that connects")
     args = ap.parse_args(argv)
 
     try:
@@ -468,6 +568,18 @@ def main(argv: Optional[List[str]] = None) -> None:
     except ImportError:
         sys.exit("the MCP server needs the optional 'mcp' extra:\n"
                  "  pip install cisco-migration-assessment-toolkit[mcp]")
+
+    if args.transport in SOCKET_TRANSPORTS:
+        env_host = os.environ.get("FASTMCP_HOST")
+        if env_host:
+            try:                                   # the loopback rule is shared with the Ollama carve-out
+                loopback_only(env_host, env_var="FASTMCP_HOST")
+            except ValueError as ex:
+                sys.exit(f"refusing to serve the snapshot off-host: {ex}\nThis server has NO "
+                         f"authentication, so it binds {LISTEN_HOST} only.")
+        print(f"[cisco-mcp-server] {args.transport} listener on {LISTEN_HOST}:{LISTEN_PORT} -- "
+              f"UNAUTHENTICATED: every tool (hostnames, mgmt IPs, findings, blast radius) answers any "
+              f"local caller. Use --transport stdio unless you need the socket.", file=sys.stderr)
 
     snap = load_snapshot(args.snapshot)
     server = build_server(snap, name=args.name)

@@ -27,7 +27,7 @@ WORKTREE/COMMIT MISMATCH (important for integration): this worktree is at 1a7f88
 VALIDATION (actually ran, green): `python -m pytest tests/test_pim_rp_health.py -q` => 15 passed (6 rp-mapping parser + 3 neighbor parser + 5 detector fire/silent + 1 end-to-end fixture-drives-detector). No regressions: tests/test_parsers.py, test_parser_robustness.py, test_collection_parsers.py, test_collection_completeness.py, test_multicast_intel.py, test_service_map.py, test_decision_layer.py, test_cry_wolf.py all green. COLLECT_PARSE_V3_23_0 + cisco_toolkit.build + cisco_toolkit.parse import cleanly.
 
 FILES TOUCHED (worktree, absolute):
-- C:\Users\[HISTORY-REDACTED]\Desktop\[HISTORY-REDACTED] files\Enhancements\.claude\worktrees\wf_b61a3107-d35-2\cisco_toolkit\parse.py (added parse_pim_rp_mapping, parse_pim_neighbors + 3 module-level regexes)
+- `<checkout>\.claude\worktrees\wf_b61a3107-d35-2\cisco_toolkit\parse.py` (added parse_pim_rp_mapping, parse_pim_neighbors + 3 module-level regexes)
 - ...\cisco_toolkit\build.py (added build_pim; added parse_pim_rp_mapping/parse_pim_neighbors to the parse import block)
 - ...\tests\synthetic_fixtures.py (added the firing PIM block to _CORE1)
 - ...\tests\_pim_detector_ref.py (NEW; runnable detector stand-in -- _decision + _pim_signals + _d_pim_rp_health)

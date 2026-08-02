@@ -15,6 +15,8 @@ def test_ouidb_resolves_known_ouis_offline():
     assert ouidb.is_locally_administered("00:50:56:aa:bb:cc") is False
     # junk / too short
     assert ouidb.vendor_for_mac("") == "" and ouidb.vendor_for_mac("zz") == ""
+    assert ouidb.vendor_for_mac("prefix-00:00:0c:11:22:33-suffix") == ""
+    assert ouidb.vendor_for_mac("00:00:0c") == ""
 
 
 def test_classifier_picks_highest_confidence_signal():
@@ -94,7 +96,7 @@ def test_endpoint_dependencies_clusters_dualhomed_validation():
 def test_classify_apc_real_registry_name_chained():
     """[audit-4 #13] CHAIN the real OUI output (not a marketing string): block 00C0B7's genuine IEEE/Wireshark
     registry name is 'American Power Conversion Corp', which contains NONE of the UPS rule substrings -- so real
-    APC UPS endpoints fell through unclassified (342 rows / 311 Unknown on the [HISTORY-REDACTED] snapshot). The existing fixture
+    APC UPS endpoints fell through unclassified (342 rows / 311 Unknown on the Meridian reference snapshot). The existing fixture
     feeds 'APC by Schneider Electric', which always matched -- the self-authored fixture that hid the miss."""
     from cisco_toolkit import ouidb
     from cisco_toolkit.analyze import _classify_endpoint
@@ -107,7 +109,7 @@ def test_classify_apc_real_registry_name_chained():
 def test_classify_resolved_vendor_evidence_never_says_no_vendor():
     """[audit-4 #13 moat] when a vendor WAS resolved but matched no class rule, the evidence must not claim 'no
     vendor signal' (the row's own vendor column is populated). 'no vendor/...' is only truthful when vendor is
-    genuinely empty. (On the [HISTORY-REDACTED] snapshot the false string hit 1770/5127 rows, true in 0.)"""
+    genuinely empty. (On the Meridian reference snapshot the false string hit 1770/5127 rows, true in 0.)"""
     from cisco_toolkit.analyze import _classify_endpoint
     for v in ("American Power Conversion Corp", "Cisco Systems", "DigiBoard", "Myricom", "Mellanox",
               "Brocade", "Data Direct Networks", "Some Unlisted Maker Inc"):

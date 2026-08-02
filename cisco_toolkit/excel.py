@@ -12,12 +12,13 @@ import re
 from typing import Dict, List, Optional, Tuple
 
 from openpyxl.cell.cell import Cell, MergedCell
+from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from cisco_toolkit.analyze import (
-    _health_band, _physical_uplink_index, _poe_device_util, build_network_model,
-    compute_findings, compute_move_groups, compute_topology_links,
+    _UNCLASSIFIED_OVERLAY_STATUS, _health_band, _physical_uplink_index, _poe_device_util,
+    build_network_model, compute_findings, compute_move_groups, compute_topology_links,
 )
 from cisco_toolkit.brand_tokens import DOC_NAVY_HEX, WORKBOOK_NAVY_HEX
 from cisco_toolkit.cmdio import _load_cmd_output
@@ -35,8 +36,33 @@ from cisco_toolkit.textutils import (
 logger = logging.getLogger(__name__)
 
 
+# --------------------------------------------------------------------------- defensive coercers
+# The house guards (ssot._as_dict / docmeta.as_dict / design_advisor._dict_rows). A sheet writer is
+# handed a raw snapshot SECTION on the `--no-collect` rebuild path, so an untrusted file can make it
+# a truthy non-dict/non-list. `x or {}` / `x or []` keeps that, and the next `.get()` / iteration
+# raises -- which _run_phase catches PER SHEET and logs, so the workbook still SAVES with that entire
+# sheet silently missing. That is a coverage-honesty false all-clear (a reader sees an absent sheet,
+# not a failure), which is why these degrade to empty instead of raising.
+def _sec_dict(v):
+    return v if isinstance(v, dict) else {}
+
+
+def _sec_rows(v):
+    """The dict ELEMENTS of a snapshot list section -- the guard for every per-row `.get()` loop."""
+    return [r for r in v if isinstance(r, dict)] if isinstance(v, list) else []
+
+#: Excel's hard per-cell character limit. openpyxl enforces it by SILENTLY slicing
+#: (`check_string`: `value = value[:32767]`) -- no exception, no warning -- so an oversized cell is
+#: amputated inside a workbook that still reports success. `_xls_sanitize` bounds + DISCLOSES instead.
+_XLSX_MAX_CELL = 32767
+_XLSX_TRUNC_NOTE = " … [TRUNCATED: {n:,} chars exceeded Excel's {cap:,}-char cell limit — see the source capture]"
+
+
 def _xls_sanitize(value):
-    """Strip the characters openpyxl rejects from a string; pass non-strings through unchanged. Covers BOTH the C0
+    """Strip the characters openpyxl rejects from a string; pass every RENDERABLE non-string through unchanged
+    (the two exceptions -- a container, and a non-finite / out-of-float64-range NUMBER -- are bounded by the shared
+    textutils.xml_safe this delegates to; see there for why openpyxl OverflowErrors on the huge int at wb.save()
+    and SILENTLY blanks inf/nan). Covers BOTH the C0
     control chars (0x00-0x08, 0x0B-0x0C, 0x0E-0x1F) AND the U+FFFE/U+FFFF noncharacters + lone surrogates that pass
     openpyxl's check_string but fail wb.save() at XML serialization (multi-domain audit #11). Device-derived
     free-text (a CDP/LLDP neighbour name, an interface description, a banner) -- collected with errors='ignore',
@@ -52,27 +78,63 @@ def _xls_sanitize(value):
     HYPERLINK/WEBSERVICE/formula construction), so a leading-'=' string is forced back to inert text with
     Excel's text-prefix apostrophe. ('+', '-', '@' are stored by openpyxl as ordinary strings -- NOT live
     formulas in the .xlsx -- and are legitimate leading chars in delta ('+3 added'), placeholder ('-') and
-    negative cells, so they are deliberately left unprefixed to avoid corrupting real content on re-read.)"""
+    negative cells, so they are deliberately left unprefixed to avoid corrupting real content on re-read.)
+
+    The '=' test skips LEADING WHITESPACE (review #63): xml_safe deliberately KEEPS tab (0x09), LF (0x0A)
+    and CR (0x0D) because they are XML-legal, so a device description of "\\t=cmd|'/c calc'!A1" slipped
+    both this guard and openpyxl's own startswith('=') formula detection -- and on the routine
+    xlsx->CSV re-export the field lands as a leading-tab formula, which Excel / LibreOffice strip-then-
+    evaluate. Testing the first NON-BLANK char closes that bypass; it stays idempotent (a value that
+    already carries the apostrophe no longer begins with '=').
+
+    Scope note: this stays a pure XML + formula sanitizer because runbook.py reuses it to clean the
+    whole snapshot tree for the DOCX. Excel's per-cell length cap belongs to the workbook write path
+    only and lives in `_xls_cell_value`."""
     v = xml_safe(value)
-    if isinstance(v, str) and v.startswith("="):
+    if isinstance(v, str) and v.lstrip(" \t\r\n").startswith("="):
         v = "'" + v
     return v
 
 
+def _xls_cell_value(value):
+    """`_xls_sanitize` plus Excel's hard 32,767-char per-cell cap (review #87), applied at the workbook
+    WRITE chokepoints only.
+
+    openpyxl's `check_string` enforces the limit with a silent `value = value[:32767]` -- no exception
+    and no warning -- so an oversized join was amputated mid-content in a workbook that still reported
+    success. The worst instance is the remediation plan's `"\\n".join(commands)`: the actual
+    configuration an engineer is meant to review and apply. Where this module already bounds a join it
+    DISCLOSES the cut (the subnet-reachability '(+N)' pattern), so the cap does the same in-cell rather
+    than letting openpyxl truncate invisibly. Idempotent: a value that has already been capped is
+    exactly at the limit and passes through untouched."""
+    v = _xls_sanitize(value)
+    if isinstance(v, str) and len(v) > _XLSX_MAX_CELL:
+        note = _XLSX_TRUNC_NOTE.format(n=len(v), cap=_XLSX_MAX_CELL)
+        logger.warning("cell value of %d chars exceeds Excel's %d-char limit - truncated WITH a "
+                       "disclosure marker (openpyxl would have cut it silently)", len(v), _XLSX_MAX_CELL)
+        v = v[:_XLSX_MAX_CELL - len(note)] + note
+    return v
+
+
 def _harden_ws(ws):
-    """Wrap one worksheet's cell()/append() so every written string value is sanitized (no IllegalCharacterError)."""
+    """Wrap one worksheet's cell()/append() so every written string value is sanitized (no IllegalCharacterError).
+    Idempotent: a sheet already wrapped (by harden_workbook's create_sheet hook, or by an earlier _new_sheet)
+    is left alone rather than double-wrapped."""
+    if getattr(ws, "_cisco_hardened", False):
+        return
+    ws._cisco_hardened = True
     _orig_cell, _orig_append = ws.cell, ws.append
 
     def _cell(*args, **kwargs):
         if "value" in kwargs:
-            kwargs["value"] = _xls_sanitize(kwargs["value"])
+            kwargs["value"] = _xls_cell_value(kwargs["value"])
         elif len(args) >= 3:
-            args = (args[0], args[1], _xls_sanitize(args[2])) + args[3:]
+            args = (args[0], args[1], _xls_cell_value(args[2])) + args[3:]
         return _orig_cell(*args, **kwargs)
 
     def _append(iterable):
         if isinstance(iterable, (list, tuple)):
-            iterable = [_xls_sanitize(v) for v in iterable]
+            iterable = [_xls_cell_value(v) for v in iterable]
         return _orig_append(iterable)
 
     ws.cell, ws.append = _cell, _append
@@ -97,7 +159,7 @@ def _install_cell_value_guard():
     if getattr(prop, "fset", None) is None:                       # defensive: nothing to wrap
         return
     Cell.value = property(prop.fget,
-                          lambda self, v: prop.fset(self, _xls_sanitize(v)),
+                          lambda self, v: prop.fset(self, _xls_cell_value(v)),
                           getattr(prop, "fdel", None))
     _CELL_VALUE_GUARDED = True
 
@@ -121,6 +183,42 @@ def harden_workbook(wb):
 
     wb.create_sheet = _create
     return wb
+
+
+def _new_sheet(wb, name: str):
+    """The ONE way this module creates a sheet. Two structural guarantees every `write_*` needs and
+    could previously lose silently:
+
+    1. NAME COLLISION (review #86). `wb.create_sheet(NAME)` on a workbook that ALREADY has a sheet
+       called NAME does not raise or warn -- openpyxl renames the new one to 'NAME1'. The workbook is
+       built on a CUSTOMER-SUPPLIED template, so a tab the customer already named e.g. 'Executive
+       Summary' kept the canonical name while the engine's freshly computed sheet landed beside it as
+       'Executive Summary1' (and write_executive_summary_sheet then moved that one to position 0).
+       It also made every writer non-idempotent on a second invocation. ~20 writers carried a
+       hand-rolled `if NAME in wb.sheetnames: del wb[NAME]`; ~28 did not. Doing it HERE fixes the
+       whole class instead of a named subset, and cannot drift again.
+
+       The match must be CASE-INSENSITIVE. openpyxl's own dedupe (`utils.avoid_duplicate_name`) folds
+       case, and so does Excel -- a workbook cannot hold both 'Findings' and 'FINDINGS'. An exact-case
+       `name in wb.sheetnames` therefore missed a customer tab named 'FINDINGS' / 'executive summary',
+       openpyxl renamed the engine's sheet to 'Findings1' anyway, and the whole defect reopened on the
+       one input it is written for (a customer-supplied template, where tab casing is arbitrary). The
+       Executive Summary is the worst instance again: it then move_sheet()s the MIS-NAMED duplicate to
+       position 0 while the customer's stale tab keeps the canonical name.
+
+    2. SANITIZATION (review #63). Every `write_*` is a PUBLIC entry point taking a caller-built
+       workbook, but the control-char / formula-injection guard lived only in `harden_workbook()`,
+       which no writer called or asserted -- a caller that skipped it lost both protections with no
+       signal. Creating the sheet through here installs the Cell.value setter guard (process-wide,
+       idempotent) and wraps the new sheet's cell()/append(), so a writer is safe on its own.
+       `harden_workbook()` is still the right call for the TEMPLATE's pre-existing sheets."""
+    _install_cell_value_guard()
+    for existing in [s for s in wb.sheetnames if s.lower() == (name or "").lower()]:
+        del wb[existing]
+    ws = wb.create_sheet(name)
+    _harden_ws(ws)
+    return ws
+
 
 _CENSUS_HDR_FILL = WORKBOOK_NAVY_HEX
 
@@ -168,7 +266,7 @@ HEADER_TO_FIELD = {
     "spanning tree rootguard (enable/disable)": "stp_rootguard",
     "spanning tree rootguard": "stp_rootguard",
     "poe status": "poe_status",
-    "system owner ([HISTORY-REDACTED] to confirm)": "system_owner", "system owner": "system_owner",
+    "system owner (customer to confirm)": "system_owner", "system owner": "system_owner",
     "end point type": "endpoint_type",
     "end point location rack-unit": "endpoint_location", "end point location": "endpoint_location",
     "dual connection": "dual_connection",
@@ -266,8 +364,7 @@ def write_device_inventory_sheet(wb, all_device_physical: List[DevicePhysical]) 
 
     if INVENTORY_SHEET_NAME in wb.sheetnames:
         del wb[INVENTORY_SHEET_NAME]
-    ws = wb.create_sheet(INVENTORY_SHEET_NAME)
-
+    ws = _new_sheet(wb, INVENTORY_SHEET_NAME)
     HDR_FONT  = Font(name="Calibri", bold=True, color="FFFFFF", size=10)
     HDR_FILL  = PatternFill("solid", fgColor=WORKBOOK_NAVY_HEX)
     HDR_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -284,7 +381,16 @@ def write_device_inventory_sheet(wb, all_device_physical: List[DevicePhysical]) 
     for row, dp in enumerate(all_device_physical, 2):
         for col, (_, field) in enumerate(INVENTORY_COLUMNS, 1):
             val = getattr(dp, field, "")
-            if val == 0: val = ""
+            # `val == 0 -> ""` is right for the int fields model.DevicePhysical declares `int = 0` with no
+            # None state (num_power_supplies / num_modules / total_ports): 0 there IS the not-observed
+            # marker. `active_ports` is the ONE exception -- it is `int | None`, where None means the
+            # up/down state was never observed and 0 is an OBSERVED fact (every port down). Blanking both
+            # made this sheet contradict the Capacity sheet of the SAME workbook, which renders the pair as
+            # 0 vs blank (review #55, fixed there only). Same defect class, a second exit.
+            if field == "active_ports":
+                val = "" if val is None else val
+            elif val == 0:
+                val = ""
             c = ws.cell(row=row, column=col, value=val)
             c.font = DAT_FONT
             c.alignment = DAT_C if field in _NUM else DAT_L
@@ -336,8 +442,7 @@ def write_svi_gateway_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceDat
 
     if SVI_SHEET_NAME in wb.sheetnames:
         del wb[SVI_SHEET_NAME]
-    ws = wb.create_sheet(SVI_SHEET_NAME)
-
+    ws = _new_sheet(wb, SVI_SHEET_NAME)
     HDR_FONT  = Font(name="Calibri", bold=True, color="FFFFFF", size=10)
     HDR_FILL  = PatternFill("solid", fgColor=WORKBOOK_NAVY_HEX)
     HDR_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -401,8 +506,7 @@ def write_stp_detail_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData
 
     if STP_SHEET_NAME in wb.sheetnames:
         del wb[STP_SHEET_NAME]
-    ws = wb.create_sheet(STP_SHEET_NAME)
-
+    ws = _new_sheet(wb, STP_SHEET_NAME)
     HDR_FONT  = Font(name="Calibri", bold=True, color="FFFFFF", size=10)
     HDR_FILL  = PatternFill("solid", fgColor=WORKBOOK_NAVY_HEX)
     HDR_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -470,7 +574,7 @@ def write_vlan_census_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceDat
             "Gateway Switch(es)", "Gateway IP", "Subnet", "FHRP"]
     if VLAN_CENSUS_SHEET_NAME in wb.sheetnames:
         del wb[VLAN_CENSUS_SHEET_NAME]
-    ws = wb.create_sheet(VLAN_CENSUS_SHEET_NAME)
+    ws = _new_sheet(wb, VLAN_CENSUS_SHEET_NAME)
     _census_header(ws, cols)
 
     agg: Dict[int, Dict[str, object]] = {}
@@ -515,7 +619,7 @@ def write_endpoint_census_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfac
             "Endpoint Type", "Location", "CDP/LLDP Neighbor"]
     if ENDPOINT_CENSUS_SHEET_NAME in wb.sheetnames:
         del wb[ENDPOINT_CENSUS_SHEET_NAME]
-    ws = wb.create_sheet(ENDPOINT_CENSUS_SHEET_NAME)
+    ws = _new_sheet(wb, ENDPOINT_CENSUS_SHEET_NAME)
     _census_header(ws, cols)
 
     rows: List[Tuple[str, InterfaceData]] = []
@@ -542,7 +646,7 @@ def write_endpoint_census_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfac
     # Disclose the basis vs the canonical evidenced-endpoint total: this sheet lists learned MACs on ALL
     # host-facing (non-trunk) ports, a SUPERSET of executive_brief.scale.n_endpoints, which counts only ports
     # explicitly tagged switchport mode 'Access'. Without this the row count silently contradicts the Exec
-    # Summary headline ([HISTORY-REDACTED]: 5326 here vs 5127 there) -- the same disclosure the VLAN Census / Migration Readiness
+    # Summary headline (Meridian: 5326 here vs 5127 there) -- the same disclosure the VLAN Census / Migration Readiness
     # sheets carry (audit-4 #17).
     n_access = sum(1 for _h, d in rows if (d.switchport_mode or "") == "Access")
     if len(rows) != n_access:
@@ -570,7 +674,7 @@ def write_move_group_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData
             "# Endpoint MACs (per-switch sum)", "Gateways", "Redundant (STP-blocked) Paths", "Notes"]
     if MOVEGROUP_SHEET_NAME in wb.sheetnames:
         del wb[MOVEGROUP_SHEET_NAME]
-    ws = wb.create_sheet(MOVEGROUP_SHEET_NAME)
+    ws = _new_sheet(wb, MOVEGROUP_SHEET_NAME)
     _census_header(ws, cols)
 
     groups = compute_move_groups(all_interfaces)
@@ -612,7 +716,7 @@ def write_topology_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]
             "Link Speed", "Confirmation"]
     if TOPOLOGY_SHEET_NAME in wb.sheetnames:
         del wb[TOPOLOGY_SHEET_NAME]
-    ws = wb.create_sheet(TOPOLOGY_SHEET_NAME)
+    ws = _new_sheet(wb, TOPOLOGY_SHEET_NAME)
     _census_header(ws, cols)
 
     DAT_FONT = Font(name="Calibri", size=10)
@@ -637,7 +741,7 @@ def write_findings_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]
     cols = ["Severity", "Category", "Scope", "Finding"]
     if FINDINGS_SHEET_NAME in wb.sheetnames:
         del wb[FINDINGS_SHEET_NAME]
-    ws = wb.create_sheet(FINDINGS_SHEET_NAME)
+    ws = _new_sheet(wb, FINDINGS_SHEET_NAME)
     _census_header(ws, cols)
     findings = compute_findings(all_interfaces)
     DAT_FONT = Font(name="Calibri", size=10)
@@ -668,10 +772,18 @@ def compute_capacity(all_device_physical: List[DevicePhysical]) -> List[dict]:
     'Capacity' sheet AND the explorer's capacity card). One record per device, sorted by hostname:
     {hostname, model, total_ports, active_ports, free_ports, port_util, poe_capacity_w, poe_drawn_w,
      poe_remaining_w, poe_util, flags}. Numeric fields are "" when unknown (so the sheet renders blanks
-     exactly as before); flags is a list of "Port-bound (>=90%)" / "PoE-bound (>=80%)"."""
+     exactly as before); flags is a list of "Port-bound (>=90%)" / "PoE-bound (>=80%)".
+
+    For active_ports, "" means NOT OBSERVED and only that (review #55). An OBSERVED zero is a fact and
+    renders as 0: the old `active or ""` collapsed it into the same blank the docstring reserves for
+    unknown, while still emitting a computed 0.0% utilisation and free_ports == total_ports for that
+    same row -- two contradictory coverage claims in one row of the sheet consolidation decisions are
+    made on. The None-vs-0 distinction the line below draws is now kept all the way to the record.
+    (total_ports is NOT the same case and is left alone: model.DevicePhysical declares it `int = 0`
+    with no None state, so 0 there IS the not-observed marker, not an observed zero.)"""
     out: List[dict] = []
     for dp in sorted(all_device_physical, key=lambda d: d.hostname.lower()):
-        total = dp.total_ports or 0
+        total = dp.total_ports or 0                           # 0 = no port inventory parsed (the field has no None)
         active = dp.active_ports                              # None = active-port count NOT observed (distinct from 0)
         # honesty: a device whose active-port count was not observed must NOT read 0% utilization — it would
         # then rank first as "most consolidation headroom". Leave util/free blank when active_ports is unknown.
@@ -689,7 +801,8 @@ def compute_capacity(all_device_physical: List[DevicePhysical]) -> List[dict]:
         if putil != "" and putil >= 85: flags.append("Port-bound (>=85%)")   # match design_advisor._PORT_UTIL_HOT=85 so workbook + design narrative agree (DET-capacity-04)
         if poe_util != "" and poe_util >= 80: flags.append("PoE-bound (>=80%)")
         out.append({"hostname": dp.hostname, "model": dp.model,
-                    "total_ports": total or "", "active_ports": active or "", "free_ports": free,
+                    "total_ports": total or "",
+                    "active_ports": "" if active is None else active, "free_ports": free,
                     "port_util": putil, "poe_capacity_w": dp.power_capacity_w,
                     "poe_drawn_w": dp.power_drawn_w, "poe_remaining_w": rem,
                     "poe_util": poe_util, "flags": flags})
@@ -705,7 +818,7 @@ def write_capacity_sheet(wb, all_device_physical: List[DevicePhysical]) -> None:
             "PoE Util %", "Flag"]
     if CAPACITY_SHEET_NAME in wb.sheetnames:
         del wb[CAPACITY_SHEET_NAME]
-    ws = wb.create_sheet(CAPACITY_SHEET_NAME)
+    ws = _new_sheet(wb, CAPACITY_SHEET_NAME)
     _census_header(ws, cols)
     DAT_FONT = Font(name="Calibri", size=10)
     DAT_L = Alignment(horizontal="left", vertical="center")
@@ -714,13 +827,19 @@ def write_capacity_sheet(wb, all_device_physical: List[DevicePhysical]) -> None:
     r = 2
     for rec in compute_capacity(all_device_physical):
         flags = rec["flags"]
+        # A colour is a claim, so shade the cell the flag is ABOUT -- not both. `if flags and col in (6, 10)`
+        # amber-filled Port Util % for a device flagged only PoE-bound, including when that cell is BLANK
+        # because active_ports was never observed: an amber "port-bound" claim over an unobserved value, in
+        # the same row whose blank exists precisely to withhold that claim (review #55).
+        _hot = {6: any(f.startswith("Port-bound") for f in flags),
+                10: any(f.startswith("PoE-bound") for f in flags)}
         vals = [rec["hostname"], rec["model"], rec["total_ports"], rec["active_ports"], rec["free_ports"],
                 rec["port_util"], rec["poe_capacity_w"], rec["poe_drawn_w"], rec["poe_remaining_w"],
                 rec["poe_util"], "; ".join(flags)]
         for col, v in enumerate(vals, 1):
             c = ws.cell(row=r, column=col, value=v); c.font = DAT_FONT
             c.alignment = DAT_C if 3 <= col <= 10 else DAT_L
-            if flags and col in (6, 10): c.fill = warn_fill
+            if _hot.get(col) and v != "": c.fill = warn_fill
         r += 1
     _census_autofit(ws, len(cols), r - 1)
     logger.info(f"  [OK] '{CAPACITY_SHEET_NAME}' sheet: {len(all_device_physical)} device(s)")
@@ -733,18 +852,22 @@ def write_endpoint_intelligence_sheet(wb, identity: list) -> None:
     (MAC OUI -- a fact) and an inferred migration CLASS + confidence + the evidence that drove it.
     NEW-V3.23.95: renders the precomputed compute_endpoint_identity records (one source of truth with
     the snapshot / runbook / explorer). A class-distribution summary is written above the table."""
+    # Coerce the SECTION ONCE at entry, not per read site: these writers are handed a raw
+    # snapshot section on the --no-collect rebuild, and each reads it in several places (the
+    # row loop AND the summary line), so a per-site guard leaves the next read reachable.
+    identity = _sec_rows(identity)
     cols = ["Switch", "Port", "VLAN", "Endpoint IP", "MACs", "Vendor (OUI fact)",
             "Class (inferred)", "Confidence", "Evidence"]
     if ENDPOINT_INTEL_SHEET_NAME in wb.sheetnames:
         del wb[ENDPOINT_INTEL_SHEET_NAME]
-    ws = wb.create_sheet(ENDPOINT_INTEL_SHEET_NAME)
+    ws = _new_sheet(wb, ENDPOINT_INTEL_SHEET_NAME)
     _census_header(ws, cols)
     DAT_FONT = Font(name="Calibri", size=10)
     DAT_L = Alignment(horizontal="left", vertical="center")
     DAT_C = Alignment(horizontal="center", vertical="center")
     low_fill = PatternFill("solid", fgColor="F2F2F2")   # shade Unknown rows so eyes go to classified ones
     r = 2
-    for rec in (identity or []):
+    for rec in _sec_rows(identity):
         vals = [rec.get("host"), rec.get("port"), rec.get("vlan"), rec.get("ip"),
                 rec.get("mac_count"), rec.get("vendor"), rec.get("endpoint_class"),
                 rec.get("confidence"), rec.get("evidence")]
@@ -757,7 +880,7 @@ def write_endpoint_intelligence_sheet(wb, identity: list) -> None:
         r += 1
     _census_autofit(ws, len(cols), r - 1)
     ws.column_dimensions["I"].width = 42
-    logger.info(f"  [OK] '{ENDPOINT_INTEL_SHEET_NAME}' sheet: {len(identity or [])} endpoint(s)")
+    logger.info(f"  [OK] '{ENDPOINT_INTEL_SHEET_NAME}' sheet: {len(identity)} endpoint(s)")
 
 
 ENDPOINT_DEPS_SHEET_NAME = "Endpoint Dependencies"   # cohesive units / clusters (NEW-V3.23.96)
@@ -767,9 +890,13 @@ def write_endpoint_dependencies_sheet(wb, dependencies: dict) -> None:
     distributed system with its endpoint count and switch/VLAN spread, then the dual-homed endpoints
     (NIC-team / redundant legs to sequence make-before-break) and the per-VLAN app tiers. NEW-V3.23.96:
     renders the precomputed compute_endpoint_dependencies dict (one source of truth)."""
+    # Coerce the SECTION ONCE at entry, not per read site: these writers are handed a raw
+    # snapshot section on the --no-collect rebuild, and each reads it in several places (the
+    # row loop AND the summary line), so a per-site guard leaves the next read reachable.
+    dependencies = _sec_dict(dependencies)
     if ENDPOINT_DEPS_SHEET_NAME in wb.sheetnames:
         del wb[ENDPOINT_DEPS_SHEET_NAME]
-    ws = wb.create_sheet(ENDPOINT_DEPS_SHEET_NAME)
+    ws = _new_sheet(wb, ENDPOINT_DEPS_SHEET_NAME)
     cols = ["Section", "Vendor / detail", "Class", "Endpoints", "Switches", "VLANs", "Note"]
     _census_header(ws, cols)
     DAT = Font(name="Calibri", size=10)
@@ -788,24 +915,25 @@ def write_endpoint_dependencies_sheet(wb, dependencies: dict) -> None:
                 c.fill = warn
         r += 1
 
-    for c in (dep.get("clusters") or []):
+    for c in _sec_rows(dep.get("clusters")):
         row(["Cluster", c.get("vendor", ""), c.get("endpoint_class", ""), c.get("count", ""),
              c.get("switches", ""), c.get("vlans", ""),
              "spans multiple move-groups — coordinate the waves" if c.get("spans_groups") else ""],
             flag=c.get("spans_groups"))
-    for d in (dep.get("dual_homed") or []):
+    for d in _sec_rows(dep.get("dual_homed")):
         row(["Dual-homed", f"{d.get('mac', '')}  [{', '.join(d.get('switches', []))}]",
              d.get("endpoint_class", ""), 1, len(d.get("switches", [])), "",
              "split across move-groups — sequence make-before-break" if d.get("split_across_groups")
              else "NIC-team / redundant legs — make-before-break"],
             flag=d.get("split_across_groups"))
-    for a in (dep.get("affinity") or []):
+    for a in _sec_rows(dep.get("affinity")):
         cls = ", ".join(f"{k} ({v})" for k, v in (a.get("classes") or {}).items())
         row(["VLAN tier", f"VLAN {a.get('vlan', '')}: {cls}", a.get("dominant", ""),
              a.get("total", ""), "", a.get("vlan", ""), ""])
     _census_autofit(ws, len(cols), r - 1)
     ws.column_dimensions["B"].width = 48; ws.column_dimensions["G"].width = 46
-    n = len(dep.get("clusters") or []) + len(dep.get("dual_homed") or []) + len(dep.get("affinity") or [])
+    n = (len(_sec_rows(dep.get("clusters"))) + len(_sec_rows(dep.get("dual_homed")))
+         + len(_sec_rows(dep.get("affinity"))))
     logger.info(f"  [OK] '{ENDPOINT_DEPS_SHEET_NAME}' sheet: {n} dependency row(s)")
 
 
@@ -817,9 +945,13 @@ def write_subnet_reachability_sheet(wb, subnet_intelligence: dict) -> None:
     its endpoints live in (via the SVI that gateways their VLAN). NEW-V3.23.97: renders the precomputed
     compute_subnet_intelligence (one source of truth). Route depth is from the full 'show ip route';
     BGP-received is populated only when the new 'show ip bgp' collection is present."""
+    # Coerce the SECTION ONCE at entry, not per read site: these writers are handed a raw
+    # snapshot section on the --no-collect rebuild, and each reads it in several places (the
+    # row loop AND the summary line), so a per-site guard leaves the next read reachable.
+    subnet_intelligence = _sec_dict(subnet_intelligence)
     if SUBNET_REACH_SHEET_NAME in wb.sheetnames:
         del wb[SUBNET_REACH_SHEET_NAME]
-    ws = wb.create_sheet(SUBNET_REACH_SHEET_NAME)
+    ws = _new_sheet(wb, SUBNET_REACH_SHEET_NAME)
     cols = ["Switch", "Role", "Destination subnets (terminates)", "# Dest", "Reachable (#)",
             "Reachable sources", "Default next-hop", "L2: subnets via gateway", "BGP recv (#)"]
     _census_header(ws, cols)
@@ -827,10 +959,17 @@ def write_subnet_reachability_sheet(wb, subnet_intelligence: dict) -> None:
     AL = Alignment(horizontal="left", vertical="top", wrap_text=True)
     CN = Alignment(horizontal="center", vertical="center")
     r = 2
-    for rec in (subnet_intelligence or {}).get("per_device", []):
+    for rec in _sec_rows(subnet_intelligence.get("per_device")):
         dest = rec.get("destination_subnets", [])
         srcs = ", ".join(f"{k}:{v}" for k, v in (rec.get("reachable_sources") or {}).items())
-        served = "; ".join(f"{s.get('subnet')} (gw {s.get('gateway')})" for s in rec.get("served_subnets", [])[:8])
+        # DISCLOSE the cut, exactly as the destination-subnet join two lines below does. This column is an
+        # access switch's whole answer to "which subnets do my endpoints live in" -- a migration-scoping
+        # fact -- and it was silently amputated at 8 while the row's own '# Dest' cell and column C both
+        # carried honest totals. A silent truncation is a coverage lie, not a display nicety; this module's
+        # cell-cap guard cites THIS sheet's '(+N)' pattern as the house rule (see _xls_cell_value).
+        _served = _sec_rows(rec.get("served_subnets"))
+        served = "; ".join(f"{s.get('subnet')} (gw {s.get('gateway')})" for s in _served[:8]) \
+            + (f" (+{len(_served) - 8})" if len(_served) > 8 else "")
         vals = [rec.get("host"), "L3" if rec.get("is_l3") else "L2",
                 ", ".join(dest[:12]) + (f" (+{len(dest) - 12})" if len(dest) > 12 else ""),
                 rec.get("destination_count", 0), rec.get("reachable_count", 0), srcs,
@@ -842,7 +981,7 @@ def write_subnet_reachability_sheet(wb, subnet_intelligence: dict) -> None:
     _census_autofit(ws, len(cols), r - 1)
     ws.column_dimensions["C"].width = 40; ws.column_dimensions["H"].width = 44
     logger.info(f"  [OK] '{SUBNET_REACH_SHEET_NAME}' sheet: "
-                f"{len((subnet_intelligence or {}).get('per_device', []))} device(s)")
+                f"{len(_sec_rows(subnet_intelligence.get('per_device')))} device(s)")
 
 
 MIGRATION_SCENARIO_SHEET_NAME = "Migration Scenarios"   # per-group cutover scenario (NEW-V3.23.98)
@@ -853,7 +992,7 @@ def write_migration_scenarios_sheet(wb, scenarios: dict) -> None:
     fleet-level recommendation in row 1. NEW-V3.23.98: renders compute_migration_scenarios."""
     if MIGRATION_SCENARIO_SHEET_NAME in wb.sheetnames:
         del wb[MIGRATION_SCENARIO_SHEET_NAME]
-    ws = wb.create_sheet(MIGRATION_SCENARIO_SHEET_NAME)
+    ws = _new_sheet(wb, MIGRATION_SCENARIO_SHEET_NAME)
     sc = scenarios or {}
     fleet = sc.get("fleet_recommendation", "")
     if fleet:
@@ -896,7 +1035,7 @@ def write_application_intelligence_sheet(wb, ai: dict) -> None:
     cross-domain (IGMP querier continuity / RFC 4541) risk block. NEW-V3.23.112."""
     if APPLICATION_INTEL_SHEET_NAME in wb.sheetnames:
         del wb[APPLICATION_INTEL_SHEET_NAME]
-    ws = wb.create_sheet(APPLICATION_INTEL_SHEET_NAME)
+    ws = _new_sheet(wb, APPLICATION_INTEL_SHEET_NAME)
     a = ai or {}
     s = a.get("summary") or {}
     summ = (f"{s.get('n_domains', 0)} domain(s)  ·  {s.get('n_on_air_critical', 0)} on-air-critical  ·  "
@@ -1017,6 +1156,37 @@ def _mermaid_id(name: str, idmap: Dict[str, str]) -> str:
         idmap[name] = f"n{len(idmap)}"
     return idmap[name]
 
+
+#: Whitespace that must never survive into a one-line diagram statement: a raw newline in a
+#: device-advertised name INJECTS statements into both the .mmd and the .dot.
+_DIAG_WS_RE = re.compile(r"[\r\n\t\v\f]+")
+
+
+def _mermaid_text(value) -> str:
+    """Escape a device-advertised string for a Mermaid QUOTED label (review #64).
+
+    `analyze.compute_topology_links` keeps the RAW advertised CDP/LLDP name for any off-scan
+    neighbour, so a_host / b_host / b_port are fully DEVICE-CONTROLLED, and these files are written
+    with a plain `open()/write()` -- neither `_xls_sanitize` nor `xml_safe` runs on them. A double
+    quote closes the label early, `[`/`]` close the node-shape bracket, `|` closes an edge label, and
+    a newline injects whole statements -- all while the writer logs `[OK]`. Mermaid's escape for these
+    is the HTML-style numeric entity, which renders as the original character."""
+    s = _DIAG_WS_RE.sub(" ", str("" if value is None else value))
+    # ';' (Mermaid's statement separator) is escaped FIRST — every entity below ENDS in ';', so doing it
+    # last would re-escape the ones just inserted ('#quot;' -> '#quot#59;').
+    for ch, ent in ((";", "#59;"), ('"', "#quot;"), ("[", "#91;"), ("]", "#93;"),
+                    ("{", "#123;"), ("}", "#125;"), ("|", "#124;")):
+        s = s.replace(ch, ent)
+    return s
+
+
+def _dot_text(value) -> str:
+    """Escape a device-advertised string for a Graphviz DOUBLE-QUOTED string (review #64). Same
+    untrusted source as _mermaid_text; DOT's escape is the backslash (escape the backslash FIRST, or
+    a trailing one would escape the closing quote)."""
+    s = _DIAG_WS_RE.sub(" ", str("" if value is None else value))
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
 def write_topology_diagram(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                            out_dir: str, basename: str = "topology") -> List[str]:
     """Emit the inter-switch link map as Mermaid (.mmd) and Graphviz (.dot) files.
@@ -1030,10 +1200,10 @@ def write_topology_diagram(all_interfaces: Dict[str, Dict[str, InterfaceData]],
     idmap: Dict[str, str] = {}
     mm = ["graph LR"]
     for n in sorted(nodes):
-        mm.append(f'    {_mermaid_id(n, idmap)}["{n}"]')
+        mm.append(f'    {_mermaid_id(n, idmap)}["{_mermaid_text(n)}"]')
     for L in links:
         a, b = _mermaid_id(str(L["a_host"]), idmap), _mermaid_id(str(L["b_host"]), idmap)
-        lbl = f'{L["a_port"]} - {L.get("b_port") or "?"}'
+        lbl = f'{_mermaid_text(L["a_port"])} - {_mermaid_text(L.get("b_port") or "?")}'
         edge = "-.-" if str(L["confirmation"]).startswith("One end") else "---"
         mm.append(f'    {a} {edge}|"{lbl}"| {b}')
     mm_path = os.path.join(out_dir, basename + ".mmd")
@@ -1043,8 +1213,8 @@ def write_topology_diagram(all_interfaces: Dict[str, Dict[str, InterfaceData]],
     dot = ["graph topology {", "    rankdir=LR;", "    node [shape=box, fontsize=10];"]
     for L in links:
         style = ' style="dashed"' if str(L["confirmation"]).startswith("One end") else ""
-        lbl = f'{L["a_port"]}\\n{L.get("b_port") or "?"}'
-        dot.append(f'    "{L["a_host"]}" -- "{L["b_host"]}" [label="{lbl}"{style}];')
+        lbl = f'{_dot_text(L["a_port"])}\\n{_dot_text(L.get("b_port") or "?")}'
+        dot.append(f'    "{_dot_text(L["a_host"])}" -- "{_dot_text(L["b_host"])}" [label="{lbl}"{style}];')
     dot.append("}")
     dot_path = os.path.join(out_dir, basename + ".dot")
     with open(dot_path, "w", encoding="utf-8") as f:
@@ -1069,7 +1239,7 @@ _CL_FILL = {"Critical": "FF5775", "High": "F4CCCC", "Medium": "FCE5CD", "Low": "
 def write_cross_layer_sheet(wb, findings: List[dict]) -> None:
     """Write the 'Cross-Layer Analysis' sheet from compute_cross_layer_correlations()."""
 
-    ws = wb.create_sheet(CROSS_LAYER_SHEET_NAME)
+    ws = _new_sheet(wb, CROSS_LAYER_SHEET_NAME)
     headers = ["CL", "Severity", "Layers", "Finding", "Detail", "Recommendation"]
     for col, h in enumerate(headers, 1):
         c = ws.cell(1, col, h)
@@ -1096,7 +1266,7 @@ PROTOCOL_HEALTH_SHEET_NAME = "Protocol Health"
 def write_protocol_health_sheet(wb, records: List[dict]) -> None:
     """Write the 'Protocol Health' sheet from compute_protocol_health()."""
 
-    ws = wb.create_sheet(PROTOCOL_HEALTH_SHEET_NAME)
+    ws = _new_sheet(wb, PROTOCOL_HEALTH_SHEET_NAME)
     headers = ["Switch", "Protocol", "Summary", "Detail", "Health"]
     for col, h in enumerate(headers, 1):
         c = ws.cell(1, col, h)
@@ -1121,11 +1291,11 @@ def write_protocol_health_sheet(wb, records: List[dict]) -> None:
 
 PROTOCOL_INTELLIGENCE_SHEET_NAME = "Protocol Intelligence"   # NEW-V3.23.100
 
-def write_protocol_intelligence_sheet(wb, records: List[dict]) -> None:
+def write_protocol_intelligence_sheet(wb, records: List[dict], *, unavailable: bool = False) -> None:
     """Write the 'Protocol Intelligence' sheet from compute_protocol_intelligence(): each abnormal
     protocol state turned into meaning + likely cause + remediation (the observed state is a fact;
     the cause is Inferred per Cisco doctrine)."""
-    ws = wb.create_sheet(PROTOCOL_INTELLIGENCE_SHEET_NAME)
+    ws = _new_sheet(wb, PROTOCOL_INTELLIGENCE_SHEET_NAME)
     headers = ["Switch", "Protocol", "State", "Severity", "Meaning",
                "Likely cause (Inferred)", "Remediation"]
     for col, h in enumerate(headers, 1):
@@ -1133,9 +1303,15 @@ def write_protocol_intelligence_sheet(wb, records: List[dict]) -> None:
         c.font = Font(bold=True, color="FFFFFF")
         c.fill = PatternFill("solid", fgColor="434343")
         c.alignment = Alignment(horizontal="center")
-    if not records:
-        ws.cell(2, 1, "No abnormal protocol states detected (control plane healthy).")
-    for r, rec in enumerate(records, 2):
+    unavailable = unavailable or (isinstance(records, dict) and bool(records.get("_unavailable")))
+    rows = [r for r in (records if isinstance(records, list) else []) if isinstance(r, dict)]
+    if unavailable:
+        ws.cell(2, 1, "UNVERIFIED - protocol-intelligence computation failed or was unavailable; "
+                      "no control-plane health conclusion is asserted.")
+    elif not rows:
+        ws.cell(2, 1, "No abnormal protocol-state advisory was emitted by this analysis. This is not "
+                      "a control-plane health certification; confirm protocol and collection coverage.")
+    for r, rec in enumerate(rows, 2):
         vals = [rec["switch"], rec["protocol"], rec["state"], rec["severity"],
                 rec["meaning"], rec["likely_cause"], rec["remediation"]]
         for col, v in enumerate(vals, 1):
@@ -1147,17 +1323,102 @@ def write_protocol_intelligence_sheet(wb, records: List[dict]) -> None:
     for i, w in enumerate([22, 13, 8, 10, 44, 46, 50], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
-    n_high = sum(1 for x in records if x["severity"] == "High")
-    logger.info(f"  [OK] '{PROTOCOL_INTELLIGENCE_SHEET_NAME}' sheet: {len(records)} advisory row(s), {n_high} High")
+    n_high = sum(1 for x in rows if x.get("severity") == "High")
+    logger.info(f"  [OK] '{PROTOCOL_INTELLIGENCE_SHEET_NAME}' sheet: {len(rows)} advisory row(s), {n_high} High")
 
 
 SERVICE_MAP_SHEET_NAME = "Service Map"   # NEW-V3.23.101
 
+# The registry's own authority labels (cisco_toolkit/portdb.py). Rendered defensively: absent on snapshots
+# produced before the producer published them, in which case no authority claim is made either way.
+_SERVICE_AUTHORITY_KEYS = frozenset(("assignment_authoritative", "semantics_authoritative", "overlay_status"))
+
+
+def service_name_authority(s: dict) -> str:
+    """One cell describing how far the registry can VOUCH for this row's service name.
+
+    Coverage-honest: `evidence_class` speaks only to whether traffic was observed. A name carried from the
+    curated overlay is a hypothesis about what the port means; saying so at the point of use is what stops
+    "Confirmed (ACL hit-counts)" from reading as confirmation of the NAME."""
+    if not (_SERVICE_AUTHORITY_KEYS & set(s or {})):
+        return ""
+    assign = bool(s.get("assignment_authoritative"))
+    sem = bool(s.get("semantics_authoritative"))
+    status = str(s.get("overlay_status") or "").strip() or "unknown"
+    if assign and sem:
+        return f"authoritative (port assignment + semantics; overlay {status})"
+    if assign:
+        return (f"port assignment authoritative; NAME is curated, NOT authoritative "
+                f"(overlay {status}) — treat the service label as a hypothesis")
+    return (f"NOT authoritative — curated-only classification (overlay {status}); "
+            "neither the port assignment nor the name is an assignment of record")
+
+
+# The SAME three authority keys ride on every MULTICAST group record (analyze._mcast_authority stamps
+# them). The multicast axis needs its own wording -- a group's `on_air` / Broadcast-AV flag is derived
+# ENTIRELY from the registry's curated category/broadcast fields, so rendering the group's name or its
+# on-air flag bare presents a curated judgement as a measurement.
+_MCAST_AUTHORITY_KEYS = _SERVICE_AUTHORITY_KEYS
+
+
+def multicast_class_authority(g: dict) -> str:
+    """SHORT authority tag for a multicast group's registry classification.
+
+    The tag qualifies the group's NAME/CATEGORY -- and therefore the `on_air` / Broadcast-AV label
+    derived from them, which is what promotes a MAC-alias clash to High. Returns "" when the producer
+    publishes no labels at all: absence of the labels is not evidence of authority, so nothing is
+    claimed either way (a pre-authority snapshot must not silently acquire a verdict)."""
+    if not (_MCAST_AUTHORITY_KEYS & set(g or {})):
+        return ""
+    status = str(g.get("overlay_status") or "").strip() or "unknown"
+    if status == _UNCLASSIFIED_OVERLAY_STATUS:
+        return "UNCLASSIFIED — no registry match; the category shown is a placeholder"
+    assign = bool(g.get("assignment_authoritative"))
+    sem = bool(g.get("semantics_authoritative"))
+    if assign and sem:
+        return f"registry-authoritative (assignment + media semantics; overlay {status})"
+    if sem:
+        return f"media semantics authoritative; group assignment curated (overlay {status})"
+    return (f"CURATED, NOT authoritative (overlay {status}) — the Broadcast-AV / on-air label is a "
+            "hypothesis, not an observation")
+
+
+def multicast_on_air_cell(g: dict) -> str:
+    """The 'On-air' census cell. `on_air` is a curated classification, never a measurement, so the
+    cell says which it is at the point of use instead of a bare 'yes'. FAIL-CLOSED: a record whose
+    producer never published `on_air_authoritative` reads 'basis NOT published', not 'verified'."""
+    if not g or not g.get("on_air"):
+        return ""
+    if "on_air_authoritative" not in g:
+        return "yes — basis NOT published"
+    return "yes (registry-verified)" if g.get("on_air_authoritative") else "yes (CURATED, unverified)"
+
+
+def mac_alias_on_air_cell(a: dict) -> str:
+    """The 'On-air involved' cell of a MAC-alias row. `has_av` is what the producer promotes the
+    finding to High on, and `has_av` is derived from the curated media classification -- so the cell
+    carries its basis. FAIL-CLOSED on a producer that never published `has_av_authoritative`."""
+    if not a or not a.get("has_av"):
+        return ""
+    if "has_av_authoritative" not in a:
+        return "yes — basis NOT published"
+    return "yes (registry-verified)" if a.get("has_av_authoritative") else "yes (CURATED, unverified)"
+
+
 def write_service_map_sheet(wb, sm: dict) -> None:
     """Write the 'Service Map' sheet from compute_service_map(): L4 services referenced in ACLs
     (design intent -- Inferred, not active traffic) + fleet multicast activity."""
-    ws = wb.create_sheet(SERVICE_MAP_SHEET_NAME)
+    ws = _new_sheet(wb, SERVICE_MAP_SHEET_NAME)
+    # "Evidence" describes the TRAFFIC evidence (ACL reference vs ACL hit-count) and says nothing about whether
+    # the service NAME is authoritative -- a curated-overlay-only name (e.g. 4440/udp "Dante-audio") reached
+    # this sheet indistinguishable from an IANA assignment, and an ACL hit then stamped the row "Confirmed".
+    # The registry labels every record with its own authority; render it AT THE POINT OF USE. Defensive: the
+    # column only appears when the producer actually publishes the labels (older snapshots simply lack them).
     headers = ["Port", "Proto", "Service", "Category", "Broadcast/AV", "ACL refs", "Switches", "Evidence"]
+    _svcs0 = (sm or {}).get("services") or []
+    _has_auth = any(isinstance(s, dict) and _SERVICE_AUTHORITY_KEYS & set(s) for s in _svcs0)
+    if _has_auth:
+        headers.append("Name authority")
     for col, h in enumerate(headers, 1):
         c = ws.cell(1, col, h)
         c.font = Font(bold=True, color="FFFFFF")
@@ -1170,8 +1431,12 @@ def write_service_map_sheet(wb, sm: dict) -> None:
     for s in services:
         vals = [s["port"], s["proto"], s["service"], s["category"], "yes" if s["broadcast"] else "",
                 s["refs"], s["host_count"], s["evidence_class"]]
+        if _has_auth:
+            vals.append(service_name_authority(s))
         for col, v in enumerate(vals, 1):
-            ws.cell(r, col, v)
+            c = ws.cell(r, col, v)
+            if _has_auth and col == 9 and not s.get("assignment_authoritative"):
+                c.font = Font(color="7F6000")   # curated-only: not an assignment of record
         r += 1
     # multicast activity block (Confirmed forwarding presence; per-group classification awaits richer collection)
     mc = (sm or {}).get("multicast") or {}
@@ -1183,8 +1448,14 @@ def write_service_map_sheet(wb, sm: dict) -> None:
             if not mc.get("group_level_collected") else "per-group membership collected")
     ws.cell(r, 1, "group-level detail"); ws.cell(r, 3, note); r += 1
     for g in (mc.get("classified_groups") or []):
-        ws.cell(r, 1, "multicast group"); ws.cell(r, 3, f"{g['group']} = {g['name']} ({g['category']})"); r += 1
-    for i, w in enumerate([8, 8, 16, 14, 12, 9, 9, 52], 1):
+        # The group NAME/CATEGORY is a registry classification, and on the shipped pack every multicast
+        # record is curated-only. Rendered bare it read as an observed property of the fabric; the
+        # authority tag travels with it (and "" when the producer publishes no labels -- no claim either way).
+        _auth = multicast_class_authority(g)
+        ws.cell(r, 1, "multicast group")
+        ws.cell(r, 3, f"{g['group']} = {g['name']} ({g['category']})" + (f" — {_auth}" if _auth else ""))
+        r += 1
+    for i, w in enumerate([8, 8, 16, 14, 12, 9, 9, 52] + ([64] if _has_auth else []), 1):
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
     logger.info(f"  [OK] '{SERVICE_MAP_SHEET_NAME}' sheet: {len(services)} service(s), "
@@ -1198,14 +1469,37 @@ def write_multicast_intelligence_sheet(wb, mi: dict) -> None:
     IGMP querier coverage, the PTP timing tree (ST 2059), and the per-group media census (with L2 MAC)."""
     if MULTICAST_INTEL_SHEET_NAME in wb.sheetnames:
         del wb[MULTICAST_INTEL_SHEET_NAME]
-    ws = wb.create_sheet(MULTICAST_INTEL_SHEET_NAME)
+    ws = _new_sheet(wb, MULTICAST_INTEL_SHEET_NAME)
     m = mi or {}
     s = m.get("summary") or {}
     HDR = Font(bold=True, color="FFFFFF", size=10); HFILL = PatternFill("solid", fgColor="434343")
     DAT = Font(name="Calibri", size=10)
     ws.cell(1, 1, "Multicast / media-fabric intelligence:").font = Font(bold=True, size=10)
-    summ = (f"{s.get('n_groups', 0)} group(s) ({s.get('n_av_groups', 0)} broadcast/AV) · "
-            f"{s.get('n_mac_clashes', 0)} MAC-alias clash(es) · {s.get('n_querier_gaps', 0)} querier gap(s) · "
+    # "N broadcast/AV" alone presents a CURATED classification as a measurement. The producer publishes
+    # how many of those on-air labels rest on an authoritative source (0 on the shipped pack) -- pair the
+    # two here. FAIL-CLOSED: a snapshot that never published the subset says so rather than reading verified.
+    _n_av = s.get("n_av_groups", 0) or 0
+    _n_av_auth = s.get("n_av_groups_authoritative")
+    if not _n_av:
+        _av_txt = f"{_n_av} broadcast/AV"
+    elif _n_av_auth is None:
+        _av_txt = f"{_n_av} broadcast/AV — classification basis NOT published by this snapshot"
+    elif _n_av_auth > _n_av:
+        # The two counts are published independently, so nothing guarantees the subtraction is
+        # meaningful. Unchecked it printed a NEGATIVE "curated/unverified" count -- a number that
+        # cannot exist, in a client workbook. An incoherent pair is a snapshot defect: say that,
+        # rather than deriving a third figure from it and presenting the result as a measurement.
+        _av_txt = (f"{_n_av} broadcast/AV — census INCOHERENT: {_n_av_auth} reported as "
+                   f"registry-authoritative out of {_n_av}; the split cannot be stated")
+    elif _n_av_auth:
+        _av_txt = (f"{_n_av} broadcast/AV — {_n_av_auth} registry-authoritative, "
+                   f"{_n_av - _n_av_auth} curated/unverified")
+    else:
+        _av_txt = f"{_n_av} broadcast/AV — ALL curated, NOT an authoritative source"
+    _n_uncls = s.get("n_unclassified_groups") or 0
+    summ = (f"{s.get('n_groups', 0)} group(s) ({_av_txt}) · "
+            + (f"{_n_uncls} unclassified (no registry match) · " if _n_uncls else "")
+            + f"{s.get('n_mac_clashes', 0)} MAC-alias clash(es) · {s.get('n_querier_gaps', 0)} querier gap(s) · "
             f"{s.get('n_ptp_dormant', 0)}/{s.get('n_ptp_clocks', 0)} PTP dormant · "
             f"{s.get('n_active_interfaces', 0)} mcast iface(s) / {s.get('n_active_switches', 0)} switch(es)")
     c0 = ws.cell(1, 2, summ); c0.font = Font(size=10)
@@ -1226,11 +1520,30 @@ def write_multicast_intelligence_sheet(wb, mi: dict) -> None:
     if not aliases:
         ws.cell(r[0], 1, "None — no two groups collapse to the same multicast MAC."); r[0] += 1
     else:
-        header(["L2 MAC", "Overlapping groups", "On-air involved"])
+        # The producer's own mac-alias risk row carries the severity AND the basis that raised it
+        # (analyze.compute_multicast_intelligence: severity_basis / evidence_confidence). Keyed off its
+        # title so this sheet never re-derives the promotion rule -- it renders the producer's verdict
+        # and the producer's stated basis side by side, which is what stops a High reading as measured.
+        _risk_by_mac = {}
+        for _rk in (m.get("risks") or []):
+            if isinstance(_rk, dict) and _rk.get("kind") == "mac-alias":
+                _t = str(_rk.get("title") or "").strip()
+                if _t:
+                    _risk_by_mac[_t.rsplit(" ", 1)[-1]] = _rk
+        header(["L2 MAC", "Overlapping groups", "On-air involved", "Severity",
+                "Why this severity (basis of the on-air label)"])
         for a in aliases:
+            _rk = _risk_by_mac.get(str(a.get("mac") or ""))
             ws.cell(r[0], 1, a.get("mac")).font = DAT
             ws.cell(r[0], 2, ", ".join(a.get("groups") or [])).font = DAT
-            ws.cell(r[0], 3, "yes" if a.get("has_av") else "").font = DAT
+            ws.cell(r[0], 3, mac_alias_on_air_cell(a)).font = DAT
+            ws.cell(r[0], 4, (_rk or {}).get("severity") or "").font = DAT
+            # FAIL-CLOSED: no risk row (older snapshot) => say the basis is unpublished, never leave the
+            # severity standing bare as if it were an observed measurement.
+            _bc = ws.cell(r[0], 5, (_rk or {}).get("severity_basis")
+                          or "severity basis NOT published by this snapshot — do not read the severity as measured")
+            _bc.font = DAT
+            _bc.alignment = Alignment(vertical="top", wrap_text=True)
             r[0] += 1
     r[0] += 1
 
@@ -1251,15 +1564,21 @@ def write_multicast_intelligence_sheet(wb, mi: dict) -> None:
     ws.cell(r[0], 1, "Grandmaster(s)"); ws.cell(r[0], 3, ", ".join(gms) if gms else "none observed"); r[0] += 2
 
     section(f"Group census ({len(m.get('groups') or [])})")
-    header(["Group", "L2 MAC", "Category", "On-air", "Source", "Name"])
+    # The census columns stay at SIX (the sheet's row-1 width is pinned by tests/golden/sheet_schema.json),
+    # so the classification authority rides IN the Category cell rather than in a seventh column -- the
+    # category and the authority that vouches for it are the same claim, and must not be readable apart.
+    header(["Group", "L2 MAC", "Category (classification authority)", "On-air (basis)", "Source", "Name"])
     for g in (m.get("groups") or []):
-        vals = [g.get("group"), g.get("mac"), g.get("category"), "yes" if g.get("on_air") else "",
-                g.get("source"), g.get("name")]
+        _auth = multicast_class_authority(g)
+        vals = [g.get("group"), g.get("mac"),
+                str(g.get("category") or "") + (f" — {_auth}" if _auth else ""),
+                multicast_on_air_cell(g), g.get("source"), g.get("name")]
         for i, v in enumerate(vals, 1):
             ws.cell(r[0], i, v).font = DAT
         r[0] += 1
 
-    for i, w in enumerate([20, 18, 16, 8, 16, 26], 1):
+    # One width set serves both tables on this sheet (E carries the alias severity-basis sentence).
+    for i, w in enumerate([20, 24, 44, 26, 40, 26], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
     logger.info(f"  [OK] '{MULTICAST_INTEL_SHEET_NAME}' sheet: {s.get('n_groups', 0)} group(s), "
@@ -1290,7 +1609,7 @@ def write_coverage_schema_sheet(wb, census: dict) -> None:
     blind spot (the real cause of a 'filler'-feeling output is an uncollected tier, not a code
     bug)."""
     c = census if isinstance(census, dict) else {}
-    ws = wb.create_sheet(COVERAGE_SCHEMA_SHEET_NAME)
+    ws = _new_sheet(wb, COVERAGE_SCHEMA_SHEET_NAME)
     summ = c.get("summary") or {}
     # Row 1: a STATIC coverage-honesty caveat. The live roll-up counts deliberately do NOT live here —
     # a header cell that carries data-dependent counts would churn the frozen sheet-schema golden on
@@ -1346,7 +1665,7 @@ def write_collection_completeness_sheet(wb, cc: dict, parse_yield: Optional[dict
     real content but whose parser produced 0 entities (collected-but-unparsed evidence; a
     possible platform-variant format gap, NEVER a device verdict). Appended BELOW the existing
     layout so the frozen sheet-schema header row is untouched."""
-    ws = wb.create_sheet(COLLECTION_COMPLETENESS_SHEET_NAME)
+    ws = _new_sheet(wb, COLLECTION_COMPLETENESS_SHEET_NAME)
     s = (cc or {}).get("summary") or {}
     ws.cell(1, 1, "Inventory").font = Font(bold=True)
     ws.cell(1, 2, s.get("inventory", 0))
@@ -1421,13 +1740,17 @@ def write_collection_completeness_sheet(wb, cc: dict, parse_yield: Optional[dict
 
 
 HEALTH_SCORES_SHEET_NAME = "Health Scores"
+
+#: What the Score column shows for a device banded "Insufficient Data". A number there is a claim
+#: about the device; this is the absence-is-not-health marker used across the deliverables.
+HEALTH_NOT_OBSERVED = "[NOT OBSERVED]"
 MIGRATION_READINESS_SHEET_NAME = "Migration Readiness"
 SCORE_SENSITIVITY_SHEET_NAME = "Score Sensitivity"   # NEW-V3.23.5
 _READY_FILL = {"READY": "36E08A", "CAUTION": "FFE566", "NOT READY": "FF5775"}
 _STATUS_FILL = {"pass": "36E08A", "warn": "FFE566", "fail": "FF5775"}
 
 def write_health_scores_sheet(wb, records: List[dict]) -> None:
-    ws = wb.create_sheet(HEALTH_SCORES_SHEET_NAME)
+    ws = _new_sheet(wb, HEALTH_SCORES_SHEET_NAME)
     headers = ["Switch", "Score", "Band", "Criticality", "Data Quality", "Top Deductions"]
     for col, h in enumerate(headers, 1):
         c = ws.cell(1, col, h)
@@ -1436,25 +1759,44 @@ def write_health_scores_sheet(wb, records: List[dict]) -> None:
         c.alignment = Alignment(horizontal="center")
     for r, rec in enumerate(records, 2):
         _lbl, fill = _health_band(rec["score"])
-        if rec.get("band") == "Insufficient Data":            # NEW-V3.23.7: neutral grey, not green
+        # `Insufficient Data` means the device was never really assessed (collection gap, or an
+        # interface parse that yielded nothing). compute_health_scores computes `score` and
+        # `deductions` BEFORE it overrides the band, so such a record arrives here carrying score=100
+        # and deductions=[] -- and the old render printed exactly that plus the literal word
+        # "healthy", behind nothing but a grey fill. An engineer sorting by Score then saw the
+        # never-collected devices ranked as the fleet's HEALTHIEST assets and de-scoped them. The
+        # score is not a finding about the device; suppress it rather than print a fabricated 100.
+        insufficient = rec.get("band") == "Insufficient Data"
+        if insufficient:                                      # NEW-V3.23.7: neutral grey, not green
             fill = "B0B0B0"
         ws.cell(r, 1, rec["switch"])
-        c = ws.cell(r, 2, rec["score"]); c.fill = PatternFill("solid", fgColor=fill); c.font = Font(bold=True)
+        c = ws.cell(r, 2, HEALTH_NOT_OBSERVED if insufficient else rec["score"])
+        c.fill = PatternFill("solid", fgColor=fill); c.font = Font(bold=True)
         c2 = ws.cell(r, 3, rec["band"]); c2.fill = PatternFill("solid", fgColor=fill)
         role = rec.get("role"); crit = rec.get("criticality")   # asset-criticality weighting (transparency)
         ws.cell(r, 4, f"{role} x{crit:g}" if role else "")
         dq = rec.get("data_quality")
         ws.cell(r, 5, "" if dq is None else f"{int(round(dq * 100))}%")
-        ws.cell(r, 6, "; ".join(rec["deductions"]) if rec["deductions"] else "healthy")
+        if insufficient:
+            ws.cell(r, 6, "not scored - insufficient collection; absence of findings here is a "
+                          "blind spot, NOT a clean result")
+        else:
+            ws.cell(r, 6, "; ".join(rec["deductions"]) if rec["deductions"] else "healthy")
     for i, w in enumerate([16, 8, 11, 15, 13, 80], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
-    avg = round(sum(r["score"] for r in records) / len(records)) if records else 0
-    logger.info(f"  [OK] '{HEALTH_SCORES_SHEET_NAME}' sheet: {len(records)} switch(es), avg score {avg}")
+    # Average the SCORED devices only. An unassessed device carries a fabricated 100, so including it
+    # pulled the fleet average UP in proportion to how much of the fleet was never collected.
+    scored = [r for r in records if r.get("band") != "Insufficient Data"]
+    avg = round(sum(r["score"] for r in scored) / len(scored)) if scored else 0
+    n_blind = len(records) - len(scored)
+    logger.info(f"  [OK] '{HEALTH_SCORES_SHEET_NAME}' sheet: {len(records)} switch(es), avg score "
+                f"{avg} over the {len(scored)} scored"
+                + (f" ({n_blind} not scored - insufficient collection)" if n_blind else ""))
 
 def write_score_sensitivity_sheet(wb, records: List[dict]) -> None:
     """Write the 'Score Sensitivity' sheet from compute_score_sensitivity()."""
-    ws = wb.create_sheet(SCORE_SENSITIVITY_SHEET_NAME)
+    ws = _new_sheet(wb, SCORE_SENSITIVITY_SHEET_NAME)
     headers = ["Perturbation", "Switches Changing Band", "Detail"]
     for col, h in enumerate(headers, 1):
         c = ws.cell(1, col, h)
@@ -1480,7 +1822,7 @@ def write_calibration_sheet(wb, report: dict) -> None:
     """Write the 'Score Calibration' sheet from compute_calibration_report() -- a
     fleet-level key/value diagnostic (band distribution, score spread, discrimination,
     and a quantile re-banding suggestion when the bands don't discriminate)."""
-    ws = wb.create_sheet(SCORE_CALIBRATION_SHEET_NAME)
+    ws = _new_sheet(wb, SCORE_CALIBRATION_SHEET_NAME)
     for col, h in enumerate(["Metric", "Value"], 1):
         c = ws.cell(1, col, h)
         c.font = Font(bold=True, color="FFFFFF")
@@ -1519,7 +1861,7 @@ NAT_INVENTORY_SHEET_NAME = "NAT Inventory"   # NEW-V3.23.50
 def write_nat_sheet(wb, all_nat: dict) -> None:
     """Write the 'NAT Inventory' sheet from {host: parse_nat()} -- every static / dynamic NAT rule,
     pool, and inside/outside interface role, so the migration can recreate them on the new platform."""
-    ws = wb.create_sheet(NAT_INVENTORY_SHEET_NAME)
+    ws = _new_sheet(wb, NAT_INVENTORY_SHEET_NAME)
     for col, h in enumerate(["Switch", "Type", "Detail"], 1):
         c = ws.cell(1, col, h); c.font = Font(bold=True, color="FFFFFF")
         c.fill = PatternFill("solid", fgColor="434343"); c.alignment = Alignment(horizontal="center")
@@ -1555,7 +1897,7 @@ def write_security_sheet(wb, all_security: dict) -> None:
     """Write the 'Config Compliance' sheet from {host: parse_security()} -- one row per CIS-aligned
     config-hardening check (pass / fail / na) with severity + remediation, so the migration can
     remediate (or consciously carry) config technical debt. Secret values were redacted by the parser."""
-    ws = wb.create_sheet(CONFIG_COMPLIANCE_SHEET_NAME)
+    ws = _new_sheet(wb, CONFIG_COMPLIANCE_SHEET_NAME)
     for col, h in enumerate(["Switch", "Severity", "Status", "Check", "Finding", "CIS / Remediation"], 1):
         c = ws.cell(1, col, h); c.font = Font(bold=True, color="FFFFFF")
         c.fill = PatternFill("solid", fgColor="434343"); c.alignment = Alignment(horizontal="center")
@@ -1594,7 +1936,7 @@ def write_detector_schema_sheet(wb, detector_schema: dict) -> None:
     makes 'not-observed != healthy' a first-class property (never empty for an evidence-gated detector)."""
     ds = detector_schema if isinstance(detector_schema, dict) else {}
     detectors = ds.get("detectors") or []
-    ws = wb.create_sheet(DETECTOR_SCHEMA_SHEET_NAME)
+    ws = _new_sheet(wb, DETECTOR_SCHEMA_SHEET_NAME)
     # Row 1: disclose that this DESCRIBES detection (never re-runs it) up top, so the sheet cannot be
     # misread as a per-device result table.
     note = (ds.get("summary") or {}).get("note") or \
@@ -1638,7 +1980,7 @@ def write_framework_coverage_sheet(wb, framework_coverage: dict) -> None:
     A 'proof of compliance' matrix over existing checks -- NOT a full framework audit."""
     fc = framework_coverage if isinstance(framework_coverage, dict) else {}
     frameworks = fc.get("frameworks") or {}
-    ws = wb.create_sheet(FRAMEWORK_COVERAGE_SHEET_NAME)
+    ws = _new_sheet(wb, FRAMEWORK_COVERAGE_SHEET_NAME)
     # Row 1: the coverage-honesty caveat, disclosed up top so a reader sees the scope before any pass/fail.
     note = fc.get("note") or "Config-evidenced mapping — NOT a full framework audit."
     scope = fc.get("scope") or ""
@@ -1690,7 +2032,7 @@ def write_config_hygiene_sheet(wb, all_hygiene: dict) -> None:
     (a referenced-but-undefined ACL/route-map/object-group/prefix-list silently does nothing: a real
     migration-breaker) and unused structures (defined-but-never-referenced cruft), so each can be fixed
     or dropped before cutover."""
-    ws = wb.create_sheet(CONFIG_HYGIENE_SHEET_NAME)
+    ws = _new_sheet(wb, CONFIG_HYGIENE_SHEET_NAME)
     for col, h in enumerate(["Switch", "Issue", "Kind", "Name", "Where / note"], 1):
         c = ws.cell(1, col, h); c.font = Font(bold=True, color="FFFFFF")
         c.fill = PatternFill("solid", fgColor="434343"); c.alignment = Alignment(horizontal="center")
@@ -1726,12 +2068,30 @@ def write_stp_roots_sheet(wb, all_stp_roots: dict, all_interfaces: dict) -> None
     """Write the 'STP Root Bridges' sheet: per VLAN, which switch is the spanning-tree root, its
     bridge priority, whether that root is ACCIDENTAL (default priority -> elected on a MAC tiebreak,
     not by design) and whether it ALIGNS with the VLAN's L3 gateway (root != gateway -> the path to
-    the default gateway hairpins through the root). Migration-relevant L2 design hygiene."""
+    the default gateway hairpins through the root). Migration-relevant L2 design hygiene.
+
+    Both verdict columns are TRI-STATE. `stp_root_findings` abstains in two cases -- an MST record (both
+    checks are PVST/RPVST-only, it `continue`s) and a VLAN for which NO gateway SVI was collected (it
+    cannot be in `misaligned`, because there is nothing to be misaligned WITH). Reading those abstentions
+    as an empty findings list rendered 'Accidental root? = no' and 'Aligned? = yes': the clean value, for
+    an axis nothing was ever compared on. On an access-only collection -- where every gateway SVI sits on
+    an uncollected core -- that is a fabricated fleet-wide 'aligned' down the whole sheet (seen exactly so
+    in a shipped deliverable). Absence of evidence is never health, so those rows carry
+    HEALTH_NOT_OBSERVED instead."""
     from cisco_toolkit.analyze import stp_root_findings
     f = stp_root_findings(all_stp_roots, all_interfaces)
     acc = {(x["vlan"], x["host"]) for x in f["accidental"]}
     mis = {x["vlan"]: x["gateways"] for x in f["misaligned"]}
-    ws = wb.create_sheet(STP_ROOTS_SHEET_NAME)
+    # Which VLANs the gateway join could see AT ALL -- keyed exactly as stp_root_findings' own `gw_of`
+    # (leading-zero-tolerant SVI id + a non-empty svi_ip), so "no gateway observed" here means precisely
+    # "the analyze-side join had nothing to compare", not a second opinion about it.
+    gw_seen: Dict[str, set] = {}
+    for _h, _ifaces in (all_interfaces or {}).items():
+        for _port, _d in (_ifaces or {}).items():
+            _m = re.match(r"^Vlan0*(\d+)$", _port or "", re.IGNORECASE)
+            if _m and (getattr(_d, "svi_ip", "") or "").strip():
+                gw_seen.setdefault(_m.group(1), set()).add(_h)
+    ws = _new_sheet(wb, STP_ROOTS_SHEET_NAME)
     for col, h in enumerate(["VLAN", "Root switch", "Root priority", "Accidental root?",
                              "VLAN gateway(s)", "Aligned?"], 1):
         c = ws.cell(1, col, h); c.font = Font(bold=True, color="FFFFFF")
@@ -1740,18 +2100,36 @@ def write_stp_roots_sheet(wb, all_stp_roots: dict, all_interfaces: dict) -> None
     for host in sorted(all_stp_roots or {}):
         for vlan, r in (all_stp_roots[host] or {}).items():
             if r.get("is_root"):
-                root_of.setdefault(vlan, (host, r.get("root_priority")))
+                root_of.setdefault(vlan, (host, r.get("root_priority"), bool(r.get("is_mst"))))
     warn = PatternFill("solid", fgColor="FCE5CD")
+    blind = PatternFill("solid", fgColor="EFEFEF")   # neutral grey — the established not-observed shade
     r = 2; nrows = 0
     for vlan in sorted(root_of, key=lambda v: int(v)):
-        host, prio = root_of[vlan]
+        host, prio, is_mst = root_of[vlan]
         is_acc = (vlan, host) in acc
         gws = mis.get(vlan)
+        seen = gw_seen.get(vlan)
         ws.cell(r, 1, vlan); ws.cell(r, 2, host)
         ws.cell(r, 3, prio if prio is not None else "")
-        ws.cell(r, 4, "yes (default priority)" if is_acc else "no")
-        ws.cell(r, 5, ", ".join(gws) if gws else "(root hosts gateway / none collected)")
-        ws.cell(r, 6, "no - root != gateway" if gws else "yes")
+        if is_mst:
+            # analyze skips MST outright: the 32768+vlan test would cry wolf on an INSTANCE number and the
+            # gateway join is keyed on real VLAN ids, so neither verdict was evaluated for this row.
+            ws.cell(r, 4, HEALTH_NOT_OBSERVED)
+            ws.cell(r, 5, "(MST instance — root/gateway join is PVST/RPVST-only)")
+            ws.cell(r, 6, HEALTH_NOT_OBSERVED)
+        else:
+            ws.cell(r, 4, "yes (default priority)" if is_acc else "no")
+            if gws:
+                ws.cell(r, 5, ", ".join(gws)); ws.cell(r, 6, "no - root != gateway")
+            elif seen:
+                ws.cell(r, 5, ", ".join(sorted(seen))); ws.cell(r, 6, "yes")
+            else:
+                ws.cell(r, 5, "(no gateway SVI collected for this VLAN)")
+                ws.cell(r, 6, HEALTH_NOT_OBSERVED)
+        if is_mst or (not is_acc and not gws and not seen):
+            ws.cell(r, 6).fill = blind
+            if is_mst:
+                ws.cell(r, 4).fill = blind
         if is_acc or gws:
             for col in range(1, 7):
                 ws.cell(r, col).fill = warn
@@ -1765,12 +2143,58 @@ def write_stp_roots_sheet(wb, all_stp_roots: dict, all_interfaces: dict) -> None
 
 PUNCHLIST_SHEET_NAME = "Migration Punch-List"   # consolidated severity-ranked roll-up (NEW-V3.23.63)
 
+# review r10 EXIT X -- the point-of-use disclosure for a severity that is NOT a measurement.
+#
+# compute_migration_punchlist's media fold carries the producer's own `severity_basis` /
+# `evidence_confidence` onto the item (analyze.py :4386), and until now NO punch-list renderer read
+# either key: the basis reached a workbook reader only as a bracketed tail on the Detail cell, which
+# measures 734 characters on a real run -- roughly thirteen wrapped lines PAST the point where the
+# reader has already accepted the "High". So a High raised by a CURATED, explicitly non-authoritative
+# on-air classification looked exactly like a High raised by an observed measurement.
+#
+# Deliberately NOT a new column, and this is measured rather than assumed: on the reference pipeline
+# workbook 37 of 37 punch-list rows publish no basis at all (the fabric has no multicast estate), so a
+# column would be 100% blank in the very deliverable the golden pins, and on the rows where it is not
+# blank it would repeat the Detail text verbatim -- ornamental both ways. A cell NOTE on the Severity
+# cell costs a basis-less row NOTHING (no blank cell to misread as "nothing to disclose", and Excel
+# draws its marker only where a note exists), lands on the exact cell whose claim it qualifies, and
+# leaves the golden-pinned header row untouched. The Detail prose STAYS as-is: it is the copy that
+# survives printing/PDF, where notes do not, so the two layers are permanent record + point-of-use.
+_PUNCH_NOTE_MAX = 900          # pathological-length bound only; a real basis is ~200 chars
+
+
+def punchlist_severity_note(it) -> str:
+    """The Severity-cell note for one punch-list item, or "" when the item publishes no usable basis.
+
+    FAIL CLOSED, and keyed on the VALUE being usable prose rather than on the key being PRESENT --
+    key-presence is the fail-open shape this review keeps finding: a null / 0 / {} / "   " value
+    satisfies `"severity_basis" in it` and would then render an EMPTY note, which a reader takes for
+    "nothing to disclose". An unusable value is treated exactly like a missing one: no note at all,
+    i.e. the row stays an ordinary punch-list row and acquires no noise. A row that DOES publish a
+    basis but no usable confidence says the confidence is unpublished, rather than quietly shipping
+    half a disclosure. The producer's strings are rendered verbatim -- this sheet never re-derives the
+    promotion rule or re-classifies the basis, exactly as the mac-alias cell above does not.
+    """
+    def _usable(v):
+        return v.strip() if isinstance(v, str) and v.strip() else ""
+
+    def _bound(s):
+        return s if len(s) <= _PUNCH_NOTE_MAX else s[:_PUNCH_NOTE_MAX].rsplit(" ", 1)[0] + " …"
+
+    basis = _usable(it.get("severity_basis") if isinstance(it, dict) else None)
+    if not basis:
+        return ""
+    conf = _usable(it.get("evidence_confidence")) or "NOT published by this snapshot"
+    return ("Why this severity — the basis this finding published for it.\n\n"
+            f"Basis: {_bound(basis)}\n\nEvidence: {_bound(conf)}")
+
+
 def write_punchlist_sheet(wb, punchlist: list) -> None:
     """Write the 'Migration Punch-List' sheet: the consolidated, severity-ranked, per-device,
     per-wave roll-up of every actionable finding (cross-layer SPOFs, security, config hygiene,
     L1/L3, protocol, STP, device health) with remediation -- the executive 'fix-this-first, in
     this order' one-pager. Rows are colour-banded by severity (Critical -> Low)."""
-    ws = wb.create_sheet(PUNCHLIST_SHEET_NAME)
+    ws = _new_sheet(wb, PUNCHLIST_SHEET_NAME)
     headers = ["#", "Severity", "Category", "Device(s)", "Wave", "Issue", "Detail", "Remediation"]
     for col, h in enumerate(headers, 1):
         c = ws.cell(1, col, h); c.font = Font(bold=True, color="FFFFFF")
@@ -1786,6 +2210,24 @@ def write_punchlist_sheet(wb, punchlist: list) -> None:
         ws.cell(r, 6, it.get("title", ""))
         ws.cell(r, 7, it.get("detail", ""))
         ws.cell(r, 8, it.get("remediation", ""))
+        # The severity's own basis, attached to the severity. xml_safe because a `--no-collect`
+        # re-analysis feeds this writer a raw snapshot section, and one illegal byte in a comment
+        # aborts the whole .xlsx.
+        _note = punchlist_severity_note(it)
+        if _note:
+            _c = Comment(xml_safe(_note), "cisco-assess")
+            # Size the box to the TEXT, do not fix it and hope. The note is bounded at
+            # _PUNCH_NOTE_MAX per half, so it can reach ~1,800 characters, while a fixed 460x190 box
+            # shows roughly 850 -- more than half the basis silently invisible in a client workbook.
+            # A note that cannot be read is the same failure as a note that was never written, and it
+            # is worse for being invisible: the reader sees a comment marker and believes they have
+            # the whole reason. ~65 chars per line at this width, ~14px per line, plus a little
+            # padding; height is capped so one pathological snapshot cannot produce a full-screen box,
+            # and the per-half truncation above keeps the content inside that cap.
+            _lines = sum(max(1, -(-len(seg) // 65)) for seg in _note.split("\n"))
+            _c.width = 460
+            _c.height = max(190, min(14 * _lines + 30, 620))
+            ws.cell(r, 2).comment = _c
         fill = PatternFill("solid", fgColor=sev_fill.get(it.get("severity"), "FFFFFF"))
         for col in range(1, 9):
             ws.cell(r, col).fill = fill
@@ -1804,7 +2246,7 @@ def write_remediation_plan_sheet(wb, rp: dict) -> None:
     snippets generated FOR REVIEW from the structured findings. Row 1 carries the review banner."""
     if REMEDIATION_PLAN_SHEET_NAME in wb.sheetnames:
         del wb[REMEDIATION_PLAN_SHEET_NAME]
-    ws = wb.create_sheet(REMEDIATION_PLAN_SHEET_NAME)
+    ws = _new_sheet(wb, REMEDIATION_PLAN_SHEET_NAME)
     p = rp or {}
     items = p.get("items") or []
     s = p.get("summary") or {}
@@ -1849,7 +2291,7 @@ def write_validation_plan_sheet(wb, vp: dict) -> None:
     carries the how-to-use banner."""
     if VALIDATION_PLAN_SHEET_NAME in wb.sheetnames:
         del wb[VALIDATION_PLAN_SHEET_NAME]
-    ws = wb.create_sheet(VALIDATION_PLAN_SHEET_NAME)
+    ws = _new_sheet(wb, VALIDATION_PLAN_SHEET_NAME)
     p = vp or {}
     items = p.get("items") or []
     s = p.get("summary") or {}
@@ -1900,7 +2342,7 @@ def write_nrfu_commands_sheet(wb, nc: dict) -> None:
     sheet's layout (that sheet is the post-cutover spot-check list; this is the certification pack)."""
     if NRFU_COMMANDS_SHEET_NAME in wb.sheetnames:
         del wb[NRFU_COMMANDS_SHEET_NAME]
-    ws = wb.create_sheet(NRFU_COMMANDS_SHEET_NAME)
+    ws = _new_sheet(wb, NRFU_COMMANDS_SHEET_NAME)
     p = nc or {}
     s = p.get("summary") or {}
     b = ws.cell(1, 1, "✓ " + (p.get("banner") or "Four-phase NRFU certification pack: confirm each "
@@ -1957,7 +2399,7 @@ def write_golden_drift_sheet(wb, gd: dict) -> None:
     directives. Row 1 states which baseline was used."""
     if GOLDEN_DRIFT_SHEET_NAME in wb.sheetnames:
         del wb[GOLDEN_DRIFT_SHEET_NAME]
-    ws = wb.create_sheet(GOLDEN_DRIFT_SHEET_NAME)
+    ws = _new_sheet(wb, GOLDEN_DRIFT_SHEET_NAME)
     p = gd or {}
     pdev = p.get("per_device") or []
     s = p.get("summary") or {}
@@ -2006,7 +2448,7 @@ def write_feature_compliance_sheet(wb, fc: dict) -> None:
     a feature with no baseline directives is simply absent (never a fabricated 'compliant')."""
     if FEATURE_COMPLIANCE_SHEET_NAME in wb.sheetnames:
         del wb[FEATURE_COMPLIANCE_SHEET_NAME]
-    ws = wb.create_sheet(FEATURE_COMPLIANCE_SHEET_NAME)
+    ws = _new_sheet(wb, FEATURE_COMPLIANCE_SHEET_NAME)
     p = fc or {}
     feats = p.get("features") or []
     s = p.get("summary") or {}
@@ -2047,7 +2489,7 @@ def write_acl_shadow_sheet(wb, alr: dict) -> None:
     the dangerous case). Coverage-honest: INDETERMINATE (unevaluable) lines are listed, never called dead."""
     if ACL_SHADOW_SHEET_NAME in wb.sheetnames:
         del wb[ACL_SHADOW_SHEET_NAME]
-    ws = wb.create_sheet(ACL_SHADOW_SHEET_NAME)
+    ws = _new_sheet(wb, ACL_SHADOW_SHEET_NAME)
     p = alr or {}
     rows = p.get("findings") or []
     s = p.get("summary") or {}
@@ -2094,7 +2536,7 @@ def write_external_reconcile_sheet(wb, recon: dict) -> None:
     confirmed match or miss). A fully-reconciling device emits no row."""
     if EXTERNAL_RECONCILE_SHEET_NAME in wb.sheetnames:
         del wb[EXTERNAL_RECONCILE_SHEET_NAME]
-    ws = wb.create_sheet(EXTERNAL_RECONCILE_SHEET_NAME)
+    ws = _new_sheet(wb, EXTERNAL_RECONCILE_SHEET_NAME)
     p = recon or {}
     rows = p.get("rows") or []
     s = p.get("summary") or {}
@@ -2139,7 +2581,7 @@ def write_capture_integrity_sheet(wb, ci: dict) -> None:
     A clean capture emits no row."""
     if CAPTURE_INTEGRITY_SHEET_NAME in wb.sheetnames:
         del wb[CAPTURE_INTEGRITY_SHEET_NAME]
-    ws = wb.create_sheet(CAPTURE_INTEGRITY_SHEET_NAME)
+    ws = _new_sheet(wb, CAPTURE_INTEGRITY_SHEET_NAME)
     p = ci or {}
     rows = p.get("findings") or []
     s = p.get("summary") or {}
@@ -2184,9 +2626,12 @@ def write_attestation_sheet(wb, attestation: dict) -> None:
     absence of evidence is never rendered as a pass."""
     if ATTESTATION_SHEET_NAME in wb.sheetnames:
         del wb[ATTESTATION_SHEET_NAME]
-    ws = wb.create_sheet(ATTESTATION_SHEET_NAME)
+    ws = _new_sheet(wb, ATTESTATION_SHEET_NAME)
     p = attestation if isinstance(attestation, dict) else {}
-    claims = p.get("claims") or []
+    # _sec_rows, not `or []`: a truthy non-list `claims` survived and the genexpr below then raised.
+    # The attestation sheet asserting "zero egress" must never vanish silently -- that is the one
+    # claim a reader trusts most (see _run_phase: a raising sheet writer drops the sheet, not the run).
+    claims = _sec_rows(p.get("claims"))
     n_holds = sum(1 for c in claims if c.get("result") == "HOLDS")
     if claims:
         banner = ("Zero-egress attestation — each claim below was RE-DERIVED at build time from the "
@@ -2232,7 +2677,7 @@ def write_whatif_sheet(wb, scenarios: list) -> None:
     blocked (definitive) vs lost_path (was reached, now unprovable, coverage-honest) vs preserved."""
     if WHATIF_SHEET_NAME in wb.sheetnames:
         del wb[WHATIF_SHEET_NAME]
-    ws = wb.create_sheet(WHATIF_SHEET_NAME)
+    ws = _new_sheet(wb, WHATIF_SHEET_NAME)
     rows = scenarios or []
     b = ws.cell(1, 1, "Failure-injection what-if — remove a node/site in memory and re-run the FIB. 'lost path' "
                       "= a flow that was reached and is now unprovable (never fabricated as a definite block).")
@@ -2272,7 +2717,7 @@ def write_path_intents_sheet(wb, pa: dict) -> None:
     verdict (pass / fail / not_observed). Coverage-honest: a lower-bound trace abstains, never a fake verdict."""
     if PATH_INTENTS_SHEET_NAME in wb.sheetnames:
         del wb[PATH_INTENTS_SHEET_NAME]
-    ws = wb.create_sheet(PATH_INTENTS_SHEET_NAME)
+    ws = _new_sheet(wb, PATH_INTENTS_SHEET_NAME)
     p = pa or {}
     rows = p.get("results") or []
     s = p.get("summary") or {}
@@ -2319,7 +2764,7 @@ def write_syslog_intelligence_sheet(wb, si: dict) -> None:
     'show logging' was not collected are declared, never scored."""
     if SYSLOG_SHEET_NAME in wb.sheetnames:
         del wb[SYSLOG_SHEET_NAME]
-    ws = wb.create_sheet(SYSLOG_SHEET_NAME)
+    ws = _new_sheet(wb, SYSLOG_SHEET_NAME)
     p = si or {}
     dets = p.get("detections") or []
     pdev = p.get("per_device") or []
@@ -2401,7 +2846,7 @@ def write_qos_audit_sheet(wb, qa: dict) -> None:
     capture are declared not assessable, never scored."""
     if QOS_AUDIT_SHEET_NAME in wb.sheetnames:
         del wb[QOS_AUDIT_SHEET_NAME]
-    ws = wb.create_sheet(QOS_AUDIT_SHEET_NAME)
+    ws = _new_sheet(wb, QOS_AUDIT_SHEET_NAME)
     p = qa or {}
     finds = p.get("findings") or []
     pdev = p.get("per_device") or []
@@ -2480,7 +2925,7 @@ def write_software_risk_sheet(wb, sr: dict) -> None:
     lifecycle bands. Screening, not a vulnerability scan -- the banner says so."""
     if SOFTWARE_RISK_SHEET_NAME in wb.sheetnames:
         del wb[SOFTWARE_RISK_SHEET_NAME]
-    ws = wb.create_sheet(SOFTWARE_RISK_SHEET_NAME)
+    ws = _new_sheet(wb, SOFTWARE_RISK_SHEET_NAME)
     p = sr or {}
     finds = p.get("findings") or []
     pdev = p.get("per_device") or []
@@ -2566,7 +3011,7 @@ def write_platform_health_sheet(wb, ph: dict) -> None:
     states the single-sample honesty rule; not-collected devices are declared."""
     if PLATFORM_HEALTH_SHEET_NAME in wb.sheetnames:
         del wb[PLATFORM_HEALTH_SHEET_NAME]
-    ws = wb.create_sheet(PLATFORM_HEALTH_SHEET_NAME)
+    ws = _new_sheet(wb, PLATFORM_HEALTH_SHEET_NAME)
     p = ph or {}
     finds = p.get("findings") or []
     pdev = p.get("per_device") or []
@@ -2641,6 +3086,67 @@ def write_platform_health_sheet(wb, ph: dict) -> None:
 
 DEVICE_RISK_SHEET_NAME = "Device Risk Register"   # NEW-V3.23.172 (per-asset compound-risk synthesis)
 
+# audit U1-2 (false-health): compute_device_dossiers() correctly ABSTAINS on an axis it has no evidence
+# for (state 'na'), and abstention is weighted ZERO in the exposure score. So an asset whose EoL, software
+# train, control plane, logs, CIS posture, hygiene, drift and QoS axes were ALL un-assessed scores
+# risk_index 0 -> band "Low" -> GREEN fill -> "No stacked risk - routine migration handling." That is a
+# collection gap rendered as a clean bill of health. The band is the ENGINE's (never re-derived here), but
+# the SHEET must not paint an un-evidenced row the same green as an evidenced one, and it must show the
+# n_na the writer previously computed upstream and dropped.
+_DOSSIER_COVERAGE_NEUTRAL = "D9D9D9"   # grey: "not assessed", visually distinct from Low's green
+
+
+# The dossier coverage rule has THREE runtime mirrors -- this function, the explorer's rrCoverage() and
+# webapp/frontend/src/pages/Snapshot.tsx's dossierCoverage(). Python, embedded JS and TSX cannot import one
+# module, so the rule is CANONICAL here and the drift is caught by execution, not by hope:
+# tests/test_explorer_render_safety.py::test_dossier_coverage_rule_is_identical_in_all_three_mirrors drives
+# all three implementations over ONE shared case table (DOSSIER_COVERAGE_CASES below) and fails the moment
+# any mirror disagrees. Change the rule here and the other two must follow in the same commit.
+#
+# CASES is data, not documentation: {label: (dossier, expected (n_na, n_axes, thin))}.
+DOSSIER_COVERAGE_CASES = {
+    # no axis census AT ALL -> the denominator is unknown, so coverage is NOT ASSESSED -> disclose (thin).
+    "no_exposures_key":      ({}, (0, 0, True)),
+    "exposures_empty_list":  ({"exposures": []}, (0, 0, True)),
+    "exposures_not_a_list":  ({"exposures": "na"}, (0, 0, True)),
+    "no_census_but_n_na":    ({"n_na": 7}, (7, 0, True)),
+    "no_census_n_na_junk":   ({"n_na": "eight"}, (0, 0, True)),
+    # a real census: thin iff at least HALF the axes abstained.
+    "all_assessed":          ({"exposures": [{"state": "ok"}, {"state": "risk"}]}, (0, 2, False)),
+    "one_of_four_na":        ({"exposures": [{"state": "na"}] + [{"state": "ok"}] * 3}, (1, 4, False)),
+    "two_of_four_na":        ({"exposures": [{"state": "na"}] * 2 + [{"state": "ok"}] * 2}, (2, 4, True)),
+    "all_na":                ({"exposures": [{"state": "na"}] * 3}, (3, 3, True)),
+    # a malformed entry is not an axis: the denominator counts only dict axes.
+    "junk_entries_dropped":  ({"exposures": [{"state": "na"}, "junk", None]}, (1, 1, True)),
+}
+
+
+def dossier_coverage(d: dict) -> tuple:
+    """(n_na, n_axes, thin) for one dossier row.
+
+    `thin` is True when at least half the asset's axes ABSTAINED -- a structural test over the row's own
+    axis census, not a list of the bands or hosts that happen to trip it today, so a new abstaining axis
+    is covered the day it ships. Tolerant of a malformed/absent `exposures` list.
+
+    FAIL-CLOSED on a MISSING census (review r8 F1). The previous `bool(n_axes and n_na * 2 >= n_axes)`
+    evaluated False when `n_axes` was 0 -- i.e. on exactly the input its own fallback branch was written
+    for -- so a dossier carrying NO axis data at all reported `thin=False` and rendered as a fully
+    assessed asset. That is absence-rendered-as-health inside the guard that exists to close
+    absence-rendered-as-health. With no census there is no denominator, so how much of the band rests on
+    evidence is itself NOT ASSESSED: disclose it."""
+    ax = d.get("exposures")
+    axes = [e for e in ax if isinstance(e, dict)] if isinstance(ax, list) else []
+    n_axes = len(axes)
+    n_na = sum(1 for e in axes if e.get("state") == "na")
+    if not n_axes:                                    # no axis census published -> fall back to the count
+        try:
+            n_na = max(0, int(d.get("n_na") or 0))
+        except (TypeError, ValueError):
+            n_na = 0
+        return n_na, 0, True                          # unknown denominator -> NOT ASSESSED, never "fine"
+    return n_na, n_axes, n_na * 2 >= n_axes
+
+
 def write_device_risk_sheet(wb, dd: dict) -> None:
     """Write 'Device Risk Register' from compute_device_dossiers(): one row per asset with the
     composite risk index (topology impact x stacked exposure), the per-axis red/watch counts and
@@ -2648,28 +3154,55 @@ def write_device_risk_sheet(wb, dd: dict) -> None:
     (riskiest first) -- the sheet preserves that order so row 5 IS the scariest box."""
     if DEVICE_RISK_SHEET_NAME in wb.sheetnames:
         del wb[DEVICE_RISK_SHEET_NAME]
-    ws = wb.create_sheet(DEVICE_RISK_SHEET_NAME)
+    ws = _new_sheet(wb, DEVICE_RISK_SHEET_NAME)
     d0 = dd or {}
     pdev = d0.get("per_device") or []
     s = d0.get("summary") or {}
     bands = s.get("bands") or {}
+    # coverage census over the ROWS (the summary carries no n_na) -- see dossier_coverage() above.
+    _cov = [dossier_coverage(d) for d in pdev if isinstance(d, dict)]
+    n_thin = sum(1 for _, _, thin in _cov if thin)
+    n_half = sum(1 for _, ax, thin in _cov if thin and ax)     # thin WITH a census -> "half or more"
+    n_nocensus = sum(1 for _, ax, _ in _cov if not ax)         # thin because there IS no census
+    n_na_tot = sum(na for na, _, _ in _cov)
+    n_ax_tot = sum(ax for _, ax, _ in _cov)
+    n_unassessed = bands.get("Unassessed", 0)
+    _gap = ""
+    if n_ax_tot:
+        _gap = f" COVERAGE: {n_na_tot} of {n_ax_tot} risk axes fleet-wide were NOT ASSESSED (column Q per asset)."
+    if n_nocensus:
+        _gap += (f" {n_nocensus} asset(s) published NO risk-axis census at all — for those rows how much of the "
+                 "band rests on evidence is itself NOT ASSESSED, so they are treated as un-evidenced, never "
+                 "as clean.")
+    if n_half or n_unassessed:
+        _gap += (f" {n_unassessed} asset(s) banded Unassessed and {n_half} asset(s) have HALF OR MORE of their "
+                 "risk axes NOT ASSESSED — an abstaining axis scores ZERO exposure, so those rows can band "
+                 "'Low' on absent evidence. Read column Q before treating a Low row as clean; not assessed is "
+                 "a collection gap, never a clean result.")
     b = ws.cell(1, 1, f"Device Risk Register: {bands.get('Severe', 0)} Severe, "
                       f"{bands.get('Elevated', 0)} Elevated of {s.get('n_devices', 0)} asset(s) · "
                       f"{s.get('n_compound', 0)} compound pattern(s). "
                       "Risk index = topology impact (1-10) × stacked exposure (0-10) — the senior-"
-                      "engineer read: independent risks coinciding on one box outrank any single finding.")
+                      "engineer read: independent risks coinciding on one box outrank any single finding."
+                      + _gap)
     b.font = Font(bold=True, color="9C0006", size=10)
     b.alignment = Alignment(horizontal="left", wrap_text=True)
     ws.cell(2, 1, d0.get("note", "")).font = Font(size=9, italic=True, color="808080")
-    BANDFILL = {"Severe": "F4CCCC", "Elevated": "FCE4D6", "Guarded": "FFF2CC", "Low": "D9EAD3"}
+    BANDFILL = {"Severe": "F4CCCC", "Elevated": "FCE4D6", "Guarded": "FFF2CC", "Low": "D9EAD3",
+                # the engine's own coverage-gap band had NO fill entry, so it rendered blank/neutral
+                # by accident rather than by design -- name it.
+                "Unassessed": _DOSSIER_COVERAGE_NEUTRAL}
     SEVFILL = _AXIS_SEV_FILL
     HDRF = Font(bold=True, color="FFFFFF", size=10)
     DAT = Font(name="Calibri", size=10)
 
     hdr_row = 4
+    # NB: "Not-assessed axes" is APPENDED (col 17), not inserted next to Red/Watch where it reads better --
+    # the column positions of "Compound patterns" (15) and "Engineer's verdict" (16) are pinned by
+    # tests/test_device_dossiers.py::test_device_risk_sheet_writer and by downstream readers.
     cols = ["Device", "Model", "Software", "Wave", "Risk index", "Band", "Impact", "Exposure",
             "Red axes", "Watch axes", "Health", "HW EoL", "SW train", "Control plane",
-            "Compound patterns", "Engineer's verdict"]
+            "Compound patterns", "Engineer's verdict", "Not-assessed axes"]
     for i, h in enumerate(cols, 1):
         c = ws.cell(hdr_row, i, h); c.font = HDRF
         c.fill = PatternFill("solid", fgColor="9C0006")
@@ -2678,18 +3211,28 @@ def write_device_risk_sheet(wb, dd: dict) -> None:
     r = hdr_row + 1
     for d in pdev:
         comp = ", ".join(f"{c.get('code', '')}" for c in (d.get("compound") or [])) or "—"
+        n_na, n_axes, thin = dossier_coverage(d)
+        na_cell = (f"{n_na} of {n_axes} NOT ASSESSED" if n_axes else
+                   f"axis census ABSENT — coverage NOT ASSESSED ({n_na} recorded not-assessed)")
+        if thin:
+            na_cell += " — band computed on absent evidence"
         vals = [d.get("host"), d.get("model") or "—", d.get("sw_version") or "—",
                 d.get("wave") or "—", d.get("risk_index"), d.get("risk_band"),
                 d.get("impact_score"), d.get("exposure_score"),
                 d.get("n_risk"), d.get("n_watch"),
                 d.get("health_band") or "—", d.get("eol_band"), d.get("train_band"),
-                d.get("platform_band"), comp, d.get("verdict")]
+                d.get("platform_band"), comp, d.get("verdict"), na_cell]
         for col, v in enumerate(vals, 1):
             c = ws.cell(r, col, v); c.font = DAT
             c.alignment = Alignment(horizontal="center" if col in (4, 5, 6, 7, 8, 9, 10) else "left",
-                                    vertical="top", wrap_text=col in (15, 16))
+                                    vertical="top", wrap_text=col in (15, 16, 17))
             if col == 6 and v in BANDFILL:
-                c.fill = PatternFill("solid", fgColor=BANDFILL[v])
+                # a row whose axes mostly abstained does NOT get the band's reassuring colour: the fill is
+                # the fastest read on the sheet and green there is a claim the evidence cannot support.
+                c.fill = PatternFill("solid", fgColor=_DOSSIER_COVERAGE_NEUTRAL if thin else BANDFILL[v])
+            if col == 17 and thin:
+                c.fill = PatternFill("solid", fgColor=_DOSSIER_COVERAGE_NEUTRAL)
+                c.font = Font(name="Calibri", size=10, bold=True, color="7F6000")
         r += 1
     if not pdev:
         ws.cell(r, 1, "No per-device axes were computed -- nothing to register.").font = DAT
@@ -2721,10 +3264,10 @@ def write_device_risk_sheet(wb, dd: dict) -> None:
     if not n_comp:
         ws.cell(r, 1, "No compound patterns -- no asset stacks independent risks. "
                       "Single-axis findings live on their own sheets and the punch-list.").font = DAT
-    for i, w in enumerate([22, 20, 16, 10, 10, 10, 8, 9, 9, 10, 12, 12, 14, 13, 22, 60], 1):
+    for i, w in enumerate([22, 20, 16, 10, 10, 10, 8, 9, 9, 10, 12, 12, 14, 13, 22, 60, 34], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     logger.info(f"  [OK] '{DEVICE_RISK_SHEET_NAME}' sheet: {len(pdev)} asset(s), "
-                f"{n_comp} compound pattern(s)")
+                f"{n_comp} compound pattern(s), {n_thin} asset(s) banded on mostly-unassessed axes")
 
 
 LIFECYCLE_RISK_SHEET_NAME = "Lifecycle Risk"   # NEW-V3.23.117 (hardware EoL / end-of-support)
@@ -2734,7 +3277,7 @@ def write_lifecycle_risk_sheet(wb, lr: dict) -> None:
     a platform rollup. Row 1 is a static (date-free) title so the golden sheet schema stays stable."""
     if LIFECYCLE_RISK_SHEET_NAME in wb.sheetnames:
         del wb[LIFECYCLE_RISK_SHEET_NAME]
-    ws = wb.create_sheet(LIFECYCLE_RISK_SHEET_NAME)
+    ws = _new_sheet(wb, LIFECYCLE_RISK_SHEET_NAME)
     L = lr or {}
     s = L.get("summary") or {}
     ws.cell(1, 1, "Hardware lifecycle (EoL / End-of-Support) — replacement urgency").font = Font(bold=True, size=11)
@@ -2797,18 +3340,22 @@ def write_architecture_review_sheet(wb, ar: dict) -> None:
     Row 1 is a static (date-free) title so the golden sheet schema stays stable."""
     if ARCHREVIEW_SHEET_NAME in wb.sheetnames:
         del wb[ARCHREVIEW_SHEET_NAME]
-    ws = wb.create_sheet(ARCHREVIEW_SHEET_NAME)
-    A = ar or {}
+    ws = _new_sheet(wb, ARCHREVIEW_SHEET_NAME)
+    A = _sec_dict(ar)
     # A CRASHED/absent review (the assembly's _unavailable sentinel, or a bare {} with no summary) must NOT
     # render as a clean 'grade N/A · 0 conform · 0 not assessable' scorecard -- that reads as 'reviewed, all
     # fine' when the computation actually failed (false-health). A legit-empty review still carries a summary
     # (n_not_assessable counts the un-evidenced checks), so this only fires on a true compute failure.
-    if A.get("_unavailable") or not A.get("summary"):
+    # `not A.get("summary")` caught an absent/empty summary but NOT a TRUTHY NON-dict one, which then
+    # crashed on `.get("score_pct")`. Coercing it to {} instead would be worse than the crash: it would
+    # render the clean 'grade N/A · 0 conform' scorecard this very guard exists to prevent. An
+    # UNREADABLE summary is a failed computation, so it takes the same UNAVAILABLE path.
+    if A.get("_unavailable") or not isinstance(A.get("summary"), dict) or not A.get("summary"):
         ws.cell(1, 1, "Architecture Review — leading-practice conformance scorecard").font = Font(bold=True, size=11)
         ws.cell(2, 1, "Architecture review unavailable — the conformance computation did not complete for this "
                       "run; no grade is asserted (see assessment_integrity).").font = Font(size=10)
         return
-    s = A.get("summary") or {}
+    s = A["summary"]
     HDR = Font(bold=True, color="FFFFFF", size=10); HFILL = PatternFill("solid", fgColor="434343")
     DAT = Font(name="Calibri", size=10)
     score = s.get("score_pct")
@@ -2827,8 +3374,7 @@ def write_architecture_review_sheet(wb, ar: dict) -> None:
     for i, h in enumerate(["Domain", "Verdict", "Score"], 1):
         c = ws.cell(r, i, h); c.font = HDR; c.fill = HFILL
     r += 1
-    for d in (A.get("domains") or []):
-        d = d if isinstance(d, dict) else {}
+    for d in _sec_rows(A.get("domains")):
         label, fill = _AR_VERDICTS.get(d.get("verdict"), (str(d.get("verdict") or "—"), "FFFFFF"))
         sc = d.get("score_pct")
         for col, v in enumerate([d.get("key"), label, f"{sc}%" if sc is not None else "—"], 1):
@@ -2845,8 +3391,7 @@ def write_architecture_review_sheet(wb, ar: dict) -> None:
         c = ws.cell(r, i, h); c.font = HDR; c.fill = HFILL
         c.alignment = Alignment(horizontal="center", wrap_text=True)
     ws.freeze_panes = ws.cell(r + 1, 1); r += 1
-    for ck in (A.get("checks") or []):
-        ck = ck if isinstance(ck, dict) else {}
+    for ck in _sec_rows(A.get("checks")):
         label, fill = _AR_VERDICTS.get(ck.get("verdict"), (str(ck.get("verdict") or "—"), "FFFFFF"))
         vals = [ck.get("id"), ck.get("domain"), ck.get("title"), label,
                 ", ".join(str(x) for x in (ck.get("evidence") or [])) or "—",
@@ -2858,7 +3403,7 @@ def write_architecture_review_sheet(wb, ar: dict) -> None:
                 c.fill = PatternFill("solid", fgColor=fill)
         r += 1
 
-    queue = A.get("top_actions") or []
+    queue = _sec_rows(A.get("top_actions"))
     if queue:
         r += 1
         ws.cell(r, 1, "Priority remediation queue (severity, then blast radius)").font = \
@@ -2867,7 +3412,6 @@ def write_architecture_review_sheet(wb, ar: dict) -> None:
             c = ws.cell(r, i, h); c.font = HDR; c.fill = HFILL
         r += 1
         for a in queue:
-            a = a if isinstance(a, dict) else {}
             label, fill = _AR_VERDICTS.get(a.get("verdict"), (str(a.get("verdict") or "—"), "FFFFFF"))
             vals = [a.get("rank"), a.get("id"), label, a.get("action"),
                     ", ".join(str(x) for x in (a.get("evidence") or [])) or "—"]
@@ -2891,7 +3435,7 @@ def write_segmentation_sheet(wb, seg: dict) -> None:
     isolation, and the findings. Row 1 is a static title."""
     if SEGMENTATION_SHEET_NAME in wb.sheetnames:
         del wb[SEGMENTATION_SHEET_NAME]
-    ws = wb.create_sheet(SEGMENTATION_SHEET_NAME)
+    ws = _new_sheet(wb, SEGMENTATION_SHEET_NAME)
     g = seg or {}
     s = g.get("summary") or {}
     ga = g.get("gateway_acl") or {}
@@ -2961,7 +3505,7 @@ def write_protocol_boundaries_sheet(wb, all_routing_neighbors: dict, all_redistr
     """Write the 'Protocol Boundaries' sheet: per device, the routing protocols it runs, its redistribution
     edges (from -> into, + route-map), and a MUTUAL-redistribution risk flag -- so a migration can recreate
     every protocol-to-protocol boundary. One row per device that runs a dynamic protocol or redistributes."""
-    ws = wb.create_sheet(PROTOCOL_BOUNDARIES_SHEET_NAME)
+    ws = _new_sheet(wb, PROTOCOL_BOUNDARIES_SHEET_NAME)
     for col, h in enumerate(["Switch", "Protocols", "Redistribution (from -> into)", "Route-map(s)", "Mutual"], 1):
         c = ws.cell(1, col, h); c.font = Font(bold=True, color="FFFFFF")
         c.fill = PatternFill("solid", fgColor="434343"); c.alignment = Alignment(horizontal="center")
@@ -3048,7 +3592,7 @@ def write_addressing_conflicts_sheet(wb, all_interfaces: Dict[str, Dict[str, Int
     the classic silent outage when two domains merge or a move-group cuts over. Surfaces the reachability
     explorer's addressing-integrity finding in the workbook."""
     c = compute_addressing_conflicts(all_interfaces)
-    ws = wb.create_sheet(ADDRESSING_CONFLICTS_SHEET_NAME)
+    ws = _new_sheet(wb, ADDRESSING_CONFLICTS_SHEET_NAME)
     for col, h in enumerate(["Type", "Address / Subnet", "VRF", "Configured on"], 1):
         cell = ws.cell(1, col, h); cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="434343"); cell.alignment = Alignment(horizontal="center")
@@ -3079,7 +3623,9 @@ def compute_fhrp_consistency(all_interfaces: Dict[str, Dict[str, InterfaceData]]
     different virtual IPs, mixed protocols, or two actives (split-brain). Reuses parse._parse_fhrp. Returns
     [{vid, issues:[str], members:[{host,proto,group,vip,role,fhrp}]}] for VLANs with an issue (empty when clean)."""
     from cisco_toolkit.parse import _parse_fhrp
-    by_vid: Dict[int, list] = {}
+    # VLAN IDs are locally significant.  Reusing VLAN 10 in two VRFs or disconnected IP
+    # domains must not merge independent FHRP groups into one fabricated split-brain set.
+    by_domain: Dict[tuple, list] = {}
     for host in sorted(all_interfaces):
         for port, d in all_interfaces[host].items():
             m = re.match(r"^Vlan(\d+)$", port or "", re.IGNORECASE)
@@ -3087,10 +3633,14 @@ def compute_fhrp_consistency(all_interfaces: Dict[str, Dict[str, InterfaceData]]
                 continue
             if not ((getattr(d, "svi_ip", "") or "").strip() or (getattr(d, "hsrp_behavior", "") or "").strip()):
                 continue                                                 # only real gateways (SVI with an IP or FHRP)
-            by_vid.setdefault(int(m.group(1)), []).append((host, d))
+            vid = int(m.group(1))
+            _ip, subnet = _svi_ip_net((getattr(d, "svi_ip", "") or "").strip())
+            vrf = str(getattr(d, "vrf", "") or "").strip().lower()
+            vrf = "" if vrf in ("", "default", "global") else vrf
+            by_domain.setdefault((vid, vrf, subnet or "(subnet-unobserved)"), []).append((host, d))
     out: List[dict] = []
-    for vid in sorted(by_vid):
-        gws = by_vid[vid]
+    for vid, vrf, subnet in sorted(by_domain):
+        gws = by_domain[(vid, vrf, subnet)]
         if len(gws) < 2:                                                 # single gateway -> SPOF, handled elsewhere
             continue
         det = []
@@ -3103,23 +3653,40 @@ def compute_fhrp_consistency(all_interfaces: Dict[str, Dict[str, InterfaceData]]
         issues: List[str] = []
         if not withf:
             issues.append(f"{len(gws)} gateways but no FHRP — no first-hop redundancy")
-            out.append({"vid": vid, "issues": issues, "members": det}); continue
+            out.append({"vid": vid, "vrf": vrf, "subnet": subnet,
+                        "issues": issues, "members": det}); continue
         protos = {x["proto"] for x in withf}
         groups = {x["group"] for x in withf if x["group"]}
         vips = {x["vip"] for x in withf if x["vip"]}
-        actives = [x for x in withf if x["role"] == "active"]
+        forward_roles = {"active", "master"}
+        backup_roles = {"standby", "backup", "listen"}
+        actives = [x for x in withf if x["role"] in forward_roles]
+        backups = [x for x in withf if x["role"] in backup_roles]
+        unknown_roles = [x for x in withf if x["role"] not in forward_roles | backup_roles]
         if without:
             issues.append(f"{', '.join(x['host'] for x in without)} runs no FHRP — unprotected, independent gateway")
         if len(protos) > 1:
             issues.append(f"mixed FHRP protocols ({' vs '.join(sorted(protos))})")
+        if any(not x["group"] for x in withf):
+            issues.append("one or more FHRP members has no observed group identifier")
+        if any(not x["vip"] for x in withf):
+            issues.append("one or more FHRP members has no observed virtual IP")
         if len(groups) > 1:
             issues.append(f"different FHRP groups (grp {' vs '.join(sorted(groups))}) — not one redundancy group")
         elif len(vips) > 1:
             issues.append(f"same group but different virtual IPs ({' vs '.join(sorted(vips))})")
+        if len(groups) == 1 and not actives:
+            issues.append("no observed Active/Master router - the forwarding owner is unverified")
+        if len(groups) == 1 and not backups:
+            issues.append("no observed Standby/Backup/Listen member - usable failover is unverified")
+        if unknown_roles:
+            issues.append("unrecognized FHRP role(s) on "
+                          + ", ".join(f"{x['host']} ({x['role'] or 'blank'})" for x in unknown_roles))
         if len(groups) == 1 and len(actives) > 1:
             issues.append(f"two active routers ({', '.join(x['host'] for x in actives)}) — split-brain")
         if issues:
-            out.append({"vid": vid, "issues": issues, "members": det})
+            out.append({"vid": vid, "vrf": vrf, "subnet": subnet,
+                        "issues": issues, "members": det})
     return out
 
 
@@ -3129,7 +3696,7 @@ def write_fhrp_consistency_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfa
     """Write the 'FHRP Consistency' sheet: VLANs whose >=2 gateways have MISconfigured first-hop redundancy
     (fake redundancy that fails silently at failover). Surfaces the explorer's FHRP-consistency finding."""
     rows = compute_fhrp_consistency(all_interfaces)
-    ws = wb.create_sheet(FHRP_CONSISTENCY_SHEET_NAME)
+    ws = _new_sheet(wb, FHRP_CONSISTENCY_SHEET_NAME)
     for col, h in enumerate(["VLAN", "Issue", "Gateways"], 1):
         cell = ws.cell(1, col, h); cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="434343"); cell.alignment = Alignment(horizontal="center")
@@ -3192,6 +3759,27 @@ def compute_trunk_native_coverage(all_interfaces: Dict[str, Dict[str, InterfaceD
     return {"links_observed": observed, "links_compared": compared}
 
 
+def _link_pair_coverage_note(all_interfaces: Dict[str, Dict[str, InterfaceData]],
+                             what: str = "trunk") -> str:
+    """The ONE owner of the two-ended link checks' coverage disclosure. Every check that compares the two
+    ENDS of a CDP/LLDP link (native VLAN, duplex/speed) can only see links whose far end was also
+    collected -- `_trunk_link_ends` yields `b is None` otherwise and the check skips the link. Stating that
+    population is what keeps "no mismatch found" from reading as a fleet-wide guarantee.
+
+    It lives here, shared, because the disclosure was written for the native-VLAN sheet only (audit-5 #6)
+    while 'Link Duplex-Speed' -- the same population, the same both-ends gate, the next writer down --
+    still printed a bare "clean". On an access-only collection that is a definitive-sounding all-clear
+    over ZERO comparisons. `what` names the thing whose far end is missing so each sheet reads naturally;
+    the native-VLAN wording is unchanged."""
+    cov = compute_trunk_native_coverage(all_interfaces)
+    gap = cov["links_observed"] - cov["links_compared"]
+    return (f"{cov['links_compared']} inter-switch link(s) with both ends collected were compared"
+            + (f"; {gap} of {cov['links_observed']} observed link(s) had an uncollected far end and were "
+               f"NOT compared" if gap else "")
+            + f". Uncollected devices, and any {what} whose far end was not collected, are NOT assessed "
+              "-- this is not a fleet-wide guarantee.")
+
+
 TRUNK_NATIVE_SHEET_NAME = "Trunk Native-VLAN"
 
 def write_trunk_native_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> None:
@@ -3199,7 +3787,7 @@ def write_trunk_native_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceDa
     (untagged) VLAN -- a silent L2 leak / VLAN-hopping exposure. Surfaces the explorer's trunk-consistency
     native-VLAN finding (allowed-VLAN asymmetry stays explorer-only for now)."""
     rows = compute_trunk_native_mismatches(all_interfaces)
-    ws = wb.create_sheet(TRUNK_NATIVE_SHEET_NAME)
+    ws = _new_sheet(wb, TRUNK_NATIVE_SHEET_NAME)
     for col, h in enumerate(["End A", "Native A", "End B", "Native B"], 1):
         cell = ws.cell(1, col, h); cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="434343"); cell.alignment = Alignment(horizontal="center")
@@ -3222,13 +3810,7 @@ def write_trunk_native_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceDa
     # The disclosure is emitted in BOTH branches: listing mismatches while staying silent about how many links
     # could not be compared conceals the same blind spot as the clean case -- worse, in fact, since a reader
     # looking at real findings most needs to know what the check could not see.
-    cov = compute_trunk_native_coverage(all_interfaces)
-    _gap = cov["links_observed"] - cov["links_compared"]
-    _coverage = (f"{cov['links_compared']} inter-switch link(s) with both ends collected were compared"
-                 + (f"; {_gap} of {cov['links_observed']} observed link(s) had an uncollected far end and were "
-                    f"NOT compared" if _gap else "")
-                 + ". Uncollected devices, and any trunk whose far end was not collected, are NOT assessed "
-                   "-- this is not a fleet-wide guarantee.")
+    _coverage = _link_pair_coverage_note(all_interfaces, "trunk")
     if r == 2:
         ws.cell(2, 1, "no mismatch")
         ws.cell(2, 2, f"No native-VLAN mismatch found. {_coverage}")
@@ -3255,14 +3837,13 @@ def compute_duplex_speed_mismatches(all_interfaces: Dict[str, Dict[str, Interfac
     """Duplex / speed mismatches on inter-switch links (mirrors the explorer's linkPhyConsistency): the two
     ends report a different OPERATIONAL duplex (one full, the other half -- the classic 'up but slow/flaky')
     or speed. 'auto-...' that hasn't resolved is skipped. Reuses analyze.compute_topology_links. Returns
-    [{a_host,a_port,b_host,b_port, duplex:(ad,bd)|None, speed:(asp,bsp)|None}] (speeds in Mbps)."""
-    from cisco_toolkit.analyze import compute_topology_links, _canon_host, _canon_host_map
-    cmap = _canon_host_map(all_interfaces)
+    [{a_host,a_port,b_host,b_port, duplex:(ad,bd)|None, speed:(asp,bsp)|None}] (speeds in Mbps).
+
+    Walks `_trunk_link_ends` (the same generator the native-VLAN check and its coverage banner use) rather
+    than re-deriving the identical pairing inline, so the population this reports on and the population the
+    sheet's coverage note describes provably cannot drift apart."""
     out: List[dict] = []
-    for L in compute_topology_links(all_interfaces):
-        a = all_interfaces.get(str(L["a_host"]), {}).get(str(L["a_port"]))
-        bh = cmap.get(_canon_host(str(L["b_host"])))
-        b = all_interfaces.get(bh, {}).get(str(L["b_port"])) if bh else None
+    for L, a, b, bh in _trunk_link_ends(all_interfaces):
         if a is None or b is None:
             continue
         ad, bd = _norm_duplex(getattr(a, "duplex", "")), _norm_duplex(getattr(b, "duplex", ""))
@@ -3282,7 +3863,7 @@ def write_link_phy_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]
     or speed -- the classic 'link is up but slow/flaky' (late collisions, CRC errors). Surfaces the explorer's
     link L1 finding."""
     rows = compute_duplex_speed_mismatches(all_interfaces)
-    ws = wb.create_sheet(LINK_PHY_SHEET_NAME)
+    ws = _new_sheet(wb, LINK_PHY_SHEET_NAME)
     for col, h in enumerate(["Link", "Issue", "End A", "End B"], 1):
         cell = ws.cell(1, col, h); cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="434343"); cell.alignment = Alignment(horizontal="center")
@@ -3299,8 +3880,19 @@ def write_link_phy_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]
         else:
             ws.cell(r, 3, f"speed {_spd(d['speed'][0])}"); ws.cell(r, 4, f"speed {_spd(d['speed'][1])}")
         r += 1
+    # coverage-honest, exactly as the 'Trunk Native-VLAN' twin: this check compares the TWO ENDS of a link,
+    # so it can only see links whose far end was also collected (compute_duplex_speed_mismatches skips the
+    # rest). The bare "clean" printed a definitive fleet-wide all-clear over a population that, on an
+    # access-only collection, is EMPTY -- every uplink lands on an uncollected core. Emitted in BOTH
+    # branches for the same reason the native-VLAN sheet gives: a reader looking at real findings most
+    # needs to know what the check could not see.
+    _coverage = _link_pair_coverage_note(all_interfaces, "link")
     if r == 2:
-        ws.cell(2, 1, "clean"); ws.cell(2, 2, "No duplex/speed mismatches on inter-switch links")
+        ws.cell(2, 1, "no mismatch")
+        ws.cell(2, 2, f"No duplex/speed mismatch found on inter-switch links. {_coverage}")
+    else:
+        ws.cell(r, 1, "coverage")
+        ws.cell(r, 2, _coverage)
     for i, w in enumerate([46, 12, 18, 18], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
@@ -3308,7 +3900,7 @@ def write_link_phy_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]
 
 
 def write_migration_readiness_sheet(wb, readiness: List[dict]) -> None:
-    ws = wb.create_sheet(MIGRATION_READINESS_SHEET_NAME)
+    ws = _new_sheet(wb, MIGRATION_READINESS_SHEET_NAME)
     headers = ["Group / Check", "Status", "Phase", "Detail"]
     for col, h in enumerate(headers, 1):
         c = ws.cell(1, col, h)
@@ -3356,7 +3948,7 @@ def write_interface_health_sheet(wb, all_cmd_to_files: Dict[str, Dict[str, str]]
             "Last Input", "Last Output", "Flag"]
     if INTERFACE_HEALTH_SHEET_NAME in wb.sheetnames:
         del wb[INTERFACE_HEALTH_SHEET_NAME]
-    ws = wb.create_sheet(INTERFACE_HEALTH_SHEET_NAME)
+    ws = _new_sheet(wb, INTERFACE_HEALTH_SHEET_NAME)
     _census_header(ws, cols)
     DAT_FONT = Font(name="Calibri", size=10)
     DAT_L = Alignment(horizontal="left", vertical="center")
@@ -3410,7 +4002,7 @@ def write_security_posture_sheet(wb, all_cmd_to_files: Dict[str, Dict[str, str]]
             "PS Action", "802.1X Method", "802.1X Status", "Auth MAC", "DHCP-Snoop Bindings"]
     if SECURITY_SHEET_NAME in wb.sheetnames:
         del wb[SECURITY_SHEET_NAME]
-    ws = wb.create_sheet(SECURITY_SHEET_NAME)
+    ws = _new_sheet(wb, SECURITY_SHEET_NAME)
     _census_header(ws, cols)
     DAT_FONT = Font(name="Calibri", size=10)
     DAT_L = Alignment(horizontal="left", vertical="center")
@@ -3447,7 +4039,7 @@ def write_routing_adjacency_sheet(wb, all_cmd_to_files: Dict[str, Dict[str, str]
     cols = ["Hostname", "Protocol", "Neighbor", "State / PfxRcd", "Interface / AS"]
     if ROUTING_SHEET_NAME in wb.sheetnames:
         del wb[ROUTING_SHEET_NAME]
-    ws = wb.create_sheet(ROUTING_SHEET_NAME)
+    ws = _new_sheet(wb, ROUTING_SHEET_NAME)
     _census_header(ws, cols)
     DAT_FONT = Font(name="Calibri", size=10)
     DAT_L = Alignment(horizontal="left", vertical="center")
@@ -3481,7 +4073,7 @@ def write_causality_chains_sheet(wb, chains: list) -> None:
             "Impact (blast radius)", "Mitigation"]
     if CAUSALITY_SHEET_NAME in wb.sheetnames:
         del wb[CAUSALITY_SHEET_NAME]
-    ws = wb.create_sheet(CAUSALITY_SHEET_NAME)
+    ws = _new_sheet(wb, CAUSALITY_SHEET_NAME)
     _census_header(ws, cols)
     chains = chains or []
     DAT_FONT = Font(name="Calibri", size=10)
@@ -3508,7 +4100,7 @@ def write_failure_impact_sheet(wb, rows: list) -> None:
             "Hard Partitions", "Backup-Covered", "FHRP-Covered", "Per-VLAN Detail"]
     if FAILURE_SHEET_NAME in wb.sheetnames:
         del wb[FAILURE_SHEET_NAME]
-    ws = wb.create_sheet(FAILURE_SHEET_NAME)
+    ws = _new_sheet(wb, FAILURE_SHEET_NAME)
     _census_header(ws, cols)
     rows = rows or []
     DAT_FONT = Font(name="Calibri", size=10)
@@ -3538,7 +4130,7 @@ def write_link_centrality_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfac
     cols = ["Rank", "Link", "Betweenness", "Bridge / SPOF", "Switch-Pairs Severed", "Assessment"]
     if LINK_CENTRALITY_SHEET_NAME in wb.sheetnames:
         del wb[LINK_CENTRALITY_SHEET_NAME]
-    ws = wb.create_sheet(LINK_CENTRALITY_SHEET_NAME)
+    ws = _new_sheet(wb, LINK_CENTRALITY_SHEET_NAME)
     _census_header(ws, cols)
     rows = compute_link_centrality(all_interfaces)
     DAT_FONT = Font(name="Calibri", size=10)
@@ -3583,7 +4175,7 @@ def write_cabling_schedule_sheet(wb, cable_map: dict) -> None:
     cols = ["Switch A", "Port A", "Switch B", "Port B", "Speed", "Type", "LAG Members", "Op-Status", "Seen"]
     if CABLING_SCHEDULE_SHEET_NAME in wb.sheetnames:
         del wb[CABLING_SCHEDULE_SHEET_NAME]
-    ws = wb.create_sheet(CABLING_SCHEDULE_SHEET_NAME)
+    ws = _new_sheet(wb, CABLING_SCHEDULE_SHEET_NAME)
     _census_header(ws, cols)
     cables = (cable_map or {}).get("cables") or []
     DAT_FONT = Font(name="Calibri", size=10)
@@ -3629,7 +4221,7 @@ def write_wave_sequencing_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfac
     cols = ["Group", "Cutover Plan", "Hard Cutover (window)", "Make-Before-Break", "Endpoints at Risk"]
     if WAVE_SEQUENCING_SHEET_NAME in wb.sheetnames:
         del wb[WAVE_SEQUENCING_SHEET_NAME]
-    ws = wb.create_sheet(WAVE_SEQUENCING_SHEET_NAME)
+    ws = _new_sheet(wb, WAVE_SEQUENCING_SHEET_NAME)
     _census_header(ws, cols)
     rows = compute_wave_sequencing(all_interfaces, move_groups)
     DAT_FONT = Font(name="Calibri", size=10)
@@ -3670,7 +4262,7 @@ def write_vlan_cutover_sheet(wb, vlan_cutover: List[dict]) -> None:
     cols = ["VLAN", "Name", "STP Root", "Root Default-Election", "FHRP",
             "Gateway SVIs", "Endpoint MACs (per-port sum)", "Endpoint Mix", "App Domain", "Criticality",
             "Dependencies", "Wave", "Scenario", "Readiness", "Cutover Window", "Rollback Owner"]
-    ws = wb.create_sheet(VLAN_CUTOVER_SHEET_NAME)
+    ws = _new_sheet(wb, VLAN_CUTOVER_SHEET_NAME)
     _census_header(ws, cols)
     DAT_FONT = Font(name="Calibri", size=10)
     DAT_L = Alignment(horizontal="left", vertical="top", wrap_text=True)
@@ -3724,13 +4316,14 @@ EXEC_SUMMARY_SHEET_NAME = "Executive Summary"
 
 def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
                                   migration_readiness: list,
-                                  failure_impact: list, brief=None, provenance=None) -> None:
+                                  failure_impact: list, brief=None, provenance=None,
+                                  assessment_integrity=None) -> None:
     """Write the 'Executive Summary' landing sheet (moved to the FRONT of the workbook): a one-page
     synthesis -- fleet posture, the keystone devices the fleet most depends on (migration blast radius),
     the punch-list severity / category breakdown, and per-group migration readiness -- so a reader knows
     where to start without opening all 30+ detail tabs. This is the workbook twin of the explorer's Risk
     cockpit: pure presentation of already-computed data; every detail tab remains the source of record."""
-    ws = wb.create_sheet(EXEC_SUMMARY_SHEET_NAME)
+    ws = _new_sheet(wb, EXEC_SUMMARY_SHEET_NAME)
     TITLE = Font(name="Calibri", bold=True, size=15, color=DOC_NAVY_HEX)
     SUB   = Font(name="Calibri", bold=True, size=11, color=DOC_NAVY_HEX)
     KEY   = Font(name="Calibri", bold=True, size=10)
@@ -3755,8 +4348,38 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
     ws.cell(r, 1, "Network Migration Assessment — Executive Summary").font = TITLE
     r += 2
 
+    ai = assessment_integrity if isinstance(assessment_integrity, dict) else {}
+    if not ai and isinstance(provenance, dict) and isinstance(provenance.get("assessment_integrity"), dict):
+        ai = provenance["assessment_integrity"]
+    failed = ai.get("failed_phases")
+    failed = failed if isinstance(failed, list) else ([failed] if failed else [])
+    if isinstance(brief, dict) and brief.get("_unavailable") and "Executive brief" not in failed:
+        failed = list(failed) + ["Executive brief"]
+    for key, value in ai.items():
+        if key not in ("failed_phases", "n_violations") and \
+                str(value).strip().lower() in ("failed", "compute_failed", "unavailable", "error"):
+            failed = list(failed) + [f"{key}: {value}"]
+    failed = list(dict.fromkeys(str(x) for x in failed))
+
+    def _phase_failed(*tokens):
+        def _key(value):
+            return "".join(ch for ch in str(value).lower() if ch.isalnum())
+        return any(any(_key(token) in _key(item) for token in tokens) for item in failed)
+    if failed:
+        _sub("ASSESSMENT INTEGRITY - UNVERIFIED")
+        cell = ws.cell(
+            r, 1,
+            f"{len(failed)} phase(s) failed or were unavailable: "
+            + ", ".join(str(x) for x in failed)
+            + ". Empty fallback sections are NOT clean results; repair and regenerate before a go/no-go decision.")
+        cell.font = Font(name="Calibri", bold=True, size=10, color="9C0006")
+        cell.fill = PatternFill("solid", fgColor="FFC7CE")
+        cell.alignment = WRAP
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=6)
+        r += 2
+
     # --- migration brief (cross-axis synthesis) NEW-V3.23.120 ---
-    eb = brief or {}
+    eb = brief if isinstance(brief, dict) else {}
     if eb.get("axes"):
         _sub("Migration brief")
         ps = eb.get("posture_statement", "")
@@ -3766,7 +4389,12 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
         tg = eb.get("top_gating") or []
         if tg:
             ws.cell(r, 1, "Address first").font = KEY
-            c = ws.cell(r, 2, " · ".join(tg[:6])); c.font = DAT; c.alignment = WRAP; r += 1
+            # DISCLOSE the cut (the subnet-reachability '(+N)' house pattern): these are the
+            # brief's GATING items, and a reader who plans around the 6 shown is short the rest
+            # (Meridian reference fleet: 9). The axis table below lists one row per axis, not per gating item,
+            # so nothing else on this sheet carries the missing three.
+            c = ws.cell(r, 2, " · ".join(tg[:6]) + (f" (+{len(tg) - 6})" if len(tg) > 6 else ""))
+            c.font = DAT; c.alignment = WRAP; r += 1
         _hdr(["Axis", "Severity", "Headline"])
         SEVFILL = {"Critical": "F4CCCC", "High": "FCE4D6", "Medium": "FFF2CC", "Low": "D9EAD3", "Info": "EFEFEF"}
         for a in eb["axes"]:
@@ -3778,7 +4406,9 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
         r += 1
 
     # --- fleet posture (health band distribution) ---
-    hs = health_scores or []
+    health_unavailable = _phase_failed("health score") or not isinstance(health_scores, list)
+    hs = [x for x in (health_scores if isinstance(health_scores, list) else [])
+          if isinstance(x, dict)]
     n = len(hs)
     bands = {"Excellent": 0, "Good": 0, "Fair": 0, "Poor": 0, "Critical": 0}
     for x in hs:
@@ -3790,11 +4420,14 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
     # arithmetic mean overstates vs posture.avg_health (criticality-weighted), and "assessed = 303" overstates
     # coverage by the 50 not-collected devices vs scale.n_collected. Fall back to the local recompute only if
     # the brief is absent (legacy snapshot).
-    _ebp = (brief or {}).get("posture") or {}
-    _ebs = (brief or {}).get("scale") or {}
+    _ebp = eb.get("posture") if isinstance(eb.get("posture"), dict) else {}
+    _ebs = eb.get("scale") if isinstance(eb.get("scale"), dict) else {}
     _ncoll = _ebs.get("n_collected"); _avgc = _ebp.get("avg_health")
     _sub("Fleet posture")
-    if isinstance(brief, dict) and brief.get("_unavailable"):
+    if health_unavailable:
+        _kv("Switches collected / inventoried", "UNVERIFIED (health-score phase unavailable)")
+        _kv("Average health score", "UNVERIFIED")
+    elif isinstance(brief, dict) and brief.get("_unavailable"):
         # the executive-brief compute RAISED -> _run_phase wired the {'_unavailable':True} sentinel. Do NOT fall
         # back to the raw recompute: that fabricates full collection coverage (n/n) + an all-rows mean that the
         # 'Insufficient Data' devices inflate. Disclose the gap, exactly as the Architecture Review sheet does
@@ -3804,9 +4437,9 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
     else:
         _kv("Switches collected / inventoried", f"{_ncoll if isinstance(_ncoll, int) else n} / {n}")
         _kv("Average health score", f"{_avgc if isinstance(_avgc, (int, float)) else avg} / 100")
-    _kv("Critical band", bands["Critical"])
-    _kv("Poor / Fair", bands["Poor"] + bands["Fair"])
-    _kv("Good / Excellent", bands["Good"] + bands["Excellent"])
+    _kv("Critical band", "UNVERIFIED" if health_unavailable else bands["Critical"])
+    _kv("Poor / Fair", "UNVERIFIED" if health_unavailable else bands["Poor"] + bands["Fair"])
+    _kv("Good / Excellent", "UNVERIFIED" if health_unavailable else bands["Good"] + bands["Excellent"])
     r += 1
 
     # canonical scope/scale from the published brief (one source — not a raw-array recompute). The sheet
@@ -3820,7 +4453,9 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
         r += 1
 
     # --- punch-list severity / category breakdown ---
-    pl = punchlist or []
+    punch_unavailable = _phase_failed("punch-list", "punchlist") or not isinstance(punchlist, list)
+    pl = [x for x in (punchlist if isinstance(punchlist, list) else [])
+          if isinstance(x, dict)]
     sev = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
     cats: Dict[str, int] = {}
     for it in pl:
@@ -3829,16 +4464,33 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
             sev[s] += 1
         cat = it.get("category", "Other")
         cats[cat] = cats.get(cat, 0) + 1
-    _sub(f"Migration punch-list — {len(pl)} item(s)")
-    _kv("Critical / High", f"{sev['Critical']} / {sev['High']}")
-    _kv("Medium / Low", f"{sev['Medium']} / {sev['Low']}")
+    _sub("Migration punch-list — UNVERIFIED" if punch_unavailable
+         else f"Migration punch-list — {len(pl)} item(s)")
+    _kv("Critical / High", "UNVERIFIED" if punch_unavailable
+        else f"{sev['Critical']} / {sev['High']}")
+    _kv("Medium / Low", "UNVERIFIED" if punch_unavailable
+        else f"{sev['Medium']} / {sev['Low']}")
+    # ranked, cut at 5 and the remainder COUNTED: "Top categories" names the ranking but not the
+    # population, so five entries read as the punch-list's whole category set (Meridian reference fleet: 17
+    # categories, the 12 hidden ones carrying 176 of the 1,805 items).
     top_cats = sorted(cats.items(), key=lambda t: -t[1])[:5]
-    _kv("Top categories", ", ".join(f"{k} ({v})" for k, v in top_cats) or "—")
+    _cat_txt = ", ".join(f"{k} ({v})" for k, v in top_cats)
+    if _cat_txt and len(cats) > len(top_cats):
+        _cat_txt += f" (+{len(cats) - len(top_cats)} more categor{'ies' if len(cats) - len(top_cats) > 1 else 'y'})"
+    _kv("Top categories", "UNVERIFIED" if punch_unavailable else (_cat_txt or "—"))
     r += 1
 
     # --- keystone devices (the few the fleet actually depends on; works when scores saturate) ---
     fi = failure_impact or []                          # NEW-V3.23.91: precomputed once in main
-    _sub("Keystone devices — fix-first (by migration blast radius)")
+    # A 10-row table headed "fix-first" reads as the keystone population; on the Meridian reference fleet 193 of the
+    # 303 simulated devices strand at least one endpoint. Name the ratio so the reader sizes the
+    # problem, not the table. (Rows with NO stranded figure are unmeasured, never counted as zero.)
+    _n_keystone = sum(1 for rec in fi
+                      if isinstance(rec, dict) and isinstance(rec.get("stranded"), (int, float))
+                      and rec["stranded"] > 0)
+    _sub("Keystone devices — fix-first (by migration blast radius)"
+         + (f" — top 10 of {_n_keystone} device(s) that strand ≥1 endpoint"
+            if _n_keystone > 10 else ""))
     _hdr(["Rank", "Device", "Severity", "Endpoints stranded", "VLANs impacted"])
     for i, rec in enumerate(fi[:10], 1):
         ws.cell(r, 1, i).font = DAT
@@ -3850,8 +4502,17 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
     r += 1
 
     # --- per-group migration readiness ---
-    mr = migration_readiness or []
-    if mr:
+    readiness_unavailable = (
+        _phase_failed("migration readiness")
+        or not isinstance(migration_readiness, list)
+    )
+    mr = [x for x in (migration_readiness if isinstance(migration_readiness, list) else [])
+          if isinstance(x, dict)]
+    if readiness_unavailable:
+        _sub("Migration readiness (per move group) — UNVERIFIED")
+        _kv("Gate", "Readiness computation failed or was unavailable; no READY conclusion is issued.")
+        r += 1
+    elif mr:
         _sub("Migration readiness (per move group)")
         _hdr(["Group", "Verdict", "Switches", "Endpoints", "Fail", "Warn"])
         for g in mr:
@@ -3871,11 +4532,15 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
         top = fi[0]
         lines.append(f"• {top.get('host')} is the top keystone — its loss strands "
                      f"{top.get('stranded', 0)} endpoint(s). Harden it first (FHRP / a redundant path).")
-    if n and bands["Critical"] == n:
+    if not health_unavailable and n and bands["Critical"] == n:
         lines.append(f"• All {n} switches land in the Critical band — the per-switch score is "
                      f"saturated, so prioritise by blast radius (above), not by score.")
-    lines.append(f"• {sev['Critical']} critical + {sev['High']} high punch-list item(s) — see the "
-                 f"'Migration Punch-List' tab for the full ranked, per-device action list.")
+    if punch_unavailable:
+        lines.append("• Migration punch-list is UNVERIFIED — repair the failed producer before "
+                     "using this page for prioritization or go/no-go.")
+    else:
+        lines.append(f"• {sev['Critical']} critical + {sev['High']} high punch-list item(s) — see the "
+                     f"'Migration Punch-List' tab for the full ranked, per-device action list.")
     for ln in lines:
         c = ws.cell(r, 1, ln); c.font = DAT; c.alignment = WRAP
         ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=6)
@@ -3987,7 +4652,20 @@ def write_physical_health_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfac
                 flags.append("error-rate-high")
                 if sev != "High": sev = "Medium"
             if not flags:
-                flags = ["ok"]
+                # `show interfaces` is NOT an essential command and _load_cmd_output is an exact-match
+                # lookup, so `counters` is routinely {} for a whole device -- and even when it parsed, a
+                # port present in `show interface status` can be absent from it. The error-rate check
+                # above then cannot fire, and the row used to print blank error counters plus the word
+                # "ok", byte-identical to a genuinely clean port, while Collection Completeness still
+                # tiered the device "complete". That is this file's own stated rule (see
+                # write_coverage_schema_sheet) broken: absence of evidence is never health. Only an
+                # operationally UP port is marked -- on a down port the error-rate check is inapplicable
+                # rather than unevaluated, so its "ok" is not a claim about unseen counters.
+                if oper_up and not cnt:
+                    flags = [f"{HEALTH_NOT_OBSERVED} - no 'show interfaces' counters for this port; "
+                             f"L1 error rate NOT assessed"]
+                else:
+                    flags = ["ok"]
 
             records.append({"switch": host, "port": port, "status": status or "",
                             "speed": speed or "unknown", "duplex": duplex or "unknown",
@@ -3997,7 +4675,7 @@ def write_physical_health_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfac
                             "risk": "; ".join(flags), "severity": sev})
 
     # ---- write the sheet ----
-    ws = wb.create_sheet(PHYSICAL_HEALTH_SHEET_NAME)
+    ws = _new_sheet(wb, PHYSICAL_HEALTH_SHEET_NAME)
     hdr_font = Font(bold=True, color="FFFFFF")
     hdr_fill = PatternFill("solid", fgColor="434343")
     for col, h in enumerate(headers, 1):
@@ -4017,9 +4695,14 @@ def write_physical_health_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfac
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
 
-    n_flagged = sum(1 for x in records if x["risk"] != "ok")
+    # A blind spot is neither "ok" nor a finding — count it as its own third thing, or the log turns
+    # every unassessed port into a flagged one (and hides how much of L1 was never seen).
+    n_blind = sum(1 for x in records if str(x["risk"]).startswith(HEALTH_NOT_OBSERVED))
+    n_flagged = sum(1 for x in records
+                    if x["risk"] != "ok" and not str(x["risk"]).startswith(HEALTH_NOT_OBSERVED))
     logger.info(f"  [OK] '{PHYSICAL_HEALTH_SHEET_NAME}' sheet: {len(records)} physical port(s), "
-                f"{n_flagged} flagged")
+                f"{n_flagged} flagged"
+                + (f", {n_blind} NOT assessed (no interface counters collected)" if n_blind else ""))
     return records
 
 
@@ -4031,7 +4714,7 @@ def write_flow_trace_sheet(wb, flow: dict) -> None:
     """Write the 'Flow Trace' sheet from a trace_full_flow() result."""
 
     s = flow["summary"]
-    ws = wb.create_sheet(FLOW_TRACE_SHEET_NAME)
+    ws = _new_sheet(wb, FLOW_TRACE_SHEET_NAME)
     bold = Font(bold=True)
 
     ws.cell(1, 1, f"Flow Trace  {s['src_ip']}  ->  {s['dst_ip']}").font = Font(bold=True, size=13)
@@ -4081,7 +4764,7 @@ def write_flow_paths_sheet(wb, flow_paths: dict) -> None:
     and risk. From compute_flow_paths(). Pure presentation; the explorer remains the interactive view."""
     fp = flow_paths or {}
     flows = fp.get("flows") or []
-    ws = wb.create_sheet(FLOW_PATHS_SHEET_NAME)
+    ws = _new_sheet(wb, FLOW_PATHS_SHEET_NAME)
     bold = Font(bold=True)
     ws.cell(1, 1, "Representative Flow Paths").font = Font(bold=True, size=14, color=DOC_NAVY_HEX)
     s0 = fp.get("summary") or {}
@@ -4150,8 +4833,12 @@ def _parse_track(output: str) -> dict:
     return {"objects": objs, "up": up, "down": down}
 
 def _track_summary(tr: dict) -> str:
-    if not tr or not tr["objects"]:
+    if not tr:
         return ""
+    if not tr["objects"]:
+        # 'show track' collected and empty (no tracked objects configured) is a FACT; 'show track'
+        # never collected is a blind spot. Both used to render the same blank cell. (review #18)
+        return "" if tr.get("observed") else HEALTH_NOT_OBSERVED
     head = f"{len(tr['objects'])} obj"
     if tr["down"]:
         head += f" ({tr['down']} DOWN)"
@@ -4174,14 +4861,18 @@ def write_l3_forwarding_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceD
     track_by_host: Dict[str, dict] = {}
     for host in all_interfaces:
         out = _load_cmd_output(all_cmd_to_files.get(host, {}), "show track")
-        track_by_host[host] = _parse_track(out) if out else {"objects": [], "up": 0, "down": 0}
+        # `observed` keeps "collected, no tracked objects" apart from "never collected" — without it the
+        # tracked-object-down check silently cannot fire and the row still reads a bare 'ok'. (review #18)
+        tr = _parse_track(out) if out else {"objects": [], "up": 0, "down": 0}
+        tr["observed"] = bool(out)
+        track_by_host[host] = tr
 
     headers = ["Switch", "VLAN", "SVI IP", "FHRP", "Role", "Virtual IP", "Routing Source",
                "Next Hop", "Primary Subnet", "Backup / Secondary", "Tracking", "L3 Risk"]
 
     records: List[dict] = []
     for host in sorted(all_interfaces):
-        tr = track_by_host.get(host, {"objects": [], "up": 0, "down": 0})
+        tr = track_by_host.get(host, {"objects": [], "up": 0, "down": 0, "observed": False})
         tsum = _track_summary(tr)
         for port, d in sorted(all_interfaces[host].items(),
                               key=lambda kv: int(re.match(r"^Vlan(\d+)$", kv[0], re.IGNORECASE).group(1))
@@ -4208,7 +4899,12 @@ def write_l3_forwarding_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceD
                 if sev == "Info":
                     sev = "Low"
             if not flags:
-                flags = ["ok"]
+                # `show track` is not essential either: without it the tracked-object-down check above
+                # could never fire, so a bare 'ok' here asserted a clean tracking state that was never
+                # looked at. Gateway redundancy and FHRP WERE assessed, so the marker names the one
+                # axis that was not. (review #18, same class as Physical Risk)
+                flags = ["ok"] if tr.get("observed") else [
+                    f"{HEALTH_NOT_OBSERVED} - no 'show track' evidence; object tracking NOT assessed"]
 
             records.append({"switch": host, "vlan": vid, "svi_ip": d.svi_ip or "",
                             "fhrp": proto or "none", "role": role or "", "vip": vip or "",
@@ -4217,7 +4913,7 @@ def write_l3_forwarding_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceD
                             "secondary": d.subnet_secondary_routes or "",
                             "tracking": tsum, "risk": "; ".join(flags), "severity": sev})
 
-    ws = wb.create_sheet(L3_FORWARDING_SHEET_NAME)
+    ws = _new_sheet(wb, L3_FORWARDING_SHEET_NAME)
     hdr_font = Font(bold=True, color="FFFFFF")
     hdr_fill = PatternFill("solid", fgColor="434343")
     for col, h in enumerate(headers, 1):
@@ -4237,9 +4933,12 @@ def write_l3_forwarding_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceD
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
 
-    n_flagged = sum(1 for x in records if x["risk"] != "ok")
+    n_blind = sum(1 for x in records if str(x["risk"]).startswith(HEALTH_NOT_OBSERVED))
+    n_flagged = sum(1 for x in records
+                    if x["risk"] != "ok" and not str(x["risk"]).startswith(HEALTH_NOT_OBSERVED))
     logger.info(f"  [OK] '{L3_FORWARDING_SHEET_NAME}' sheet: {len(records)} gateway SVI(s), "
-                f"{n_flagged} flagged")
+                f"{n_flagged} flagged"
+                + (f", {n_blind} with tracking NOT assessed (no 'show track')" if n_blind else ""))
     return records
 
 
@@ -4250,8 +4949,31 @@ def write_l3_forwarding_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceD
 # logic is byte-exact. Uses find_header_row/ensure_headers/sortkey (above) + the
 # template header map.
 # =============================================================================
+#: Template columns the ENGINEER owns, not the device: the engine never collects them, so a blank in
+#: this run means "the engine has nothing to say", not "this run observed nothing" — their pre-existing
+#: value is the engineer's annotation and must survive a re-run. EVERY OTHER column is device-derived:
+#: it is a claim about what this collection SAW, so a blank there must clear the cell rather than leave
+#: the previous run's value standing beside a freshly-overwritten Status. (review #88)
+#: Columns a blank must NOT clear, because a blank there is not "the device stopped reporting it".
+#:
+#: `system_owner` / `endpoint_location` are pure annotation — the engine never observes them.
+#: `endpoint_type` is HYBRID and belongs here for a sharper reason: `build.py` sets it only inside
+#: the CDP/LLDP neighbour loop, so a port with no CDP neighbour (a PC, a non-CDP phone, anything
+#: unmanaged) has no engine value on ANY run — which is precisely the port where an engineer types
+#: one in, because the engine cannot tell them what it is. Clearing on blank would therefore delete
+#: that annotation on every single re-run, and only ever for the ports whose annotation is worth
+#: most. Weigh the two failure modes: a stale endpoint_type is cosmetic, while a stale VLAN, native
+#: VLAN, trunk or BPDU-guard is a cutover decision made on last quarter's evidence. Review #88 is
+#: about the second kind; this column is the first.
+_HUMAN_OWNED_COLS = frozenset({"system_owner", "endpoint_location", "endpoint_type"})
+
+
 def append_interface_rows(ws, header_row: int, col_map: Dict[str,int],
                           hostname: str, interfaces: Dict[str, InterfaceData]):
+    # This writer takes a bare worksheet (no workbook), so it cannot go through _new_sheet; it writes
+    # device text via DIRECT `cell.value = ...`, which only the Cell.value setter guard covers. Install
+    # it here so the protection does not depend on the caller having called harden_workbook. (review #63)
+    _install_cell_value_guard()
     required_cols = [col_map["hostname"], col_map["port"], col_map["status"]]
 
     def row_is_writable(r):
@@ -4297,15 +5019,27 @@ def append_interface_rows(ws, header_row: int, col_map: Dict[str,int],
             if field not in col_map: return
             cell = ws.cell(row=row, column=col_map[field])
             if isinstance(cell, MergedCell): return
-            cell.value = val if val else (cell.value or None)
+            if val:
+                cell.value = val
+            elif field in _HUMAN_OWNED_COLS:
+                cell.value = cell.value or None      # engineer's annotation — the engine never observes it
+            else:
+                # Device-derived and NOT observed this run. Keeping the old value produced rows whose
+                # Hostname/Port/Status were fresh (those three are overwritten unconditionally) while
+                # VLAN / native VLAN / BPDU-guard were the PREVIOUS run's, rendered identically — and
+                # this function is explicitly designed to match pre-existing rows, so re-running against
+                # a filled template is the NORMAL path, not an edge case. (review #88)
+                cell.value = None
 
         def w_po(field, val):
             if field not in col_map: return
             cell = ws.cell(row=row, column=col_map[field])
             if isinstance(cell, MergedCell): return
+            # port_channel is device-derived: an unobserved value clears, exactly like w(). The
+            # trunk-status-word branch is kept for the template shape it documents.
             existing = str(cell.value or "").strip().lower()
             if existing in _TRUNK_STATUS_WORDS: cell.value = val if val else None
-            else: cell.value = val if val else (cell.value or None)
+            else: cell.value = val if val else None
 
         w("switchport_mode",      d.switchport_mode)
         w("vlan",                 d.vlan)

@@ -31,6 +31,21 @@ _FEATURE_MAP = [
 ]
 
 
+def _reported_missing(d: Dict[str, Any], seen: int) -> int:
+    """The device's TRUE missing-directive count, defaulting to what we can see.
+
+    Kept local so this module stays pure-stdlib. Falls back to `seen` on anything non-numeric, so a
+    malformed row can never manufacture a truncation (which would turn every feature on that device
+    not-assessable) nor hide one."""
+    v = d.get("n_missing")
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return seen
+    try:
+        return int(v)
+    except (ValueError, OverflowError):
+        return seen
+
+
 def _feature_of(line: str) -> str:
     s = (line or "").lower().strip()
     if s[:3] == "re:":                      # golden-file 're:<pattern>' requirement -> classify by the pattern body
@@ -57,18 +72,40 @@ def compute_feature_compliance(golden_drift: Dict[str, Any]) -> Dict[str, Any]:
 
     rows: List[dict] = []
     feat_drift: Dict[str, int] = {f: 0 for f in feat_baseline}
+    n_unassessable = 0
     for d in per_device:
         host = d.get("host")
-        missing = set(d.get("missing") or [])
+        missing_list = list(d.get("missing") or [])
+        missing = set(missing_list)
+        # `golden_drift.per_device[].missing` is capped by its PRODUCER (analyze.py stores
+        # `missing[:30]`) while `n_missing` keeps the true count. That cap is a DISPLAY bound, and
+        # this function consumes the field as DATA — so a feature whose missing directives all fall
+        # past the cut has no evidence here and used to be graded "compliant".
+        #
+        # In majority mode the producer's baseline is `sorted(...)`, so the survivors are the
+        # alphabetically-first 30: the loss is not random but SYSTEMATIC, and a late-sorting feature
+        # is dropped on every device over the cap. Measured: a device missing all 5 of its
+        # spanning-tree baseline directives graded `compliant` on spanning-tree because 30 `aaa`
+        # directives sorted ahead of them. That is "not observed" rendered as health, in a
+        # compliance grade (CLAUDE.md guardrail 3).
+        #
+        # Absence of evidence is not compliance: on a truncated device, a feature with nothing
+        # visible is NOT ASSESSABLE. Drift is unaffected — a directive we CAN see is still drift.
+        truncated = len(missing_list) < _reported_missing(d, len(missing_list))
         miss_by_feat: Dict[str, set] = {}
         for m in missing:
             miss_by_feat.setdefault(_feature_of(m), set()).add(m)
         for feat in sorted(feat_baseline):
             base = feat_baseline[feat]
             mm = sorted(m for m in miss_by_feat.get(feat, set()) if m in base)
-            status = "compliant" if not mm else "drift"
-            if status == "drift":
+            if mm:
+                status = "drift"
                 feat_drift[feat] += 1
+            elif truncated:
+                status = "not-assessable"
+                n_unassessable += 1
+            else:
+                status = "compliant"
             rows.append({"host": host, "feature": feat, "n_baseline": len(base),
                          "n_missing": len(mm), "missing": mm[:20], "status": status})
 
@@ -76,5 +113,8 @@ def compute_feature_compliance(golden_drift: Dict[str, Any]) -> Dict[str, Any]:
                 for f in sorted(feat_baseline)]
     features.sort(key=lambda x: (-x["n_drifting"], x["feature"]))
     summary = {"n_features": len(features), "n_rows": len(rows),
-               "n_drift_rows": sum(1 for r in rows if r["status"] == "drift")}
+               "n_drift_rows": sum(1 for r in rows if r["status"] == "drift"),
+               # disclosed, never folded into "compliant": rows on a device whose producer-side
+               # `missing` list was truncated, where this feature had nothing visible to grade
+               "n_unassessable_rows": n_unassessable}
     return {"features": features, "per_device_feature": rows, "summary": summary}

@@ -113,7 +113,6 @@
     "cdp_neighbor": "access1.lab",
     "current_switch_serial": "FCW1234A001",
     "current_switch_ip": "10.0.99.1",
-    "neighbor_switch_serial": "access1.lab",
     "neighbor_switch_ip": "10.0.99.3",
     "stp_fwd_vlans": "10,30",
     "neighbor_port": "Gi0/1",
@@ -171,7 +170,6 @@
     "cdp_neighbor": "core2.lab",
     "current_switch_serial": "FCW1234A001",
     "current_switch_ip": "10.0.99.1",
-    "neighbor_switch_serial": "core2.lab",
     "neighbor_switch_ip": "10.0.99.2",
     "stp_fwd_vlans": "10,30",
     "neighbor_port": "Po1",
@@ -274,7 +272,6 @@
     "cdp_neighbor": "core1.lab",
     "current_switch_serial": "FDO12345ABC",
     "current_switch_ip": "10.0.99.2",
-    "neighbor_switch_serial": "core1.lab",
     "neighbor_switch_ip": "10.0.99.1",
     "stp_fwd_vlans": "10,20",
     "neighbor_port": "Po1",
@@ -314,7 +311,6 @@
     "cdp_neighbor": "wan-edge-rtr1.lab",
     "current_switch_serial": "FDO12345ABC",
     "current_switch_ip": "10.0.99.2",
-    "neighbor_switch_serial": "wan-edge-rtr1.lab",
     "neighbor_switch_ip": "10.0.250.1",
     "neighbor_port": "Gi0/0/1",
     "neighbor_platform": "cisco ASR1001-X"
@@ -326,7 +322,6 @@
     "cdp_neighbor": "SEP00112233AABB",
     "current_switch_serial": "FDO12345ABC",
     "current_switch_ip": "10.0.99.2",
-    "neighbor_switch_serial": "SEP00112233AABB",
     "neighbor_switch_ip": "10.0.40.20",
     "neighbor_port": "Port",
     "neighbor_platform": "Cisco IP Phone 8845"
@@ -339,7 +334,6 @@
     "cdp_neighbor": "AP-floor3-01",
     "current_switch_serial": "FDO12345ABC",
     "current_switch_ip": "10.0.99.2",
-    "neighbor_switch_serial": "AP-floor3-01",
     "neighbor_switch_ip": "10.0.50.30",
     "neighbor_port": "Gi0",
     "neighbor_platform": "cisco AIR-AP2802I-B-K9"
@@ -365,7 +359,6 @@
     "cdp_neighbor": "core1.lab",
     "current_switch_serial": "FOC2233B002",
     "current_switch_ip": "10.0.99.3",
-    "neighbor_switch_serial": "core1.lab",
     "neighbor_switch_ip": "10.0.99.1",
     "stp_fwd_vlans": "10,30",
     "neighbor_port": "Gi1/0/24",
@@ -390,7 +383,6 @@
     "cdp_neighbor": "AP-floor1",
     "current_switch_serial": "FOC2233B002",
     "current_switch_ip": "10.0.99.3",
-    "neighbor_switch_serial": "AP-floor1",
     "neighbor_switch_ip": "10.0.10.50",
     "neighbor_port": "Gi0",
     "neighbor_platform": "cisco AIR-AP2802I"
@@ -463,7 +455,7 @@
    "output_drops": "",
    "port_channel": "",
    "poe": "",
-   "risk": "ok",
+   "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
    "severity": "Info"
   },
   {
@@ -480,7 +472,7 @@
    "output_drops": "",
    "port_channel": "",
    "poe": "",
-   "risk": "ok",
+   "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
    "severity": "Info"
   },
   {
@@ -497,7 +489,7 @@
    "output_drops": "",
    "port_channel": "",
    "poe": "",
-   "risk": "ok",
+   "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
    "severity": "Info"
   },
   {
@@ -514,7 +506,7 @@
    "output_drops": "",
    "port_channel": "Po1",
    "poe": "",
-   "risk": "ok",
+   "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
    "severity": "Info"
   },
   {
@@ -531,7 +523,7 @@
    "output_drops": "",
    "port_channel": "Po1",
    "poe": "",
-   "risk": "ok",
+   "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
    "severity": "Info"
   },
   {
@@ -565,7 +557,7 @@
    "output_drops": "",
    "port_channel": "",
    "poe": "",
-   "risk": "ok",
+   "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
    "severity": "Info"
   },
   {
@@ -616,7 +608,7 @@
    "output_drops": "",
    "port_channel": "Po1",
    "poe": "",
-   "risk": "ok",
+   "risk": "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error rate NOT assessed",
    "severity": "Info"
   },
   {
@@ -683,8 +675,8 @@
    "next_hop": "Vlan10",
    "primary_subnet": "10.0.10.0/24",
    "secondary": "10.0.10.2/32",
-   "tracking": "",
-   "risk": "ok",
+   "tracking": "[NOT OBSERVED]",
+   "risk": "[NOT OBSERVED] - no 'show track' evidence; object tracking NOT assessed",
    "severity": "Info"
   },
   {
@@ -698,8 +690,8 @@
    "next_hop": "Vlan20",
    "primary_subnet": "10.0.20.0/24",
    "secondary": "10.0.20.2/32",
-   "tracking": "",
-   "risk": "ok",
+   "tracking": "[NOT OBSERVED]",
+   "risk": "[NOT OBSERVED] - no 'show track' evidence; object tracking NOT assessed",
    "severity": "Info"
   },
   {
@@ -713,7 +705,7 @@
    "next_hop": "Vlan30",
    "primary_subnet": "10.0.30.0/24",
    "secondary": "10.0.30.1/32",
-   "tracking": "",
+   "tracking": "[NOT OBSERVED]",
    "risk": "single-gateway",
    "severity": "Medium"
   },
@@ -728,8 +720,8 @@
    "next_hop": "Vlan10",
    "primary_subnet": "10.0.10.0/24",
    "secondary": "10.0.10.3/32",
-   "tracking": "",
-   "risk": "ok",
+   "tracking": "[NOT OBSERVED]",
+   "risk": "[NOT OBSERVED] - no 'show track' evidence; object tracking NOT assessed",
    "severity": "Info"
   },
   {
@@ -743,8 +735,8 @@
    "next_hop": "Vlan20",
    "primary_subnet": "10.0.20.0/24",
    "secondary": "10.0.20.3/32",
-   "tracking": "",
-   "risk": "ok",
+   "tracking": "[NOT OBSERVED]",
+   "risk": "[NOT OBSERVED] - no 'show track' evidence; object tracking NOT assessed",
    "severity": "Info"
   }
  ],
@@ -868,42 +860,86 @@
  "service_map": {
   "services": [
    {
-    "port": 22,
-    "proto": "tcp",
-    "service": "SSH",
+    "service": "ssh",
+    "aliases": [],
+    "alias_records": [],
     "category": "Management",
     "broadcast": false,
+    "note": "The Secure Shell (SSH) Protocol",
+    "assignment_source": "iana",
+    "semantics_source": "curated-overlay",
+    "overlay_service": "SSH",
+    "overlay_note": "Secure Shell device admin",
+    "overlay_status": "supplemental",
+    "assignment_authoritative": true,
+    "semantics_authoritative": false,
+    "source_authoritative": false,
     "refs": 2,
+    "port": 22,
+    "proto": "tcp",
     "host_count": 1,
     "evidence_class": "Inferred (ACL design intent -- not active traffic; no flow telemetry)"
    },
    {
-    "port": 443,
-    "proto": "tcp",
-    "service": "HTTPS",
+    "service": "https",
+    "aliases": [],
+    "alias_records": [],
     "category": "Web",
     "broadcast": false,
+    "note": "http protocol over TLS/SSL",
+    "assignment_source": "iana",
+    "semantics_source": "curated-overlay",
+    "overlay_service": "HTTPS",
+    "overlay_note": "TLS web / device GUI / REST/NETCONF-over-TLS",
+    "overlay_status": "supplemental",
+    "assignment_authoritative": true,
+    "semantics_authoritative": false,
+    "source_authoritative": false,
     "refs": 2,
+    "port": 443,
+    "proto": "tcp",
     "host_count": 1,
     "evidence_class": "Inferred (ACL design intent -- not active traffic; no flow telemetry)"
    },
    {
-    "port": 5060,
-    "proto": "udp",
-    "service": "SIP",
+    "service": "sip",
+    "aliases": [],
+    "alias_records": [],
     "category": "Voice",
     "broadcast": false,
+    "note": "SIP",
+    "assignment_source": "iana",
+    "semantics_source": "curated-overlay",
+    "overlay_service": "SIP",
+    "overlay_note": "SIP signalling",
+    "overlay_status": "supplemental",
+    "assignment_authoritative": true,
+    "semantics_authoritative": false,
+    "source_authoritative": false,
     "refs": 1,
+    "port": 5060,
+    "proto": "udp",
     "host_count": 1,
     "evidence_class": "Inferred (ACL design intent -- not active traffic; no flow telemetry)"
    },
    {
-    "port": 16384,
-    "proto": "udp",
     "service": "connected",
+    "aliases": [],
+    "alias_records": [],
     "category": "",
     "broadcast": false,
+    "note": "Connected Corp",
+    "assignment_source": "iana",
+    "semantics_source": "iana",
+    "overlay_service": "",
+    "overlay_note": "",
+    "overlay_status": "none",
+    "assignment_authoritative": true,
+    "semantics_authoritative": true,
+    "source_authoritative": true,
     "refs": 1,
+    "port": 16384,
+    "proto": "udp",
     "host_count": 1,
     "evidence_class": "Inferred (ACL design intent -- not active traffic; no flow telemetry)"
    }
@@ -956,6 +992,8 @@
   "summary": {
    "n_groups": 0,
    "n_av_groups": 0,
+   "n_av_groups_authoritative": 0,
+   "n_unclassified_groups": 0,
    "n_mac_clashes": 0,
    "n_querier_gaps": 0,
    "n_mcast_vlans": 0,
@@ -3014,7 +3052,7 @@
     {
      "check": "Port-channels healthy",
      "status": "pass",
-     "note": "all members bundled / none",
+     "note": "all members bundled",
      "phase": "Baseline capture"
     },
     {
@@ -4968,8 +5006,8 @@
    "nodes": [
     {
      "hostname": "ise-pan-1",
-     "host": "ise-pan-1.[HISTORY-REDACTED].local",
-     "fqdn": "ise-pan-1.[HISTORY-REDACTED].local",
+     "host": "ise-pan-1.example.net",
+     "fqdn": "ise-pan-1.example.net",
      "roles": [
       "PrimaryAdmin",
       "PrimaryMonitoring"
@@ -4987,8 +5025,8 @@
     },
     {
      "hostname": "ise-psn-2",
-     "host": "ise-psn-2.[HISTORY-REDACTED].local",
-     "fqdn": "ise-psn-2.[HISTORY-REDACTED].local",
+     "host": "ise-psn-2.example.net",
+     "fqdn": "ise-psn-2.example.net",
      "roles": [],
      "services": [],
      "node_status": "Disconnected",
@@ -5005,7 +5043,7 @@
   "core1": {
    "devices": [
     {
-     "name": "[HISTORY-REDACTED]-FTD-01",
+     "name": "MERIDIAN-FTD-01",
      "host_name": "10.9.9.1",
      "model": "FTDv",
      "sw_version": "7.2.5",
@@ -5014,7 +5052,7 @@
      "deployment_status": "DEPLOYED"
     },
     {
-     "name": "[HISTORY-REDACTED]-FTD-99",
+     "name": "MERIDIAN-FTD-99",
      "host_name": "10.9.9.99",
      "model": "FTDv",
      "sw_version": "7.2.5",
@@ -5025,14 +5063,14 @@
    ],
    "ha_pairs": [
     {
-     "name": "[HISTORY-REDACTED]-FTD-HA-Edge",
+     "name": "MERIDIAN-FTD-HA-Edge",
      "primary_status": "Active",
      "secondary_status": "Failed"
     }
    ],
    "deployable": [
     {
-     "name": "[HISTORY-REDACTED]-FTD-03",
+     "name": "MERIDIAN-FTD-03",
      "can_be_deployed": true,
      "up_to_date": false
     }
@@ -6397,39 +6435,12 @@
   "summary": {
    "n_features": 0,
    "n_rows": 0,
-   "n_drift_rows": 0
+   "n_drift_rows": 0,
+   "n_unassessable_rows": 0
   }
  },
  "acl_line_reachability": {
   "findings": [
-   {
-    "line_index": 0,
-    "action": "permit",
-    "raw": "permit tcp object-group MGMT_HOSTS any eq 22",
-    "reason": "INDETERMINATE",
-    "verdict": "indeterminate",
-    "blocking_lines": [],
-    "different_action": false,
-    "detail": "unparseable address/port (e.g. non-contiguous wildcard)",
-    "host": "core1",
-    "acl": "MGMT_IN",
-    "source_command": "show running-config",
-    "citation": "acls.core1.MGMT_IN[0]"
-   },
-   {
-    "line_index": 1,
-    "action": "deny",
-    "raw": "deny ip any any",
-    "reason": "INDETERMINATE",
-    "verdict": "indeterminate",
-    "blocking_lines": [],
-    "different_action": false,
-    "detail": "an earlier unevaluable line may overlap \u2014 cannot prove reachable or dead",
-    "host": "core1",
-    "acl": "MGMT_IN",
-    "source_command": "show running-config",
-    "citation": "acls.core1.MGMT_IN[1]"
-   },
    {
     "line_index": 0,
     "action": "permit",
@@ -6474,11 +6485,11 @@
    }
   ],
   "summary": {
-   "n_findings": 5,
+   "n_findings": 3,
    "n_shadowed": 0,
    "n_different_action": 0,
    "n_unmatchable": 0,
-   "n_indeterminate": 5,
+   "n_indeterminate": 3,
    "n_bad_reference": 0
   }
  },
@@ -6507,6 +6518,7 @@
    "n_error": 0,
    "n_empty": 0,
    "n_unverified_prompt": 0,
+   "n_unreadable": 0,
    "n_hosts_affected": 2
   }
  },
@@ -6515,15 +6527,15 @@
   "claims": [
    {
     "id": "read_only_command_surface",
-    "method": "re-derive over every COMMANDS_* registry of the collector: each command must match the read-only grammar (show/display/get/dir/ping/moquery | aws ec2 describe- | api|ers|dataservice REST GET paths)",
+    "method": "re-derive over every COMMANDS_* registry of the collector: the WHOLE of each command must be read-only \u2014 a read verb (show/display/get/dir/ping/moquery | aws ec2 describe- | api|ers|dataservice REST GET paths) AND no way to chain, redirect or substitute a second command out of it (no CR/LF ; & ` $ > < \\, and every pipe stage an output filter, never redirect/tee/append or a URL sink)",
     "result": "HOLDS",
     "detail": "all 285 registry commands across 7 COMMANDS_* registries match the read-only grammar"
    },
    {
     "id": "no_egress_import_graph",
-    "method": "AST import-walk (any nesting depth, lazy imports included) over the analysis package for network libraries; charter exclusion: rest_collect.py (the opt-in REST collector, covered by its own GET-only claim); documented dev-only exception: gen_port_registry.py (data-pack generator, not pipeline-reachable)",
+    "method": "RECURSIVE AST import-walk (every subpackage, any nesting depth, lazy imports included) over the analysis package for network libraries; charter exclusion(s): rest_collect.py (the opt-in REST collector is covered by its own GET-only claim); documented exception(s), subtracted AFTER the scan and named in the result: none \u2014 the package is clean without subtracting anything",
     "result": "HOLDS",
-    "detail": "0 network-library imports across 68 analysis modules (excluded by charter: rest_collect.py; documented exception: gen_port_registry.py)"
+    "detail": "0 unexplained network-library imports across 72 analysis modules (recursive walk; excluded by charter: rest_collect.py; no documented exception was needed)"
    },
    {
     "id": "rest_collect_get_only",
@@ -6535,7 +6547,7 @@
     "id": "no_llm_runtime",
     "method": "AST import-walk over the analysis package (rest_collect.py included) + the collector entry module for LLM/GenAI SDK imports \u2014 the pipeline is deterministic and air-gapped, no model call at runtime",
     "result": "HOLDS",
-    "detail": "0 LLM/GenAI SDK imports across 70 modules (analysis package + collector entry)"
+    "detail": "0 LLM/GenAI SDK imports across 74 modules (analysis package + collector entry)"
    }
   ]
  },
@@ -8033,6 +8045,95 @@
    "rollback_owner": ""
   }
  ],
+ "data_authorities": {
+  "oui": {
+   "status": "verified-authoritative",
+   "integrity_verified": true,
+   "source_authoritative": true,
+   "authoritative": true,
+   "path": "oui_registry.tsv.gz",
+   "error": "",
+   "row_count": 53486,
+   "compressed_sha256": "2120d5ca8a07cd320d480c6b5bcb5cd810c877cb70a5c949e2d635891e48a51a",
+   "provenance_status": "generated-from-retained-ieee-primary-sources",
+   "build_provenance_verified": true,
+   "retained_source_bytes_verified": true,
+   "official_sources_available": true,
+   "source_retrieved_at": "2026-07-30T12:47:53Z",
+   "source_max_age_days": 180,
+   "source_max_future_skew_seconds": 300,
+   "source_future_dated": false,
+   "source_stale": false,
+   "source_fresh": true,
+   "freshness_status": "fresh"
+  },
+  "ports": {
+   "status": "integrity-verified-mixed-authority",
+   "integrity_verified": true,
+   "source_authoritative": false,
+   "official_source_authoritative": true,
+   "curated_overlay_authoritative": false,
+   "curated_multicast_authoritative": false,
+   "authoritative": false,
+   "path": "port_registry.tsv.gz",
+   "error": "pack contains non-authoritative curated overlay and multicast semantics",
+   "authority_note": "IANA assignments are source-authoritative; curated overlay and multicast semantics are explicitly non-authoritative",
+   "row_count": 12373,
+   "port_count": 12352,
+   "multicast_count": 21,
+   "iana_assignment_count": 12341,
+   "iana_alias_record_count": 232,
+   "iana_duplicate_key_count": 226,
+   "overlay_enriched_iana_count": 69,
+   "overlay_only_port_count": 11,
+   "overlay_conflict_count": 3,
+   "source_authoritative_record_count": 12272,
+   "mixed_authority_record_count": 69,
+   "curated_only_record_count": 32,
+   "compressed_sha256": "3fcfa1c38e5cb7b7acf6a740f75214a3c8bfa000cb7df422593682045dea8519",
+   "provenance_status": "generated-from-retained-iana-primary-source",
+   "build_provenance_verified": true,
+   "retained_source_bytes_verified": true,
+   "official_sources_available": true,
+   "source_retrieved_at": "2026-07-30T12:47:53Z",
+   "source_max_age_days": 180,
+   "source_max_future_skew_seconds": 300,
+   "source_future_dated": false,
+   "source_stale": false,
+   "source_fresh": true,
+   "freshness_status": "fresh"
+  },
+  "eol": {
+   "status": "verified-authoritative",
+   "integrity_verified": true,
+   "integrity_scope": "retained-fixture-sha256-plus-exact-runtime-semantic-binding",
+   "schema_verified": true,
+   "build_provenance_verified": true,
+   "retained_source_bytes_verified": true,
+   "source_authoritative": true,
+   "authoritative": true,
+   "path": "eoldb.py",
+   "fixture_path": "reference-data/official-sources/cisco/eol-bulletins.json",
+   "fixture_sha256": "7683b29e66d3e5b39d89407e60a5f08ffbf8ef9f19ab029279ffc9d0861349c3",
+   "semantic_sha256": "dbbd00ce46789baeb62fee6abf56fbd366ca51d190d33c63603093cb61d2af5b",
+   "reviewed_at": "2026-07-30",
+   "row_count": 44,
+   "bulletin_count": 17,
+   "exact_url_count": 17,
+   "bulletin_cited_rows": 44,
+   "fixture_bound_rows": 44,
+   "unresolved_reference_rows": 0,
+   "active_unresolved_rows": 0,
+   "error": "",
+   "source_retrieved_at": "2026-07-30T13:48:46Z",
+   "source_max_age_days": 180,
+   "source_max_future_skew_seconds": 300,
+   "source_future_dated": false,
+   "source_stale": false,
+   "source_fresh": true,
+   "freshness_status": "fresh"
+  }
+ },
  "architecture_review": {
   "domains": [
    {
@@ -8109,8 +8210,8 @@
    },
    {
     "key": "Lifecycle & software",
-    "verdict": "deviation",
-    "score_pct": 68,
+    "verdict": "critical",
+    "score_pct": 50,
     "checks": [
      "LC-1",
      "LC-2"
@@ -8388,7 +8489,7 @@
     "domain": "Security & segmentation",
     "title": "Segmentation enforced at the L3 boundary",
     "verdict": "advisory",
-    "observed": "1 VRF(s) in use; 2 of 5 gateway SVIs carry an ACL.",
+    "observed": "1 VRF(s) carry a gateway SVI; 2 of 5 gateway SVIs carry an ACL.",
     "implication": "Partial enforcement leaves unpoliced inter-segment paths.",
     "recommendation": "Close the unpoliced SVIs (or fold them into a VRF) in the target design.",
     "reference": "Segmentation guidance \u2014 enforce inter-segment policy at the L3 boundary (VRF / gateway ACL)",
@@ -8398,13 +8499,14 @@
     "id": "LC-1",
     "domain": "Lifecycle & software",
     "title": "No hardware past end-of-support",
-    "verdict": "deviation",
-    "observed": "1 device(s) past end-of-sale, 1 approaching LDoS.",
-    "implication": "Support windows are closing; replacement lead times belong in the plan now.",
-    "recommendation": "Schedule the EoS platforms into the early waves of the replacement plan.",
+    "verdict": "critical",
+    "observed": "1 device(s) are past LAST-DAY-OF-SUPPORT (and 1 more past end-of-sale): access1, core1. Separately, 1 device(s) could NOT be lifecycle-banded \u2014 no EoX bulletin in the offline KB covers their platform, so their support state is UNKNOWN, never determined, and this check is unanswered for them.",
+    "implication": "Past LDoS there is NO TAC escalation path and no software fix \u2014 a fault during a migration window on these devices has no vendor backstop. The undetermined device(s) carry no evidence of vendor support in either direction; absent lifecycle data is not a pass, and a plan that assumes it is may stage a platform with no TAC path into a change window.",
+    "recommendation": "Replace (not upgrade) the LDoS devices as the first migration waves; stage spares for any that must briefly remain. Resolve every undetermined platform against Cisco's EoX portal and re-run, or record them as an accepted risk in the engagement RAID log.",
     "reference": "Cisco EoX policy \u2014 no TAC/software support past last-day-of-support",
     "evidence": [
-     "access1"
+     "access1",
+     "core1"
     ]
    },
    {
@@ -8422,6 +8524,17 @@
   "top_actions": [
    {
     "rank": 1,
+    "id": "LC-1",
+    "domain": "Lifecycle & software",
+    "verdict": "critical",
+    "action": "Replace (not upgrade) the LDoS devices as the first migration waves; stage spares for any that must briefly remain. Resolve every undetermined platform against Cisco's EoX portal and re-run, or record them as an accepted risk in the engagement RAID log.",
+    "evidence": [
+     "access1",
+     "core1"
+    ]
+   },
+   {
+    "rank": 2,
     "id": "RES-2",
     "domain": "Resiliency & availability",
     "verdict": "critical",
@@ -8431,21 +8544,11 @@
     ]
    },
    {
-    "rank": 2,
+    "rank": 3,
     "id": "L2-1",
     "domain": "Layer-2 design",
     "verdict": "deviation",
     "action": "Pin root primary/secondary priorities on the distribution pair for every VLAN.",
-    "evidence": [
-     "access1"
-    ]
-   },
-   {
-    "rank": 3,
-    "id": "LC-1",
-    "domain": "Lifecycle & software",
-    "verdict": "deviation",
-    "action": "Schedule the EoS platforms into the early waves of the replacement plan.",
     "evidence": [
      "access1"
     ]
@@ -8528,13 +8631,13 @@
    "n_assessable": 22,
    "n_conforms": 8,
    "n_advisory": 9,
-   "n_deviation": 4,
-   "n_critical": 1,
+   "n_deviation": 3,
+   "n_critical": 2,
    "n_not_assessable": 3,
-   "score_pct": 71,
+   "score_pct": 70,
    "grade": "C",
    "grade_label": "Material deviations",
-   "statement": "Architecture conformance grade C (71%) \u2014 Material deviations. 8 of 22 assessable checks conform to leading practice; 1 critical and 4 material deviation(s) require remediation, concentrated in: Resiliency & availability, Layer-2 design, Security & segmentation, Lifecycle & software. 3 check(s) were not assessable from this snapshot and are listed in the review scope."
+   "statement": "Architecture conformance grade C (70%) \u2014 Material deviations. 8 of 22 assessable checks conform to leading practice; 2 critical and 3 material deviation(s) require remediation, concentrated in: Resiliency & availability, Layer-2 design, Security & segmentation, Lifecycle & software. 3 check(s) were not assessable from this snapshot and are listed in the review scope."
   }
  },
  "schema_census": {
@@ -8634,7 +8737,7 @@
    {
     "key": "lifecycle_risk",
     "state": "published",
-    "count": 5,
+    "count": 6,
     "kind": "dict",
     "note": "seen \u2014 collected and non-empty"
    },
@@ -9192,6 +9295,13 @@
     "note": "seen \u2014 collected and non-empty"
    },
    {
+    "key": "data_authorities",
+    "state": "published",
+    "count": 3,
+    "kind": "dict",
+    "note": "seen \u2014 collected and non-empty"
+   },
+   {
     "key": "device_dossiers",
     "state": "published",
     "count": 3,
@@ -9249,10 +9359,10 @@
    }
   ],
   "summary": {
-   "n_published": 93,
+   "n_published": 94,
    "n_collected_but_empty": 8,
    "n_not_collected": 0,
-   "n_sections": 101
+   "n_sections": 102
   }
  }
 }

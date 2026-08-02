@@ -19,12 +19,12 @@ def test_provenance_section_renders_when_supplied():
         wb, _HS, [], [], [],
         provenance={"script_version": "V3.23.0",
                     "generated_at": "2026-07-11T18:30:00.123456",
-                    "snapshot": "[HISTORY-REDACTED]_Assessment"})
+                    "snapshot": "MERIDIAN_Assessment"})
     cells = _cells(wb[EXEC_SUMMARY_SHEET_NAME])
     assert "Document control" in cells
     assert "V3.23.0" in cells
     assert "2026-07-11 18:30:00" in cells        # ISO 'T' -> space, trimmed to seconds
-    assert "[HISTORY-REDACTED]_Assessment" in cells
+    assert "MERIDIAN_Assessment" in cells
 
 
 def test_absent_fields_are_omitted_not_fabricated():

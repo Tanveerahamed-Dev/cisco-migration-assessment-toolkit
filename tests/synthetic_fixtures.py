@@ -256,7 +256,7 @@ Vl10        10   110 P Active   local           10.0.10.3       10.0.10.1
 Vl20        20   100   Standby  10.0.20.3       local           10.0.20.1
 """,
     # FHRP DETAIL (universality): the active Vl10 gateway has preempt but NO interface tracking -- the
-    # classic gap _d_fhrp_resilience now catches. [HISTORY-REDACTED] ran zero FHRP, so this fixture is the first to prove
+    # classic gap _d_fhrp_resilience now catches. Meridian ran zero FHRP, so this fixture is the first to prove
     # the engine ASSESSES first-hop redundancy end-to-end.
     "show standby all": """\
 Vlan10 - Group 10
@@ -581,32 +581,32 @@ Conns [rate]           62      984         N/A            0   System
     "api/v1/deployment/node": """\
 {
   "response": [
-    {"hostname": "ise-pan-1", "fqdn": "ise-pan-1.[HISTORY-REDACTED].local", "roles": ["PrimaryAdmin", "PrimaryMonitoring"], "services": ["Session", "Profiler"], "nodeStatus": "Connected"},
-    {"hostname": "ise-psn-2", "fqdn": "ise-psn-2.[HISTORY-REDACTED].local", "roles": [], "services": [], "nodeStatus": "Disconnected"}
+    {"hostname": "ise-pan-1", "fqdn": "ise-pan-1.example.net", "roles": ["PrimaryAdmin", "PrimaryMonitoring"], "services": ["Session", "Profiler"], "nodeStatus": "Connected"},
+    {"hostname": "ise-psn-2", "fqdn": "ise-psn-2.example.net", "roles": [], "services": [], "nodeStatus": "Disconnected"}
   ],
   "version": "1.0.0"
 }
 """,
     # Cisco Secure Firewall Mgmt Center (FMC, universality, JSON channel): core1 stands in as the FMC query
-    # host. devicerecords has [HISTORY-REDACTED]-FTD-99 isConnected=false+red -> _d_fmc_device_disconnected; ftddevicehapairs
+    # host. devicerecords has MERIDIAN-FTD-99 isConnected=false+red -> _d_fmc_device_disconnected; ftddevicehapairs
     # has a Failed secondary -> _d_ftd_ha_degraded; deployabledevices is non-empty -> _d_fmc_deployment_pending;
     # fmchastatuses overallStatus DEGRADED -> _d_fmc_manager_ha_degraded (real FMCHAStatus schema: overallStatus
     # /syncStatus, healthy value 'GOOD'; a transient IN_PROGRESS sync or 'Disabled' HA stays silent -- proved in
     # tests/test_fmc.py.) List endpoints wrap rows in {"items":[...]}.
     "api/fmc_config/v1/devices/devicerecords": """\
 {"items": [
-  {"name": "[HISTORY-REDACTED]-FTD-01", "hostName": "10.9.9.1", "model": "FTDv", "sw_version": "7.2.5", "isConnected": true, "healthStatus": "green", "deploymentStatus": "DEPLOYED"},
-  {"name": "[HISTORY-REDACTED]-FTD-99", "hostName": "10.9.9.99", "model": "FTDv", "sw_version": "7.2.5", "isConnected": false, "healthStatus": "red", "deploymentStatus": "WARNING"}
+  {"name": "MERIDIAN-FTD-01", "hostName": "10.9.9.1", "model": "FTDv", "sw_version": "7.2.5", "isConnected": true, "healthStatus": "green", "deploymentStatus": "DEPLOYED"},
+  {"name": "MERIDIAN-FTD-99", "hostName": "10.9.9.99", "model": "FTDv", "sw_version": "7.2.5", "isConnected": false, "healthStatus": "red", "deploymentStatus": "WARNING"}
 ], "paging": {"count": 2}}
 """,
     "api/fmc_config/v1/devicehapairs/ftddevicehapairs": """\
 {"items": [
-  {"name": "[HISTORY-REDACTED]-FTD-HA-Edge", "primaryStatus": {"currentStatus": "Active"}, "secondaryStatus": {"currentStatus": "Failed"}}
+  {"name": "MERIDIAN-FTD-HA-Edge", "primaryStatus": {"currentStatus": "Active"}, "secondaryStatus": {"currentStatus": "Failed"}}
 ], "paging": {"count": 1}}
 """,
     "api/fmc_config/v1/deployment/deployabledevices": """\
 {"items": [
-  {"name": "[HISTORY-REDACTED]-FTD-03", "canBeDeployed": true, "upToDate": false, "device": {"name": "[HISTORY-REDACTED]-FTD-03"}}
+  {"name": "MERIDIAN-FTD-03", "canBeDeployed": true, "upToDate": false, "device": {"name": "MERIDIAN-FTD-03"}}
 ], "paging": {"count": 1}}
 """,
     "api/fmc_config/v1/integration/fmchastatuses": """\

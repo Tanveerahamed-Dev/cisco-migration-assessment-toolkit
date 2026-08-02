@@ -80,8 +80,15 @@ Phase 3+). Scope is a P0 interview question — never silently narrow
    implementation of any kind.
 5. VERIFY BEFORE TRUSTING — including this prompt. Reconcile every KNOWN
    STATE bullet and every prior plan document against code before
-   building on it. Prior art to reconcile — the repo's EIGHT plan
-   documents plus three ADRs: docs/MASTER_PLAN_2026-07-05.md,
+   building on it. Prior art to reconcile — ENUMERATE IT LIVE (`docs/*plan*.md`
+   plus every ADR in `docs/decisions/`); the list below is a 2026-07-10 seed,
+   not the owner, and it has already drifted: ADRs 0004 (Atlas), 0005 (Cognee
+   — a REJECT decision squarely inside this command's default brain-layer
+   scope) and 0006 landed after it, as did this command's own prior output.
+   The newest docs/architect-master-plan-<DATE>.md is the plan a re-run
+   supersedes — skip it and you are plan #9 by a different route. Seed: the
+   repo's then-EIGHT plan documents plus three ADRs —
+   docs/MASTER_PLAN_2026-07-05.md,
    docs/deliverable-excellence-plan.md,
    docs/autonomous-brain-plan-v4-final-2026-07-06.md,
    docs/autonomous-brain-plan-v3-validation-2026-07-06.md,
@@ -282,7 +289,8 @@ H — ENGINE & DELIVERABLES (only when scope includes the engine):
     docs/parser-format-fidelity.md), _ARCH_COVERAGE_REGISTRY vs its
     SSOT guards, deliverable-generator surface, webapp test posture.
 R — RECONCILIATION (worker, not a layer): executes Operating Rule 5 —
-    reads the eight prior plan documents + ADRs 0001–0003 and returns
+    reads the prior plan documents + every ADR, enumerated live per that
+    rule rather than taken from its seed list, and returns
     the KNOWN-STATE RECONCILIATION table plus the raw material for
     Stage B's PRIOR-PLAN DISPOSITION.
 
@@ -333,8 +341,10 @@ questions; the human gate is doctrine 7.
    HIGH / MEDIUM / LOW.
 
 3. PRIOR-PLAN DISPOSITION
-   The repo already carries eight plan documents (Operating Rule 5
-   lists them). For each: ABSORBED (folded into this plan, cite where) /
+   The repo already carries a stack of plan documents (Operating Rule 5
+   says how to enumerate them — live, not from its seed list, and
+   including this command's own prior master plan). For each: ABSORBED
+   (folded into this plan, cite where) /
    SUPERSEDED (say why) / STILL-AUTHORITATIVE (this plan defers to it,
    cite the boundary). A master plan that skips this step is just
    plan #9.
@@ -456,7 +466,12 @@ questions; the human gate is doctrine 7.
    reconciled to one source, no hallucinated state, upstream gate
    inputs exist). Close the loop per qa.md: save the reviewer's
    VERBATIM verdict to a UTF-8 file and record it with
-   `python -m cisco_toolkit.scorecard --record <file>` — then CONFIRM
+   `python -m cisco_toolkit.scorecard --record <file> --authored-by main
+   --reviewed-by deliverable-qa-reviewer` — the provenance pair is NOT
+   optional here even though the CLI tolerates its absence: unstamped,
+   the row carries no independence evidence and its APPROVE is
+   machine-marked provisional, so the doctrine-3 claim this section
+   exists to make lands unrecorded. Then CONFIRM
    the row actually landed: --record parses a per-artifact verdict
    signature and records NOTHING without it; if the console shows
    nothing recorded, have the reviewer re-emit explicit per-artifact

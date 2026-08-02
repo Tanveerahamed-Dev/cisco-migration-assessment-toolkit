@@ -29,13 +29,18 @@ AND ``--expect-root``, the two checks that exist to answer "is this the workbook
 verification says so explicitly rather than implying coverage it cannot check.
 
 Auditor surface: ``python -m cisco_toolkit.manifest verify <run_manifest.json>`` (exit 0 clean / 4
-broken), and on a Python-less stick the same check is ``Atlas.exe --verify-manifest <path>``.
+broken). It verifies the listed artifact bytes beside the manifest by default; ``--metadata-only`` is
+the explicit opt-out for a deliberately separated manifest. Provenance, input/evidence records,
+abstentions and redaction metadata are committed through :data:`SEAL_METADATA`, not loose claims
+outside the root. On a Python-less stick the same check is ``Atlas.exe --verify-manifest <path>``.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import stat
+import unicodedata
 from typing import Any, Dict, List, Optional, Tuple
 
 GENESIS = "0" * 64
@@ -46,12 +51,24 @@ _RESERVED = ("seq", "prev_sha256", "sha256")
 #: :func:`verify_file` says so rather than implying coverage it cannot check.
 SEAL_ARTIFACTS = "seal_artifacts"
 
+#: Stage name of the synthesized row that seals every provenance/coverage metadata field. Metadata
+#: used to be copied into loose top-level keys where it could be edited without changing chain_root.
+SEAL_METADATA = "seal_metadata"
+
+#: Version of the manifest envelope (independent of the assessment snapshot schema version).
+MANIFEST_FORMAT = 2
+
 #: Windows reserved device names. ``open("NUL")`` succeeds on Windows and reads as an empty file,
 #: so an artifact named NUL whose sealed digest is the (publicly known) sha256 of b"" verified
 #: "ok" from an EMPTY folder. Names are matched on the stem, case-insensitively.
 _WIN_DEVICES = frozenset(
     ["CON", "PRN", "AUX", "NUL"]
     + [f"COM{i}" for i in range(1, 10)] + [f"LPT{i}" for i in range(1, 10)])
+_MAX_MANIFEST_BYTES = 16 * 1024 * 1024
+_MAX_CHAIN_ROWS = 10_000
+_MAX_ARTIFACTS = 4_096
+_MAX_ARTIFACT_BYTES = 4 * 1024 * 1024 * 1024
+_HASH_CHUNK_BYTES = 1024 * 1024
 
 
 def _canon(obj: Any) -> str:
@@ -121,29 +138,136 @@ def artifact_sha256(data: bytes) -> str:
     return hashlib.sha256(data or b"").hexdigest()
 
 
-def build_manifest(meta: Dict[str, Any], artifacts: Dict[str, str], steps: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Assemble the run manifest: provenance metadata + per-artifact sha256 + the sealed step chain.
+def _is_sha256_digest(value: Any) -> bool:
+    """Canonical lowercase SHA-256 without accepting lookalike/partial digests."""
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and value == value.lower()
+        and all(ch in "0123456789abcdef" for ch in value)
+    )
 
-    `meta` carries schema_version / generated_at / collected_at / devices_file_sha256 / abstention_ledger;
-    `artifacts` is {name: sha256}; `steps` is the ordered pipeline ledger. `chain_root` is the final hash,
-    a single value that seals the entire run."""
-    meta = meta or {}
-    rows = [{"name": n, "sha256": s} for n, s in sorted((artifacts or {}).items())]
-    # Seal the per-artifact DIGESTS into the chain, not just alongside it. Before this, `artifacts`
-    # sat entirely outside `chain`/`chain_root` (the pipeline's own steps carry artifact NAMES only),
-    # so swapping a delivered workbook and updating its sha256 in this list left chain_root
-    # untouched — and BOTH `verify --artifacts` and `--expect-root` reported clean. A
-    # chain-of-custody seal whose whole purpose is "is this the workbook that was sealed?" cannot
-    # leave the answer unsealed. `verify_file` cross-checks the two copies (:func:`_sealed_artifacts`).
-    chain = hash_chain(list(steps or []) + [{"stage": SEAL_ARTIFACTS, "artifacts": rows}])
+
+def _is_reparse(st: os.stat_result) -> bool:
+    marker = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return bool(marker and getattr(st, "st_file_attributes", 0) & marker)
+
+
+def _open_regular_no_follow(path: str):
+    """Open a regular file while refusing final-component links/reparse points.
+
+    ``O_NOFOLLOW`` closes the final-component race on platforms that expose it.  Windows does not
+    expose that flag through :mod:`os`, so the reparse attribute and file identity are checked both
+    before and after opening; the verifier never follows a link that was already present.
+    """
+    before = os.lstat(path)
+    if stat.S_ISLNK(before.st_mode) or _is_reparse(before) or not stat.S_ISREG(before.st_mode):
+        raise ValueError("path is not a regular non-link file")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    try:
+        opened = os.fstat(fd)
+        after = os.lstat(path)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or _is_reparse(opened)
+            or stat.S_ISLNK(after.st_mode)
+            or _is_reparse(after)
+            or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+            or (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino)
+        ):
+            raise ValueError("file identity changed or resolves through a link/reparse point")
+        return os.fdopen(fd, "rb")
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _stream_file_sha256(path: str, *, max_bytes: int) -> Tuple[str, int]:
+    st = os.lstat(path)
+    if st.st_size > max_bytes:
+        raise OverflowError(f"file is {st.st_size} bytes; limit is {max_bytes}")
+    digest = hashlib.sha256()
+    total = 0
+    with _open_regular_no_follow(path) as handle:
+        while True:
+            chunk = handle.read(_HASH_CHUNK_BYTES)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                raise OverflowError(f"file exceeds the {max_bytes}-byte verification limit")
+            digest.update(chunk)
+    return digest.hexdigest(), total
+
+
+def _strict_manifest_json(raw: bytes) -> Any:
+    def object_pairs(pairs):
+        out = {}
+        for key, value in pairs:
+            if key in out:
+                raise ValueError(f"duplicate JSON key {key!r}")
+            out[key] = value
+        return out
+
+    def reject_constant(value):
+        raise ValueError(f"non-standard JSON constant {value}")
+
+    return json.loads(
+        raw.decode("utf-8-sig"),
+        object_pairs_hook=object_pairs,
+        parse_constant=reject_constant,
+    )
+
+
+def _json_value(value: Any) -> Any:
+    """Return the deterministic JSON value actually committed to the chain."""
+    return json.loads(_canon(value))
+
+
+def _artifact_rows(artifacts: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Normalize legacy and rich artifact mappings into sealed rows."""
+    rows: List[Dict[str, Any]] = []
+    for name, value in sorted((artifacts or {}).items()):
+        if isinstance(value, dict):
+            row = {str(k): _json_value(v) for k, v in value.items() if k != "name"}
+            row = {"name": str(name), **row}
+        else:
+            row = {"name": str(name), "sha256": str(value)}
+        rows.append(row)
+    return rows
+
+
+def build_manifest(meta: Dict[str, Any], artifacts: Dict[str, Any],
+                   steps: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Assemble a manifest whose root commits to every custody claim.
+
+    ``meta`` is open-ended: input hashes, raw-evidence records, abstentions, redaction provenance
+    and future fields are preserved rather than silently dropped. ``artifacts`` accepts the legacy
+    ``{name: sha256}`` shape or rich per-file records containing size/kind/source.
+    """
+    metadata = _json_value(meta or {})
+    if not isinstance(metadata, dict):
+        raise TypeError("manifest metadata must be an object")
+    metadata.setdefault("tool", "cisco-assess")
+    metadata["manifest_format"] = MANIFEST_FORMAT
+    rows = _artifact_rows(artifacts)
+    chain = hash_chain(list(steps or []) + [
+        {"stage": SEAL_METADATA, "metadata": metadata},
+        {"stage": SEAL_ARTIFACTS, "artifacts": rows},
+    ])
+    # Historic headline keys remain compatibility caches. ``metadata`` is the complete authoritative
+    # copy and verify_file rejects any cache which disagrees with it.
     return {
-        "tool": meta.get("tool", "cisco-assess"),
-        "schema_version": meta.get("schema_version"),
-        "generated_at": meta.get("generated_at"),
-        "collected_at": meta.get("collected_at"),
-        "devices_file_sha256": meta.get("devices_file_sha256"),
+        "manifest_format": MANIFEST_FORMAT,
+        "tool": metadata.get("tool"),
+        "schema_version": metadata.get("schema_version"),
+        "generated_at": metadata.get("generated_at"),
+        "collected_at": metadata.get("collected_at"),
+        "devices_file_sha256": metadata.get("devices_file_sha256"),
+        "abstention_ledger": metadata.get("abstention_ledger") or {},
+        "metadata": metadata,
         "artifacts": rows,
-        "abstention_ledger": meta.get("abstention_ledger") or {},
         "chain": chain,
         "chain_root": chain[-1]["sha256"] if chain else GENESIS,
     }
@@ -163,9 +287,12 @@ def _is_confined(name: str) -> bool:
         return False
     if ":" in name or name.startswith(("/", "\\", "~")):        # drive-qualified, absolute or UNC
         return False
-    if "\x00" in name:
-        # open() raises ValueError (NOT OSError) on an embedded NUL, which the caller's
-        # `except OSError` would not catch — a corrupted JSON string crashed the auditor's CLI.
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
+        # Embedded NUL raises ValueError (not OSError); other controls make file/audit names
+        # ambiguous, so all are refused before a filesystem call.
+        return False
+    if name.rstrip(". ") != name:
+        # Windows silently strips these suffixes while opening, creating an alias.
         return False
     if name.split(".")[0].strip().upper() in _WIN_DEVICES:
         # Not a path escape, but not a file either: on Windows these open successfully and read
@@ -176,6 +303,11 @@ def _is_confined(name: str) -> bool:
     return len(parts) == 1 and parts[0] not in ("", ".", "..")
 
 
+def _portable_artifact_name_key(name: str) -> str:
+    """The most collision-prone portable spelling of an artifact basename."""
+    return unicodedata.normalize("NFKC", str(name)).rstrip(". ").casefold()
+
+
 def _sealed_artifacts(chain: List[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
     """The artifact digests sealed INSIDE the chain, or ``None`` for a manifest sealed before
     :data:`SEAL_ARTIFACTS` existed (absence is reported, never treated as agreement)."""
@@ -183,6 +315,15 @@ def _sealed_artifacts(chain: List[Dict[str, Any]]) -> Optional[List[Dict[str, An
         if isinstance(row, dict) and row.get("stage") == SEAL_ARTIFACTS:
             got = row.get("artifacts")
             return got if isinstance(got, list) else []
+    return None
+
+
+def _sealed_metadata(chain: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The complete metadata object sealed inside the chain, or ``None`` for a legacy manifest."""
+    for row in reversed(chain):
+        if isinstance(row, dict) and row.get("stage") == SEAL_METADATA:
+            got = row.get("metadata")
+            return got if isinstance(got, dict) else {}
     return None
 
 
@@ -200,6 +341,8 @@ def _structural_problem(man: Dict[str, Any]) -> Optional[str]:
         return f"'chain' is {type(chain).__name__}, not a list of steps — this is not a manifest"
     if not chain:
         return "carries no chain — there is nothing sealed here to verify"
+    if len(chain) > _MAX_CHAIN_ROWS:
+        return f"carries {len(chain)} chain rows; limit is {_MAX_CHAIN_ROWS}"
     bad = [i for i, row in enumerate(chain) if not isinstance(row, dict)]
     if bad:
         return (f"{len(bad)} chain row(s) are not objects (first at index {bad[0]}, "
@@ -215,15 +358,32 @@ def _structural_problem(man: Dict[str, Any]) -> Optional[str]:
     if arts is not None and not isinstance(arts, list):
         return f"'artifacts' is {type(arts).__name__}, not a list"
     if isinstance(arts, list):
+        if len(arts) > _MAX_ARTIFACTS:
+            return f"carries {len(arts)} artifacts; limit is {_MAX_ARTIFACTS}"
         bad_a = [i for i, a in enumerate(arts) if not isinstance(a, dict)]
         if bad_a:
             return (f"{len(bad_a)} artifact entr(ies) are not objects (first at index {bad_a[0]}) "
                     f"— the artifact list is malformed")
+        names = [
+            str(row.get("name") or "")
+            for row in arts
+            if _is_confined(str(row.get("name") or ""))
+        ]
+        portable = [_portable_artifact_name_key(name) for name in names]
+        if len(set(portable)) != len(portable):
+            return (
+                "carries artifact names that collide under portable Unicode/Windows "
+                "normalization; one delivered file could satisfy multiple manifest rows"
+            )
+    metadata = man.get("metadata")
+    if metadata is not None and not isinstance(metadata, dict):
+        return f"'metadata' is {type(metadata).__name__}, not an object"
     return None
 
 
 def verify_file(path: str, expect_root: Optional[str] = None,
-                artifacts_dir: Optional[str] = None) -> Dict[str, Any]:
+                artifacts_dir: Optional[str] = None, *,
+                metadata_only: bool = False) -> Dict[str, Any]:
     """Verify a delivered ``*.run_manifest.json`` on disk. Returns
     ``{ok, reason, broken, chain_root, artifacts}`` — never raises for a bad file, because the caller
     is a CLI whose whole job is to report the bad file.
@@ -233,17 +393,33 @@ def verify_file(path: str, expect_root: Optional[str] = None,
     * the hash chain reconciles to its own sealed ``chain_root`` (:func:`verify_manifest`);
     * ``expect_root``, when given, matches — the only check a re-sealing forger cannot pass, since it
       pins the file to a root carried out of band (see the module docstring);
-    * ``artifacts_dir``, when given, re-hashes every listed deliverable there. A MISSING artifact fails
-      as loudly as a MISMATCHed one: a manifest naming a file you were not given is incomplete custody,
-      and "not present" must never quietly read as "verified" (coverage honesty).
+    * every listed deliverable is re-hashed beside the manifest by default. ``artifacts_dir`` may
+      select another folder. A MISSING artifact fails as loudly as a MISMATCHed one: a manifest naming
+      a file you were not given is incomplete custody. ``metadata_only=True`` is the explicit opt-out
+      for an intentionally separated manifest.
     """
     try:
-        # utf-8-SIG: strips a BOM if present and is identical to utf-8 when absent. The producer
-        # never writes one, but a manifest that merely passed through a Windows tool acquires one,
-        # and rejecting an untampered file as unreadable is a false alarm at a client site.
-        with open(path, encoding="utf-8-sig") as f:
-            man = json.load(f)
-    except (OSError, ValueError) as e:
+        manifest_stat = os.lstat(path)
+        if manifest_stat.st_size > _MAX_MANIFEST_BYTES:
+            raise OverflowError(
+                f"manifest is {manifest_stat.st_size} bytes; limit is {_MAX_MANIFEST_BYTES}"
+            )
+        # utf-8-SIG strips a BOM if present and is identical to utf-8 when absent. The producer
+        # never writes one, but a manifest that merely passed through a Windows tool acquires one.
+        with _open_regular_no_follow(path) as f:
+            raw_manifest = f.read(_MAX_MANIFEST_BYTES + 1)
+        if len(raw_manifest) > _MAX_MANIFEST_BYTES:
+            raise OverflowError(
+                f"manifest exceeds the {_MAX_MANIFEST_BYTES}-byte verification limit"
+            )
+        man = _strict_manifest_json(raw_manifest)
+    except (OSError, UnicodeError, ValueError, OverflowError, RecursionError) as e:
+        # RecursionError is NOT a ValueError, so deeply nested JSON escaped this handler and broke
+        # this function's documented contract ("never raises for a bad file, because the caller is a
+        # CLI whose whole job is to report the bad file"). Reachable from `Atlas.exe
+        # --verify-manifest` — the field auditor's surface for CLIENT-SUPPLIED manifests, i.e. exactly
+        # the untrusted input this guard exists for. `_MAX_CHAIN_ROWS`/`_MAX_ARTIFACTS` cannot help:
+        # they are enforced after the parse.
         return {"ok": False, "reason": f"cannot read manifest {path}: {e}",
                 "broken": [], "chain_root": None, "artifacts": []}
     if not isinstance(man, dict):
@@ -290,22 +466,49 @@ def verify_file(path: str, expect_root: Optional[str] = None,
     # editing a top-level artifact digest was invisible to BOTH the chain and --expect-root, so a
     # swapped deliverable passed every check the tool offered.
     sealed = _sealed_artifacts(chain)
-    listed = [{"name": str(a.get("name") or ""), "sha256": str(a.get("sha256") or "")}
-              for a in (man.get("artifacts") or [])]
+    listed = _json_value(man.get("artifacts") or [])
     if sealed is None:
         reason += ("; NOTE this manifest predates artifact sealing, so its artifact digests are "
-                   "NOT covered by chain_root — re-hash the files and compare out of band")
+                    "NOT covered by chain_root — re-hash the files and compare out of band")
     elif sealed != listed:
         ok = False
         reason += ("; ARTIFACT LIST ALTERED — the delivered list no longer matches the copy sealed "
                    "in the chain, so a deliverable was swapped or its digest rewritten")
 
+    sealed_meta = _sealed_metadata(chain)
+    if sealed_meta is None:
+        reason += ("; NOTE this manifest predates metadata sealing, so its provenance/abstention "
+                   "fields are NOT covered by chain_root")
+    else:
+        listed_meta = man.get("metadata")
+        if listed_meta != sealed_meta:
+            ok = False
+            reason += ("; METADATA ALTERED — the top-level metadata no longer matches the complete "
+                       "copy sealed in the chain")
+        # The old headline fields are caches for existing consumers. They must not be an alternate,
+        # editable truth surface beside the sealed metadata.
+        for key in ("manifest_format", "tool", "schema_version", "generated_at", "collected_at",
+                    "devices_file_sha256", "abstention_ledger"):
+            expected = (sealed_meta.get("abstention_ledger") or {}) if key == "abstention_ledger" \
+                else sealed_meta.get(key)
+            if man.get(key) != expected:
+                ok = False
+                reason += f"; METADATA CACHE ALTERED ({key})"
+
     checked: List[Dict[str, str]] = []
-    if artifacts_dir is not None:
+    if metadata_only:
+        reason += "; artifact bytes NOT checked (--metadata-only was explicitly requested)"
+    else:
+        if artifacts_dir is None:
+            artifacts_dir = os.path.dirname(os.path.abspath(path)) or "."
+        artifacts_dir = os.path.abspath(artifacts_dir)
         bad = 0
         for a in man.get("artifacts") or []:
             name, want_sha = str(a.get("name") or ""), str(a.get("sha256") or "")
-            if not _is_confined(name):
+            if (
+                not _is_confined(name)
+                or not _is_sha256_digest(want_sha)
+            ):
                 # The manifest is UNTRUSTED input — it arrives from wherever the deliverable set has
                 # been. os.path.join DISCARDS artifacts_dir for an absolute/UNC name, and "../" walks
                 # out of it, so a crafted manifest turns `verify --artifacts` into a read-and-hash
@@ -314,20 +517,31 @@ def verify_file(path: str, expect_root: Optional[str] = None,
                 # unopened rather than normalised into something plausible.
                 state = "INVALID"
             else:
+                candidate = os.path.join(artifacts_dir, name)
                 try:
-                    with open(os.path.join(artifacts_dir, name), "rb") as fh:
-                        got = artifact_sha256(fh.read())
+                    got, _size = _stream_file_sha256(
+                        candidate,
+                        max_bytes=_MAX_ARTIFACT_BYTES,
+                    )
                     state = "ok" if got == want_sha else "MISMATCH"
-                except (OSError, ValueError):   # ValueError: embedded NUL is not an OSError
+                except FileNotFoundError:
                     state = "MISSING"
+                except OverflowError:
+                    state = "OVERSIZE"
+                except ValueError:
+                    state = "INVALID"
+                except OSError:
+                    state = "UNREADABLE"
             if state != "ok":
                 bad += 1
             checked.append({"name": name, "state": state})
         if bad:
             ok = False
-            reason += (f"; {bad} of {len(checked)} artifact(s) do not match the seal (MISMATCH = "
-                       f"altered after sealing, MISSING = not in {artifacts_dir}, INVALID = the "
-                       f"manifest named a path outside that folder and was not opened)")
+            reason += (
+                f"; {bad} of {len(checked)} artifact(s) do not match the seal "
+                "(MISMATCH=altered, MISSING=absent, UNREADABLE=I/O refused, "
+                "OVERSIZE=verification bound exceeded, INVALID=unsafe path/hash/link/non-file)"
+            )
         elif checked:
             reason += f"; all {len(checked)} artifact(s) hash to the seal"
     return {"ok": ok, "reason": reason, "broken": broken, "chain_root": root, "artifacts": checked}
@@ -353,17 +567,23 @@ def main(argv: Optional[List[str]] = None) -> int:
                    help="the chain_root recorded OUT OF BAND for this run. The chain is unkeyed, so "
                         "this is the only check a re-sealing forger cannot pass")
     p.add_argument("--artifacts", nargs="?", const="", default=None, metavar="DIR",
-                   help="also re-hash every listed deliverable (default: the manifest's own folder). "
-                        "A missing artifact fails, like a mismatched one")
+                   help="re-hash listed deliverables in DIR instead of beside the manifest. Artifact "
+                        "verification is already the default; a missing file fails like a mismatch")
+    p.add_argument("--metadata-only", action="store_true",
+                   help="explicitly verify only the sealed chain/metadata, without opening artifact "
+                        "files. Use only when the manifest was intentionally separated from its files")
     args = parser.parse_args(argv)
     if args.cmd != "verify":
         parser.print_help()
         return 0
 
+    if args.metadata_only and args.artifacts is not None:
+        p.error("--metadata-only and --artifacts are mutually exclusive")
     art = args.artifacts
-    if art == "":                                    # bare --artifacts -> beside the manifest
+    if art in (None, ""):                            # default/bare --artifacts -> beside manifest
         art = os.path.dirname(os.path.abspath(args.path)) or "."
-    res = verify_file(args.path, expect_root=args.expect_root, artifacts_dir=art)
+    res = verify_file(args.path, expect_root=args.expect_root, artifacts_dir=art,
+                      metadata_only=args.metadata_only)
     print(("OK: " if res["ok"] else "INTEGRITY: ") + res["reason"])
     for a in res["artifacts"]:
         if a["state"] != "ok":

@@ -14,7 +14,7 @@ mechanically (see *Enforcement* below), not by convention.
 A headline number that is computed in two places will eventually disagree. The recurring failure
 this contract kills — found and fixed by hand, one surface at a time, across several audit waves —
 is the **end-of-support conflation**: a surface reads `lifecycle_risk.summary.n_past_eos` (0 on the
-[HISTORY-REDACTED] fleet) where it means the *past-support population*, which is `n_past_ldos` (152). The result is a
+Meridian reference fleet) where it means the *past-support population*, which is `n_past_ldos` (152). The result is a
 false "healthy" reading that silently drops 152 end-of-support devices. Its near-twin is a device
 count rendered from `len(devices)` / `len(health_scores)` instead of the published
 `executive_brief.scale.n_devices`.
@@ -66,7 +66,7 @@ the established `_scale.get("n_devices") if ... is not None else len(...)` idiom
    in-process-assembled* snapshot (`tests/test_pipeline_inprocess.py`). Coverage-honest: a fact is
    only checked when both the published value and its raw basis are present.
 2. **Cross-surface render lock** — `tests/test_ssot_reconciliation.py` renders the lifecycle/scale
-   deliverables (crd, engagement, runbook, archreview, mop, design) from a fixture carrying the [HISTORY-REDACTED]
+   deliverables (crd, engagement, runbook, archreview, mop, design) from a fixture carrying the Meridian
    trap values (`n_past_ldos=152`, `n_past_eos=0`) and asserts each surface headlines the
    past-support population (152), never the conflated sibling (0). Mutation-proven to bite.
 3. **Dashboard lock** — the explorer / campaign-trend header (`html._trend_point`) is unit-tested

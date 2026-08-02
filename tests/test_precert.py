@@ -9,6 +9,7 @@ Verdict doctrine under test (coverage-honest, exact):
   * nothing definitively checkable -> INDETERMINATE.
 Every changed flow is cited before->after; every blind spot is NAMED.
 """
+import hashlib
 import json
 import os
 import subprocess
@@ -18,7 +19,8 @@ from openpyxl import load_workbook
 
 from cisco_toolkit.html import write_diff_workbook
 from cisco_toolkit.precert import (CERT_SHEET_HEADERS, CERT_SHEET_NAME, READINESS_SCHEMA,
-                                   compute_precert, compute_readiness_freeze)
+                                   compute_precert, compute_readiness_freeze,
+                                   verify_readiness_freeze)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(ROOT, "COLLECT_PARSE_V3_23_0.py")
@@ -296,7 +298,8 @@ def test_readiness_freeze_is_worst_of_and_coverage_honest():
     cert = compute_readiness_freeze(_readiness_snap(groups, cc), mode="shadow")
     assert cert["schema"] == READINESS_SCHEMA and cert["mode"] == "shadow"
     assert cert["verdict"] == "CAUTION"                               # worst-of (never the better READY)
-    assert cert["readiness_distribution"] == {"READY": 1, "CAUTION": 1, "NOT READY": 0}
+    assert cert["readiness_distribution"] == {"READY": 1, "CAUTION": 1, "NOT READY": 0, "UNRATED": 0}
+    assert sum(cert["readiness_distribution"].values()) == cert["n_groups"]   # no group falls out
     assert cert["groups"][1]["blocking"] == ["STP consistency"]      # only the fail/warn check is blocking
     assert cert["coverage"]["not_collected"] == 2
     assert cert["coverage"]["not_collected_hosts"] == ["x-uncollected", "y-uncollected"]  # NAMED + sorted
@@ -308,6 +311,43 @@ def test_readiness_freeze_worst_of_promotes_not_ready():
     groups = [{"group": "G1", "readiness": "CAUTION", "checks": []},
               {"group": "G2", "readiness": "NOT READY", "n_fail": 1, "checks": []}]
     assert compute_readiness_freeze(_readiness_snap(groups))["verdict"] == "NOT READY"
+
+
+def test_readiness_freeze_never_certifies_ready_over_an_unassessed_group():
+    """A move-group whose readiness label is absent or unrecognised used to be silently DROPPED:
+    `_canon_readiness` returned '', `_READINESS_RANK.get('', -1)` never beat the seed and '' is not a
+    key of the distribution — so the group inflated `n_groups` and contributed to neither the
+    worst-of verdict, the distribution, nor `blind_spots`. Measured before the fix: 2 READY + 1
+    never-assessed + 1 typo'd group certified **READY** over 4 groups with an empty blind-spot list,
+    and `prediction_hash` made that false READY the tamper-evident pre-cutover record."""
+    groups = [{"group": "G1", "readiness": "READY", "checks": []},
+              {"group": "G2", "readiness": "READY", "checks": []},
+              {"group": "G3-never-assessed", "checks": []},               # no readiness key at all
+              {"group": "G4-typo", "readiness": "Not-Ready!", "checks": []}]
+    cert = compute_readiness_freeze(_readiness_snap(groups), mode="real")
+    assert cert["verdict"] == "INDETERMINATE"                             # NOT READY-over-blind-spots
+    d = cert["readiness_distribution"]
+    assert d == {"READY": 2, "CAUTION": 0, "NOT READY": 0, "UNRATED": 2}
+    assert sum(d.values()) == cert["n_groups"] == 4                       # the distribution accounts
+    blind = " ".join(cert["blind_spots"])                                 # ...and both are NAMED
+    assert "G3-never-assessed" in blind and "no readiness label" in blind
+    assert "G4-typo" in blind and "Not-Ready!" in blind
+    assert [g["readiness"] for g in cert["groups"]] == ["READY", "READY", "UNRATED", "UNRATED"]
+    assert "UNRATED" in cert["verdict_note"]
+
+
+def test_readiness_freeze_unrated_group_does_not_mask_a_worse_rating():
+    """The verdict is still the WORST of what WAS assessed — an unrated group withholds READY, it
+    does not erase a NOT READY (a freeze must not read better OR emptier than its evidence)."""
+    groups = [{"group": "G1", "readiness": "NOT READY", "n_fail": 1, "checks": []},
+              {"group": "G2", "checks": []}]
+    cert = compute_readiness_freeze(_readiness_snap(groups))
+    assert cert["verdict"] == "NOT READY"
+    assert cert["readiness_distribution"]["UNRATED"] == 1 and cert["blind_spots"]
+    # all-unrated asserts nothing at all
+    allbad = compute_readiness_freeze(_readiness_snap([{"group": "X"}, {"group": "Y"}]))
+    assert allbad["verdict"] == "INDETERMINATE" and allbad["n_groups"] == 2
+    assert allbad["readiness_distribution"]["UNRATED"] == 2
 
 
 def test_readiness_freeze_empty_is_indeterminate_never_ready():
@@ -331,6 +371,66 @@ def test_readiness_freeze_shadow_and_real_share_the_prediction_hash():
     real = compute_readiness_freeze(_readiness_snap(g), mode="real")
     assert shadow["prediction_hash"] == real["prediction_hash"]      # mode is metadata; prediction is identical
     assert (shadow["mode"], real["mode"]) == ("shadow", "real")
+    assert shadow["certificate_hash"] != real["certificate_hash"]    # full decision envelope is not identical
+    assert verify_readiness_freeze(shadow) == (True, "ok")
+    assert verify_readiness_freeze(real) == (True, "ok")
+
+
+def test_readiness_freeze_malformed_row_is_named_unrated_not_dropped():
+    cert = compute_readiness_freeze(
+        _readiness_snap([
+            {"group": "G1", "readiness": "READY", "checks": []},
+            "malformed-row",
+        ]),
+        mode="real",
+    )
+    assert cert["verdict"] == "INDETERMINATE"
+    assert cert["n_groups"] == 2
+    assert cert["readiness_distribution"]["UNRATED"] == 1
+    assert cert["groups"][1]["group"] == "malformed row #2"
+    assert any("expected an object" in item for item in cert["blind_spots"])
+    assert verify_readiness_freeze(cert) == (True, "ok")
+
+
+def test_readiness_freeze_full_envelope_hash_detects_mode_relabelling():
+    cert = compute_readiness_freeze(
+        _readiness_snap([{"group": "G1", "readiness": "CAUTION", "checks": []}]),
+        mode="shadow",
+    )
+    cert["mode"] = "real"
+    ok, reason = verify_readiness_freeze(cert)
+    assert ok is False
+    assert "certificate_hash" in reason
+
+
+def test_invalid_source_hash_is_not_accepted_as_a_binding():
+    cert = compute_readiness_freeze(
+        _readiness_snap([{"group": "G1", "readiness": "READY", "checks": []}]),
+        source_hash="looks-like-a-hash",
+    )
+    assert cert["source_binding"] == {}
+    assert cert["verdict"] == "INDETERMINATE"
+    assert any("source hash" in item for item in cert["integrity"]["failures"])
+
+    pair = compute_precert({}, {}, source_hashes={"before": "nope", "after": "also-nope"})
+    assert pair["source_binding"] == {}
+    assert pair["verdict"] == "FAIL"
+    assert any("source hash" in item for item in pair["gate_failures"])
+
+    for supplied in ("", {"sha256": ""}, {"hash": None}):
+        cert = compute_readiness_freeze(
+            _readiness_snap([{"group": "G1", "readiness": "READY", "checks": []}]),
+            source_hash=supplied,
+        )
+        assert cert["source_binding"] == {}
+        assert cert["verdict"] == "INDETERMINATE"
+        assert any("source hash" in item for item in cert["integrity"]["failures"])
+
+    for supplied in ("not-an-object", {"before": ""}, {"before": {}}):
+        pair = compute_precert({}, {}, source_hashes=supplied)
+        assert pair["source_binding"] == {}
+        assert pair["verdict"] == "FAIL"
+        assert any("source hash" in item for item in pair["gate_failures"])
 
 
 def test_readiness_freeze_total_on_bad_input():
@@ -351,3 +451,21 @@ def test_main_unreadable_snapshot_returns_2(capsys):
     from cisco_toolkit import precert as P
     assert P.main(["no-such-snapshot.json"]) == 2
     assert "cannot read snapshot" in capsys.readouterr().out
+
+
+def test_main_binds_certificate_to_exact_snapshot_bytes(tmp_path):
+    from cisco_toolkit import precert as P
+
+    raw = json.dumps(
+        _readiness_snap([{"group": "G1", "readiness": "READY", "checks": []}]),
+        ensure_ascii=True,
+        indent=1,
+    ).encode("utf-8")
+    source = tmp_path / "source.snapshot.json"
+    output = tmp_path / "freeze.json"
+    source.write_bytes(raw)
+
+    assert P.main([str(source), "--mode", "real", "--out", str(output)]) == 0
+    cert = json.loads(output.read_text(encoding="utf-8"))
+    assert cert["source_binding"]["snapshot"] == "sha256:" + hashlib.sha256(raw).hexdigest()
+    assert verify_readiness_freeze(cert) == (True, "ok")

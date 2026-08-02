@@ -259,7 +259,7 @@ def test_deck_survives_xml_illegal_chars(tmp_path):
     snap["failure_impact"][0]["host"] = snap["failure_impact"][0]["host"] + bad
     snap["executive_brief"]["axes"][0]["headline"] = "61/100 " + bad
     out = str(tmp_path / "d.pptx")
-    write_executive_deck_pptx(out, snap, "[HISTORY-REDACTED]" + bad)     # must not raise
+    write_executive_deck_pptx(out, snap, "Meridian" + bad)     # must not raise
     Presentation(out)                                    # and open
 
 
@@ -493,7 +493,7 @@ _DECK_POISON_SECTIONS = [
 @pytest.mark.parametrize("label,snap", _DECK_POISON_SECTIONS, ids=[c[0] for c in _DECK_POISON_SECTIONS])
 def test_deck_tolerates_truthy_nondict_sections(tmp_path, label, snap):
     out = tmp_path / "poison.pptx"
-    write_executive_deck_pptx(str(out), snap, "[HISTORY-REDACTED]")               # must NOT raise
+    write_executive_deck_pptx(str(out), snap, "Meridian")               # must NOT raise
     assert out.is_file(), f"no deck produced for poisoned {label}"
     prs = Presentation(str(out))                                  # and must be a valid, openable pptx
     assert len(prs.slides._sldIdLst) >= 6, f"deck degenerate for poisoned {label}"
@@ -518,7 +518,7 @@ _DECK_UNHASHABLE_LEAVES = [
 def test_deck_tolerates_unhashable_band_leaf(tmp_path, label, snap):
     """An unhashable `band` leaf must degrade to a stringified key, never crash the deck."""
     out = tmp_path / "unhashable.pptx"
-    write_executive_deck_pptx(str(out), snap, "[HISTORY-REDACTED]")               # must NOT raise
+    write_executive_deck_pptx(str(out), snap, "Meridian")               # must NOT raise
     assert out.is_file(), f"no deck produced for {label}"
     prs = Presentation(str(out))                                  # and must be a valid, openable pptx
     assert len(prs.slides._sldIdLst) >= 6, f"deck degenerate for {label}"
@@ -531,7 +531,7 @@ def test_deck_wellformed_band_tally_unchanged(tmp_path):
                               {"switch": "sw2", "score": 5, "band": "Critical"},
                               {"switch": "sw3", "score": 90, "band": "Excellent"}]}
     out = tmp_path / "bands.pptx"
-    write_executive_deck_pptx(str(out), snap, "[HISTORY-REDACTED]")
+    write_executive_deck_pptx(str(out), snap, "Meridian")
     _n, txt = _deck(str(out))
     assert "2" in txt, "the Critical-band tally (2) must survive the str() keying"
 
@@ -556,3 +556,118 @@ def test_deck_wellformed_unchanged_alongside_hardening(tmp_path):
     assert "worry an engineer most" in txt and "CR-01" in txt   # dossiers slide, compound codes intact
     assert "Introduce FHRP" in txt                              # design slide, decisions intact
     assert "220" in txt and "Group 1" in txt                    # keystone + waves unchanged
+
+
+# ===========================================================================================
+# review r9 F1 — the deck's stacked-risk slide rendered `risk_band` with no coverage
+# qualification, and (sharper) SELECTED only Severe/Elevated/Guarded, so an all-unassessed
+# fleet produced NO slide at all: absence rendered as health, in a customer-facing deck.
+# ===========================================================================================
+
+def _real_dossiers(assessed: bool):
+    """Dossiers from the REAL producer (analyze.compute_device_dossiers), not a hand-shaped dict —
+    a fixture in the shape the writer expects would only prove the writer agrees with itself.
+
+    assessed=False feeds ONLY health + blast radius + an Unknown-lifecycle row, so 8 of the 11 risk
+    axes ABSTAIN. An abstaining axis is weighted ZERO exposure, so every asset bands 'Low' with
+    risk_index 0 and the verdict "No stacked risk — routine migration handling"."""
+    from cisco_toolkit.analyze import compute_device_dossiers
+    if not assessed:
+        return compute_device_dossiers(
+            health_scores=[{"switch": "core1", "score": 70, "band": "Good", "role": "core"},
+                           {"switch": "acc1", "score": 80, "band": "Good", "role": "access"}],
+            failure_impact=[{"host": "core1", "stranded": 220, "vlans_impacted": 4},
+                            {"host": "acc1", "stranded": 10, "vlans_impacted": 1}],
+            lifecycle_risk={"per_device": [{"host": "core1", "band": "Unknown"},
+                                           {"host": "acc1", "band": "Unknown"}]})
+    return compute_device_dossiers(
+        health_scores=[{"switch": "core1", "score": 92, "band": "Excellent", "role": "core"}],
+        failure_impact=[{"host": "core1", "stranded": 4, "vlans_impacted": 1}],
+        lifecycle_risk={"per_device": [{"host": "core1", "band": "Active", "model": "C9300"}]},
+        software_risk={"per_device": [{"host": "core1", "band": "OK", "n_findings": 0}]},
+        security={"core1": {"checks": [{"id": "x", "status": "pass"}]}},
+        config_hygiene={"core1": {"findings": []}})
+
+
+def test_dossier_coverage_mirrors_the_canonical_rule():
+    """deck._dossier_coverage is a MIRROR of cisco_toolkit/excel.py::dossier_coverage; drift is
+    caught by EXECUTION over the canonical case table."""
+    from cisco_toolkit.excel import DOSSIER_COVERAGE_CASES, dossier_coverage
+    from cisco_toolkit import deck as D
+
+    thins = {k for k, v in DOSSIER_COVERAGE_CASES.items() if v[1][2]}
+    assert thins and (set(DOSSIER_COVERAGE_CASES) - thins)      # NON-VACUITY: both verdicts present
+    for label, (row, expected) in DOSSIER_COVERAGE_CASES.items():
+        assert list(D._dossier_coverage(row)) == list(expected), label
+        assert list(D._dossier_coverage(row)) == list(dossier_coverage(row)), label
+
+
+def test_all_unassessed_fleet_still_gets_a_slide_and_it_says_not_assessed(tmp_path):
+    """review r9 F1, the sharp edge. dd_top selected only Severe/Elevated/Guarded. On a fleet whose
+    risk axes were never collected EVERY asset bands 'Low', the selection matched nothing and the
+    slide was DROPPED — the steering committee saw no stacked-risk slide and read that as no
+    stacked risk. Pre-fix this snapshot rendered 7 slides with no mention of coverage at all."""
+    dd = _real_dossiers(assessed=False)
+    assert {d["risk_band"] for d in dd["per_device"]} == {"Low"}      # the defect's precondition
+    assert all(d["risk_index"] == 0 and d["n_na"] == 8 for d in dd["per_device"])
+
+    snap = _rich_snap()
+    snap["device_dossiers"] = dd
+    out = tmp_path / "deck_unassessed.pptx"
+    write_executive_deck_pptx(str(out), snap, "Test fleet")
+    n, txt = _deck(str(out))
+    assert n == 8, f"the un-evidenced fleet must still get the stacked-risk slide, got {n}"
+    assert "NOT ASSESSED" in txt
+    assert "8 of 11 risk axes NOT ASSESSED" in txt                   # per-asset census
+    assert "band rests on absent evidence" in txt
+    assert "NOT a clean fleet" in txt
+    assert "core1" in txt and "acc1" in txt                          # the un-evidenced assets are named
+
+
+def test_banded_slide_carries_the_coverage_qualification(tmp_path):
+    """A snapshot that DOES have banded assets keeps its slide, and every row now carries its
+    coverage census beside the band — the band alone was the un-qualified exit."""
+    snap = _rich_snap()
+    dd = _real_dossiers(assessed=False)
+    dd["per_device"][0]["risk_band"] = "Severe"      # one banded asset alongside un-evidenced ones
+    dd["per_device"][0]["risk_index"] = 60
+    snap["device_dossiers"] = dd
+    out = tmp_path / "deck_banded.pptx"
+    write_executive_deck_pptx(str(out), snap, "Test fleet")
+    n, txt = _deck(str(out))
+    assert n == 8
+    assert "worry an engineer most" in txt                       # the normal (banded) framing
+    assert "8 of 11 risk axes NOT ASSESSED" in txt               # ... but the census travels with it
+    assert "half or more of their risk axes NOT ASSESSED" in txt
+
+
+def test_fully_assessed_asset_does_not_acquire_the_disclosure(tmp_path):
+    """NON-VACUITY: an asset whose axes WERE assessed (5 of 11 na -> not thin) must NOT be flagged
+    as resting on absent evidence, and the fleet lead must not read 'NOT a clean fleet'."""
+    snap = _rich_snap()
+    dd = _real_dossiers(assessed=True)
+    assert dd["per_device"][0]["n_na"] == 5 and len(dd["per_device"][0]["exposures"]) == 11
+    dd["per_device"][0]["risk_band"] = "Severe"      # banded, so the slide renders in normal mode
+    snap["device_dossiers"] = dd
+    out = tmp_path / "deck_assessed.pptx"
+    write_executive_deck_pptx(str(out), snap, "Test fleet")
+    _n, txt = _deck(str(out))
+    assert "5 of 11 risk axes NOT ASSESSED" in txt               # census still legible
+    assert "band rests on absent evidence" not in txt            # ... but not flagged un-evidenced
+    assert "NOT a clean fleet" not in txt
+
+
+def test_dossier_rows_without_an_axis_census_fail_closed(tmp_path):
+    """An OLDER snapshot whose dossier rows carry no `exposures` list has no denominator, so how
+    much of the band rests on evidence is itself NOT ASSESSED — and with every row 'Low' the slide
+    must still render rather than vanish."""
+    snap = _rich_snap()
+    snap["device_dossiers"] = {
+        "per_device": [{"host": "core1", "risk_band": "Low", "risk_index": 0, "compound": [],
+                        "verdict": "No stacked risk."}],
+        "summary": {"n_devices": 1, "bands": {"Low": 1}}}
+    out = tmp_path / "deck_nocensus.pptx"
+    write_executive_deck_pptx(str(out), snap, "Test fleet")
+    n, txt = _deck(str(out))
+    assert n == 8, f"a census-less register must still render the slide, got {n}"
+    assert "axis census ABSENT" in txt and "coverage NOT ASSESSED" in txt

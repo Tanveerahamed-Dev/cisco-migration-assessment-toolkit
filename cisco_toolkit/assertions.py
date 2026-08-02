@@ -189,11 +189,16 @@ def evaluate_assertion(snap: Dict[str, Any], a: Dict[str, Any]) -> Dict[str, Any
     raw = _dotted(snap, subject)
     text = _as_text(raw)
     group_results: List[Optional[bool]] = []
+    had_unevaluable = False
     for mode, key in (("all", "all_of"), ("any", "any_of")):
         rules = a.get(key) or []
         if not rules:
             continue
-        evals = [r for r in (_rule_holds(rule, text, raw) for rule in rules) if r is not None]
+        if not isinstance(rules, list):
+            rules = [rules]
+        evaluated = [_rule_holds(rule, text, raw) if isinstance(rule, dict) else None for rule in rules]
+        had_unevaluable = had_unevaluable or any(r is None for r in evaluated)
+        evals = [r for r in evaluated if r is not None]
         if not evals:
             group_results.append(None)
         else:
@@ -205,10 +210,97 @@ def evaluate_assertion(snap: Dict[str, Any], a: Dict[str, Any]) -> Dict[str, Any
         out["abstention"] = "indeterminate"
         out["detail"] = "no rule could be evaluated against the collected value"
         return out
+    if any(g is False for g in decided):
+        out["status"] = FAIL
+        out["detail"] = "one or more rules failed"
+        return out
+    if had_unevaluable:
+        # A known-true rule cannot launder a typo, malformed regex, or unsupported sibling rule
+        # into PASS.  The assertion remains unknown until every declared rule is understood.
+        out["status"] = NOT_OBSERVED
+        out["abstention"] = "indeterminate"
+        out["detail"] = "one or more declared rules could not be evaluated; PASS withheld"
+        return out
     ok = all(decided)
     out["status"] = PASS if ok else FAIL
     out["detail"] = "all rule groups satisfied" if ok else "one or more rules failed"
     return out
+
+
+def _rows_for_each(snap: Dict[str, Any], path: Any) -> Optional[List[Dict[str, Any]]]:
+    """Resolve a for-each collection, including the common host->object-map snapshot shapes."""
+    if not isinstance(path, str) or not path.strip():
+        return None
+    raw = _dotted(snap, path)
+    if isinstance(raw, list):
+        # Preserve malformed elements as explicit unknown rows. Dropping them would let the
+        # well-formed subset certify the whole declared collection.
+        return [dict(r) if isinstance(r, dict) else {"_invalid_object": True} for r in raw]
+    if not isinstance(raw, dict):
+        return None
+    rows: List[Dict[str, Any]] = []
+    for host, value in raw.items():
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    rows.append(dict(item, **({"host": host} if "host" not in item else {})))
+                else:
+                    rows.append({"host": host, "_invalid_object": True})
+        elif isinstance(value, dict):
+            # ``interfaces`` is host -> ifname -> record; a shallower host -> record map is
+            # handled by the fallback row below.
+            nested = [(name, item) for name, item in value.items() if isinstance(item, dict)]
+            if nested and len(nested) == len(value):
+                for name, item in nested:
+                    row = dict(item)
+                    row.setdefault("host", host)
+                    row.setdefault("ifname", name)
+                    rows.append(row)
+            else:
+                row = dict(value)
+                row.setdefault("host", host)
+                rows.append(row)
+        else:
+            rows.append({"host": host, "_invalid_object": True})
+    return rows
+
+
+def _evaluate_object_assertion(snap: Dict[str, Any], spec: Dict[str, Any]) -> Dict[str, Any]:
+    """Adapt :func:`evaluate_for_each` into the ordinary pack result contract."""
+    path = spec.get("for_each") or spec.get("collection")
+    if isinstance(path, dict):
+        path = path.get("subject") or path.get("collection")
+    rows = _rows_for_each(snap, path)
+    base = {
+        "id": spec.get("id"), "title": spec.get("title"),
+        "severity": spec.get("severity", "medium"), "subject": path,
+        "device": None, "citation": path, "kind": "for_each",
+    }
+    if rows is None:
+        return dict(base, status=NOT_OBSERVED, abstention="not_collected",
+                    detail="for_each collection missing or unusable", object_evaluation=None)
+    detail = evaluate_for_each(rows, spec)
+    summary = detail["summary"]
+    if not spec.get("field_rules") and not spec.get("unique_by"):
+        status = NOT_OBSERVED
+        text = "for_each declaration has no field_rules or unique_by constraint; PASS withheld"
+        abstention = "indeterminate"
+    elif summary["n_fail"] or summary["n_uniqueness_violations"]:
+        status = FAIL
+        text = (f"{summary['n_fail']} row failure(s), "
+                f"{summary['n_uniqueness_violations']} uniqueness violation(s)")
+        abstention = None
+    elif not summary["n_rows"] or (spec.get("field_rules") and summary["n_not_observed"]) \
+            or (spec.get("unique_by") and summary["unique_by_observed_rows"] < summary["n_rows"]):
+        status = NOT_OBSERVED
+        text = "per-object proof incomplete; one or more rows/fields were not observed"
+        abstention = "indeterminate"
+    else:
+        status = PASS
+        text = f"all {summary['n_rows']} object row(s) satisfied the declared constraints"
+        abstention = None
+    return dict(base, status=status, abstention=abstention, detail=text,
+                object_evaluation=detail)
 
 
 def evaluate_pack(snap: Dict[str, Any], pack: Dict[str, Any]) -> Dict[str, Any]:
@@ -218,8 +310,22 @@ def evaluate_pack(snap: Dict[str, Any], pack: Dict[str, Any]) -> Dict[str, Any]:
     a blind spot is neither pass nor fail). ``grade`` is ``fail`` if any assertion failed, else
     ``pass`` if anything was assessable, else ``na``.
     """
-    items = (pack or {}).get("assertions") or []
-    results = [evaluate_assertion(snap, a) for a in items if isinstance(a, dict)]
+    pack = pack if isinstance(pack, dict) else {}
+    items = pack.get("assertions") or []
+    if not isinstance(items, list):
+        items = [items]
+    object_items = pack.get("for_each") or []
+    if isinstance(object_items, dict):
+        object_items = [object_items]
+    elif not isinstance(object_items, list):
+        object_items = []
+    specs = [a for a in list(items) + list(object_items) if isinstance(a, dict)]
+    results = [
+        (_evaluate_object_assertion(snap, a)
+         if a.get("for_each") or a.get("collection") or a in object_items
+         else evaluate_assertion(snap, a))
+        for a in specs
+    ]
     n_pass = sum(1 for r in results if r["status"] == PASS)
     n_fail = sum(1 for r in results if r["status"] == FAIL)
     n_not_observed = sum(1 for r in results if r["status"] == NOT_OBSERVED)
@@ -227,6 +333,7 @@ def evaluate_pack(snap: Dict[str, Any], pack: Dict[str, Any]) -> Dict[str, Any]:
     grade = "na" if n_assessed == 0 else ("fail" if n_fail else "pass")
     return {
         "results": results,
+        "object_results": [r for r in results if r.get("kind") == "for_each"],
         "summary": {
             "n_pass": n_pass,
             "n_fail": n_fail,
@@ -296,13 +403,18 @@ def evaluate_for_each(rows: List[Dict[str, Any]], spec: Dict[str, Any]) -> Dict[
     (a missing field), else PASS. `unique_by` flags duplicate values across rows. Pure; coverage-honest."""
     spec = spec or {}
     rules = spec.get("field_rules") or []
+    if not isinstance(rules, list):
+        rules = [rules]
     out_rows: List[dict] = []
     for idx, row in enumerate(rows or []):
         row = row if isinstance(row, dict) else {}
         rule_results = []
         for r in rules:
+            if not isinstance(r, dict):
+                rule_results.append({"field": None, "op": None, "status": NOT_OBSERVED})
+                continue
             field = r.get("field")
-            present = field in row and row.get(field) not in (None, "")
+            present = isinstance(field, str) and field in row and row.get(field) not in (None, "")
             rule_results.append({"field": field, "op": r.get("op"),
                                  "status": _field_pred(r.get("op"), row.get(field), present, r.get("value"))})
         statuses = [rr["status"] for rr in rule_results]

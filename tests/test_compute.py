@@ -355,22 +355,22 @@ def test_reconcile_cdp_neighbor_resolves_configured_name_split_node():
     from cisco_toolkit import analyze
     from cisco_toolkit.model import InterfaceData
     DP = analyze.DevicePhysical
-    # CORE collected as 'CORE-BC' but configured 'CORE-BC-AJDOH'; ACC advertises CORE over CDP by that configured name.
+    # CORE collected as 'CORE-BC' but configured 'MERIDIAN-CORE-LEGACY'; ACC advertises CORE over CDP by that configured name.
     all_if = {
         "CORE-BC": {"Gi1/0/1": InterfaceData(port="Gi1/0/1", cdp_neighbor="ACC-BC", neighbor_port="Gi1/0/24",
                                              endpoint_type="Switch", speed="1G")},
-        "ACC-BC": {"Gi1/0/24": InterfaceData(port="Gi1/0/24", cdp_neighbor="CORE-BC-AJDOH", neighbor_port="Gi1/0/1",
+        "ACC-BC": {"Gi1/0/24": InterfaceData(port="Gi1/0/24", cdp_neighbor="MERIDIAN-CORE-LEGACY", neighbor_port="Gi1/0/1",
                                              endpoint_type="Switch", speed="1G")},
     }
-    devs = [DP(hostname="CORE-BC", reported_hostname="CORE-BC-AJDOH"),
+    devs = [DP(hostname="CORE-BC", reported_hostname="MERIDIAN-CORE-LEGACY"),
             DP(hostname="ACC-BC", reported_hostname="ACC-BC")]
     before = analyze.compute_topology_links(all_if)
     hosts_before = {str(r["a_host"]) for r in before} | {str(r["b_host"]) for r in before}
-    assert "CORE-BC-AJDOH" in hosts_before and len(before) == 2          # phantom split node + duplicate link record
+    assert "MERIDIAN-CORE-LEGACY" in hosts_before and len(before) == 2          # phantom split node + duplicate link record
     assert analyze.reconcile_cdp_neighbor_names(all_if, devs) == 1
     after = analyze.compute_topology_links(all_if)
     hosts_after = {str(r["a_host"]) for r in after} | {str(r["b_host"]) for r in after}
-    assert "CORE-BC-AJDOH" not in hosts_after                            # phantom gone
+    assert "MERIDIAN-CORE-LEGACY" not in hosts_after                            # phantom gone
     assert len(after) == 1                                               # bidirectional link is now ONE record
     # over-merge guard: a configured name claimed by TWO devices (a FEX reporting its parent) is NOT used
     fex_if = {
@@ -404,7 +404,7 @@ def test_build_device_physical_emits_none_active_ports_when_status_unobserved(cp
     """The companion to the above: compute_capacity handles a None active count, but the PIPELINE must
     actually PRODUCE one. build_device_physical must emit active_ports=None (not 0) when no physical
     port carries an observed link status — else that None-guard is dead code and a device whose port
-    status was not collected (e.g. [HISTORY-REDACTED]'s DS17/AS01: chassis ports known, status uncollected) falsely
+    status was not collected (e.g. Meridian's DS17/AS01: chassis ports known, status uncollected) falsely
     reads 0% utilization / all-ports-free on the Capacity sheet. A genuine all-down switch (status
     observed, 0 up) stays a real 0."""
     from cisco_toolkit.build import build_device_physical
@@ -993,7 +993,7 @@ def test_exec_summary_sheet_no_fabricated_coverage_on_brief_crash():
 
 def test_readiness_sheet_discloses_endpoint_mac_is_per_switch_sum():
     """[audit-3 L3 scale-ssot] the Migration Readiness sheet printed a bare 'N endpoint-MAC(s)' per group whose
-    sum across groups (5160 on [HISTORY-REDACTED]) exceeds the canonical distinct n_endpoints (5127) -- a multi-homed MAC counts
+    sum across groups (5160 on Meridian) exceeds the canonical distinct n_endpoints (5127) -- a multi-homed MAC counts
     once per switch. The dedicated move-group sheets disclose '(per-switch sum)'; this sheet must too."""
     from openpyxl import Workbook
     import cisco_toolkit.excel as X
@@ -1095,7 +1095,7 @@ def test_endpoint_classify_apc_legal_name_and_truthful_evidence():
 def test_endpoint_census_discloses_basis_vs_canonical_n_endpoints():
     """[audit-4 #17 scale-ssot] the Endpoint Census sheet counts learned MACs on ALL non-trunk ports (a superset),
     while executive_brief.scale.n_endpoints counts only Access-tagged-port endpoints -> the sheet's row count (5326
-    on [HISTORY-REDACTED]) silently contradicted the Exec Summary headline (5127). The sheet must disclose its basis."""
+    on Meridian) silently contradicted the Exec Summary headline (5127). The sheet must disclose its basis."""
     from openpyxl import Workbook
     import cisco_toolkit.excel as X
     from cisco_toolkit.model import InterfaceData

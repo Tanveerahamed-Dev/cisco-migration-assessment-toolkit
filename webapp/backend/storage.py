@@ -15,12 +15,14 @@ left byte-identical for a human restore (README-FIELD).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import sqlite3
 import sys
 import threading
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -80,6 +82,7 @@ _BACKUP_KEEP = 3
 #: forever, and can delete the engineer's file too. Both were reproduced.
 _BACKUP_RE = re.compile(r"^assesshub-\d{8}T\d{6}Z\.db$")
 _PARTIAL_SUFFIX = ".partial"
+_SNAPSHOT_BINDING_SOURCE = "persisted snapshots.snapshot_json blob"
 
 
 class StoreCorruptError(RuntimeError):
@@ -185,7 +188,12 @@ class Store:
             # Write to a partial name and rename only on success: a backup killed by a yank or a
             # full stick must never be mistaken for a good one (an empty stub also passes
             # quick_check), nor occupy a keep-slot.
-            tmp = backups / f"{_BACKUP_PREFIX}{stamp}.db{_PARTIAL_SUFFIX}"
+            # The partial name is process-owned and unguessable. A fixed timestamp name lets a
+            # concurrent boot share (and then delete) another process's in-progress backup.
+            tmp = backups / (
+                f"{_BACKUP_PREFIX}{stamp}-{os.getpid()}-{uuid.uuid4().hex}"
+                f".db{_PARTIAL_SUFFIX}"
+            )
             try:
                 dest = sqlite3.connect(str(tmp))
                 try:
@@ -198,11 +206,10 @@ class Store:
         except (OSError, sqlite3.Error) as e:
             print(f"[warn] boot backup failed ({e}) — unplug protection degraded this session",
                   file=sys.stderr)
-        # Rotation runs even when the backup failed, so abandoned partials and surplus copies are
-        # always pruned; it only ever considers files matching our own timestamp pattern.
+        # Rotate only completed files that match our exact timestamp pattern. Unknown ``.partial``
+        # files are not ours to delete: another Atlas process may still be writing one, and an
+        # engineer may have deliberately parked a file under that broad glob.
         try:
-            for stale in backups.glob(f"{_BACKUP_PREFIX}*{_PARTIAL_SUFFIX}"):
-                stale.unlink(missing_ok=True)
             for old in _our_backups(backups)[:-_BACKUP_KEEP]:
                 old.unlink(missing_ok=True)
         except OSError as e:
@@ -322,6 +329,36 @@ class Store:
             ).fetchone()
         return json.loads(row["snapshot_json"]) if row else None
 
+    def get_bound_snapshot(
+            self, snapshot_id: int) -> Optional[tuple[Dict[str, Any], Dict[str, str]]]:
+        """Read one snapshot and bind its parsed object to the exact persisted JSON bytes.
+
+        Original upload/archive bytes are not retained. The authoritative webapp compare/trend
+        input is therefore the blob in ``snapshots.snapshot_json``. Both parsing and SHA-256 consume
+        the same byte sequence from this single database read.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT CAST(snapshot_json AS BLOB) AS snapshot_blob
+                   FROM snapshots WHERE id = ?""", (snapshot_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        raw = row["snapshot_blob"]
+        if isinstance(raw, memoryview):
+            raw = raw.tobytes()
+        elif isinstance(raw, str):
+            raw = raw.encode("utf-8")
+        elif not isinstance(raw, bytes):
+            raw = bytes(raw)
+        return (
+            json.loads(raw),
+            {
+                "source": _SNAPSHOT_BINDING_SOURCE,
+                "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+            },
+        )
+
     def get_snapshot_section(self, snapshot_id: int, key: str) -> Any:
         """One top-level section of a snapshot WITHOUT deserializing the whole multi-MB blob —
         sqlite's json_extract parses in C and returns just the subtree (V3.23.159: the gate board
@@ -376,17 +413,36 @@ class Store:
     # -- executions ----------------------------------------------------------
     # A live cutover-execution run (war room) over one snapshot's plan. The state blob is the source
     # of truth; label/status/timestamps are mirrored into columns for cheap listing.
-    def create_execution(self, snapshot_id: int, state: Dict[str, Any]) -> int:
+    def create_execution(self, snapshot_id: int, state: Dict[str, Any],
+                         *, auto_label: bool = False) -> int:
         with self._lock:
-            cur = self._conn.execute(
-                """INSERT INTO executions(snapshot_id, label, status, started_at, ended_at, state_json)
-                   VALUES (?,?,?,?,?,?)""",
-                (snapshot_id, state.get("label", ""), state.get("status", "in_progress"),
-                 state.get("started_at", _now()), state.get("ended_at"),
-                 json.dumps(state, separators=(",", ":"))),
-            )
-            self._conn.commit()
-            return int(cur.lastrowid or 0)
+            try:
+                # Serialize label selection + insert across independent Store instances/processes.
+                self._conn.execute("BEGIN IMMEDIATE")
+                if auto_label:
+                    labels = self._conn.execute(
+                        "SELECT label FROM executions WHERE snapshot_id=?", (snapshot_id,)
+                    ).fetchall()
+                    used = {
+                        int(match.group(1))
+                        for row in labels
+                        if (match := re.fullmatch(r"Cutover run ([1-9]\d*)", str(row["label"])))
+                    }
+                    ordinal = max(used, default=0) + 1
+                    state["label"] = f"Cutover run {ordinal}"
+                cur = self._conn.execute(
+                    """INSERT INTO executions(snapshot_id, label, status, started_at, ended_at, state_json)
+                       VALUES (?,?,?,?,?,?)""",
+                    (snapshot_id, state.get("label", ""), state.get("status", "in_progress"),
+                     state.get("started_at", _now()), state.get("ended_at"),
+                     json.dumps(state, separators=(",", ":"))),
+                )
+                execution_id = int(cur.lastrowid or 0)
+                self._conn.commit()
+                return execution_id
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def get_execution(self, execution_id: int) -> Optional[Dict[str, Any]]:
         """{'id', 'snapshot_id', 'state'} or None."""
@@ -397,7 +453,26 @@ class Store:
         if not row:
             return None
         return {"id": row["id"], "snapshot_id": row["snapshot_id"],
-                "state": json.loads(row["state_json"])}
+                "state": json.loads(row["state_json"]), "_state_json": row["state_json"]}
+
+    def save_execution_if_unchanged(self, execution_id: int, expected_state_json: str,
+                                    state: Dict[str, Any]) -> str:
+        """Atomic cross-process compare-and-swap: ``saved``, ``conflict``, or ``missing``."""
+        encoded = json.dumps(state, separators=(",", ":"))
+        with self._lock:
+            cur = self._conn.execute(
+                """UPDATE executions SET label=?, status=?, ended_at=?, state_json=?
+                   WHERE id=? AND state_json=?""",
+                (state.get("label", ""), state.get("status", "in_progress"),
+                 state.get("ended_at"), encoded, execution_id, expected_state_json),
+            )
+            self._conn.commit()
+            if cur.rowcount > 0:
+                return "saved"
+            exists = self._conn.execute(
+                "SELECT 1 FROM executions WHERE id=?", (execution_id,)
+            ).fetchone()
+            return "conflict" if exists else "missing"
 
     def save_execution(self, execution_id: int, state: Dict[str, Any]) -> bool:
         """False when the row no longer exists (deleted mid-flight) — a silent 0-row UPDATE would

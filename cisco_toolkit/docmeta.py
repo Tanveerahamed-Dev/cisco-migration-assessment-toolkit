@@ -15,6 +15,10 @@ writers only call in after their own `from docx import …` has succeeded, so th
 unchanged.
 """
 from datetime import datetime
+import json
+import os
+import zipfile
+from xml.etree import ElementTree
 
 from cisco_toolkit.textutils import xml_safe   # shared XML-illegal-char sanitizer (every cell text routes through it)
 
@@ -78,6 +82,14 @@ CLI_ARTIFACT_SUFFIX = {
 #: Family kinds AssessHub renders in the web layer; no engine writer produces them.
 WEB_ONLY_KINDS = frozenset({"cutover", "nrfu"})
 
+#: Appended to a WEB_ONLY_KINDS entry's role in the Related-Documents table. The table lists the
+#: whole FAMILY, so a CLI/Atlas delivery — whose complete set is CLI_ARTIFACT_SUFFIX, which excludes
+#: these two — used to advertise a Cutover Plan and an NRFU/ATP that no engine writer produces and
+#: that are not in the folder. Naming the producer keeps the cross-reference true in BOTH channels
+#: (the web set really does contain them) instead of dropping rows in one.
+WEB_ONLY_ROLE_NOTE = (" — rendered in AssessHub from the stored snapshot; not produced by the "
+                      "offline engine run, so it may not be part of this delivery")
+
 
 def cli_artifacts(stem):
     """``[(key, name, filename)]`` a complete engine CLI run writes for output stem ``stem``.
@@ -87,6 +99,136 @@ def cli_artifacts(stem):
     base = str(stem).replace("\\", "/").rsplit("/", 1)[-1]
     return [(key, name, base + CLI_ARTIFACT_SUFFIX[key])
             for key, name, _role in FAMILY if key in CLI_ARTIFACT_SUFFIX]
+
+
+def artifact_candidate_paths(stem):
+    """Return the finite, producer-owned output set for one engine output ``stem``.
+
+    This is deliberately not a prefix glob.  A prefix glob turns an older run, an operator's
+    similarly-named note, or another concurrent run into evidence for the current assessment.
+    Callers use this exact set only to identify files which already existed and were *not* emitted
+    by the current run; the manifest itself is built exclusively from the live producer registry.
+    """
+    base = os.path.abspath(str(stem))
+    out_dir = os.path.dirname(base) or "."
+    paths = [base + suffix for suffix in CLI_ARTIFACT_SUFFIX.values()]
+    paths.extend([
+        base + ".snapshot.json",
+        base + ".phase_timings.json",
+        base + ".run_manifest.json",
+        os.path.join(out_dir, "topology.mmd"),
+        os.path.join(out_dir, "topology.dot"),
+    ])
+    # Preserve order while protecting against a future suffix collision.
+    return list(dict.fromkeys(os.path.normpath(p) for p in paths))
+
+
+def artifact_kind(path):
+    """Return the structural kind used to validate a generated artifact."""
+    name = os.path.basename(str(path)).lower()
+    if name.endswith(".phase_timings.json"):
+        return "phase-timings"
+    if name.endswith(".snapshot.json"):
+        return "snapshot"
+    if name.endswith(".run_manifest.json"):
+        return "manifest"
+    ext = os.path.splitext(name)[1]
+    return {
+        ".xlsx": "xlsx",
+        ".docx": "docx",
+        ".pptx": "pptx",
+        ".html": "html",
+        ".json": "json",
+        ".mmd": "mermaid",
+        ".dot": "graphviz",
+    }.get(ext, "file")
+
+
+_OFFICE_REQUIRED = {
+    "xlsx": ("[Content_Types].xml", "xl/workbook.xml"),
+    "docx": ("[Content_Types].xml", "word/document.xml"),
+    "pptx": ("[Content_Types].xml", "ppt/presentation.xml"),
+}
+
+
+def validate_artifact(path, kind=None):
+    """Structurally validate one generated file before it may enter custody.
+
+    Returns ``(ok, reason)`` and never raises for a malformed/partial file.  A successful writer
+    return is insufficient evidence of delivery: an interrupted ZIP write can leave a non-empty
+    ``.docx``/``.xlsx``/``.pptx`` which exists but cannot be opened, and a truncated JSON/HTML
+    writer can do the same.  The checks intentionally use only the standard library so the custody
+    gate works in the base installation and frozen Atlas build.
+    """
+    p = os.path.abspath(str(path))
+    k = str(kind or artifact_kind(p)).strip().lower()
+    try:
+        st = os.stat(p)
+    except OSError as exc:
+        return False, f"missing or unreadable: {exc}"
+    if not os.path.isfile(p):
+        return False, "not a regular file"
+    if st.st_size <= 0:
+        return False, "empty file"
+
+    if k in _OFFICE_REQUIRED:
+        try:
+            with zipfile.ZipFile(p, "r") as zf:
+                names = set(zf.namelist())
+                missing = [n for n in _OFFICE_REQUIRED[k] if n not in names]
+                if missing:
+                    return False, "invalid Office package; missing " + ", ".join(missing)
+                bad = zf.testzip()
+                if bad:
+                    return False, f"corrupt Office package member: {bad}"
+                for member in _OFFICE_REQUIRED[k]:
+                    ElementTree.fromstring(zf.read(member))
+        except (OSError, zipfile.BadZipFile, RuntimeError, ValueError,
+                ElementTree.ParseError) as exc:
+            return False, f"invalid Office package: {exc}"
+        return True, "valid Office Open XML package"
+
+    if k in ("json", "snapshot", "phase-timings", "manifest"):
+        try:
+            with open(p, encoding="utf-8-sig") as fh:
+                obj = json.load(fh)
+        except (OSError, UnicodeError, ValueError) as exc:
+            return False, f"invalid JSON: {exc}"
+        if k in ("snapshot", "phase-timings", "manifest") and not isinstance(obj, dict):
+            return False, f"{k} root is {type(obj).__name__}, not an object"
+        if k == "phase-timings" and not isinstance(obj.get("phases"), list):
+            return False, "phase-timings object has no phases list"
+        if k == "manifest" and not isinstance(obj.get("chain"), list):
+            return False, "manifest object has no chain list"
+        return True, "valid JSON"
+
+    if k == "html":
+        try:
+            with open(p, encoding="utf-8") as fh:
+                text = fh.read()
+        except (OSError, UnicodeError) as exc:
+            return False, f"invalid HTML text: {exc}"
+        low = text.lower()
+        if "<html" not in low or "</html>" not in low:
+            return False, "HTML document is missing its root/open or closing tag"
+        return True, "complete HTML document"
+
+    if k in ("mermaid", "graphviz"):
+        try:
+            with open(p, encoding="utf-8") as fh:
+                text = fh.read().strip()
+        except (OSError, UnicodeError) as exc:
+            return False, f"invalid diagram text: {exc}"
+        if k == "mermaid" and not (
+                text.startswith("graph ") or text.startswith("flowchart ")):
+            return False, "Mermaid document has no graph/flowchart declaration"
+        if k == "graphviz" and not (
+                (text.startswith("graph ") or text.startswith("digraph "))
+                and text.endswith("}")):
+            return False, "Graphviz document has no complete graph declaration"
+        return True, f"valid {k} document"
+
+    return True, "non-empty regular file"
 
 # Caveats every generated deliverable shares; writers append doc-specific ones via extra_assumptions.
 _ASSUMPTIONS = (
@@ -107,9 +249,13 @@ DEFAULT_ROLES = ("Customer network owner", "Customer operations lead",
 def related_rows(exclude=()):
     """(name, role) rows for the Related-Documents table, excluding the document being written.
     `exclude` is a family key or an iterable of keys; a bare string is treated as one key (set("mop")
-    would otherwise dissolve into letters and silently keep the document in its own related list)."""
+    would otherwise dissolve into letters and silently keep the document in its own related list).
+
+    A WEB_ONLY_KINDS row carries WEB_ONLY_ROLE_NOTE: it is a real member of the family, but no engine
+    writer produces it, so an offline delivery must not advertise it as if it were enclosed."""
     ex = {exclude} if isinstance(exclude, str) else set(exclude)
-    return [(name, role) for key, name, role in FAMILY if key not in ex]
+    return [(name, role + (WEB_ONLY_ROLE_NOTE if key in WEB_ONLY_KINDS else ""))
+            for key, name, role in FAMILY if key not in ex]
 
 
 def add_table(doc, headers, rows, widths=None, *, fixed=True):
@@ -171,10 +317,17 @@ def add_related_documents(doc, *, exclude=(), audience=None, intro=False):
     PIR writers (which carry their own control tables) call it directly (V3.23.152 review cleanup)."""
     doc.add_heading("Related documents", level=2)
     if intro:
+        # NOT "the set is internally consistent (every number reconciles)". That was asserted
+        # unconditionally, in the same front matter where add_excellence_front's single-source-of-truth
+        # line may report the opposite (figures published but never reconciled, or reconciled with
+        # violations) — a verification claimed by furniture that ran no verification. The reconcile
+        # VERDICT has one owner (ssot.summary, rendered in 'At a Glance'); this block states only the
+        # provenance fact it can vouch for and points at that owner (SSOT Law 1).
         doc.add_paragraph(
-            "This document is one of a set generated from the same assessment snapshot — the set is "
-            "internally consistent (every number reconciles) and should travel together with the "
-            "engagement's statement of work and change records.")
+            "This document is one of a set generated from the same assessment snapshot, and should "
+            "travel together with the engagement's statement of work and change records. Whether the "
+            "set's headline figures were reconciled against the raw evidence is reported per document "
+            "on the single-source-of-truth line under 'At a Glance' — this block does not assert it.")
     add_table(doc, ["Document", "Role in the set"], related_rows(exclude), widths=[2.7, 4.0])
     if audience:
         _kv(doc, "Intended audience:", audience)
@@ -352,8 +505,15 @@ def _glance_rows(snap):
         ("What was assessed?", scope),
         ("How healthy is the fleet?",
          f"average health {v(f.get('avg_health'))}/100 — {v(f.get('n_critical'))} Critical, {v(f.get('n_poor'))} Poor"),
+        # The unknown count rides WITH the headline, not in a footnote. `v()` maps only None to
+        # [NOT OBSERVED], so a real 0 passed straight through and the first page of every
+        # deliverable led with "0 device(s) past last-date-of-support" for a fleet whose platforms
+        # the offline EoX KB never matched. Zero findings and zero coverage are different facts.
         ("Biggest lifecycle exposure?",
-         f"{v(f.get('n_past_ldos'))} device(s) past last-date-of-support (migration-critical)"),
+         f"{v(f.get('n_past_ldos'))} device(s) past last-date-of-support (migration-critical)"
+         + (f" — plus {f['n_unknown']} device(s) NOT ASSESSED: no EoX bulletin matched their "
+            f"platform, so their support state is undetermined, not clear"
+            if f.get("n_unknown") else "")),
         ("Scale (VLANs / endpoints)?",
          f"{v(f.get('n_vlans'))} production VLANs · {v(f.get('n_endpoints'))} evidenced endpoints"),
     ]
@@ -375,13 +535,36 @@ def add_excellence_front(doc, snap, *, extra_rows=(), heading="At a Glance"):
     s = ssot.summary(snap if isinstance(snap, dict) else {})
     if s.get("n_facts"):
         if s.get("verified"):
+            # `n_facts` and `n_checked` are NOT the same unit and must never share an "X of Y" frame:
+            # n_facts counts the canonical facts PUBLISHED (14), n_checked counts the reconcile CHECKS
+            # that RAN (20 on the Meridian reference fleet — several facts carry more than one independent basis, and
+            # reconcile also verifies non-canonical siblings such as lifecycle_risk.summary.by_band).
+            # Rendered as "{n_checked} of {n_facts}" this shipped "✓ 20 of 14 headline figures
+            # self-verified" into all seven DOCX deliverables: a client-facing trust badge claiming more
+            # figures verified than exist. eval_harness._BADGE_COUNT_RE reads the number immediately
+            # before "headline figures self-verified", so that slot stays n_facts and the L1 rendered-
+            # citation guard keeps reconciling; the check count is disclosed in its own unit beside it.
             _kv(doc, "Single source of truth:",
-                f"✓ {s['n_facts']} headline figures self-verified against the raw evidence — "
-                "every number in this document reconciles to one source.")
+                f"✓ {s['n_facts']} headline figures self-verified against the raw evidence "
+                f"({s['n_checked']} independent reconciliation check(s), none disagreed) — every "
+                "number checked reconciles to one source.")
+        elif not s.get("n_checked"):
+            # PUBLISHED but never RECONCILED. Distinct from both other states and it must say so: a
+            # snapshot can publish every canonical block while carrying none of the raw arrays the
+            # checks derive from, and the old text claimed "self-verified ... every number in this
+            # document reconciles to one source" over exactly that. Claiming a verification that did
+            # not run is worse than reporting none.
+            _kv(doc, "Single source of truth:",
+                f"⚠ {s['n_facts']} headline figures published, but NONE could be reconciled against "
+                "raw evidence in this snapshot — they are unverified, not confirmed.")
         else:
+            # Same unit discipline as the verified branch: both numbers here are CHECKS (a violation is
+            # emitted per failed check, and one fact can carry several), so the label says checks —
+            # "reconciled headline figures" read them as facts and could imply more figures than exist.
             _kv(doc, "Single source of truth:",
-                f"⚠ {s['n_violations']} of {s['n_facts']} headline figures did not reconcile; "
-                "treat flagged numbers with caution (see the assessment-integrity disclosure).")
+                f"⚠ {s['n_violations']} of {s['n_checked']} reconciliation check(s) over the "
+                f"{s['n_facts']} published headline figures did not agree; treat flagged numbers with "
+                "caution (see the assessment-integrity disclosure).")
     rows = list(_glance_rows(snap)) + list(extra_rows)
     add_table(doc, ["Question", "Answer"], rows, widths=[2.6, 4.1], fixed=False)
 

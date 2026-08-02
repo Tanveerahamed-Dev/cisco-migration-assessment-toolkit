@@ -28,5 +28,8 @@ Run a **grounded council** on the claim in `$ARGUMENTS` — the proposer≠verif
    counterexamples (those are the reasons; surface them, don't average them away). If REFUTE, the claim is
    **not certified** — say so plainly and list what must change to clear it.
 
-Read-only throughout: no device writes, no external fetch. Ground every lens verdict in collected evidence
-(cite the field/line); "not observed" is never "healthy".
+Read-only throughout: no device writes, and no live collection — every lens reasons over the snapshot that
+already exists. Ground every lens verdict in collected evidence (cite the field/line); "not observed" is
+never "healthy". Note the one egress seam: `config-security-auditor`'s own charter tells it to WebSearch
+PSIRT for advisories, so a Security lens is NOT offline by default — tell it to stay on collected evidence
+when this council must run air-gapped.

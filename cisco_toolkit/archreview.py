@@ -39,7 +39,8 @@ from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_exce
 from cisco_toolkit.docmeta import as_dict as _docmeta_as_dict
 from cisco_toolkit.docmeta import as_list as _docmeta_as_list
 from cisco_toolkit.textutils import (   # entry deep-sanitize of device text (audit-5) + fail-soft numeric
-    NATIVE1_CFG_BASIS, _as_num, is_trunk_mode, xml_safe, xml_safe_deep)   # coercion + native-VLAN-1 basis
+    NATIVE1_CFG_BASIS, _as_num, bpduguard_state, is_trunk_mode, xml_safe, xml_safe_deep)   # coercion + shared token owners
+from cisco_toolkit import ssot as _ssot_mod   # Law 1 accessors (canonical facts + segmentation posture)
 
 logger = logging.getLogger(__name__)
 
@@ -112,11 +113,45 @@ def _port_gbps(port: str, speed: str):
     return None
 
 
-def _ev(hosts, cap: int = 12) -> str:
-    """Render an evidence host/item list, capped (cry-wolf doctrine: aggregate, don't enumerate)."""
+def _ev(hosts, cap: int = 12, total=None) -> str:
+    """Render an evidence host/item list, capped (cry-wolf doctrine: aggregate, don't enumerate).
+
+    `total` is the TRUE population size for the case where `hosts` is ITSELF already a sample: a
+    check's stored `evidence` is capped at `_EVIDENCE_CAP` by `add()`, so a "+N more" computed off
+    the stored list understates the scope by everything the first cut dropped -- on the Meridian reference fleet
+    L2-3 carries 230 evidence hosts, and the §3 scorecard rendered "5 shown +15 more" for it.
+    Shown + hidden must reconcile to the real total, so the caller passes the check's
+    `evidence_total` (absent when nothing was dropped, hence the None default)."""
     items = sorted({str(h) for h in hosts if h is not None})
-    head = ", ".join(items[:cap])
-    return head + (f" +{len(items) - cap} more" if len(items) > cap else "") if items else "—"
+    if not items:
+        return "—"
+    shown = items[:cap]
+    n_total = max(_as_int(total), len(items)) if total else len(items)
+    hidden = n_total - len(shown)
+    return ", ".join(shown) + (f" +{hidden} more" if hidden > 0 else "")
+
+
+#: How many evidence hosts a check RETAINS (the snapshot section is consumed by the explorer + the
+#: webapp, so an unbounded fleet-wide list is not free). The cut is disclosed via `evidence_total`.
+_EVIDENCE_CAP = 20
+
+
+def _clip(text, width: int) -> str:
+    """Cut a free-text field to a display width WITHOUT manufacturing a token: trim back to the last
+    word boundary and mark the cut with '…'.
+
+    A raw ``str(...)[:60]`` on a device-derived string ends mid-word, and the reader has no way to
+    tell a clipped title from a complete one (the same failure the Findings-Delta devices column had:
+    a hostname's front half read as a hostname). Measured on the Meridian reference fleet: 1 of 3 rendered
+    High/Critical drift titles is 69 chars and was cut mid-word."""
+    s = str(text if text is not None else "")
+    if len(s) <= width:
+        return s
+    cut = s[:width]
+    sp = cut.rfind(" ")
+    if sp >= width // 2:                    # only honour a boundary that keeps most of the text
+        cut = cut[:sp]
+    return cut.rstrip(" ,;:-") + "…"
 
 
 # =============================================================================
@@ -201,10 +236,20 @@ def compute_architecture_review(snap: dict) -> dict:
 
     def add(cid, domain, title, verdict, observed, implication, recommendation, reference,
             evidence=()):
-        checks.append({"id": cid, "domain": domain, "title": title, "verdict": verdict,
-                       "observed": observed, "implication": implication,
-                       "recommendation": recommendation, "reference": reference,
-                       "evidence": sorted({str(h) for h in evidence if h is not None})[:20]})
+        # The evidence cut is DISCLOSED, never silent: every renderer of `evidence` shows a
+        # "+N more" tail, and computing that N from the already-capped list is a lie about scope
+        # (Meridian reference fleet: 8 of 25 checks exceed the cap -- L2-3 at 230 hosts rendered as "+15 more",
+        # LC-1 152, HIER-1 116, SEC-1 74, HIER-2 67, L2-1 42, RES-1 21, L2-5 21).
+        # `evidence_total` is emitted ONLY when something was actually dropped -- an unconditional
+        # key would restate `len(evidence)` on every check for no reader.
+        _ev_all = sorted({str(h) for h in evidence if h is not None})
+        rec = {"id": cid, "domain": domain, "title": title, "verdict": verdict,
+               "observed": observed, "implication": implication,
+               "recommendation": recommendation, "reference": reference,
+               "evidence": _ev_all[:_EVIDENCE_CAP]}
+        if len(_ev_all) > _EVIDENCE_CAP:
+            rec["evidence_total"] = len(_ev_all)
+        checks.append(rec)
 
     # ---------------- D1 · Hierarchy & modularity ----------------
     D1 = "Hierarchy & modularity"
@@ -324,7 +369,10 @@ def compute_architecture_review(snap: dict) -> dict:
 
     psu_known = {h: _as_int(_as_dict(d).get("num_power_supplies")) for h, d in devices.items()}
     psu_single = sorted(h for h, n in psu_known.items() if n == 1)
-    if not any(n > 0 for n in psu_known.values()):
+    # _as_int coerces a MISSING inventory to 0, so `n > 0` is the coverage test, not a PSU count.
+    n_psu_known = sum(1 for n in psu_known.values() if n > 0)
+    n_psu_unknown = len(psu_known) - n_psu_known
+    if n_psu_known == 0:
         add("RES-3", D2, "Redundant power supplies", "not-assessable",
             "Power-supply inventory was not captured for any device.", "—",
             "Include 'show environment power' / inventory output in collection.",
@@ -333,38 +381,89 @@ def compute_architecture_review(snap: dict) -> dict:
         worst = sorted(set(psu_single) & l3_hosts)
         add("RES-3", D2, "Redundant power supplies", "deviation" if worst else "advisory",
             f"{len(psu_single)} device(s) run on a single PSU: {_ev(psu_single)}"
-            + (f" — including L3 node(s) {_ev(worst, 6)}" if worst else "") + ".",
+            + (f" — including L3 node(s) {_ev(worst, 6)}" if worst else "")
+            + (f" (power inventory captured for {n_psu_known} of {len(psu_known)} device(s); the "
+               f"remaining {n_psu_unknown} are unassessed)" if n_psu_unknown else "") + ".",
             "A single supply turns a PSU/feed fault into a chassis outage; on a distribution node "
             "that is a multi-closet event.",
             "Fit second supplies (separate feeds) on the listed devices — distribution tier first.",
             "Cisco campus HA design — N+1 power on aggregation nodes", evidence=psu_single)
+    elif n_psu_unknown:
+        # conforms-by-silence guard (matches HIER-2 / L2-3): the not-assessable gate above is
+        # FLEET-WIDE (`no device reported a count`), so a single device reporting 2 supplies used to
+        # carry the whole fleet to CONFORMS and assert "no single feed/PSU fault takes a switch
+        # down" over devices whose power inventory was never captured. Partial coverage is a blind
+        # spot, never health.
+        add("RES-3", D2, "Redundant power supplies", "not-assessable",
+            f"Power-supply inventory was captured for only {n_psu_known} of {len(psu_known)} "
+            f"device(s) (all of them carry ≥2 supplies); the remaining {n_psu_unknown} report none, "
+            "so fleet power redundancy cannot be graded from this evidence.", "—",
+            "Include 'show environment power' / inventory output for every device, then re-review.",
+            "Cisco campus HA design — N+1 power on aggregation nodes")
     else:
         add("RES-3", D2, "Redundant power supplies", "conforms",
-            "Every device with captured power inventory carries ≥2 supplies.",
+            f"All {len(psu_known)} device(s) report captured power inventory and carry ≥2 supplies.",
             "No single feed/PSU fault takes a switch down.",
             "Keep dual feeds through the migration (verify per site during NRFU).",
             "Cisco campus HA design — N+1 power on aggregation nodes")
 
     fi = [r for r in _as_list(snap.get("failure_impact")) if isinstance(r, dict)]
-    keystones = sorted((r for r in fi if _as_int(r.get("stranded")) > 0),
+    # conforms-by-silence guard (matches HIER-2 / RES-3 / L2-2 / L2-3): the old gate was
+    # `snap.get("failure_impact") is None`, which catches ONLY a literally absent key. A simulation
+    # section that is present-but-EMPTY (or a truthy non-list from an uploaded snapshot, which
+    # `_as_list` normalises to []), or rows that carry no `stranded` figure at all, produced an empty
+    # keystone set and fell straight through to CONFORMS — asserting "the failure simulation strands
+    # no endpoints behind any single device / redundancy absorbs any one device loss" over evidence
+    # that was never collected. `stranded: 0` is a real observed zero; a MISSING one is not.
+    fi_measured = [r for r in fi if r.get("stranded") is not None]
+    keystones = sorted((r for r in fi_measured if _as_int(r.get("stranded")) > 0),
                        key=lambda r: -_as_int(r.get("stranded")))
-    if snap.get("failure_impact") is None:
+    if not fi_measured:
         add("RES-4", D2, "No keystone single point of failure", "not-assessable",
-            "The failure-impact simulation is absent from this snapshot.", "—",
+            ("The failure-impact simulation is absent from this snapshot."
+             if not fi else
+             f"The failure-impact section carries {len(fi)} row(s) but none reports a stranded-"
+             "endpoint figure, so single-device blast radius cannot be graded from this evidence."),
+            "—",
             "Re-run the assessment with the current engine.",
             "Availability analysis — single-device blast radius")
     elif keystones:
+        # This names 5 of len(keystones) — 193 on the Meridian reference fleet, 19 on the sample — and without the
+        # tail sentence it reads as the complete keystone set, i.e. "the fleet has five keystones".
+        # A migration that hardens those five leaves the rest unhardened and sequences waves off the
+        # wrong blast-radius population. The band is read off the DESCENDING tail so it can never
+        # overstate a hidden row ("at least the 5th value" would).
+        _tail = keystones[5:]
+        _more = ""
+        if _tail:
+            _hi = _as_int(_tail[0].get("stranded"))
+            _lo = _as_int(_tail[-1].get("stranded"))
+            _more = (f"; and {len(_tail)} further device(s) strand "
+                     + (f"{_lo}-{_hi}" if _lo != _hi else f"{_lo}") + " endpoint(s) each")
         add("RES-4", D2, "No keystone single point of failure", "advisory",
             "Losing " + "; ".join(f"{r.get('host')} strands {_as_int(r.get('stranded'))} endpoint(s)"
-                                  for r in keystones[:5]) + ".",
+                                  for r in keystones[:5]) + _more + ".",
             "Endpoint dependency is concentrated — these devices ARE the availability budget.",
             "Verify each keystone's redundancy (uplinks, power, supervisor) and sequence them with "
             "the most conservative cutover plan (their waves carry the widest blast radius).",
             "Availability analysis — single-device blast radius",
-            evidence=[r.get("host") for r in keystones[:8]])
+            # Pass the FULL keystone list: pre-cutting at 8 here happens BEFORE add()'s own 20-item
+            # evidence cap, so `evidence_total` never fired for this check and its "+N more" marker
+            # reconciled against 8 instead of the real population. Let the disclosed cap do the
+            # bounding.
+            evidence=[r.get("host") for r in keystones])
+    elif len(fi_measured) < len(fi):
+        # partial coverage is a blind spot, never health — the same rule RES-3 applies to PSU inventory
+        add("RES-4", D2, "No keystone single point of failure", "not-assessable",
+            f"Only {len(fi_measured)} of {len(fi)} simulated device(s) report a stranded-endpoint "
+            "figure (none of those strands any endpoint); the rest carry no figure, so fleet blast "
+            "radius cannot be graded from this evidence.", "—",
+            "Re-run the assessment with the current engine so every device is simulated.",
+            "Availability analysis — single-device blast radius")
     else:
         add("RES-4", D2, "No keystone single point of failure", "conforms",
-            "The failure simulation strands no endpoints behind any single device.",
+            f"The failure simulation strands no endpoints behind any single device "
+            f"(all {len(fi_measured)} simulated device(s) report a stranded-endpoint figure).",
             "Redundancy absorbs any one device loss.",
             "Re-verify after each migration wave (the topology changes underneath the simulation).",
             "Availability analysis — single-device blast radius")
@@ -386,7 +485,13 @@ def compute_architecture_review(snap: dict) -> dict:
     elif access_roots:
         add("L2-1", D3, "Deterministic STP root at the distribution tier", "deviation",
             "Access switch(es) hold the STP root: "
-            + "; ".join(f"{h} roots {roots_by_host[h]} VLAN(s)" for h in access_roots[:6]) + ".",
+            # This sentence is the check's whole statement of SCOPE — how many closets the design
+            # must re-pin. Naming 6 of len(access_roots) (42 on the Meridian reference fleet, 17 on the sample) sizes
+            # an LLD task list and a per-wave STP risk off a display cap.
+            + "; ".join(f"{h} roots {roots_by_host[h]} VLAN(s)" for h in access_roots[:6])
+            + (f"; and {len(access_roots) - 6} further access switch(es) rooting "
+               f"{sum(roots_by_host[h] for h in access_roots[6:])} VLAN(s) between them"
+               if len(access_roots) > 6 else "") + ".",
             "A root on an access closet means the L2 tree converges around the smallest box in the "
             "fabric — default (un-pinned) priorities usually caused it, and any new switch can "
             "silently steal the root.",
@@ -409,29 +514,56 @@ def compute_architecture_review(snap: dict) -> dict:
             if str(d.get("switchport_mode") or "").lower() != "access":
                 continue
             n_access_ports += 1
-            v = str(d.get("stp_bpduguard") or "").strip().lower()
-            if v:
-                bpdu_data += 1
-                if v not in ("no", "disabled", "off", "false", "-", "--"):
+            # textutils.bpduguard_state is the ONE owner of this token decision (see there). The
+            # hand-rolled `v not in ("no","disabled","off","false","-","--")` this replaced did not
+            # contain the producer's own "Disable", so an edge port with BPDU Guard explicitly OFF
+            # was counted as GUARDED here while design_advisor counted it unguarded off the same
+            # field -- a false-health inversion in the direction that matters.
+            st = bpduguard_state(d.get("stp_bpduguard"))
+            if st is not None:
+                bpdu_data += 1              # assessable: the token proves one state or the other
+                if st:
                     guarded += 1
+    # Two DIFFERENT denominators are in play: `bpdu_data` = access ports whose BPDU-Guard state was
+    # actually captured (the assessable set), `n_access_ports` = every access port. The old
+    # `guarded * 2 < n_access_ports` advisory test graded CONFORMS — asserting "the edge is
+    # protected" — as soon as guarded ports passed HALF of ALL access ports, so ports with NO
+    # evidence (and even ports positively observed UNGUARDED) were carried into a pass. The cited
+    # rule is PortFast + BPDU Guard on EVERY edge port, so conformance needs full capture AND no
+    # unguarded port; anything less abstains or deviates (matching HIER-2 / L2-3).
+    n_unguarded = bpdu_data - guarded
+    n_uncaptured = n_access_ports - bpdu_data
     if n_access_ports == 0 or bpdu_data == 0:
         add("L2-2", D3, "Edge protection (BPDU Guard) on access ports", "not-assessable",
             "BPDU Guard state was not captured for the access ports.", "—",
             "Include 'show spanning-tree interface detail' (or run-config) in collection.",
             "Cisco campus design — PortFast + BPDU Guard on every edge port")
-    elif guarded * 2 < n_access_ports:
+    elif n_unguarded:
         add("L2-2", D3, "Edge protection (BPDU Guard) on access ports", "advisory",
-            f"{guarded} of {n_access_ports} access port(s) carry BPDU Guard.",
+            f"{n_unguarded} of the {bpdu_data} access port(s) whose BPDU-Guard state was captured "
+            f"do NOT carry it ({guarded} do)"
+            + (f"; a further {n_uncaptured} of {n_access_ports} access port(s) carry no BPDU-Guard "
+               "evidence at all" if n_uncaptured else f" — all {n_access_ports} access port(s) captured") + ".",
             "An unguarded edge port lets a plugged-in switch (or a looped wall jack) join and "
             "reshape the spanning tree — the classic cause of campus-wide L2 meltdowns.",
             "Enable PortFast + BPDU Guard as the access-port default in the target configuration "
             "standard (the remediation plan carries the snippets).",
             "Cisco campus design — PortFast + BPDU Guard on every edge port")
+    elif n_uncaptured:
+        # conforms-by-silence guard: every CAPTURED port is guarded, but the rest were never
+        # evidenced — "the edge is protected" would be asserted off silence.
+        add("L2-2", D3, "Edge protection (BPDU Guard) on access ports", "not-assessable",
+            f"All {bpdu_data} access port(s) with a captured BPDU-Guard state carry it, but "
+            f"{n_uncaptured} of {n_access_ports} access port(s) carry no BPDU-Guard evidence — edge "
+            "protection cannot be graded from this evidence (the rule is EVERY edge port).", "—",
+            "Include 'show spanning-tree interface detail' (or run-config) for every access port, "
+            "then re-review.",
+            "Cisco campus design — PortFast + BPDU Guard on every edge port")
     else:
         add("L2-2", D3, "Edge protection (BPDU Guard) on access ports", "conforms",
-            f"{guarded} of {n_access_ports} access port(s) carry BPDU Guard.",
+            f"All {n_access_ports} access port(s) carry BPDU Guard (state captured on every one).",
             "The edge is protected against accidental switch insertion.",
-            "Keep the standard; close the remaining gap ports during the migration touch.",
+            "Keep the standard through the migration touch.",
             "Cisco campus design — PortFast + BPDU Guard on every edge port")
 
     v1_access, v1_native = [], []
@@ -725,23 +857,45 @@ def compute_architecture_review(snap: dict) -> dict:
             "Cisco campus rule of thumb — ≤20:1 access→distribution, ≤4:1 distribution→core")
 
     cap_rows = [r for r in _as_list(snap.get("capacity")) if isinstance(r, dict)]
-    tight = sorted((r for r in cap_rows if isinstance(r.get("port_util"), (int, float))
-                    and r["port_util"] > 90), key=lambda r: -r["port_util"])
-    if not cap_rows:
+    # conforms-by-silence guard: `port_util` is absent-prone (the runbook already excludes rows whose
+    # active-port count was never observed, "port_util can read 0.0 from absent evidence"). The old
+    # test filtered non-numeric rows into oblivion and then graded CONFORMS off whatever survived —
+    # so a capacity section whose utilisation column was never captured asserted "All N device(s)
+    # hold port headroom below the 90% line" over N unmeasured closets, and RAISED the overall grade.
+    cap_measured = [r for r in cap_rows if isinstance(r.get("port_util"), (int, float))]
+    tight = sorted((r for r in cap_measured if r["port_util"] > 90), key=lambda r: -r["port_util"])
+    if not cap_measured:
         add("CAP-2", D5, "Port-capacity headroom for growth", "not-assessable",
-            "No capacity rows in the snapshot.", "—", "Re-run with the current engine.",
+            ("No capacity rows in the snapshot." if not cap_rows else
+             f"{len(cap_rows)} capacity row(s) carry no numeric port-utilisation figure, so port "
+             "headroom cannot be graded from this evidence."),
+            "—", "Re-run with the current engine.",
             "Capacity planning — keep ~10% port headroom per closet")
     elif tight:
         add("CAP-2", D5, "Port-capacity headroom for growth", "advisory",
+            # The BoM sizes replacement hardware off this list, so the count past the 90% line must
+            # not be the display cap: 6 named of len(tight) (16 on the sample fleet) means ten full
+            # closets get no spare-port allowance.
             "; ".join(f"{r.get('hostname')} at {r.get('port_util')}% port utilisation"
-                      for r in tight[:6]) + ".",
+                      for r in tight[:6])
+            + (f"; and {len(tight) - 6} further closet(s) above the 90% line"
+               if len(tight) > 6 else "") + ".",
             "A full closet forces ad-hoc daisy-chaining (see HIER-2) the day a port is needed.",
             "Size replacement hardware with ≥10% spare ports per listed closet.",
             "Capacity planning — keep ~10% port headroom per closet",
             evidence=[r.get("hostname") for r in tight])
+    elif len(cap_measured) < len(cap_rows):
+        # partial coverage is a blind spot, never health (same rule as RES-3 / L2-2)
+        add("CAP-2", D5, "Port-capacity headroom for growth", "not-assessable",
+            f"All {len(cap_measured)} device(s) with a captured port-utilisation figure sit below the "
+            f"90% line, but {len(cap_rows) - len(cap_measured)} of {len(cap_rows)} capacity row(s) "
+            "carry no figure — fleet port headroom cannot be graded from this evidence.", "—",
+            "Capture port utilisation for every device, then re-review.",
+            "Capacity planning — keep ~10% port headroom per closet")
     else:
         add("CAP-2", D5, "Port-capacity headroom for growth", "conforms",
-            f"All {len(cap_rows)} device(s) hold port headroom below the 90% line.",
+            f"All {len(cap_measured)} device(s) hold port headroom below the 90% line "
+            "(utilisation captured on every one).",
             "Growth fits without topology workarounds.",
             "Carry the same headroom rule into the BoM for the target build.",
             "Capacity planning — keep ~10% port headroom per closet")
@@ -759,7 +913,7 @@ def compute_architecture_review(snap: dict) -> dict:
     elif d_hi:
         add("OPS-1", D6, "No operational drift / false health", "deviation",
             f"{len(d_hi)} High/Critical drift finding(s) (of {len(drift)} total): "
-            + "; ".join(str(d.get("title") or d.get("detail") or "?")[:60] for d in d_hi[:3]) + ".",
+            + "; ".join(_clip(d.get("title") or d.get("detail") or "?", 60) for d in d_hi[:3]) + ".",
             "Drift findings are the traps a green control plane hides — they surface on the first "
             "change, which is exactly what a migration is.",
             "Close the High/Critical drift items before their carrying waves (punch-list owners).",
@@ -778,12 +932,26 @@ def compute_architecture_review(snap: dict) -> dict:
             "Assessment doctrine — configured is not healthy; up is not healthy")
 
     hyg = _as_dict(snap.get("config_hygiene"))
-    undef_hosts = {h: _as_int(_as_dict(_as_dict(v).get("summary")).get("undefined"))
-                   for h, v in hyg.items()}
-    undef_hosts = {h: n for h, n in undef_hosts.items() if n > 0}
-    if not hyg:
+
+    def _undef_n(v):
+        """Undefined-reference count for one device, or None when the record evidences NEITHER a
+        count nor a list. `_as_int(<missing>)` coerced to 0, so a hygiene record that never reported
+        the figure was carried to CONFORMS ("No undefined references across the fleet") off silence —
+        the same conforms-by-silence hole guarded at RES-3 / RES-4 / L2-2 / L2-3 / CAP-2. The list is
+        read when the summary lacks the count, so a partial record still yields a real number."""
+        v = _as_dict(v)
+        s = _as_dict(v.get("summary")).get("undefined")
+        if s is not None:
+            return _as_int(s)
+        return len(v["undefined"]) if isinstance(v.get("undefined"), list) else None
+
+    hyg_measured = {h: n for h, n in ((h, _undef_n(v)) for h, v in hyg.items()) if n is not None}
+    undef_hosts = {h: n for h, n in hyg_measured.items() if n > 0}
+    if not hyg or not hyg_measured:
         add("OPS-2", D6, "Clean configuration hygiene", "not-assessable",
-            "Config-hygiene analysis is absent from this snapshot.", "—",
+            ("Config-hygiene analysis is absent from this snapshot." if not hyg else
+             f"{len(hyg)} config-hygiene record(s) report no undefined-reference count, so hygiene "
+             "cannot be graded from this evidence."), "—",
             "Re-run the assessment with the current engine.",
             "Operational hygiene — no undefined references in running configuration")
     elif undef_hosts:
@@ -795,9 +963,18 @@ def compute_architecture_review(snap: dict) -> dict:
             "Resolve or remove each undefined reference before its device migrates.",
             "Operational hygiene — no undefined references in running configuration",
             evidence=undef_hosts)
+    elif len(hyg_measured) < len(hyg):
+        # partial coverage is a blind spot, never health
+        add("OPS-2", D6, "Clean configuration hygiene", "not-assessable",
+            f"All {len(hyg_measured)} device(s) with a captured undefined-reference count are clean, "
+            f"but {len(hyg) - len(hyg_measured)} of {len(hyg)} hygiene record(s) report no count — "
+            "fleet hygiene cannot be graded from this evidence.", "—",
+            "Re-run the assessment with the current engine so every device reports a count.",
+            "Operational hygiene — no undefined references in running configuration")
     else:
         add("OPS-2", D6, "Clean configuration hygiene", "conforms",
-            "No undefined references across the fleet.",
+            f"No undefined references across the fleet ({len(hyg_measured)} device(s) reported a "
+            "count).",
             "Config intent is internally consistent.",
             "Keep the hygiene gate in the target config standard.",
             "Operational hygiene — no undefined references in running configuration")
@@ -882,41 +1059,49 @@ def compute_architecture_review(snap: dict) -> dict:
             "Re-grade after the migration (new platforms, new defaults).",
             "CIS Cisco IOS Benchmark — AAA, NTP, logging, SSHv2/VTY, SNMPv3 hardening")
 
-    vrfs = set()
-    n_svis = n_acl_svis = 0
-    for host, ports in interfaces.items():
-        for p, d in _as_dict(ports).items():
-            d = _as_dict(d)
-            vrf = str(d.get("vrf") or "").strip()
-            if vrf and vrf.lower() not in ("default", "global"):
-                vrfs.add(vrf)
-            if re.match(r"^Vlan\d+$", str(p), re.I) and str(d.get("svi_ip") or ""):
-                n_svis += 1
-                if str(d.get("acl_in") or "").strip() or str(d.get("acl_out") or "").strip():
-                    n_acl_svis += 1
+    # SSOT (Law 1): the gateway-tier segmentation posture has ONE owner -- analyze.compute_segmentation
+    # -> snap['segmentation'] -- read here via ssot.segmentation_facts (interface-derived fallback for
+    # pre-segmentation snapshots). The local recount this replaced asked a DIFFERENT question under the
+    # owner's label: it counted every non-default VRF configured ANYWHERE (mgmt0's management VRF, a vPC
+    # keepalive VRF) as a "VRF in use", so on the Meridian reference fleet it rendered "4 VRF(s) in use" beside the
+    # runbook's "1 VRF(s) across 231 gateway SVI(s)" off the same snapshot -- and, worse, those 4
+    # gateway-less VRFs made `not vrfs` False, downgrading a fabric the owner calls FLAT from the
+    # deviation branch to "advisory / partial enforcement". Only VRFs that actually CARRY a gateway SVI
+    # can segment user traffic, so the gate reads `gateway_vrfs`; the management-only VRFs are still
+    # reported, under their own name, so nothing is dropped.
+    _seg = _ssot_mod.segmentation_facts(snap)
+    gw_vrfs = list(_seg.get("gateway_vrfs") or [])
+    other_vrfs = list(_seg.get("other_vrfs") or [])
+    n_svis = _as_int(_seg.get("n_gateways"))
+    n_acl_svis = _as_int(_seg.get("n_with_acl"))
+    _other = (f" ({len(other_vrfs)} further non-default VRF(s) are configured — "
+              f"{', '.join(other_vrfs[:6])} — but carry no gateway SVI, so they segment no user traffic)"
+              if other_vrfs else "")
     if n_svis == 0:
         add("SEC-2", D7, "Segmentation enforced at the L3 boundary", "not-assessable",
             "No in-scope gateway SVIs to read policy from.", "—",
             "Bring the gateway tier into collection scope.",
             "Segmentation guidance — enforce inter-segment policy at the L3 boundary (VRF / gateway ACL)")
-    elif not vrfs and n_acl_svis * 4 < n_svis:
+    elif not gw_vrfs and n_acl_svis * 4 < n_svis:
         add("SEC-2", D7, "Segmentation enforced at the L3 boundary", "deviation",
-            f"No non-default VRFs and only {n_acl_svis} of {n_svis} gateway SVIs carry an ACL.",
+            f"No gateway SVI sits in a non-default VRF and only {n_acl_svis} of {n_svis} carry an ACL"
+            + _other + ".",
             "Inter-VLAN traffic is openly routed: any compromised segment reaches every other "
             "segment at wire speed.",
             "Use the migration to introduce intended segmentation — VRF separation for true "
             "isolation, gateway ACLs as the minimum policy line.",
             "Segmentation guidance — enforce inter-segment policy at the L3 boundary (VRF / gateway ACL)")
-    elif n_acl_svis < n_svis or not vrfs:
+    elif n_acl_svis < n_svis or not gw_vrfs:
         add("SEC-2", D7, "Segmentation enforced at the L3 boundary", "advisory",
-            (f"{len(vrfs)} VRF(s) in use; " if vrfs else "No non-default VRFs; ")
-            + f"{n_acl_svis} of {n_svis} gateway SVIs carry an ACL.",
+            (f"{len(gw_vrfs)} VRF(s) carry a gateway SVI; " if gw_vrfs
+             else "No gateway SVI sits in a non-default VRF; ")
+            + f"{n_acl_svis} of {n_svis} gateway SVIs carry an ACL" + _other + ".",
             "Partial enforcement leaves unpoliced inter-segment paths.",
             "Close the unpoliced SVIs (or fold them into a VRF) in the target design.",
             "Segmentation guidance — enforce inter-segment policy at the L3 boundary (VRF / gateway ACL)")
     else:
         add("SEC-2", D7, "Segmentation enforced at the L3 boundary", "conforms",
-            f"{len(vrfs)} VRF(s); every gateway SVI carries policy.",
+            f"{len(gw_vrfs)} VRF(s) carry a gateway SVI; every gateway SVI carries policy." + _other,
             "Inter-segment traffic crosses an enforced boundary.",
             "Preserve policy parity through the migration (NRFU verifies).",
             "Segmentation guidance — enforce inter-segment policy at the L3 boundary (VRF / gateway ACL)")
@@ -926,47 +1111,79 @@ def compute_architecture_review(snap: dict) -> dict:
     lc_sum = _as_dict(_as_dict(snap.get("lifecycle_risk")).get("summary"))
     n_ldos, n_eos, n_near = (_as_int(lc_sum.get("n_past_ldos")), _as_int(lc_sum.get("n_past_eos")),
                              _as_int(lc_sum.get("n_near")))
+    # Published by analyze.compute_lifecycle_risk (analyze.py:6199) and, until now, read by nothing
+    # in this chain — which is exactly how an all-Unknown fleet reached the `conforms` branch below.
+    n_unknown = _as_int(lc_sum.get("n_unknown"))
     lc_dev = [str(_as_dict(r).get("host")) for r in
               _as_list(_as_dict(snap.get("lifecycle_risk")).get("per_device"))
               if _as_dict(r).get("band") in ("Past-EoS", "Past-LDoS")]
+    # COVERAGE is ORTHOGONAL to what was FOUND, so it must not be chained behind the findings.
+    # Subordinated as an `elif` (the shape crd.py carried until this round), the coverage disclosure
+    # fired only when every adverse count was zero — so the BROWNFIELD fleet, some gear banded and
+    # most not, lost it entirely. Measured: 1 Past-LDoS + 20 Unknown emitted verdict `critical`
+    # reading "1 device(s) are past LAST-DAY-OF-SUPPORT: sw0." and never mentioned the 20 devices
+    # whose support state was never determined — while LC-1 feeds domains[].score_pct, the
+    # conformance grade, the Architecture Review DOCX and its workbook sheet.
+    #
+    # Build the coverage sentence ONCE and append it through a wrapper, so EVERY LC-1 exit carries
+    # it by construction rather than by each branch remembering to. A future branch cannot forget.
+    _lc_cov_obs = (f" Separately, {n_unknown} device(s) could NOT be lifecycle-banded — no EoX "
+                   "bulletin in the offline KB covers their platform, so their support state is "
+                   "UNKNOWN, never determined, and this check is unanswered for them."
+                   if n_unknown else "")
+    _lc_cov_imp = (" The undetermined device(s) carry no evidence of vendor support in either "
+                   "direction; absent lifecycle data is not a pass, and a plan that assumes it is "
+                   "may stage a platform with no TAC path into a change window."
+                   if n_unknown else "")
+    _lc_cov_rec = (" Resolve every undetermined platform against Cisco's EoX portal and re-run, or "
+                   "record them as an accepted risk in the engagement RAID log."
+                   if n_unknown else "")
+
+    def add_lc(verdict, observed, implication, recommendation, evidence=()):
+        add("LC-1", D8, "No hardware past end-of-support", verdict,
+            observed + _lc_cov_obs, implication + _lc_cov_imp, recommendation + _lc_cov_rec,
+            "Cisco EoX policy — no TAC/software support past last-day-of-support", evidence=evidence)
+
     if not lc_sum:
-        add("LC-1", D8, "No hardware past end-of-support", "not-assessable",
-            "Lifecycle analysis is absent from this snapshot.", "—",
-            "Re-run the assessment with the current engine (offline EoL KB).",
-            "Cisco EoX policy — no TAC/software support past last-day-of-support")
+        add_lc("not-assessable", "Lifecycle analysis is absent from this snapshot.", "—",
+               "Re-run the assessment with the current engine (offline EoL KB).")
     elif n_ldos:
-        add("LC-1", D8, "No hardware past end-of-support", "critical",
-            f"{n_ldos} device(s) are past LAST-DAY-OF-SUPPORT"
-            # bands are EXCLUSIVE: n_eos is the Past-EoS-ONLY count. Every Past-LDoS device is ALSO past
-            # end-of-sale, so a bare "(and 0 past end-of-sale)" reads as "nothing is past EoS" — omit it
-            # when 0, and say "more" when >0 (the additional EoS-only devices).
-            + (f" (and {n_eos} more past end-of-sale)" if n_eos else "")
-            + ": " + _ev(lc_dev) + ".",
-            "Past LDoS there is NO TAC escalation path and no software fix — a fault during a "
-            "migration window on these devices has no vendor backstop.",
-            "Replace (not upgrade) the LDoS devices as the first migration waves; stage spares for "
-            "any that must briefly remain.",
-            "Cisco EoX policy — no TAC/software support past last-day-of-support",
-            evidence=lc_dev)
+        add_lc("critical",
+               f"{n_ldos} device(s) are past LAST-DAY-OF-SUPPORT"
+               # bands are EXCLUSIVE: n_eos is the Past-EoS-ONLY count. Every Past-LDoS device is ALSO past
+               # end-of-sale, so a bare "(and 0 past end-of-sale)" reads as "nothing is past EoS" — omit it
+               # when 0, and say "more" when >0 (the additional EoS-only devices).
+               + (f" (and {n_eos} more past end-of-sale)" if n_eos else "")
+               + ": " + _ev(lc_dev) + ".",
+               "Past LDoS there is NO TAC escalation path and no software fix — a fault during a "
+               "migration window on these devices has no vendor backstop.",
+               "Replace (not upgrade) the LDoS devices as the first migration waves; stage spares for "
+               "any that must briefly remain.",
+               evidence=lc_dev)
     elif n_eos:
-        add("LC-1", D8, "No hardware past end-of-support", "deviation",
-            f"{n_eos} device(s) past end-of-sale" + (f", {n_near} approaching LDoS" if n_near else "") + ".",
-            "Support windows are closing; replacement lead times belong in the plan now.",
-            "Schedule the EoS platforms into the early waves of the replacement plan.",
-            "Cisco EoX policy — no TAC/software support past last-day-of-support",
-            evidence=lc_dev)
+        add_lc("deviation",
+               f"{n_eos} device(s) past end-of-sale" + (f", {n_near} approaching LDoS" if n_near else "") + ".",
+               "Support windows are closing; replacement lead times belong in the plan now.",
+               "Schedule the EoS platforms into the early waves of the replacement plan.",
+               evidence=lc_dev)
     elif n_near:
-        add("LC-1", D8, "No hardware past end-of-support", "advisory",
-            f"{n_near} device(s) approaching last-day-of-support.",
-            "The window to plan replacement on normal lead times is open but finite.",
-            "Track the dates in the engagement RAID log.",
-            "Cisco EoX policy — no TAC/software support past last-day-of-support")
+        add_lc("advisory",
+               f"{n_near} device(s) approaching last-day-of-support.",
+               "The window to plan replacement on normal lead times is open but finite.",
+               "Track the dates in the engagement RAID log.")
     else:
-        add("LC-1", D8, "No hardware past end-of-support", "conforms",
-            "Every device with lifecycle data is in an Active support band.",
-            "Vendor support backs the whole migration.",
-            "Re-check EoX bulletins at each engagement gate (statuses move).",
-            "Cisco EoX policy — no TAC/software support past last-day-of-support")
+        # Nothing adverse was found. Whether that is a PASS depends entirely on coverage: with any
+        # undetermined device the honest verdict is `not-assessable`, because the sentence "every
+        # device with lifecycle data is in an Active support band" is VACUOUSLY true of a fleet
+        # nothing could band — a true sentence under a false verdict, the hardest form of
+        # "absence rendered as health" to spot. Measured on Catalyst 6500s years past support,
+        # banded Unknown because no retained bulletin covers them.
+        add_lc("not-assessable" if n_unknown else "conforms",
+               ("Every device that COULD be lifecycle-banded is in an Active support band."
+                if n_unknown else "Every device with lifecycle data is in an Active support band."),
+               ("Vendor support backs the banded devices only."
+                if n_unknown else "Vendor support backs the whole migration."),
+               "Re-check EoX bulletins at each engagement gate (statuses move).")
 
     sw_by_model = defaultdict(set)
     for h, d in devices.items():
@@ -1017,9 +1234,15 @@ def compute_architecture_review(snap: dict) -> dict:
 
     actions = sorted((c for c in checks if c["verdict"] in ("critical", "deviation", "advisory")),
                      key=lambda c: (V_RANK[c["verdict"]], -len(c["evidence"]), c["id"]))
-    top_actions = [{"rank": i + 1, "id": c["id"], "domain": c["domain"], "verdict": c["verdict"],
-                    "action": c["recommendation"], "evidence": c["evidence"]}
-                   for i, c in enumerate(actions[:10])]
+    top_actions = []
+    for i, c in enumerate(actions[:10]):
+        a = {"rank": i + 1, "id": c["id"], "domain": c["domain"], "verdict": c["verdict"],
+             "action": c["recommendation"], "evidence": c["evidence"]}
+        if c.get("evidence_total"):        # carry the true scope with the sampled list (see `add`)
+            a["evidence_total"] = c["evidence_total"]
+        top_actions.append(a)
+    # NB the queue is the top 10 of `len(actions)`; §1.1 discloses that ratio, recomputed there from
+    # `checks` rather than published as a new summary key (the key would restate a derivable count).
 
     if score_pct is None:
         statement = ("The snapshot carries too little evidence to grade the architecture — every "
@@ -1030,7 +1253,12 @@ def compute_architecture_review(snap: dict) -> dict:
                      f"{n_by['conforms']} of {len(assessable)} assessable checks conform to leading "
                      f"practice; {n_by['critical']} critical and {n_by['deviation']} material "
                      f"deviation(s) require remediation"
-                     + (f", concentrated in: {', '.join(worst_doms[:4])}" if worst_doms else "")
+                     + (f", concentrated in: {', '.join(worst_doms[:4])}"
+                        # "concentrated in: A, B, C, D" over 7 affected domains (Meridian reference fleet) inverts
+                        # the finding -- the deviations are FLEET-WIDE, not concentrated.
+                        + (f" and {len(worst_doms) - 4} further domain(s)"
+                           if len(worst_doms) > 4 else "")
+                        if worst_doms else "")
                      + f". {n_by['not-assessable']} check(s) were not assessable from this snapshot "
                        "and are listed in the review scope.")
 
@@ -1147,13 +1375,24 @@ def write_archreview_docx(output_path: str, snap_dict: dict, label: str) -> None
           widths=[3.2, 2.0, 1.6])
     top = _as_list(ar.get("top_actions"))
     if top:
+        # The queue is the top 10 of every actionable check; unqualified, a 10-row table titled
+        # "Priority remediation queue" reads as the WHOLE remediation scope (Meridian reference fleet: 19 actionable
+        # checks, sample fleet: 14). Recomputed from `checks`, so an older snapshot discloses too.
+        n_actionable = sum(1 for c in _as_list(ar.get("checks"))
+                           if isinstance(c, dict)
+                           and c.get("verdict") in ("critical", "deviation", "advisory"))
         doc.add_heading("1.1 Priority remediation queue", level=2)
         doc.add_paragraph(
             "Ordered by verdict severity then blast radius — the order a senior engineer would work "
-            "them. Items overlapping the migration punch-list keep their punch-list owners.")
+            "them. Items overlapping the migration punch-list keep their punch-list owners."
+            + (f" Showing the top {len(top)} of {n_actionable} check(s) requiring remediation; the "
+               f"remaining {n_actionable - len(top)} carry the same verdicts and are listed in the "
+               "§3 scorecard and §4 findings."
+               if n_actionable > len(top) else ""))
         table(["#", "Check", "Severity", "Action", "Evidence"],
               [(a.get("rank"), a.get("id"), VERDICT_LABEL.get(a.get("verdict"), ""),
-                str(a.get("action") or "")[:220], _ev(_as_list(a.get("evidence")), 4))
+                _clip(a.get("action"), 220),
+                _ev(_as_list(a.get("evidence")), 4, a.get("evidence_total")))
                for a in top if isinstance(a, dict)],
               widths=[0.4, 0.7, 1.2, 3.3, 1.4])
 
@@ -1172,8 +1411,8 @@ def write_archreview_docx(output_path: str, snap_dict: dict, label: str) -> None
     if na:
         doc.add_heading("2.1 Checks not assessable from this snapshot", level=2)
         table(["Check", "Why not assessable", "How to close the gap"],
-              [(f"{c.get('id')} — {c.get('title')}", str(c.get("observed") or "")[:160],
-                str(c.get("recommendation") or "")[:160]) for c in na],
+              [(f"{c.get('id')} — {c.get('title')}", _clip(c.get("observed"), 160),
+                _clip(c.get("recommendation"), 160)) for c in na],
               widths=[2.2, 2.5, 2.2])
     doc.add_heading("2.2 Outside the reach of an offline snapshot", level=2)
     doc.add_paragraph(
@@ -1188,7 +1427,7 @@ def write_archreview_docx(output_path: str, snap_dict: dict, label: str) -> None
     table(["Check", "Domain", "Verdict", "Evidence"],
           [(f"{c.get('id')} — {c.get('title')}", c.get("domain"),
             VERDICT_LABEL.get(c.get("verdict"), str(c.get("verdict"))),
-            _ev(_as_list(c.get("evidence")), 5))
+            _ev(_as_list(c.get("evidence")), 5, c.get("evidence_total")))
            for c in _as_list(ar.get("checks")) if isinstance(c, dict)],
           widths=[2.6, 1.7, 1.3, 1.5])
 

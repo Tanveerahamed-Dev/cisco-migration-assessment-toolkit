@@ -7,6 +7,12 @@ so these never require a running model. Properties:
   mode we hunt), a correct rejection localizes to 1.0, a wrong-reason reject is unlocalized;
 - Ollama-down degrades to {ok: False}, never raises.
 """
+import email.message
+import http.client
+import io
+
+import pytest
+
 import ollama_judge as J
 from cisco_toolkit import defect_panel as P
 
@@ -98,12 +104,49 @@ def test_run_baseline_wrong_reason_is_unlocalized():
     assert res["localized_tnr"] == 0.0 and res["unlocalized_rejection_rate"] == 1.0
 
 
-def test_run_baseline_is_total_on_judge_error():
-    # a judge that raises must not crash the run — that defect just counts as not-caught (APPROVE)
+def test_run_baseline_refuses_to_measure_a_judge_that_never_answered():
+    """A judge that RAISED is signal_absent, not an APPROVE (2026-07-28, finding #77).
+
+    The prior contract here was "a judge error just counts as not-caught": the exception became the
+    string ``"(judge error: …)"``, which :func:`parse_verdict` reads as ordinary free text and defaults
+    to APPROVE. With the model not pulled, ``_listening`` still returns True and every /api/chat 404s —
+    so ``approves_clean`` (the specificity control that unlocks a numeric ``judge_tnr``) was satisfied
+    with ZERO successful calls and a 0.0 TNR was recorded over a panel nobody judged. The run must
+    degrade the same way Ollama-down degrades, and it must never raise.
+    """
     def boom(prompt):
-        raise RuntimeError("model exploded")
+        raise RuntimeError("model 'qwen3:4b' not found, try pulling it first")
     res = J.run_baseline(ids=["D-11"], listening=lambda h: True, chat=boom)
-    assert res["ok"] is True and res["localized_tnr"] == 0.0
+    assert res["ok"] is False
+    assert "clean control" in res["reason"] and "not found" in res["reason"]
+    assert "localized_tnr" not in res and "approves_clean" not in res   # nothing is measured
+
+
+def test_run_baseline_refuses_when_a_panel_call_fails_midway():
+    """The clean control answering does not license scoring a PARTIAL panel: one unjudged defect and
+    the TNR denominator is a fiction, so the whole run is signal_absent."""
+    calls = {"n": 0}
+
+    def flaky(prompt):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "VERDICT: APPROVE\nDEFECT_CLASS: NONE"        # clean control answers
+        raise TimeoutError("read timed out")                     # then the model dies
+    res = J.run_baseline(ids=["D-03", "D-11"], listening=lambda h: True, chat=flaky)
+    assert res["ok"] is False and "D-03" in res["reason"] and "incomplete" in res["reason"]
+
+
+def test_append_baseline_cli_records_nothing_when_the_judge_errors(tmp_path, monkeypatch):
+    """End-to-end of the same defect through the recording path: a listening-but-not-answering Ollama
+    (model never pulled) must append NO scorecard row — the docstring's signal_absent promise."""
+    from cisco_toolkit import scorecard as S
+    sc = str(tmp_path / "sc.jsonl")
+    monkeypatch.setenv("SCORECARD_FILE", sc)
+    monkeypatch.setattr(J, "_listening", lambda *a, **kw: True)   # socket accepts...
+    monkeypatch.setattr(J, "_chat", lambda *a, **kw: (_ for _ in ()).throw(
+        OSError("HTTP Error 404: Not Found")))                    # ...but every call 404s
+    assert J.main(["qwen3:4b", "--append-baseline"]) == 0
+    assert S.read_rows(sc) == []
 
 
 def test_run_baseline_reports_specificity_via_clean_control():
@@ -237,3 +280,72 @@ def test_think_flag_is_plumbed_to_run_baseline(monkeypatch):
     monkeypatch.setattr(J, "run_baseline", fake_rb)
     assert J.main(["fake", "--think"]) == 0
     assert seen == {"model": "fake", "think": True}
+
+
+# ── the loopback pin: no redirect may take an Ollama call off-host ──────────────────────────────
+# cisco_toolkit.attestation.loopback_only validates the FIRST hop only. urlopen follows a 301/302/303
+# through the default HTTPRedirectHandler, so anything answering on 127.0.0.1:11434 that is not
+# Ollama (a local AI-gateway / LiteLLM shim on the standard port) could reply
+# `Location: http://ollama.corp.example/...` and urllib would open THAT host and hand its body back
+# as the model's answer — egress, and an off-host party dictating a scorecard measurement. Driven
+# through a faked transport: no socket is ever created, and the assertion is on the hosts urllib
+# WOULD have opened. Reverting the _no_redirect_opener() call sites fails this with
+# `2 hop(s) opened: ['127.0.0.1', 'ollama.corp.example']`.
+_REAL_CONN = http.client.HTTPConnection
+
+
+class _FakeResp(io.BytesIO):
+    def __init__(self, status, headers, body=b""):
+        super().__init__(body)
+        self.status = self.code = status
+        self.reason, self.url, self.will_close = "fake", "", False
+        self.headers = self.msg = email.message.Message()
+        for k, v in headers.items():
+            self.headers[k] = v
+
+    def info(self):
+        return self.headers
+
+    def geturl(self):
+        return self.url
+
+
+def _redirecting_transport(opened, target):
+    """An HTTPConnection whose first response is a 302 to `target` — connect() is a no-op, so no
+    socket is opened and nothing here can touch a real network."""
+
+    class _Conn(_REAL_CONN):
+        def connect(self):
+            pass
+
+        def request(self, method, url, body=None, headers=None, **kw):
+            opened.append(self.host)
+            self._n = len(opened)
+
+        def getresponse(self):
+            if self._n == 1:
+                return _FakeResp(302, {"Location": target, "Content-Length": "0"})
+            return _FakeResp(200, {"Content-Type": "application/json"},
+                             b'{"message": {"content": "{}"}, "embedding": [1.0]}')
+
+        def close(self):
+            pass
+
+    return _Conn
+
+
+@pytest.mark.parametrize("module_name, call", [
+    ("ollama_judge", lambda m: m._chat("qwen3:4b", "prompt", timeout=1)),
+    ("ollama_recall", lambda m: m._embed("prompt", timeout=1)),
+    ("ollama_retrieval_judge", lambda m: m._chat("qwen3:4b", "prompt", timeout=1)),
+])
+def test_ollama_helpers_refuse_a_redirect_off_loopback(module_name, call, monkeypatch):
+    mod = __import__(module_name)
+    assert mod.OLLAMA_HOST.startswith(("127.", "localhost", "[::1]"))   # first hop is pinned
+    opened = []
+    monkeypatch.setattr(http.client, "HTTPConnection",
+                        _redirecting_transport(opened, "http://ollama.corp.example:11434/api/chat"))
+    with pytest.raises(Exception) as ex:
+        call(mod)
+    assert "redirect" in str(ex.value).lower(), f"{module_name} did not name the refusal: {ex.value}"
+    assert opened == ["127.0.0.1"], f"{len(opened)} hop(s) opened: {opened}"

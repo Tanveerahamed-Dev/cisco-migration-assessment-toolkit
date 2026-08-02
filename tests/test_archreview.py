@@ -226,6 +226,101 @@ def test_l2_3_not_assessable_without_vlan_evidence():
     assert _check(compute_architecture_review(snap), "L2-3")["verdict"] == "not-assessable"
 
 
+def _access_ports(n_total, n_captured, n_guarded):
+    """`n_total` access ports on one switch: the first `n_captured` carry a BPDU-Guard field
+    (`n_guarded` of those enabled, the rest explicitly disabled); the remainder carry NO field."""
+    ports = {}
+    for i in range(1, n_total + 1):
+        d = {"switchport_mode": "Access", "vlan": "10"}
+        if i <= n_captured:
+            d["stp_bpduguard"] = "Yes" if i <= n_guarded else "disabled"
+        ports[f"Gi1/0/{i}"] = d
+    return {"devices": {"acc1": {}}, "interfaces": {"acc1": ports}}
+
+
+def test_l2_2_conforms_only_when_every_access_port_is_captured_and_guarded():
+    """L2-2's not-assessable gate counts ports whose BPDU-Guard state was CAPTURED, but the pass
+    threshold compared `guarded` against ALL access ports — so CONFORMS ('the edge is protected
+    against accidental switch insertion') was reached with half the fleet's edge unguarded or
+    unevidenced. The cited rule is BPDU Guard on EVERY edge port."""
+    # half the captured ports are positively UNGUARDED -> a deviation, never a pass
+    c = _check(compute_architecture_review(_access_ports(100, 100, 50)), "L2-2")
+    assert c["verdict"] == "advisory"
+    assert "50" in c["observed"] and "do NOT carry it" in c["observed"]
+    # every captured port is guarded but 40 ports carry NO evidence -> conforms-by-silence guard
+    c2 = _check(compute_architecture_review(_access_ports(100, 60, 60)), "L2-2")
+    assert c2["verdict"] == "not-assessable"
+    assert "no BPDU-Guard evidence" in c2["observed"]
+    assert "protected" not in c2["implication"]
+    # full capture, every port guarded -> the only shape that conforms
+    c3 = _check(compute_architecture_review(_access_ports(100, 100, 100)), "L2-2")
+    assert c3["verdict"] == "conforms" and "All 100" in c3["observed"]
+    # one unguarded port out of a fully-captured fleet still fails the EVERY-edge-port rule
+    assert _check(compute_architecture_review(_access_ports(100, 100, 99)), "L2-2")["verdict"] == "advisory"
+
+
+def test_l2_2_reads_the_producers_own_bpduguard_tokens():
+    """Cross-module SSOT audit 2026-07-28: L2-2 hand-rolled its own token set and it did not contain
+    the PRODUCER's own value. parse.py writes exactly "Enable"/"Disable" (and build.py promotes a
+    global `portfast bpduguard default` to "Enable"), but the old test was
+    `v not in ("no","disabled","off","false","-","--")` — "Disable" is not in that list, so an edge
+    port with BPDU Guard EXPLICITLY OFF counted as GUARDED, while design_advisor counted the same
+    port unguarded off the same field. Both consumers now share textutils.bpduguard_state."""
+    from cisco_toolkit.textutils import bpduguard_state
+    snap = _access_ports(10, 10, 10)
+    for i in (1, 2, 3):                      # the producer's literal token, not the test's "disabled"
+        snap["interfaces"]["acc1"][f"Gi1/0/{i}"]["stp_bpduguard"] = "Disable"
+    c = _check(compute_architecture_review(snap), "L2-2")
+    assert c["verdict"] == "advisory", c     # pre-fix: "conforms" — 3 disabled ports read as protected
+    assert "3 of the 10" in c["observed"] and "do NOT carry it" in c["observed"]
+
+    # and an UNRECOGNISED token is not evidence of protection either: it leaves the assessable set
+    # rather than being counted as guarded (absence of evidence is never health).
+    snap2 = _access_ports(10, 10, 10)
+    snap2["interfaces"]["acc1"]["Gi1/0/1"]["stp_bpduguard"] = "??"
+    assert bpduguard_state("??") is None
+    c2 = _check(compute_architecture_review(snap2), "L2-2")
+    assert c2["verdict"] == "not-assessable" and "no BPDU-Guard evidence" in c2["observed"]
+
+
+def test_bpduguard_state_is_the_one_token_owner_for_both_consumers():
+    """The two consumers must agree, port for port, on the producer's whole vocabulary."""
+    from cisco_toolkit import design_advisor
+    from cisco_toolkit.textutils import bpduguard_state
+    assert (bpduguard_state("Enable"), bpduguard_state("Disable"), bpduguard_state("")) == (True, False, None)
+    ports = {"Gi1/0/1": {"switchport_mode": "Access", "end_host_mac": "00:11:22:33:44:55",
+                         "stp_bpduguard": "Disable"},
+             "Gi1/0/2": {"switchport_mode": "Access", "end_host_mac": "00:11:22:33:44:66",
+                         "stp_bpduguard": "Enable"}}
+    snap = {"devices": {"acc1": {}}, "interfaces": {"acc1": ports}}
+    sig = design_advisor._signals(snap)
+    assert sig["bpdu_unguarded"] == 1 and sig["bpdu_not_assessed"] == 0
+    c = _check(compute_architecture_review(snap), "L2-2")
+    # archreview's assessable/guarded split must reconcile with design_advisor's verdict on the SAME
+    # two ports: 2 captured, exactly 1 guarded (pre-fix archreview said 2 guarded, 0 unguarded).
+    assert "1 of the 2 access port(s)" in c["observed"] and "(1 do)" in c["observed"]
+
+
+def test_res_3_not_assessable_when_only_some_devices_report_psu_inventory():
+    """RES-3's not-assessable gate was FLEET-WIDE (`no device reported a count`), so ONE device
+    reporting 2 supplies graded the whole fleet CONFORMS — 'no single feed/PSU fault takes a switch
+    down' asserted over 49 devices whose power inventory was never captured."""
+    devices = {"dist1": {"num_power_supplies": 2}}
+    devices.update({f"acc{i}": {"model": "WS-C2960X"} for i in range(1, 50)})
+    c = _check(compute_architecture_review({"devices": devices}), "RES-3")
+    assert c["verdict"] == "not-assessable"
+    assert "1 of 50" in c["observed"]
+    assert "No single feed" not in c["implication"]
+    # full coverage still conforms
+    every = {h: {"num_power_supplies": 2} for h in devices}
+    assert _check(compute_architecture_review({"devices": every}), "RES-3")["verdict"] == "conforms"
+    # a single-PSU device is still the deviation, and the partial coverage is disclosed with it
+    devices["acc1"] = {"num_power_supplies": 1}
+    c2 = _check(compute_architecture_review({"devices": devices}), "RES-3")
+    assert c2["verdict"] in ("deviation", "advisory")
+    assert "2 of 50" in c2["observed"] and "unassessed" in c2["observed"]
+
+
 def test_mixed_images_flagged_per_platform():
     ar = compute_architecture_review(_snap())
     lc2 = _check(ar, "LC-2")
@@ -420,3 +515,79 @@ def test_trunk_allowed_none_is_not_classified_allow_all():
     c = _check(compute_architecture_review(snap), "L2-5")
     assert "allow ALL VLANs" not in c["observed"], c["observed"]
     assert c["verdict"] == "conforms", c["verdict"]
+
+
+def _lc_snap(**summary):
+    """A snapshot whose ONLY lifecycle signal is the summary band counts."""
+    return {"devices": {f"sw{i}": {"platform": "ios"} for i in range(4)},
+            "lifecycle_risk": {"summary": summary, "per_device": []}}
+
+
+def _lc1(ar):
+    return next(c for c in ar["checks"] if c["id"] == "LC-1")
+
+
+def test_lc1_does_not_certify_a_fleet_whose_lifecycle_is_UNKNOWN():
+    """An all-Unknown fleet must not read as 'conforms'.
+
+    `analyze.py:6199` publishes `n_unknown` in the lifecycle summary, and the LC-1 chain
+    (`if n_past_ldos / elif n_past_eos / elif n_near / else conforms`) never consulted it. So a fleet
+    of Catalyst 6500s years past support — every one banded Unknown because no retained bulletin
+    covers them — fell to the `else` and was certified:
+
+        VERDICT: conforms — "Every device with lifecycle data is in an Active support band."
+                            "Vendor support backs the whole migration."
+
+    That reaches the Architecture Review DOCX, its workbook sheet, and the conformance grade. It is
+    guardrail 3's exact wording ("Not observed" never silently becomes "healthy") in a signed
+    deliverable, and it is the most consequential form of it: the sentence is VACUOUSLY true —
+    zero devices have lifecycle data, so all zero of them are Active — while the verdict it carries
+    is false.
+    """
+    ar = compute_architecture_review(_lc_snap(n_past_ldos=0, n_past_eos=0, n_near=0, n_unknown=4))
+    f = _lc1(ar)
+    assert f["verdict"] != "conforms", (
+        f"LC-1 certified a fleet with 4 UNKNOWN-lifecycle devices: {f['verdict']} / {f['observed']}"
+    )
+    assert "unknown" in (f["observed"] + f["implication"]).lower(), (
+        f"the unknown count is not disclosed to the reader: {f['observed']!r}"
+    )
+
+
+def test_lc1_still_conforms_when_every_device_IS_assessed_and_active():
+    """Non-vacuity: the fix must not turn a genuinely clean fleet into a deviation."""
+    f = _lc1(compute_architecture_review(_lc_snap(n_past_ldos=0, n_past_eos=0, n_near=0, n_unknown=0)))
+    assert f["verdict"] == "conforms", f"a fully-assessed Active fleet must still conform: {f}"
+
+
+def test_lc1_reports_the_real_finding_when_both_unknown_and_past_ldos_exist():
+    """A real past-LDoS finding must not be displaced by the unknown-coverage branch."""
+    f = _lc1(compute_architecture_review(_lc_snap(n_past_ldos=2, n_past_eos=0, n_near=0, n_unknown=3)))
+    assert f["verdict"] not in ("conforms", "not-assessable"), f
+    assert "2" in f["observed"], f"the past-LDoS count must lead: {f['observed']!r}"
+
+
+def test_lc1_discloses_coverage_even_when_a_real_finding_fires():
+    """The coverage disclosure was SUBORDINATED to the findings (`elif n_unknown`), so it fired only
+    when every adverse count was zero -- covering the all-unbanded fleet and silently dropping the
+    BROWNFIELD one, which is the fleet this instrument exists for.
+
+    Measured before the fix: 1 Past-LDoS + 20 Unknown produced verdict `critical` reading
+    "1 device(s) are past LAST-DAY-OF-SUPPORT: sw0." with the 20 undetermined devices never
+    mentioned -- and LC-1 feeds domains[].score_pct, the conformance grade, the Architecture Review
+    DOCX and its workbook sheet. What was FOUND and what could NOT BE ASSESSED are orthogonal facts.
+    """
+    for adverse in (dict(n_past_ldos=1), dict(n_past_eos=1), dict(n_near=1)):
+        base = dict(n_past_ldos=0, n_past_eos=0, n_near=0, n_unknown=20)
+        base.update(adverse)
+        f = _lc1(compute_architecture_review(_lc_snap(**base)))
+        assert f["verdict"] not in ("conforms", "not-assessable"), (adverse, f)
+        assert "20 device(s) could NOT be lifecycle-banded" in f["observed"], (adverse, f["observed"])
+        assert "UNKNOWN" in f["observed"], (adverse, f["observed"])
+
+    # NON-VACUITY: with the same real finding and FULL coverage, no coverage clause may appear --
+    # otherwise the disclosure is always-on and tells the reader nothing.
+    clean_cov = _lc1(compute_architecture_review(
+        _lc_snap(n_past_ldos=1, n_past_eos=0, n_near=0, n_unknown=0)))
+    assert "could NOT be lifecycle-banded" not in clean_cov["observed"], clean_cov["observed"]
+    assert clean_cov["verdict"] == "critical", clean_cov

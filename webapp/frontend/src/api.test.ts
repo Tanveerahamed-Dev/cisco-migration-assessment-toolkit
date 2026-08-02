@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, bandColor, gateColor, readyColor, sevColor, sevSoft } from "./api";
+import { api, ApiError, bandColor, gateColor, readyColor, sevColor, sevSoft } from "./api";
 
 // The shared colour helpers map the engine's category vocabulary onto CSS custom-property names
 // (with a fallback var). The contract worth pinning: the label is squashed into a token, and the
@@ -70,8 +70,8 @@ describe("api client (request construction + the j response handler)", () => {
   }
 
   it("GETs the right URL and parses the JSON body on success", async () => {
-    const spy = mockFetch(new Response(JSON.stringify([{ id: 1, name: "[HISTORY-REDACTED]" }]), { status: 200 }));
-    await expect(api.listCampaigns()).resolves.toEqual([{ id: 1, name: "[HISTORY-REDACTED]" }]);
+    const spy = mockFetch(new Response(JSON.stringify([{ id: 1, name: "Meridian" }]), { status: 200 }));
+    await expect(api.listCampaigns()).resolves.toEqual([{ id: 1, name: "Meridian" }]);
     expect(spy).toHaveBeenCalledWith("/api/campaigns");
   });
 
@@ -106,11 +106,83 @@ describe("api client (request construction + the j response handler)", () => {
     });
   });
 
+  it("exchanges a bearer token for the HttpOnly browser session", async () => {
+    const spy = mockFetch(new Response(null, { status: 204 }));
+    await api.authenticate("field-secret");
+    expect(spy).toHaveBeenCalledWith("/api/session", {
+      method: "POST",
+      headers: { Authorization: "Bearer field-secret" },
+    });
+  });
+
   it("builds pure deliverable/explorer/report URLs without touching the network", () => {
     const spy = vi.spyOn(globalThis, "fetch");
     expect(api.explorerUrl(7)).toBe("/api/snapshots/7/explorer");
     expect(api.deliverableUrl(7, "runbook")).toBe("/api/snapshots/7/deliverable/runbook");
     expect(api.executionReportUrl(42)).toBe("/api/executions/42/report");
     expect(spy).not.toHaveBeenCalled(); // pure string builders, no fetch
+  });
+});
+
+// ── FE-11: the error object carries the STATUS, and a FastAPI validation body is humanised ──
+// The hardened backend answers 403 / 409 / 413 / 422 / 503+Retry-After where it previously did not.
+// `new Error(detail)` collapsed every one of those into an opaque string, so nothing downstream
+// could tell a transient generation-cap shed from a permanent 404, and a per-field length-cap
+// rejection (FastAPI's `detail` is a LIST there, not a string) reached the toast as raw JSON.
+describe("ApiError (status-aware failures)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("carries the HTTP status, and marks a 503 generation-cap shed retryable with its Retry-After", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({ detail: "AssessHub is generating too many deliverables at once — please retry shortly." }),
+        { status: 503, headers: { "Retry-After": "5" } },
+      ),
+    );
+    const err = await api.getCampaign(1).then(() => null, (e) => e as ApiError);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err!.status).toBe(503);
+    expect(err!.retryAfter).toBe(5);
+    expect(err!.retryable).toBe(true);
+    expect(err!.message).toContain("too many deliverables");
+  });
+
+  it("a 403 cross-site refusal is NOT retryable and keeps its own status", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ detail: "Cross-site state-changing request refused" }), { status: 403 }),
+    );
+    const err = await api.getCampaign(1).then(() => null, (e) => e as ApiError);
+    expect(err!.status).toBe(403);
+    expect(err!.retryable).toBe(false);
+    expect(err!.retryAfter).toBeNull();
+  });
+
+  it("humanises FastAPI's 422 validation LIST into field: message, never raw JSON", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          detail: [
+            { type: "string_too_long", loc: ["body", "note"], msg: "String should have at most 2000 characters" },
+            { type: "string_too_long", loc: ["body", "operator"], msg: "String should have at most 200 characters" },
+          ],
+        }),
+        { status: 422 },
+      ),
+    );
+    const err = await api.getCampaign(1).then(() => null, (e) => e as ApiError);
+    expect(err!.status).toBe(422);
+    expect(err!.message).toBe(
+      "note: String should have at most 2000 characters; operator: String should have at most 200 characters",
+    );
+    expect(err!.message).not.toContain("{");   // no JSON blob in the war-room toast
+  });
+
+  it("a 413 body-ceiling refusal still reports its plain detail string unchanged", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ detail: "Request body exceeds the 1024 KB limit for this endpoint" }), { status: 413 }),
+    );
+    const err = await api.getCampaign(1).then(() => null, (e) => e as ApiError);
+    expect(err!.status).toBe(413);
+    expect(err!.message).toBe("Request body exceeds the 1024 KB limit for this endpoint");
   });
 });
