@@ -134,7 +134,19 @@ def test_official_ieee_build_is_byte_deterministic_and_full_chain(tmp_path):
     shipped = (
         Path(G.__file__).resolve().parent / "data" / "oui_registry.tsv.gz"
     )
-    assert out.read_bytes() == shipped.read_bytes()
+    # PAYLOAD-determinism, deliberately not compressed-byte determinism. The committed pack was
+    # built on Windows; CI rebuilds on ubuntu, and the two zlib builds emit DIFFERENT deflate
+    # streams for the same input at the same level -- deflate is not canonical across
+    # implementations. Proven by this test's own first ubuntu run (2026-08-02): the compressed
+    # bytes differed while the gzip CRC32/ISIZE trailers matched, i.e. identical payload, different
+    # encoding. The properties a cross-platform rebuild CAN promise, and which matter: the
+    # decompressed TSV is byte-identical, the gzip header is canonical (mtime pinned to 0, so the
+    # archive carries no build-time), and rebuilding TWICE ON ONE PLATFORM is byte-stable.
+    import gzip as _gz
+    rebuilt = out.read_bytes()
+    assert _gz.decompress(rebuilt) == _gz.decompress(shipped.read_bytes()), (
+        "the rebuilt pack PAYLOAD differs from the shipped pack -- a real content regression")
+    assert rebuilt[4:8] == bytes(4), "gzip mtime is no longer pinned to 0"
     manifest = json.loads(
         out.with_name("registry_manifest.json").read_text(encoding="utf-8")
     )

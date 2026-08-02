@@ -4228,3 +4228,49 @@ side-engagement client's directory. Pushed for ~2 minutes, then scrubbed, tip am
 with `--force-with-lease` pinned to the bad sha (private repo, own just-pushed commit, nothing else
 moved). Two rules re-learned at cost: **a verification gate chained with `;` is decoration**, and a
 client marker is a marker in PROSE too, including inside a commit message describing an ignore rule.
+
+### 13.4 CI cycle 2 — SPA reproduction CONFIRMED; three more first-execution gates fixed; a linux-only cluster measured and left open
+
+**CONFIRMED on the real runner:** `Prove the SPA build reproduced the immutable source` — step
+conclusion `success` on ubuntu/node-20 against the Windows-committed bundle. Cross-platform byte
+reproduction of the shipped SPA is now an established, CI-enforced property, not a prediction.
+
+**Fixed this cycle, each measured before fixing:**
+
+1. **Wheel-context self-test (Distribution contract).** The job survived every release check and died
+   at the LAST step: `assesshub --selftest` from the installed wheel failed oui-kb/port-kb because the
+   wheel ships without `reference-data/official-sources/**` (handoff 5.5, sdist-only) and the gate read
+   CANNOT-CHECK-HERE as CHECKED-AND-FAILED — the port-authority refuter's F7, predicted and now
+   confirmed. Fix: a structured `official_sources_available` fact from `source_authority_details`
+   (a stat, deliberately not a parse, so present-but-corrupt stays a real refusal), consumed by the
+   single owner `pack_is_usable` — so the self-test, the workbook sheet and the AssessHub banner all
+   learn the distinction at once. serve.py + the engine mirror route through the owner and DISCLOSE the
+   degraded form on the [ok] line. Six-way matrix pinned in `tests/test_registry_integrity.py`,
+   including: stale producers without the field stay strict (fail-closed), and sources-present-but-
+   failing stays refused.
+2. **pip-audit could not pass, twice, differently.** `--strict` → not-on-PyPI fatal (the project is
+   private). `--strict --skip-editable` → "distribution marked as editable" ALSO fatal, because
+   --strict's definition is "fail on ANY skip" — the flags compose against each other. Fix: uninstall
+   the unpublishable project before auditing; the dependency closure is audited under undiluted
+   --strict with no skips at all.
+3. **The pack "byte-determinism" tests asserted a property deflate does not have.** Compressed bytes
+   differed across zlib builds while the gzip CRC32/ISIZE trailers matched — identical payload,
+   different encoding; deflate is not canonical. Re-anchored on what a cross-platform rebuild CAN
+   promise: byte-identical decompressed payload, pinned mtime=0 header, and same-platform double-build
+   stability. (The Coverage job and every matrix leg failed on these same two tests — one cause.)
+4. Golden regenerated through the guarded door (additive: `data_authorities` gained
+   `official_sources_available`; regen accepted WITHOUT the shrink flag).
+
+**MEASURED AND LEFT OPEN — the linux-only cluster (first real linux execution of these suites):**
+`tests/test_redact_collection.py` × 4 — the corpus tests hit the leading-dot suffix residual the
+round-3 refuter flagged (`..yaml`-shaped names; `splitext` vs `PurePath.suffix` divergence), which
+Windows runs never exercised; and `tests/test_ci_gates.py::test_stop_hook_BLOCKS_when_verification_
+times_out` — **the Stop hook fails OPEN on linux** (`rc=0` on a timed-out suite), §7.16's contradiction
+surfacing for real on a platform where the hook's timeout path behaves differently. Both need a
+dedicated diagnosis cycle with the next run's isolated data; neither is masked by this push (the
+matrix will stay red on exactly these until then, and that is the honest state).
+
+Running tally of the review's sharpest lesson, now **six** instances: verify_archives' accept path,
+the SPA reproduction step, the dependency audit, the wheel-context self-test, the ubuntu test matrix,
+and the linux Stop-hook path — **every one a gate or suite that had never actually executed, and every
+first execution found something real.**

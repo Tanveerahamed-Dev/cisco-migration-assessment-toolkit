@@ -249,14 +249,25 @@ def run_selftest(dist_dir=None, db_path=None) -> int:
           None if tpl.is_file() and tpl.stat().st_size > 10_000
           else f"missing/truncated at {tpl} — every explorer render would fail")
 
-    from cisco_toolkit import ouidb, portdb
+    from cisco_toolkit import ouidb, portdb, registry_integrity
 
     oui_health = ouidb.registry_health()
     oui_rows = oui_health.get("row_count")
     oui_detail = (f"{oui_rows or 0} rows; "
                   f"provenance={oui_health.get('provenance_status', 'unknown')}")
-    check(f"oui-kb [{oui_detail}]",
-          None if oui_health.get("authoritative")
+    # Routed through registry_integrity.pack_is_usable, the ONE owner of "can this pack be relied
+    # on" (three consumers had previously each written their own conjunction and disagreed). It
+    # distinguishes CANNOT-CHECK-HERE from CHECKED-AND-FAILED: a wheel or frozen bundle ships
+    # without reference-data/official-sources/** (handoff 5.5), so the source chain is structurally
+    # unverifiable there -- the first-ever wheel-context run of this self-test (CI, 2026-08-02)
+    # failed on exactly that, as the port-authority refuter's F7 predicted. Where the inventory is
+    # absent the pack passes on bytes + build provenance, and the [ok] line SAYS SO; a present
+    # inventory that fails verification is still a hard [FAIL].
+    _oui_degraded = (" — retained official sources NOT present in this install form; source chain "
+                     "verifiable from the repository/sdist only (bytes + build provenance verified)"
+                     if registry_integrity.official_sources_available() is False else "")
+    check(f"oui-kb [{oui_detail}]{_oui_degraded}",
+          None if registry_integrity.pack_is_usable(oui_health)
           and isinstance(oui_rows, int) and oui_rows > 0
           else "OUI registry is not authoritative — "
                f"{oui_health.get('error') or oui_health.get('status', 'unknown')}")
@@ -284,9 +295,8 @@ def run_selftest(dist_dir=None, db_path=None) -> int:
     # registry_integrity.source_authority_details only sets source_authoritative when the retained
     # source bytes verify AND satisfy the 180-day max-age / 5-minute future-skew bounds. Exposing a
     # duplicate official_source_fresh would assert a second, independent proof that does not exist.
-    check(f"port-kb [{port_detail}]",
-          None if port_health.get("integrity_verified")
-          and port_health.get("official_source_authoritative")
+    check(f"port-kb [{port_detail}]{_oui_degraded}",
+          None if registry_integrity.pack_is_usable(port_health)
           and isinstance(port_rows, int) and port_rows > 0
           else "Port registry unusable — "
                f"{port_health.get('error') or port_health.get('status', 'unknown')}"

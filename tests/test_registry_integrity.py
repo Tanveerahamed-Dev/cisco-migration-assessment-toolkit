@@ -338,7 +338,22 @@ def test_official_iana_build_is_byte_deterministic(tmp_path):
     destination = tmp_path / "port_registry.tsv.gz"
     count = gen_port_registry.build(out_path=str(destination))
     assert count == 12_352
-    assert destination.read_bytes() == Path(portdb._DATA).read_bytes()
+    # PAYLOAD-determinism, deliberately not compressed-byte determinism. The committed pack was
+    # built on Windows; CI rebuilds on ubuntu, and the two zlib builds emit DIFFERENT deflate
+    # streams for the same input at the same level -- deflate is not canonical across
+    # implementations. Proven by this test's own first ubuntu run (2026-08-02): the compressed
+    # bytes differed while the gzip CRC32/ISIZE trailers matched, i.e. identical payload, different
+    # encoding. The properties a cross-platform rebuild CAN promise, and which matter: the
+    # decompressed TSV is byte-identical, the gzip header is canonical (mtime pinned to 0, so the
+    # archive carries no build-time), and rebuilding TWICE ON ONE PLATFORM is byte-stable.
+    import gzip as _gz
+    rebuilt, shipped = destination.read_bytes(), Path(portdb._DATA).read_bytes()
+    assert _gz.decompress(rebuilt) == _gz.decompress(shipped), (
+        "the rebuilt pack PAYLOAD differs from the shipped pack -- a real content regression")
+    assert rebuilt[4:8] == bytes(4), "gzip mtime is no longer pinned to 0"
+    second = tmp_path / "port_registry.2.tsv.gz"
+    assert gen_port_registry.build(out_path=str(second)) == 12_352
+    assert second.read_bytes() == rebuilt, "same-platform rebuild is not byte-stable"
     proof = registry.verify_retained_source_chain(str(destination))
     assert proof["verified"] is True
     assert proof["artifact_count"] == 1
@@ -533,3 +548,52 @@ def test_generated_metadata_cannot_override_integrity_fields():
             provenance_status="test",
             extra={"row_count": 999},
         )
+
+
+def test_pack_usability_distinguishes_cannot_check_here_from_checked_and_failed(tmp_path):
+    """The Atlas self-test's first-ever run from an installed WHEEL failed oui-kb and port-kb:
+    the wheel ships without reference-data/official-sources/** (deliberately — handoff 5.5, sdist
+    only), so every source-chain verification died with [Errno 2], and the gate read that ABSENCE
+    of the ability to check as a failed check. Predicted, unverified, by the port-authority
+    refuter's F7; confirmed by CI on 2026-08-02.
+
+    `official_sources_available` is the structured fact that separates the two states — a stat of
+    the inventory path, deliberately NOT a parse, so a present-but-corrupt inventory keeps
+    reporting available=True and its verification failure stays a real refusal. Consumers key on
+    `is False`, so a stale health dict without the field keeps the strict behaviour (fail-closed).
+    """
+    import json
+    from pathlib import Path
+
+    from cisco_toolkit import portdb
+    from cisco_toolkit.registry_integrity import (
+        official_sources_available,
+        pack_is_usable,
+        source_authority_details,
+    )
+
+    # REAL producer, both roots — not a hand-shaped dict.
+    assert official_sources_available() is True, "repo checkout must see the retained sources"
+    assert official_sources_available(repository_root=tmp_path) is False
+
+    manifest = json.loads(
+        (Path(portdb._DATA).parent / "registry_manifest.json").read_text(encoding="utf-8"))
+    details = source_authority_details(
+        manifest["packs"]["port_registry.tsv.gz"],
+        allowed_provenance_states={"generated-from-retained-iana-primary-source"},
+        repository_root=tmp_path)
+    assert details["official_sources_available"] is False
+    assert details["build_provenance_verified"] is True
+    assert details["source_authoritative"] is False, "absence must never claim authority"
+
+    # the owner predicate, across the whole matrix, from the real repo health dict
+    h = portdb.registry_health()
+    assert pack_is_usable(h) is True                                   # repo: fully proven
+    wheel = dict(h, official_sources_available=False, official_source_authoritative=False)
+    assert pack_is_usable(wheel) is True, "a wheel install read as a DEAD registry (the CI failure)"
+    checked_failed = dict(wheel, official_sources_available=True)
+    assert pack_is_usable(checked_failed) is False, "a PRESENT-but-failing chain must stay refused"
+    assert pack_is_usable(dict(wheel, integrity_verified=False)) is False
+    assert pack_is_usable(dict(wheel, build_provenance_verified=False)) is False
+    stale = {k: v for k, v in wheel.items() if k != "official_sources_available"}
+    assert pack_is_usable(stale) is False, "an old producer without the field must stay strict"

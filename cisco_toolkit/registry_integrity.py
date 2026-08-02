@@ -617,6 +617,38 @@ def _build_provenance_authority(
     return True, "", freshness
 
 
+def official_sources_available(
+    *,
+    repository_root: str | os.PathLike[str] | None = None,
+    inventory_path: str | os.PathLike[str] | None = None,
+) -> bool:
+    """Is the retained official-source inventory PRESENT at this install root at all?
+
+    A structured fact, so consumers can distinguish CANNOT-CHECK-HERE from CHECKED-AND-FAILED
+    without sniffing error prose. The retained sources ship in the repository and the sdist ONLY
+    (handoff 5.5) -- a wheel or frozen bundle structurally cannot carry them, so in those install
+    forms every source-chain verification fails with "[Errno 2] No such file or directory", which
+    is the ABSENCE of the ability to check, not a failed check. Before this field existed the two
+    states were the same `PackIntegrityError` differing only in wording, and the Atlas self-test's
+    first-ever run from an installed wheel (CI, 2026-08-02) failed oui-kb and port-kb on exactly
+    that conflation -- a failure the port-authority refuter had predicted (its F7) and could not
+    verify without a real frozen install.
+
+    Deliberately a bare existence probe, not a parse: a PRESENT-but-corrupt inventory must keep
+    reporting available=True so its verification failure stays a real failure.
+    """
+    root = _repository_root(repository_root)
+    path = (
+        Path(inventory_path).resolve()
+        if inventory_path is not None
+        else root / PurePosixPath(SOURCE_INVENTORY_RELATIVE_PATH)
+    )
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
 def source_authority_details(
     entry: Mapping[str, Any],
     *,
@@ -643,6 +675,11 @@ def source_authority_details(
         "retained_source_bytes_verified": False,
         "source_authoritative": False,
         "authority_error": build_reason,
+        # present on EVERY return path, so a consumer can always tell an install form that cannot
+        # carry the retained sources apart from a real verification failure
+        "official_sources_available": official_sources_available(
+            repository_root=repository_root, inventory_path=inventory_path
+        ),
         **freshness,
     }
     if not build_ok:
@@ -732,10 +769,22 @@ def pack_is_usable(health: Any) -> bool:
         return False
     if health.get("integrity_verified") is not True:
         return False
+    # CANNOT-CHECK-HERE is not CHECKED-AND-FAILED. The retained official sources ship in the
+    # repository and sdist only (handoff 5.5), so a wheel or frozen bundle structurally cannot
+    # verify the source chain -- its first-ever self-test run (CI, 2026-08-02) failed on exactly
+    # that. Where the inventory is genuinely ABSENT (`official_sources_available is False` -- a
+    # REAL False from the current producer; an older health dict without the field keeps today's
+    # strict behaviour), a byte-intact pack whose BUILD provenance verified is usable, and the
+    # caller is expected to disclose the degraded form. A PRESENT inventory that fails to verify
+    # stays a hard refusal.
+    sources_absent = (
+        health.get("official_sources_available") is False
+        and health.get("build_provenance_verified") is True
+    )
     official = health.get("official_source_authoritative")
     if official is not None:
-        return official is True
-    return health.get("source_authoritative") is True
+        return official is True or sources_absent
+    return health.get("source_authoritative") is True or sources_absent
 
 
 def verify_retained_source_chain(

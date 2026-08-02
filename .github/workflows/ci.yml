@@ -112,16 +112,21 @@ jobs:
       - run: python -m pip install --upgrade pip
       - name: Install audited Python environment
         run: python -m pip install -e ".[dev]" "pip-audit>=2.9,<3"
-      # --skip-editable is load-bearing, not a loosening. The step above installs the PROJECT ITSELF
-      # editable (`-e ".[dev]"`), and this project is private and unpublished — so under --strict,
-      # pip-audit's "Dependency not found on PyPI and could not be audited:
-      # cisco-migration-assessment-toolkit" is FATAL and the job can never pass as written (proven on
-      # its first real run, 2026-08-02: zero vulnerabilities reported, exit 1 anyway). Skipping the
-      # editable local package audits exactly the same DEPENDENCY set; the only thing excluded is the
-      # one package PyPI can never know about. Same defect class as the SPA-immutability step that
-      # failed deterministically on its first run: a gate nobody had executed.
+      # The audit's subject is the DEPENDENCY CLOSURE, so the unpublishable project itself is
+      # uninstalled first. Both flag-level attempts failed, each measured on a real run (2026-08-02):
+      #   --strict                  -> "Dependency not found on PyPI: cisco-migration-assessment-
+      #                                toolkit" is FATAL (the project is private; PyPI can never
+      #                                know it) — the gate could not pass as written.
+      #   --strict --skip-editable  -> "distribution marked as editable" is ALSO fatal, because
+      #                                --strict's definition is "fail on ANY skip" — the two flags
+      #                                compose against each other by design.
+      # Uninstalling the project leaves exactly the dependency set in the environment, fully audited
+      # under undiluted --strict: no skips, no not-found, and a real CVE in any dependency still
+      # fails the job. The project's own code is what every other job tests.
       - name: Audit installed Python dependencies
-        run: python -m pip_audit --strict --skip-editable
+        run: |
+          python -m pip uninstall --yes cisco-migration-assessment-toolkit
+          python -m pip_audit --strict
       - name: Install locked frontend dependencies
         working-directory: webapp/frontend
         run: npm ci

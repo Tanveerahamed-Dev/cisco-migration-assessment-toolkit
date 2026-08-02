@@ -3904,19 +3904,23 @@ def main():
             # intact AND its official component is source-proven; it does not need universal
             # authority over every curated row.
             #
-            # Both component fields fall back to `authoritative` when absent, so packs that do make
-            # a whole-pack claim (OUI carries no official_source_authoritative) are evaluated
-            # exactly as before. Freshness is subsumed by official_source_authoritative, which
-            # registry_integrity only sets when the retained source bytes verify AND satisfy the
-            # 180-day max-age / future-skew bounds.
-            _whole = _health.get("authoritative")
-            _pack_ok = (
-                bool(_health.get("integrity_verified", _whole))
-                and bool(_health.get("official_source_authoritative", _whole))
-            )
-            if not _pack_ok:
+            # Routed through registry_integrity.pack_is_usable — the ONE owner of this question,
+            # created (handoff 8.2) precisely because this file, serve.py and summary.py each wrote
+            # their own conjunction and disagreed. The owner also distinguishes CANNOT-CHECK-HERE
+            # from CHECKED-AND-FAILED: an installed wheel / frozen bundle ships without
+            # reference-data/official-sources/** (handoff 5.5), so the source chain is structurally
+            # unverifiable there and a byte-intact, build-provenance-verified pack must not read as
+            # a DEAD registry (the self-test's first wheel-context run failed exactly so). Where the
+            # inventory is absent the degraded form is disclosed on the phase, not silently passed.
+            from cisco_toolkit import registry_integrity as _reg_integrity
+            if not _reg_integrity.pack_is_usable(_health):
                 _record_phase_failure(
                     _axis, str(_health.get("error") or "authoritative data pack unavailable"))
+            elif _health.get("official_sources_available") is False:
+                logger.warning(
+                    "%s: pack usable on bytes + build provenance; retained official sources are "
+                    "NOT present in this install form (repository/sdist only), so the source "
+                    "chain was not verified here", _axis)
         snap_dict["data_authorities"] = _authorities
     except Exception as e:
         snap_dict["data_authorities"] = {
