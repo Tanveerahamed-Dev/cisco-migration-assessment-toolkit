@@ -4008,3 +4008,74 @@ still the rollback path.
   Committing the file did not make that claim true; it is required by `distribution_verify` and stays
   an open finding for correction.
 * The residual findings in §10.3, §11.2 and §12.7 that were carried rather than fixed.
+
+### 12.16 BUILT (Phase D 5-7) — one wheel, one sdist, verified; and what the build itself found
+
+Preconditions satisfied for the first time: source frozen (committed, clean tree) and the distribution
+lane independently reviewed (§12.8's accept-path refuter returned SOUND).
+
+```text
+cisco_migration_assessment_toolkit-3.31.0-py3-none-any.whl   3,395,666 B  sha fa52606867604 64b...
+cisco_migration_assessment_toolkit-3.31.0.tar.gz             5,358,420 B  sha a1e62be683b9f ffd...
+  109 wheel members · 123 sdist members · proof schema 6 · source b65324b / tree 11b69870
+twine check ................. PASSED (both)
+distribution_verify ......... exit 0
+isolated wheel install ...... exit 0   cisco-assess --help exit 0
+packaged assets ............. port pack, OUI pack, explorer template, SPA bundle all present
+```
+
+**THE BUILD FOUND A DEFECT IN THE RELEASE GATE ITSELF.** First run failed on one line:
+
+```text
+wheel METADATA has unexpected metadata headers: ['Dynamic']
+```
+
+`Dynamic` is emitted by the BUILD BACKEND and never declared in pyproject, so it can never appear in
+the expected-header contract derived from pyproject — but it is standard: "In any context other than a
+source distribution, `Dynamic` is for information only, and indicates that the field value was
+calculated at wheel build time" (core metadata spec, PEP 643 / Metadata 2.2; `License-File` is 2.4).
+setuptools 83.0.0 emits `Dynamic: license-file` — **and 83.0.0 is the version this module PINS via its
+own Generator check.** The verifier required a backend and then refused that backend's output. Fixed
+in `b65324b`, allowed as a NAME but constrained by VALUE (`_BACKEND_COMPUTABLE_FIELDS`), because
+widening the header allowlist alone would have accepted `Dynamic: Requires-Dist` — legal metadata
+meaning the dependency set was decided at build time, exactly what this verifier exists to refuse.
+
+Then the verifier caught its own fix: editing `distribution_verify.py` after the build made the
+archives stale, and it reported `wheel_source_mismatches` + `source_binding_errors` naming that file.
+Re-committed, rebuilt, re-verified. **The instrument working on its author.**
+
+**HONEST LIMIT, disclosed by the proof rather than by me.** `--require-source-binding` exits **3**:
+
+```text
+5 shipped archive member(s) are outside the claimed commit
+untracked_prefixes_covering_shipped_members: ['cisco_migration_assessment_toolkit.egg-info',
+                                              'webapp/frontend/dist']
+```
+
+Five members = the SPA bundle (index.html + 4 assets), untracked by design. So the archives are built
+and structurally verified, but **not source-bound**, and cannot be while `webapp/frontend/dist/` stays
+untracked — the §I1/F1 finding, now quantified by the release proof instead of argued about. The
+proof's `does_not_establish` block says the rest plainly, including that the claim is compared against
+`git rev-parse HEAD` in the same tree and is therefore a SELF-check.
+
+**The installed wheel degrades honestly**, which is the property this whole review was about:
+
+```text
+portdb: pack bytes/schema verified, but retained IANA source bytes are not authoritative
+        (official-source inventory unavailable ... reference-data/official-sources/manifest.json)
+registry: integrity-verified-build-provenance-mixed-authority | 12,373 rows | integrity True
+```
+
+Official sources are sdist-only by design (§5.5), so an installed wheel cannot verify the retained-
+source chain — and it says so instead of claiming authority it cannot establish.
+
+**Two environment notes for the next session.** `verify_checkout_immutable.py` cannot pass on Windows:
+it hashes RAW worktree bytes against LF-normalized HEAD blobs, and with `core.autocrlf=true` every
+text file mismatches (`.claude/agents/design-author.md`: worktree 1,763 B / 23 CRLF vs HEAD blob
+1,740 B / 0 CRLF, while `git diff` correctly reports it unmodified). CI runs it on ubuntu where no
+translation occurs. Git's own clean-tree check was used in its place here, and stated as a
+substitution. Separately, an isolated venv under the long scratchpad path fails `pip install` with
+Windows MAX_PATH — `ntc_templates` ships ~90-character template filenames; use a short venv root.
+
+**NOT DONE and still reserved:** no GitHub release, no PyPI upload, nothing pushed. Phase E
+(master-reference deployment) and the history rewrite remain human gates.
