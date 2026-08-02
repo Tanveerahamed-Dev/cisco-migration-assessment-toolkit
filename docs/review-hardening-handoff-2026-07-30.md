@@ -2024,7 +2024,7 @@ the relevant tests first and confirmed exit 0. That is the point: none of this i
 ### 7.1 FIXED — the privacy gate could certify a tree carrying client identifiers (P0, LIVE)
 
 `.github/scripts/verify_repository_privacy.py` matched markers with `\b`. `\b` is defined against
-`\w`, and **`_` is a word character** — so `\bsyntys\b` never matched `<sidebrand>_dc_design`, and
+`\w`, and **`_` is a word character** — so `\bthe side-engagement client\b` never matched `<sidebrand>_dc_design`, and
 `\baj\b` never matched `<initials>_switch01`. Measured before the fix, against the module's own patterns:
 
 | flagged | PASSED (missed) |
@@ -4135,3 +4135,54 @@ the name is true, because there are now tracked bytes to compare against.
 
 Working tree at this commit: **0 modified, 0 staged, 0 untracked** — the first fully clean tree in
 this review.
+
+---
+
+## 13. MERGED WITH PR #506 AND PUSHED — 2026-08-02
+
+### 13.1 The merge
+
+`origin/review/whole-repo-2026-07-28` carried 24 commits this session did not have — open DRAFT
+**PR #506 "security: protect client evidence and audit release artifacts"** — diverged from the same
+base (`ef8e893`). A force-push would have orphaned them; user chose merge. Result: `64d8637`, a true
+merge commit, pushed fast-forward (`5d014b6..64d8637`) with **nothing discarded**. The pre-merge local
+tip is preserved at `refs/preserved/pre-merge-4dfeb28`.
+
+Conflict resolutions (full detail in the merge commit message): `ci.yml` composed — this branch's
+immutability-interleaved sequence + #506's `tools/audit_wheel.py` member-list audit, placed before
+install/preservation; `publish.yml` keeps the download-the-tagged-artifacts model with #506's audit
+pointed at the downloaded bytes; the add/add on `tests/test_r8_client_evidence_is_ignored.py` resolved
+as a UNION (12 tests, disjoint concerns, no collisions — their half derives the capture set by
+AST-parsing `COMMANDS_*`, structurally stronger than this branch's curated list, recorded as such).
+
+Three defects found while merging, all fixed: #506's batch ignore-oracle broken on Windows (text-mode
+`\n`→`\r\n` on stdin made git match NOTHING; now `-z` + bytes; measured 0-of-2 → 2-of-2);
+`audit_wheel.py` stale against the widened `packages.find` (rejected the project's own wheel three
+ways; aligned without touching the filename denylist); the auto-merged `test_ci_gates.py` pinned #506's
+literal step spellings (rewritten to assert the PROPERTY: audit present in both workflows, ordered
+before install and before publish).
+
+### 13.2 First CI verdicts on the merged head, and a fix they forced
+
+Push triggered PR CI. **webapp-ci: success.** **Master reference: FAILURE**, real and mine:
+
+```text
+vite.config.ts(3,23): error TS2307: Cannot find module './build/sites-vite-plugin.ts'
+```
+
+`.gitignore:10`'s **unanchored `build/`** (meant for Python's root build output) silently swallowed
+`master-reference/build/sites-vite-plugin.ts` — a SOURCE file that `vite.config.ts` imports. Every
+local run passed because the file sat in the worktree; the first CI run failed because it was never
+committable. **Local-green/CI-red with no code difference is the signature of an ignore rule eating a
+tracked dependency.** Fixed by anchoring to `/build/` — the identical fix the review already applied to
+`/dist/` one line down — and tracking the plugin. Swept the whole repo for other ignored source: the
+only hits are the ignored side-engagement design tree (ignored BY DESIGN, referenced by nothing tracked; its directory name is withheld here because the name is itself a client marker). master-reference re-verified locally: 3/3, typecheck via `npm test` exit 0.
+
+The main CI run (test matrix, coverage, Distribution contract with the first-ever ubuntu SPA
+reproduction check) was IN PROGRESS at this fix's push, which supersedes it under
+`cancel-in-progress`. **The cross-platform SPA byte-reproduction question is answered by the run on
+the NEW head — read it from actual job/step conclusions, never the run summary** (this repo's memory:
+`cancelled` ≠ `failed`; zero-step instant-fail = billing).
+
+PR #506 retitled/re-described to reflect that it now carries both lines of work (66 commits), left in
+DRAFT — marking ready-for-review is the user's call.

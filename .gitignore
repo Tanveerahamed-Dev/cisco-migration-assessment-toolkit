@@ -7,7 +7,14 @@ venv/
 env/
 
 # Build / packaging artifacts (pyproject build, wheels)
-build/
+# ROOT-anchored, exactly like /dist/ one line down and for the same reason: the unanchored form
+# matches a directory named `build` ANYWHERE, and master-reference/build/ holds SOURCE (the
+# sites-vite-plugin that vite.config.ts imports). Unanchored, that plugin was silently ignored,
+# never committed, and the first CI run of the master-reference workflow failed with
+#   vite.config.ts(3,23): error TS2307: Cannot find module './build/sites-vite-plugin.ts'
+# while every LOCAL run passed, because the file sat in the worktree. Local-green/CI-red with no
+# code difference is the signature of an ignore rule eating a tracked dependency.
+/build/
 /dist/
 *.whl
 _wheeltest/
