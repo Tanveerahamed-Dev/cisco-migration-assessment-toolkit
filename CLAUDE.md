@@ -5,8 +5,11 @@ Before continuing the repository-wide hardening review on
 **`docs/review-hardening-handoff-2026-07-30.md` in full**. It is the current,
 loss-preserving checkpoint: exact baseline, protected backups, completed lane
 evidence, unresolved cross-lane defects, prohibited destructive actions, and
-the ordered continuation plan. Its status is intentionally **not release-ready
-or repository-wide green**. Use **`/resume-review`** to run the guarded
+the ordered continuation plan. Status (2026-08-02): **repository-wide CI GREEN
+as of `213f5a3`** (its §13.9 — every job, every workflow, the branch's first),
+but intentionally **not release-ready**: the human gates in its §12.10/§13.9
+(master-reference deploy, history rewrite, PR #506 draft flip) and the carried
+questions remain open. Use **`/resume-review`** to run the guarded
 continuation protocol; its first action is the read-only checkpoint integrity
 check at `.claude/scripts/verify-review-handoff.ps1`.
 

@@ -1,6 +1,10 @@
 # Repository hardening handoff — 2026-07-30
 
-> **Status: active checkpoint, not a release and not a repository-wide green claim.**
+> **Status (amended 2026-08-02): CI is repository-wide GREEN as of `213f5a3` — every job of every
+> workflow, the branch's first (§13.9). Still NOT a release: the human gates (§12.10, §13.9) are
+> open, and Git history still carries the original private material (§2).** The original status
+> line — "active checkpoint, not a release and not a repository-wide green claim" — described the
+> pre-staging tree and is superseded for the green half only.
 >
 > **START HERE (updated 2026-07-31, end of session 2).**
 >
@@ -4467,3 +4471,41 @@ direction), and the simulation's own gap is asserted. Focused files green; **ful
 > a LIST of names; this one was a guard scoped to one CALL SITE of a replaceable collaborator.
 > Same defect one level up — the fix is owned by the boundary where the promise is made, not by
 > whichever consumer happened to crash first.
+
+### 13.9 CI cycle 6 — REPOSITORY-WIDE GREEN, the branch's first
+
+**Every job of every workflow on `213f5a3` succeeded** (verified per-job twice: direct jobs-API
+query and an independent monitor stream, both printed — never a workflow-level rollup alone):
+
+```text
+CI (run 30749472626):        Ruff lint, mypy, Coverage, Dependency audit, Distribution contract,
+                             Tests py3.10/3.11/3.12/3.13/3.14 ubuntu, py3.12 windows   ALL success
+webapp-ci (30749472624):     Frontend test+type-check+build, Backend e2e, Frontend E2E ALL success
+Master reference (…472623):  Static reference contract                                    success
+```
+
+Six cycles from first push to green. What each cycle bought, in one line each: (1) merge + the
+never-executed accept path; (2) the SPA reproduction + payload-vs-deflate; (3) the release gates'
+first green; (4) the ubuntu matrix + windows' first completed verdict; (5) the custody engine bug
++ the version-neutral suffix rewrite; (6) the spool boundary contract. Every red was a finding —
+the two production bugs of the effort (8.3 custody containment, the py3.10 spool contract) were
+both invisible to every leg that had already run.
+
+**What GREEN does and does not mean.** It means: the suite, lint, types, coverage floor,
+dependency audit, distribution contract, SPA reproduction and reference contracts all hold on
+every supported interpreter and both platforms, at `213f5a3`. It does NOT mean release-ready.
+Still open, unchanged in kind:
+
+* **Human gates (§12.10):** master-reference deploy (Phase E, outward-facing), the history
+  rewrite / force-push decision (§2 — history still carries the original private material), and
+  the PR #506 draft flip.
+* **Carried questions:** the EoL registry `evidence_method` claim (§12.12 item 2); the `..json`
+  name-shape semantics on 3.14 (§13.7); react-router v7 (two moderates below gate threshold,
+  deferred). The §13.7 matrix-dependency note stands: the <=3.13 legs are the only guard against
+  the splitext-restatement regression — dropping them silently retires it.
+* **PYSEC-2026-2858** stays a NAMED, commented suppression until netmiko admits paramiko>=5.
+
+> The number worth keeping: six consecutive cycles, and every one of the ~24 red job-verdicts
+> along the way decomposed into a real defect, a version-bound test, or an environment fact —
+> zero were flaky reruns. On this branch "rerun and hope" would have converged on nothing;
+> per-job forensics converged in six.
