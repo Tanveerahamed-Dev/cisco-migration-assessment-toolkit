@@ -4639,3 +4639,33 @@ marker-free history.
 
 Remaining open, unchanged: the Codex-side master-reference deploy tail (§13.10), the carried
 questions (§13.9), and the GitHub-side purge of pre-rewrite `refs/pull/*` objects (§13.11).
+
+### 13.13 PHASE E COMPLETE — the master reference is DEPLOYED (user-directed, 2026-08-02)
+
+The §5.7 tail executed end-to-end, driven through the LOCAL Codex CLI (`codex exec`, v0.146.0,
+ChatGPT auth — discovered on PATH; the same environment that authored the `.openai` scaffolding)
+from THIS checkout, so the deploy source was the rewritten, merged state, never a stale clone.
+
+```text
+project    appgprj_6a6fa5e281f88191a3c30a13a7d89e28   create_site ran EXACTLY ONCE
+version 1  appgver_bfa3defb9bc48191…                  private deploy, owner-verified in browser
+version 2  appgver_11977eb671d48191…                  from pushed HEAD c92981d (metadataBase +
+                                                      OG URL bound), deploy succeeded
+probe      anonymous HTTP 401                          access control confirmed, both versions
+URL        https://enhancements-master-reference.tanveerahamed81.chatgpt.site   (private)
+```
+
+**Codex refused twice, correctly, and each refusal was resolved the legitimate way rather than
+bypassed:** (1) it would not mint a bypass bearer to verify the private site — the OWNER opened
+the URL in their signed-in browser and confirmed rendering; (2) it would not create version 2
+from an uncommitted tree under its no-git-mutation constraint — and the platform agreed:
+**Sites versions bind to PUSHED source HEADs** (it deduplicated the unchanged archive to
+version 1 and rejected the local HEAD verbatim). The metadata edit came back to THIS session's
+gate-ordered commit (`c92981d`: hosting.json project id + `layout.tsx` metadataBase/OG — the
+only two files changed across all three Codex runs, verified by diff), was pushed, and only
+then did version 2 exist. Site gates re-run INDEPENDENTLY after the edit: npm test 3/3, lint 0.
+
+Every §12.10 human gate is now closed: staging, distributions, PR flip, history rewrite, merge,
+deploy. Still carried (unchanged in kind): the §13.9 questions, the GitHub purge of pre-rewrite
+`refs/pull/*` objects, and — new, minor — publishing the site beyond private is a separate
+outward-facing decision nobody has taken.

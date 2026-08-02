@@ -5,12 +5,13 @@ Before continuing the repository-wide hardening review on
 **`docs/review-hardening-handoff-2026-07-30.md` in full**. It is the current,
 loss-preserving checkpoint: exact baseline, protected backups, completed lane
 evidence, unresolved cross-lane defects, prohibited destructive actions, and
-the ordered continuation plan. Status (2026-08-02): **repository-wide CI GREEN
-(its §13.9) and the HISTORY REWRITE DONE (its §13.11 — origin marker-free on
-every branch and tag; old shas translate via the preserved commit-map)**, but
-still **not a release**: the master-reference Codex-side deploy tail (§13.10),
-the PR #507 review/merge (successor to auto-closed #506), and the carried
-questions remain open. Use **`/resume-review`** to run the guarded
+the ordered continuation plan. Status (2026-08-02, final): **CI repository-wide GREEN (§13.9), HISTORY
+REWRITE DONE (§13.11 — origin marker-free; old shas translate via the
+preserved commit-map), PR #507 MERGED to main (§13.12), and the master
+reference DEPLOYED privately via Codex Sites (§13.13)**. Every §12.10 human
+gate is closed. Still carried: the §13.9 questions, the GitHub Support purge
+of pre-rewrite `refs/pull/*` objects, and the separate decision to publish
+the site beyond private. Use **`/resume-review`** to run the guarded
 continuation protocol; its first action is the read-only checkpoint integrity
 check at `.claude/scripts/verify-review-handoff.ps1`.
 
