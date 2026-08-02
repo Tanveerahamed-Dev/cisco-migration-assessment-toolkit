@@ -4079,3 +4079,59 @@ Windows MAX_PATH — `ntc_templates` ships ~90-character template filenames; use
 
 **NOT DONE and still reserved:** no GitHub release, no PyPI upload, nothing pushed. Phase E
 (master-reference deployment) and the history rewrite remain human gates.
+
+### 12.17 SOURCE-BOUND (Phase D 5-7 closed) — the archives now bind to a commit
+
+`webapp/frontend/dist/` is TRACKED as of `b047d5e`, and the archives rebuilt from it satisfy
+`distribution_verify --require-source-binding`. Measured before and after, same command, same flags:
+
+```text
+                                                        b65324b        b047d5e
+shipped_archive_members_all_covered_by_claimed_commit    False    ->    True
+runtime_inventory_all_covered_by_claimed_commit          False    ->    True
+self_verified_against_this_worktree                      False    ->    True
+members_outside_source_binding                               5    ->       0
+untracked prefixes holding shipped members                   2    ->       1  (egg-info only)
+--require-source-binding                                exit 3    ->  exit 0
+```
+
+129 distinct shipped members = **115 bound to the commit + 14 build-generated-unbindable**
+(`dist-info`, `PKG-INFO` — no commit can contain them), 0 outside. `unverified_reason` is empty.
+
+```text
+wheel  3,395,666 B  sha256 a8257d8ddd052687f79700bc816b62893f17b2867d84ee526e9c5ef095142bc3
+sdist  5,358,421 B  sha256 16828c6bca8060f47db30c041199b82573d35d1eaf5608f736df2443cb330c9a
+commit b047d5ed54e6a959b6c6142a0634de5fcd54e1fe   tree 40665b3107d69a43a76ffa745488dfb65103bd29
+twine check PASSED (both) · full suite exit 0 · ruff exit 0 · privacy (index+worktree) exit 0
+```
+
+**The `-text` rule was applied BEFORE the first commit, not after the first failure.** Tracking the
+bundle only works if its bytes survive round-tripping exactly — CI rebuilds and byte-compares against
+these blobs, so any line-ending translation would make a CORRECT rebuild look like a modified tracked
+file. That is precisely what caught the retained official sources at the staging gate one day earlier
+(§12.14, one byte lost per CRLF against a SHA-256 manifest). Verified: all 5 blobs byte-identical
+between index and worktree. Cost of applying the lesson proactively: nothing.
+
+The dist allow-listing is REMOVED from `ci.yml` and `release.yml` — a tracked path is not an untracked
+path, so it became a no-op that would only mask an unexpected build output. Both steps are renamed
+from "left the immutable source untouched" to "**reproduced** the immutable source": for the first time
+the name is true, because there are now tracked bytes to compare against.
+
+**HONEST LIMITS THAT REMAIN, and they are structural rather than oversights:**
+
+* `independent_of_the_verified_worktree: False`. The proof says so itself, at length: "the archives,
+  the working tree and the Git repository the claim is resolved against are all the same checkout, so
+  every value in this block is this release describing itself". A signed tag verified against its
+  signer, or a reviewer reading the commit id, is the only thing that could establish which reviewed
+  revision this is — and the module cannot tell whether it was given one.
+* `cisco_migration_assessment_toolkit.egg-info` is untracked and holds shipped members. It is
+  setuptools' own build metadata; binding it would mean committing a build product.
+* **CROSS-PLATFORM REPRODUCTION IS UNPROVEN.** These bytes were built on Windows; CI rebuilds on
+  ubuntu/node-20. Two consecutive builds were byte-identical on the authoring machine (5/5 members,
+  same SHA-256s), but the ubuntu rebuild — including Vite's content-hashed filenames — has never run.
+  The CI step now proves or disproves it on first execution. **If it fails, the honest reading is that
+  the bundle is not reproducible across platforms, and the fix is a pinned/containerised build, NOT
+  re-adding the allowlist.**
+
+Working tree at this commit: **0 modified, 0 staged, 0 untracked** — the first fully clean tree in
+this review.
