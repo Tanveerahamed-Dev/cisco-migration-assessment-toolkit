@@ -3971,3 +3971,40 @@ real finding rather than a nuisance — was exactly right.
 
 > The checkpoint verifier is now SPENT by design (`Assert-Equal $staged 0` can no longer hold). The
 > default privacy gate is its replacement as the live proof, and it is green.
+
+### 12.15 COMMITTED (Phase D 4) — the reviewed source commit
+
+`9ed40be` on `review/whole-repo-2026-07-28` — **316 files, 121,363 insertions, 15,540 deletions**,
+including the 27 sanitization deletions.
+
+Verified AT the committed tree, not before it:
+
+```text
+full pytest suite ...................... exit 0 (219 s parallel)
+ruff check .  (the literal CI command) . exit 0
+privacy gate, index + working tree ..... exit 0
+working tree ........................... 0 modified, 0 staged
+untracked .............................. webapp/frontend/dist/ only (deliberate)
+branch ................................. review/whole-repo-2026-07-28 (NOT main); nothing pushed
+```
+
+**The checkpoint verifier is now permanently spent** (`Assert-Equal $staged 0` cannot hold past a
+commit). Its replacement as the live proof is the DEFAULT privacy gate plus the suite, both green
+above. A future session must NOT run `.claude/scripts/verify-review-handoff.ps1` expecting
+CHECKPOINT INTACT — that instrument belonged to the pre-commit phase and its job is done. The sealed
+recovery material under `private-inputs/review-handoff-checkpoint-20260730/` remains untouched and is
+still the rollback path.
+
+**Still open after this commit, unchanged:**
+
+* Phase D 5-7 — immutable distributions. §1 rule 7's precondition (frozen source bytes) is NOW
+  satisfiable for the first time: the tree is committed and clean. `verify_archives` gained accept-path
+  coverage in §12.8, so the lane is materially readier than when this handoff was written.
+* Phase E — master-reference deployment (outward-facing publication).
+* History rewrite / force-push — §2: Git history still contains the original private material. **This
+  commit does not rewrite it, and the repository must not be described as history-clean.**
+* `reference-data/official-sources/cisco/eol-bulletins.json` — its `evidence_method` asserts claims
+  were checked against Cisco source URLs, which is unverifiable under the no-egress doctrine.
+  Committing the file did not make that claim true; it is required by `distribution_verify` and stays
+  an open finding for correction.
+* The residual findings in §10.3, §11.2 and §12.7 that were carried rather than fixed.
