@@ -7,7 +7,12 @@ import json
 import re
 import subprocess
 import sys
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:                       # Python 3.10: tomllib is stdlib only since 3.11.
+    import tomli as tomllib  # type: ignore[no-redef]  # tomli ships in [dev]; first 3.10 CI leg
+    #                          ever to run this script found the bare import (the old fleet was
+    #                          Windows py3.12 only, so requires-python ">=3.10" was never exercised)
 from pathlib import Path
 
 _TAG_RE = re.compile(r"v(?P<version>[0-9]+(?:\.[0-9]+){2}(?:[A-Za-z0-9.+-]*)?)\Z")

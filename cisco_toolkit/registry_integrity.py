@@ -125,6 +125,25 @@ _AUTHORITATIVE_STATE_GENERATORS = {
 _KNOWN_SOURCE_AUTHORITATIVE_STATES = frozenset(
     _AUTHORITATIVE_STATE_SOURCE_IDS
 )
+#: PAYLOAD (decompressed) digests of the reviewed deterministic builds. The compressed pins below
+#: bind the exact shipped artifact; these bind the CONTENT. Both are code-review anchors, but they
+#: answer different questions and fail differently: deflate is not canonical across zlib builds, so
+#: a byte-for-byte-faithful REBUILD of the same reviewed content on another platform produces
+#: different compressed bytes with an identical payload — proven on CI 2026-08-02, where every
+#: ubuntu leg refused a rebuild whose gzip CRC32/ISIZE trailers matched the shipped pack ("pack
+#: digest ... is not the code-pinned deterministic build"). Pinning ONLY compressed bytes meant
+#: pack regeneration was blessable on exactly one zlib build, ever. The manifest's
+#: `decompressed_sha256` is verified against the actual decompressed bytes by `verified_text`
+#: (never trusted bare), so accepting it against these pins is sound: provenance is only ever
+#: consumed after integrity.
+_TRUSTED_PAYLOAD_SHA256_BY_STATE = {
+    "generated-from-retained-ieee-primary-sources": (
+        "5bae084489f21916c573d7159907ab9c4543b0f6bd786a7a40c7abe2655cca19"
+    ),
+    "generated-from-retained-iana-primary-source": (
+        "b45b87bcdf9a63363163fd8c1d002bea03a0ca1e557bea01c9c88bceeb1f9c68"
+    ),
+}
 _TRUSTED_PACK_SHA256_BY_STATE = {
     "generated-from-retained-ieee-primary-sources": (
         "2120d5ca8a07cd320d480c6b5bcb5cd810c877cb70a5c949e2d635891e48a51a"
@@ -516,11 +535,20 @@ def _build_provenance_authority(
             {},
         )
     trusted_pack_hash = _TRUSTED_PACK_SHA256_BY_STATE[state]
-    if entry.get("compressed_sha256") != trusted_pack_hash:
+    trusted_payload_hash = _TRUSTED_PAYLOAD_SHA256_BY_STATE[state]
+    # Either anchor establishes the reviewed build: the compressed pin is exact for the SHIPPED
+    # artifact; the payload pin admits a faithful rebuild whose deflate framing differs (deflate is
+    # not canonical across zlib implementations — see _TRUSTED_PAYLOAD_SHA256_BY_STATE). A pack
+    # matching NEITHER is refused exactly as before.
+    if (
+        entry.get("compressed_sha256") != trusted_pack_hash
+        and entry.get("decompressed_sha256") != trusted_payload_hash
+    ):
         return (
             False,
             f"pack digest for provenance state {state!r} is not the "
-            "code-pinned deterministic build",
+            "code-pinned deterministic build (neither the shipped compressed bytes nor the "
+            "reviewed payload)",
             {},
         )
     try:

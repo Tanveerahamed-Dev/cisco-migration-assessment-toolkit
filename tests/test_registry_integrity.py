@@ -597,3 +597,53 @@ def test_pack_usability_distinguishes_cannot_check_here_from_checked_and_failed(
     assert pack_is_usable(dict(wheel, build_provenance_verified=False)) is False
     stale = {k: v for k, v in wheel.items() if k != "official_sources_available"}
     assert pack_is_usable(stale) is False, "an old producer without the field must stay strict"
+
+
+def test_provenance_accepts_a_faithful_rebuild_from_a_foreign_zlib_and_refuses_a_tampered_payload():
+    """The code pin was a COMPRESSED digest, so a byte-faithful rebuild of the reviewed content on
+    another platform was refused as "not the code-pinned deterministic build" — proven on CI
+    2026-08-02, where every ubuntu leg's rebuild produced different deflate bytes with an identical
+    payload (gzip CRC32/ISIZE trailers matched). Deflate is not canonical across zlib builds, so a
+    compressed-only pin means pack regeneration is blessable on exactly one zlib build, ever.
+
+    The payload anchor closes that: the manifest's `decompressed_sha256` — which `verified_text`
+    checks against the actual decompressed bytes, so it is never trusted bare — may match
+    `_TRUSTED_PAYLOAD_SHA256_BY_STATE` instead. Simulated here with a real foreign framing
+    (compresslevel=1, mtime=0) rather than a hand-edited digest.
+    """
+    import gzip as _gz
+    import io
+    import json
+    from pathlib import Path
+
+    from cisco_toolkit import portdb
+    from cisco_toolkit.registry_integrity import _build_provenance_authority
+
+    shipped = Path(portdb._DATA).read_bytes()
+    payload = _gz.decompress(shipped)
+    buf = io.BytesIO()
+    with _gz.GzipFile(fileobj=buf, mode="wb", compresslevel=1, mtime=0) as handle:
+        handle.write(payload)
+    foreign = buf.getvalue()
+    assert foreign != shipped, "the simulation failed to produce a different deflate framing"
+    assert _gz.decompress(foreign) == payload
+
+    manifest = json.loads(
+        (Path(portdb._DATA).parent / "registry_manifest.json").read_text(encoding="utf-8"))
+    states = {"generated-from-retained-iana-primary-source"}
+
+    rebuilt = dict(manifest["packs"]["port_registry.tsv.gz"])
+    rebuilt["compressed_sha256"] = registry._sha256(foreign)
+    rebuilt["compressed_bytes"] = len(foreign)
+    ok, reason, _ = _build_provenance_authority(rebuilt, allowed_provenance_states=states)
+    assert ok is True, f"a faithful rebuild was refused: {reason}"
+
+    # NON-VACUITY in both directions: a tampered PAYLOAD fails both anchors...
+    tampered = dict(rebuilt)
+    tampered["decompressed_sha256"] = registry._sha256(payload + b"x")
+    ok2, reason2, _ = _build_provenance_authority(tampered, allowed_provenance_states=states)
+    assert ok2 is False and "code-pinned" in reason2
+    # ...and the SHIPPED pack still verifies through the compressed anchor, unchanged.
+    ok3, _r, _ = _build_provenance_authority(
+        dict(manifest["packs"]["port_registry.tsv.gz"]), allowed_provenance_states=states)
+    assert ok3 is True

@@ -4314,3 +4314,44 @@ The linux-only cluster (4 redact_collection corpus tests + the Stop-hook fail-op
 recorded in 13.4 — cycle 3's matrix will re-measure it in isolation. Locally proven meanwhile: both
 capture rules AGREE on every CI-failing name on Windows, so that cluster is filesystem-behaviour
 dependent, not rule-text dependent.
+
+### 13.6 CI cycle 4 — the provenance pin was the deeper cause, and two records corrected
+
+**Both release-facing jobs went GREEN on cycle 3** (`b71f9d9`): Dependency audit and Distribution
+contract passed for the first time in the branch's history — the named paramiko suppression, the
+fourth-copy deletion and the wheel-context selftest chain all held on the real runner.
+
+**The pack failures' true mechanism was beneath my test fix.** Cycle 2 still failed the two pack
+tests WITH the payload-comparison rewrite in place, because the refusal came from
+`_build_provenance_authority`: `_TRUSTED_PACK_SHA256_BY_STATE` pins the COMPRESSED digest in code, so
+any rebuild whose deflate framing differs from the shipped (Windows-zlib) bytes is "not the
+code-pinned deterministic build" — meaning **pack regeneration was blessable on exactly one zlib
+build, ever**. Fixed at the design level: `_TRUSTED_PAYLOAD_SHA256_BY_STATE` pins the CONTENT, and
+provenance accepts either anchor. Sound because the manifest's `decompressed_sha256` is verified
+against real bytes by `verified_text` before provenance is ever consumed (integrity precedes
+authority everywhere via `pack_is_usable`). Proven three ways with a REAL foreign framing
+(compresslevel=1, mtime=0), not a hand-edited digest: faithful rebuild ACCEPTED, tampered payload
+REFUSED by both anchors, shipped pack unchanged via the compressed anchor. No manifest surgery and no
+pack regeneration were needed — the payload digest was already in the manifest and already
+integrity-verified.
+
+**`requires-python = ">=3.10"` was never true until this week.** The py3.10 leg — first ever to run —
+failed four release-supply-chain tests with `ModuleNotFoundError: tomllib` (stdlib only since 3.11)
+in `.github/scripts/verify_release.py`. Fallback to `tomli` (already in `[dev]`). The old fleet was
+Windows py3.12 only, so the floor of the claimed support range had never executed anything.
+
+**Two of my own records corrected:**
+* §13.4 called the redact/stop-hook failures "the linux cluster". Wrong twice: they appeared only in
+  cycle 1's AGGREGATE log — which mixes all jobs — and none of cycle 2's isolated ubuntu legs shows
+  them (each shows exactly the two pack tests; py3.10 adds the tomllib four). I had conflated run
+  aggregates across cycles and attributed Coverage/windows-leg failures to "linux". They have not
+  recurred in an isolated leg since; they are watched, not diagnosed, and no longer carried as a
+  named open cluster.
+* My pathlib-version and platform-class hypotheses for those failures were both refuted by
+  measurement (both `PurePath` flavours agree on every probe name; cycle-2 ubuntu 3.12.13 passes the
+  corpus tests). Recorded so the next session does not re-derive dead theories.
+
+Verified locally: full suite exit 0, ruff exit 0, focused registry/supply-chain suites green,
+`tomli` import confirmed. Expected on cycle 4: every ubuntu leg green on the pack tests, py3.10
+green on supply-chain; remaining watch items are the windows leg (cancelled mid-run in cycles 2-3,
+never a completed verdict since cycle 1) and any recurrence of the cycle-1-only failures.
