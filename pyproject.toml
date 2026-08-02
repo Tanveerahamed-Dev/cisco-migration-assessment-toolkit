@@ -11,7 +11,7 @@
 # than migrating into [tool.*] here, to avoid any change in how those tools resolve their settings.
 
 [build-system]
-requires = ["setuptools==83.0.0", "wheel==0.46.2"]
+requires = ["setuptools==83.0.0", "wheel==0.47.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -75,7 +75,7 @@ dev = [
     "pytest-xdist>=3,<4",
     "ruff>=0.5",
     "mypy>=1.8",
-    "ntc-templates>=4,<9",
+    "ntc-templates>=4,<10",
     # REQUIRED for webapp/tests to be COLLECTED AT ALL. `webapp/tests/conftest.py` needs
     # ("fastapi", "httpx") and sets collect_ignore_glob when either is missing; pytest then exits 5
     # having run nothing. httpx is NOT a base fastapi dependency — it ships only under fastapi's
@@ -89,7 +89,7 @@ dev = [
 # The Model Context Protocol server is optional: it exposes READ-ONLY query tools over a
 # already-produced snapshot.json (offline, no egress). The base engine never imports `mcp`
 # unless this extra is installed; cisco_toolkit.mcp_server guards the import at call time.
-mcp = ["mcp>=1.28,<2"]
+mcp = ["mcp>=1.28,<3"]
 # The AssessHub web layer (webapp/backend) + the `assesshub` entry point (ADR-0004 P1: the
 # portable app's one door). Mirrors webapp/requirements.txt — keep the two in lockstep.
 # Compatibility alias; AssessHub runtime dependencies are already in the base set.
