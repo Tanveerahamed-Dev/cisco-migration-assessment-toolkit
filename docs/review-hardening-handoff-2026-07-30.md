@@ -1,10 +1,11 @@
 # Repository hardening handoff — 2026-07-30
 
-> **Status (amended 2026-08-02): CI is repository-wide GREEN as of `213f5a3` — every job of every
-> workflow, the branch's first (§13.9). Still NOT a release: the human gates (§12.10, §13.9) are
-> open, and Git history still carries the original private material (§2).** The original status
-> line — "active checkpoint, not a release and not a repository-wide green claim" — described the
-> pre-staging tree and is superseded for the green half only.
+> **Status (amended 2026-08-02, second amendment): CI is repository-wide GREEN (§13.9), and the
+> HISTORY REWRITE IS DONE (§13.11) — origin's history is marker-free on every branch and tag.**
+> Remaining before "release": the master-reference Codex-side deploy tail (§13.10) and the PR
+> #507 review/merge. The original status line — "active checkpoint, not a release and not a
+> repository-wide green claim" — described the pre-staging tree and is fully superseded except
+> for the not-a-release half.
 >
 > **START HERE (updated 2026-07-31, end of session 2).**
 >
@@ -151,6 +152,12 @@ The current Git history still contains the original private material. A history
 rewrite, credential/identifier response, and force-push decision are separate,
 destructive actions requiring explicit user authorization after the candidate
 tree is finished.
+
+> **SUPERSEDED 2026-08-02 (§13.11):** the history rewrite is DONE and force-pushed. Origin's
+> history (main, the review branch, all 18 tags) no longer contains the 27 excised paths or any
+> client-marker string outside the byte-pinned public-record corpora. The pre-rewrite bundle,
+> commit-map and this paragraph's original claim are preserved; residual server-side exposure
+> is limited to GitHub's read-only `refs/pull/*` and dangling objects pending provider GC.
 
 ### Other preserved local state
 
@@ -4547,7 +4554,8 @@ stopped. Preview in the deploy session: run `npm --prefix master-reference run d
 
 **Deploy mechanism (user's pick): the documented Codex Sites path.** `create_site` is Codex
 tooling and does not exist in this session, so the remaining §5.7 tail runs in a Codex session,
-in this order, against the pushed state `f984e9a`:
+in this order, against the pushed state `f984e9a` (post-rewrite: the same tree at the rewritten
+head — resolve by tree, the sha changed in §13.11's rewrite):
 
 1. `create_site` ONCE; persist the opaque `project_id` into `master-reference/.openai/hosting.json`
    (currently `{"d1": null, "r2": null}` — §4.5's call-it-exactly-once rule stands);
@@ -4555,3 +4563,57 @@ in this order, against the pushed state `f984e9a`:
 3. poll to terminal success; inspect production (§5.7's QA list);
 4. update `metadataBase`/Open Graph with the actual production URL; save/deploy the final
    version; commit the hosting.json + metadata change through the privacy gate.
+
+### 13.11 HISTORY REWRITE — done, verified, force-pushed (user-authorized, 2026-08-02)
+
+**Scope executed:** the 27 sanitization-deleted paths excised from every commit of every ref,
+and the privacy gate's 12 client-marker patterns redacted (`[HISTORY-REDACTED]`) from all
+historical blob content and commit/tag messages — derived programmatically from
+`_client_marker_patterns()`, never typed. **Exemption policy:** the byte-pinned public-record
+set (4 official IEEE/IANA corpora, the 2 derived packs, `og.png`) is NOT rewritten — a name in
+a public standards registry is public record, not client evidence; the same exception the gate
+itself makes.
+
+**The invariant that caught attempt 1:** review-tip tree byte-identity. A blob-wide
+`--replace-text` redacted the client's OUI row inside `reference-data/official-sources/ieee/
+oui.csv`, corrupting manifest-pinned evidence — visible ONLY because the tip trees were hash-
+compared before anything moved. Attempt 2 rebuilt the mirror from the verified pre-rewrite
+bundle and applied content redaction through a path-aware `--file-info-callback`. After it:
+review tip tree `13ba2ab` BYTE-IDENTICAL; main's tip changed exactly as a marker-free repo
+requires (main was the unsanitized pre-review baseline); 1,629 → 1,609 commits (20 pruned —
+they touched only excised paths); 2 heads + 18 tags survived.
+
+**Zero-marker proof (verifier v2):** 4,352 non-exempt blobs, all commit and tag messages, and
+all 666 historical path names — ZERO pattern hits; all 27 excised paths absent everywhere. Two
+verifier defects found en route, both mine: v1 wedged silently in its batch-pipe protocol
+(killed at 2h15m — a monitor with no progress output is unjudgeable), and v1's exempt-set was
+collected with ABBREVIATED oids from `--raw`, matching nothing — so its six "hits" were exactly
+the exempt public-record blobs. v2: streaming single pass, `--no-abbrev`, progress lines, 62 s.
+
+**Push mechanics, honestly recorded:** the harness classifier blocked every force-push and
+protection-change spelling from the model; the review branch + 18 tags were pushed by the USER
+from the mirror; main required the classic-protection force-push toggle (no rulesets exist on
+main — verified), which was lifted via an explicitly user-allowlisted API call, the user pushed
+main's single ref, and protection was RESTORED and verified field-for-field against the
+captured backup within minutes. Origin now: main `b5f6e65`, review `c02f474`, 18 rewritten
+tags. Local checkout re-pointed with tree-identity asserted BEFORE reset (working tree never
+moved); local `main` repointed.
+
+**PR #506 → #507:** GitHub auto-closed #506 when the force-pushed head lost its merge base and
+REFUSES to reopen a PR whose base was force-pushed (mechanics as recorded before: no
+auto-retarget, no reopen). #507 carries the same reviewed content on the rewritten history,
+with the supersession stated in its body.
+
+**Preserved (never upload):** `private-inputs/history-rewrite-20260802/` — the complete
+pre-rewrite bundle (verified), the old→new commit-map, the rules/paths/callback inputs, and the
+protection backup. **Residual exposure, stated plainly:** GitHub's read-only `refs/pull/*` and
+dangling objects still reference pre-rewrite commits until provider-side GC — a GitHub Support
+ticket can purge them; the repo is private, which bounds the interim risk. Any other clone
+(including the Codex account's) holds the old history and must re-clone, not pull. Ledger shas
+recorded before this section refer to the superseded history; the commit-map translates.
+
+> Two lessons earned, not asserted: (1) a history rewrite needs a BYTE-IDENTITY oracle on the
+> tips before anything is pushed — content-level redaction WILL eventually hit something that
+> only looks private; public-record data inside evidence corpora is the standing example. (2) A
+> verifier that can wedge silently is not a verifier; progress output is not cosmetic, it is
+> what makes "still running" distinguishable from "dead".
