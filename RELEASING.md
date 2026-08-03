@@ -77,7 +77,24 @@ they cannot disagree about a release's contents.
 
 ## Promote the exact release to PyPI
 
-Publishing is intentionally manual because a PyPI version cannot be replaced.
+> **DECIDED 2026-08-03 — this project is NOT published to the public PyPI.**
+> The open question below ("decide explicitly whether public installability is
+> appropriate") is now answered: **no**. `LICENSE` is all-rights-reserved
+> proprietary — "No permission is granted to use, copy, modify, merge, publish,
+> distribute... except with the prior written consent of the copyright holder" —
+> and PyPI is a public distribution channel whose versions can be yanked but
+> never deleted or reused. Publishing there would make the full source
+> permanently world-downloadable and `pip install`-able by anyone, which the
+> license forbids. **Distribution is the GitHub Release**, which already carries
+> the verified wheel, source archive and `dist-verification.json` source-binding
+> proof for authorized recipients.
+>
+> `publish.yml` is retained, unused, and still correct: if a private index or a
+> licensing change ever makes promotion appropriate, it is the reviewed path.
+> Reopening this requires an explicit, recorded decision — not a convenience call.
+
+The procedure below applies only if that decision is ever revisited. Publishing
+is intentionally manual because a PyPI version cannot be replaced.
 Run **Publish verified release to PyPI** and supply the existing tag, for
 example `v3.31.0`.
 
