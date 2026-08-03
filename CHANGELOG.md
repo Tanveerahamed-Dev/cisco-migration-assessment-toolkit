@@ -4,6 +4,10 @@ Release-level highlights. The complete, engineering-grade change history (one da
 per change, with verification evidence) lives in
 [`COLLECT_PARSE_V3_23_0.md → Change Log`](COLLECT_PARSE_V3_23_0.md#change-log).
 
+## [Unreleased]
+
+_No changes yet._
+
 ## [v3.32.0] — 2026-08-03 — the review release (whole-repo coverage-honesty hardening + source-bound archives + proven support floor)
 
 ### Fixed
