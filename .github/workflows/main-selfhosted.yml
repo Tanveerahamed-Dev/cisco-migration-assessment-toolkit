@@ -34,15 +34,19 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The venv lives in RUNNER_TEMP, never inside the checkout: the privacy gate scans the
+      # working tree, and a venv inside it fails the gate on its own scaffolding (churning
+      # Scripts/*.exe stubs, and pyvenv.cfg embeds the machine's user-name path, which the
+      # gate correctly treats as a marker). Proven by this workflow's maiden run.
       - name: Create isolated venv
-        run: py -3.12 -m venv .ci-venv
+        run: py -3.12 -m venv "$env:RUNNER_TEMP\ci-venv"
       - name: Upgrade pip
-        run: .ci-venv\Scripts\python.exe -m pip install --upgrade pip
+        run: '& "$env:RUNNER_TEMP\ci-venv\Scripts\python.exe" -m pip install --upgrade pip'
       - name: Install complete runtime and test dependencies
-        run: .ci-venv\Scripts\python.exe -m pip install -e ".[dev]"
+        run: '& "$env:RUNNER_TEMP\ci-venv\Scripts\python.exe" -m pip install -e ".[dev]"'
       - name: Ruff correctness rules
-        run: .ci-venv\Scripts\python.exe -m ruff check .
+        run: '& "$env:RUNNER_TEMP\ci-venv\Scripts\python.exe" -m ruff check .'
       - name: Tracked-tree privacy boundary
-        run: .ci-venv\Scripts\python.exe .github/scripts/verify_repository_privacy.py
+        run: '& "$env:RUNNER_TEMP\ci-venv\Scripts\python.exe" .github/scripts/verify_repository_privacy.py'
       - name: Run the complete default suite
-        run: .ci-venv\Scripts\python.exe -m pytest
+        run: '& "$env:RUNNER_TEMP\ci-venv\Scripts\python.exe" -m pytest'
