@@ -19,6 +19,13 @@ updates:
     groups:
       frontend:
         patterns: ["*"]
+    # Majors are deliberate migrations here, not routine bumps: PR #513 grouped React 18->19,
+    # react-router 6->7 (explicitly deferred during the 2026-07 repo review), TypeScript 5->7,
+    # Vite 6->8 and jsdom 29->30 into one lockfile-only PR with no code changes, which cannot
+    # work. Run frontend majors as planned migrations, one major at a time, with code changes.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /
