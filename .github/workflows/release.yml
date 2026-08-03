@@ -54,11 +54,21 @@ jobs:
           --expected-tree "${{ steps.source.outputs.tree }}"
       - name: Verify the tagged tracked-tree privacy boundary
         run: python .github/scripts/verify_repository_privacy.py
-      - name: Prove privacy validation did not change the tagged source
+      # THE GATE THAT WAS MISSING — see the identical note in release-selfhosted.yml. Every other
+      # step verifies PROVENANCE; none verified that the tagged code passes its own tests, so
+      # RELEASING.md's "confirm all required CI checks are green" precondition was an unenforced
+      # markdown instruction. It failed the first time it was stressed (v3.32.0 released from a
+      # commit whose suite was RED). Kept in lockstep with the self-hosted path.
+      - name: Install the test toolchain against the tagged source
+        run: python -m pip install -e ".[dev]"
+      - name: Run the complete suite against the tagged source
+        run: python -m pytest -q
+      - name: Prove privacy and suite validation did not change the tagged source
         run: >-
           python .github/scripts/verify_checkout_immutable.py
           --expected-commit "${{ steps.source.outputs.commit }}"
           --expected-tree "${{ steps.source.outputs.tree }}"
+          --allow-untracked-prefix cisco_migration_assessment_toolkit.egg-info
       - name: Detect an idempotent re-run
         id: existing
         env:

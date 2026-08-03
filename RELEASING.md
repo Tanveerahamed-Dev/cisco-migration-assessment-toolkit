@@ -26,7 +26,12 @@ Before tagging:
 1. Merge the release commit to `main`.
 2. Confirm all required CI checks are green, including the full Python matrix,
    coverage, frontend/backend tests, dependency audit, privacy gate, and
-   distribution contract.
+   distribution contract. **This is now also enforced mechanically**: both
+   release workflows run the complete test suite against the tagged source
+   before building or attaching anything, so a tag cut from a red commit fails
+   the release instead of producing assets. It became a step because it failed
+   as a promise — v3.32.0 was released from a commit whose own suite was red
+   (a version-cache reconcile test), caught only afterwards.
 3. Ensure `pyproject.toml` contains the intended release version.
 4. Review the change log and the master reference for user-visible changes.
 5. Confirm the GitHub `pypi` environment still requires the intended approval

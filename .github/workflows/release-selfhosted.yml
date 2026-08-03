@@ -81,6 +81,22 @@ jobs:
         run: '& "$env:RUNNER_TEMP\rel-venv\Scripts\python.exe" .github/scripts/verify_release.py --tag "${{ inputs.tag }}" --commit HEAD --base origin/main'
       - name: Verify the tagged tracked-tree privacy boundary
         run: '& "$env:RUNNER_TEMP\rel-venv\Scripts\python.exe" .github/scripts/verify_repository_privacy.py'
+      # THE GATE THAT WAS MISSING. Every other step here verifies PROVENANCE — tag, version,
+      # ancestry, privacy, immutability, metadata, installability, registry health — and none
+      # verified that the tagged code actually PASSES ITS OWN TESTS. RELEASING.md's precondition
+      # ("confirm all required CI checks are green") was a documented human step with no
+      # mechanical enforcement, and it failed the first time it was stressed: v3.32.0 was
+      # released from a commit whose suite was RED
+      # (test_registry_freshness::test_release_version_cache_reconciles_to_pyproject, proven by
+      # running the tag's own content). A precondition that lives only in a markdown file is the
+      # exact defect class this repository's review existed to remove, so it is now a step.
+      - name: Install the test toolchain against the tagged source
+        run: |
+          py -3.12 -m venv "$env:RUNNER_TEMP\test-venv"
+          & "$env:RUNNER_TEMP\test-venv\Scripts\python.exe" -m pip install --quiet --upgrade pip
+          & "$env:RUNNER_TEMP\test-venv\Scripts\python.exe" -m pip install --quiet -e ".[dev]"
+      - name: Run the complete suite against the tagged source
+        run: '& "$env:RUNNER_TEMP\test-venv\Scripts\python.exe" -m pytest -q'
       # The runner wraps powershell steps in $ErrorActionPreference='stop', and PS5.1 turns a
       # native command's REDIRECTED stderr into terminating NativeCommandErrors — so
       # `gh release view ... *> $null` on a not-yet-existing release killed the script before
@@ -114,7 +130,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           npm run build
       - name: Prove the SPA build reproduced the immutable tagged source
-        run: '& "$env:RUNNER_TEMP\rel-venv\Scripts\python.exe" .github/scripts/verify_checkout_immutable.py --expected-commit "${{ steps.source.outputs.commit }}" --expected-tree "${{ steps.source.outputs.tree }}" --allow-untracked-prefix webapp/frontend/node_modules --allow-untracked-prefix dist'
+        run: '& "$env:RUNNER_TEMP\rel-venv\Scripts\python.exe" .github/scripts/verify_checkout_immutable.py --expected-commit "${{ steps.source.outputs.commit }}" --expected-tree "${{ steps.source.outputs.tree }}" --allow-untracked-prefix webapp/frontend/node_modules --allow-untracked-prefix cisco_migration_assessment_toolkit.egg-info --allow-untracked-prefix dist'
       - name: Build the release archives once
         if: steps.existing.outputs.exists == 'false'
         run: '& "$env:RUNNER_TEMP\rel-venv\Scripts\python.exe" -m build --sdist --wheel --outdir dist'
