@@ -39,17 +39,33 @@ jobs:
         with:
           ref: ${{ inputs.tag }}
           fetch-depth: 0
-      # The machine git carries core.autocrlf=true, which smudges every unattributed text file
-      # to CRLF on checkout — verify_checkout_immutable compares WORKING-TREE BYTES against the
-      # committed blobs, so the proof structurally cannot pass (maiden run: every .md/.py
-      # "differs from immutable HEAD"). Rewrite the tree byte-faithfully instead of weakening
-      # the instrument; this also makes the built archives consume committed bytes, matching
-      # what the hosted ubuntu build ships.
+      # The machine git carries core.autocrlf=true globally, which smudges every unattributed
+      # text file to CRLF on checkout — verify_checkout_immutable compares WORKING-TREE BYTES
+      # against the committed blobs, so the proof structurally cannot pass (maiden run: every
+      # .md "differs from immutable HEAD"). Rewrite the tree byte-faithfully instead of
+      # weakening the instrument; the build then also consumes committed bytes, matching what
+      # the hosted ubuntu build ships.
+      #
+      # `checkout-index -a -f` is NOT sufficient and was measured failing here: on a workspace
+      # git has already populated, the index stat-cache makes it skip files it considers
+      # current, so it exits 0 having rewritten nothing (proven in the runner's own workspace,
+      # 2026-08-03 — it DOES work on a fresh clone, which is exactly how a local probe can lie
+      # about this). Dropping the cached entries first forces a real re-materialisation.
+      # The verification below is the point: a silent no-op must fail HERE, loudly, rather
+      # than surfacing as an unexplained immutability-proof failure three steps later.
       - name: Normalize the checkout to committed bytes
         run: |
           git config core.autocrlf false
           git config core.eol lf
-          git checkout-index -a -f
+          git rm --cached -r --quiet .
+          git reset --hard --quiet
+          $dirty = git status --porcelain
+          if ($dirty) {
+            Write-Host "normalisation left the tree dirty:"
+            Write-Host $dirty
+            exit 1
+          }
+          Write-Host "working tree matches committed bytes"
       - name: Capture the immutable tagged-source identity
         id: source
         run: |
