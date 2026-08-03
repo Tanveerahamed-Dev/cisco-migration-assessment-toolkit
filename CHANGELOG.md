@@ -8,6 +8,28 @@ per change, with verification evidence) lives in
 
 _No changes yet._
 
+## [v3.32.1] — 2026-08-03 — release-integrity fix
+
+**Supersedes v3.32.0, which was released from a commit that failed its own test suite.** The
+defect was confined to release metadata — `docs/ssot.md` still cached the previous release
+version and the changelog had no open `[Unreleased]` section — so the v3.32.0 artifacts are
+functionally sound, but re-verifying that tag reports RED and its provenance claim cannot be
+reproduced. v3.32.1 is the same content from a commit whose suite is green.
+
+### Fixed
+- The release-metadata caches the v3.32.0 cut missed: a fresh `[Unreleased]` section, and
+  `docs/ssot.md`'s release-version cache reconciled to its owner (`pyproject.toml`), which
+  `tests/test_registry_freshness.py` verifies.
+
+### Changed
+- **A release now proves the tagged code passes its own suite.** Both release workflows ran an
+  exhaustive *provenance* gate — annotated tag, version match, main ancestry, privacy boundary,
+  immutability proofs between every step, archive metadata, clean-environment installability,
+  registry health — and none of it asked whether the code works. `RELEASING.md` carried that as
+  a documented precondition with no mechanical enforcement, and it failed the first time it was
+  stressed. The suite now runs against the tagged source before anything is built or attached,
+  in both the hosted and self-hosted paths.
+
 ## [v3.32.0] — 2026-08-03 — the review release (whole-repo coverage-honesty hardening + source-bound archives + proven support floor)
 
 ### Fixed
