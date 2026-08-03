@@ -28,8 +28,11 @@ from .registry_integrity import (
     source_freshness,
 )
 
-# Date every row below was re-checked against its named Cisco bulletin and
-# bound to the retained semantic primary-source fixture.
+# Date every row below was transcribed from its named Cisco bulletin and
+# bound to the retained semantic primary-source fixture. Bulletin IDs and
+# URLs are provenance recorded at transcription time; under the no-egress
+# doctrine nothing offline can re-confirm a claim at its live Cisco URL,
+# and no such re-confirmation is claimed (handoff 2026-07-30 §13.15).
 _EOL_REVIEWED = "2026-07-30"
 _EOL_FIXTURE_SOURCE_ID = "cisco-eol-bulletin-semantic-fixture"
 _EOL_FIXTURE_RELATIVE_PATH = (

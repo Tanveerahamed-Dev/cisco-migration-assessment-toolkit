@@ -2223,8 +2223,10 @@ def test_eoldb_compact_3560c_2960c_not_classic_family_dates():
     built on came from an uncommitted working-tree edit, never from HEAD.
 
     This matters because the direction is adverse: a platform's end-of-support moves four years
-    earlier in customer-facing deliverables. It is backed only by the retained fixture, which is
-    itself UNTRACKED — see the handoff's Phase B findings before treating it as settled.
+    earlier in customer-facing deliverables. It is backed by the retained fixture — committed and
+    hash-pinned since the review closed (handoff §12.15), its provenance being transcription at
+    authoring time rather than live re-verification (handoff §13.15) — so the fixture, not this
+    test, is the place to challenge the dates.
     """
     from cisco_toolkit.eoldb import lifecycle_for
     cg35 = lifecycle_for("WS-C3560CG-8PC-S")

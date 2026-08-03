@@ -19,7 +19,9 @@
 >
 > **Still genuinely open** (also in CLAUDE.md): Support ticket `#4624412` for the server-side
 > purge of pre-rewrite objects; the site is deployed **private** and publishing it is a separate
-> decision; and §13.9's three carried questions.
+> decision; and one of §13.9's three carried questions — react-router v7 (the EoL registry
+> `evidence_method` claim CLOSED 2026-08-03 — §13.15; the `..json`/3.14 name-shape question
+> CLOSED 2026-08-03 — §13.14).
 >
 > ---
 >
@@ -4528,10 +4530,16 @@ Still open, unchanged in kind:
   `e969606` verification and "SPA reproduction unproven" claims corrected), marked ready, all
   15 required pull_request-event checks pass; the PR now waits only on the required human
   review, which the author's account cannot supply.
-* **Carried questions:** the EoL registry `evidence_method` claim (§12.12 item 2); the `..json`
-  name-shape semantics on 3.14 (§13.7); react-router v7 (two moderates below gate threshold,
-  deferred). The §13.7 matrix-dependency note stands: the <=3.13 legs are the only guard against
-  the splitext-restatement regression — dropping them silently retires it.
+* **Carried questions:** ~~the EoL registry `evidence_method` claim (§12.12 item 2)~~ — CLOSED
+  2026-08-03 (§13.15: reworded to offline-honest transcription provenance; the byte-pinned
+  fixture's frozen sentence is ratchet-guarded until the next evidence refresh); ~~the `..json`
+  name-shape semantics on 3.14 (§13.7)~~ — CLOSED 2026-08-03 (§13.14: stdlib-following
+  semantics accepted, and the residual blind spot measured to nothing); react-router v7 (two
+  moderates below gate threshold, deferred). ~~The §13.7 matrix-dependency note stands: the
+  <=3.13 legs are the only guard against the splitext-restatement regression — dropping them
+  silently retires it.~~ Superseded by §13.14: on 3.14+ the restatement returns the owner's own
+  answer, so the <=3.13 legs guard the divergence exactly where it exists — retiring those legs
+  would retire the risk along with the guard.
 * **PYSEC-2026-2858** stays a NAMED, commented suppression until netmiko admits paramiko>=5.
 
 > The number worth keeping: six consecutive cycles, and every one of the ~24 red job-verdicts
@@ -4705,3 +4713,113 @@ separate outward-facing decision nobody has taken.
 > with an explicit "I am NOT asking to delete this repository" opening the body. A support
 > category that reads right can still be the destructive one; read the fields it reveals
 > before typing a repo URL into it.
+
+### 13.14 CLOSED — the `..json` / 3.14 name-shape carry dissolves under measurement (2026-08-03)
+
+The engagement lead's decision, implemented here, not reopened: **accept the stdlib-following
+semantics** — no name-shape pinning in `html._capture_suffix` /
+`redaction_verify.is_uncoverable_capture`. On 3.14+ a file literally named `..json` is a raw
+capture and gets scrubbed; the flip is toward scrubbing (fail-safe), production stays
+parity-stable on every interpreter (one primitive on each side, §13.7), and the suite derives
+its expectations from the owner rule, so nothing else moves.
+
+**The residual blind spot, measured to nothing.** §13.7/§13.9 carried: "the splitext-restatement
+mutation is UNDETECTABLE on 3.14 by construction — the <=3.13 matrix legs are the only guard."
+Measured with a sitecustomize simulation faithful to the real 3.14 rule (verified against the
+CPython 3.14 branch: `PurePath.suffix` computes from `self.name.lstrip('.')` — a suffix exists
+iff a non-dot character precedes the final component's last dot, the SAME condition
+`genericpath._splitext` applies; the 3.14 whatsnew line is "A single dot ('.') is considered a
+valid suffix"). Corpus: 69,950 distinct strings — the §13.7 axes, exotic classes (8.3 tildes,
+fullwidth/zero-width unicode, colon and backslash spellings, trailing-dot runs, all-dots names),
+plus 100k seeded fuzz — compared under BOTH flavour pairings production actually runs
+(`ntpath.splitext` vs `PureWindowsPath`; `posixpath.splitext` vs `PurePosixPath`):
+
+* **3.14 semantics: 0 divergent legal directory-entry names, both flavours.** Every divergent
+  string (5,259 windows / 1 posix) carries a path separator or a windows-illegal `:` — spellings
+  `os.walk`/`scandir` can never yield as a NAME, so they are unreachable through the producer's
+  and the verifier's walks alike. On the guard test's own generated corpus: 0 string mismatches,
+  0 classification flips (the earlier "0/5 under simulation" claim, reproduced and widened).
+* **<=3.13 semantics (same corpus, same script, run plain on 3.12.10): 8,399 windows / 25,015
+  posix divergent legal names**, and on the test corpus 40 string mismatches with 15
+  classification flips — the restatement is loudly detectable exactly where the divergence lives.
+* A detail §13.7 under-recorded: the <=3.13 divergence is TWO-sided — leading-dot runs
+  (`splitext("..json")[1] == ""` vs `suffix == ".json"`) AND trailing dots
+  (`splitext("f.")[1] == "."` vs `suffix == ""`); 3.14 aligned BOTH toward splitext.
+  Classification never turns on the trailing-dot half (neither `"."` nor `""` is in the skip
+  set — both read as capture), so the flip §13.7 described remains the only one that moves a file
+  between scrubbed and excluded.
+
+**What remains load-bearing: nothing — the mutation is harmless on 3.14+.** Restating the owner
+via `os.path.splitext` there returns THE OWNER'S OWN ANSWER for every reachable filename, so
+there is nothing for a guard to catch. The <=3.13 legs guard the divergence exactly where it
+exists, and the §13.9 warning that dropping them "silently retires" the guard dissolves with the
+carry: on a hypothetical 3.14+-only matrix there would be nothing left to guard. No corpus
+extension was needed — `test_the_producer_restates_the_owners_suffix_PRIMITIVE_not_a_lookalike`
+stands unchanged, and its anti-tautology battery still discriminates on every interpreter via
+the `endswith` and `rpartition` lookalikes (version-independent by construction, §13.7).
+
+Verification, this closure: `py -3.12 -m pytest -q -p no:cacheprovider
+tests/test_redaction_secrets.py tests/test_redact_collection.py
+webapp/tests/test_atlas_redaction.py` — 154 tests, **exit 0 run plain AND exit 0 re-run under
+the 3.14 sitecustomize simulation** (simulation fidelity pre-asserted against 8 known 3.14 data
+points, including `"file." -> "."`). `py -3.12 -m ruff check .` exit 0.
+
+> The §13.14 reservation made when §13.15 was written resolved as intended: the concurrent
+> lane's entry landed the same day, in slot, above.
+
+### 13.15 CLOSED — the EoL registry `evidence_method` overclaim (2026-08-03)
+
+The review's oldest carried question (§6.3 item 2 → §12.12 item 2 → §12.15 → §13.9) is closed.
+The registry's provenance language now states **transcription**, not live verification.
+
+**The claim, and why it was wrong.** The retained fixture
+`reference-data/official-sources/cisco/eol-bulletins.json` carries `evidence_method: "Facts only;
+no bulletin prose is reproduced. Every claim is checked against its exact HTTPS Cisco source
+URL."` Under the no-egress doctrine nothing offline can check a claim against a live URL, so the
+assertion was unverifiable and, asserted, implied egress. What is true — and offline-provable —
+is transcription provenance: each claim was transcribed from its named bulletin at authoring time
+(2026-07-30); the bulletin ID, document ID and exact HTTPS URL are recorded as provenance
+references; and offline verification binds the fixture bytes (SHA-256 + size), the 17-URL shape,
+and all 44 date/PID scopes to runtime code. None of that real, offline-verifiable validation
+changed — only the verification-implying prose did.
+
+**Every copy of the claim was enumerated (a claim has exits too), and all unpinned ones changed:**
+
+* `cisco_toolkit/eoldb.py` — the `_EOL_REVIEWED` comment ("re-checked against its named Cisco
+  bulletin", the wording §5.14 quoted as the rebuild's claim) now reads "transcribed from its
+  named Cisco bulletin" with an explicit statement that no offline re-confirmation at the live
+  URL is claimed.
+* `reference-data/README.md` — the Cisco lifecycle authority paragraph now states what offline
+  verification proves (fixture ↔ runtime binding) and what the URLs are (transcription
+  provenance).
+* `reference-data/official-sources/README.md` — the acquisition list no longer implies the Cisco
+  fixture was fetched bytes like the four CSVs; it is named a hand transcription with URLs as
+  provenance references.
+* `tests/test_parsers.py` (the 3560C/2960C docstring) — the stale "UNTRACKED" caveat replaced;
+  the fixture has been committed and hash-pinned since §12.15.
+* `tests/test_eoldb_provenance.py` — two new guards keep this closure non-vacuous:
+  `test_provenance_prose_is_transcription_not_live_verification` (comment-marker-stripped,
+  whitespace-normalized scan of `eoldb.py` + both READMEs for any "checked against" /
+  "verified against" / "validated against" provenance phrasing, plus a positive pin on the
+  transcription wording) and `test_fixture_refresh_must_drop_the_live_verification_sentence`
+  (see next paragraph). The runtime surface needed no change: the lookup record publishes
+  `bulletin_id`/`document_id`/`source_url`/`citation_status`, never the `evidence_method`
+  sentence, so no deliverable restates it (verified by repo-wide grep).
+
+**The one copy deliberately NOT changed: the fixture itself.** Its bytes are pinned three ways —
+`official-sources/manifest.json` (`sha256` `7683b29e…`, 13,261 bytes),
+`eoldb._EOL_FIXTURE_SHA256`, and `verify_repository_privacy._EOL_SEMANTIC_SOURCE_RECORD` — so a
+one-sentence prose edit would force a coordinated re-hash in all three plus the byte count,
+churning the evidence chain for no factual change. Decision: the sentence stays frozen with the
+bytes and is **superseded in interpretation by this section** — read it as "checked at
+transcription time, by its author", never as an offline or ongoing verification claim. The
+refresh ratchet makes this self-correcting: the overclaiming sentence is tolerated at exactly
+the 2026-07-30 SHA-256 (where it is also asserted PRESENT, so drift is caught) and at any other
+fixture content the guard fails unless `evidence_method` is free of verification-implying
+phrasing — so the next sanctioned evidence refresh (the official-sources README's documented
+procedure, which re-pins the hashes anyway) is forced to correct the pinned prose.
+
+§6.3 item 2, §12.12 item 2 and §12.15's still-open bullet stand unedited as the historical
+record of the finding; this section supersedes their "open" status. Trackers updated: the §13.9
+carried-questions bullet, this file's top-of-file closed-review block, and CLAUDE.md's
+carried-forward list.

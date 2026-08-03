@@ -45,8 +45,11 @@ The retained inputs were acquired on 2026-07-30 directly from:
   `https://standards-oui.ieee.org/oui36/oui36.csv`
 - IANA Service Name and Transport Protocol Port Number Registry:
   `https://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.csv`
-- 17 Cisco End-of-Life bulletin URLs enumerated exactly in
-  `cisco/eol-bulletins.json`.
+- the 17 Cisco End-of-Life bulletins named in `cisco/eol-bulletins.json` —
+  a fact-only hand transcription made at authoring time, not fetched bytes
+  like the CSVs above; its bulletin IDs and URLs are provenance references
+  for the reader, and offline verification binds the fixture to runtime
+  code, never to the live Cisco pages.
 
 Refreshing is an explicit evidence update: download to a temporary location,
 verify strict UTF-8 and the expected CSV schema, replace the retained input,

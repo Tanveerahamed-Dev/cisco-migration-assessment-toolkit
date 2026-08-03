@@ -37,7 +37,10 @@ no negative "no EoL announced" claims. Broad or unlisted families return
 `Unknown`; callers must verify the exact PID in Cisco EoX rather than infer
 support from absence. `official-sources/cisco/eol-bulletins.json` is a
 hash-pinned, fact-only primary-source fixture. The verifier requires its 17
-URLs, 44 PID scopes, dates, and runtime rows to match exactly.
+URLs, 44 PID scopes, dates, and runtime rows to match exactly. Bulletin IDs
+and URLs are transcription provenance recorded at authoring time; offline
+verification proves the retained fixture and its exact runtime binding,
+never the live Cisco pages behind those URLs (no-egress).
 
 All three authority domains expose a 180-day freshness limit and reject source
 timestamps more than five minutes in the future. A trust decision requires

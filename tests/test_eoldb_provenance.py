@@ -1,6 +1,8 @@
 """Exact-source authority guards for the inline Cisco lifecycle table."""
 
 import datetime as _dt
+import hashlib
+import json
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -8,6 +10,69 @@ import pytest
 
 from cisco_toolkit import eoldb
 from cisco_toolkit.registry_integrity import PackIntegrityError
+
+# The exact 2026-07-30 fixture bytes, frozen by three hash pins (the
+# official-sources manifest, eoldb._EOL_FIXTURE_SHA256, and the repository
+# privacy guard). Deliberately a LITERAL, not a read of eoldb's constant: a
+# future refresh that re-pins new bytes must not inherit the tolerance below.
+_FIXTURE_2026_07_30_SHA256 = (
+    "7683b29e66d3e5b39d89407e60a5f08ffbf8ef9f19ab029279ffc9d0861349c3"
+)
+
+# Verification-implying provenance phrasing. Under the no-egress doctrine no
+# offline process can check a claim against a live Cisco URL, so registry
+# provenance prose must state transcription, never verification (handoff
+# 2026-07-30 §13.15).
+_VERIFICATION_OVERCLAIM_PHRASES = (
+    "checked against",
+    "verified against",
+    "validated against",
+)
+
+
+def _normalized_prose(text: str) -> str:
+    """Lowercase, comment-marker-stripped, whitespace-collapsed prose, so a
+    re-wrap or comment reflow cannot hide a reintroduced phrase."""
+
+    return " ".join(text.replace("#", " ").split()).lower()
+
+
+def test_provenance_prose_is_transcription_not_live_verification():
+    """§13.15 wording guard: eoldb and the reference-data docs state
+    transcription provenance and never claim live-URL verification."""
+
+    root = Path(__file__).resolve().parent.parent
+    eoldb_path = Path(eoldb.__file__).resolve()
+    assert "transcribed from its named cisco bulletin" in _normalized_prose(
+        eoldb_path.read_text(encoding="utf-8")
+    )
+    for path in (
+        eoldb_path,
+        root / "reference-data" / "README.md",
+        root / "reference-data" / "official-sources" / "README.md",
+    ):
+        prose = _normalized_prose(path.read_text(encoding="utf-8"))
+        for phrase in _VERIFICATION_OVERCLAIM_PHRASES:
+            assert phrase not in prose, (path.name, phrase)
+
+
+def test_fixture_refresh_must_drop_the_live_verification_sentence():
+    """The retained fixture's `evidence_method` still carries the pre-§13.15
+    sentence "checked against its exact HTTPS Cisco source URL"; its bytes are
+    hash-frozen, so the sentence is tolerated ONLY at exactly those bytes (and
+    asserted present there, so silent drift is caught). Any other fixture
+    content — i.e. the next sanctioned evidence refresh — must state
+    transcription provenance with no verification-implying phrasing."""
+
+    root = Path(__file__).resolve().parent.parent
+    raw = (root / Path(eoldb._EOL_FIXTURE_RELATIVE_PATH)).read_bytes()
+    method = json.loads(raw.decode("utf-8"))["evidence_method"]
+    if hashlib.sha256(raw).hexdigest() == _FIXTURE_2026_07_30_SHA256:
+        assert "checked against its exact HTTPS Cisco source URL" in method
+        return
+    normalized = _normalized_prose(method)
+    for phrase in _VERIFICATION_OVERCLAIM_PHRASES:
+        assert phrase not in normalized, phrase
 
 
 def test_review_vintage_is_a_valid_iso_date():

@@ -15,9 +15,14 @@ ledger shas predating §13.11 refer to superseded history); the master reference
 - GitHub Support ticket `#4624412` — server-side purge of pre-rewrite objects and stale
   `refs/pull/*`. Until they act, superseded SHAs still resolve by direct URL on this private repo.
 - The master-reference site is deployed **private**; publishing it publicly is an open decision.
-- §13.9's questions: the EoL registry `evidence_method` claim, 3.14 leading-dot-run name-shape
-  semantics (the ≤3.13 matrix legs are the only guard against the splitext-restatement
-  regression — do not drop them), and react-router v7.
+- §13.9's questions — the EoL registry `evidence_method` claim is CLOSED (2026-08-03, handoff
+  §13.15: reworded to offline-honest transcription provenance everywhere unpinned; the
+  byte-pinned fixture's frozen sentence is superseded in interpretation and ratchet-guarded by
+  `tests/test_eoldb_provenance.py` until the next evidence refresh), and the 3.14
+  leading-dot-run name-shape question is CLOSED (2026-08-03, handoff §13.14: stdlib-following
+  semantics accepted; measured — on 3.14 semantics `os.path.splitext` and `PurePath.suffix`
+  agree on every legal directory-entry name, so the splitext restatement is harmless there and
+  the ≤3.13 legs guard the divergence exactly where it exists). Still open: react-router v7.
 
 A future whole-repo review should start fresh rather than reopening this one. Its most reusable
 output is the defect *shapes*, not its findings: absence rendered as health, a guard scoped to a
