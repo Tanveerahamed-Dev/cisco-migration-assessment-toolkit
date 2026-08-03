@@ -4607,8 +4607,16 @@ with the supersession stated in its body.
 **Preserved (never upload):** `private-inputs/history-rewrite-20260802/` — the complete
 pre-rewrite bundle (verified), the old→new commit-map, the rules/paths/callback inputs, and the
 protection backup. **Residual exposure, stated plainly:** GitHub's read-only `refs/pull/*` and
-dangling objects still reference pre-rewrite commits until provider-side GC — a GitHub Support
-ticket can purge them; the repo is private, which bounds the interim risk. Any other clone
+dangling objects still reference pre-rewrite commits until provider-side GC. **GitHub Support
+ticket `#4624412` is OPEN for exactly this** (raised 2026-08-03, "Purge unreachable pre-rewrite
+objects and stale PR refs after an authorized history rewrite"): it requests server-side GC,
+dereferencing `refs/pull/506/*`, and cache-view clearing, and carries the four details the
+documented sensitive-data workflow requires — repo owner/name, affected-PR count (1: #506),
+git-filter-repo's `NOTE: First Changed Commit(s)` = `f47418467f60511374f2e63c6b5553ded5f5a385
+255d5e03b8551c5185143c74539a9582d80bd1ce` (read from
+`<mirror>/filter-repo/first-changed-commits`), and no orphaned LFS objects. **Until Support
+confirms, the pre-rewrite SHAs still resolve by direct URL** — verify by opening
+`/commit/ef8e893…`; the repo is private, which bounds the interim risk. Any other clone
 (including the Codex account's) holds the old history and must re-clone, not pull. Ledger shas
 recorded before this section refer to the superseded history; the commit-map translates.
 
@@ -4666,6 +4674,15 @@ only two files changed across all three Codex runs, verified by diff), was pushe
 then did version 2 exist. Site gates re-run INDEPENDENTLY after the edit: npm test 3/3, lint 0.
 
 Every §12.10 human gate is now closed: staging, distributions, PR flip, history rewrite, merge,
-deploy. Still carried (unchanged in kind): the §13.9 questions, the GitHub purge of pre-rewrite
-`refs/pull/*` objects, and — new, minor — publishing the site beyond private is a separate
-outward-facing decision nobody has taken.
+deploy. Still carried: the §13.9 questions; the GitHub-side purge of pre-rewrite objects, now
+**raised as Support ticket `#4624412` and awaiting their reply** (§13.11 — the ONLY item here
+with an open external dependency); and — new, minor — publishing the site beyond private is a
+separate outward-facing decision nobody has taken.
+
+> A filing note worth keeping, because the wrong choice was the plausible one: GitHub's
+> **"Repositories → Deletes"** category looks like the match for the word "purge" and instead
+> asks *"What is the URL of the repository you would like to delete?"* — it is the
+> delete-my-repository flow. Filed under General support request → Technical issue instead,
+> with an explicit "I am NOT asking to delete this repository" opening the body. A support
+> category that reads right can still be the destructive one; read the fields it reveals
+> before typing a repo URL into it.
