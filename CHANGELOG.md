@@ -6,7 +6,14 @@ per change, with verification evidence) lives in
 
 ## [Unreleased]
 
-_No changes yet._
+### Changed
+- **The release suite gate no longer leaves debris in the tagged checkout.** Running the suite
+  mutates the working tree (pytest's cache, the editable install's `egg-info`, and an engine log
+  a test writes into the CWD), which the release workflows' immutability proofs correctly
+  refused. Fixed by prevention (`-p no:cacheprovider`) plus an explicit restore-and-verify step,
+  and the allow-list entries added while diagnosing were **removed**: an immutability proof
+  loosened to tolerate its own test debris stops being able to detect the tampering it exists
+  for. CI-only; no shipped bytes are affected, so v3.32.1's artifacts are unchanged.
 
 ## [v3.32.1] — 2026-08-03 — release-integrity fix
 
