@@ -50,3 +50,27 @@ jobs:
         run: '& "$env:RUNNER_TEMP\ci-venv\Scripts\python.exe" .github/scripts/verify_repository_privacy.py'
       - name: Run the complete default suite
         run: '& "$env:RUNNER_TEMP\ci-venv\Scripts\python.exe" -m pytest'
+
+  frontend:
+    name: Frontend suite · self-hosted-windows
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The runner is the dev box: node/npm come from the machine (like py -3.12 above), the
+      # Playwright browser cache is per-user and shared, and the E2E server port is pinned to a
+      # CI-only value so a developer's own preview/E2E session can never collide with a job
+      # (playwright.config.ts: E2E_PORT overrides the 41973 default, itself chosen off-default
+      # because of exactly this collision class).
+      - name: Install exact frontend dependencies
+        run: npm --prefix webapp/frontend ci
+      - name: Frontend test + type-check
+        run: npm --prefix webapp/frontend test
+      - name: Production build
+        run: npm --prefix webapp/frontend run build
+      - name: Ensure Playwright chromium
+        run: Set-Location webapp/frontend; npx playwright install chromium
+      - name: Frontend E2E (real browser)
+        env:
+          E2E_PORT: "42973"
+        run: Set-Location webapp/frontend; npm run test:e2e
