@@ -446,6 +446,23 @@ _BACKEND_COMPUTABLE_FIELDS = frozenset({"license-file"})
 _LB = r"(?<![A-Za-z0-9])"
 _RB = r"(?![A-Za-z0-9])"
 
+# Mirrors the repository gate's carve-out (verify_repository_privacy.py, kept in lockstep by
+# tests/test_repository_privacy.py::test_the_two_client_marker_implementations_cannot_diverge):
+# minified bundles emit ALPHABETICAL two-char export aliases (ah, ai, then the initials, then
+# ak, ...), so the bare initials pattern is structurally guaranteed to false-positive inside
+# built bundle assets. ONLY that pattern is excluded, ONLY for dist/assets bundle members
+# (prefix-tolerant because sdist members carry the release-root prefix); every other marker
+# stays active on them. (The initials never appear literally in this file — the §12.9 rule.)
+_BARE_INITIALS_MARKER = re.compile(_LB + re.escape("a" + "j") + _RB, re.IGNORECASE)
+_MINIFIED_BUNDLE_ASSETS = re.compile(r"(^|/)webapp/frontend/dist/assets/[^/]+\.js$")
+
+
+def _marker_patterns_for(name: str) -> tuple[re.Pattern[str], ...]:
+    patterns = _client_marker_patterns()
+    if _MINIFIED_BUNDLE_ASSETS.search(name):
+        return tuple(p for p in patterns if p is not _BARE_INITIALS_MARKER)
+    return patterns
+
 
 def _client_marker_patterns() -> tuple[re.Pattern[str], ...]:
     legacy_brand = "al" + "jazeera"
@@ -464,7 +481,7 @@ def _client_marker_patterns() -> tuple[re.Pattern[str], ...]:
         ),
         re.compile(_LB + re.escape(legacy_short) + _RB, re.IGNORECASE),
         re.compile(r"\." + re.escape(legacy_short) + _RB, re.IGNORECASE),
-        re.compile(_LB + re.escape(legacy_initials) + _RB, re.IGNORECASE),
+        _BARE_INITIALS_MARKER,
         re.compile(
             _LB
             + re.escape(legacy_initials)
@@ -1045,7 +1062,7 @@ def _content_privacy_errors(
         return [f"archive member is opaque binary content: {name}"], True
     if "\x00" in text:
         return [f"archive member is opaque binary content: {name}"], True
-    if any(pattern.search(text) for pattern in _client_marker_patterns()):
+    if any(pattern.search(text) for pattern in _marker_patterns_for(name)):
         return [f"known client marker appears in archive content: {name}"], True
     if any(
         hashlib.sha256(token.group(0).casefold().encode("utf-8")).hexdigest()

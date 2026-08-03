@@ -22,7 +22,11 @@ ledger shas predating §13.11 refer to superseded history); the master reference
   leading-dot-run name-shape question is CLOSED (2026-08-03, handoff §13.14: stdlib-following
   semantics accepted; measured — on 3.14 semantics `os.path.splitext` and `PurePath.suffix`
   agree on every legal directory-entry name, so the splitext restatement is harmless there and
-  the ≤3.13 legs guard the divergence exactly where it exists). Still open: react-router v7.
+  the ≤3.13 legs guard the divergence exactly where it exists), and react-router v7 is CLOSED
+  (2026-08-03, handoff §13.16: migrated to `react-router@7.18.2` — the future flags were
+  already live in production, so the swap was the package rename; verified through unit,
+  build and real-browser E2E). **Every carried question is now closed.** React 19 / v8 is
+  future planned work, not a carry.
 
 A future whole-repo review should start fresh rather than reopening this one. Its most reusable
 output is the defect *shapes*, not its findings: absence rendered as health, a guard scoped to a

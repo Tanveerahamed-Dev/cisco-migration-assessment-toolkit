@@ -18,10 +18,10 @@
 > commit-map in `private-inputs/history-rewrite-20260802/`); master reference deployed (§13.13).
 >
 > **Still genuinely open** (also in CLAUDE.md): Support ticket `#4624412` for the server-side
-> purge of pre-rewrite objects; the site is deployed **private** and publishing it is a separate
-> decision; and one of §13.9's three carried questions — react-router v7 (the EoL registry
-> `evidence_method` claim CLOSED 2026-08-03 — §13.15; the `..json`/3.14 name-shape question
-> CLOSED 2026-08-03 — §13.14).
+> purge of pre-rewrite objects, and the site's private→public decision. **All three §13.9
+> carried questions are CLOSED**: the EoL registry `evidence_method` claim (2026-08-03, §13.15),
+> the `..json`/3.14 name-shape question (2026-08-03, §13.14), and react-router v7 (2026-08-03,
+> §13.16 — migrated to `react-router@7.18.2`).
 >
 > ---
 >
@@ -4823,3 +4823,50 @@ procedure, which re-pins the hashes anyway) is forced to correct the pinned pros
 record of the finding; this section supersedes their "open" status. Trackers updated: the §13.9
 carried-questions bullet, this file's top-of-file closed-review block, and CLAUDE.md's
 carried-forward list.
+
+### 13.16 CLOSED — react-router v7 migrated: the LAST carried question (user-directed, 2026-08-03)
+
+Migrated `webapp/frontend` from `react-router-dom@6.30.4` to `react-router@7.18.2` on branch
+`migrate/react-router-7`. The decisive orientation find: **the v6 future flags
+(`v7_startTransition`, `v7_relativeSplatPath`) were ALREADY enabled on the production
+`BrowserRouter`** — every green run to date (unit, E2E, fleet) had been exercising v7 semantics,
+including the one genuine risk (startTransition wrapping vs the lagged-location view-transition
+machinery in App.tsx). Half the "open" migration was already in the code — the
+external-plans-map-to-code lesson, again.
+
+What remained was the package consolidation the official v6→v7 guide prescribes (verified from
+the primary source at the `react-router@7.18.2` tag: v7 needs node 20 + react 18, both
+satisfied; "no breaking changes if you have enabled all future flags"): uninstall
+`react-router-dom`, install `react-router@7.18.2` exact-pinned (the same audited version
+dependabot proposed in the closed #513), rewrite the import in 16 `.tsx` files, drop the
+now-default `future` prop. The app's exposure is minimal by construction: all-declarative
+(no data routers, loaders, actions or fetchers), and its only splat is a single-segment root
+404 with absolute links — outside `v7_relativeSplatPath`'s multi-segment concern entirely.
+
+Verified: typecheck + production build + 200/200 vitest (`npm test` exit 0), Playwright E2E in
+real Chromium exit 0 (4 passed / 1 pre-existing skip, including router navigation and the WebGL
+topology render), tracked `dist/` rebuilt from the migrated source (source-binding preserved).
+Deliberately NOT taken: react-router v8 (exists as of this writing; requires React 19.2.7+ and
+node 22.22+) — that is the React-19 migration wearing a router label, and it stays planned
+future work, not a carry.
+
+**With this, every §13.9 carried question is closed.** The review has no open findings,
+questions, or deferrals — only the two external items (ticket `#4624412`; the site's
+private→public decision) and ordinary future work.
+
+**§13.16 addendum — the migration tripped a structural false-positive class in BOTH privacy
+scanners, fixed at the class.** The first `dist/` rebuild since the dependency train (the tracked
+bundles had quietly gone stale against the lockfile — a latent source-binding failure this branch
+also fixes) made the privacy gate flag two fresh bundles: minified bundlers emit ALPHABETICAL
+two-char export aliases, so any large public-library bundle eventually contains the bare client
+initials as a generated identifier (measured: pattern[3], 2 hits per bundle, masked context
+`ah as …, ai as …, ## as …, ak as …`). Both marker implementations (the repository gate AND
+`distribution_verify`, which scans the shipped archives containing the same bundles — found via
+their lockstep parity test) now exclude EXACTLY the bare-initials pattern for
+`dist/assets/*.js` bundle members only; every other marker stays live on those files. Pinned
+both directions in `test_minified_bundle_carveout_silences_only_the_bare_initials_and_only_in_
+bundles` (alias run passes, a planted real marker in the same bundle still FAILS, exactly one
+pattern removed, bare pattern still fires everywhere else). And the gate defended itself twice
+en route: my first carve-out comments wrote the initials literally into the two scanner files —
+the §12.9 "a file that rejects these tokens must not carry them" defect, reproduced and caught
+by the gate within minutes.

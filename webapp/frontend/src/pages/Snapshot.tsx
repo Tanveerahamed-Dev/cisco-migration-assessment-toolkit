@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams } from "react-router";
 import { api, bandColor, readyColor, sevColor, LifecycleSummary, SnapshotMeta, Summary } from "../api";
 import { Bars, CountUp, ErrorBox, Gauge, Loading, SegBar, SevChip, SkelLines, SkelTable, useAsync } from "../components/ui";
 import TopologyGraph from "../components/TopologyGraph";
