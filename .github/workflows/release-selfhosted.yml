@@ -1,0 +1,121 @@
+name: Release (self-hosted)
+
+# The billing-outage release path: the SAME fail-closed gate sequence as release.yml, executed
+# on the self-hosted fleet at zero hosted minutes. Dispatch-only with an explicit tag input —
+# NEVER pull_request (the ci.yml-header invariant: only reviewed, merged refs run on persistent
+# machines; an annotated tag on main is exactly that trust class). release.yml stays the
+# canonical path and takes over again when hosted minutes return; on a re-run of an existing
+# release BOTH paths verify the already-published assets instead of rebuilding, so they cannot
+# disagree about what a release contains.
+#
+# Fleet facts baked in (see main-selfhosted.yml): PowerShell 5.1 steps, one command per step,
+# no bashisms; interpreter = the machine's `py -3.12` through an isolated RUNNER_TEMP venv;
+# node/npm from the machine; setup-python/setup-node are not used.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing annotated release tag, e.g. v3.32.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-selfhosted-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Verify tag and create immutable release assets (fleet)
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 90
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      - name: Capture the immutable tagged-source identity
+        id: source
+        run: |
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "commit=$(git rev-parse 'HEAD^{commit}')"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "tree=$(git rev-parse 'HEAD^{tree}')"
+      - name: Create isolated venv
+        run: py -3.12 -m venv "$env:RUNNER_TEMP\rel-venv"
+      - name: Install the exact distribution toolchain
+        run: '& "$env:RUNNER_TEMP\rel-venv\Scripts\python.exe" -m pip install --quiet --upgrade pip "build==1.5.0" "twine==6.2.0"'
+      - name: Prove toolchain setup did not change the tagged source
+        run: '& "$env:RUNNER_TEMP\rel-venv\Scripts\python.exe" .github/scripts/verify_checkout_immutable.py --expected-commit "${{ steps.source.outputs.commit }}" --expected-tree "${{ steps.source.outputs.tree }}"'
+      - name: Verify annotated tag, project version, commit, and main ancestry
+        run: '& "$env:RUNNER_TEMP\rel-venv\Scripts\python.exe" .github/scripts/verify_release.py --tag "${{ inputs.tag }}" --commit HEAD --base origin/main'
+      - name: Verify the tagged tracked-tree privacy boundary
+        run: '& "$env:RUNNER_TEMP\rel-venv\Scripts\python.exe" .github/scripts/verify_repository_privacy.py'
+      - name: Detect an idempotent re-run
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $found = "false"
+          gh release view "${{ inputs.tag }}" *> $null
+          if ($LASTEXITCODE -eq 0) { $found = "true" }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "exists=$found"
+          exit 0
+      - name: Download the already-published assets on a re-run
+        if: steps.existing.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "${{ inputs.tag }}" --pattern "*.whl" --pattern "*.tar.gz" --pattern "dist-verification.json" --dir dist
+      - name: Rebuild the bundled AssessHub SPA
+        if: steps.existing.outputs.exists == 'false'
+        run: |
+          Set-Location webapp/frontend
+          npm ci
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          npm test
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          npm run build
+      - name: Prove the SPA build reproduced the immutable tagged source
+        run: '& "$env:RUNNER_TEMP\rel-venv\Scripts\python.exe" .github/scripts/verify_checkout_immutable.py --expected-commit "${{ steps.source.outputs.commit }}" --expected-tree "${{ steps.source.outputs.tree }}" --allow-untracked-prefix webapp/frontend/node_modules --allow-untracked-prefix dist'
+      - name: Build the release archives once
+        if: steps.existing.outputs.exists == 'false'
+        run: '& "$env:RUNNER_TEMP\rel-venv\Scripts\python.exe" -m build --sdist --wheel --outdir dist'
+      - name: Verify archive metadata
+        run: |
+          $archives = Get-ChildItem dist -File | Where-Object { $_.Name -match "\.(whl|tar\.gz)$" } | ForEach-Object { $_.FullName }
+          & "$env:RUNNER_TEMP\rel-venv\Scripts\python.exe" -m twine check @archives
+      - name: Create the trusted distribution proof
+        if: steps.existing.outputs.exists == 'false'
+        run: '& "$env:RUNNER_TEMP\rel-venv\Scripts\python.exe" -m cisco_toolkit.distribution_verify dist --source-commit "${{ steps.source.outputs.commit }}" --source-tree "${{ steps.source.outputs.tree }}" --json-out dist/dist-verification.json'
+      - name: Recompute and compare the trusted distribution proof on a re-run
+        if: steps.existing.outputs.exists == 'true'
+        run: '& "$env:RUNNER_TEMP\rel-venv\Scripts\python.exe" -m cisco_toolkit.distribution_verify dist --source-commit "${{ steps.source.outputs.commit }}" --source-tree "${{ steps.source.outputs.tree }}" --expected-json dist/dist-verification.json --json-out "$env:RUNNER_TEMP\recomputed-dist-verification.json"'
+      - name: Prove distribution verification did not change the tagged source
+        run: '& "$env:RUNNER_TEMP\rel-venv\Scripts\python.exe" .github/scripts/verify_checkout_immutable.py --expected-commit "${{ steps.source.outputs.commit }}" --expected-tree "${{ steps.source.outputs.tree }}" --allow-untracked-prefix webapp/frontend/node_modules --allow-untracked-prefix build --allow-untracked-prefix cisco_migration_assessment_toolkit.egg-info --allow-untracked-prefix dist'
+      - name: Install and smoke-test the exact wheel in a clean venv
+        run: |
+          py -3.12 -m venv "$env:RUNNER_TEMP\smoke-venv"
+          $wheel = (Get-ChildItem dist -Filter *.whl | Select-Object -First 1).FullName
+          & "$env:RUNNER_TEMP\smoke-venv\Scripts\python.exe" -m pip install --quiet $wheel
+      - name: Verify the installed runtime outside the checkout
+        working-directory: ${{ runner.temp }}
+        run: |
+          & "$env:RUNNER_TEMP\smoke-venv\Scripts\cisco-assess.exe" --help
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & "$env:RUNNER_TEMP\smoke-venv\Scripts\assesshub.exe" --selftest
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & "$env:RUNNER_TEMP\smoke-venv\Scripts\python.exe" -c "import sys; from cisco_toolkit import ouidb, portdb; ok = lambda h: (lambda w: bool(h.get('integrity_verified', w)) and bool(h.get('official_source_authoritative', w)))(h.get('authoritative')); bad = [(n, h) for n, h in (('oui', ouidb.registry_health()), ('port', portdb.registry_health())) if not ok(h)]; sys.exit('registry pack unusable: %r' % (bad,)) if bad else None"
+      - name: Final immutable-tagged-source proof before release
+        run: '& "$env:RUNNER_TEMP\rel-venv\Scripts\python.exe" .github/scripts/verify_checkout_immutable.py --expected-commit "${{ steps.source.outputs.commit }}" --expected-tree "${{ steps.source.outputs.tree }}" --allow-untracked-prefix webapp/frontend/node_modules --allow-untracked-prefix build --allow-untracked-prefix cisco_migration_assessment_toolkit.egg-info --allow-untracked-prefix dist'
+      - name: Reverify exact bytes and create the GitHub Release
+        if: steps.existing.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          & "$env:RUNNER_TEMP\rel-venv\Scripts\python.exe" -m cisco_toolkit.distribution_verify dist --source-commit "${{ steps.source.outputs.commit }}" --source-tree "${{ steps.source.outputs.tree }}" --expected-json dist/dist-verification.json
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $proof = Get-Content dist/dist-verification.json -Raw | ConvertFrom-Json
+          gh release create "${{ inputs.tag }}" "dist/$($proof.wheel)" "dist/$($proof.sdist)" dist/dist-verification.json --title "${{ inputs.tag }}" --generate-notes --verify-tag

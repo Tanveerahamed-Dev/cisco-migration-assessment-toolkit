@@ -61,6 +61,20 @@ authoritative-registry smoke tests, and attaches the verified archives plus
 Re-running an existing release downloads and re-verifies its existing assets.
 It does not replace them with a fresh build.
 
+### Hosted-minutes outage: the self-hosted release path
+
+When GitHub-hosted minutes are unavailable (billing exhaustion), the tag-triggered `Release`
+workflow cannot execute. **Release (self-hosted)** (`release-selfhosted.yml`) is the sanctioned
+alternative: dispatch it manually with the existing tag. It replicates the same fail-closed gate
+sequence (annotated-tag/version/ancestry verification, privacy boundary, immutability proofs
+between every step, single build, trusted distribution proof, clean-venv smoke test) on the
+self-hosted fleet, and attaches the assets to the GitHub Release. It is deliberately
+dispatch-only — never `pull_request` — per the runner-isolation rule in the `ci.yml` header, and
+it is idempotent the same way the hosted workflow is: re-running an existing release re-verifies
+the published assets rather than rebuilding. When hosted minutes return, the tag-triggered
+workflow resumes as the canonical path; both paths verify rather than rebuild on re-runs, so
+they cannot disagree about a release's contents.
+
 ## Promote the exact release to PyPI
 
 Publishing is intentionally manual because a PyPI version cannot be replaced.
