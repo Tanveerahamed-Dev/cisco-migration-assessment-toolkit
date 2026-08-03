@@ -1,11 +1,30 @@
 # Repository hardening handoff — 2026-07-30
 
-> **Status (amended 2026-08-02, second amendment): CI is repository-wide GREEN (§13.9), and the
-> HISTORY REWRITE IS DONE (§13.11) — origin's history is marker-free on every branch and tag.**
-> Remaining before "release": the master-reference Codex-side deploy tail (§13.10) and the PR
-> #507 review/merge. The original status line — "active checkpoint, not a release and not a
-> repository-wide green claim" — described the pre-staging tree and is fully superseded except
-> for the not-a-release half.
+> # ⛔ CLOSED 2026-08-03 — HISTORICAL RECORD, NOT INSTRUCTIONS
+>
+> **This review is complete and merged to `main`. Do not follow the procedures below.** They
+> describe a live review that no longer exists: `/resume-review`, the checkpoint verifier
+> `.claude/scripts/verify-review-handoff.ps1`, and `review-live-delta.json` were all **deleted**
+> when it closed, and the preservation rules (never stage, never commit, keep the dirty tree)
+> were superseded by the staging, merge, history rewrite and deploy that actually happened.
+>
+> **Read this file for *why*, not for *what to do next*.** §7–§13 carry the reasoning behind most
+> of the repository's coverage-honesty guards; that reasoning is the durable part. Every status
+> line, ordered plan, and "next action" below is spent.
+>
+> **What it concluded:** CI repository-wide green on every supported interpreter and both
+> platforms; archives source-bound; history rewritten marker-free on every branch and tag
+> (§13.11 — shas cited *before* that section refer to superseded history and translate via the
+> commit-map in `private-inputs/history-rewrite-20260802/`); master reference deployed (§13.13).
+>
+> **Still genuinely open** (also in CLAUDE.md): Support ticket `#4624412` for the server-side
+> purge of pre-rewrite objects; the site is deployed **private** and publishing it is a separate
+> decision; and §13.9's three carried questions.
+>
+> ---
+>
+> *Everything below this line is the review's own record, preserved unedited except where a
+> later section explicitly supersedes an earlier one.*
 >
 > **START HERE (updated 2026-07-31, end of session 2).**
 >
@@ -4607,8 +4626,16 @@ with the supersession stated in its body.
 **Preserved (never upload):** `private-inputs/history-rewrite-20260802/` — the complete
 pre-rewrite bundle (verified), the old→new commit-map, the rules/paths/callback inputs, and the
 protection backup. **Residual exposure, stated plainly:** GitHub's read-only `refs/pull/*` and
-dangling objects still reference pre-rewrite commits until provider-side GC — a GitHub Support
-ticket can purge them; the repo is private, which bounds the interim risk. Any other clone
+dangling objects still reference pre-rewrite commits until provider-side GC. **GitHub Support
+ticket `#4624412` is OPEN for exactly this** (raised 2026-08-03, "Purge unreachable pre-rewrite
+objects and stale PR refs after an authorized history rewrite"): it requests server-side GC,
+dereferencing `refs/pull/506/*`, and cache-view clearing, and carries the four details the
+documented sensitive-data workflow requires — repo owner/name, affected-PR count (1: #506),
+git-filter-repo's `NOTE: First Changed Commit(s)` = `f47418467f60511374f2e63c6b5553ded5f5a385
+255d5e03b8551c5185143c74539a9582d80bd1ce` (read from
+`<mirror>/filter-repo/first-changed-commits`), and no orphaned LFS objects. **Until Support
+confirms, the pre-rewrite SHAs still resolve by direct URL** — verify by opening
+`/commit/ef8e893…`; the repo is private, which bounds the interim risk. Any other clone
 (including the Codex account's) holds the old history and must re-clone, not pull. Ledger shas
 recorded before this section refer to the superseded history; the commit-map translates.
 
@@ -4617,3 +4644,64 @@ recorded before this section refer to the superseded history; the commit-map tra
 > only looks private; public-record data inside evidence corpora is the standing example. (2) A
 > verifier that can wedge silently is not a verifier; progress output is not cosmetic, it is
 > what makes "still running" distinguishable from "dead".
+
+### 13.12 MERGED — PR #507 is main (user-directed, 2026-08-02)
+
+The rewritten history's first full CI came back **green across all three workflows** (run on
+`d159e51`), so the merge proceeded at the user's direction, in their chosen order:
+
+1. **Protection contexts fixed FIRST** (the user's pick over a bare bypass): the stale required
+   context "Package build + install" — a job renamed long ago that nothing emits, wedging every
+   merge exactly as the protection-rename trap predicts — replaced by its real successors,
+   `Distribution contract` + `Dependency audit`. Main's protection now requires 11 contexts,
+   every one of them a job the current CI actually runs, all green on the head. Force-push
+   stays blocked; the 1-review requirement stays.
+2. **`gh pr merge 507 --admin --merge`**, named and authorized by the user — the bypass covered
+   ONLY the review gate (self-approval being impossible for the PR author's account).
+
+**Merge commit `1b5514ca`; origin main verified at it; local main repointed.** The review
+branch (`d159e51`) is fully contained in main. What main now is: the sanitized candidate tree,
+repository-wide green matrix, source-bound archives, finalized master reference — on the
+marker-free history.
+
+Remaining open, unchanged: the Codex-side master-reference deploy tail (§13.10), the carried
+questions (§13.9), and the GitHub-side purge of pre-rewrite `refs/pull/*` objects (§13.11).
+
+### 13.13 PHASE E COMPLETE — the master reference is DEPLOYED (user-directed, 2026-08-02)
+
+The §5.7 tail executed end-to-end, driven through the LOCAL Codex CLI (`codex exec`, v0.146.0,
+ChatGPT auth — discovered on PATH; the same environment that authored the `.openai` scaffolding)
+from THIS checkout, so the deploy source was the rewritten, merged state, never a stale clone.
+
+```text
+project    appgprj_6a6fa5e281f88191a3c30a13a7d89e28   create_site ran EXACTLY ONCE
+version 1  appgver_bfa3defb9bc48191…                  private deploy, owner-verified in browser
+version 2  appgver_11977eb671d48191…                  from pushed HEAD c92981d (metadataBase +
+                                                      OG URL bound), deploy succeeded
+probe      anonymous HTTP 401                          access control confirmed, both versions
+URL        https://enhancements-master-reference.tanveerahamed81.chatgpt.site   (private)
+```
+
+**Codex refused twice, correctly, and each refusal was resolved the legitimate way rather than
+bypassed:** (1) it would not mint a bypass bearer to verify the private site — the OWNER opened
+the URL in their signed-in browser and confirmed rendering; (2) it would not create version 2
+from an uncommitted tree under its no-git-mutation constraint — and the platform agreed:
+**Sites versions bind to PUSHED source HEADs** (it deduplicated the unchanged archive to
+version 1 and rejected the local HEAD verbatim). The metadata edit came back to THIS session's
+gate-ordered commit (`c92981d`: hosting.json project id + `layout.tsx` metadataBase/OG — the
+only two files changed across all three Codex runs, verified by diff), was pushed, and only
+then did version 2 exist. Site gates re-run INDEPENDENTLY after the edit: npm test 3/3, lint 0.
+
+Every §12.10 human gate is now closed: staging, distributions, PR flip, history rewrite, merge,
+deploy. Still carried: the §13.9 questions; the GitHub-side purge of pre-rewrite objects, now
+**raised as Support ticket `#4624412` and awaiting their reply** (§13.11 — the ONLY item here
+with an open external dependency); and — new, minor — publishing the site beyond private is a
+separate outward-facing decision nobody has taken.
+
+> A filing note worth keeping, because the wrong choice was the plausible one: GitHub's
+> **"Repositories → Deletes"** category looks like the match for the word "purge" and instead
+> asks *"What is the URL of the repository you would like to delete?"* — it is the
+> delete-my-repository flow. Filed under General support request → Technical issue instead,
+> with an explicit "I am NOT asking to delete this repository" opening the body. A support
+> category that reads right can still be the destructive one; read the fields it reveals
+> before typing a repo URL into it.
