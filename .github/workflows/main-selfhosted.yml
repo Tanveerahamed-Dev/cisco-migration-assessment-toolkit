@@ -1,0 +1,48 @@
+name: main-selfhosted
+
+# Post-merge verification on the self-hosted Windows fleet — zero hosted-runner minutes.
+#
+# Deliberately NOT triggered by pull_request: the repository's standing security rule
+# (see the ci.yml header) is that PR code executes only on GitHub-hosted, ephemeral
+# runners, never on a persistent local machine. Push-to-main and workflow_dispatch run
+# only code that has already been reviewed and merged, which is the trust boundary this
+# workflow respects. This job supplements the hosted matrix (it does not replace it and
+# is not a required protection context); it exists so main keeps continuous verification
+# when hosted minutes are exhausted.
+#
+# Runner facts this workflow is written around: the fleet is Windows (PowerShell steps,
+# no bashisms, no && chains), and actions/setup-python cannot install interpreters on it
+# — the machine's own `py -3.12` launcher is used via an isolated per-run venv so the
+# runner host's Python environment is never mutated.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mainsh-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suite:
+    name: Main suite · py3.12 · self-hosted-windows
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Create isolated venv
+        run: py -3.12 -m venv .ci-venv
+      - name: Upgrade pip
+        run: .ci-venv\Scripts\python.exe -m pip install --upgrade pip
+      - name: Install complete runtime and test dependencies
+        run: .ci-venv\Scripts\python.exe -m pip install -e ".[dev]"
+      - name: Ruff correctness rules
+        run: .ci-venv\Scripts\python.exe -m ruff check .
+      - name: Tracked-tree privacy boundary
+        run: .ci-venv\Scripts\python.exe .github/scripts/verify_repository_privacy.py
+      - name: Run the complete default suite
+        run: .ci-venv\Scripts\python.exe -m pytest

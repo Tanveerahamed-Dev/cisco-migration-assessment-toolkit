@@ -105,6 +105,36 @@ def test_pull_request_workflows_cannot_select_self_hosted_runners():
         assert all(value in {"ubuntu-latest", "${{ matrix.os }}"} for value in runs_on)
 
 
+def test_no_workflow_that_handles_pull_requests_can_select_self_hosted_runners():
+    """The STRUCTURAL form of the guard above, which is scoped to two workflows by NAME.
+
+    The invariant (ci.yml header) is about the event, not about those two files: code arriving
+    via a pull request must only ever execute on GitHub-hosted, ephemeral runners — never on a
+    persistent local machine holding credentials or private state. A future workflow file with a
+    `pull_request` trigger would evade a named list, so this sweeps EVERY workflow: any file
+    whose non-comment body engages with pull_request events at all must not select self-hosted
+    runners. Push-to-main / dispatch-only workflows (e.g. main-selfhosted.yml) may use the
+    fleet: they run only code that was already reviewed and merged."""
+    offenders = []
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        body = "\n".join(
+            line for line in path.read_text(encoding="utf-8").splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        if "pull_request" in body and "self-hosted" in body:
+            offenders.append(path.name)
+    assert not offenders, (
+        "workflows that handle pull_request events must never run on self-hosted runners: "
+        + ", ".join(offenders)
+    )
+    # NON-VACUITY, both directions: the sweep saw a pull_request workflow and a self-hosted one.
+    bodies = {p.name: p.read_text(encoding="utf-8") for p in WORKFLOWS.glob("*.yml")}
+    assert any("pull_request" in b for b in bodies.values())
+    assert any("self-hosted" in "\n".join(
+        line for line in b.splitlines() if not line.lstrip().startswith("#")
+    ) for b in bodies.values()), "no self-hosted workflow found — the sweep proves nothing"
+
+
 def test_publish_promotes_release_assets_without_rebuilding():
     body = _workflow("publish.yml")
     assert "workflow_dispatch:" in body
