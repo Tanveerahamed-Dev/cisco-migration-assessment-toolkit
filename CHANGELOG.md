@@ -56,6 +56,37 @@ per change, with verification evidence) lives in
   set is refused before the engine starts, because a failed writer would otherwise leave another
   engagement's document under this run's filename — and redaction keeps hostnames by design.
   `--reuse-out` is the explicit escape for re-running the same job.
+- **Evidence custody no longer falsely refuses on an alias-spelled collection root.** The sealer
+  resolved each evidence FILE but compared containment against the RAW root string, so any
+  environment where the two spell the same directory differently — DOS 8.3 short paths
+  (`RUNNER~1`), junctions, symlinks — refused every file of a healthy run and failed the whole
+  collection. Both sides now resolve before comparison; pinned by a junction-spelled-root test
+  plus the still-refuses-outside-files direction.
+- **Uploads work on Python 3.10.** `tempfile.SpooledTemporaryFile` lacks `seekable()` before 3.11
+  (bpo-35112), so every archive upload died with `AttributeError` before validation ran. The
+  ingest route now normalizes the spool at its boundary (`ingest.iobase_upload_file`) so any
+  consumer — including a replaced zip runner — receives the full IO probe interface. The claimed
+  `requires-python >= 3.10` floor is now actually exercised: CI runs the full suite on
+  CPython 3.10–3.14 (ubuntu) and 3.12 (windows), all green.
+
+### Added
+- **Master reference** (`master-reference/`): a static, self-explanatory reference site for the
+  repository — the evidence pipeline, 16 major engineering decisions with rationale/tradeoff/
+  enforcement/evidence, the data-authority model, an interactive trust-boundary explorer, PPDIOO
+  gates, repository atlas, verification matrix, operator commands, and glossary. Server-rendered
+  semantic HTML, keyboard access, reduced-motion support; no database, analytics, cookies, or
+  runtime content fetch. Deployed privately; its own CI (typecheck + build + rendered-contract
+  tests + lint + audit) gates changes.
+
+### Changed
+- **The release chain is source-bound.** `webapp/frontend/dist/` is tracked (byte-pinned,
+  `-text`), and `distribution_verify --require-source-binding` proves 115 of 129 shipped archive
+  members bind to the release commit (the other 14 are build-generated and declared as such).
+  A release archive can no longer silently diverge from its claimed source.
+- **Build backend pinned forward**: `wheel 0.46.2 → 0.47.0` (audited by the dependency-audit
+  gate; the exact-pin guard test moved with it). Dependency ranges widened: `ntc-templates <10`,
+  `mcp <3`. GitHub Actions moved to the v7 line (checkout / setup-python / setup-node /
+  upload-artifact), each proven by an executed green matrix before merge.
 
 ## [v3.31.0] — 2026-07-18 — the hardening release (security audit + fail-soft totality + verified deliverable quality)
 
