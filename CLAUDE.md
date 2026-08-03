@@ -1,19 +1,28 @@
-## Active repository-review handoff
+## Repository-review record (CLOSED 2026-08-03)
 
-Before continuing the repository-wide hardening review on
-`review/whole-repo-2026-07-28`, read
-**`docs/review-hardening-handoff-2026-07-30.md` in full**. It is the current,
-loss-preserving checkpoint: exact baseline, protected backups, completed lane
-evidence, unresolved cross-lane defects, prohibited destructive actions, and
-the ordered continuation plan. Status (2026-08-02, final): **CI repository-wide GREEN (§13.9), HISTORY
-REWRITE DONE (§13.11 — origin marker-free; old shas translate via the
-preserved commit-map), PR #507 MERGED to main (§13.12), and the master
-reference DEPLOYED privately via Codex Sites (§13.13)**. Every §12.10 human
-gate is closed. Still carried: the §13.9 questions, the GitHub Support purge
-of pre-rewrite `refs/pull/*` objects, and the separate decision to publish
-the site beyond private. Use **`/resume-review`** to run the guarded
-continuation protocol; its first action is the read-only checkpoint integrity
-check at `.claude/scripts/verify-review-handoff.ps1`.
+The whole-repository hardening review is **complete and merged to `main`**. There is nothing to
+resume: the review branch, its checkpoint verifier, and `/resume-review` were retired when it
+closed. `docs/review-hardening-handoff-2026-07-30.md` is now a **historical record**, not a live
+checkpoint — read it for *why* something is the way it is (§7–§13 carry the reasoning behind most
+coverage-honesty guards), not for instructions to follow.
+
+What it concluded: CI repository-wide green on every supported interpreter and both platforms;
+the archives source-bound; the Git history rewritten marker-free on every branch and tag (old
+shas translate via the commit-map preserved in `private-inputs/history-rewrite-20260802/` —
+ledger shas predating §13.11 refer to superseded history); the master reference deployed.
+
+**Carried forward — the only genuinely open items:**
+- GitHub Support ticket `#4624412` — server-side purge of pre-rewrite objects and stale
+  `refs/pull/*`. Until they act, superseded SHAs still resolve by direct URL on this private repo.
+- The master-reference site is deployed **private**; publishing it publicly is an open decision.
+- §13.9's questions: the EoL registry `evidence_method` claim, 3.14 leading-dot-run name-shape
+  semantics (the ≤3.13 matrix legs are the only guard against the splitext-restatement
+  regression — do not drop them), and react-router v7.
+
+A future whole-repo review should start fresh rather than reopening this one. Its most reusable
+output is the defect *shapes*, not its findings: absence rendered as health, a guard scoped to a
+hand-maintained list standing in for the class it means, and gates whose success path was never
+executed.
 
 ## graphify
 
