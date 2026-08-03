@@ -62,13 +62,24 @@ jobs:
       - name: Install the test toolchain against the tagged source
         run: python -m pip install -e ".[dev]"
       - name: Run the complete suite against the tagged source
-        run: python -m pytest -q
+        run: python -m pytest -q -p no:cacheprovider
+      # See the identical note in release-selfhosted.yml: the suite mutates the checkout
+      # (pytest cache, egg-info, an engine log written to CWD) and the immutability proofs must
+      # stay a real instrument, so the checkout is restored rather than the allow-list widened.
+      - name: Restore the tagged checkout after the suite
+        run: |
+          git clean -fdx
+          git checkout -- .
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --porcelain
+            echo "suite left the tagged checkout dirty" >&2
+            exit 1
+          fi
       - name: Prove privacy and suite validation did not change the tagged source
         run: >-
           python .github/scripts/verify_checkout_immutable.py
           --expected-commit "${{ steps.source.outputs.commit }}"
           --expected-tree "${{ steps.source.outputs.tree }}"
-          --allow-untracked-prefix cisco_migration_assessment_toolkit.egg-info
       - name: Detect an idempotent re-run
         id: existing
         env:

@@ -96,7 +96,26 @@ jobs:
           & "$env:RUNNER_TEMP\test-venv\Scripts\python.exe" -m pip install --quiet --upgrade pip
           & "$env:RUNNER_TEMP\test-venv\Scripts\python.exe" -m pip install --quiet -e ".[dev]"
       - name: Run the complete suite against the tagged source
-        run: '& "$env:RUNNER_TEMP\test-venv\Scripts\python.exe" -m pytest -q'
+        run: '& "$env:RUNNER_TEMP\test-venv\Scripts\python.exe" -m pytest -q -p no:cacheprovider'
+      # Running the suite MUTATES the checkout — pytest's cache, the editable install's
+      # egg-info, and an engine log a test writes into the CWD — inside a workflow whose entire
+      # design is "prove nothing changed the tagged source". The immutability proof caught it
+      # (measured: run 30835092907 failed on `.pytest_cache/` +
+      # `cisco_migration_autofill_v3_23_0.log`). Restore the checkout to committed bytes rather
+      # than widening the allow-list: an instrument loosened to tolerate its own debris stops
+      # being able to detect the tampering it exists for. `-p no:cacheprovider` prevents what is
+      # preventable; this restores the rest and FAILS LOUDLY if anything survives.
+      - name: Restore the tagged checkout after the suite
+        run: |
+          git clean -fdx --quiet
+          git checkout -- .
+          $dirty = git status --porcelain
+          if ($dirty) {
+            Write-Host "suite left the tagged checkout dirty:"
+            Write-Host $dirty
+            exit 1
+          }
+          Write-Host "tagged checkout restored to committed bytes"
       # The runner wraps powershell steps in $ErrorActionPreference='stop', and PS5.1 turns a
       # native command's REDIRECTED stderr into terminating NativeCommandErrors — so
       # `gh release view ... *> $null` on a not-yet-existing release killed the script before
@@ -130,7 +149,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           npm run build
       - name: Prove the SPA build reproduced the immutable tagged source
-        run: '& "$env:RUNNER_TEMP\rel-venv\Scripts\python.exe" .github/scripts/verify_checkout_immutable.py --expected-commit "${{ steps.source.outputs.commit }}" --expected-tree "${{ steps.source.outputs.tree }}" --allow-untracked-prefix webapp/frontend/node_modules --allow-untracked-prefix cisco_migration_assessment_toolkit.egg-info --allow-untracked-prefix dist'
+        run: '& "$env:RUNNER_TEMP\rel-venv\Scripts\python.exe" .github/scripts/verify_checkout_immutable.py --expected-commit "${{ steps.source.outputs.commit }}" --expected-tree "${{ steps.source.outputs.tree }}" --allow-untracked-prefix webapp/frontend/node_modules --allow-untracked-prefix dist'
       - name: Build the release archives once
         if: steps.existing.outputs.exists == 'false'
         run: '& "$env:RUNNER_TEMP\rel-venv\Scripts\python.exe" -m build --sdist --wheel --outdir dist'
