@@ -73,11 +73,12 @@ def test_pep639_license_expression_has_no_superseded_license_classifier():
 def test_build_backend_uses_exact_nonvulnerable_tool_versions():
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert (
-        'requires = ["setuptools==83.0.0", "wheel==0.46.2"]'
+        'requires = ["setuptools==83.0.0", "wheel==0.47.0"]'
         in pyproject
     )
     assert "setuptools==80.9.0" not in pyproject
     assert "wheel==0.45.1" not in pyproject
+    assert "wheel==0.46.2" not in pyproject
 
 
 def test_privacy_boundary_rejects_tests_office_files_and_non_sample_snapshots():
