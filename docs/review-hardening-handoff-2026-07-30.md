@@ -1,11 +1,30 @@
 # Repository hardening handoff — 2026-07-30
 
-> **Status (amended 2026-08-02, second amendment): CI is repository-wide GREEN (§13.9), and the
-> HISTORY REWRITE IS DONE (§13.11) — origin's history is marker-free on every branch and tag.**
-> Remaining before "release": the master-reference Codex-side deploy tail (§13.10) and the PR
-> #507 review/merge. The original status line — "active checkpoint, not a release and not a
-> repository-wide green claim" — described the pre-staging tree and is fully superseded except
-> for the not-a-release half.
+> # ⛔ CLOSED 2026-08-03 — HISTORICAL RECORD, NOT INSTRUCTIONS
+>
+> **This review is complete and merged to `main`. Do not follow the procedures below.** They
+> describe a live review that no longer exists: `/resume-review`, the checkpoint verifier
+> `.claude/scripts/verify-review-handoff.ps1`, and `review-live-delta.json` were all **deleted**
+> when it closed, and the preservation rules (never stage, never commit, keep the dirty tree)
+> were superseded by the staging, merge, history rewrite and deploy that actually happened.
+>
+> **Read this file for *why*, not for *what to do next*.** §7–§13 carry the reasoning behind most
+> of the repository's coverage-honesty guards; that reasoning is the durable part. Every status
+> line, ordered plan, and "next action" below is spent.
+>
+> **What it concluded:** CI repository-wide green on every supported interpreter and both
+> platforms; archives source-bound; history rewritten marker-free on every branch and tag
+> (§13.11 — shas cited *before* that section refer to superseded history and translate via the
+> commit-map in `private-inputs/history-rewrite-20260802/`); master reference deployed (§13.13).
+>
+> **Still genuinely open** (also in CLAUDE.md): Support ticket `#4624412` for the server-side
+> purge of pre-rewrite objects; the site is deployed **private** and publishing it is a separate
+> decision; and §13.9's three carried questions.
+>
+> ---
+>
+> *Everything below this line is the review's own record, preserved unedited except where a
+> later section explicitly supersedes an earlier one.*
 >
 > **START HERE (updated 2026-07-31, end of session 2).**
 >
