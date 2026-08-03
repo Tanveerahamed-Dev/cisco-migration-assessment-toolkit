@@ -81,15 +81,23 @@ jobs:
         run: '& "$env:RUNNER_TEMP\rel-venv\Scripts\python.exe" .github/scripts/verify_release.py --tag "${{ inputs.tag }}" --commit HEAD --base origin/main'
       - name: Verify the tagged tracked-tree privacy boundary
         run: '& "$env:RUNNER_TEMP\rel-venv\Scripts\python.exe" .github/scripts/verify_repository_privacy.py'
+      # The runner wraps powershell steps in $ErrorActionPreference='stop', and PS5.1 turns a
+      # native command's REDIRECTED stderr into terminating NativeCommandErrors — so
+      # `gh release view ... *> $null` on a not-yet-existing release killed the script before
+      # `exit 0` could run (measured, run 30819480653). Un-redirected stderr is never wrapped,
+      # which is why the npm steps are safe. Relax EAP for this one probe step and merge
+      # stderr under Continue semantics instead.
       - name: Detect an idempotent re-run
         id: existing
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          $ErrorActionPreference = "Continue"
           $found = "false"
-          gh release view "${{ inputs.tag }}" *> $null
+          $null = gh release view "${{ inputs.tag }}" --json name 2>&1
           if ($LASTEXITCODE -eq 0) { $found = "true" }
           Add-Content -Path $env:GITHUB_OUTPUT -Value "exists=$found"
+          Write-Host "release exists: $found"
           exit 0
       - name: Download the already-published assets on a re-run
         if: steps.existing.outputs.exists == 'true'
