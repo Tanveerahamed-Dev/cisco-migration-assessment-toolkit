@@ -308,6 +308,27 @@ _LB = r"(?<![A-Za-z0-9])"
 _RB = r"(?![A-Za-z0-9])"
 
 
+# The bare two-character initials pattern is the one marker that a MINIFIED bundle is
+# structurally guaranteed to false-positive on eventually: bundlers emit ALPHABETICAL
+# two-char export aliases (ah, ai, then the initials, then ak, ...), so any sufficiently
+# large public-library bundle contains the initials as a generated identifier (first
+# observed: three 0.185 via dist/assets, 2026-08-03). It is therefore excluded — ONLY this
+# pattern, ONLY for built bundle assets under dist/assets — while every other marker
+# (brands, users, hostnames, initials-compounds) stays active on those same files, so a
+# real leak into a bundle still fails the gate. Named so the exclusion is by IDENTITY,
+# never by tuple position. (The initials never appear literally in this file — §12.9.)
+_BARE_INITIALS_MARKER = re.compile(_LB + re.escape("a" + "j") + _RB, re.IGNORECASE)
+_MINIFIED_BUNDLE_ASSETS = re.compile(r"^webapp/frontend/dist/assets/[^/]+\.js$")
+
+
+def _marker_patterns_for(
+    relative: str, marker_patterns: tuple[re.Pattern[str], ...]
+) -> tuple[re.Pattern[str], ...]:
+    if _MINIFIED_BUNDLE_ASSETS.fullmatch(relative):
+        return tuple(p for p in marker_patterns if p is not _BARE_INITIALS_MARKER)
+    return marker_patterns
+
+
 def _client_marker_patterns() -> tuple[re.Pattern[str], ...]:
     # Constructed from fragments so the guard does not trip over its own source.
     legacy_brand = "al" + "jazeera"
@@ -324,7 +345,7 @@ def _client_marker_patterns() -> tuple[re.Pattern[str], ...]:
         ),
         re.compile(_LB + re.escape(legacy_short) + _RB, re.IGNORECASE),
         re.compile(r"\." + re.escape(legacy_short) + _RB, re.IGNORECASE),
-        re.compile(_LB + re.escape(legacy_initials) + _RB, re.IGNORECASE),
+        _BARE_INITIALS_MARKER,
         re.compile(
             _LB
             + re.escape(legacy_initials)
@@ -960,7 +981,10 @@ def _inspect_index_blobs(
         if "\x00" in text:
             violations.append(f"indexed binary file is not allowlisted: {relative}")
             continue
-        if any(pattern.search(text) for pattern in marker_patterns):
+        if any(
+            pattern.search(text)
+            for pattern in _marker_patterns_for(relative, marker_patterns)
+        ):
             violations.append(
                 f"known client marker appears in indexed text: {relative}"
             )
@@ -1122,7 +1146,10 @@ def inspect_tracked_tree(
         if "\x00" in text:
             violations.append(f"binary file is not allowlisted: {relative}")
             continue
-        if any(pattern.search(text) for pattern in marker_patterns):
+        if any(
+            pattern.search(text)
+            for pattern in _marker_patterns_for(relative, marker_patterns)
+        ):
             violations.append(
                 f"known client marker appears in tracked text: {relative}"
             )

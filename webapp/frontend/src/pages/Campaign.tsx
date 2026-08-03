@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router";
 import { api, bandColor, gateColor } from "../api";
 import type { GateRecord, SnapshotVerification } from "../api";
 import { ErrorBox, Loading, SegBar, useAsync, useToast } from "../components/ui";

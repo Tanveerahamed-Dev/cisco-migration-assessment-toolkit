@@ -546,3 +546,52 @@ def test_the_two_client_marker_implementations_cannot_diverge():
         "the probe set no longer reaches the underscore boundary this test exists to pin"
     assert not any(p.search("ordinary networking prose about ospf timers") for p in dist_patterns), \
         "the archive scanner now flags ordinary prose -- it became a blanket match"
+
+
+def test_minified_bundle_carveout_silences_only_the_bare_initials_and_only_in_bundles():
+    """Minified bundles emit alphabetical two-char export aliases, so a large enough public
+    library bundle is structurally GUARANTEED to contain the bare initials as a generated
+    identifier (first observed: three 0.185, 2026-08-03 -- `ah as X, ai as Y, <initials> as Z`).
+    Both marker implementations therefore exclude EXACTLY that one pattern for built bundle
+    assets, and nothing else, nowhere else. Pinned in both directions on both copies, because a
+    carve-out is precisely where a real leak would hide if it grew wider than measured."""
+    import importlib.util
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location(
+        "_vrp_carveout", root / ".github" / "scripts" / "verify_repository_privacy.py")
+    gate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gate)
+    from cisco_toolkit import distribution_verify
+
+    initials, side = "a" + "j", "syn" + "tys"
+    bundle_alias_run = "ah as gn,ai as Mo," + initials + " as Po,ak as Kh"
+    real_leak = "hostname " + side + "-core-01 collected"
+    repo_bundle = "webapp/frontend/dist/assets/index-Ab12Cd34.js"
+    sdist_bundle = "pkg-9.9.9/webapp/frontend/dist/assets/index-Ab12Cd34.js"
+    prose_path = "docs/notes.md"
+
+    gate_full = gate._client_marker_patterns()
+    for label, patterns in (
+        ("repository gate", gate._marker_patterns_for(repo_bundle, gate_full)),
+        ("archive scanner", distribution_verify._marker_patterns_for(sdist_bundle)),
+    ):
+        # The alias run no longer flags in a bundle...
+        assert not any(p.search(bundle_alias_run) for p in patterns), label
+        # ...but a REAL marker in the same bundle still does (the carve-out is one pattern wide).
+        assert any(p.search(real_leak) for p in patterns), (
+            f"{label}: the bundle carve-out silenced more than the bare-initials pattern")
+        # Exactly one pattern was removed.
+        assert len(patterns) == len(gate_full) - 1, label
+
+    # Outside bundle paths the bare pattern still fires, in both copies (non-vacuity).
+    assert any(p.search(bundle_alias_run)
+               for p in gate._marker_patterns_for(prose_path, gate_full)), \
+        "the bare-initials pattern stopped firing on ordinary paths -- the carve-out leaked"
+    assert any(p.search(bundle_alias_run)
+               for p in distribution_verify._marker_patterns_for(prose_path)), \
+        "the archive scanner's bare-initials pattern stopped firing on ordinary members"
+    # And the path class is exact: a lookalike path outside dist/assets gets the full set.
+    assert len(gate._marker_patterns_for("webapp/frontend/src/evil.js", gate_full)) == \
+        len(gate_full)

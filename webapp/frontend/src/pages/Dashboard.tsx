@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router";
 import { api, bandColor, Campaign } from "../api";
 import { ErrorBox, Loading, SegBar, useAsync, useToast } from "../components/ui";
 import { VerificationBadge } from "../components/VerificationStatus";

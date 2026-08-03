@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
-import { MemoryRouter, Routes, Route } from "react-router-dom";
+import { MemoryRouter, Routes, Route } from "react-router";
 import ExecutionPage, { fmtClock, OUTCOME_COLOR } from "./Execution";
 import { api } from "../api";
 import type { ExecCheck, ExecutionState, SnapshotMeta } from "../api";

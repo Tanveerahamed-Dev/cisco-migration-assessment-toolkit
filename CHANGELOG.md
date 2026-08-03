@@ -87,6 +87,15 @@ per change, with verification evidence) lives in
   gate; the exact-pin guard test moved with it). Dependency ranges widened: `ntc-templates <10`,
   `mcp <3`. GitHub Actions moved to the v7 line (checkout / setup-python / setup-node /
   upload-artifact), each proven by an executed green matrix before merge.
+- **react-router 6 → 7** (`react-router@7.18.2`, closing the review's last carried question).
+  The v6 future flags (`v7_startTransition`, `v7_relativeSplatPath`) had already been enabled
+  in production, so every run since had exercised v7 semantics — including the startTransition
+  interaction with the view-transition machinery; the swap itself is the package rename
+  (`react-router-dom` → `react-router` across 16 files) with zero API changes: the app is
+  all-declarative (no data routers) and its only splat is a single-segment root 404, outside
+  the one behavioral change v7 ships. Verified: typecheck, 200/200 unit tests, production
+  build, real-browser E2E including router navigation. (v8 exists but requires React 19 —
+  deliberately not taken; React 19 remains a planned migration.)
 
 ## [v3.31.0] — 2026-07-18 — the hardening release (security audit + fail-soft totality + verified deliverable quality)
 

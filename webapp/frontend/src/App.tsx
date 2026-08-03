@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Link, NavLink, Route, Routes, useLocation } from "react-router-dom";
+import { Link, NavLink, Route, Routes, useLocation } from "react-router";
 import Landing from "./pages/Landing";
 import Dashboard from "./pages/Dashboard";
 import CampaignPage from "./pages/Campaign";
