@@ -1,0 +1,1649 @@
+<title>Fabric — coverage-honest topology engine</title>
+<style>
+/* Tokens copied verbatim from webapp/frontend/src/theme.css (dark default, [data-theme] flips). */
+:root{
+  --bg:#0e1116; --surface:#161b22; --surface-2:#1c2230; --surface-3:#222a39;
+  --border:#2a313c; --border-strong:#3b4452; --border-faint:#21272f;
+  --text:#e6edf3; --text-dim:#9aa7b4; --text-faint:#6b7785;
+  --accent:#5b9dff; --accent-dim:#3d6fc0; --accent-soft:#14233c;
+  --ok:#3fb950; --ok-soft:#11261a;
+  --watch:#d8a800; --watch-soft:#2a2410;
+  --risk:#f0883e; --risk-soft:#2a1c10;
+  --crit:#f85149; --crit-soft:#2c1517;
+  --grid:#1a212b;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+  --radius:12px; --radius-sm:8px;
+  --ease:cubic-bezier(.2,.7,.2,1); --motion-fast:.14s; --motion:.26s;
+  --band-Excellent:var(--ok); --band-Good:#6cc24a; --band-Fair:var(--watch);
+  --band-Poor:var(--risk); --band-Critical:var(--crit);
+  --glass:color-mix(in srgb,var(--surface) 74%,transparent);
+  --glass-border:color-mix(in srgb,#ffffff 10%,transparent);
+  --elev-2:0 2px 6px rgba(0,0,0,.34),0 16px 42px rgba(0,0,0,.50);
+  --blur:14px;
+}
+@media (prefers-color-scheme:light){ :root:not([data-theme="dark"]){
+  --bg:#eef1f5; --surface:#ffffff; --surface-2:#f3f6fa; --surface-3:#e9eef4;
+  --border:#d6dde6; --border-strong:#bcc6d2; --border-faint:#e6ebf1;
+  --text:#1b2530; --text-dim:#586675; --text-faint:#8a96a4;
+  --accent:#2563eb; --accent-dim:#5b86e0; --accent-soft:#e4eeff;
+  --ok:#1a7f37; --watch:#9a6700; --risk:#bc4c00; --crit:#cf222e;
+  --grid:#e4e9f0; --band-Good:#4c9a2a;
+  --glass:color-mix(in srgb,var(--surface) 80%,transparent);
+  --glass-border:color-mix(in srgb,#1b2530 12%,transparent);
+  --elev-2:0 2px 8px rgba(40,55,80,.12),0 16px 40px rgba(40,55,80,.16);
+}}
+:root[data-theme="light"]{
+  --bg:#eef1f5; --surface:#ffffff; --surface-2:#f3f6fa; --surface-3:#e9eef4;
+  --border:#d6dde6; --border-strong:#bcc6d2; --border-faint:#e6ebf1;
+  --text:#1b2530; --text-dim:#586675; --text-faint:#8a96a4;
+  --accent:#2563eb; --accent-dim:#5b86e0; --accent-soft:#e4eeff;
+  --ok:#1a7f37; --watch:#9a6700; --risk:#bc4c00; --crit:#cf222e;
+  --grid:#e4e9f0; --band-Good:#4c9a2a;
+  --glass:color-mix(in srgb,var(--surface) 80%,transparent);
+  --glass-border:color-mix(in srgb,#1b2530 12%,transparent);
+  --elev-2:0 2px 8px rgba(40,55,80,.12),0 16px 40px rgba(40,55,80,.16);
+}
+
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{
+  background:var(--bg); color:var(--text); font-family:var(--sans);
+  font-size:14px; line-height:1.5; overflow:hidden;
+  font-variant-numeric:tabular-nums;
+}
+#app{display:grid; grid-template-rows:auto 1fr; height:100dvh; min-height:0}
+
+/* ── masthead ─────────────────────────────────────────────────── */
+header{
+  display:flex; align-items:center; gap:18px; flex-wrap:wrap;
+  padding:10px 16px; border-bottom:1px solid var(--border);
+  background:var(--surface); z-index:3;
+}
+.brand{display:flex; align-items:baseline; gap:10px; margin-right:auto}
+.brand b{font-size:15px; letter-spacing:-.01em; font-weight:650}
+.brand span{
+  font-family:var(--mono); font-size:10.5px; color:var(--text-faint);
+  text-transform:uppercase; letter-spacing:.09em;
+}
+.tele{display:flex; gap:16px; align-items:center; flex-wrap:wrap}
+.t{display:flex; flex-direction:column; gap:1px; min-width:64px}
+.t i{
+  font-style:normal; font-family:var(--mono); font-size:9.5px; letter-spacing:.1em;
+  text-transform:uppercase; color:var(--text-faint);
+}
+.t b{font-family:var(--mono); font-size:14px; font-weight:600; letter-spacing:-.02em}
+#spark{display:block; border:1px solid var(--border-faint); border-radius:4px; background:var(--bg)}
+
+/* ── stage ────────────────────────────────────────────────────── */
+main{position:relative; min-height:0; overflow:hidden; background:var(--bg)}
+#gl,#lbl{position:absolute; inset:0; width:100%; height:100%; display:block}
+#lbl{pointer-events:none}
+#dom{position:absolute; inset:0; overflow:hidden; pointer-events:none}
+#dom svg{position:absolute; inset:0; width:100%; height:100%}
+#stage{position:absolute; inset:0; cursor:grab; outline:none}
+#stage:focus-visible{outline:2px solid var(--accent); outline-offset:-2px}
+#stage.drag{cursor:grabbing}
+
+/* ── floating rails ───────────────────────────────────────────── */
+.rail{
+  position:absolute; z-index:2; background:var(--glass);
+  -webkit-backdrop-filter:blur(var(--blur)); backdrop-filter:blur(var(--blur));
+  border:1px solid var(--glass-border); border-radius:var(--radius);
+  box-shadow:var(--elev-2);
+}
+#ctl{left:14px; top:14px; width:250px; padding:12px 13px}
+#insp{right:14px; top:14px; width:286px; max-height:calc(100% - 28px); overflow:auto; padding:13px}
+#legend{left:14px; bottom:14px; padding:10px 12px}
+
+h2{
+  margin:0 0 9px; font-size:10px; font-family:var(--mono); font-weight:600;
+  letter-spacing:.13em; text-transform:uppercase; color:var(--text-faint);
+}
+.row{display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:9px}
+.row:last-child{margin-bottom:0}
+label{font-size:12px; color:var(--text-dim)}
+input[type=range]{width:100%; accent-color:var(--accent); margin:0}
+.seg{display:flex; border:1px solid var(--border-strong); border-radius:var(--radius-sm); overflow:hidden}
+.seg button{
+  flex:1; padding:5px 8px; font:inherit; font-size:11.5px; cursor:pointer;
+  background:transparent; color:var(--text-dim); border:0; border-right:1px solid var(--border-strong);
+  transition:background var(--motion-fast) var(--ease), color var(--motion-fast) var(--ease);
+}
+.seg button:last-child{border-right:0}
+.seg button[aria-pressed=true]{background:var(--accent); color:#fff}
+.seg button:focus-visible{outline:2px solid var(--accent); outline-offset:-2px}
+.btn{
+  padding:5px 10px; font:inherit; font-size:11.5px; cursor:pointer; color:var(--text);
+  background:var(--surface-2); border:1px solid var(--border-strong); border-radius:var(--radius-sm);
+}
+.btn:hover{border-color:var(--accent-dim)}
+.btn:focus-visible{outline:2px solid var(--accent); outline-offset:1px}
+.pads{display:grid; grid-template-columns:repeat(4,1fr); gap:5px}
+
+/* ── legend / evidence states ─────────────────────────────────── */
+.lg{display:flex; align-items:center; gap:8px; margin-bottom:6px; font-size:11.5px; color:var(--text-dim)}
+.lg:last-child{margin-bottom:0}
+.sw{width:15px; height:11px; border-radius:3px; flex:none; border:1.5px solid var(--border-strong)}
+.sw.obs{background:var(--band-Good)}
+.sw.deg{background:var(--risk)}
+.sw.nobs{
+  background:repeating-linear-gradient(45deg,var(--text-faint) 0 2px,transparent 2px 4px);
+  border-style:dashed; border-color:var(--text-faint);
+}
+.sw.unp{background:var(--surface-3); border-style:dotted}
+
+/* ── inspector ────────────────────────────────────────────────── */
+.kv{display:grid; grid-template-columns:auto 1fr; gap:3px 12px; font-size:12px; margin-bottom:11px}
+.kv dt{color:var(--text-faint); font-family:var(--mono); font-size:10.5px; letter-spacing:.05em; text-transform:uppercase}
+.kv dd{margin:0; font-family:var(--mono); font-size:12px; word-break:break-word}
+.hero{font-family:var(--mono); font-size:15px; font-weight:600; margin:0 0 3px; word-break:break-all}
+.sub{font-size:11.5px; color:var(--text-dim); margin:0 0 11px}
+.chip{
+  display:inline-flex; align-items:center; gap:5px; padding:2px 8px; border-radius:999px;
+  font-size:10.5px; font-weight:700; letter-spacing:.03em; white-space:nowrap;
+  border:1px solid color-mix(in srgb,currentColor 45%,transparent);
+  background:color-mix(in srgb,currentColor 13%,transparent);
+}
+.warn{
+  border:1px solid color-mix(in srgb,var(--crit) 48%,transparent);
+  border-left:4px solid var(--crit);
+  background:color-mix(in srgb,var(--crit) 9%,var(--surface));
+  border-radius:var(--radius-sm); padding:9px 11px; margin-bottom:11px;
+}
+.warn.part{
+  border-color:color-mix(in srgb,var(--watch) 52%,transparent);
+  border-left-color:var(--watch);
+  background:color-mix(in srgb,var(--watch) 10%,var(--surface));
+}
+.warn b{display:block; font-size:12px; margin-bottom:3px}
+.warn p{margin:0; font-size:11px; color:var(--text-dim); line-height:1.45}
+.bars{display:flex; flex-direction:column; gap:4px; margin-bottom:11px}
+.bar{display:grid; grid-template-columns:74px 1fr 34px; gap:7px; align-items:center; font-size:11px}
+.bar i{font-style:normal; color:var(--text-dim); font-family:var(--mono); font-size:10px; text-transform:uppercase; letter-spacing:.05em}
+.bar u{display:block; height:6px; border-radius:3px; text-decoration:none; background:var(--surface-3); overflow:hidden}
+.bar u s{display:block; height:100%; text-decoration:none; border-radius:3px}
+.bar b{font-family:var(--mono); font-size:11px; text-align:right; font-weight:600}
+.hint{font-size:10.5px; color:var(--text-faint); line-height:1.45; margin:9px 0 0}
+.hint kbd{
+  font-family:var(--mono); font-size:9.5px; background:var(--surface-3);
+  border:1px solid var(--border); border-radius:3px; padding:0 3px;
+}
+#mirror{position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap}
+#toast{
+  position:absolute; left:50%; bottom:18px; transform:translateX(-50%);
+  background:var(--surface-3); border:1px solid var(--border-strong); color:var(--text);
+  padding:7px 13px; border-radius:999px; font-size:12px; z-index:5;
+  box-shadow:var(--elev-2); opacity:0; transition:opacity var(--motion) var(--ease);
+}
+#toast.on{opacity:1}
+@media (prefers-reduced-motion:reduce){ *{transition-duration:.01ms !important} }
+/* Narrow: the coverage panel is the whole point, so it becomes a bottom sheet.
+   The legend is the thing that goes — its four states are restated in the panel. */
+@media (max-width:900px){
+  #insp{left:14px; right:14px; top:auto; bottom:14px; width:auto; max-height:30%}
+  #legend{display:none}
+  #ctl{width:196px}
+  #ctl .pads{display:none}      /* arrow keys already do this; reclaim the height */
+  #ctl .hint{display:none}
+}
+</style>
+
+<div id="app">
+  <header>
+    <div class="brand">
+      <b>Fabric</b>
+      <span>coverage-honest topology engine</span>
+    </div>
+    <div class="tele">
+      <div class="t"><i>frame</i><b id="tFrame">—</b></div>
+      <div class="t"><i>gpu draws</i><b id="tDraw">—</b></div>
+      <div class="t"><i>devices</i><b id="tNodes">—</b></div>
+      <div class="t"><i>links</i><b id="tLinks">—</b></div>
+      <canvas id="spark" width="150" height="34" aria-label="Frame time history"></canvas>
+    </div>
+  </header>
+
+  <main>
+    <canvas id="gl"></canvas>
+    <canvas id="lbl"></canvas>
+    <div id="dom" hidden></div>
+    <div id="stage" tabindex="0" role="application"
+         aria-label="Network fabric. Arrow keys pan, plus and minus zoom, Tab moves through devices."></div>
+
+    <section class="rail" id="ctl">
+      <h2>Fleet</h2>
+      <div class="row">
+        <label for="scale">Devices</label>
+        <b style="font-family:var(--mono);font-size:12px" id="scaleV">1200</b>
+      </div>
+      <input type="range" id="scale" min="120" max="5000" step="20" value="1200"
+             aria-label="Number of devices in the synthetic fleet">
+      <div class="row" style="margin-top:11px"><label>On click</label></div>
+      <div class="seg" role="group" aria-label="What clicking a device analyses">
+        <button id="aFail" aria-pressed="true">If it fails</button>
+        <button id="aReach" aria-pressed="false">What it reaches</button>
+      </div>
+      <div class="row" style="margin-top:11px"><label for="q">Find</label>
+        <b style="font-family:var(--mono);font-size:11px;color:var(--text-faint)" id="qN"></b></div>
+      <input type="search" id="q" placeholder="hostname or site, e.g. NOC" autocomplete="off"
+             style="width:100%;padding:5px 8px;font:inherit;font-size:12px;color:var(--text);
+                    background:var(--surface-2);border:1px solid var(--border-strong);
+                    border-radius:var(--radius-sm)">
+      <div class="row" style="margin-top:11px"><label for="beta">Bundling</label>
+        <b style="font-family:var(--mono);font-size:12px" id="betaV">0.85</b></div>
+      <input type="range" id="beta" min="0" max="1" step="0.01" value="0.85"
+             aria-label="Edge bundling strength; 0 draws straight lines">
+      <div class="row" style="margin-top:11px"><label>Substrate</label></div>
+      <div class="seg" role="group" aria-label="Rendering substrate">
+        <button id="mGpu" aria-pressed="true">WebGL2</button>
+        <button id="mDom" aria-pressed="false">SVG&nbsp;DOM</button>
+      </div>
+      <div class="row" style="margin-top:11px"><label for="coverage">Assessed</label>
+        <b style="font-family:var(--mono);font-size:12px" id="covV">83%</b></div>
+      <input type="range" id="coverage" min="35" max="100" step="1" value="83"
+             aria-label="Percentage of the fleet with resolved adjacency">
+      <div class="row" style="margin-top:11px">
+        <button class="btn" id="fit" style="flex:1">Fit</button>
+        <button class="btn" id="theme" style="flex:1">Theme</button>
+      </div>
+      <div class="pads" style="margin-top:6px">
+        <button class="btn" id="pL" aria-label="Pan left">←</button>
+        <button class="btn" id="pD" aria-label="Pan down">↓</button>
+        <button class="btn" id="pU" aria-label="Pan up">↑</button>
+        <button class="btn" id="pR" aria-label="Pan right">→</button>
+      </div>
+      <p class="hint">Drag to pan · wheel to zoom · click a device to trace blast radius. <kbd>Esc</kbd> clears.</p>
+    </section>
+
+    <section class="rail" id="legend">
+      <h2>Evidence</h2>
+      <div class="lg"><span class="sw obs"></span>Observed · healthy</div>
+      <div class="lg"><span class="sw deg"></span>Observed · degraded</div>
+      <div class="lg"><span class="sw nobs"></span>Not observed — never “healthy”</div>
+      <div class="lg"><span class="sw unp"></span>Collected · unparsed</div>
+      <div class="lg" style="margin-top:9px;padding-top:9px;border-top:1px solid var(--border-faint)">
+        <span class="sw" style="background:var(--crit);border-color:var(--crit)"></span>Goes dark if the selected device fails</div>
+      <div class="lg"><span class="sw" style="background:transparent;border-color:var(--crit)"></span>Link severed by that failure</div>
+    </section>
+
+    <aside class="rail" id="insp" aria-live="polite"></aside>
+    <div id="mirror" aria-live="polite"></div>
+    <div id="toast" role="status"></div>
+  </main>
+</div>
+
+<script>
+"use strict";
+/* ═══════════════════════════════════════════════════════════════════════════
+   Fabric — a coverage-honest, GPU-accelerated network topology engine.
+
+   Design decisions, each earned from measurement rather than taste:
+
+   • LAYOUT IS THE PERFORMANCE DECISION. A measured comparison on an Intel
+     iGPU put 8,000 random "hairball" edges at 12.4 ms of GPU time versus
+     0.56 ms for the same count laid out in tier-adjacent lanes — a 22x gap,
+     larger than every other lever combined. Edge length is an output of
+     layout, not a rendering parameter. So the canonical view is deterministic
+     role-tiered lanes, which is also how a network engineer already thinks.
+   • gl.lineWidth is capped at 1 on essentially all desktop GL. Links are
+     therefore instanced screen-space quads expanded in the vertex shader.
+   • Everything is two draw calls: one instanced call for all links, one for
+     all devices. Node count is not the bottleneck; edge fill-rate is.
+   • devicePixelRatio is clamped and adaptive — DPR 1 -> 2 measured 2.4x cost.
+   • The layout is frozen after solve, so pan/zoom/hover cost zero layout work
+     and no web worker is needed (SharedArrayBuffer is unavailable here anyway).
+
+   The point of the picture, though, is honesty: a fast render that draws
+   "not measured" the same as "measured redundant" is a lie with a frame
+   budget. Absence is drawn louder than health, everywhere.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── deterministic PRNG: integer-only, no Math.random, no clock ──────────── */
+const fnv1a = s => { let h = 0x811c9dc5; for (let i=0;i<s.length;i++){ h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); } return h >>> 0; };
+function mulberry32(a){ return function(){ a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a>>>15, 1 | a); t = t + Math.imul(t ^ t>>>7, 61 | t) ^ t; return ((t ^ t>>>14) >>> 0) / 4294967296; }; }
+
+/* ── theme tokens resolved through a probe span (the idiom Topology3D uses) ─ */
+const probe = document.createElement("span");
+probe.style.cssText = "position:absolute;visibility:hidden;pointer-events:none";
+document.body.appendChild(probe);
+function tok(name){
+  probe.style.color = "";
+  probe.style.color = "var(" + name + ")";
+  const m = getComputedStyle(probe).color.match(/[\d.]+/g) || [0,0,0];
+  return [ +m[0]/255, +m[1]/255, +m[2]/255 ];
+}
+/* Windows High Contrast remaps CSS colours but NOT canvas pixels — a forced-colors
+   user would get the OS palette everywhere except the one surface carrying the data.
+   Resolve the system keywords through the same probe and repaint from those instead. */
+const forced = matchMedia("(forced-colors: active)");
+function sysTok(keyword){
+  probe.style.color = "";
+  probe.style.color = keyword;
+  const m = getComputedStyle(probe).color.match(/[\d.]+/g) || [0,0,0];
+  return [ +m[0]/255, +m[1]/255, +m[2]/255 ];
+}
+let T = {};
+function readTokens(){
+  T = {
+    bg:tok("--bg"), surface:tok("--surface"), border:tok("--border"),
+    borderStrong:tok("--border-strong"), faint:tok("--text-faint"),
+    dim:tok("--text-dim"), text:tok("--text"), accent:tok("--accent"),
+    ok:tok("--ok"), watch:tok("--watch"), risk:tok("--risk"), crit:tok("--crit"),
+    good:tok("--band-Good"), grid:tok("--grid")
+  };
+  if (forced.matches){
+    // In forced colours there is no palette to spend: everything is ground, ink or
+    // highlight. Evidence state then has to ride entirely on the redundant channels
+    // (hatch, dashed ring, desaturation) that the shader already draws — which is
+    // exactly why they were built as separate channels rather than as colour alone.
+    const ink = sysTok("CanvasText"), ground = sysTok("Canvas"), hi = sysTok("Highlight"), grey = sysTok("GrayText");
+    T.bg = ground; T.surface = ground; T.text = ink;
+    T.border = ink; T.borderStrong = ink; T.faint = grey; T.dim = grey;
+    T.accent = hi; T.ok = ink; T.watch = ink; T.risk = ink; T.crit = ink; T.good = ink; T.grid = grey;
+  }
+  T.band = { Excellent:T.ok, Good:T.good, Fair:T.watch, Poor:T.risk, Critical:T.crit };
+  // Cached once per theme: getComputedStyle in a per-frame path is a silent tax.
+  const cs = getComputedStyle(document.body);
+  T.css = {
+    mono: cs.getPropertyValue("--mono"),
+    borderFaint: cs.getPropertyValue("--border-faint"),
+    accent: cs.getPropertyValue("--accent")
+  };
+}
+const rgb = c => "rgb(" + Math.round(c[0]*255) + "," + Math.round(c[1]*255) + "," + Math.round(c[2]*255) + ")";
+readTokens();
+
+/* ═══ FLEET ═══════════════════════════════════════════════════════════════
+   Wholly fictional. Hostname grammar and band vocabulary follow the shipped
+   sample fleet; the organisation name is deliberately not carried over.
+   Tier vocabulary and lane order mirror ROLE_ORDER in TopologyGraph.tsx:
+   core, distribution, access, edge — then any other observed role, then ""
+   (rendered UNCLASSIFIED) always last, never guessed into a tier.          */
+const ROLE_ORDER = ["core","distribution","access","edge"];
+const SITES = ["MBG","STU","NOC","CAM","LAB","WHS","OPS","MED","LIB","ANX"];
+const BANDS = ["Excellent","Good","Fair","Poor","Critical"];
+
+function buildFleet(n, coveragePct){
+  const rnd = mulberry32(fnv1a("fabric:" + n + ":" + coveragePct));
+  const nCore = Math.max(2, Math.round(n * 0.006));
+  const nDist = Math.max(2, Math.round(n * 0.05));
+  const nEdge = Math.round(n * 0.05);
+  const nAcc  = Math.max(1, n - nCore - nDist - nEdge);
+
+  const id = [], role = [], tier = [], band = [], score = [], observed = [], parsed = [], keystone = [];
+  const push = (host, r, t) => {
+    id.push(host); role.push(r); tier.push(t);
+    // Coverage is the honest variable: a device may simply never have been reached.
+    const seen = rnd() * 100 < coveragePct;
+    observed.push(seen);
+    // Of those reached, a few return output the parser could not read.
+    const ok = seen && rnd() > 0.035;
+    parsed.push(ok);
+    if (!ok) { band.push(""); score.push(null); }
+    else {
+      const roll = rnd();
+      const b = roll < 0.30 ? "Excellent" : roll < 0.62 ? "Good" : roll < 0.83 ? "Fair" : roll < 0.945 ? "Poor" : "Critical";
+      band.push(b);
+      score.push(Math.round(b === "Excellent" ? 90 + rnd()*10 : b === "Good" ? 75 + rnd()*15
+        : b === "Fair" ? 55 + rnd()*20 : b === "Poor" ? 35 + rnd()*20 : rnd()*35));
+    }
+    keystone.push(false);
+  };
+
+  for (let i=0;i<nCore;i++) push(SITES[i % SITES.length] + "-CORE-" + String(i+1).padStart(2,"0"), "core", 0);
+  for (let i=0;i<nDist;i++) push(SITES[i % SITES.length] + "-DS-" + String(i+1).padStart(2,"0"), "distribution", 1);
+  for (let i=0;i<nAcc;i++){
+    const s = SITES[i % SITES.length];
+    // A slice of the estate carries no role at all — it must never be guessed into a tier.
+    if (rnd() < 0.02) push(s + "-SW-" + String(i+1).padStart(4,"0"), "", 4);
+    else push(s + "-AS-" + String(i+1).padStart(4,"0"), "access", 2);
+  }
+  for (let i=0;i<nEdge;i++) push(SITES[i % SITES.length] + "-AP-" + String(i+1).padStart(4,"0"), "edge", 3);
+
+  // Links follow the physical hierarchy, which is what keeps edges short.
+  const src = [], dst = [];
+  const idxOf = t => { const a=[]; for (let i=0;i<tier.length;i++) if (tier[i]===t) a.push(i); return a; };
+  const core = idxOf(0), dist = idxOf(1), acc = idxOf(2), edg = idxOf(3), un = idxOf(4);
+  const link = (a,b) => { if (a!==b && a!=null && b!=null){ src.push(a); dst.push(b); } };
+
+  /* Uplinks go to a CONTIGUOUS block of parents, not `i % parents`. Modular
+     cycling makes consecutive access switches attach to parents scattered across
+     the whole lane, which is both wrong (a distribution pair serves a building,
+     not every 250th closet) and the true source of long edges — the dominant
+     fill-rate cost. Blocks + the barycentre pass make uplinks near-vertical. */
+  const block = (i, count, pool) => pool[Math.min(pool.length-1, Math.floor(i * pool.length / Math.max(1,count)))];
+  for (let i=1;i<core.length;i++) link(core[i-1], core[i]);
+  if (core.length > 2) link(core[core.length-1], core[0]);
+  dist.forEach((d,i) => {
+    const c = Math.min(core.length-1, Math.floor(i * core.length / Math.max(1,dist.length)));
+    link(d, core[c]);
+    if (core.length > 1) link(d, core[(c+1) % core.length]);       // redundant pair
+  });
+  const parentPool = dist.length ? dist : core;
+  acc.forEach((a,i) => {
+    const p = Math.min(parentPool.length-1, Math.floor(i * parentPool.length / Math.max(1,acc.length)));
+    link(a, parentPool[p]);
+    if (rnd() < 0.55 && parentPool.length > 1)                      // dual-homed to the pair
+      link(a, parentPool[Math.min(parentPool.length-1, p + 1)]);
+  });
+  // Attach downstream gear to a NEARBY access switch, spread proportionally. A stride
+  // (i*7) scatters them across the whole lane, which is both unrealistic — an AP patches
+  // into the closet it is in — and slow, since edge length is the dominant fill-rate cost.
+  const near = (i, count, pool) => pool[Math.min(pool.length-1, Math.floor(i * pool.length / Math.max(1,count)))];
+  edg.forEach((e,i) => { if (acc.length) link(e, near(i, edg.length, acc)); });
+  un.forEach((u,i)  => { if (rnd() < 0.55 && acc.length) link(u, near(i, un.length, acc)); });
+
+  // A link is only real if BOTH endpoints were actually reached.
+  const S=[], D=[];
+  for (let i=0;i<src.length;i++) if (observed[src[i]] && observed[dst[i]]) { S.push(src[i]); D.push(dst[i]); }
+
+  const N = id.length;
+  const deg = new Int32Array(N);
+  for (let i=0;i<S.length;i++){ deg[S[i]]++; deg[D[i]]++; }
+  return { N, M:S.length, id, role, tier, band, score, observed, parsed, keystone,
+           src:Int32Array.from(S), dst:Int32Array.from(D), deg };
+}
+
+/* ═══ ADJACENCY (CSR) + ONE DFS FOR BRIDGES AND ARTICULATION POINTS ═══════
+   is_bridge is a LINK-removal analysis; keystone/articulation is a NODE-
+   removal analysis. The codebase keeps them deliberately distinct and so
+   does this. Iterative, never recursive: a 5,000-deep daisy chain would
+   blow the JS stack.                                                       */
+function csr(F){
+  const off = new Int32Array(F.N + 1);
+  for (let i=0;i<F.M;i++){ off[F.src[i]+1]++; off[F.dst[i]+1]++; }
+  for (let i=0;i<F.N;i++) off[i+1] += off[i];
+  const adj = new Int32Array(2*F.M), eid = new Int32Array(2*F.M), cur = off.slice(0,F.N);
+  for (let i=0;i<F.M;i++){
+    adj[cur[F.src[i]]] = F.dst[i]; eid[cur[F.src[i]]++] = i;
+    adj[cur[F.dst[i]]] = F.src[i]; eid[cur[F.dst[i]]++] = i;
+  }
+  return { off, adj, eid };
+}
+function analyse(F, G){
+  const N = F.N;
+  const tin = new Int32Array(N).fill(-1), low = new Int32Array(N);
+  const isArt = new Uint8Array(N), isBridge = new Uint8Array(F.M);
+  const stackV = new Int32Array(N+1), stackE = new Int32Array(N+1), parentE = new Int32Array(N+1);
+  let timer = 0;
+  for (let root=0; root<N; root++){
+    if (tin[root] !== -1 || F.deg[root] === 0) continue;
+    let sp = 0, rootChildren = 0;
+    stackV[0] = root; stackE[0] = G.off[root]; parentE[0] = -1;
+    tin[root] = low[root] = timer++;
+    while (sp >= 0){
+      const v = stackV[sp];
+      if (stackE[sp] < G.off[v+1]){
+        const k = stackE[sp]++;
+        const to = G.adj[k], e = G.eid[k];
+        if (e === parentE[sp]) continue;            // skip the edge we came in on
+        if (tin[to] !== -1){ if (tin[to] < low[v]) low[v] = tin[to]; }
+        else {
+          tin[to] = low[to] = timer++;
+          if (sp === 0) rootChildren++;
+          sp++; stackV[sp] = to; stackE[sp] = G.off[to]; parentE[sp] = e;
+        }
+      } else {
+        sp--;
+        if (sp >= 0){
+          const p = stackV[sp];
+          if (low[v] < low[p]) low[p] = low[v];
+          if (low[v] > tin[p]) isBridge[parentE[sp+1]] = 1;   // removing it disconnects
+          if (sp > 0 && low[v] >= tin[p]) isArt[p] = 1;       // non-root cut vertex
+        }
+      }
+    }
+    if (rootChildren > 1) isArt[root] = 1;
+  }
+  return { isArt, isBridge };
+}
+/* Counterfactual failure impact — the question an engineer actually asks before a
+   maintenance window is not "what can this device reach" but "what goes dark if I
+   pull it". Answered by re-running reachability from the fabric anchor with the
+   device deleted, and diffing against the baseline. One BFS, O(V+E), ~4ms at 5,000
+   devices, so it can run live on click.
+
+   This is deliberately NOT the same analysis as the articulation-point pass:
+   isArt tells you a device is A cut vertex; this tells you exactly WHICH devices
+   are stranded behind it, and how many. A cut vertex that strands two access
+   switches and one that strands eight hundred are not the same finding. */
+function reachFrom(F, G, root, skip){
+  const seen = new Uint8Array(F.N);
+  if (root < 0 || root === skip) return seen;
+  const q = new Int32Array(F.N);
+  let head=0, tail=0; seen[root]=1; q[tail++]=root;
+  while (head<tail){
+    const v=q[head++];
+    for (let k=G.off[v]; k<G.off[v+1]; k++){
+      const to=G.adj[k];
+      if (to !== skip && !seen[to]){ seen[to]=1; q[tail++]=to; }
+    }
+  }
+  return seen;
+}
+function anchorOf(F){                       // the best-connected observed device
+  let best=-1, bd=-1;
+  for (let i=0;i<F.N;i++) if (F.observed[i] && F.deg[i] > bd){ bd=F.deg[i]; best=i; }
+  return best;
+}
+function failureImpact(F, G, base, root, v){
+  const after = reachFrom(F, G, root === v ? -1 : root, v);
+  const stranded = new Uint8Array(F.N);
+  let n = 0;
+  for (let i=0;i<F.N;i++){
+    if (i === v) continue;
+    if (base[i] && !after[i]){ stranded[i] = 1; n++; }
+  }
+  return { stranded, count:n, after };
+}
+function blastRadius(F, G, from){
+  const hop = new Int32Array(F.N).fill(-1);
+  const q = new Int32Array(F.N);
+  let head=0, tail=0; hop[from]=0; q[tail++]=from;
+  while (head<tail){
+    const v=q[head++];
+    for (let k=G.off[v]; k<G.off[v+1]; k++){
+      const to=G.adj[k];
+      if (hop[to]===-1){ hop[to]=hop[v]+1; q[tail++]=to; }
+    }
+  }
+  return { hop, reached:tail };
+}
+
+/* ═══ LAYOUT — deterministic role-tiered lanes ════════════════════════════
+   Lane order follows ROLE_ORDER, filtered to roles actually present, with
+   "" (UNCLASSIFIED) always last. Row wrap is aspect-aware rather than a
+   fixed constant, which is what actually breaks at fleet scale.            */
+const NW = 22, NH = 13, GAPX = 9, GAPY = 30, LANE_PAD = 74;
+function layout(F){
+  const lanes = [];
+  for (const r of ROLE_ORDER){ const ix=[]; for (let i=0;i<F.N;i++) if (F.role[i]===r) ix.push(i); if (ix.length) lanes.push({role:r, ix}); }
+  { const ix=[]; for (let i=0;i<F.N;i++) if (F.role[i]==="") ix.push(i); if (ix.length) lanes.push({role:"", ix}); }
+
+  const X = new Float32Array(F.N), Y = new Float32Array(F.N);
+  const laneOf = new Int32Array(F.N).fill(-1);
+  lanes.forEach((L,li) => L.ix.forEach(i => laneOf[i]=li));
+
+  // Barycentre ordering: a lane is ordered by the mean position of its
+  // neighbours in the lane above, so uplinks stay near-vertical (= short).
+  /* Uniform spacing, every lane. I tried normalising lane WIDTHS so tier-adjacent
+     links would run vertically, on the theory that long edges are the dominant
+     fill-rate cost. Measured: mean |dx| went 894 -> 1228, i.e. worse, and attaching
+     uplinks in contiguous blocks instead of `i % parents` barely moved it either
+     (1228 -> 1211). The reason is structural: once a lane wraps into 37 rows of
+     120, X is a function of COLUMN, so a full-width row attaches to parents
+     clustered at one X and no ordering can align them. Long world-space edges are
+     inherent to wrapped lanes — and they turn out not to matter here, because at
+     fit-zoom the whole fabric compresses and screen-space fill stays small
+     (measured 0.070 ms/frame at 5,000 devices). Metric chased, hypothesis refuted,
+     spacing left uniform. */
+  const meta = lanes.map(La => {
+    const count = La.ix.length;
+    const perRow = Math.max(10, Math.min(120, Math.ceil(Math.sqrt(count * 3.4))));
+    return { count, perRow, nRows: Math.ceil(count / perRow) };
+  });
+  const stepFor = () => NW + GAPX;
+
+  const pos = new Float32Array(F.N);
+  let cursorY = 0;
+  const rows = [];
+  lanes.forEach((L, li) => {
+    if (li > 0){
+      const bc = new Float64Array(L.ix.length), cnt = new Int32Array(L.ix.length);
+      const slot = new Map(); L.ix.forEach((v,k)=>slot.set(v,k));
+      for (let e=0;e<F.M;e++){
+        const a=F.src[e], b=F.dst[e];
+        if (slot.has(a) && laneOf[b]===li-1){ const k=slot.get(a); bc[k]+=pos[b]; cnt[k]++; }
+        if (slot.has(b) && laneOf[a]===li-1){ const k=slot.get(b); bc[k]+=pos[a]; cnt[k]++; }
+      }
+      const keyed = L.ix.map((v,k)=>({v, key: cnt[k] ? bc[k]/cnt[k] : Number.MAX_SAFE_INTEGER}));
+      keyed.sort((p,q)=> p.key-q.key || (p.v-q.v));
+      L.ix = keyed.map(o=>o.v);
+    }
+    const { count, perRow, nRows } = meta[li];
+    const step = stepFor(meta[li]);
+    const rowW = perRow * step;
+    L.ix.forEach((v,k) => {
+      const r = (k / perRow) | 0, c = k % perRow;
+      X[v] = c * step - rowW/2 + step/2;
+      Y[v] = cursorY + r * (NH + GAPY);
+      // Normalised, so a barycentre computed against a 4,365-device lane is
+      // comparable to one against a 250-device lane instead of dwarfing it.
+      pos[v] = k / Math.max(1, count - 1);
+    });
+    rows.push({ role:L.role, count, y0:cursorY, y1:cursorY + Math.max(0,nRows-1)*(NH+GAPY) });
+    cursorY += nRows * (NH + GAPY) + LANE_PAD;
+  });
+  return { X, Y, lanes:rows, height:cursorY };
+}
+
+/* ═══ TIER-GAP BUNDLING — O(E), once per layout, zero per-frame cost ══════
+   Two levels on purpose. With one trunk per parent, the largest fan (60 edges)
+   compresses into the top of the gap and makes the BOTTOM third denser than it
+   was unbundled — bundling that adds clutter. A second level of ~sqrt(k)
+   sub-trunks lets the fan peel off progressively instead.
+
+   The 0.5/0.5 trunk blend is also deliberate: pure X[parent] forces every bit of
+   lateral movement into the splay near the leaves; pure centroid makes the curve
+   leave the parent sideways. Half and half puts the trunk where the fan's mass is.
+
+   Intra-lane edges (h = 0) are routed to the chord by setting C1,C2 to the
+   Greville points L1,L2 — then P1'=L1 and P2'=L2 for ANY beta, so they render
+   dead straight with no shader branch, and the no-cusp guarantee (which needs
+   strictly increasing y) is never relied on where it does not hold. */
+const SEG_S = 12;                 // segments per curve; measured free vs S=1
+function bundleCtrl(F, L){
+  const ctrl = new Float32Array(F.M * 4);
+  const chord = (e, a, b) => {
+    const x0=L.X[a], y0=L.Y[a], x1=L.X[b], y1=L.Y[b];
+    ctrl[e*4]   = x0 + (x1-x0)/3;   ctrl[e*4+1] = y0 + (y1-y0)/3;
+    ctrl[e*4+2] = x0 + 2*(x1-x0)/3; ctrl[e*4+3] = y0 + 2*(y1-y0)/3;
+  };
+  const kids = new Map();
+  for (let e=0;e<F.M;e++){
+    const a=F.src[e], b=F.dst[e], ta=F.tier[a], tb=F.tier[b];
+    if (ta === tb || L.Y[a] === L.Y[b]){ chord(e, a, b); continue; }   // peer link
+    const u = ta < tb ? a : b, v = ta < tb ? b : a;
+    let arr = kids.get(u); if (!arr){ arr = []; kids.set(u, arr); }
+    arr.push({ e, v });
+  }
+  for (const [u, arr] of kids){
+    arr.sort((p,q) => (L.X[p.v] - L.X[q.v]) || (p.v - q.v));   // barycentre order
+    const k = arr.length;
+    const B = Math.max(8, Math.min(32, Math.round(Math.sqrt(k))));
+    let sum = 0; for (const o of arr) sum += L.X[o.v];
+    const trunkX = 0.5*L.X[u] + 0.5*(sum/k);
+    const y0 = L.Y[u];
+    for (let s=0; s<k; s+=B){
+      const end = Math.min(k, s+B);
+      let bs = 0; for (let i=s;i<end;i++) bs += L.X[arr[i].v];
+      const branchX = bs / (end-s);
+      for (let i=s;i<end;i++){
+        const o = arr[i], h = L.Y[o.v] - y0;
+        let c1x=trunkX, c1y=y0+0.30*h, c2x=branchX, c2y=y0+0.78*h;
+        // Control points are derived parent->child; the buffer is src->dst.
+        // Reversing a Bezier swaps the interior points.
+        if (F.src[o.e] !== u){ const tx=c1x, ty=c1y; c1x=c2x; c1y=c2y; c2x=tx; c2y=ty; }
+        ctrl[o.e*4]=c1x; ctrl[o.e*4+1]=c1y; ctrl[o.e*4+2]=c2x; ctrl[o.e*4+3]=c2y;
+      }
+    }
+  }
+  return ctrl;
+}
+
+/* ═══ UNIFORM GRID PICKING — rebuilt only when layout changes ═════════════ */
+function buildGrid(F, L){
+  let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+  for (let i=0;i<F.N;i++){ if(L.X[i]<minX)minX=L.X[i]; if(L.X[i]>maxX)maxX=L.X[i]; if(L.Y[i]<minY)minY=L.Y[i]; if(L.Y[i]>maxY)maxY=L.Y[i]; }
+  const cell = 46;
+  const gw = Math.max(1, Math.ceil((maxX-minX+1)/cell)), gh = Math.max(1, Math.ceil((maxY-minY+1)/cell));
+  const count = new Int32Array(gw*gh+1);
+  const cellOf = new Int32Array(F.N);
+  for (let i=0;i<F.N;i++){
+    const cx=Math.min(gw-1,((L.X[i]-minX)/cell)|0), cy=Math.min(gh-1,((L.Y[i]-minY)/cell)|0);
+    const c=cy*gw+cx; cellOf[i]=c; count[c+1]++;
+  }
+  for (let i=0;i<gw*gh;i++) count[i+1]+=count[i];
+  const items=new Int32Array(F.N), cur=count.slice(0,gw*gh);
+  for (let i=0;i<F.N;i++) items[cur[cellOf[i]]++]=i;
+  return { minX, minY, cell, gw, gh, off:count, items,
+           bounds:{minX,maxX,minY,maxY} };
+}
+/* The scan must cover the radius the caller asked for. A fixed 3x3 window of 46-unit
+   cells silently missed devices whenever the pointer radius exceeded one cell — at the
+   default fit zoom for 5,000 devices that was 1.2% of clicks, and 27% at minimum zoom,
+   every one a MISS (the click deselected instead of selecting). Capped so a huge radius
+   cannot turn picking into a full scan. */
+function pick(grid, L, wx, wy, radius){
+  const cx=((wx-grid.minX)/grid.cell)|0, cy=((wy-grid.minY)/grid.cell)|0;
+  const rad = Math.max(1, Math.min(6, Math.ceil(radius / grid.cell)));
+  let best=-1, bestD=radius*radius;
+  for (let y=cy-rad;y<=cy+rad;y++){
+    if (y<0||y>=grid.gh) continue;
+    for (let x=cx-rad;x<=cx+rad;x++){
+      if (x<0||x>=grid.gw) continue;
+      const c=y*grid.gw+x;
+      for (let k=grid.off[c]; k<grid.off[c+1]; k++){
+        const i=grid.items[k], dx=L.X[i]-wx, dy=L.Y[i]-wy, d=dx*dx+dy*dy;
+        if (d<bestD){ bestD=d; best=i; }
+      }
+    }
+  }
+  return best;
+}
+
+/* ═══ WEBGL2 ═════════════════════════════════════════════════════════════ */
+const glc = document.getElementById("gl");
+const lblc = document.getElementById("lbl");
+const lctx = lblc.getContext("2d");
+let gl = null, progE = null, progN = null, vaoE = null, vaoN = null;
+let bufSeg=null, bufSegCol=null, bufCtrl=null, bufNode=null, bufNodeCol=null, bufQuad=null;
+let glReady = false, lostOverlay = false;
+
+/* Tier-gap edge bundling — cubic Bezier with Holten's straightening (Eq.1) at N=4.
+
+   Drawn as E*S instances with vertexAttribDivisor(S) on every per-edge attribute,
+   so instance i reads edge floor(i/S) and the segment index is gl_InstanceID % S.
+   The CPU expands nothing: the buffers stay E-sized and it is still ONE draw call.
+
+   Joints are crack-free WITHOUT mitering: each segment takes its normal from the
+   curve derivative at its own endpoint parameter, so segment j's far end and
+   segment j+1's near end evaluate the identical expression on identical inputs.
+   A smooth curve has no join, only a shared vertex — which also means no double-
+   blended sliver darkening the inside of every turn.
+
+   beta = 0 reproduces the straight-line renderer EXACTLY at every t, because Eq.1
+   puts the interior points at the Greville abscissae i/3 of the chord and Bezier
+   curves have linear precision. That is not a nicety — it is the correctness
+   oracle this implementation is tested against. */
+const VS_EDGE = `#version 300 es
+layout(location=0) in vec2 corner;      // unit quad {0,-1},{1,-1},{0,1},{1,1}
+layout(location=1) in vec4 seg;         // ax, ay, bx, by   (world)  divisor S
+layout(location=2) in vec4 col;         // rgba                      divisor S
+layout(location=3) in vec4 ctrl;        // C1.xy, C2.xy     (world)  divisor S
+uniform vec2 uTrans; uniform float uScale; uniform vec2 uView;
+uniform float uBeta; uniform int uS;
+out vec4 vCol; out float vLat; out float vHalf;
+vec2 bez(vec2 p0,vec2 p1,vec2 p2,vec2 p3,float t){
+  float u=1.0-t; return u*u*u*p0 + 3.0*u*u*t*p1 + 3.0*u*t*t*p2 + t*t*t*p3; }
+vec2 dbez(vec2 p0,vec2 p1,vec2 p2,vec2 p3,float t){
+  float u=1.0-t; return 3.0*u*u*(p1-p0) + 6.0*u*t*(p2-p1) + 3.0*t*t*(p3-p2); }
+void main(){
+  vec2 P0=(seg.xy+uTrans)*uScale, P3=(seg.zw+uTrans)*uScale;
+  vec2 C1=(ctrl.xy+uTrans)*uScale, C2=(ctrl.zw+uTrans)*uScale;
+  vec2 L1=P0+(P3-P0)*(1.0/3.0), L2=P0+(P3-P0)*(2.0/3.0);
+  vec2 P1=uBeta*C1+(1.0-uBeta)*L1;      // Holten Eq.1, i=1, N=4
+  vec2 P2=uBeta*C2+(1.0-uBeta)*L2;      // Holten Eq.1, i=2, N=4
+  float t=(float(gl_InstanceID % uS)+corner.x)/float(uS);
+  vec2 p=bez(P0,P1,P2,P3,t);
+  vec2 d=dbez(P0,P1,P2,P3,t);
+  vec2 n=vec2(-d.y,d.x)/max(length(d),1e-5);
+  float w = max(col.a > 0.85 ? 2.4 : 1.15, 0.9);
+  p += n * corner.y * w;
+  vec2 clip=(p/uView)*2.0-1.0;
+  gl_Position=vec4(clip.x,-clip.y,0.0,1.0);
+  vCol=col; vLat=corner.y; vHalf=w;
+}`;
+/* Analytic AA by box-filtering one pixel across the stroke, plus sub-pixel ink
+   conservation so a sub-pixel-wide stroke reads as a FRACTION of the ink rather
+   than a whole one — otherwise density lies at low zoom and thin near-vertical
+   uplinks shimmer and drop out under pan. Cheaper than antialias:true, which
+   multiplies exactly the fill cost this pass is bound by. */
+const FS_EDGE = `#version 300 es
+precision mediump float;
+in vec4 vCol; in float vLat; in float vHalf; out vec4 o;
+void main(){
+  float cov = clamp((1.0 - abs(vLat)) * vHalf + 0.5, 0.0, 1.0);
+  o = vec4(vCol.rgb, vCol.a * cov);
+}`;
+
+const VS_NODE = `#version 300 es
+layout(location=0) in vec2 corner;
+layout(location=1) in vec4 inst;   // x, y, halfW, halfH  (world)
+layout(location=2) in vec4 col;    // rgb + state flag packed in a
+uniform vec2 uTrans; uniform float uScale; uniform vec2 uView;
+out vec2 vLocal; out vec4 vCol; out vec2 vHalf;
+void main(){
+  vec2 hs = max(inst.zw * uScale, vec2(1.0));   // NB: 'half' is a reserved word in GLSL ES
+  vec2 c = (inst.xy + uTrans) * uScale;
+  vec2 p = c + corner * hs;
+  vec2 clip = (p / uView) * 2.0 - 1.0;
+  gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+  vLocal = corner * hs; vHalf = hs; vCol = col;
+}`;
+/* Rounded-box SDF gives one glyph that reads as a chassis when zoomed in and
+   collapses to a clean dot when zoomed out — semantic zoom for free.
+   State is carried in the alpha channel so absence gets its own texture:
+   1.0 observed · 0.6 not-observed (hatched, dashed) · 0.3 unparsed (dotted). */
+const FS_NODE = `#version 300 es
+precision mediump float;
+in vec2 vLocal; in vec4 vCol; in vec2 vHalf; out vec4 o;
+uniform vec3 uInk;
+float sdRound(vec2 p, vec2 b, float r){ vec2 q = abs(p) - b + r; return min(max(q.x,q.y),0.0) + length(max(q,0.0)) - r; }
+void main(){
+  float r = min(2.5, min(vHalf.x, vHalf.y) * 0.42);
+  float d = sdRound(vLocal, vHalf, r);
+  float aa = fwidth(d) + 0.001;
+  float fill = 1.0 - smoothstep(-aa, aa, d);
+  if (fill <= 0.001) discard;
+  float ring = 1.0 - smoothstep(-aa, aa, abs(d + 1.1) - 1.1);
+  float state = vCol.a;
+  vec3 c = vCol.rgb;
+  float alpha = fill;
+  if (state < 0.75){
+    /* Absence has to be the LOUDEST thing here, not the quietest. The first cut
+       hatched the glyph but also dropped it to 42-62% alpha, and a readPixels
+       audit measured it 2.8-3.5x LOWER contrast against the ground than a healthy
+       device — i.e. the exact failure this whole picture exists to prevent, wearing
+       a texture. Absence now renders at FULL opacity and hatches against the page's
+       ink colour, so it out-contrasts every health hue instead of receding. */
+    // Duty cycle, not just presence. At 50% ink the glyph still measured QUIETER
+    // than a healthy one on the light ground (contrast ratio 0.85) because health
+    // on near-white is itself high-contrast. 68% ink coverage carries it past.
+    float hatch = step(0.32, fract((vLocal.x + vLocal.y) * 0.30));
+    float dash  = step(0.30, fract((vLocal.x - vLocal.y) * 0.16));
+    c = mix(c, uInk, hatch * (state < 0.45 ? 0.96 : 0.86));
+    c = mix(c, uInk, ring * dash);          // hard broken ring, full strength
+    alpha = fill;
+  } else {
+    c = mix(c, c * 1.35, ring);
+  }
+  o = vec4(c, alpha);
+}`;
+
+function compile(src, type){
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s) || "shader");
+  return s;
+}
+function program(vs, fs){
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(vs, gl.VERTEX_SHADER));
+  gl.attachShader(p, compile(fs, gl.FRAGMENT_SHADER));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p) || "link");
+  return p;
+}
+/* All GL object creation lives here so a context restore is a re-upload,
+   never a re-derive. The source of truth stays in plain typed arrays. */
+function initGL(){
+  try { return initGLInner(); }
+  catch (err){ glReady = false; console.error("[fabric] GL init failed:", err); return false; }
+}
+function initGLInner(){
+  gl = glc.getContext("webgl2", { antialias:false, alpha:false, powerPreference:"high-performance", desynchronized:true });
+  if (!gl) return false;
+  progE = program(VS_EDGE, FS_EDGE);
+  progN = program(VS_NODE, FS_NODE);
+  const quad = new Float32Array([0,-1, 1,-1, 0,1, 1,1]);
+  const quadN = new Float32Array([-1,-1, 1,-1, -1,1, 1,1]);
+  bufQuad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bufQuad); gl.bufferData(gl.ARRAY_BUFFER, quad, gl.STATIC_DRAW);
+  const bufQuadN = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bufQuadN); gl.bufferData(gl.ARRAY_BUFFER, quadN, gl.STATIC_DRAW);
+
+  vaoE = gl.createVertexArray(); gl.bindVertexArray(vaoE);
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufQuad);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
+  bufSeg = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bufSeg);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1,4,gl.FLOAT,false,0,0); gl.vertexAttribDivisor(1,SEG_S);
+  bufSegCol = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bufSegCol);
+  gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2,4,gl.FLOAT,false,0,0); gl.vertexAttribDivisor(2,SEG_S);
+  bufCtrl = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bufCtrl);
+  gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3,4,gl.FLOAT,false,0,0); gl.vertexAttribDivisor(3,SEG_S);
+
+  vaoN = gl.createVertexArray(); gl.bindVertexArray(vaoN);
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufQuadN);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
+  bufNode = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bufNode);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1,4,gl.FLOAT,false,0,0); gl.vertexAttribDivisor(1,1);
+  bufNodeCol = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bufNodeCol);
+  gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2,4,gl.FLOAT,false,0,0); gl.vertexAttribDivisor(2,1);
+  gl.bindVertexArray(null);
+
+  gl.enable(gl.BLEND);
+  gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+  glReady = true;
+  return true;
+}
+glc.addEventListener("webglcontextlost", e => {
+  e.preventDefault(); glReady = false; lostOverlay = true; toast("GPU context lost — restoring view…");
+}, false);
+glc.addEventListener("webglcontextrestored", () => {
+  if (initGL()){ lostOverlay = false; uploadBuffers(); toast("View restored."); startLoop(); }
+}, false);
+
+/* ═══ STATE ══════════════════════════════════════════════════════════════ */
+let F, G, L, grid, ANA, anchor = -1, baseReach = null;
+let segData, segCol, ctrlData, nodeData, nodeCol;
+let beta = 0.85;      // Holten straightening; 0 = exact straight lines, 1 = full bundle
+let cam = { x:0, y:0, k:1 };
+let hover = -1, sel = -1, blast = null, strand = null, waveT = 0, waveRAF = 0;
+let analysisMode = "fail";        // "fail" = counterfactual (default), "reach" = BFS from node
+let query = "", matches = null;
+let mode = "gpu";
+let dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const frames = new Float32Array(150); let fi = 0, drawCalls = 0;
+
+const el = id => document.getElementById(id);
+function toast(msg){
+  const t = el("toast"); t.textContent = msg; t.classList.add("on");
+  clearTimeout(toast._t); toast._t = setTimeout(()=>t.classList.remove("on"), 2200);
+}
+
+/* ── build everything for a given fleet size ────────────────────────────── */
+function rebuild(n, cov){
+  F = buildFleet(n, cov);
+  G = csr(F);
+  ANA = analyse(F, G);
+  for (let i=0;i<F.N;i++) F.keystone[i] = !!ANA.isArt[i];
+  L = layout(F);
+  grid = buildGrid(F, L);
+  anchor = anchorOf(F);
+  baseReach = reachFrom(F, G, anchor, -1);   // the baseline every counterfactual diffs against
+  sel = -1; hover = -1; blast = null; strand = null;
+  applyQuery();
+  allocBuffers();
+  fitView();
+  renderInspector();
+  renderMirror();
+}
+function allocBuffers(){
+  segData = new Float32Array(F.M * 4);
+  segCol  = new Float32Array(F.M * 4);
+  ctrlData = bundleCtrl(F, L);   // O(E), once per layout
+  nodeData = new Float32Array(F.N * 4);
+  nodeCol  = new Float32Array(F.N * 4);
+  for (let i=0;i<F.N;i++){
+    nodeData[i*4]   = L.X[i];
+    nodeData[i*4+1] = L.Y[i];
+    nodeData[i*4+2] = NW/2;
+    nodeData[i*4+3] = NH/2;
+  }
+  paint();
+  uploadBuffers();
+}
+/* Colour is evidence, not decoration. The alpha channel carries the evidence
+   state so the shader can give absence its own texture. */
+function paint(){
+  const hop = blast ? blast.hop : null;
+  // Recede toward the GROUND, not toward black — otherwise "not in focus" reads
+  // as "burnt" on a light theme, and louder than the thing that is in focus.
+  const recede = (c, amt) => [ c[0]*amt + T.bg[0]*(1-amt), c[1]*amt + T.bg[1]*(1-amt), c[2]*amt + T.bg[2]*(1-amt) ];
+  for (let i=0;i<F.N;i++){
+    let c, state;
+    if (!F.observed[i]){ c = T.faint; state = 0.6; }
+    else if (!F.parsed[i]){ c = T.dim; state = 0.3; }
+    else { c = T.band[F.band[i]] || T.dim; state = 1.0; }
+    if (strand){
+      if (i === sel) c = T.accent;                 // the device being removed
+      else if (strand.stranded[i]) c = T.crit;     // goes dark when it fails
+      else c = recede(c, 0.20);                    // survives — quiet, still legible
+    } else if (hop){
+      const h = hop[i];
+      if (h === -1) c = recede(c, 0.22);
+      else if (h === 0) c = T.accent;
+    }
+    if (matches && !matches[i] && i !== sel) c = recede(c, 0.16);
+    nodeCol[i*4] = c[0]; nodeCol[i*4+1] = c[1]; nodeCol[i*4+2] = c[2]; nodeCol[i*4+3] = state;
+  }
+  for (let e=0;e<F.M;e++){
+    const a = F.src[e], b = F.dst[e];
+    segData[e*4] = L.X[a]; segData[e*4+1] = L.Y[a];
+    segData[e*4+2] = L.X[b]; segData[e*4+3] = L.Y[b];
+    // --border is near-invisible on the light ground; --text-faint carries in both.
+    let c = T.faint, alpha = 0.18;
+    if (ANA.isBridge[e]){ c = T.crit; alpha = 0.9; }      // removal disconnects the fabric
+    if (strand){
+      const sa = strand.stranded[a] || a === sel, sb = strand.stranded[b] || b === sel;
+      if (sa && sb){ c = T.crit; alpha = 0.85; }           // link inside the stranded island
+      else if (sa || sb){ c = T.crit; alpha = 0.55; }      // link that gets severed
+      else { c = T.faint; alpha = 0.07; }
+    } else if (hop){
+      const ha = hop[a], hb = hop[b];
+      if (ha === -1 || hb === -1){ alpha = 0.04; c = T.faint; }
+      else {
+        const ring = Math.max(ha, hb);
+        if (ring <= waveT){ c = ANA.isBridge[e] ? T.crit : T.accent; alpha = 0.95; }
+        else { alpha = 0.05; c = T.faint; }
+      }
+    }
+    segCol[e*4] = c[0]; segCol[e*4+1] = c[1]; segCol[e*4+2] = c[2]; segCol[e*4+3] = alpha;
+  }
+}
+function uploadBuffers(){
+  if (!glReady) return;
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufSeg);     gl.bufferData(gl.ARRAY_BUFFER, segData,  gl.DYNAMIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufSegCol);  gl.bufferData(gl.ARRAY_BUFFER, segCol,   gl.DYNAMIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufCtrl);    gl.bufferData(gl.ARRAY_BUFFER, ctrlData, gl.STATIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufNode);    gl.bufferData(gl.ARRAY_BUFFER, nodeData, gl.DYNAMIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufNodeCol); gl.bufferData(gl.ARRAY_BUFFER, nodeCol,  gl.DYNAMIC_DRAW);
+}
+
+/* ── camera ─────────────────────────────────────────────────────────────── */
+let viewOverride = null;   // set only by the bench/snap harness
+function viewSize(){
+  if (viewOverride) return viewOverride;
+  const r = glc.getBoundingClientRect();
+  return [Math.max(1,r.width), Math.max(1,r.height)];
+}
+function fitView(){
+  const [w,h] = viewSize(), b = grid.bounds;
+  const bw = Math.max(1, b.maxX-b.minX+NW*2), bh = Math.max(1, b.maxY-b.minY+NH*4);
+  cam.k = Math.min(w/bw, h/bh) * 0.92;
+  cam.x = -(b.minX + b.maxX)/2 + w/(2*cam.k);
+  cam.y = -(b.minY + b.maxY)/2 + h/(2*cam.k);
+}
+function screenToWorld(sx, sy){ return [ sx/cam.k - cam.x, sy/cam.k - cam.y ]; }
+
+/* ── render ─────────────────────────────────────────────────────────────── */
+function resize(){
+  const [w,h] = viewSize();
+  const W = Math.round(w*dpr), H = Math.round(h*dpr);
+  if (W*H > (1<<28)) { dpr = 1; }
+  for (const c of [glc, lblc]){
+    if (c.width !== W || c.height !== H){ c.width = W; c.height = H; }
+  }
+  if (glReady) gl.viewport(0,0,glc.width,glc.height);
+}
+function drawGL(){
+  drawCalls = 0;
+  gl.viewport(0,0,glc.width,glc.height);
+  gl.clearColor(T.bg[0], T.bg[1], T.bg[2], 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  const view = [glc.width, glc.height];
+  const scale = cam.k * dpr;
+  const trans = [cam.x, cam.y];
+
+  gl.useProgram(progE);
+  gl.uniform2f(gl.getUniformLocation(progE,"uTrans"), trans[0], trans[1]);
+  gl.uniform1f(gl.getUniformLocation(progE,"uScale"), scale);
+  gl.uniform2f(gl.getUniformLocation(progE,"uView"), view[0], view[1]);
+  gl.uniform1f(gl.getUniformLocation(progE,"uBeta"), beta);
+  gl.uniform1i(gl.getUniformLocation(progE,"uS"), SEG_S);
+  gl.bindVertexArray(vaoE);
+  gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, F.M * SEG_S); drawCalls++;
+
+  gl.useProgram(progN);
+  gl.uniform2f(gl.getUniformLocation(progN,"uTrans"), trans[0], trans[1]);
+  gl.uniform1f(gl.getUniformLocation(progN,"uScale"), scale);
+  gl.uniform2f(gl.getUniformLocation(progN,"uView"), view[0], view[1]);
+  gl.uniform3f(gl.getUniformLocation(progN,"uInk"), T.text[0], T.text[1], T.text[2]);
+  gl.bindVertexArray(vaoN);
+  gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, F.N); drawCalls++;
+  gl.bindVertexArray(null);
+}
+/* Labels are the classic killer at scale, so they are culled hard: only lane
+   headers, plus device names once a chassis is actually wide enough to hold
+   one, plus the hovered/selected device. */
+function drawLabels(){
+  const [w,h] = viewSize();
+  lctx.setTransform(dpr,0,0,dpr,0,0);
+  lctx.clearRect(0,0,w,h);
+  const css = rgb;
+
+  lctx.font = "600 9.5px " + T.css.mono;
+  lctx.textBaseline = "middle";
+  for (const lane of L.lanes){
+    const sy = (lane.y0 + cam.y) * cam.k;
+    if (sy < -30 || sy > h + 30) continue;
+    lctx.fillStyle = css(T.faint);
+    lctx.fillText((lane.role || "unclassified").toUpperCase() + " · " + lane.count, 12, sy - 15);
+    lctx.strokeStyle = css(T.grid); lctx.lineWidth = 1;
+    lctx.beginPath(); lctx.moveTo(10, sy - 7); lctx.lineTo(w - 10, sy - 7); lctx.stroke();
+  }
+  /* The label pass is a THIRD pass the "two draw calls" figure never counted, and
+     it is the real frame cost: crossing the wpx>34 threshold turned on 2,108
+     fillText calls and took the frame from 0.003 ms to 1.60 ms — a 485x cliff over
+     a 1.3% zoom change. Capped and prioritised so it can never dominate: nearest
+     the viewport centre wins, because that is what the engineer is reading. */
+  const wpx = NW * cam.k;
+  lastLabelCount = 0;
+  if (wpx > 34){
+    lctx.font = "500 8.5px " + T.css.mono;
+    lctx.fillStyle = css(T.dim); lctx.textAlign = "center";
+    const cxp = w/2, cyp = h/2, cand = [];
+    for (let i=0;i<F.N;i++){
+      const sx = (L.X[i] + cam.x) * cam.k, sy = (L.Y[i] + cam.y) * cam.k;
+      if (sx < -60 || sx > w+60 || sy < -20 || sy > h+20) continue;
+      cand.push([ (sx-cxp)*(sx-cxp) + (sy-cyp)*(sy-cyp), i, sx, sy ]);
+      if (cand.length > LABEL_CAP * 4) break;      // bound the gather too
+    }
+    if (cand.length > LABEL_CAP) cand.sort((a,b) => a[0]-b[0]);
+    const n = Math.min(cand.length, LABEL_CAP);
+    for (let k=0;k<n;k++) lctx.fillText(F.id[cand[k][1]], cand[k][2], cand[k][3] + NH*cam.k*0.5 + 7);
+    lastLabelCount = n;
+    lctx.textAlign = "start";
+  }
+  for (const i of [hover, sel]){
+    if (i < 0) continue;
+    const sx = (L.X[i] + cam.x) * cam.k, sy = (L.Y[i] + cam.y) * cam.k;
+    lctx.strokeStyle = css(T.accent); lctx.lineWidth = i===sel ? 2 : 1.25;
+    const hw = Math.max(6, NW/2*cam.k) + 3, hh = Math.max(4, NH/2*cam.k) + 3;
+    lctx.strokeRect(sx-hw, sy-hh, hw*2, hh*2);
+    if (i === hover && wpx <= 34){
+      lctx.font = "600 11px " + T.css.mono;
+      const tw = lctx.measureText(F.id[i]).width;
+      lctx.fillStyle = css(T.surface); lctx.globalAlpha = .94;
+      lctx.fillRect(sx - tw/2 - 6, sy - hh - 22, tw + 12, 17);
+      lctx.globalAlpha = 1; lctx.fillStyle = css(T.text);
+      lctx.textAlign = "center"; lctx.fillText(F.id[i], sx, sy - hh - 13); lctx.textAlign = "start";
+    }
+  }
+}
+/* The honest A/B: identical layout, identical data, DOM substrate instead of
+   GPU. Capped hard, because the point is to show the wall, not to hang the tab. */
+const DOM_CAP = 1400;
+function drawDOM(){
+  const host = el("dom");
+  const [w,h] = viewSize();
+  const css = c => "rgb(" + Math.round(c[0]*255) + "," + Math.round(c[1]*255) + "," + Math.round(c[2]*255) + ")";
+  const n = Math.min(F.N, DOM_CAP), m = Math.min(F.M, DOM_CAP);
+  let s = '<svg viewBox="0 0 ' + w + ' ' + h + '">';
+  for (let e=0;e<m;e++){
+    const a=F.src[e], b=F.dst[e];
+    s += '<line x1="'+((L.X[a]+cam.x)*cam.k).toFixed(1)+'" y1="'+((L.Y[a]+cam.y)*cam.k).toFixed(1)+
+         '" x2="'+((L.X[b]+cam.x)*cam.k).toFixed(1)+'" y2="'+((L.Y[b]+cam.y)*cam.k).toFixed(1)+
+         '" stroke="'+(ANA.isBridge[e]?css(T.crit):css(T.border))+'" stroke-width="1"/>';
+  }
+  for (let i=0;i<n;i++){
+    const c = !F.observed[i] ? T.faint : (!F.parsed[i] ? T.dim : (T.band[F.band[i]]||T.dim));
+    s += '<rect x="'+((L.X[i]+cam.x)*cam.k - NW/2*cam.k).toFixed(1)+'" y="'+((L.Y[i]+cam.y)*cam.k - NH/2*cam.k).toFixed(1)+
+         '" width="'+(NW*cam.k).toFixed(1)+'" height="'+(NH*cam.k).toFixed(1)+'" rx="2" fill="'+css(c)+
+         '" opacity="'+(F.observed[i]?1:0.45)+'"/>';
+  }
+  host.innerHTML = s + "</svg>";
+}
+
+/* Exactly one render loop, ever. The context-restore handler used to call frame()
+   while the original loop was still scheduled; rafId was then overwritten, so
+   cancelAnimationFrame could never reach the orphan and every restore permanently
+   doubled the frame cost (measured 1x -> 2x -> 4x over three losses). A generation
+   token makes any superseded loop retire itself on its next tick. */
+let rafId = 0, needsPaint = true, loopGen = 0, lastLabelCount = 0, frameRuns = 0;
+const LABEL_CAP = 400;
+function startLoop(){
+  loopGen++;
+  const gen = loopGen;
+  cancelAnimationFrame(rafId);
+  rafId = requestAnimationFrame(() => frame(gen));
+}
+function frame(gen){
+  if (gen !== undefined && gen !== loopGen) return;   // an orphaned loop dies here
+  const t0 = performance.now();
+  frameRuns++;
+  drawCalls = 0;   // never let a stale count outlive the frame that produced it
+  resize();
+  if (mode === "gpu"){
+    if (glReady){ if (needsPaint){ paint(); uploadBuffers(); needsPaint = false; } drawGL(); }
+    drawLabels();
+  } else {
+    drawDOM();
+    lctx.setTransform(dpr,0,0,dpr,0,0);
+    lctx.clearRect(0,0,...viewSize());
+    drawCalls = Math.min(F.N,DOM_CAP) + Math.min(F.M,DOM_CAP);
+  }
+  const dt = performance.now() - t0;
+  frames[fi = (fi+1) % frames.length] = dt;
+  // Degrade resolution before frame rate.
+  if (dt > 14 && dpr > 1){ slow++; if (slow > 30){ dpr = 1; slow = 0; toast("Reduced render scale to hold frame rate."); } } else slow = 0;
+  telemetry(dt);
+  rafId = requestAnimationFrame(() => frame(gen));
+}
+let slow = 0;
+function telemetry(dt){
+  el("tFrame").textContent = dt.toFixed(1) + " ms";
+  el("tFrame").style.color = dt < 8 ? "var(--ok)" : dt < 16.7 ? "var(--watch)" : "var(--crit)";
+  const liveGpu = mode === "gpu" && glReady && gl && !gl.isContextLost();
+  el("tDraw").textContent = liveGpu ? (drawCalls + " + " + lastLabelCount + " lbl")
+    : (mode === "dom" ? drawCalls.toLocaleString() + " svg" : "no GPU");
+  el("tDraw").style.color = liveGpu ? "var(--ok)" : "var(--crit)";
+  el("tNodes").textContent = F.N.toLocaleString();
+  el("tLinks").textContent = F.M.toLocaleString();
+  const s = el("spark"), c = s.getContext("2d");
+  
+  c.clearRect(0,0,s.width,s.height);
+  c.strokeStyle = T.css.borderFaint; c.lineWidth = 1;
+  c.beginPath(); c.moveTo(0, s.height - 16.7/50*s.height); c.lineTo(s.width, s.height - 16.7/50*s.height); c.stroke();
+  c.beginPath();
+  for (let i=0;i<frames.length;i++){
+    const v = frames[(fi + 1 + i) % frames.length];
+    const y = s.height - Math.min(1, v/50) * s.height;
+    i ? c.lineTo(i, y) : c.moveTo(i, y);
+  }
+  c.strokeStyle = T.css.accent; c.lineWidth = 1.25; c.stroke();
+}
+
+/* ═══ INSPECTOR ══════════════════════════════════════════════════════════ */
+function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+function renderInspector(){
+  const box = el("insp");
+  const unobs = F.observed.reduce((a,v)=>a+(v?0:1),0);
+  const unparsed = F.observed.reduce((a,v,i)=>a+(v && !F.parsed[i]?1:0),0);
+  let bridges = 0; for (let i=0;i<F.M;i++) bridges += ANA.isBridge[i];
+  let arts = 0; for (let i=0;i<F.N;i++) arts += ANA.isArt[i];
+
+  let h = "";
+  if (sel >= 0){
+    const i = sel;
+    const state = !F.observed[i] ? ["NOT OBSERVED","var(--text-faint)"]
+                : !F.parsed[i]  ? ["UNPARSED","var(--text-dim)"]
+                : [F.band[i].toUpperCase(), "var(--band-" + F.band[i] + ")"];
+    h += '<p class="hero">' + esc(F.id[i]) + '</p>';
+    h += '<p class="sub"><span class="chip" style="color:' + state[1] + '">' + esc(state[0]) + '</span>'
+       + (F.keystone[i] ? ' <span class="chip" style="color:var(--accent)">KEYSTONE</span>' : '') + '</p>';
+    if (!F.observed[i]) h += '<div class="warn"><b>This device was never reached.</b><p>Nothing below is a health result. It is the absence of one — the device may be fine, failed, or gone.</p></div>';
+    else if (!F.parsed[i]) h += '<div class="warn part"><b>Collected, but not parsed.</b><p>Output was captured and could not be read. Treat every derived figure for this device as unavailable, not as zero.</p></div>';
+    h += '<dl class="kv">'
+       + '<dt>role</dt><dd>' + esc(F.role[i] || "unclassified") + '</dd>'
+       + '<dt>score</dt><dd>' + (F.score[i] == null ? "—" : F.score[i]) + '</dd>'
+       + '<dt>links</dt><dd>' + F.deg[i] + '</dd>';
+    if (blast){
+      h += '<dt>reached</dt><dd>' + blast.reached.toLocaleString() + " of " + F.N.toLocaleString() + '</dd>';
+      let maxh = 0; for (let k=0;k<F.N;k++) if (blast.hop[k] > maxh) maxh = blast.hop[k];
+      h += '<dt>depth</dt><dd>' + maxh + ' hops</dd>';
+    }
+    if (strand) h += '<dt>strands</dt><dd>' + strand.count.toLocaleString() + ' device(s)</dd>';
+    h += '</dl>';
+    if (strand){
+      h += strand.count
+        ? '<div class="warn"><b>Removing this device strands &le; ' + strand.count.toLocaleString() + ' others.</b>'
+          + '<p>Shown in red. Stated as an upper bound: an unobserved link can only provide an alternate path and <em>shrink</em> this set — '
+          + 'but devices that were never reached are absent from the graph entirely and may be stranded without appearing here.</p></div>'
+        : '<div class="warn part"><b>Removing this device strands nothing observed.</b>'
+          + '<p>Every neighbour keeps a path to the fabric without it. That is a statement about the <em>resolved</em> topology only — '
+          + 'it is not a guarantee of redundancy for links that were never seen.</p></div>';
+      h += '<p class="hint">Counterfactual: the fabric re-solved with this device deleted. <kbd>Esc</kbd> to clear.</p>';
+    } else {
+      if (blast && blast.reached < F.N){
+        h += '<div class="warn part"><b>' + (F.N - blast.reached).toLocaleString() + ' devices unreachable from here.</b>'
+           + '<p>They are not necessarily disconnected — an unobserved link is indistinguishable from an absent one.</p></div>';
+      }
+      h += '<p class="hint">Rings show hop distance from this device. <kbd>Esc</kbd> to clear.</p>';
+    }
+  } else {
+    h += '<h2>Fleet posture</h2>';
+    const cov = F.N - unobs;
+    h += '<div class="warn' + (unobs ? '' : ' part') + '"><b>' + (unobs
+        ? unobs.toLocaleString() + " of " + F.N.toLocaleString() + " devices were never reached."
+        : "Every device was reached.") + '</b><p>' + (unobs
+        ? "Their absence from every count below is a collection gap, not a clean result."
+        : "Counts below cover the whole fleet.") + '</p></div>';
+    const counts = {}; BANDS.forEach(b => counts[b] = 0);
+    for (let i=0;i<F.N;i++) if (F.observed[i] && F.parsed[i]) counts[F.band[i]]++;
+    h += '<div class="bars">';
+    for (const b of BANDS){
+      const pct = cov ? counts[b]/cov*100 : 0;
+      h += '<div class="bar"><i>' + b + '</i><u><s style="width:' + pct.toFixed(1) + '%;background:var(--band-' + b + ')"></s></u><b>' + counts[b] + '</b></div>';
+    }
+    h += '</div>';
+    h += '<dl class="kv">'
+       + '<dt>assessed</dt><dd>' + cov.toLocaleString() + " / " + F.N.toLocaleString() + '</dd>'
+       + '<dt>unparsed</dt><dd>' + unparsed.toLocaleString() + '</dd>'
+       + '<dt>links</dt><dd>' + F.M.toLocaleString() + '</dd>'
+       + '</dl>';
+    h += '<div class="warn part"><b>&le; ' + arts.toLocaleString() + ' single points of failure, &le; ' + bridges.toLocaleString() + ' critical links.</b>'
+       + '<p>Stated as an upper bound on purpose. Every unobserved link can only <em>remove</em> an entry from this list, never add one — and '
+       + unobs.toLocaleString() + ' unreached devices may hide chokepoints that are not drawn here.</p></div>';
+    h += '<p class="hint">Red links are bridges: removing one severs the fabric. Click any device to re-solve the topology <em>without</em> it and see exactly what goes dark.</p>';
+  }
+  box.innerHTML = h;
+}
+/* A visually-hidden DOM mirror is the accessible path — canvas hit regions are
+   not a substitute. Only the notable devices are mirrored; 5,000 hidden nodes
+   would be its own performance problem. */
+function renderMirror(){
+  const notable = [];
+  for (let i=0;i<F.N && notable.length<220;i++){
+    if (ANA.isArt[i] || !F.observed[i] || F.band[i]==="Critical" || F.role[i]==="core") notable.push(i);
+  }
+  el("mirror").innerHTML = "<p>Fabric of " + F.N + " devices, " + F.M + " links. "
+    + notable.length + " notable devices listed.</p><ul>"
+    + notable.map(i => "<li>" + esc(F.id[i]) + " — " + esc(F.role[i] || "unclassified") + ", "
+        + (!F.observed[i] ? "not observed" : (!F.parsed[i] ? "unparsed" : F.band[i]))
+        + (ANA.isArt[i] ? ", single point of failure" : "") + "</li>").join("") + "</ul>";
+}
+
+/* ═══ INTERACTION ════════════════════════════════════════════════════════ */
+const stage = el("stage");
+let dragging = false, lastX = 0, lastY = 0, moved = false;
+stage.addEventListener("pointerdown", e => {
+  dragging = true; moved = false; lastX = e.clientX; lastY = e.clientY;
+  stage.classList.add("drag"); stage.setPointerCapture(e.pointerId);
+});
+stage.addEventListener("pointermove", e => {
+  const r = stage.getBoundingClientRect();
+  if (dragging){
+    const dx = e.clientX - lastX, dy = e.clientY - lastY;
+    if (Math.abs(dx) + Math.abs(dy) > 2) moved = true;
+    cam.x += dx / cam.k; cam.y += dy / cam.k;
+    lastX = e.clientX; lastY = e.clientY;
+  } else {
+    const [wx, wy] = screenToWorld(e.clientX - r.left, e.clientY - r.top);
+    const h = pick(grid, L, wx, wy, Math.max(NW, 26/cam.k));
+    if (h !== hover){ hover = h; }
+  }
+});
+stage.addEventListener("pointerup", e => {
+  dragging = false; stage.classList.remove("drag");
+  if (!moved){
+    const r = stage.getBoundingClientRect();
+    const [wx, wy] = screenToWorld(e.clientX - r.left, e.clientY - r.top);
+    const i = pick(grid, L, wx, wy, Math.max(NW, 26/cam.k));
+    select(i);
+  }
+});
+stage.addEventListener("wheel", e => {
+  e.preventDefault();
+  const r = stage.getBoundingClientRect();
+  const sx = e.clientX - r.left, sy = e.clientY - r.top;
+  const [bx, by] = screenToWorld(sx, sy);
+  cam.k = Math.max(0.04, Math.min(14, cam.k * (e.deltaY < 0 ? 1.14 : 1/1.14)));
+  cam.x = sx/cam.k - bx; cam.y = sy/cam.k - by;
+}, { passive:false });
+
+let matchCount = 0;
+function applyQuery(){
+  if (!query){ matches = null; matchCount = 0; return; }
+  const q = query.toUpperCase();
+  matches = new Uint8Array(F.N); matchCount = 0;
+  for (let i=0;i<F.N;i++) if (F.id[i].indexOf(q) !== -1){ matches[i] = 1; matchCount++; }
+}
+function select(i){
+  cancelAnimationFrame(waveRAF);
+  if (i < 0){ sel = -1; blast = null; strand = null; }
+  else if (analysisMode === "fail"){
+    sel = i; blast = null;
+    strand = failureImpact(F, G, baseReach, anchor, i);
+  }
+  else {
+    sel = i; strand = null;
+    blast = blastRadius(F, G, i);
+    waveT = reduceMotion ? 1e9 : 0;
+    if (!reduceMotion){
+      const t0 = performance.now();
+      let maxh = 0; for (let k=0;k<F.N;k++) if (blast.hop[k] > maxh) maxh = blast.hop[k];
+      const per = Math.min(110, 660 / Math.max(1, maxh));
+      const step = () => {
+        waveT = (performance.now() - t0) / per;
+        needsPaint = true;
+        if (waveT <= maxh + 1) waveRAF = requestAnimationFrame(step);
+      };
+      waveRAF = requestAnimationFrame(step);
+    }
+  }
+  needsPaint = true;
+  renderInspector();
+}
+stage.addEventListener("keydown", e => {
+  const step = 60 / cam.k;
+  if (e.key === "ArrowLeft"){ cam.x += step; e.preventDefault(); }
+  else if (e.key === "ArrowRight"){ cam.x -= step; e.preventDefault(); }
+  else if (e.key === "ArrowUp"){ cam.y += step; e.preventDefault(); }
+  else if (e.key === "ArrowDown"){ cam.y -= step; e.preventDefault(); }
+  else if (e.key === "+" || e.key === "="){ cam.k = Math.min(14, cam.k*1.2); e.preventDefault(); }
+  else if (e.key === "-"){ cam.k = Math.max(0.04, cam.k/1.2); e.preventDefault(); }
+  else if (e.key === "Escape"){ select(-1); }
+  else if (e.key === "Enter" || e.key === " "){
+    if (hover >= 0){ select(hover); e.preventDefault(); }
+  }
+});
+el("pL").onclick = () => cam.x += 90/cam.k;
+el("pR").onclick = () => cam.x -= 90/cam.k;
+el("pU").onclick = () => cam.y += 90/cam.k;
+el("pD").onclick = () => cam.y -= 90/cam.k;
+el("fit").onclick = () => fitView();
+el("theme").onclick = () => {
+  const root = document.documentElement;
+  const now = root.getAttribute("data-theme")
+    || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+  root.setAttribute("data-theme", now === "dark" ? "light" : "dark");
+};
+new MutationObserver(() => { readTokens(); needsPaint = true; })
+  .observe(document.documentElement, { attributes:true, attributeFilter:["data-theme"] });
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readTokens(); needsPaint = true; });
+forced.addEventListener("change", () => { readTokens(); needsPaint = true; });
+
+function setMode(m){
+  mode = m;
+  el("mGpu").setAttribute("aria-pressed", String(m === "gpu"));
+  el("mDom").setAttribute("aria-pressed", String(m === "dom"));
+  el("dom").hidden = m !== "dom";
+  glc.style.visibility = m === "gpu" ? "visible" : "hidden";
+  if (m === "dom") toast("SVG DOM substrate — capped at " + DOM_CAP.toLocaleString() + " nodes and links so the tab survives.");
+  needsPaint = true;
+}
+el("beta").addEventListener("input", e => {
+  beta = +e.target.value;
+  el("betaV").textContent = beta.toFixed(2);
+  needsPaint = true;      // beta is a uniform, so this is a redraw, never a relayout
+});
+el("mGpu").onclick = () => setMode("gpu");
+el("mDom").onclick = () => setMode("dom");
+
+function setAnalysis(m){
+  analysisMode = m;
+  el("aFail").setAttribute("aria-pressed", String(m === "fail"));
+  el("aReach").setAttribute("aria-pressed", String(m === "reach"));
+  if (sel >= 0) select(sel);          // re-answer the new question about the same device
+}
+el("aFail").onclick  = () => setAnalysis("fail");
+el("aReach").onclick = () => setAnalysis("reach");
+
+let qTimer = 0;
+el("q").addEventListener("input", e => {
+  query = e.target.value.trim();
+  clearTimeout(qTimer);
+  qTimer = setTimeout(() => {
+    applyQuery();
+    el("qN").textContent = query ? matchCount.toLocaleString() + " match" + (matchCount===1?"":"es") : "";
+    // Search, show context, expand on demand: jump to the first hit rather than
+    // making the engineer hunt for a highlighted pixel in five thousand.
+    if (matchCount){
+      let first = -1; for (let i=0;i<F.N;i++) if (matches[i]){ first = i; break; }
+      if (first >= 0){
+        const [w,h] = viewSize();
+        cam.k = Math.max(cam.k, 1.6);
+        cam.x = w/(2*cam.k) - L.X[first];
+        cam.y = h/(2*cam.k) - L.Y[first];
+        hover = first;
+      }
+    }
+    needsPaint = true;
+  }, 140);
+});
+
+let scaleTimer = 0;
+el("scale").addEventListener("input", e => {
+  el("scaleV").textContent = (+e.target.value).toLocaleString();
+  clearTimeout(scaleTimer);
+  scaleTimer = setTimeout(() => rebuild(+e.target.value, +el("coverage").value), 90);
+});
+el("coverage").addEventListener("input", e => {
+  el("covV").textContent = e.target.value + "%";
+  clearTimeout(scaleTimer);
+  scaleTimer = setTimeout(() => rebuild(+el("scale").value, +e.target.value), 90);
+});
+new ResizeObserver(() => { needsPaint = true; }).observe(document.querySelector("main"));
+
+/* ═══ BOOT ═══════════════════════════════════════════════════════════════ */
+if (!initGL()){
+  document.querySelector("main").insertAdjacentHTML("beforeend",
+    '<div style="position:absolute;inset:0;display:grid;place-items:center;padding:30px;text-align:center">' +
+    '<p style="max-width:420px;color:var(--text-dim)">This view needs WebGL2, which this browser did not provide. ' +
+    'The SVG substrate still works — switch to it in the panel on the left.</p></div>');
+  mode = "dom"; setMode("dom");
+}
+rebuild(1200, 83);
+startLoop();
+window.__fabric = {
+  stats: () => ({ n:F.N, m:F.M, mode, dpr, draws:drawCalls,
+                  frameAvg: Array.from(frames).filter(v=>v>0).reduce((a,b)=>a+b,0) / Math.max(1, Array.from(frames).filter(v=>v>0).length),
+                  glReady }),
+  set: (n, cov) => rebuild(n, cov ?? +el("coverage").value),
+  setMode, select, fitView, setAnalysis,
+  setBeta: (v) => { beta = v; const s=el("beta"); if(s){s.value=v; el("betaV").textContent=(+v).toFixed(2);} },
+  getBeta: () => beta,
+  ctrlAt: (e) => ({ c1x:ctrlData[e*4], c1y:ctrlData[e*4+1], c2x:ctrlData[e*4+2], c2y:ctrlData[e*4+3] }),
+  segAt: (e) => ({ ax:segData[e*4], ay:segData[e*4+1], bx:segData[e*4+2], by:segData[e*4+3] }),
+  segS: () => SEG_S, cam: () => cam,
+  pickAt: (wx,wy,radius) => pick(grid, L, wx, wy, radius || NW),
+  nodePos: (i) => ({ x:L.X[i], y:L.Y[i] }),
+  evidence: (i) => !F.observed[i] ? "not-observed" : (!F.parsed[i] ? "unparsed"
+                   : ((F.band[i]==="Poor"||F.band[i]==="Critical") ? "degraded" : "healthy")),
+  bgRgb: () => T.bg.map(v => Math.round(v*255)),
+  pixelHash(){                       // FNV-1a over the GL buffer: is this the same picture?
+    if (!glReady || gl.isContextLost()) return null;
+    const W = glc.width, H = glc.height;
+    const px = new Uint8Array(W*H*4);
+    gl.readPixels(0,0,W,H,gl.RGBA,gl.UNSIGNED_BYTE,px);
+    let h = 0x811c9dc5, nonBg = 0;
+    const br=Math.round(T.bg[0]*255), bgc=Math.round(T.bg[1]*255), bb=Math.round(T.bg[2]*255);
+    for (let i=0;i<px.length;i+=4){
+      h ^= px[i]; h = Math.imul(h,0x01000193);
+      h ^= px[i+1]; h = Math.imul(h,0x01000193);
+      h ^= px[i+2]; h = Math.imul(h,0x01000193);
+      if (Math.abs(px[i]-br)>6||Math.abs(px[i+1]-bgc)>6||Math.abs(px[i+2]-bb)>6) nonBg++;
+    }
+    return { hash:(h>>>0).toString(16), inkPct:+(nonBg/(W*H)*100).toFixed(2), w:W, h:H };
+  },
+  frameRuns: () => frameRuns,
+  /* Mean colour of a box at the centre of the GL buffer — used to measure whether
+     absence really is louder than health, rather than asserting it. */
+  readCentre(bw, bh){
+    if (!glReady || gl.isContextLost()) return null;
+    const W = glc.width, H = glc.height;
+    bw = Math.min(bw||48, W); bh = Math.min(bh||24, H);
+    const px = new Uint8Array(bw*bh*4);
+    gl.readPixels(((W-bw)/2)|0, ((H-bh)/2)|0, bw, bh, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    let r=0,g2=0,b=0; const n=bw*bh;
+    for (let i=0;i<px.length;i+=4){ r+=px[i]; g2+=px[i+1]; b+=px[i+2]; }
+    return [ +(r/n).toFixed(1), +(g2/n).toFixed(1), +(b/n).toFixed(1) ];
+  },
+  layoutSig(){                       // cheap content hash of the solved layout
+    let h = 0x811c9dc5;
+    for (let i=0;i<F.N;i++){
+      const a = Math.round(L.X[i]*8), b = Math.round(L.Y[i]*8);
+      h ^= a; h = Math.imul(h, 0x01000193); h ^= b; h = Math.imul(h, 0x01000193);
+    }
+    return (h>>>0).toString(16) + ":" + F.N + ":" + F.M;
+  },
+  loseAndRestore(){
+    return new Promise((resolve) => {
+      const ext = gl && gl.getExtension("WEBGL_lose_context");
+      if (!ext) return resolve({ ok:false, why:"WEBGL_lose_context unavailable" });
+      const onRestore = () => { glc.removeEventListener("webglcontextrestored", onRestore);
+                                setTimeout(() => resolve({ ok:true, glReady }), 60); };
+      glc.addEventListener("webglcontextrestored", onRestore, false);
+      ext.loseContext();
+      setTimeout(() => ext.restoreContext(), 120);
+    });
+  },
+  /* Loop-fork probe. frame(gen) must retire immediately when gen is stale, so a
+     context-restore can never leave a second self-rescheduling loop alive. */
+  loopProbe(){
+    const genBefore = loopGen, rafBefore = rafId;
+    startLoop();
+    const genAfter = loopGen, rafAfterStart = rafId;
+    const framesBefore = frameRuns;
+    frame(genBefore);                 // a stale loop tick: must be a no-op
+    const staleRan = frameRuns !== framesBefore;
+    const rafUnchanged = rafId === rafAfterStart;
+    const framesMid = frameRuns;
+    frame(genAfter);                  // the live loop tick: must run
+    const liveRan = frameRuns !== framesMid;
+    return { genBefore, genAfter, staleTickRan: staleRan, staleScheduledNewRaf: !rafUnchanged,
+             liveTickRan: liveRan, pass: !staleRan && rafUnchanged && liveRan };
+  },
+  gridCell: () => grid.cell,
+  anchor: () => anchor,
+  edgeStats(){
+    let sum=0, max=0, sumX=0;
+    for (let e=0;e<F.M;e++){
+      const dx=Math.abs(L.X[F.src[e]]-L.X[F.dst[e]]), dy=L.Y[F.src[e]]-L.Y[F.dst[e]];
+      const d=Math.hypot(dx,dy); sum+=d; sumX+=dx; if(d>max)max=d;
+    }
+    return { m:F.M, meanLen:+(sum/F.M).toFixed(1), meanDX:+(sumX/F.M).toFixed(1),
+             maxLen:+max.toFixed(0), laneW:L.lanes.map(l=>l.count) };
+  },
+  strandOf: (i) => { const r = failureImpact(F, G, baseReach, anchor, i); return { i, count:r.count }; },
+  isArt: (i) => !!ANA.isArt[i],
+  search: (q) => { query = q; applyQuery(); return matchCount; },
+  /* Composite GL + label layers into one PNG, in the SAME task as the draw so the
+     drawing buffer is still valid without paying for preserveDrawingBuffer. */
+  /* Fit and shoot at the SAME viewport. Fitting first uses the CSS rect, which in a
+     hidden pane is 1x1 — the camera then points nowhere and the PNG comes out empty. */
+  snapFit(w,h,zoom,pick){
+    w = w || 1200; h = h || 760;
+    this.bench({ iters:1, w, h, keepView:true });   // establish the viewport
+    fitView();                                      // ...then fit to it
+    if (zoom) cam.k *= zoom;
+    if (pick != null) select(pick);
+    return this.snap(w,h);
+  },
+  snap(w,h){
+    w = w || 1200; h = h || 760;
+    this.bench({ iters:1, w, h, keepView:true });
+    const out = document.createElement("canvas");
+    out.width = w; out.height = h;
+    const c = out.getContext("2d");
+    c.fillStyle = rgb(T.bg); c.fillRect(0,0,w,h);
+    c.drawImage(glc, 0,0, w,h); c.drawImage(lblc, 0,0, w,h);
+    viewOverride = null;
+    return out.toDataURL("image/png");
+  },
+  /* Synchronous bench. requestAnimationFrame does not fire while the preview
+     pane is hidden, so any rAF-derived timing there is fiction. This drives the
+     real per-frame path directly and calls gl.finish() so the GPU is actually
+     done before the clock stops — otherwise you time queue submission, not work. */
+  bench(opt){
+    opt = opt || {};
+    const iters = opt.iters || 60;
+    // performance.now() is clamped to ~0.1ms in Chrome, so timing ONE frame of a
+    // fast path returns 0 and reads like a dead render. Time the whole batch.
+    let W = glc.width, H = glc.height;
+    const dpr0 = dpr;
+    if (opt.w){                              // fixed viewport => comparable numbers
+      W = opt.w; H = opt.h || Math.round(opt.w * 0.625);
+      glc.width = W; glc.height = H; lblc.width = W; lblc.height = H;
+      if (glReady) gl.viewport(0,0,W,H);
+      // viewSize() otherwise still reports the CSS rect, so the label layer would
+      // cull against the wrong height and the snapshot would lie about the page.
+      dpr = 1; viewOverride = [W, H];
+    }
+    // Centre the camera on a world point AT the bench viewport, so a probe can be
+    // sure the thing it is measuring is actually on screen.
+    if (opt.centreOn){
+      if (opt.zoom) cam.k = opt.zoom;
+      cam.x = W/(2*cam.k) - opt.centreOn.x;
+      cam.y = H/(2*cam.k) - opt.centreOn.y;
+    }
+    const lost = !gl || gl.isContextLost();
+    const live = mode === "gpu" && glReady && !lost;
+    const substrate = live ? "gpu" : (mode === "dom" ? "svg" : "none");
+    if (substrate === "none"){
+      if (opt.keepView !== true){ viewOverride = null; dpr = dpr0; }
+      return { n:F.N, m:F.M, substrate:"none", contextLost:lost, msPerFrame:null,
+               note:"WebGL context unavailable — nothing was drawn, no timing reported" };
+    }
+    if (needsPaint && live){ paint(); uploadBuffers(); needsPaint = false; }
+    for (let i=0;i<8;i++){ cam.x += 0.11; if (live) drawGL(); else drawDOM(); }
+    if (live) gl.finish();
+    const t0 = performance.now();
+    for (let i=0;i<iters;i++){
+      cam.x += 0.37;                         // move the camera so nothing is cached
+      if (live){ drawGL(); drawLabels(); }
+      else drawDOM();
+    }
+    if (live) gl.finish();                        // GPU actually done before the clock stops
+    const total = performance.now() - t0;
+    /* Refuse to report a timing for a frame that painted nothing. The first version
+       happily reported 0.337 ms as a "worst case" for a view where the camera was
+       off-target and readPixels found 0.00% of the buffer touched — and reported
+       mode:"gpu", draws:2 while the context was lost and the SVG path had quietly
+       run instead. An instrument in a piece about coverage honesty does not get to
+       report absence as health. */
+    let paintedPct = null;
+    if (live){
+      const SW = Math.min(96, W), SH = Math.min(96, H);
+      const px = new Uint8Array(SW*SH*4);
+      gl.readPixels(((W-SW)/2)|0, ((H-SH)/2)|0, SW, SH, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      const br=Math.round(T.bg[0]*255), bgc=Math.round(T.bg[1]*255), bb=Math.round(T.bg[2]*255);
+      let hit=0;
+      for (let i=0;i<px.length;i+=4)
+        if (Math.abs(px[i]-br)>6 || Math.abs(px[i+1]-bgc)>6 || Math.abs(px[i+2]-bb)>6) hit++;
+      paintedPct = +(hit/(SW*SH)*100).toFixed(2);
+    }
+    const res = { n:F.N, m:F.M, substrate, contextLost:lost, dpr, viewport:W+"x"+H,
+                  draws: substrate === "gpu" ? drawCalls : null,
+                  svgElements: substrate === "svg" ? Math.min(F.N,DOM_CAP) + Math.min(F.M,DOM_CAP) : null,
+                  labelsDrawn: lastLabelCount, paintedPct,
+                  msPerFrame: substrate === "none" ? null : +(total/iters).toFixed(3),
+                  totalMs:+total.toFixed(1), iters,
+                  note: substrate === "none" ? "nothing was drawn — no timing reported" :
+                        (paintedPct === 0 ? "FRAME PAINTED NOTHING — timing is meaningless" : undefined) };
+    if (opt.keepView !== true){ viewOverride = null; dpr = dpr0; }
+    return res;
+  }
+};
+</script>
