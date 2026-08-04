@@ -7,7 +7,7 @@
  * (The widgets themselves are exported from webapp/frontend/ds.entry.ts — the bundle entry.)
  */
 import { type ReactNode } from "react";
-import { MemoryRouter, useInRouterContext } from "react-router-dom";
+import { MemoryRouter, useInRouterContext } from "react-router";
 import { DEMO_ROUTES } from "./sample-data";
 
 let patched = false;
