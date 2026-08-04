@@ -237,6 +237,22 @@
   therefore never flagged).
 
 ## Re-sync risks (what can silently go stale)
+- **`dtsPropsFor` is MANDATORY here — this DS emits no `.d.ts` of its own.** The build log line to
+  watch is `[DTS] parsed 0 .d.ts files from webapp/frontend`: the extractor reads props out of an
+  emitted `.d.ts` tree, and this DS is a private app with no library build, so for six syncs EVERY
+  component shipped `<Name>Props { [key: string]: unknown }` — a published API contract carrying zero
+  information, for all 21 at once. `@types/react` being installed does NOT help; there is simply
+  nothing to parse. Fixed 2026-08-04 by hand-writing all 21 bodies into `cfg.dtsPropsFor` from the
+  real inline source signatures. **Keep it in step with the source** — a prop added to a component and
+  not to `dtsPropsFor` is invisible to the design agent, and nothing warns (same failure shape as the
+  manual barrel). Two gotchas: use SINGLE quotes for string-literal unions (`tone?: 'ok' | 'watch'`)
+  so the JSON needs no escaping, and never name a type the emitted `.d.ts` cannot resolve — it only
+  does `import * as React from 'react'`, so `SnapshotVerification` had to be inlined structurally
+  (a happy side effect: the contract is now published in the type itself). Verify by COMPILING, not
+  reading: `ts.createProgram` over `ds-bundle/components/*/*/*.d.ts` with `strict: true` — 21/21 valid,
+  0 placeholders, 2026-08-04. Filling this also enriched all 21 `prompt.md` files (the props body
+  feeds the synthesized doc), so expect `sourceHashes` to move 2 per component with `renderHashes`
+  and `.jsx` untouched — types are not DOM, so no regrade is needed.
 - **`sample-data.ts` is hand-inlined** against `webapp/frontend/src/api.ts` interfaces — an engine/API field
   rename won't break the build; the widgets just render '—'/empty in cards. When api.ts changes, re-check the
   payloads field-by-field.
