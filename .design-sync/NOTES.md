@@ -325,3 +325,22 @@
   error — it silently renders "Unverified coverage", so the card would lie about what it is demonstrating.
   The authored previews exploit this deliberately (`NeverOverClaims` feeds it a self-contradicting object to
   show the guard rejecting it); keep that cell if the fixtures are ever regenerated.
+- **`bundleSha12` moves when ANY emitted artifact moves — including a DOC-ONLY edit** (2026-08-04).
+  The `/* @ds-bundle: … */` stamp on line 1 of `_ds_bundle.js` embeds `sourceHashes` for every emitted
+  `.jsx`/`.d.ts`/`.prompt.md`. So editing `.design-sync/docs/<Name>.md` rewrites that component's
+  `prompt.md`, rewrites the stamp, and moves `bundleSha12` — with the compiled JS byte-identical.
+  Signature: `upload.bundle: true` while `styling: false` AND `aux: false`, **zero** renderHashes moved,
+  and `sourceHashes` moving ONLY on the `.prompt.md` you edited. Confirm by grepping the changed
+  artifact's hash out of the stamp itself (`head -1 _ds_bundle.js | grep -o '<Name>.prompt.md[^,]*'`)
+  and matching it to `_ds_sync.json`. This is a THIRD benign cause alongside a real `theme.css`/
+  `styles.css` edit and esbuild non-determinism — don't hunt a phantom source change, and don't
+  dismiss it either: check WHICH sourceHashes moved.
+- **A component whose props pass through a VALIDATOR needs a copy-pasteable valid value in its docs.**
+  Found by an independent refuter pass 2026-08-04, and FIXED the same day. `normalizedVerification` is
+  strict, so the shorthand a design agent would naturally invent (`{ status: "verified" }`) normalises
+  DOWN to unverified: the badge showed a permanent red "Unverified coverage" and `VerificationWarning`
+  never hid itself — making its own documented "renders `null` when verified" read as broken. Root
+  cause: the uploaded docs only showed `value={snapshot.verification}`, and **the design agent has no
+  snapshot**. Both `.design-sync/docs/Verification*.md` now publish the full contract-v3 literal plus
+  the two invariants the validator enforces. Generalise it: any authored doc whose example depends on
+  runtime data the design agent cannot obtain is a doc that only works for us — give it a literal.

@@ -13,4 +13,34 @@ Pass the snapshot's `verification` object straight through. Anything absent, leg
 <VerificationBadge value={undefined} />   {/* → "Unverified coverage", never a blank */}
 ```
 
+## Building a value in a design (when there is no live snapshot)
+
+`normalizedVerification` is a strict **validator**, not a formatter: anything absent, legacy or
+self-inconsistent is normalised **down** to `unverified`. A shorthand mock like `{ status: "verified" }`
+therefore renders as **"Unverified coverage"** — not as a bug, but because a partial object cannot
+support a verified claim. To show the verified or partial states, pass the whole contract-v3 object:
+
+```tsx
+const VERIFIED = {
+  contract_version: 3, integrity_status: "verified", status: "verified",
+  label: "Verified coverage", verified: true, coverage_honest: true,
+  reasons: [], failed_phases: [], missing_authorities: [],
+  non_authoritative_authorities: [], integrity_failed_authorities: [],
+  integrity_unknown_authorities: [],
+};
+
+const PARTIAL = {
+  ...VERIFIED, status: "partial", verified: false,
+  label: "Partial coverage — 2 authorities unattested",
+  reasons: ["EoL registry carries transcription provenance only.",
+            "Port-capability authority was not consulted for 50 of 303 devices."],
+  non_authoritative_authorities: ["eol"], integrity_unknown_authorities: ["ports"],
+};
+```
+
+Two rules the validator enforces: `verified` must equal `status === "verified"`, and when `status`
+is `"verified"` **every** array (`reasons`, `failed_phases`, and all four authority lists) must be
+empty and `integrity_status` must be `"verified"`. Break either and the value silently renders as
+unverified. For the unverified state you can simply pass `undefined`.
+
 Pair it with `VerificationWarning` on any page that shows assessment results: the badge is the label, the warning is the explanation.
