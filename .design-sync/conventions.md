@@ -3,7 +3,7 @@
 AssessHub is a **dark-first network-assessment cockpit**. Everything below names real, shipped vocabulary — read `styles.css` (it `@import`s `_ds_bundle.css`: design tokens first, then every component class) before inventing anything.
 
 ## Setup — the one wrapper that matters
-The six snapshot widgets — `TopologyGraph`, `CableMap`, `CausalFlowPanel`, `CutoverPlanner`, `DesignBlueprintPanel`, `ArchReviewPanel` — fetch their data at mount and show eternal spinners without a backend. Wrap them (once, at the top of the design) in `DemoDataProvider`: it serves a built-in, internally consistent sample fleet and provides the Router context `CutoverPlanner` needs. Any `snapId` value works; nesting is safe. The UI-kit pieces (`Kpi`, `Gauge`, `SegBar`, `Bars`, `SevChip`, `CountUp`, `Loading`, `ErrorBox`, `ErrorBoundary`, `Skeleton`, `SkelLines`, `SkelTable`) don't need it and aren't harmed by it.
+The six snapshot widgets — `TopologyGraph`, `CableMap`, `CausalFlowPanel`, `CutoverPlanner`, `DesignBlueprintPanel`, `ArchReviewPanel` — fetch their data at mount and show eternal spinners without a backend. Wrap them (once, at the top of the design) in `DemoDataProvider`: it serves a built-in, internally consistent sample fleet and provides the Router context `CutoverPlanner` needs. Any `snapId` value works; nesting is safe. The UI-kit pieces (`Kpi`, `Gauge`, `SegBar`, `Bars`, `SevChip`, `CountUp`, `Loading`, `ErrorBox`, `ErrorBoundary`, `Skeleton`, `SkelLines`, `SkelTable`, `VerificationBadge`, `VerificationWarning`) don't need it and aren't harmed by it.
 
 ```tsx
 <DemoDataProvider>
@@ -21,6 +21,7 @@ No CSS-in-JS, no utility framework. Style with (1) the shipped global classes an
 | Buttons & controls | `btn` (+ `primary` / `ghost` / `lg` / `danger`), `tabs` (buttons take `.on`), bare `input`/`select`/`textarea` are pre-styled |
 | Chips | `chip`; `chip sev` (colour via `--c`/`--cs`), `chip gate` (via `--gc`), `chip tag` |
 | Data display | `tbl` (+ `num` cells), `kpi` (children `l`/`v`/`hint`; tone class `ok`/`watch`/`risk`/`crit`), `segbar`, `legend` (+ `item`/`sw`), `bars`, `gauge`, `cmd` (code block) |
+| Coverage honesty | `verification-badge`, `verification-warning` — each takes a state modifier `verification-verified` / `verification-partial` / `verification-unverified` |
 | App chrome | `topbar`, `brand`, `page-head`, `breadcrumb`, `toast`, `spinner`, `wave-card`, `blocker`, `ros` (run-of-show timeline) |
 
 Tokens (dark default; put `data-theme="light"` on a root element to flip): surfaces `--bg --surface --surface-2 --surface-3 --border --border-strong --border-faint`; text `--text --text-dim --text-faint`; accent `--accent --accent-dim --accent-soft`; posture `--ok --watch --risk --crit` (each with a `-soft` pair); fonts `--sans --mono`; radii `--radius --radius-sm`; motion `--ease --motion-fast --motion --motion-reveal`; **depth & glass** `--glass` / `--glass-2` (frosted surface fills), `--glass-border` (frosted border), `--blur` (backdrop-blur radius), `--elev-1` / `--elev-2` (resting / raised shadow), `--accent-grad` (gradient CTA fill), `--glow` (accent halo).
@@ -28,6 +29,16 @@ Tokens (dark default; put `data-theme="light"` on a root element to flip): surfa
 The depth layer is applied for you by `panel`, `topbar`, `btn primary` and `tabs` (active `.on`). To frost a **custom** surface, mirror them: `background: var(--glass); border: 1px solid var(--glass-border); backdrop-filter: blur(var(--blur)); box-shadow: var(--elev-1)` — swap `--elev-2` when raised/hovered. For a custom accent CTA: `background: var(--accent-grad)` with a `var(--glow)` halo in `box-shadow`.
 
 **Engine vocabulary → colour: never hand-pick.** Use the exported helpers `sevColor("High")` / `sevSoft`, `bandColor("Fair")`, `readyColor("CAUTION")`, `gateColor("NO-GO")` — or the underlying `--sev-*`, `--band-*`, `--ready-*`, `--gate-*` tokens. Severities are `Critical | High | Medium | Low | Info`; bands `Excellent | Good | Fair | Poor | Critical`.
+
+**Absence is never health.** Any screen showing assessment results states its coverage rather than
+implying it: `<VerificationBadge value={snap.verification} />` in the page header (add `compact` for
+table cells), `<VerificationWarning value={snap.verification} />` above the first `.grid`. Mount the
+warning **unconditionally** — it returns `null` for a verified snapshot and only speaks when it has
+something to say. Never hand-roll either from `chip`/`panel`: both run their input through
+`normalizedVerification`, which forces absent, legacy or self-contradicting metadata **down** to
+unverified, so they cannot over-claim and a hand-rolled lookalike can. An empty result table gets the
+same treatment — say "[NOT OBSERVED]" (the house phrasing used by `TopologyGraph`, `CableMap` and
+`CausalFlowPanel` when nothing resolved), never a silent blank that reads as all-clear.
 
 ## Motion — shipped classes only, never hand-rolled keyframes
 Every animation below is pre-gated behind `prefers-reduced-motion`; compose with these and reduced-motion correctness comes free. Durations/easing always via the motion tokens (`--motion-fast` micro, `--motion` transitions, `--motion-reveal` mount reveals, `--ease`) — never literal ms values.

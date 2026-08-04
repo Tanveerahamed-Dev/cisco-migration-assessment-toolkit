@@ -11,7 +11,11 @@
   "docsDir": "../../.design-sync/docs",
   "extraEntries": ["../../.design-sync/providers/demo.tsx"],
   "provider": { "component": "DemoDataProvider" },
-  "overrides": { "Kpi": { "cardMode": "column" } },
+  "overrides": {
+    "Kpi": { "cardMode": "column" },
+    "VerificationBadge": { "cardMode": "column" },
+    "VerificationWarning": { "cardMode": "column" }
+  },
   "componentSrcMap": {
     "Kpi": "src/components/ui.tsx",
     "Gauge": "src/components/ui.tsx",
@@ -25,6 +29,8 @@
     "SkelLines": "src/components/ui.tsx",
     "SkelTable": "src/components/ui.tsx",
     "ErrorBoundary": "src/components/ErrorBoundary.tsx",
+    "VerificationBadge": "src/components/VerificationStatus.tsx",
+    "VerificationWarning": "src/components/VerificationStatus.tsx",
     "TopologyGraph": "src/components/TopologyGraph.tsx",
     "CableMap": "src/components/CableMap.tsx",
     "CausalFlowPanel": "src/components/CausalFlow.tsx",

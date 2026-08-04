@@ -209,6 +209,33 @@
   Do NOT "fix" a future CRLF/LF flip by uploading — `webapp/frontend/**` is deliberately NOT pinned (its line
   endings never reach the artifacts: esbuild normalizes, the emitted `_ds_bundle.js` contains ZERO CRLF).
 
+- ✅ **2026-08-03 RE-SYNCED — react-router 7 unbroke, + 2 NEW components (19 → 21).** Bundle rebuilt from
+  main `5cba3bd7`. **The driver's FIRST run failed the build outright** (`exit 1`, stages diff/validate/capture
+  all `prior_failure`): `.design-sync/providers/demo.tsx:10` still imported `MemoryRouter`/`useInRouterContext`
+  from **`react-router-dom`**, which `3ddf5663` (react-router 7 migration, CLAUDE.md's last carried question)
+  deleted — `webapp/frontend/node_modules/react-router-dom` no longer exists, only `react-router@7.18.2`.
+  One-line repoint to `"react-router"` fixed it; both symbols verified present in the installed package's
+  `.d.ts` before editing, and the app's own `CutoverPlanner.tsx` had made the identical move.
+  **Two genuinely new components shipped** — `VerificationBadge` + `VerificationWarning`
+  (`src/components/VerificationStatus.tsx`, used by Dashboard/Campaign/Snapshot, with ~110 lines of new
+  `styles.css`): this file's own "manual barrel" risk item firing for real, found by diffing
+  `src/components/` against `ds.entry.ts`. Added to the barrel (+ `normalizedVerification`,
+  `VERIFICATION_CONTRACT_VERSION`), `componentSrcMap`, docs, and authored previews (4 cells each, all graded
+  `good` from fresh sheets). Verdict: 19 verified-by-upload with **all 19 renderHashes/sourceKeys byte-identical
+  pre- and post-upload**, 2 added, 0 changed/removed, `deletePaths` empty. `bundle+styling+aux` all moved and
+  were git-diff-PROVEN real (not esbuild noise, per this file's own rule): `styles.css` +110 verification
+  classes, `api.ts` +99 (`LifecycleSummary`/`SnapshotVerification`/`ApiError`), `ui.tsx` generation-guarded
+  `useAsync`, and coverage-honesty empty states across all 5 widgets. Atomic upload: sentinel → 112 content
+  files (chunked: 4.19 MB `_ds_bundle.js` alone, `_vendor` alone, then 24/42/42) → 0 deletes → re-arm → anchor
+  LAST. Post-upload `list_files` = 113 mine + 2 server + the untouched user-side `templates/`; live anchor AND
+  live `VerificationBadge.prompt.md` both re-fetched == local (`bundleSha12 cc27dcdc8d83 → bc914732e8ab`,
+  `styleSha 4418e35e → d5d819e0`, `auxSha dc733191 → 81c30b2b`). `report_validate` {21,1,0,0,3}.
+  Conventions header gained a **coverage-honesty** clause + a `verification-*` class row (every name
+  grep-verified against the fresh build first); skill rebuild-rule followed (fresh driver run post-edit).
+  Both known warns matched the list verbatim; the only new warn was `[GRID_OVERFLOW]` on VerificationBadge's
+  table story → `cardMode: column` (now in config, and pre-emptively set on VerificationWarning, which
+  therefore never flagged).
+
 ## Re-sync risks (what can silently go stale)
 - **`sample-data.ts` is hand-inlined** against `webapp/frontend/src/api.ts` interfaces — an engine/API field
   rename won't break the build; the widgets just render '—'/empty in cards. When api.ts changes, re-check the
@@ -263,3 +290,38 @@
   but no component moved, DIFF THE ACTUAL CSS: `git diff <last-upload-commit> -- webapp/frontend/src/theme.css
   webapp/frontend/src/styles.css` and/or fetch the live `_ds_bundle.css` and compare — do NOT trust "it's just
   noise." (This trap hid the glass refresh from 07-03→07-04 until the 07-04 driver run + CSS diff caught it.)
+- **`providers/demo.tsx` imports APP runtime deps by bare name — a dependency migration breaks the BUILD**
+  (2026-08-03, react-router 7). It is the only durable design-sync file that does; everything else imports
+  from `assesshub-frontend` (the bundle) or is pure. So whenever `webapp/frontend/package.json` dependencies
+  move, check `demo.tsx`'s imports resolve. The failure is loud and unmistakable — driver `ok:false`,
+  `build.exit 1`, every later stage `prior_failure`, and `[UNRESOLVED_IMPORT] <pkg> — missing from
+  node_modules` naming the file:line — so **read the build log, don't re-run hoping**. Fix by matching what
+  the app itself now imports (grep the same symbol in `src/`), and verify the symbols exist in the new
+  package's `.d.ts` before editing.
+- **Detecting the "manual barrel" gap — a TESTED command, not a hope.** The standing risk above says nothing
+  detects a new component's omission; this does. Run it from the repo root before every re-sync:
+  ```js
+  // node this: PascalCase component exports under src/components that ds.entry.ts does NOT re-export
+  const fs=require('fs'),path=require('path'),SRC='webapp/frontend/src/components';
+  const ex=new Set(fs.readFileSync('webapp/frontend/ds.entry.ts','utf8').match(/[A-Z][A-Za-z0-9]*/g)||[]);
+  const found=new Map();
+  for(const f of fs.readdirSync(SRC)){ if(!f.endsWith('.tsx')||f.includes('.test.'))continue;
+    const t=fs.readFileSync(path.join(SRC,f),'utf8');
+    for(const m of t.matchAll(/export\s+function\s+([A-Z][A-Za-z0-9]*)/g))found.set(m[1],f);
+    for(const m of t.matchAll(/export\s+const\s+([A-Z][A-Za-z0-9]*)\s*[:=]/g))found.set(m[1],f);
+    if(/export\s+default/.test(t))found.set(path.basename(f,'.tsx'),f); }
+  for(const [n,f] of [...found].filter(([n])=>!ex.has(n))) console.log('MISSING:',n,'('+f+')');
+  ```
+  **Control-tested** against the pre-fix barrel (`git show 84fb9624:webapp/frontend/ds.entry.ts`), where it
+  correctly reported `VerificationBadge` + `VerificationWarning`. Today it reports exactly one name:
+  **`Topology3D` — a DELIBERATE exclusion, do not "fix" it.** It is `lazy(() => import("./Topology3D"))`
+  *inside* TopologyGraph, reached only by that panel's 3D toggle, and takes internal props
+  (`raw`/`sel`/`hover`/`active`) rather than a public API — a WebGL force-graph that would not screenshot as
+  a static card. Any OTHER name the command prints is a real omission.
+- **Fixtures for `VerificationBadge`/`VerificationWarning` must satisfy `normalizedVerification` EXACTLY.**
+  It is a strict validator, not a formatter: a `status: "verified"` object is rejected wholesale unless
+  `integrity_status === "verified"` AND `reasons` AND all four authority arrays AND `failed_phases` are
+  empty, and `verified === (status === "verified")` must hold for every status. A sloppy fixture does not
+  error — it silently renders "Unverified coverage", so the card would lie about what it is demonstrating.
+  The authored previews exploit this deliberately (`NeverOverClaims` feeds it a self-contradicting object to
+  show the guard rejecting it); keep that cell if the fixtures are ever regenerated.

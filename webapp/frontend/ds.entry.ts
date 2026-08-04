@@ -15,6 +15,12 @@ export {
   useReducedMotion, useAsync, useToast, useViewTransition, usePositionTween,
 } from "./src/components/ui";
 export { ErrorBoundary } from "./src/components/ErrorBoundary";
+// Coverage-honesty surface: the badge/banner pair that keeps "not observed" from reading as
+// "healthy". normalizedVerification is the guard itself — stale, legacy or absent metadata is
+// normalised DOWN to unverified, so neither component can ever over-claim.
+export {
+  VerificationBadge, VerificationWarning, normalizedVerification, VERIFICATION_CONTRACT_VERSION,
+} from "./src/components/VerificationStatus";
 export { default as TopologyGraph } from "./src/components/TopologyGraph";
 export { default as CableMap } from "./src/components/CableMap";
 export { default as CausalFlowPanel } from "./src/components/CausalFlow";
