@@ -9,7 +9,6 @@
   "tsconfig": "tsconfig.json",
   "cssEntry": "src/styles.css",
   "docsDir": "../../.design-sync/docs",
-  "extraEntries": ["../../.design-sync/providers/demo.tsx"],
   "provider": { "component": "DemoDataProvider" },
   "overrides": {
     "Kpi": { "cardMode": "column" },

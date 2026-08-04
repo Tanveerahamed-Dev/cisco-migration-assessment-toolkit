@@ -46,9 +46,20 @@ Every animation below is pre-gated behind `prefers-reduced-motion`; compose with
 - **Content swaps**: wrap swappable content in `<div className="tabfade" key={activeKey}>` — the key change replays a fade (the app's tab idiom). For a disclosure/accordion body that mounts on open, add `ros-reveal`.
 - **Loading states**: `SkelLines` (panel bodies), `SkelTable` (tables) — structure-shaped, self-announcing placeholders; keep `Loading` for full-page/unknown-shape waits. Never leave a blank div while data loads.
 
-## Where the truth lives
-- `styles.css` → `_ds_bundle.css` — tokens + every class above, in that order.
-- Per-component API and usage: `components/<group>/<Name>/<Name>.prompt.md` and `<Name>.d.ts`.
+## Where the truth lives — and what this DS does not ship
+- `styles.css` → `_ds_bundle.css` — tokens + every class above, in that order. **That is the only
+  stylesheet.** This DS ships **no `tokens/*.css` files and no `fonts/` directory** — the tokens are
+  compiled into `_ds_bundle.css`, and the type stack is deliberately system fonts (`--sans`, `--mono`).
+  A generic "Where things are" list further down names both paths; for *this* design system they are
+  empty, so `read_file("tokens/…")` returns nothing. Read `_ds_bundle.css` instead.
+- Per-component API and usage: `components/<group>/<Name>/<Name>.prompt.md` and `<Name>.d.ts`
+  (every component publishes a real props interface).
+- **Load order is load-bearing.** `_ds_bundle.js` externalises React rather than vendoring it, so
+  React must already be on the page: load `_vendor/react.js`, then `_vendor/react-dom.js`, then
+  `_ds_bundle.js` — exactly what the shipped preview cards do. `styles.css` is a plain `<link>` and
+  can sit anywhere in `<head>`. Get the order wrong and the bundle throws part-way through its IIFE,
+  `window.AssessHub` is **never created at all**, and the `<script>` tag itself reports no error —
+  so every component reads as `undefined` with nothing in the console to explain it.
 
 ## An idiomatic page
 ```tsx

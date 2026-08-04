@@ -29,3 +29,9 @@ export { default as DesignBlueprintPanel } from "./src/components/DesignBlueprin
 export { default as ArchReviewPanel } from "./src/components/ArchReview";
 // Engine-vocabulary → token helpers (severity/band/readiness/gate colours).
 export { sevColor, sevSoft, bandColor, readyColor, gateColor } from "./src/api";
+// Preview-support provider. Re-exported from THIS barrel rather than via cfg.extraEntries on
+// purpose: extraEntries makes package-build synthesise an `export * as __dsMainNs` marker, whose
+// key survives on window.AssessHub as an enumerable `undefined` after the footer's Object.assign.
+// One entry = one clean namespace. Outside the app's tsconfig include:["src"], so the app build
+// never type-checks this path.
+export { DemoDataProvider } from "../../.design-sync/providers/demo";

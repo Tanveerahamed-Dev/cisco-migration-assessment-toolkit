@@ -237,6 +237,27 @@
   therefore never flagged).
 
 ## Re-sync risks (what can silently go stale)
+- **`styleSha` includes the JS BUNDLE BODY — a module-graph change moves it with ZERO css change**
+  (2026-08-04). `lib/sync-hashes.mjs :: styleShaFor` hashes `_ds_bundle.js` minus its first line
+  *before* it hashes `_ds_bundle.css` / `styles.css` / `fonts/` / `tokens/`. So dropping
+  `cfg.extraEntries` moved `styleSha` while `_ds_bundle.css` stayed byte-identical (35567 bytes both
+  sides). This is a FOURTH cause to add to the styleSha triage list above, and the cheapest way to
+  tell them apart is `stat -c %s ds-bundle/_ds_bundle.css` plus re-running the conventions validator —
+  if every class and token still resolves and the byte count is unchanged, the CSS did not move and
+  the JS body did.
+- **The driver SAMPLES the render check — `.render-check.json` with fewer than 21 entries is NOT a
+  full pass.** On an anchored re-sync it scopes automatically (skip / sample / full). A run that
+  sampled 7 of 21 was nearly taken as proof that all six provider-dependent widgets still rendered
+  after `DemoDataProvider` moved out of `extraEntries`. **Always check `require('./ds-bundle/.render-check.json').length`
+  before trusting it**; for a full pass run `node .ds-sync/package-validate.mjs ./ds-bundle` directly
+  (it is unscoped by default) or pass `--render-sample 0` to the driver.
+- **`cp ds-bundle/_ds_sync.json .design-sync/.cache/remote-sync.json` is ONLY valid immediately after
+  an upload.** Doing it before a driver run — when `ds-bundle/` holds a local probe build — poisons
+  the anchor, and the diff then measures the build against ITSELF: it reported `bundle:false` for a
+  change that had definitely altered the bundle. Symptom is a verdict that is suspiciously empty
+  (`components: 0`, `bundle:false`) right after a change you know is real. Recovery: re-fetch the live
+  `_ds_sync.json` with `DesignSync(get_file)` and compare by hand, or restore the cache from it. The
+  full-writes upload rule is what keeps this from desyncing the project.
 - **`dtsPropsFor` is MANDATORY here — this DS emits no `.d.ts` of its own.** The build log line to
   watch is `[DTS] parsed 0 .d.ts files from webapp/frontend`: the extractor reads props out of an
   emitted `.d.ts` tree, and this DS is a private app with no library build, so for six syncs EVERY
@@ -253,6 +274,26 @@
   0 placeholders, 2026-08-04. Filling this also enriched all 21 `prompt.md` files (the props body
   feeds the synthesized doc), so expect `sourceHashes` to move 2 per component with `renderHashes`
   and `.jsx` untouched — types are not DOM, so no regrade is needed.
+- **DO NOT re-add `cfg.extraEntries` — the provider is re-exported from `ds.entry.ts` on purpose**
+  (2026-08-04). `package-build.mjs` synthesises `export * as __dsMainNs from <main>` whenever
+  extraEntries are present, and `lib/bundle.mjs`'s footer then does
+  `Object.assign({}, NS, NS.__dsMainNs, {__dsMainNs: undefined})` — which suppresses the VALUE but
+  leaves the KEY enumerable, so `Object.keys(window.AssessHub)` carried an `undefined`-valued
+  `__dsMainNs` entry. Fixing it in `lib/bundle.mjs` is off-limits (the skill names `emit.mjs` and
+  `bundle.mjs` as the output contract with the app's self-check, and `.ds-sync/` is re-copied every
+  sync so an edit there is wiped anyway). Root fix with no fork: move `DemoDataProvider` into the
+  barrel and delete `extraEntries` — one entry, no marker, footer becomes a runtime no-op. Verified
+  by enumerating the live namespace: **33 keys, no `__dsMainNs`, no undefined-valued key**, all 21
+  components + 6 helpers present, and a FULL render check clean for all six provider-dependent
+  widgets. `componentSrcMap.DemoDataProvider` still points at the same file and is unaffected.
+- **Two generated-README defects are corrected by `conventions.md`, not by the generator.** The
+  README body (from `lib/emit.mjs`, off-limits to fork) unconditionally advertises `tokens/*.css` and
+  `fonts/` — this DS ships NEITHER (`tokens/` is an empty dir, there is no `fonts/`; `copyTokens` in
+  `lib/css.mjs` returns early without a `tokensPkg`, and ours is not a node_modules package, so this
+  cannot be fixed by config) — and its Loading section says "React must be on the page first" without
+  naming `_vendor/react.js`, the shipped file that satisfies it. Because `readmeHeader` is PREPENDED
+  verbatim, the conventions header states both corrections BEFORE the generated text and wins. If a
+  future skill version fixes the generator, delete those two clauses rather than leaving duplicates.
 - **`sample-data.ts` is hand-inlined** against `webapp/frontend/src/api.ts` interfaces — an engine/API field
   rename won't break the build; the widgets just render '—'/empty in cards. When api.ts changes, re-check the
   payloads field-by-field.
