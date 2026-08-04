@@ -344,3 +344,18 @@
   snapshot**. Both `.design-sync/docs/Verification*.md` now publish the full contract-v3 literal plus
   the two invariants the validator enforces. Generalise it: any authored doc whose example depends on
   runtime data the design agent cannot obtain is a doc that only works for us — give it a literal.
+- **Prove a doc's example by RENDERING it — the grading loop cannot catch a doc defect.** Grades come
+  from the authored `previews/<Name>.tsx`, which uses correct props by construction, so a `.prompt.md`
+  whose example is unusable still grades `good` on every cell. The 2026-08-04 defect above survived a
+  clean render check, 8/8 `good` cells, and two contact-sheet eyeballs for exactly that reason.
+  The cheap closing test, ~40 lines, no rebuild needed:
+  drive the **real shipped card** with playwright (`.ds-sync/node_modules/playwright`, import it via a
+  `file:///` URL — a bare `C:/…` ESM import throws `ERR_UNSUPPORTED_ESM_URL_SCHEME`), because the card
+  already loads `_vendor/react.js` → `react-dom.js` → `_ds_bundle.js` in the shipped order. Do NOT
+  hand-build a host page with `page.setContent` — it has no origin, the `file://` script tags never
+  load, and you get a `waitForFunction` timeout on `window.AssessHub` that looks like a broken bundle.
+  Then transcribe the literal **verbatim out of the `.md`** (never out of the `.tsx` — copying the
+  preview's known-good props is what makes the test agree with the bug) and assert each documented
+  state. Run 2026-08-04: 5/5 PASS, 0 page errors — verified/partial/unverified badges and the
+  warning's documented `null`. Harness kept at
+  `.design-sync/.cache/` scratch only; re-create it from this recipe when a doc example changes.
