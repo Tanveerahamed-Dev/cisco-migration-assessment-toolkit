@@ -6,6 +6,27 @@ per change, with verification evidence) lives in
 
 ## [Unreleased]
 
+### Added
+- **`docs/prototypes/fabric/` — a coverage-honest topology engine prototype.** One
+  self-contained WebGL2 file that re-solves the fabric *without* a selected device to show what
+  its failure strands, instead of only what it can reach (one BFS, ~0.3 ms at 5,000 devices).
+  Its reason for existing is the gap it makes visible: `webapp/backend/graph.py` publishes
+  `bridge_assessed`, `link_centrality_assessed` and `offscan_peers` (graph.py:105,127,128) and
+  **no shipped frontend surface reads any of them** — so a picture can render "not measured"
+  identically to "measured redundant", which is exactly the failure guardrail 3 forbids.
+  Absence is therefore drawn *louder* than health and every count is stated as a bound. It runs
+  on a wholly fictional synthetic fleet, is deliberately **not** bound to
+  `/api/snapshots/{id}/graph`, and is parked under `docs/` so it cannot be mistaken for a
+  product surface. Its own gate is `node docs/prototypes/fabric/verify.mjs` (14 checks).
+  Docs-only; no shipped bytes are affected.
+- **`VerificationBadge` and `VerificationWarning` now reach the design system** (19 → 21
+  components). Both ship in the app and are used by three pages, but the hand-maintained
+  `webapp/frontend/ds.entry.ts` barrel never re-exported them, so the design agent could not
+  build with them and would hand-roll lookalikes that bypass `normalizedVerification` — the
+  guard that forces absent, legacy or self-contradicting coverage metadata *down* to unverified.
+  Nothing detected the omission, which `.design-sync/NOTES.md` had already recorded as a
+  standing risk of a manually maintained barrel.
+
 ### Changed
 - **The release suite gate no longer leaves debris in the tagged checkout.** Running the suite
   mutates the working tree (pytest's cache, the editable install's `egg-info`, and an engine log
@@ -14,6 +35,32 @@ per change, with verification evidence) lives in
   and the allow-list entries added while diagnosing were **removed**: an immutability proof
   loosened to tolerate its own test debris stops being able to detect the tampering it exists
   for. CI-only; no shipped bytes are affected, so v3.32.1's artifacts are unchanged.
+
+### Fixed
+- **The design-system sync had been failing outright, not drifting.**
+  `.design-sync/providers/demo.tsx` still imported `MemoryRouter` from `react-router-dom`, which
+  the react-router 7 migration removed, so the converter died in its bundle step
+  (`[UNRESOLVED_IMPORT]`) and every stage after it was skipped — no re-sync could complete at
+  all. That file is the only durable design-sync input importing an app dependency by bare name,
+  now recorded in `.design-sync/NOTES.md` as the thing to check whenever the frontend's
+  dependencies move.
+- **Every component was publishing an empty API contract.** The design agent reads
+  `<Name>.d.ts` as a component's props interface, and all 21 emitted
+  `{ [key: string]: unknown }` — six syncs' worth of no prop information for the entire design
+  system, including long-standing components. The cause is a single build-log line,
+  `[DTS] parsed 0 .d.ts files`: the extractor reads props out of an emitted `.d.ts` tree and this
+  DS is a private app with no library build, so there was nothing to parse. All 21 bodies are now
+  hand-written into `cfg.dtsPropsFor` from the real source signatures and verified by compiling
+  every emitted `.d.ts` under `strict`.
+- **The verification components' own documentation made their states unreachable.** Their only
+  example was `value={snapshot.verification}` — and the design agent has no snapshot. The
+  13-field contract-v3 object actually required appeared nowhere it is told to look, so any
+  shorthand mock normalised *down* to unverified and `VerificationWarning`'s documented "renders
+  `null` when verified" read as broken. Both docs now publish a copy-pasteable literal. Proven by
+  rendering the literal transcribed from the `.md` (not from the preview source, which uses
+  known-good props by construction).
+
+  All three fixes above touch design-system sync inputs only; no shipped bytes are affected.
 
 ## [v3.32.1] — 2026-08-03 — release-integrity fix
 
