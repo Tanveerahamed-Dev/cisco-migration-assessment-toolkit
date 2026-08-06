@@ -29,6 +29,15 @@ per change, with verification evidence) lives in
   standing risk of a manually maintained barrel.
 
 ### Changed
+- **Webapp checks can now be required without deadlocking unrelated pull requests.**
+  Pull requests always start `webapp-ci`; a fail-closed, tested three-dot path classifier moves
+  relevance filtering to the four job conditions, where GitHub reports irrelevant jobs as skipped
+  successes. Pull requests execute the classifier from their trusted base commit (and run every job
+  during its one-time bootstrap), so proposed code cannot self-declare itself irrelevant. Missing
+  SHAs, checkout/diff failures, or invalid classifier output make all four jobs fail instead of
+  silently passing. One always-reported aggregate gate now proves the exact expected success/skip
+  result for all four jobs, leaving branch protection one stable context to require. Push filtering
+  remains unchanged.
 - **The release suite gate no longer leaves debris in the tagged checkout.** Running the suite
   mutates the working tree (pytest's cache, the editable install's `egg-info`, and an engine log
   a test writes into the CWD), which the release workflows' immutability proofs correctly
@@ -55,6 +64,16 @@ per change, with verification evidence) lives in
   jsdom-only development dependency moved from 7.28.0 to 7.29.0 without changing shipped runtime
   dependencies. npm's remaining high-severity report is React Router's RSC-mode advisory; AssessHub
   uses the client-only `BrowserRouter` surface, and a forced major-version upgrade is not bundled here.
+  CI now accepts only that advisory's exact direct-package record while pinning the current non-RSC
+  source/dependency contract and the exact Node 20.20.2/npm 10.8.2 report producer; every other
+  high/critical finding, audit/schema drift, toolchain drift, linked source tree, or import beyond
+  the reviewed frontend/design-system source roots still fails.
+  The exception hard-expires on 2026-11-06 and must be deleted with the Node 24 / React 19.2.7+ /
+  Vite 7+ / React Router 8.3+ migration.
+- **The standalone offline explorer now has a real-browser interaction gate.** Playwright serves the
+  canonical self-contained HTML only on ephemeral loopback, derives all 14 modes from its live
+  registry, activates each mode, and verifies the mode chrome, URL state, drawer, and 2D/3D render
+  surface. Page errors, console errors, registry/toolbar drift, and any external request fail the test.
 - **The shipped topology no longer renders unmeasured redundancy as healthy.** The graph API's
   `bridge_assessed`, `link_centrality_assessed`, and `offscan_peers` evidence now reaches both the
   2D and 3D fabric views: unassessed links are loud and explicit, peers outside the collected

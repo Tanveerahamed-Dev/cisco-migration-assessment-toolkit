@@ -106,7 +106,9 @@ jobs:
           cache: pip
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          # npm's audit JSON is an exact, reviewed security-policy input. Keep
+          # its producer fixed until the temporary Router exception is deleted.
+          node-version: "20.20.2"
           cache: npm
           cache-dependency-path: webapp/frontend/package-lock.json
       - run: python -m pip install --upgrade pip
@@ -138,10 +140,14 @@ jobs:
           python -m pip_audit --strict --ignore-vuln PYSEC-2026-2858
       - name: Install locked frontend dependencies
         working-directory: webapp/frontend
-        run: npm ci
+        run: npm ci --ignore-scripts
       - name: Audit frontend dependencies
         working-directory: webapp/frontend
-        run: npm audit --audit-level=high
+        # Fail closed for every high/critical finding except the exact direct
+        # react-router GHSA-qwww-vcr4-c8h2 record reviewed for this non-RSC SPA.
+        # The verifier expires its review on 2026-11-06 and must be deleted as
+        # part of the Node 24 / React 19.2.7 / Vite 7 / React Router 8.3 upgrade.
+        run: python ../../.github/scripts/verify_frontend_npm_audit.py
 
   package:
     name: Distribution contract
