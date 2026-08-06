@@ -500,14 +500,16 @@ function analyse(F, G){
 }
 /* Counterfactual failure impact — the question an engineer actually asks before a
    maintenance window is not "what can this device reach" but "what goes dark if I
-   pull it". Answered by re-running reachability from the fabric anchor with the
-   device deleted, and diffing against the baseline. One BFS, O(V+E), ~4ms at 5,000
-   devices, so it can run live on click.
+   pull it". Answered for the resolved topology by re-running reachability from a
+   deterministic reference anchor with the device deleted, and diffing against the
+   anchor's baseline component. One BFS, O(V+E), ~4ms at 5,000 devices, so it can
+   run live on click.
 
    This is deliberately NOT the same analysis as the articulation-point pass:
-   isArt tells you a device is A cut vertex; this tells you exactly WHICH devices
-   are stranded behind it, and how many. A cut vertex that strands two access
-   switches and one that strands eight hundred are not the same finding. */
+   isArt tells you a device is A cut vertex; this tells you exactly WHICH resolved,
+   baseline-reachable devices lose their anchor path, and how many. The anchor itself
+   is not assessable because deleting the reference makes every loss tautological;
+   a device outside the anchor's baseline is also not assessable against that baseline. */
 function reachFrom(F, G, root, skip){
   const seen = new Uint8Array(F.N);
   if (root < 0 || root === skip) return seen;
@@ -522,20 +524,23 @@ function reachFrom(F, G, root, skip){
   }
   return seen;
 }
-function anchorOf(F){                       // the best-connected observed device
+function anchorOf(F){                       // highest-degree observed; stable fleet order breaks ties
   let best=-1, bd=-1;
   for (let i=0;i<F.N;i++) if (F.observed[i] && F.deg[i] > bd){ bd=F.deg[i]; best=i; }
   return best;
 }
 function failureImpact(F, G, base, root, v){
-  const after = reachFrom(F, G, root === v ? -1 : root, v);
   const stranded = new Uint8Array(F.N);
+  if (root < 0) return { status:"no-anchor", stranded, count:null, after:null };
+  if (v === root) return { status:"reference-anchor", stranded, count:null, after:null };
+  if (!base[v]) return { status:"outside-baseline", stranded, count:null, after:null };
+  const after = reachFrom(F, G, root, v);
   let n = 0;
   for (let i=0;i<F.N;i++){
     if (i === v) continue;
     if (base[i] && !after[i]){ stranded[i] = 1; n++; }
   }
-  return { stranded, count:n, after };
+  return { status:"assessed", stranded, count:n, after };
 }
 function blastRadius(F, G, from){
   const hop = new Int32Array(F.N).fill(-1);
@@ -947,6 +952,7 @@ function allocBuffers(){
    state so the shader can give absence its own texture. */
 function paint(){
   const hop = blast ? blast.hop : null;
+  const assessedFailure = strand && strand.status === "assessed";
   // Recede toward the GROUND, not toward black — otherwise "not in focus" reads
   // as "burnt" on a light theme, and louder than the thing that is in focus.
   const recede = (c, amt) => [ c[0]*amt + T.bg[0]*(1-amt), c[1]*amt + T.bg[1]*(1-amt), c[2]*amt + T.bg[2]*(1-amt) ];
@@ -955,10 +961,12 @@ function paint(){
     if (!F.observed[i]){ c = T.faint; state = 0.6; }
     else if (!F.parsed[i]){ c = T.dim; state = 0.3; }
     else { c = T.band[F.band[i]] || T.dim; state = 1.0; }
-    if (strand){
+    if (assessedFailure){
       if (i === sel) c = T.accent;                 // the device being removed
       else if (strand.stranded[i]) c = T.crit;     // goes dark when it fails
       else c = recede(c, 0.20);                    // survives — quiet, still legible
+    } else if (strand && i === sel){
+      c = T.accent;                                // selected, but not assessable against this anchor
     } else if (hop){
       const h = hop[i];
       if (h === -1) c = recede(c, 0.22);
@@ -974,7 +982,7 @@ function paint(){
     // --border is near-invisible on the light ground; --text-faint carries in both.
     let c = T.faint, alpha = 0.18;
     if (ANA.isBridge[e]){ c = T.crit; alpha = 0.9; }      // removal disconnects the fabric
-    if (strand){
+    if (assessedFailure){
       const sa = strand.stranded[a] || a === sel, sb = strand.stranded[b] || b === sel;
       if (sa && sb){ c = T.crit; alpha = 0.85; }           // link inside the stranded island
       else if (sa || sb){ c = T.crit; alpha = 0.55; }      // link that gets severed
@@ -1200,6 +1208,7 @@ function renderInspector(){
   const box = el("insp");
   const unobs = F.observed.reduce((a,v)=>a+(v?0:1),0);
   const unparsed = F.observed.reduce((a,v,i)=>a+(v && !F.parsed[i]?1:0),0);
+  const anchorName = anchor >= 0 ? F.id[anchor] : "none";
   let bridges = 0; for (let i=0;i<F.M;i++) bridges += ANA.isBridge[i];
   let arts = 0; for (let i=0;i<F.N;i++) arts += ANA.isArt[i];
 
@@ -1223,17 +1232,36 @@ function renderInspector(){
       let maxh = 0; for (let k=0;k<F.N;k++) if (blast.hop[k] > maxh) maxh = blast.hop[k];
       h += '<dt>depth</dt><dd>' + maxh + ' hops</dd>';
     }
-    if (strand) h += '<dt>strands</dt><dd>' + strand.count.toLocaleString() + ' device(s)</dd>';
+    if (strand && strand.status === "assessed")
+      h += '<dt>strands (resolved)</dt><dd>' + strand.count.toLocaleString() + ' device(s)</dd>';
+    else if (strand && strand.status === "reference-anchor")
+      h += '<dt>failure impact</dt><dd>UNASSESSABLE</dd>';
+    else if (strand && strand.status === "outside-baseline")
+      h += '<dt>failure impact</dt><dd>OUTSIDE BASELINE</dd>';
     h += '</dl>';
     if (strand){
-      h += strand.count
-        ? '<div class="warn"><b>Removing this device strands &le; ' + strand.count.toLocaleString() + ' others.</b>'
-          + '<p>Shown in red. Stated as an upper bound: an unobserved link can only provide an alternate path and <em>shrink</em> this set — '
-          + 'but devices that were never reached are absent from the graph entirely and may be stranded without appearing here.</p></div>'
-        : '<div class="warn part"><b>Removing this device strands nothing observed.</b>'
-          + '<p>Every neighbour keeps a path to the fabric without it. That is a statement about the <em>resolved</em> topology only — '
-          + 'it is not a guarantee of redundancy for links that were never seen.</p></div>';
-      h += '<p class="hint">Counterfactual: the fabric re-solved with this device deleted. <kbd>Esc</kbd> to clear.</p>';
+      if (strand.status === "reference-anchor"){
+        h += '<div class="warn"><b>[REFERENCE ANCHOR] Failure impact is unassessable.</b>'
+           + '<p><code>' + esc(anchorName) + '</code> is the deterministic reference anchor. Removing it also removes the reference used to define a lost path, '
+           + 'so counting its baseline component as stranded would be tautological. Choose another baseline-connected device or configure an external service anchor.</p></div>';
+      } else if (strand.status === "outside-baseline"){
+        h += '<div class="warn"><b>[OUTSIDE BASELINE] Failure impact is unassessable.</b>'
+           + '<p><code>' + esc(F.id[i]) + '</code> has no baseline path to deterministic reference anchor <code>' + esc(anchorName) + '</code>. '
+           + 'Deleting it cannot be reported as a zero-impact result against that baseline; choose a device in the anchor component or change the anchor.</p></div>';
+      } else if (strand.status === "no-anchor"){
+        h += '<div class="warn"><b>[NO REFERENCE ANCHOR] Failure impact is unassessable.</b>'
+           + '<p>No observed device is available to define the baseline component.</p></div>';
+      } else if (strand.count){
+        h += '<div class="warn"><b>Removing this device strands ' + strand.count.toLocaleString() + ' others in the resolved topology.</b>'
+           + '<p>The deterministic reference anchor is <code>' + esc(anchorName) + '</code> (highest-degree observed device; stable fleet-order tie-break). '
+           + 'This total is exact for the resolved topology. Real network impact may be smaller if missing links provide alternate paths, '
+           + 'or larger if uncollected devices also depend on this device.</p></div>';
+      } else {
+        h += '<div class="warn part"><b>Removing this device strands no others in the resolved topology.</b>'
+           + '<p>Relative to deterministic reference anchor <code>' + esc(anchorName) + '</code>, no resolved device loses its baseline path. '
+           + 'That zero does not prove real-world redundancy: uncollected devices can still make the real impact larger.</p></div>';
+      }
+      h += '<p class="hint">Counterfactual relative to the resolved baseline. <kbd>Esc</kbd> to clear.</p>';
     } else {
       if (blast && blast.reached < F.N){
         h += '<div class="warn part"><b>' + (F.N - blast.reached).toLocaleString() + ' devices unreachable from here.</b>'
@@ -1262,10 +1290,10 @@ function renderInspector(){
        + '<dt>unparsed</dt><dd>' + unparsed.toLocaleString() + '</dd>'
        + '<dt>links</dt><dd>' + F.M.toLocaleString() + '</dd>'
        + '</dl>';
-    h += '<div class="warn part"><b>&le; ' + arts.toLocaleString() + ' single points of failure, &le; ' + bridges.toLocaleString() + ' critical links.</b>'
-       + '<p>Stated as an upper bound on purpose. Every unobserved link can only <em>remove</em> an entry from this list, never add one — and '
-       + unobs.toLocaleString() + ' unreached devices may hide chokepoints that are not drawn here.</p></div>';
-    h += '<p class="hint">Red links are bridges: removing one severs the fabric. Click any device to re-solve the topology <em>without</em> it and see exactly what goes dark.</p>';
+    h += '<div class="warn part"><b>' + arts.toLocaleString() + ' single points of failure and ' + bridges.toLocaleString() + ' critical links in the resolved topology.</b>'
+       + '<p>These are exact counts for this solved graph, not bounds on the unseen network. Real network impact may be smaller if missing links provide alternate paths, '
+       + 'or larger if uncollected devices introduce dependencies or chokepoints that are absent here.</p></div>';
+    h += '<p class="hint">Red links are bridges in the resolved topology. Click any device to re-solve it <em>without</em> that device and see which resolved devices lose their anchor path.</p>';
   }
   box.innerHTML = h;
 }
@@ -1546,8 +1574,41 @@ window.__fabric = {
     return { m:F.M, meanLen:+(sum/F.M).toFixed(1), meanDX:+(sumX/F.M).toFixed(1),
              maxLen:+max.toFixed(0), laneW:L.lanes.map(l=>l.count) };
   },
-  strandOf: (i) => { const r = failureImpact(F, G, baseReach, anchor, i); return { i, count:r.count }; },
+  strandOf: (i) => { const r = failureImpact(F, G, baseReach, anchor, i); return { i, status:r.status, count:r.count }; },
   isArt: (i) => !!ANA.isArt[i],
+  /* Verification seam for adversarial graph shapes. It drives the real failure
+     calculation and renderInspector(), captures the actual #insp branch, then
+     restores the live fleet synchronously before a render frame can observe it. */
+  verifyFailureFixture(spec){
+    const saved = { F, G, ANA, anchor, baseReach, sel, blast, strand };
+    try {
+      const id = spec.ids.slice(), N = id.length;
+      const observed = spec.observed ? spec.observed.slice() : new Array(N).fill(true);
+      const parsed = observed.map(Boolean);
+      const src = Int32Array.from(spec.edges.map(e => e[0]));
+      const dst = Int32Array.from(spec.edges.map(e => e[1]));
+      const deg = new Int32Array(N);
+      for (let e=0;e<src.length;e++){ deg[src[e]]++; deg[dst[e]]++; }
+      F = { N, M:src.length, id, observed, parsed, src, dst, deg,
+            role:new Array(N).fill("core"), tier:new Array(N).fill(0),
+            band:new Array(N).fill("Good"), score:new Array(N).fill(80),
+            keystone:new Array(N).fill(false) };
+      G = csr(F); ANA = analyse(F, G);
+      for (let i=0;i<N;i++) F.keystone[i] = !!ANA.isArt[i];
+      anchor = anchorOf(F); baseReach = reachFrom(F, G, anchor, -1);
+      sel = spec.selected; blast = null;
+      strand = failureImpact(F, G, baseReach, anchor, sel);
+      renderInspector();
+      const box = el("insp");
+      return { text:box.innerText, html:box.innerHTML, status:strand.status, count:strand.count,
+               anchor, anchorId:anchor >= 0 ? F.id[anchor] : null, selected:sel,
+               selectedId:F.id[sel], selectedInBaseline:!!baseReach[sel],
+               selectedIsArt:!!ANA.isArt[sel], anchorIsArt:anchor >= 0 && !!ANA.isArt[anchor] };
+    } finally {
+      ({ F, G, ANA, anchor, baseReach, sel, blast, strand } = saved);
+      renderInspector();
+    }
+  },
   search: (q) => { query = q; applyQuery(); return matchCount; },
   /* Composite GL + label layers into one PNG, in the SAME task as the draw so the
      drawing buffer is still valid without paying for preserveDrawingBuffer. */

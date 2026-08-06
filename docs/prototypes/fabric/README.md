@@ -5,7 +5,7 @@ and answers the question an engineer actually asks before a maintenance window:
 **not** "what can this device reach" but **"what goes dark if it fails"**.
 
 ```
-node docs/prototypes/fabric/verify.mjs     # 14 checks, exit 0 on pass
+node docs/prototypes/fabric/verify.mjs     # 18 checks, exit 0 on pass
 ```
 Open `fabric.html` directly in a browser to use it. No build, no dependencies, no network.
 
@@ -24,25 +24,34 @@ copied in, so it reads as the same product in both themes.
 ## Why it exists
 
 `webapp/backend/graph.py` publishes three coverage-honesty fields — `bridge_assessed`,
-`link_centrality_assessed`, `offscan_peers` — that **no shipped frontend surface reads**.
-A fast picture that renders "not measured" identically to "measured redundant" is a lie
-with a frame budget, and that is precisely what this repo's third guardrail forbids.
+`link_centrality_assessed`, `offscan_peers` — that no shipped frontend surface read when this
+prototype exposed the gap. The shipped `TopologyGraph` now consumes them; this standalone file
+remains the high-scale WebGL experiment. A fast picture that renders "not measured" identically
+to "measured redundant" is a lie with a frame budget, and that is precisely what this repo's
+third guardrail forbids.
 
-So the organising rule here is that absence is drawn **louder** than health, and every
-count is stated as a bound:
+So the organising rule here is that absence is drawn **louder** than health. Structural
+totals are exact counts for the **resolved synthetic topology**, not bounds on a network
+that collection did not fully resolve:
 
-> ≤ 70 single points of failure, ≤ 344 critical links. Stated as an upper bound on purpose.
-> Every unobserved link can only *remove* an entry from this list, never add one — and 179
-> unreached devices may hide chokepoints that are not drawn here.
+> 70 single points of failure and 344 critical links in the resolved topology. The real
+> network's count and failure impact may be smaller if links missing from this graph provide
+> alternate paths, or larger if uncollected devices introduce dependencies or chokepoints
+> that are absent here.
 
 ## What it does
 
 - **Counterfactual failure.** Click a device and the fabric is re-solved *without* it;
-  everything that loses its path to the anchor turns red. One BFS, ~0.3 ms at 5,000 devices,
-  so it runs live on click. This is a different analysis from the articulation-point pass:
-  `isArt` says a device *is* a cut vertex, this says exactly **which** devices are stranded
-  behind it. A cut vertex stranding two access switches and one stranding eight hundred are
-  not the same finding.
+  every baseline-reachable device in the resolved topology that loses its path to the
+  deterministic reference anchor turns red. The anchor is the highest-degree observed
+  device, with ties settled by stable fleet order, and its name is shown with the result.
+  One BFS, ~0.3 ms at 5,000 devices, so it runs live on click. This is a different analysis
+  from the articulation-point pass: `isArt` says a device *is* a cut vertex, while this says
+  exactly **which resolved devices** are stranded relative to that anchor. A cut vertex
+  stranding two access switches and one stranding eight hundred are not the same finding.
+  Selecting the anchor itself is explicitly **[REFERENCE ANCHOR] / unassessable**: deleting
+  the reference cannot yield a meaningful stranded count. A device that had no baseline
+  path to it is **[OUTSIDE BASELINE]**, also unassessable rather than a false zero.
 - **Four evidence states on redundant channels** — observed-healthy, observed-degraded,
   **not observed**, collected-but-unparsed. Absence gets full opacity, a 68%-duty ink hatch
   and a broken ring, so it out-contrasts every health hue instead of receding.
@@ -92,7 +101,7 @@ function so it is not re-attempted.
 
 ## Verification
 
-`verify.mjs` is the gate — 14 checks, all of which have failed at some point during
+`verify.mjs` is the gate — 18 checks, all of which have failed at some point during
 development:
 
 | check | why it is there |
@@ -105,6 +114,8 @@ development:
 | SVG never claims GPU draws | the bench once reported `mode:"gpu", draws:2` while the context was dead and the SVG path had run |
 | loop does not fork | a context restore used to leave a second self-rescheduling rAF loop alive: 1× → 2× → 4× frame cost |
 | layout deterministic | snapshots get compared |
+| coverage copy stays scoped | resolved-topology counts must not be advertised as global bounds; the copy names the anchor and both directions of uncertainty |
+| rendered failure branches are semantic | the actual `#insp` is asserted for the live anchor, a non-articulation cycle anchor, and a disconnected component; neither unassessable case may masquerade as a count |
 
 **Timing caveat.** `verify.mjs` runs under SwiftShader (software). Correctness results are
 valid; frame times from it are **not** hardware figures, and the perf assertions are

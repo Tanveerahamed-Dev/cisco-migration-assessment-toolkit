@@ -10,15 +10,16 @@ per change, with verification evidence) lives in
 - **`docs/prototypes/fabric/` — a coverage-honest topology engine prototype.** One
   self-contained WebGL2 file that re-solves the fabric *without* a selected device to show what
   its failure strands, instead of only what it can reach (one BFS, ~0.3 ms at 5,000 devices).
-  Its reason for existing is the gap it makes visible: `webapp/backend/graph.py` publishes
+  Its reason for existing was the gap it made visible: `webapp/backend/graph.py` publishes
   `bridge_assessed`, `link_centrality_assessed` and `offscan_peers` (graph.py:105,127,128) and
-  **no shipped frontend surface reads any of them** — so a picture can render "not measured"
-  identically to "measured redundant", which is exactly the failure guardrail 3 forbids.
-  Absence is therefore drawn *louder* than health and every count is stated as a bound. It runs
-  on a wholly fictional synthetic fleet, is deliberately **not** bound to
+  the shipped frontend previously read none of them — so a picture could render "not measured"
+  identically to "measured redundant", which is exactly the failure guardrail 3 forbids. The
+  shipped integration below now closes that gap. Absence is drawn *louder* than health and counts
+  are scoped to the resolved topology rather than advertised as fleet-wide bounds. The prototype
+  runs on a wholly fictional synthetic fleet and is deliberately **not** bound to
   `/api/snapshots/{id}/graph`, and is parked under `docs/` so it cannot be mistaken for a
-  product surface. Its own gate is `node docs/prototypes/fabric/verify.mjs` (14 checks).
-  Docs-only; no shipped bytes are affected.
+  product surface. Its own gate is `node docs/prototypes/fabric/verify.mjs` (18 checks). The
+  prototype itself remains docs-only; the separately listed shipped integration changes SPA bytes.
 - **`VerificationBadge` and `VerificationWarning` now reach the design system** (19 → 21
   components). Both ship in the app and are used by three pages, but the hand-maintained
   `webapp/frontend/ds.entry.ts` barrel never re-exported them, so the design agent could not
@@ -37,6 +38,21 @@ per change, with verification evidence) lives in
   for. CI-only; no shipped bytes are affected, so v3.32.1's artifacts are unchanged.
 
 ### Fixed
+- **The shipped topology no longer renders unmeasured redundancy as healthy.** The graph API's
+  `bridge_assessed`, `link_centrality_assessed`, and `offscan_peers` evidence now reaches both the
+  2D and 3D fabric views: unassessed links are loud and explicit, peers outside the collected
+  snapshot are disclosed, and clicking a non-reference device re-solves the resolved topology
+  without it to name which baseline-reached devices lose their path to a deterministic reference
+  anchor. Selecting the anchor itself or a node outside its baseline fails closed instead of
+  publishing a tautological catastrophe or a false zero. Counts are deliberately scoped to the
+  resolved graph; missing alternate links can make real impact smaller, while uncollected downstream
+  devices can make it larger.
+- **Fabric's prototype copy no longer calls resolved-topology chokepoint counts fleet-wide upper
+  bounds.** A missing leaf/device can add an articulation point or bridge, so the old claim was
+  mathematically unsafe. The 18-check verifier now ratchets the corrected scope, both uncertainty
+  directions, and rendered fail-closed reference/outside-baseline states; it also tries every
+  installed Playwright candidate until one can actually launch its matching Chromium rather than
+  stopping at a stale package.
 - **The design-system sync had been failing outright, not drifting.**
   `.design-sync/providers/demo.tsx` still imported `MemoryRouter` from `react-router-dom`, which
   the react-router 7 migration removed, so the converter died in its bundle step

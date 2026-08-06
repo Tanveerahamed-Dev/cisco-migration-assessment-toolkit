@@ -68,6 +68,38 @@ export interface SnapshotMeta {
   summary: Summary;
 }
 
+/** Coverage-honest projection returned by `/api/snapshots/{id}/graph`.
+ *
+ * `is_bridge: false` is a redundancy verdict only when `bridge_assessed` is true. Older snapshots
+ * and partially computed projections can carry a perfectly drawable edge whose bridge status was
+ * never measured, so consumers must preserve the third state instead of collapsing it to healthy.
+ */
+export interface TopologyNode {
+  id: string;
+  band: string;
+  score: number | null;
+  role: string;
+  degree: number;
+  keystone: boolean;
+}
+
+export interface TopologyEdge {
+  source: string;
+  target: string;
+  bridge_assessed?: boolean;
+  is_bridge: boolean;
+  pairs_cut: number;
+}
+
+export interface TopologyGraphData {
+  nodes: TopologyNode[];
+  edges: TopologyEdge[];
+  /** True when at least one link-centrality record was available; inspect each edge as well. */
+  link_centrality_assessed?: boolean;
+  /** Discovered CDP peers which were not present as collected switch nodes in this snapshot. */
+  offscan_peers?: string[];
+}
+
 export interface Campaign {
   id: number;
   name: string;
@@ -592,7 +624,7 @@ export const api = {
     fetch(`/api/snapshots/${id}/section/${name}`).then((r) => j<{ section: string; data: any }>(r)),
   deleteSnapshot: (id: number) => fetch(`/api/snapshots/${id}`, { method: "DELETE" }).then((r) => j<null>(r)),
   graph: (id: number) =>
-    fetch(`/api/snapshots/${id}/graph`).then((r) => j<{ nodes: any[]; edges: any[] }>(r)),
+    fetch(`/api/snapshots/${id}/graph`).then((r) => j<TopologyGraphData>(r)),
   cutover: (id: number) => fetch(`/api/snapshots/${id}/cutover`).then((r) => j<CutoverPlan>(r)),
   archreview: (id: number) => fetch(`/api/snapshots/${id}/archreview`).then((r) => j<ArchReview>(r)),
   design: (id: number) => fetch(`/api/snapshots/${id}/design`).then((r) => j<DesignBlueprint>(r)),
