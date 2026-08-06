@@ -58,6 +58,12 @@ per change, with verification evidence) lives in
   `dtsPropsFor`, authored docs, and previews; rejects empty or generic props contracts; and discovers
   exported source components omitted from that set. `Topology3D` is recorded as the sole deliberate
   internal exception, while `DemoDataProvider` remains a required public contract.
+- **Hand-written design-system props can no longer drift from their source signatures.** A
+  compiler-backed Vitest gate resolves all 21 components through the real barrel, compares member
+  names, optionality, readonly modifiers, and bidirectionally assignable types against `dtsPropsFor`,
+  and rejects unresolved or recursively unsafe contracts. In-memory mutations ratchet missing/extra,
+  optionality-changed, readonly, mistyped, and nested `any`/`unknown` failure paths without emitting
+  declaration artifacts.
 - **The design-system sync had been failing outright, not drifting.**
   `.design-sync/providers/demo.tsx` still imported `MemoryRouter` from `react-router-dom`, which
   the react-router 7 migration removed, so the converter died in its bundle step

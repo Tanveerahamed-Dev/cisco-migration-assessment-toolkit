@@ -266,14 +266,18 @@
   nothing to parse. Fixed 2026-08-04 by hand-writing all 21 bodies into `cfg.dtsPropsFor` from the
   real inline source signatures. **Keep it in step with the source** —
   `tests/test_design_sync_no_client_data.py` now rejects a missing component contract, an empty body,
-  and the generic `[key: string]: unknown` placeholder, but it cannot infer that a hand-written body
-  missed one newly added source prop. Review source-signature changes and compile the emitted declarations.
-  Two gotchas: use SINGLE quotes for string-literal unions (`tone?: 'ok' | 'watch'`)
+  and the generic `[key: string]: unknown` placeholder. The compiler-backed
+  `webapp/frontend/src/designSyncProps.test.ts` then resolves all 21 components through the real
+  `ds.entry.ts` barrel and compares member names, optionality, and types bidirectionally against the
+  hand-written bodies; its mutation controls prove missing/extra, required/optional, readonly,
+  mistyped, and nested `any`/`unknown` props fail. Two gotchas: use SINGLE quotes for string-literal unions
+  (`tone?: 'ok' | 'watch'`)
   so the JSON needs no escaping, and never name a type the emitted `.d.ts` cannot resolve — it only
   does `import * as React from 'react'`, so `SnapshotVerification` had to be inlined structurally
-  (a happy side effect: the contract is now published in the type itself). Verify by COMPILING, not
-  reading: `ts.createProgram` over `ds-bundle/components/*/*/*.d.ts` with `strict: true` — 21/21 valid,
-  0 placeholders, 2026-08-04. Filling this also enriched all 21 `prompt.md` files (the props body
+  (a happy side effect: the contract is now published in the type itself). The committed guard
+  proves config ↔ source equivalence; after a re-sync, still verify the generator's OUTPUT by
+  compiling `ds-bundle/components/*/*/*.d.ts` with `strict: true` — 21/21 valid, 0 placeholders,
+  2026-08-04. Filling this also enriched all 21 `prompt.md` files (the props body
   feeds the synthesized doc), so expect `sourceHashes` to move 2 per component with `renderHashes`
   and `.jsx` untouched — types are not DOM, so no regrade is needed.
 - **DO NOT re-add `cfg.extraEntries` — the provider is re-exported from `ds.entry.ts` on purpose**
@@ -360,9 +364,12 @@
   the app itself now imports (grep the same symbol in `src/`), and verify the symbols exist in the new
   package's `.d.ts` before editing.
 - **Detecting the "manual barrel" gap — now a committed test.** Run
-  `python -m pytest -q tests/test_design_sync_no_client_data.py` before every re-sync. It reconciles
-  the barrel, `componentSrcMap`, `dtsPropsFor`, docs, and previews; rejects empty props placeholders;
-  and scans source component exports while allowing only the documented internal `Topology3D` exception.
+  `python -m pytest -q tests/test_design_sync_no_client_data.py` and
+  `npm --prefix webapp/frontend test -- --run src/designSyncProps.test.ts` before every re-sync.
+  The first reconciles the barrel, `componentSrcMap`, `dtsPropsFor`, docs, and previews; rejects empty
+  props placeholders; and scans source component exports while allowing only the documented internal
+  `Topology3D` exception. The second uses TypeScript's checker to prove every registered props body
+  still matches the component actually exported by the barrel, including readonly and nested unsafe types.
   The control-tested probe below remains useful as a quick diagnostic:
   ```js
   // node this: PascalCase component exports under src/components that ds.entry.ts does NOT re-export
