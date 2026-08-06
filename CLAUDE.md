@@ -25,8 +25,10 @@ ledger shas predating §13.11 refer to superseded history); the master reference
   the ≤3.13 legs guard the divergence exactly where it exists), and react-router v7 is CLOSED
   (2026-08-03, handoff §13.16: migrated to `react-router@7.18.2` — the future flags were
   already live in production, so the swap was the package rename; verified through unit,
-  build and real-browser E2E). **Every carried question is now closed.** React 19 / v8 is
-  future planned work, not a carry.
+  build and real-browser E2E). **Every carried question is now closed.** The subsequent frontend
+  platform migration is also complete: Node 24, React/React DOM 19.2.8, React Router 8.3.0,
+  Vite 8.2.1, and `@vitejs/plugin-react` 6.0.5. It removed the temporary RSC-only npm-audit
+  exception; this is current repository state, not a reopened item from the historical review.
 
 A future whole-repo review should start fresh rather than reopening this one. Its most reusable
 output is the defect *shapes*, not its findings: absence rendered as health, a guard scoped to a

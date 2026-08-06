@@ -106,9 +106,7 @@ jobs:
           cache: pip
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          # npm's audit JSON is an exact, reviewed security-policy input. Keep
-          # its producer fixed until the temporary Router exception is deleted.
-          node-version: "20.20.2"
+          node-version: "24.19.0"
           cache: npm
           cache-dependency-path: webapp/frontend/package-lock.json
       - run: python -m pip install --upgrade pip
@@ -140,14 +138,19 @@ jobs:
           python -m pip_audit --strict --ignore-vuln PYSEC-2026-2858
       - name: Install locked frontend dependencies
         working-directory: webapp/frontend
-        run: npm ci --ignore-scripts
+        run: |
+          npm run verify:node
+          npm ci --ignore-scripts
       - name: Audit frontend dependencies
         working-directory: webapp/frontend
-        # Fail closed for every high/critical finding except the exact direct
-        # react-router GHSA-qwww-vcr4-c8h2 record reviewed for this non-RSC SPA.
-        # The verifier expires its review on 2026-11-06 and must be deleted as
-        # part of the Node 24 / React 19.2.7 / Vite 7 / React Router 8.3 upgrade.
-        run: python ../../.github/scripts/verify_frontend_npm_audit.py
+        env:
+          NPM_CONFIG_USERCONFIG: /dev/null
+          NPM_CONFIG_GLOBALCONFIG: /dev/null
+        run: >-
+          npm audit --audit-level=high
+          --registry=https://registry.npmjs.org/
+          --offline=false
+          --include=prod --include=dev --include=optional --include=peer
 
   package:
     name: Distribution contract
@@ -167,7 +170,7 @@ jobs:
           cache: pip
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          node-version: "24.19.0"
           cache: npm
           cache-dependency-path: webapp/frontend/package-lock.json
       - name: Prove toolchain setup did not change the source
@@ -178,6 +181,7 @@ jobs:
       - name: Rebuild the bundled AssessHub SPA
         working-directory: webapp/frontend
         run: |
+          npm run verify:node
           npm ci
           npm test
           npm run build
@@ -196,7 +200,7 @@ jobs:
       # now a no-op that would only mask an unexpected build output). node_modules stays.
       #
       # FIRST RUN IS THE REAL TEST: these bytes were built on Windows and this job rebuilds on
-      # ubuntu/node-20. Two consecutive builds were verified byte-identical on the authoring machine,
+      # ubuntu/node-24.19.0. Two consecutive builds were verified byte-identical on the authoring machine,
       # but CROSS-PLATFORM reproduction — including Vite's content-hashed filenames — is unproven
       # until this step runs. If it fails, the honest reading is that the bundle is not reproducible
       # across platforms, and the fix is a pinned/containerised build, NOT re-adding the allowlist.

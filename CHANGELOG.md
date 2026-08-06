@@ -60,16 +60,14 @@ per change, with verification evidence) lives in
   code-pinned by the repository privacy gate after complete PNG structure/CRC/decode validation; no
   generic image or directory exception was introduced. Promotable capture artifacts are emitted only
   after install, capture, comparison, and runner/browser provenance all succeed.
-- **The visual-gate lock refresh also removes the transitive `undici` audit findings.** The
-  jsdom-only development dependency moved from 7.28.0 to 7.29.0 without changing shipped runtime
-  dependencies. npm's remaining high-severity report is React Router's RSC-mode advisory; AssessHub
-  uses the client-only `BrowserRouter` surface, and a forced major-version upgrade is not bundled here.
-  CI now accepts only that advisory's exact direct-package record while pinning the current non-RSC
-  source/dependency contract and the exact Node 20.20.2/npm 10.8.2 report producer; every other
-  high/critical finding, audit/schema drift, toolchain drift, linked source tree, or import beyond
-  the reviewed frontend/design-system source roots still fails.
-  The exception hard-expires on 2026-11-06 and must be deleted with the Node 24 / React 19.2.7+ /
-  Vite 7+ / React Router 8.3+ migration.
+- **The frontend platform migration removes the last npm-audit exception.** The earlier visual-gate
+  lock refresh moved the jsdom-only development dependency from 7.28.0 to 7.29.0 and removed its
+  transitive `undici` findings. The completed platform step now moves Node 20 to Node 24,
+  React/React DOM 18.3.1 to 19.2.8, React Router 7.18.2 to the advisory-fixed 8.3.0, Vite 6.4.3 to
+  8.2.1, and `@vitejs/plugin-react` 4.7.0 to 6.0.5. The temporary fail-closed exception for the
+  RSC-only `GHSA-qwww-vcr4-c8h2` finding and its exact Node 20.20.2/npm 10.8.2 report-producer pin
+  are deleted; CI again applies the ordinary high/critical npm audit with no frontend advisory
+  suppression.
 - **The standalone offline explorer now has a real-browser interaction gate.** Playwright serves the
   canonical self-contained HTML only on ephemeral loopback, derives all 14 modes from its live
   registry, activates each mode, and verifies the mode chrome, URL state, drawer, and 2D/3D render

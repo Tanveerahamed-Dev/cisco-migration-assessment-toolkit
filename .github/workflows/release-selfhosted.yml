@@ -143,6 +143,8 @@ jobs:
         if: steps.existing.outputs.exists == 'false'
         run: |
           Set-Location webapp/frontend
+          npm run verify:node
+          if ($LASTEXITCODE -ne 0) { exit 1 }
           npm ci
           if ($LASTEXITCODE -ne 0) { exit 1 }
           npm test

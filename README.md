@@ -238,7 +238,7 @@ the network — and a one-sentence engineer's verdict each. An axis without
 evidence reads *not assessed*, never healthy-by-silence. The top row is the
 scariest box in the fleet; the compound patterns also fold into the punch-list.
 
-**Explorer — eleven modes over one topology.** Pan/zoom the graph; search by
+**Explorer — 14 modes over one topology.** Pan/zoom the graph; search by
 switch / IP / MAC; filter by VLAN. The modes:
 
 - **Blast radius** — click a switch to simulate its removal and see what it strands.
@@ -252,13 +252,18 @@ switch / IP / MAC; filter by VLAN. The modes:
   switch in any mode opens its dossier, led by the engine's **Engineer's verdict** card.
 - **Protocols** — routing-protocol topology, redistribution boundaries, adjacency health.
 - **Cross-Layer** — findings that compound across layers into one real migration risk.
-- **Causality** — each structural SPOF as a trigger → mechanism → impact → mitigation chain.
+- **Causal Flow** — each structural SPOF as a trigger → mechanism → impact → mitigation chain.
 - **Waves** — the migration move-groups in recommended cutover order, each with its readiness
   verdict, scenario (make-before-break vs hard cutover) and post-cutover validation checks.
 - **Apps** — application domains (workloads) with footprint, criticality tier and inter-domain
   coupling — the unit the business actually migrates.
 - **Review** — the senior-engineer architecture review: leading-practice checks across eight
   design domains with an A–F conformance grade and not-assessable honesty.
+- **Design** — the evidence-gated target-state blueprint: recommended decisions, trade-offs,
+  affected devices, and the requirement questions that remain open.
+- **Cable Map** — a role-tiered physical view of CDP/LLDP cabling, with operational state,
+  port-channel membership, and uncollected links kept visibly not observed.
+- **3D** — an orbitable tiered fabric view with device health, selection, and link highlighting.
 
 The explorer is a single self-contained file (no server, no external assets) and
 runs fully offline — safe to email or open from a USB stick.

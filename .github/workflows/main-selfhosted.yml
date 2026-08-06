@@ -62,6 +62,8 @@ jobs:
       # CI-only value so a developer's own preview/E2E session can never collide with a job
       # (playwright.config.ts: E2E_PORT overrides the 41973 default, itself chosen off-default
       # because of exactly this collision class).
+      - name: Verify frontend Node contract
+        run: npm --prefix webapp/frontend run verify:node
       - name: Install exact frontend dependencies
         run: npm --prefix webapp/frontend ci
       - name: Frontend test + type-check

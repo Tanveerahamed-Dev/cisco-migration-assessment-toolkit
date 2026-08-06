@@ -123,7 +123,7 @@ One-time repository administration:
 
 ## Local release-candidate verification
 
-From a clean checkout with Node 20+ and Python 3.12:
+From a clean checkout with Node 24 LTS (24.18.0 or newer) and Python 3.12:
 
 ```bash
 cd webapp/frontend
