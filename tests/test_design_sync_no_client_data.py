@@ -24,12 +24,52 @@ paths (the run log), and `node_modules/` + `learnings/` are machine state. None 
 from __future__ import annotations
 
 import ipaddress
+import json
 import re
 from pathlib import Path
 
 import pytest
 
-_DS = Path(__file__).resolve().parents[1] / ".design-sync"
+_REPO = Path(__file__).resolve().parents[1]
+_DS = _REPO / ".design-sync"
+_FRONTEND = _REPO / "webapp" / "frontend"
+_BARREL = _FRONTEND / "ds.entry.ts"
+
+# These are intentionally public from ds.entry.ts, but they are helpers rather than Design cards.
+# Keeping the list explicit makes a new barrel export fail closed until it is classified. The
+# provider is deliberately NOT here: DemoDataProvider is one of the 21 public component contracts.
+_BARREL_HELPER_EXPORTS = frozenset(
+    {
+        "VERIFICATION_CONTRACT_VERSION",
+        "bandColor",
+        "gateColor",
+        "normalizedVerification",
+        "readyColor",
+        "sevColor",
+        "sevSoft",
+        "useAsync",
+        "usePositionTween",
+        "useReducedMotion",
+        "useToast",
+        "useViewTransition",
+    }
+)
+
+# Topology3D is an internal, lazy-loaded implementation detail of TopologyGraph. It takes internal
+# graph state rather than a public snapId contract and cannot produce a useful static Design card.
+_DELIBERATE_SOURCE_ONLY_COMPONENTS = frozenset({"Topology3D"})
+
+_BARREL_EXPORT_BLOCK = re.compile(
+    r"^\s*export\s*{(?P<body>.*?)}\s*from\s*[\"'][^\"']+[\"']\s*;?",
+    re.MULTILINE | re.DOTALL,
+)
+_BARREL_EXPORT_ITEM = re.compile(
+    r"(?P<local>default|[A-Za-z_$][A-Za-z0-9_$]*)"
+    r"(?:\s+as\s+(?P<public>[A-Za-z_$][A-Za-z0-9_$]*))?"
+)
+_DTS_PLACEHOLDER = re.compile(
+    r"\s*(?:{\s*)?\[\s*key\s*:\s*string\s*\]\s*:\s*unknown\s*;?\s*(?:}\s*)?"
+)
 
 # gitignored (.gitignore:64-66) — local machine state, not part of what the converter uploads
 _SKIP_DIRS = {".cache", "node_modules", "learnings"}
@@ -53,6 +93,78 @@ def _uploaded_files() -> list[Path]:
             continue
         out.append(p)
     return out
+
+
+def _config() -> dict:
+    return json.loads((_DS / "config.json").read_text(encoding="utf-8"))
+
+
+def _barrel_exports() -> set[str]:
+    """Return the public names from the committed named-export barrel."""
+    text = _BARREL.read_text(encoding="utf-8")
+    exports: set[str] = set()
+    blocks = list(_BARREL_EXPORT_BLOCK.finditer(text))
+    assert blocks, f"no named re-export blocks found in {_BARREL}"
+    for block in blocks:
+        for raw_item in block.group("body").split(","):
+            item = raw_item.strip()
+            if not item:
+                continue
+            match = _BARREL_EXPORT_ITEM.fullmatch(item)
+            assert match, f"unrecognised named export {item!r} in {_BARREL}"
+            exports.add(match.group("public") or match.group("local"))
+    return exports
+
+
+def _source_component_exports() -> dict[str, set[str]]:
+    """Discover PascalCase component declarations in the app's component modules.
+
+    This is the committed form of NOTES.md's manual-barrel probe. Unlike that illustrative probe,
+    it uses a named default function/class when one exists, so CausalFlowPanel is not mistaken for
+    the source filename CausalFlow.
+    """
+    found: dict[str, set[str]] = {}
+
+    def record(name: str, path: Path) -> None:
+        found.setdefault(name, set()).add(str(path.relative_to(_FRONTEND)))
+
+    declaration = re.compile(
+        r"^\s*export\s+(?P<default>default\s+)?(?:async\s+)?"
+        r"(?:function|class)\s+(?P<name>[A-Z][A-Za-z0-9]*)\b",
+        re.MULTILINE,
+    )
+    named_const = re.compile(
+        r"^\s*export\s+const\s+(?P<name>[A-Z][A-Za-z0-9]*)\s*(?::|=)",
+        re.MULTILINE,
+    )
+    default_reference = re.compile(
+        r"^\s*export\s+default\s+(?P<name>[A-Z][A-Za-z0-9]*)\s*;",
+        re.MULTILINE,
+    )
+
+    for path in sorted((_FRONTEND / "src" / "components").rglob("*.tsx")):
+        if path.name.endswith(".test.tsx"):
+            continue
+        text = path.read_text(encoding="utf-8")
+        named_default = False
+        for match in declaration.finditer(text):
+            record(match.group("name"), path)
+            named_default = named_default or bool(match.group("default"))
+        for match in named_const.finditer(text):
+            record(match.group("name"), path)
+        default_refs = list(default_reference.finditer(text))
+        for match in default_refs:
+            record(match.group("name"), path)
+        if re.search(r"^\s*export\s+default\b", text, re.MULTILINE):
+            if not named_default and not default_refs:
+                record(path.stem, path)
+    return found
+
+
+def _is_empty_or_placeholder_dts(body: object) -> bool:
+    if not isinstance(body, str) or not body.strip():
+        return True
+    return bool(_DTS_PLACEHOLDER.fullmatch(body) or re.fullmatch(r"\s*{\s*}\s*", body))
 
 
 def _is_non_identifying(token: str, is_cidr_base: bool) -> bool:
@@ -136,37 +248,135 @@ def test_the_ip_rule_actually_rejects_a_real_fleet_address():
     assert _is_non_identifying("1.2.3.4.5", False)        # not an address at all
 
 
-def _config_path_citations() -> list[tuple[str, str]]:
-    """(key, path) for every path-like value in config.json — what the converter resolves at run
-    time. Read from the file rather than hardcoded, so a new entry is covered automatically."""
-    import json
+def _config_path_citations() -> list[tuple[str, Path, str]]:
+    """(key, resolved path, expected kind) for every path-like config value.
 
-    cfg = json.loads((_DS / "config.json").read_text(encoding="utf-8"))
-    out: list[tuple[str, str]] = []
-    for key in ("entry", "readmeHeader", "cssEntry", "tsconfig", "docsDir"):
+    `entry` and `readmeHeader` are repo-root-relative; the remaining converter inputs are relative
+    to the private app package. Reading the mappings dynamically enrolls every future component.
+    """
+    cfg = _config()
+    out: list[tuple[str, Path, str]] = []
+    for key in ("entry", "readmeHeader"):
         if isinstance(cfg.get(key), str):
-            out.append((key, cfg[key]))
+            out.append((key, _REPO / cfg[key], "file"))
+    for key in ("cssEntry", "tsconfig"):
+        if isinstance(cfg.get(key), str):
+            out.append((key, _FRONTEND / cfg[key], "file"))
+    if isinstance(cfg.get("docsDir"), str):
+        out.append(("docsDir", _FRONTEND / cfg["docsDir"], "directory"))
     for i, extra in enumerate(cfg.get("extraEntries") or []):
-        out.append((f"extraEntries[{i}]", extra))
+        out.append((f"extraEntries[{i}]", _FRONTEND / extra, "file"))
     for comp, src in sorted((cfg.get("componentSrcMap") or {}).items()):
-        out.append((f"componentSrcMap.{comp}", src))
+        out.append((f"componentSrcMap.{comp}", _FRONTEND / src, "file"))
     return out
 
 
-@pytest.mark.parametrize("key,cited", _config_path_citations(), ids=lambda v: str(v)[:40])
-def test_config_json_path_citations_resolve(key, cited):
+@pytest.mark.parametrize("key,path,kind", _config_path_citations(), ids=lambda v: str(v)[:40])
+def test_config_json_path_citations_resolve(key, path, kind):
     """A path in config.json that stops resolving breaks the next `resync` run, and the failure
-    surfaces inside the external converter rather than here.
+    surfaces inside the external converter rather than here."""
+    exists_as_expected = path.is_dir() if kind == "directory" else path.is_file()
+    assert exists_as_expected, f"config.json {key} cites missing {kind}: {path}"
 
-    The config mixes two bases — `entry`/`readmeHeader` are repo-root-relative while `cssEntry`,
-    `tsconfig` and `componentSrcMap` are relative to the package dir — and the resolution rules
-    belong to a tool this repo does not vendor. So this asserts the weaker, checkable claim: the
-    citation resolves from one of those two bases. It cannot prove the converter picks the same
-    one; it does prove the file has not been moved or deleted."""
-    repo = _DS.parent
-    bases = (repo, repo / "webapp" / "frontend")
-    resolved = [b / cited for b in bases if (b / cited).exists()]
-    assert resolved, (
-        f"config.json {key} = {cited!r} resolves from neither the repo root nor webapp/frontend; "
-        f"the next design-sync run will fail on it"
+
+def test_design_sync_public_component_surfaces_stay_in_lockstep():
+    """Every public Design card has one source, prop contract, doc, preview, and barrel export."""
+    cfg = _config()
+    component_src_map = cfg.get("componentSrcMap")
+    dts_props_for = cfg.get("dtsPropsFor")
+    assert isinstance(component_src_map, dict) and component_src_map, \
+        "config.json componentSrcMap must be a non-empty object"
+    assert isinstance(dts_props_for, dict) and dts_props_for, \
+        "config.json dtsPropsFor must be a non-empty object"
+
+    barrel_exports = _barrel_exports()
+    missing_helpers = _BARREL_HELPER_EXPORTS - barrel_exports
+    assert not missing_helpers, (
+        "ds.entry.ts lost documented non-component helper export(s): "
+        + ", ".join(sorted(missing_helpers))
+    )
+    barrel_components = barrel_exports - _BARREL_HELPER_EXPORTS
+
+    provider = cfg.get("provider")
+    assert isinstance(provider, dict) and isinstance(provider.get("component"), str), \
+        "config.json provider.component must name the public preview-support provider"
+    assert provider["component"] in barrel_components, (
+        f"configured provider {provider['component']!r} is not exported from ds.entry.ts"
+    )
+
+    docs_dir_value = cfg.get("docsDir")
+    assert isinstance(docs_dir_value, str), "config.json docsDir must be a path string"
+    docs_dir = _FRONTEND / docs_dir_value
+    previews_dir = _DS / "previews"
+    assert docs_dir.is_dir(), f"configured docsDir is missing: {docs_dir}"
+    assert previews_dir.is_dir(), f"design-sync previews directory is missing: {previews_dir}"
+
+    surfaces = {
+        "componentSrcMap": set(component_src_map),
+        "dtsPropsFor": set(dts_props_for),
+        "docsDir/*.md": {path.stem for path in docs_dir.glob("*.md") if path.is_file()},
+        "previews/*.tsx": {
+            path.stem for path in previews_dir.glob("*.tsx") if path.is_file()
+        },
+        "ds.entry.ts components": barrel_components,
+    }
+    all_names = set().union(*surfaces.values())
+    omissions = {
+        surface: sorted(all_names - names)
+        for surface, names in surfaces.items()
+        if names != all_names
+    }
+    assert not omissions, (
+        "design-sync public component surfaces drifted; each name must occur in componentSrcMap, "
+        "dtsPropsFor, docs, previews, and the manual barrel:\n  "
+        + "\n  ".join(f"{surface} missing: {', '.join(names)}" for surface, names in omissions.items())
+    )
+
+    discovered = _source_component_exports()
+    wrong_sources = {
+        name: source
+        for name, source in component_src_map.items()
+        if name != provider["component"]
+        and str(Path(source)) not in discovered.get(name, set())
+    }
+    assert not wrong_sources, (
+        "componentSrcMap must cite the module that actually exports each component; mismatches: "
+        + ", ".join(f"{name} -> {source}" for name, source in sorted(wrong_sources.items()))
+    )
+
+
+def test_manual_barrel_covers_source_components_except_internal_topology3d():
+    """Catch a new exported component that was omitted from the converter's manual barrel."""
+    discovered = _source_component_exports()
+    stale_exclusions = _DELIBERATE_SOURCE_ONLY_COMPONENTS - set(discovered)
+    assert not stale_exclusions, (
+        "documented internal-component exclusion is stale: "
+        + ", ".join(sorted(stale_exclusions))
+    )
+
+    public_barrel_components = _barrel_exports() - _BARREL_HELPER_EXPORTS
+    missing = set(discovered) - _DELIBERATE_SOURCE_ONLY_COMPONENTS - public_barrel_components
+    details = [f"{name} ({', '.join(sorted(discovered[name]))})" for name in sorted(missing)]
+    assert not missing, (
+        "PascalCase component export(s) are missing from ds.entry.ts; add each public component to "
+        "the barrel/componentSrcMap/dtsPropsFor/docs/previews, or document a deliberate internal "
+        "exclusion:\n  " + "\n  ".join(details)
+    )
+
+
+def test_dts_props_for_never_uses_the_unknown_index_placeholder():
+    """The private app emits no declarations, so a missing manual body becomes an empty API."""
+    dts_props_for = _config().get("dtsPropsFor")
+    assert isinstance(dts_props_for, dict) and dts_props_for
+    assert _is_empty_or_placeholder_dts("[key: string]: unknown;"), \
+        "guard bug: the converter's known placeholder is not recognised"
+    assert _is_empty_or_placeholder_dts("{ }"), \
+        "guard bug: an empty props body is not recognised"
+    placeholders = {
+        name: body for name, body in dts_props_for.items()
+        if _is_empty_or_placeholder_dts(body)
+    }
+    assert not placeholders, (
+        "dtsPropsFor must publish concrete props, not the converter's "
+        f"[key: string]: unknown placeholder: {placeholders}"
     )

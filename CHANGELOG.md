@@ -53,6 +53,11 @@ per change, with verification evidence) lives in
   directions, and rendered fail-closed reference/outside-baseline states; it also tries every
   installed Playwright candidate until one can actually launch its matching Chromium rather than
   stopping at a stale package.
+- **Design-system component registration can no longer drift silently across hand-maintained
+  surfaces.** A static parity gate now reconciles the public barrel, `componentSrcMap`,
+  `dtsPropsFor`, authored docs, and previews; rejects empty or generic props contracts; and discovers
+  exported source components omitted from that set. `Topology3D` is recorded as the sole deliberate
+  internal exception, while `DemoDataProvider` remains a required public contract.
 - **The design-system sync had been failing outright, not drifting.**
   `.design-sync/providers/demo.tsx` still imported `MemoryRouter` from `react-router-dom`, which
   the react-router 7 migration removed, so the converter died in its bundle step

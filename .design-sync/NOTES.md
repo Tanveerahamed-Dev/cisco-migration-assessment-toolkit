@@ -264,9 +264,11 @@
   component shipped `<Name>Props { [key: string]: unknown }` — a published API contract carrying zero
   information, for all 21 at once. `@types/react` being installed does NOT help; there is simply
   nothing to parse. Fixed 2026-08-04 by hand-writing all 21 bodies into `cfg.dtsPropsFor` from the
-  real inline source signatures. **Keep it in step with the source** — a prop added to a component and
-  not to `dtsPropsFor` is invisible to the design agent, and nothing warns (same failure shape as the
-  manual barrel). Two gotchas: use SINGLE quotes for string-literal unions (`tone?: 'ok' | 'watch'`)
+  real inline source signatures. **Keep it in step with the source** —
+  `tests/test_design_sync_no_client_data.py` now rejects a missing component contract, an empty body,
+  and the generic `[key: string]: unknown` placeholder, but it cannot infer that a hand-written body
+  missed one newly added source prop. Review source-signature changes and compile the emitted declarations.
+  Two gotchas: use SINGLE quotes for string-literal unions (`tone?: 'ok' | 'watch'`)
   so the JSON needs no escaping, and never name a type the emitted `.d.ts` cannot resolve — it only
   does `import * as React from 'react'`, so `SnapshotVerification` had to be inlined structurally
   (a happy side effect: the contract is now published in the type itself). Verify by COMPILING, not
@@ -297,8 +299,10 @@
 - **`sample-data.ts` is hand-inlined** against `webapp/frontend/src/api.ts` interfaces — an engine/API field
   rename won't break the build; the widgets just render '—'/empty in cards. When api.ts changes, re-check the
   payloads field-by-field.
-- **`ds.entry.ts` is a manual barrel** — a NEW component ships only if someone adds its export there + a
-  `componentSrcMap` entry + a `.design-sync/docs/<Name>.md`. Nothing detects the omission.
+- **`ds.entry.ts` is a manual barrel** — a NEW public component ships only if its name remains aligned
+  across the barrel, `componentSrcMap`, `dtsPropsFor`, authored docs, and previews. The static parity
+  tests in `tests/test_design_sync_no_client_data.py` now fail on an omission and scan exported source
+  components for names missing from that contract. `Topology3D` is the one documented internal exception.
 - **`.ds-sync/` is gitignored** — fresh clone setup: re-copy the skill scripts, then
   `npm i --prefix .ds-sync esbuild ts-morph @types/react typescript playwright@<version pinning the cached
   chromium>` (this machine: playwright **1.58.0** ↔ cache `chromium-1208`; verify with
@@ -355,8 +359,11 @@
   node_modules` naming the file:line — so **read the build log, don't re-run hoping**. Fix by matching what
   the app itself now imports (grep the same symbol in `src/`), and verify the symbols exist in the new
   package's `.d.ts` before editing.
-- **Detecting the "manual barrel" gap — a TESTED command, not a hope.** The standing risk above says nothing
-  detects a new component's omission; this does. Run it from the repo root before every re-sync:
+- **Detecting the "manual barrel" gap — now a committed test.** Run
+  `python -m pytest -q tests/test_design_sync_no_client_data.py` before every re-sync. It reconciles
+  the barrel, `componentSrcMap`, `dtsPropsFor`, docs, and previews; rejects empty props placeholders;
+  and scans source component exports while allowing only the documented internal `Topology3D` exception.
+  The control-tested probe below remains useful as a quick diagnostic:
   ```js
   // node this: PascalCase component exports under src/components that ds.entry.ts does NOT re-export
   const fs=require('fs'),path=require('path'),SRC='webapp/frontend/src/components';
