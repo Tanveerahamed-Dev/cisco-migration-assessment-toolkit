@@ -388,7 +388,7 @@ def test_publish_job_keeps_contents_read():
 
 
 def test_webapp_ci_path_filter_covers_what_can_break_it():
-    """None of webapp-ci's three jobs is a required check, so a run the path filter skipped is
+    """None of webapp-ci's four jobs is a required check, so a run the path filter skipped is
     indistinguishable from a green one at the merge button. The filter must therefore cover the
     dependency + pytest config the backend suite's result depends on, not only the code it
     imports. The two lists must also stay identical — GitHub Actions rejects YAML anchors, so
@@ -399,9 +399,56 @@ def test_webapp_ci_path_filter_covers_what_can_break_it():
     push, pr = (ln.split("paths:", 1)[1].strip() for ln in lists)
     assert push == pr, "the push and pull_request path filters have drifted apart"
     for required in ("requirements.txt", "requirements-dev.txt", "pyproject.toml", "pytest.ini",
-                     "webapp/**", "cisco_toolkit/**"):
+                     "webapp/**", ".design-sync/**", "cisco_toolkit/**"):
         assert required in push, \
             "%s can break the backend suite but does not trigger webapp-ci" % required
+
+
+def test_webapp_visual_gate_has_one_explicit_hosted_pixel_oracle():
+    """System fonts make a broad ``Windows`` label an ambiguous pixel contract.
+
+    Pull-request code must compare only on the explicit hosted Server 2025 image; the shared
+    self-hosted dev box remains a behavioral-E2E lane and cannot consume the hosted raster set.
+    Canonical refresh is an explicit artifact-only dispatch, never an automatic commit.
+    """
+    webapp = _read(".github", "workflows", "webapp-ci.yml")
+    visual = webapp.split("\n  visual:", 1)[1]
+    assert "runs-on: windows-2025" in visual
+    assert visual.count("\n        run: npm run test:visual\n") == 2
+    assert 'VISUAL_ORACLE_CAPTURE: "1"' in visual
+    assert visual.count("\n        run: npm run test:visual:update\n") == 1
+    assert "actions/upload-artifact@" in visual
+    assert "contents: write" not in webapp
+    candidate_upload = visual.split(
+        "\n      - name: Upload candidate visual baselines", 1
+    )[1].split("\n      - name:", 1)[0]
+    assert "success()" in candidate_upload
+    assert "always()" not in candidate_upload
+    provenance = visual.split("\n      - name: Record visual-oracle versions", 1)[1].split(
+        "\n      - name:", 1
+    )[0]
+    assert "steps.install.outcome == 'success'" in provenance
+    assert ".\\node_modules\\.bin\\playwright.cmd --version" in provenance
+    assert "npx playwright --version" not in provenance
+
+    visual_config = _read("webapp", "frontend", "playwright.visual.config.ts")
+    assert 'VISUAL_BASELINE_ID = "windows-2025-x64"' in _read(
+        "webapp", "frontend", "visual-e2e", "oracle.ts"
+    )
+    for guard in ("GITHUB_ACTIONS", "RUNNER_OS", "RUNNER_ARCH"):
+        assert guard in visual_config
+    assert "test-results/visual-candidates" in visual_config
+    assert "threshold: 0.02" in visual_config
+
+    visual_spec = _read(
+        "webapp", "frontend", "visual-e2e", "design-cards.visual.spec.ts"
+    )
+    assert "threshold: 0.2, maxDiffPixels: TOPOLOGY_RASTER_BUDGET" in visual_spec
+
+    self_hosted = _read(".github", "workflows", "main-selfhosted.yml")
+    assert "test:visual" not in self_hosted, (
+        "the unversioned self-hosted Windows machine cannot share hosted pixel baselines"
+    )
 
 
 def test_no_ci_step_swallows_a_failure_outside_the_documented_report():

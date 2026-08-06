@@ -1,0 +1,22 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "assesshub-frontend": ["./ds.entry.ts"],
+      "react": ["./node_modules/@types/react"],
+      "react/*": ["./node_modules/@types/react/*"],
+      "react-dom": ["./node_modules/@types/react-dom"],
+      "react-dom/*": ["./node_modules/@types/react-dom/*"],
+      "react-router": ["./node_modules/react-router"]
+    },
+    "types": ["node", "vite/client"]
+  },
+  "include": [
+    "playwright.visual.config.ts",
+    "vite.visual.config.ts",
+    "visual-e2e/**/*.ts",
+    "visual-e2e/**/*.tsx"
+  ],
+  "exclude": []
+}

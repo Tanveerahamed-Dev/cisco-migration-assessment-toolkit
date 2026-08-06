@@ -38,6 +38,23 @@ per change, with verification evidence) lives in
   for. CI-only; no shipped bytes are affected, so v3.32.1's artifacts are unchanged.
 
 ### Fixed
+- **CSS and token changes now face a real design-system pixel gate.** A source-driven Playwright
+  harness renders all 21 tracked component cards and 42 authored preview variants through the real
+  barrel, synthetic provider, theme, and component CSS. Forty-two reviewed 900px and 728px baseline
+  images target a GitHub-hosted Windows Server 2025 x64/Chromium oracle, with zero changed-pixel
+  tolerance above a strict 0.02 threshold outside one fixed 16-pixel TopologyGraph-card
+  anti-aliasing budget. Config-driven
+  grid/column/single presentation, deterministic motion/time controls, offline-only
+  requests/WebSockets, narrow ErrorBoundary handling, explicit SVG-only 2D topology assertions, and
+  responsive overflow checks make visual drift fail pre-merge CI instead of relying on manual
+  screenshots or render hashes that cannot see pixel changes. Every synthetic PNG is individually
+  code-pinned by the repository privacy gate after complete PNG structure/CRC/decode validation; no
+  generic image or directory exception was introduced. Promotable capture artifacts are emitted only
+  after install, capture, comparison, and runner/browser provenance all succeed.
+- **The visual-gate lock refresh also removes the transitive `undici` audit findings.** The
+  jsdom-only development dependency moved from 7.28.0 to 7.29.0 without changing shipped runtime
+  dependencies. npm's remaining high-severity report is React Router's RSC-mode advisory; AssessHub
+  uses the client-only `BrowserRouter` surface, and a forced major-version upgrade is not bundled here.
 - **The shipped topology no longer renders unmeasured redundancy as healthy.** The graph API's
   `bridge_assessed`, `link_centrality_assessed`, and `offscan_peers` evidence now reaches both the
   2D and 3D fabric views: unassessed links are loud and explicit, peers outside the collected

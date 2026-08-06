@@ -370,6 +370,35 @@
   props placeholders; and scans source component exports while allowing only the documented internal
   `Topology3D` exception. The second uses TypeScript's checker to prove every registered props body
   still matches the component actually exported by the barrel, including readonly and nested unsafe types.
+  Run `npm --prefix webapp/frontend run test:visual` on Windows for the complementary pixel gate:
+  it compares all **21 component cards / 42 authored preview variants** against the reviewed
+  baseline set for a GitHub-hosted Windows Server 2025 x64/Chromium oracle at both the configured
+  primary review width (900px today) and 728px product-pane bound, freezes time, forces reduced motion,
+  blocks non-local requests and WebSockets, and tolerates zero changed pixels above a strict 0.02
+  Pixelmatch threshold. The sole measured renderer exception is local to the complete TopologyGraph
+  card: threshold 0.2 with a fixed 16-pixel cap (eight pixels were observed changing in its scaled SVG
+  across fresh Chromium processes). It is not an image-size ratio and cannot grow silently.
+  The locally reviewed seed set is not hosted-runner proof: the first hosted comparison/capture
+  must still replace or accept it before hosted reproducibility is claimed. A local
+  `npm --prefix webapp/frontend run test:visual:update` writes workstation candidates only under
+  ignored `test-results/visual-candidates/`; it cannot overwrite the canonical set. Canonical
+  replacements are accepted by repository policy only from the webapp-ci `workflow_dispatch` capture
+  option on `windows-2025`:
+  download its artifact, inspect every changed PNG, refresh the exact privacy pins, and commit the
+  reviewed files beside the source change. The promotable artifact is success-only: install,
+  capture, comparison, and recorded runner/browser provenance must all pass. CI never commits
+  screenshots automatically. The config's Actions/Windows/x64 environment check is misuse resistance,
+  not an unspoofable provenance boundary; the explicit workflow runner plus recorded image metadata
+  and human artifact review supply provenance. The hosted
+  job is the pixel oracle because the shipped `system-ui` stack is deliberately platform-native;
+  Ubuntu keeps behavior/WebGL E2E rather than comparing a different valid font rasterization. Generated
+  `ds-bundle/_screenshots/` is upload-review evidence only: it is ignored, can be stale, and is not
+  the durable visual ratchet.
+  The 42 tracked PNGs are also exact-hash/size/dimension contracts in
+  `.github/scripts/verify_repository_privacy.py`; after visual review, run
+  `python .github/scripts/refresh_visual_baseline_pins.py --write --reviewed` and review the
+  sentinel-bounded code-pin diff. Never add a path-prefix image exemption: any missing, extra,
+  changed, or unreviewed sibling PNG must continue to fail the repository privacy gate.
   The control-tested probe below remains useful as a quick diagnostic:
   ```js
   // node this: PascalCase component exports under src/components that ds.entry.ts does NOT re-export

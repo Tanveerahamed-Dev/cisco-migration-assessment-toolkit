@@ -3,10 +3,16 @@ name: webapp-ci
 on:
   push:
     branches: [main]
-    paths: ["webapp/**", "cisco_toolkit/**", "COLLECT_PARSE_V3_23_0.py", "conftest.py", "requirements.txt", "requirements-dev.txt", "pyproject.toml", "pytest.ini", ".github/workflows/webapp-ci.yml"]
+    paths: ["webapp/**", ".design-sync/**", "cisco_toolkit/**", "COLLECT_PARSE_V3_23_0.py", "conftest.py", "requirements.txt", "requirements-dev.txt", "pyproject.toml", "pytest.ini", ".github/workflows/webapp-ci.yml"]
   pull_request:
-    paths: ["webapp/**", "cisco_toolkit/**", "COLLECT_PARSE_V3_23_0.py", "conftest.py", "requirements.txt", "requirements-dev.txt", "pyproject.toml", "pytest.ini", ".github/workflows/webapp-ci.yml"]
+    paths: ["webapp/**", ".design-sync/**", "cisco_toolkit/**", "COLLECT_PARSE_V3_23_0.py", "conftest.py", "requirements.txt", "requirements-dev.txt", "pyproject.toml", "pytest.ini", ".github/workflows/webapp-ci.yml"]
   workflow_dispatch:
+    inputs:
+      refresh_visual_baselines:
+        description: Capture reviewed-candidate pixels from the Windows 2025 oracle
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -66,3 +72,68 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
+
+  visual:
+    name: Design visual regression · Windows 2025 x64 Chromium
+    runs-on: windows-2025
+    defaults:
+      run:
+        working-directory: webapp/frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: webapp/frontend/package-lock.json
+      - id: install
+        run: npm ci
+      - run: npx playwright install chromium
+      - run: npm run test:visual:types
+      - name: Compare reviewed visual baselines
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.refresh_visual_baselines }}
+        run: npm run test:visual
+      - name: Capture candidate visual baselines for human review
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.refresh_visual_baselines }}
+        env:
+          VISUAL_ORACLE_CAPTURE: "1"
+        run: npm run test:visual:update
+      - name: Validate the freshly captured baseline set
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.refresh_visual_baselines }}
+        run: npm run test:visual
+      - name: Record visual-oracle versions
+        if: ${{ always() && !cancelled() && steps.install.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force test-results/visual | Out-Null
+          $nodeVersion = node --version
+          $playwrightVersion = & .\node_modules\.bin\playwright.cmd --version
+          $chromiumVersion = node -e 'const {chromium}=require("playwright"); (async()=>{const b=await chromium.launch(); console.log(b.version()); await b.close()})().catch(e=>{console.error(e); process.exit(1)})'
+          $details = @(
+            "ImageOS=$env:ImageOS"
+            "ImageVersion=$env:ImageVersion"
+            "RunnerArch=$env:RUNNER_ARCH"
+            "Node=$nodeVersion"
+            "Playwright=$playwrightVersion"
+            "Chromium=$chromiumVersion"
+          )
+          $details | Set-Content -Encoding utf8 test-results/visual/oracle.txt
+          $details | ForEach-Object { "- $_" } | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+      - name: Upload candidate visual baselines
+        if: ${{ success() && github.event_name == 'workflow_dispatch' && inputs.refresh_visual_baselines }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: design-visual-baselines-windows-2025-x64
+          path: webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload visual diffs
+        if: ${{ failure() && (github.event_name != 'workflow_dispatch' || !inputs.refresh_visual_baselines) }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: design-visual-diffs-windows-2025-x64
+          path: |
+            webapp/frontend/test-results/visual
+            webapp/frontend/playwright-report/visual
+          if-no-files-found: ignore
+          retention-days: 14

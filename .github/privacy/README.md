@@ -18,9 +18,39 @@ sensitive staged version cannot hide behind a clean working-tree version, and
 an unstaged deletion cannot hide the blob that the next commit would retain.
 The only binary exceptions are the OUI and port registry packs, whose exact
 size and SHA-256 must match `cisco_toolkit/data/registry_manifest.json`.
-The sole project-asset exception is `master-reference/public/og.png`; its exact
-path, `image/png` media type, 2,338,417-byte length, SHA-256, PNG signature,
-IHDR position, and 1730x909 dimensions are hard-coded and regression-tested.
+Project images have two code-pinned exceptions. `master-reference/public/og.png`
+is pinned by exact path, `image/png` media type, 2,338,417-byte length, SHA-256,
+PNG signature, IHDR position, and 1730x909 dimensions. The synthetic
+Windows/Chromium visual-regression set is the sentinel-bounded
+`_SYNTHETIC_VISUAL_BASELINES` mapping in `verify_repository_privacy.py`. Its
+canonical contract is exactly two reviewed PNGs for every component registered
+in `.design-sync/config.json`: `<Name>.png` at its configured primary viewport
+(900 CSS pixels by default) and `<Name>-728.png` at the product-pane bound, all under
+`webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/` (21 components,
+42 files at the time this contract was introduced). They are generated only
+from the tracked fictional `MERIDIAN-*` preview data and individually pinned by
+exact path, media type, byte length, SHA-256, PNG structure, width, and height.
+This is not a directory allowlist: a partial set, an extra sibling image, or a
+changed byte without a matching reviewed pin is rejected.
+
+After `test:visual:update`, inspect every changed PNG before refreshing its
+privacy pin. Then run:
+
+```text
+python .github/scripts/refresh_visual_baseline_pins.py --write --reviewed
+python .github/scripts/refresh_visual_baseline_pins.py
+python .github/scripts/verify_repository_privacy.py
+python -m pytest -q tests/test_repository_privacy.py
+```
+
+The refresh helper derives the exact 2× component path set and primary widths from the design-sync
+config, refuses missing/extra/malformed/linked files and linked/reparse ancestors, validates complete
+CRC-correct PNG chunk/IDAT streams, and rewrites only the
+sentinel-bounded generated mapping. CI and ordinary reviews use its read-only
+default check; `--write --reviewed` is an explicit human-review acknowledgement,
+never an automatic CI step. While a baseline migration is incomplete, the
+existing code-pinned mapping remains the only exception and the helper fails
+closed instead of blessing a partial new set.
 No other image or generic binary path is allowed.
 The four retained IEEE/IANA CSV corpora are a separate, path-exact public-data
 exception: their URL, schema, row count, byte length, and SHA-256 must match

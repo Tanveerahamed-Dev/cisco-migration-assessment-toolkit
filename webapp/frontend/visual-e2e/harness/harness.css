@@ -1,0 +1,58 @@
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+  background: #fff;
+}
+
+.visual-card {
+  width: 100%;
+  min-height: 700px;
+  padding: 24px;
+  background: #fff;
+}
+
+.ds-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 20px;
+  align-items: start;
+}
+
+.ds-grid.ds-col {
+  grid-template-columns: 1fr;
+}
+
+.visual-card[data-mode="single"] {
+  padding: 0;
+}
+
+.ds-single {
+  min-width: 0;
+  transform: translateZ(0);
+}
+
+.ds-cell {
+  min-width: 0;
+  padding: 12px;
+  overflow: hidden;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  transform: translateZ(0);
+}
+
+.ds-cell > h4 {
+  margin: 0 0 8px;
+  color: #6b7280;
+  font: 600 12px system-ui;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.visual-error {
+  padding: 24px;
+  color: #7f1d1d;
+  font: 600 14px/1.5 ui-monospace, monospace;
+  white-space: pre-wrap;
+}

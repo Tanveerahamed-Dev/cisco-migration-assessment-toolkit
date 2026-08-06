@@ -102,7 +102,10 @@ def test_pull_request_workflows_cannot_select_self_hosted_runners():
             if line.strip().startswith("runs-on:")
         ]
         assert runs_on
-        assert all(value in {"ubuntu-latest", "${{ matrix.os }}"} for value in runs_on)
+        assert all(
+            value in {"ubuntu-latest", "windows-2025", "${{ matrix.os }}"}
+            for value in runs_on
+        )
 
 
 def test_no_workflow_that_handles_pull_requests_can_select_self_hosted_runners():
