@@ -1,7 +1,7 @@
 """Offline Cisco hardware lifecycle knowledge base.
 
 This deliberately small table contains only claims bound to an exact Cisco
-End-of-Life bulletin. End-of-sale (EoS) and last-date-of-support (LDoS) are
+End-of-Life bulletin. End-of-sale (EoS) and last-day-of-support (LDoS) are
 copied from the bulletin; no date is derived from a generic support-window
 rule. Broad family claims and negative claims such as "no EoL announced" are
 not evidence and therefore are not represented. An uncovered PID returns
@@ -38,6 +38,7 @@ _EOL_FIXTURE_SOURCE_ID = "cisco-eol-bulletin-semantic-fixture"
 _EOL_FIXTURE_RELATIVE_PATH = (
     "reference-data/official-sources/cisco/eol-bulletins.json"
 )
+_EOL_BUNDLED_FIXTURE_RELATIVE_PATH = "cisco_toolkit/data/eol-bulletins.json"
 _EOL_FIXTURE_SHA256 = (
     "7683b29e66d3e5b39d89407e60a5f08ffbf8ef9f19ab029279ffc9d0861349c3"
 )
@@ -549,55 +550,99 @@ def verify_retained_eol_source_chain(
     *,
     now: datetime | None = None,
 ) -> dict:
-    """Verify retained Cisco evidence and its exact 44-row runtime binding."""
+    """Verify retained Cisco evidence and its exact 44-row runtime binding.
 
+    A repository/sdist checkout verifies the official-source inventory and its
+    retained fixture.  An installed wheel or frozen Atlas bundle deliberately
+    has no ``reference-data`` tree, so it verifies the byte-identical compact
+    fixture bundled inside :mod:`cisco_toolkit` instead.  A partial repository
+    evidence tree never falls back to the bundled copy: that state is treated
+    as corruption and fails closed.
+    """
+
+    explicit_repository_root = repository_root is not None
     root = (
         Path(__file__).resolve().parent.parent
         if repository_root is None
         else Path(repository_root).resolve()
     )
     inventory_path = root / PurePosixPath(SOURCE_INVENTORY_RELATIVE_PATH)
-    try:
-        if inventory_path.stat().st_size > MAX_MANIFEST_BYTES:
-            raise PackIntegrityError("official-source inventory exceeds its size limit")
-        inventory = _strict_json_loads(
-            inventory_path.read_text(encoding="utf-8"),
-            label="official-source inventory",
-        )
-    except PackIntegrityError:
-        raise
-    except (OSError, UnicodeDecodeError) as exc:
-        raise PackIntegrityError(
-            f"official-source inventory unavailable or invalid: {exc}"
-        ) from exc
-    record = (
-        inventory.get("sources", {}).get(_EOL_FIXTURE_SOURCE_ID)
-        if isinstance(inventory, dict)
-        and isinstance(inventory.get("sources"), dict)
-        else None
+    repository_fixture_path = root / PurePosixPath(_EOL_FIXTURE_RELATIVE_PATH)
+    repository_evidence_present = (
+        inventory_path.exists() or repository_fixture_path.exists()
     )
-    expected_record = {
-        "name": "Cisco EoL bulletin semantic primary-source fixture",
-        "path": _EOL_FIXTURE_RELATIVE_PATH,
-        "sha256": _EOL_FIXTURE_SHA256,
-        "bytes": _EOL_FIXTURE_BYTES,
-        "encoding": "utf-8",
-        "media_type": "application/json",
-        "fixture_schema_version": 1,
-        "expected_bulletins": _EOL_EXPECTED_BULLETIN_COUNT,
-        "expected_claims": _EOL_EXPECTED_CLAIM_COUNT,
-        "expected_urls": _EOL_EXPECTED_URL_COUNT,
-        "retrieved_at": _EOL_FIXTURE_RETRIEVED_AT,
-        "reviewed_at": _EOL_REVIEWED,
-    }
-    if not isinstance(record, dict) or {
-        key: record.get(key) for key in expected_record
-    } != expected_record:
-        raise PackIntegrityError(
-            "Cisco EoL fixture inventory record violates its code-pinned contract"
-        )
+    # Absence of both evidence files is legitimate only in an installed/frozen distribution. A
+    # repository or unpacked sdist remains a repository layout even if both files are accidentally
+    # deleted; silently falling back to the package copy there would turn a two-file deletion into a
+    # verified source chain. Structural markers distinguish that state from site-packages/Atlas.
+    # `pyproject.toml` is intentionally present in the frozen Atlas bundle so its version reporter
+    # can identify the release.  It is therefore *not* a repository marker.  Treating it as one made
+    # a correctly bundled Atlas insist on repository-only `reference-data/` files and reject the
+    # package fixture that the frozen distribution is designed to use.
+    repository_layout_present = any(
+        (root / marker).exists()
+        for marker in ("setup.py", "MANIFEST.in", ".git")
+    )
+    use_repository_evidence = (
+        explicit_repository_root
+        or repository_evidence_present
+        or repository_layout_present
+    )
 
-    fixture_path = root / PurePosixPath(_EOL_FIXTURE_RELATIVE_PATH)
+    if use_repository_evidence:
+        try:
+            if inventory_path.stat().st_size > MAX_MANIFEST_BYTES:
+                raise PackIntegrityError(
+                    "official-source inventory exceeds its size limit"
+                )
+            inventory = _strict_json_loads(
+                inventory_path.read_text(encoding="utf-8"),
+                label="official-source inventory",
+            )
+        except PackIntegrityError:
+            raise
+        except (OSError, UnicodeDecodeError) as exc:
+            raise PackIntegrityError(
+                f"official-source inventory unavailable or invalid: {exc}"
+            ) from exc
+        record = (
+            inventory.get("sources", {}).get(_EOL_FIXTURE_SOURCE_ID)
+            if isinstance(inventory, dict)
+            and isinstance(inventory.get("sources"), dict)
+            else None
+        )
+        expected_record = {
+            "name": "Cisco EoL bulletin semantic primary-source fixture",
+            "path": _EOL_FIXTURE_RELATIVE_PATH,
+            "sha256": _EOL_FIXTURE_SHA256,
+            "bytes": _EOL_FIXTURE_BYTES,
+            "encoding": "utf-8",
+            "media_type": "application/json",
+            "fixture_schema_version": 1,
+            "expected_bulletins": _EOL_EXPECTED_BULLETIN_COUNT,
+            "expected_claims": _EOL_EXPECTED_CLAIM_COUNT,
+            "expected_urls": _EOL_EXPECTED_URL_COUNT,
+            "retrieved_at": _EOL_FIXTURE_RETRIEVED_AT,
+            "reviewed_at": _EOL_REVIEWED,
+        }
+        if not isinstance(record, dict) or {
+            key: record.get(key) for key in expected_record
+        } != expected_record:
+            raise PackIntegrityError(
+                "Cisco EoL fixture inventory record violates its code-pinned contract"
+            )
+        fixture_path = repository_fixture_path
+        fixture_relative_path = _EOL_FIXTURE_RELATIVE_PATH
+        evidence_distribution = "repository-retained-official-source"
+        inventory_verified = True
+    else:
+        fixture_path = (
+            Path(__file__).resolve().parent / "data" / "eol-bulletins.json"
+        )
+        fixture_relative_path = _EOL_BUNDLED_FIXTURE_RELATIVE_PATH
+        evidence_distribution = "bundled-authoritative-evidence"
+        inventory_verified = False
+
     try:
         if fixture_path.stat().st_size != _EOL_FIXTURE_BYTES:
             raise PackIntegrityError("Cisco EoL fixture byte-size mismatch")
@@ -637,9 +682,12 @@ def verify_retained_eol_source_chain(
         )
     return {
         "verified": True,
-        "fixture_path": _EOL_FIXTURE_RELATIVE_PATH,
+        "fixture_path": fixture_relative_path,
         "fixture_sha256": _EOL_FIXTURE_SHA256,
         "fixture_bytes": _EOL_FIXTURE_BYTES,
+        "evidence_distribution": evidence_distribution,
+        "inventory_verified": inventory_verified,
+        "code_pinned_contract_verified": True,
         "reviewed_at": _EOL_REVIEWED,
         "bulletin_count": len({claim["bulletin_id"] for claim in runtime_claims}),
         "model_scope_count": len(runtime_claims),
@@ -816,6 +864,11 @@ def provenance_health() -> dict:
             or _EOL_FIXTURE_RELATIVE_PATH
         ),
         "fixture_sha256": _EOL_FIXTURE_SHA256,
+        "evidence_distribution": proof.get("evidence_distribution", "unverified"),
+        "inventory_verified": bool(proof.get("inventory_verified")),
+        "code_pinned_contract_verified": bool(
+            proof.get("code_pinned_contract_verified")
+        ),
         "semantic_sha256": semantic_hash,
         "reviewed_at": _EOL_REVIEWED,
         "row_count": len(_EOL),

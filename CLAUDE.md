@@ -30,6 +30,14 @@ ledger shas predating §13.11 refer to superseded history); the master reference
   Vite 8.2.1, and `@vitejs/plugin-react` 6.0.5. It removed the temporary RSC-only npm-audit
   exception; this is current repository state, not a reopened item from the historical review.
 
+The 2026-08-07 lifecycle-authority closure is also complete. Repository installs, wheels, sdists,
+and Atlas bundles carry and verify the exact 13,261-byte `eol-bulletins.json` fixture; self-test and
+release smoke gates fail closed when it is absent or altered. Every lifecycle consumer now uses the
+canonical Past-LDoS / Near-LDoS / Past-EoS / Active / Unknown bands with entitlement-neutral date
+semantics, and future, unrecognized, or missing lifecycle rows remain Unknown rather than being
+rendered as healthy. The golden snapshot, sample fleet, and checked frontend distribution were
+regenerated from that final source state.
+
 A future whole-repo review should start fresh rather than reopening this one. Its most reusable
 output is the defect *shapes*, not its findings: absence rendered as health, a guard scoped to a
 hand-maintained list standing in for the class it means, and gates whose success path was never
@@ -37,7 +45,7 @@ executed.
 
 ## graphify
 
-This project has a knowledge graph at graphify-out/ (12,517 nodes / 22,228 edges as of 2026-08-03 — `graphify-out/GRAPH_REPORT.md` header is the authoritative count and this figure is only a cache of it, so re-read the header rather than trusting this line; after the 2026-07-03 de-pollution that also
+This project has a knowledge graph at graphify-out/ (12,842 nodes / 22,802 edges as of 2026-08-07 — `graphify-out/GRAPH_REPORT.md` header is the authoritative count and this figure is only a cache of it, so re-read the header rather than trusting this line; after the 2026-07-03 de-pollution that also
 excluded untracked scratch + side-engagement dirs — `ds-bundle/`+`.ds-sync/` (design-sync output), `*_DC_Design/`,
 `compass_artifact_*`, `scratch_*` — which had diluted it ~27%; the earlier 2026-06-25 pass excluded the stale `_ref/`
 engine copy + the graph's own `graphify-out/` dumps — see `.graphifyignore`). The live graph is

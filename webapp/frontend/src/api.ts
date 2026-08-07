@@ -31,7 +31,7 @@ export interface LifecycleSummary {
   near_eos?: number | string;
   past_ldos?: number | string;
   active?: number | string;
-  /** Assets whose support state could NOT be determined (no EoX match). A gap, never a clean result. */
+  /** Assets with no exact EoX row or incomplete retained source/date authority. A gap, never clean. */
   unknown?: number;
   n_devices?: number;
   assessed?: number;
@@ -393,7 +393,18 @@ export interface DesignDimension {
 }
 export interface DesignTargetState {
   dimensions: DesignDimension[];
-  replacement_bom: { replace_now: [string, number][]; refresh_soon: [string, number][]; n_replace: number; n_refresh: number; note: string };
+  replacement_bom: {
+    replace_now: [string, number][];
+    refresh_soon: [string, number][];
+    undetermined?: [string, number][];
+    n_replace: number;
+    n_refresh: number;
+    n_near?: number;
+    n_past_eos?: number;
+    n_undetermined?: number;
+    n_not_assessed?: number;
+    note: string;
+  };
   addressing_plan: {
     status: string; mode?: string; observed_vlans?: number; requirement_needed?: string; note: string;
     n_census_vlans?: number; n_unsizable?: number;

@@ -49,32 +49,103 @@ function lifecycleGapDisclosed(coverageGap: boolean | undefined, unknown: number
  *        assessed-and-clean case looked identical to the section-absent case; and
  *    (2) it read the RISK rollup alone, so an all-Unknown fleet (nothing assessed at all) also
  *        rendered nothing — the coverage gap was invisible by construction.
- *  Both are the same shape: an un-assessed fleet reading as a healthy one. `unknown` is disclosed
- *  in a non-green tone whenever it is > 0, and a measured 0 now prints as a measurement. */
+ *  Both are the same shape: an un-assessed fleet reading as a healthy one. The compact line now
+ *  renders the complete five-band census in canonical urgency order, uses the full `by_band`
+ *  census as a compatibility fallback, and keeps date position separate from entitlement. */
 function LifecycleNote({ lc }: { lc?: LifecycleSummary }) {
   if (!lc || !Object.keys(lc).length) return null;   // section absent -> say nothing, claim nothing
-  const eos = countOf(lc.past_eos), ldos = countOf(lc.past_ldos);
-  const unknown = countOf(lc.unknown), total = countOf(lc.n_devices);
-  const bits: string[] = [];
-  if (Number.isFinite(eos)) bits.push(`${eos} past-EoS`);
-  if (Number.isFinite(ldos) && ldos > 0) bits.push(`${ldos} past-LDoS`);
+  const hasBandCensus = !!lc.by_band && Object.keys(lc.by_band).length > 0;
+  const canonicalBands = new Set(["Past-LDoS", "Near-LDoS", "Past-EoS", "Active", "Unknown"]);
+  const bandCount = (named: unknown, band: string): number => {
+    const direct = countOf(named);
+    if (Number.isFinite(direct)) return direct;
+    return hasBandCensus ? countOf(lc.by_band?.[band] ?? 0) : NaN;
+  };
+  const ldos = bandCount(lc.past_ldos, "Past-LDoS");
+  const near = bandCount(lc.near_eos, "Near-LDoS");
+  const eos = bandCount(lc.past_eos, "Past-EoS");
+  const active = bandCount(lc.active, "Active");
+  // The backend's compatibility field may aggregate every unrecognized bucket into `unknown`. When the
+  // complete census is present, render its literal Unknown bucket and render future bands separately so
+  // each asset appears exactly once. Fall back to the aggregate only for older summaries without by_band.
+  const reportedUnknown = countOf(lc.unknown);
+  const unknown = hasBandCensus ? countOf(lc.by_band?.Unknown ?? 0) : reportedUnknown;
+  const total = countOf(lc.n_devices);
+  // Forward-compatible fail-closed handling: api.ts deliberately carries the complete census. A future
+  // engine band that this client does not understand is not Active and must not disappear. Keep canonical
+  // bands first, then append stable-sorted unrecognized bands as NOT ASSESSED until the UI learns them.
+  const unrecognized = Object.entries(lc.by_band || {})
+    .filter(([band]) => !canonicalBands.has(band))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([band, raw]) => ({ band, count: countOf(raw) }));
+  const unrecognizedGap = unrecognized.some(({ count }) => !Number.isFinite(count) || count > 0);
+  const unrecognizedCount = unrecognized.reduce(
+    (sum, { count }) => sum + (Number.isFinite(count) && count > 0 ? count : 0), 0,
+  );
+  // Some compatibility owners publish an aggregate unknown count that is larger than every Unknown/future
+  // bucket present in by_band (for example, 8 Active of 12 total and unknown=4). Preserve that positive
+  // remainder once as an outside-census gap; do not hide it and do not add it to a future band twice.
+  const unknownRemainder = hasBandCensus && Number.isFinite(reportedUnknown)
+    ? Math.max(0, reportedUnknown - (Number.isFinite(unknown) ? unknown : 0) - unrecognizedCount)
+    : 0;
+  const bits: Array<{ band: string; text: string; color: string; title?: string; strong?: boolean }> = [];
+  if (Number.isFinite(ldos)) bits.push({
+    band: "Past-LDoS", text: `${ldos} past-LDoS`, color: "var(--crit)", strong: ldos > 0,
+    title: "Recorded LDoS has passed; verify the exact PID and entitlement record before acting.",
+  });
+  if (Number.isFinite(near)) bits.push({
+    band: "Near-LDoS", text: `${near} within 1yr of LDoS`, color: "var(--risk)", strong: near > 0,
+    title: "Recorded LDoS is within one year; this date position does not establish contract entitlement.",
+  });
+  if (Number.isFinite(eos)) bits.push({
+    band: "Past-EoS", text: `${eos} past-EoS (LDoS future)`, color: "var(--watch)", strong: eos > 0,
+    title: "Past end-of-sale with recorded LDoS still future; contract entitlement is not inferred.",
+  });
+  if (Number.isFinite(active)) bits.push({
+    band: "Active", text: `${active} Active (pre-EoS date position)`, color: "var(--text-dim)",
+    title: "Active is the schema label for a pre-EoS date position; support entitlement was not assessed.",
+  });
   const counted = Number.isFinite(unknown) && unknown > 0;
-  const gap = lifecycleGapDisclosed(lc.coverage_gap, unknown, bits.length > 0);   // see r8 F6 above
+  const gap = lifecycleGapDisclosed(lc.coverage_gap, unknown, bits.length > 0 || Number.isFinite(unknown));
   const gapText = counted
-    ? `${unknown}${Number.isFinite(total) && total > 0 ? `/${total}` : ""} EoL NOT ASSESSED`
+    ? `${unknown}${Number.isFinite(total) && total > 0 ? `/${total}` : ""} Unknown / EoL NOT ASSESSED`
     : "EoL NOT ASSESSED — no lifecycle figure was published for this fleet";
   const gapTitle = counted
-    ? "No EoX bulletin matched these platforms — their support state was NOT determined. Un-assessed is a coverage gap, never a clean bill of health."
+    ? "No authoritative lifecycle band was assigned to these devices: either no exact EoX bulletin row matched or the matched row's retained source proof/complete dates did not verify. Their support state was NOT determined; un-assessed is a coverage gap, never a clean bill of health."
     : "The lifecycle section published no band census and no un-assessed count, so hardware support state was NOT measured here. A missing measurement is a coverage gap, never a clean bill of health.";
+  if (counted || (gap && !unrecognizedGap && unknownRemainder <= 0)) bits.push({
+    band: "Unknown", text: gapText, color: "var(--text-dim)", title: gapTitle, strong: true,
+  });
+  else if (Number.isFinite(unknown)) bits.push({
+    band: "Unknown", text: `${unknown} Unknown / EoL NOT ASSESSED`, color: "var(--text-dim)",
+    title: "No devices lacked an authoritative lifecycle band in this census.",
+  });
+  if (unknownRemainder > 0) bits.push({
+    band: "Unknown-remainder",
+    text: `${unknownRemainder} NOT ASSESSED (reported outside band census)`,
+    color: "var(--text-dim)",
+    title: "The lifecycle owner reported additional un-assessed assets that were not represented by a named by_band bucket; the discrepancy is preserved as a gap, not merged or dropped.",
+    strong: true,
+  });
+  for (const entry of unrecognized) bits.push({
+    band: entry.band,
+    text: `${Number.isFinite(entry.count) ? `${entry.count} ` : ""}NOT ASSESSED (unrecognized band: ${entry.band})`,
+    color: "var(--text-dim)",
+    title: "This lifecycle band is not recognized by this client, so it is treated as un-assessed rather than healthy.",
+    strong: true,
+  });
   return (
     <>
-      {bits.length ? <> · {bits.join(" · ")}</> : null}
-      {gap && (
-        <>
-          {" "}
-          <b style={{ color: "var(--text-dim)" }} title={gapTitle}>· {gapText}</b>
-        </>
-      )}
+      {bits.length ? <>{" · "}{bits.map((bit, i) => (
+        <span
+          key={bit.band}
+          data-lifecycle-band={bit.band}
+          style={{ color: bit.color, fontWeight: bit.strong ? 700 : 500 }}
+          title={bit.title}
+        >
+          {i ? " · " : ""}{bit.text}
+        </span>
+      ))}</> : null}
     </>
   );
 }

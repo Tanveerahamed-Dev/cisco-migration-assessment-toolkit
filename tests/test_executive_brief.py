@@ -36,6 +36,35 @@ def test_axes_headlines_and_severity():
     assert b["scale"] == {"n_devices": 2, "n_domains": 11, "n_endpoints": 150}
 
 
+def test_past_eos_only_is_a_medium_non_green_lifecycle_axis():
+    b = compute_executive_brief(
+        health_scores=[{"band": "Good", "score": 85}],
+        lifecycle_risk={"summary": {
+            "n_devices": 4, "n_past_ldos": 0, "n_near": 0,
+            "n_past_eos": 4, "n_active": 0, "n_unknown": 0,
+            "asof": "2026-08-07",
+        }},
+    )
+    axis = next(a for a in b["axes"] if a["axis"] == "Hardware lifecycle (EoL)")
+    assert axis["severity"] == "Medium"
+    assert "4 past end-of-sale (LDoS still future)" in axis["headline"]
+    assert "contract entitlement is not inferred" in axis["detail"]
+
+
+def test_mixed_lifecycle_axis_preserves_higher_urgency_and_reports_past_eos():
+    b = compute_executive_brief(
+        health_scores=[{"band": "Good", "score": 85}],
+        lifecycle_risk={"summary": {
+            "n_devices": 10, "n_past_ldos": 0, "n_near": 2,
+            "n_past_eos": 3, "n_active": 5, "n_unknown": 0,
+        }},
+    )
+    axis = next(a for a in b["axes"] if a["axis"] == "Hardware lifecycle (EoL)")
+    assert axis["severity"] == "High"
+    assert "2 within 1yr" in axis["headline"]
+    assert "3 past end-of-sale (LDoS still future)" in axis["headline"]
+
+
 def test_axes_ranked_and_top_gating_is_high_only():
     b = compute_executive_brief(**_full())
     ranks = [_RANK[a["severity"]] for a in b["axes"]]

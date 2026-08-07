@@ -4248,14 +4248,29 @@
     "key": "lifecycle-past-ldos",
     "title": "Device past last-day-of-support (LDoS)",
     "family": "Lifecycle",
-    "checks": "A device whose model's LDoS date is in the past relative to the assessment date \u2014 no vendor support of any kind remains.",
-    "healthy_value": "band == Active (LDoS in the future)",
-    "threshold": "band == Past-LDoS (LDoS date <= asof)",
+    "checks": "A device whose assessment date is after the LDoS date in its authoritative exact-model row. This is a lifecycle date band, not proof of contract entitlement or support availability.",
+    "healthy_value": "band == Active (authoritative EoS date is in the future; entitlement not inferred)",
+    "threshold": "band == Past-LDoS (asof > LDoS; the LDoS date itself is not past)",
     "cited_fields": [
      "lifecycle_risk.per_device[].band",
      "lifecycle_risk.summary.n_past_ldos"
     ],
-    "abstains_when": "model not resolvable in the offline eoldb KB, or device model not collected (band == Unknown, never a silent Active)",
+    "abstains_when": "device model not collected, no exact model row exists, or the matched row's retained source/date authority is incomplete (band == Unknown, never silently Active)",
+    "evidence_gated": true,
+    "source_command": "show version"
+   },
+   {
+    "key": "lifecycle-near-ldos",
+    "title": "Device within one year of last-day-of-support (LDoS)",
+    "family": "Lifecycle",
+    "checks": "A device whose authoritative exact-model LDoS date is on or after the assessment date and no more than one year away. This is a lifecycle date band, not proof of contract entitlement or support availability.",
+    "healthy_value": "band in (Past-EoS, Active) (LDoS is more than one year away; entitlement not inferred)",
+    "threshold": "band == Near-LDoS (0 <= (LDoS - asof) / 365.25 <= 1.0)",
+    "cited_fields": [
+     "lifecycle_risk.per_device[].band",
+     "lifecycle_risk.summary.n_near"
+    ],
+    "abstains_when": "device model not collected, no exact model row exists, or the matched row's retained source/date authority is incomplete (band == Unknown, never silently Active)",
     "evidence_gated": true,
     "source_command": "show version"
    },
@@ -4263,14 +4278,14 @@
     "key": "lifecycle-past-eos",
     "title": "Device past end-of-sale but not yet LDoS",
     "family": "Lifecycle",
-    "checks": "A device past its end-of-sale date but still within the support tail (a distinct, smaller population than Past-LDoS).",
-    "healthy_value": "band == Active",
-    "threshold": "band == Past-EoS (EoS <= asof < LDoS)",
+    "checks": "A device whose authoritative exact-model EoS date has strictly passed while its LDoS date remains more than one year away. This is a lifecycle date band, not proof of contract entitlement or support availability.",
+    "healthy_value": "band == Active (authoritative EoS date is in the future; entitlement not inferred)",
+    "threshold": "band == Past-EoS (asof > EoS and LDoS is more than one year away)",
     "cited_fields": [
      "lifecycle_risk.per_device[].band",
      "lifecycle_risk.summary.n_past_eos"
     ],
-    "abstains_when": "model not resolvable in the eoldb KB, or device model not collected (band == Unknown)",
+    "abstains_when": "device model not collected, no exact model row exists, or the matched row's retained source/date authority is incomplete (band == Unknown, never silently Active)",
     "evidence_gated": true,
     "source_command": "show version"
    },
@@ -4490,15 +4505,15 @@
    }
   ],
   "summary": {
-   "n_detectors": 32,
-   "n_with_threshold": 12,
-   "n_evidence_gated": 32,
+   "n_detectors": 33,
+   "n_with_threshold": 13,
+   "n_evidence_gated": 33,
    "families": {
     "Capacity": 2,
     "Hygiene": 3,
     "L1": 4,
     "L3": 4,
-    "Lifecycle": 2,
+    "Lifecycle": 3,
     "Platform": 2,
     "QoS": 2,
     "STP": 2,
@@ -5638,7 +5653,7 @@
    ],
    "wave": "",
    "title": "CR-01: End-of-support keystone",
-   "detail": "Hardware is past/near last-day-of-support AND removal strands 3 endpoint(s) across 2 VLAN(s) \u2014 an unsupportable box the network cannot lose.",
+   "detail": "Hardware is past last-day-of-support AND removal strands 3 endpoint(s) across 2 VLAN(s) \u2014 an unsupportable box the network cannot lose.",
    "remediation": "Stacked independent risks on one asset \u2014 clear at least one leg before this device's migration window.",
    "priority": 1
   },
@@ -5678,7 +5693,7 @@
    ],
    "wave": "",
    "title": "CR-02: Failing hardware past support",
-   "detail": "Critical health score on hardware that is past/near end-of-support \u2014 no TAC escalation path when it degrades further.",
+   "detail": "Critical health score on hardware that is past last-day-of-support \u2014 no standard TAC escalation path when it degrades further.",
    "remediation": "Stacked independent risks on one asset \u2014 clear at least one leg before this device's migration window.",
    "priority": 4
   },
@@ -8115,6 +8130,9 @@
    "path": "eoldb.py",
    "fixture_path": "reference-data/official-sources/cisco/eol-bulletins.json",
    "fixture_sha256": "7683b29e66d3e5b39d89407e60a5f08ffbf8ef9f19ab029279ffc9d0861349c3",
+   "evidence_distribution": "repository-retained-official-source",
+   "inventory_verified": true,
+   "code_pinned_contract_verified": true,
    "semantic_sha256": "dbbd00ce46789baeb62fee6abf56fbd366ca51d190d33c63603093cb61d2af5b",
    "reviewed_at": "2026-07-30",
    "row_count": 44,
@@ -8498,14 +8516,13 @@
    {
     "id": "LC-1",
     "domain": "Lifecycle & software",
-    "title": "No hardware past end-of-support",
+    "title": "Hardware lifecycle exposure is controlled",
     "verdict": "critical",
-    "observed": "1 device(s) are past LAST-DAY-OF-SUPPORT (and 1 more past end-of-sale): access1, core1. Separately, 1 device(s) could NOT be lifecycle-banded \u2014 no EoX bulletin in the offline KB covers their platform, so their support state is UNKNOWN, never determined, and this check is unanswered for them.",
-    "implication": "Past LDoS there is NO TAC escalation path and no software fix \u2014 a fault during a migration window on these devices has no vendor backstop. The undetermined device(s) carry no evidence of vendor support in either direction; absent lifecycle data is not a pass, and a plan that assumes it is may stage a platform with no TAC path into a change window.",
-    "recommendation": "Replace (not upgrade) the LDoS devices as the first migration waves; stage spares for any that must briefly remain. Resolve every undetermined platform against Cisco's EoX portal and re-run, or record them as an accepted risk in the engagement RAID log.",
-    "reference": "Cisco EoX policy \u2014 no TAC/software support past last-day-of-support",
+    "observed": "1 device(s) are past LAST-DAY-OF-SUPPORT: core1. Separately, 1 device(s) are past end-of-sale with LDoS still future: access1. Separately, 1 device(s) could NOT be lifecycle-banded \u2014 either no exact EoX bulletin row matched or the matched row's retained source authority/complete dates did not verify, so their support state is UNKNOWN and this check is unanswered for them.",
+    "implication": "For the Past-LDoS devices there is NO standard TAC escalation path or software fix \u2014 a fault during a migration window on those devices has no vendor backstop. The Past-EoS-only date band does not establish contract entitlement. The undetermined device(s) carry no evidence of vendor support in either direction; absent lifecycle data is not a pass, and a plan that assumes it is may stage a platform with no TAC path into a change window.",
+    "recommendation": "Replace (not upgrade) the LDoS devices as the first migration waves; stage spares for any that must briefly remain. Schedule Near-LDoS and EoS-only devices for refresh before their recorded LDoS dates. Resolve every undetermined platform against Cisco's EoX portal and re-run, or record them as an accepted risk in the engagement RAID log.",
+    "reference": "Cisco EoX policy \u2014 exact EoS/LDoS date bands; support entitlement assessed separately",
     "evidence": [
-     "access1",
      "core1"
     ]
    },
@@ -8527,9 +8544,8 @@
     "id": "LC-1",
     "domain": "Lifecycle & software",
     "verdict": "critical",
-    "action": "Replace (not upgrade) the LDoS devices as the first migration waves; stage spares for any that must briefly remain. Resolve every undetermined platform against Cisco's EoX portal and re-run, or record them as an accepted risk in the engagement RAID log.",
+    "action": "Replace (not upgrade) the LDoS devices as the first migration waves; stage spares for any that must briefly remain. Schedule Near-LDoS and EoS-only devices for refresh before their recorded LDoS dates. Resolve every undetermined platform against Cisco's EoX portal and re-run, or record them as an accepted risk in the engagement RAID log.",
     "evidence": [
-     "access1",
      "core1"
     ]
    },

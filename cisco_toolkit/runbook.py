@@ -504,8 +504,16 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         doc.add_paragraph(
             f"As of the assessment date {lr.get('asof', '')} (when the evidence was collected), of {ls.get('n_devices', 0)} device(s): "
             f"{ls.get('n_past_ldos', 0)} are PAST Cisco's last day of support (no software fixes / no TAC), "
-            f"{ls.get('n_near', 0)} reach end-of-support within a year, {ls.get('n_active', 0)} are active, "
-            f"{ls.get('n_unknown', 0)} unknown. End-of-support hardware is a hard migration driver.")
+            f"{ls.get('n_near', 0)} reach end-of-support within a year, "
+            f"{ls.get('n_past_eos', 0)} are past end-of-sale with LDoS still future (date band only; "
+            f"support entitlement not inferred), {ls.get('n_active', 0)} are in the "
+            f"pre-EoS date band (schema: Active; not a support-entitlement claim), and "
+            f"{ls.get('n_unknown', 0)} device(s) are NOT ASSESSED. End-of-support hardware is a hard migration driver.")
+        if ls.get("n_unknown"):
+            doc.add_paragraph(
+                "NOT ASSESSED means either no exact EoX row matched the collected PID or the matched "
+                "row's retained source/date authority was withheld or incomplete. Lifecycle position "
+                "and support entitlement remain undetermined until both are verified.")
         _label_run(doc.add_paragraph(), "Reference note:", lr.get("note", ""), GREY)
         rows = [[p.get("platform"), p.get("count"), p.get("band"), p.get("ldos") or "—"]
                 for p in _R(ls.get("by_platform"))]

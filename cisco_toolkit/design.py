@@ -22,6 +22,7 @@ import re
 from collections import Counter, defaultdict
 from datetime import datetime
 
+from cisco_toolkit.analyze import _LIFECYCLE_BAND_RANK as _LC_BAND_RANK
 from cisco_toolkit.analyze import vlan_inventory
 # The overlay-status sentinel for a multicast group the offline registry had NO entry for. Imported from
 # its OWNER rather than re-spelled here, so the §2.5 classification-basis cell cannot drift from the
@@ -36,9 +37,6 @@ from cisco_toolkit.textutils import _as_num, xml_safe, xml_safe_deep
 from cisco_toolkit import ssot as _ssot_mod   # Law 1 accessors (canonical facts + segmentation posture)
 
 logger = logging.getLogger(__name__)
-
-_LC_BAND_RANK = {"Past-LDoS": 0, "Past-EoS": 1, "Near-LDoS": 2, "Active": 3, "Unknown": 4}
-
 
 def _capped_join(items, cap: int, sep: str = ", ") -> str:
     """Join at most `cap` items and DISCLOSE the remainder with the house `(+N more)` marker.
@@ -742,16 +740,27 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
             break
 
     doc.add_heading("3.4 Equipment list (Bill of Materials)", level=2)
-    by_model = defaultdict(lambda: {"count": 0, "band": "Unknown"})
+    by_model = defaultdict(lambda: {"count": 0, "band": None, "n_unknown": 0})
     for h, d in devices.items():
         m = _D(d).get("model") or "Unknown"    # _D: a truthy non-dict device value -> {} (same class as devices[h])
         by_model[m]["count"] += 1
         b = lc_by_host.get(h, {}).get("band")
-        if b and _LC_BAND_RANK.get(b, 9) < _LC_BAND_RANK.get(by_model[m]["band"], 9):
+        if b not in _LC_BAND_RANK or b == "Unknown":
+            by_model[m]["n_unknown"] += 1
+        elif by_model[m]["band"] is None or _LC_BAND_RANK[b] < _LC_BAND_RANK[by_model[m]["band"]]:
             by_model[m]["band"] = b
-    bom_rows = sorted(((m, v["count"], v["band"]) for m, v in by_model.items()),
+
+    def _band_display(v):
+        band = v.get("band")
+        base = ("Pre-EoS date band (schema: Active)" if band == "Active" else
+                band if band else "NOT ASSESSED")
+        if v.get("n_unknown") and band:
+            base += f"; {v['n_unknown']} NOT ASSESSED"
+        return base
+
+    bom_rows = sorted(((m, v["count"], _band_display(v)) for m, v in by_model.items()),
                       key=lambda r: (-r[1], r[0]))
-    table(["Model", "Qty", "Worst EoL band"], bom_rows, widths=[3.0, 1.0, 2.0])
+    table(["Model", "Qty", "Lifecycle band / coverage"], bom_rows, widths=[3.0, 1.0, 2.0])
     if _scope_note:
         # This list is handed to procurement: an unreconciled gap is an under-order, not a footnote.
         _label_run(doc.add_paragraph(), "Coverage — DO NOT ORDER FROM THIS TABLE UNRECONCILED:",
@@ -781,8 +790,8 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
             status = "Consistent"
         else:
             status = "No version data"
-        sw_rows.append((m, images, status, by_model[m]["band"]))
-    table(["Model", "Images observed", "Status", "Worst EoL band"],
+        sw_rows.append((m, images, status, _band_display(by_model[m])))
+    table(["Model", "Images observed", "Status", "Lifecycle band / coverage"],
           sw_rows[:30], widths=[1.7, 2.2, 1.8, 1.0])
     if _scope_note:
         _label_run(doc.add_paragraph(), "Coverage:",
@@ -801,40 +810,54 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                     f"above ({len(mixed)} in total) — the table above carries each one's observed "
                     "images and standardization candidate; every mixed model needs the same "
                     "consolidation decision.")
-    eol_models = sorted(m for m, v in by_model.items() if v["band"] in ("Past-EoS", "Past-LDoS"))
-    if eol_models:
+    past_ldos_models = sorted(m for m, v in by_model.items() if v["band"] == "Past-LDoS")
+    near_ldos_models = sorted(m for m, v in by_model.items() if v["band"] == "Near-LDoS")
+    past_eos_models = sorted(m for m, v in by_model.items() if v["band"] == "Past-EoS")
+    unknown_models = sorted(m for m, v in by_model.items() if v["n_unknown"])
+    if past_ldos_models:
         # `(+N more)`, not a bare cut: this sentence is a replacement scope statement, and §3.4's BoM
-        # note already warns the quantities are a FLOOR. 10 past-EoS/LDoS models, 8 shown.
-        recs.append("Hardware past end-of-support gets replacement, not an image upgrade: "
-                    + _capped_join(eol_models, 8)
-                    + (f" — {len(eol_models)} model(s) in total" if len(eol_models) > 8 else "")
+        # note already warns the quantities are a FLOOR. Only Past-LDoS supports this statement.
+        recs.append("Hardware past last-day-of-support gets replacement, not an image upgrade: "
+                    + _capped_join(past_ldos_models, 8)
+                    + (f" — {len(past_ldos_models)} model(s) in total"
+                       if len(past_ldos_models) > 8 else "")
                     + ". Plan these as new-platform builds in the target design (§4).")
+    if near_ldos_models:
+        recs.append("Hardware within one year of LDoS needs a scheduled replacement before the "
+                    "recorded deadline; this date band does not establish support entitlement: "
+                    + _capped_join(near_ldos_models, 8)
+                    + (f" — {len(near_ldos_models)} model(s) in total"
+                       if len(near_ldos_models) > 8 else "")
+                    + ". Confirm exact PIDs, lead times, and any serial-numbered contract coverage.")
+    if past_eos_models:
+        recs.append("Hardware in the past-end-of-sale date band needs a planned refresh decision before "
+                    "LDoS, but that date band alone does not prove lost support entitlement or require "
+                    "immediate replacement: " + _capped_join(past_eos_models, 8)
+                    + (f" — {len(past_eos_models)} model(s) in total"
+                       if len(past_eos_models) > 8 else "")
+                    + ". Verify exact PIDs, LDoS dates, and contract coverage before selecting the target image.")
     lifecycle_unavailable = _phase_failed(integrity_failures, "lifecycle risk")
     if lifecycle_unavailable:
         doc.add_paragraph(
             "UNVERIFIED - lifecycle-risk synthesis failed for this run. No image-consistency or "
             "end-of-support clearance is asserted from the empty fallback.")
-    elif recs:
+    else:
         for r_ in recs:
             doc.add_paragraph(r_, style="List Bullet")
-    else:
-        # "no past-end-of-support hardware was OBSERVED" is a statement about what the assessment
-        # SAW, and it is true even when it saw nothing — `by_model` bands only devices the offline
-        # EoX KB matched, so a fleet of entirely unmatched platforms produced no `eol_models` and
-        # this sentence licensed carrying their images forward. Disclose the undetermined population
-        # in the same paragraph; a design baseline built on unassessed hardware is the decision this
-        # sentence was quietly making for the reader. (handoff §7.23)
-        _unknown_models = sorted(m for m, v in by_model.items() if v.get("band") == "Unknown")
-        if _unknown_models:
+        # Coverage is orthogonal to findings. A mixed-image or date-banded recommendation must not
+        # suppress the unassessed population that sits beside it.
+        if unknown_models:
+            n_unknown_devices = sum(by_model[m]["n_unknown"] for m in unknown_models)
             doc.add_paragraph(
-                "Software is consistent per platform, and no past-end-of-support hardware was "
-                f"observed — but {len(_unknown_models)} platform(s) could not be assessed at all: "
-                + _capped_join(_unknown_models, 8)
-                + (f" — {len(_unknown_models)} model(s) in total" if len(_unknown_models) > 8 else "")
-                + ". No EoX bulletin in the offline KB matched them, so their support state is "
-                "UNDETERMINED, not clear. Resolve them against Cisco's EoX portal before adopting "
-                "the current images as the target baseline.")
-        else:
+                f"NOT ASSESSED — {n_unknown_devices} device(s) across {len(unknown_models)} platform(s) "
+                "have no authoritative lifecycle band: " + _capped_join(unknown_models, 8)
+                + (f" — {len(unknown_models)} model(s) in total" if len(unknown_models) > 8 else "")
+                + ". Either no exact EoX row matched or the matched row's retained source/date authority "
+                "was withheld or incomplete, so lifecycle position and support entitlement are "
+                "UNDETERMINED, not clear. Resolve them against Cisco's EoX and entitlement records "
+                "before adopting the current images as the target baseline.",
+                style="List Bullet")
+        if not recs and not unknown_models:
             doc.add_paragraph(
                 "Software is consistent per platform and no past-end-of-support hardware was observed — "
                 "carry the current images forward as the minimum-version baseline for the target design.")
@@ -1018,9 +1041,11 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         if bom.get("n_replace") or bom.get("n_refresh") or bom.get("n_undetermined"):
             doc.add_heading("5.1 Replacement Bill of Materials (target procurement)", level=2)
             doc.add_paragraph(
-                f"{bom.get('n_replace', 0)} asset(s) at end-of-support to replace and "
-                f"{bom.get('n_refresh', 0)} approaching it to refresh, grouped by current model — the "
-                "procurement the target build requires."
+                f"{bom.get('n_replace', 0)} Past-LDoS asset(s) to replace now; "
+                f"{bom.get('n_near', 0)} Near-LDoS asset(s) to replace before the recorded deadline; "
+                f"{bom.get('n_past_eos', 0)} Past-EoS asset(s) to place in refresh planning while LDoS "
+                "is still future. These date bands are grouped by current model and do not establish "
+                "serial-numbered support entitlement."
                 + (f" A further {bom.get('n_undetermined')} asset(s) could NOT be banded and are "
                    "listed below for resolution; they are not costed here."
                    if bom.get("n_undetermined") else "")

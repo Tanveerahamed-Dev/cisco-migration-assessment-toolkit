@@ -288,12 +288,29 @@ _DETECTOR_DESCRIPTORS: List[Dict[str, Any]] = [
         "key": "lifecycle-past-ldos",
         "title": "Device past last-day-of-support (LDoS)",
         "family": "Lifecycle",
-        "checks": "A device whose model's LDoS date is in the past relative to the assessment date — no "
-                  "vendor support of any kind remains.",
-        "healthy_value": "band == Active (LDoS in the future)",
-        "threshold": "band == Past-LDoS (LDoS date <= asof)",
+        "checks": "A device whose assessment date is after the LDoS date in its authoritative "
+                  "exact-model row. This is a lifecycle date band, not proof of contract entitlement "
+                  "or support availability.",
+        "healthy_value": "band == Active (authoritative EoS date is in the future; entitlement not inferred)",
+        "threshold": "band == Past-LDoS (asof > LDoS; the LDoS date itself is not past)",
         "cited_fields": ["lifecycle_risk.per_device[].band", "lifecycle_risk.summary.n_past_ldos"],
-        "abstains_when": "model not resolvable in the offline eoldb KB, or device model not collected (band == Unknown, never a silent Active)",
+        "abstains_when": "device model not collected, no exact model row exists, or the matched row's "
+                         "retained source/date authority is incomplete (band == Unknown, never silently Active)",
+        "evidence_gated": True,
+        "source_command": _src("Inventory", "show version"),
+    },
+    {
+        "key": "lifecycle-near-ldos",
+        "title": "Device within one year of last-day-of-support (LDoS)",
+        "family": "Lifecycle",
+        "checks": "A device whose authoritative exact-model LDoS date is on or after the assessment "
+                  "date and no more than one year away. This is a lifecycle date band, not proof of "
+                  "contract entitlement or support availability.",
+        "healthy_value": "band in (Past-EoS, Active) (LDoS is more than one year away; entitlement not inferred)",
+        "threshold": "band == Near-LDoS (0 <= (LDoS - asof) / 365.25 <= 1.0)",
+        "cited_fields": ["lifecycle_risk.per_device[].band", "lifecycle_risk.summary.n_near"],
+        "abstains_when": "device model not collected, no exact model row exists, or the matched row's "
+                         "retained source/date authority is incomplete (band == Unknown, never silently Active)",
         "evidence_gated": True,
         "source_command": _src("Inventory", "show version"),
     },
@@ -301,12 +318,14 @@ _DETECTOR_DESCRIPTORS: List[Dict[str, Any]] = [
         "key": "lifecycle-past-eos",
         "title": "Device past end-of-sale but not yet LDoS",
         "family": "Lifecycle",
-        "checks": "A device past its end-of-sale date but still within the support tail (a distinct, "
-                  "smaller population than Past-LDoS).",
-        "healthy_value": "band == Active",
-        "threshold": "band == Past-EoS (EoS <= asof < LDoS)",
+        "checks": "A device whose authoritative exact-model EoS date has strictly passed while its "
+                  "LDoS date remains more than one year away. This is a lifecycle date band, not "
+                  "proof of contract entitlement or support availability.",
+        "healthy_value": "band == Active (authoritative EoS date is in the future; entitlement not inferred)",
+        "threshold": "band == Past-EoS (asof > EoS and LDoS is more than one year away)",
         "cited_fields": ["lifecycle_risk.per_device[].band", "lifecycle_risk.summary.n_past_eos"],
-        "abstains_when": "model not resolvable in the eoldb KB, or device model not collected (band == Unknown)",
+        "abstains_when": "device model not collected, no exact model row exists, or the matched row's "
+                         "retained source/date authority is incomplete (band == Unknown, never silently Active)",
         "evidence_gated": True,
         "source_command": _src("Inventory", "show version"),
     },

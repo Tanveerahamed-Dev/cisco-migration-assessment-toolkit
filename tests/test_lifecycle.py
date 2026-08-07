@@ -70,14 +70,85 @@ def test_risks_and_summary_rollup():
     assert summary["by_platform"][0]["band"] == "Past-LDoS"
 
 
-def test_unproven_active_family_is_unknown_not_healthy():
+def test_uncovered_family_is_unknown_not_healthy():
     output = compute_lifecycle_risk(_dev("C9300-48T"), asof=ASOF)
     row = output["per_device"][0]
     assert row["citation_status"] == "missing"
     assert row["band"] == "Unknown"
-    assert "Unknown model" in row["status"]
+    assert "No retained Cisco EoX bulletin match" in row["status"]
+    assert "support state undetermined" in row["status"]
     assert output["summary"]["n_active"] == 0
     assert output["summary"]["n_unknown"] == 1
+
+
+def test_active_band_is_date_position_not_a_negative_eol_or_entitlement_claim():
+    """The public ``Active`` band name is retained for schema compatibility, but the row must say
+    only what the bulletin dates establish. A future LDoS does not prove support entitlement, and
+    an unmatched negative search never proves that Cisco has announced no EoL."""
+    output = compute_lifecycle_risk(_dev("WS-C2960X-48FPD-L"), asof="2021-01-01")
+    row = output["per_device"][0]
+    assert row["band"] == "Active"
+    assert "EoS not yet passed as of assessment" in row["status"]
+    assert "support entitlement not assessed" in row["status"]
+    assert "no end-of-life announced" not in row["status"].lower()
+    assert "in support" not in row["status"].lower()
+
+
+def test_legacy_incomplete_or_nonconfirmed_row_abstains(monkeypatch):
+    """A legacy ``conf=active`` row once reached an impossible ``bulletin-id`` branch and could
+    manufacture 'no EoL announced'. The current KB forbids such rows; the consumer also abstains
+    defensively if one is ever returned across that boundary."""
+    legacy = {
+        "platform": "Legacy family",
+        "eos": "",
+        "ldos": "",
+        "source": "",
+        "conf": "active",
+        "matched_pattern": "LEGACY-",
+        "match_kind": "family-prefix",
+        "reviewed_at": eoldb._EOL_REVIEWED,
+        "citation_status": "retained-primary-fixture",
+        "source_authoritative": True,
+    }
+    monkeypatch.setattr(eoldb, "lifecycle_for", lambda _model: dict(legacy))
+    output = compute_lifecycle_risk(_dev("LEGACY-1"), asof=ASOF)
+    row = output["per_device"][0]
+    assert row["band"] == "Unknown"
+    assert "support state undetermined" in row["status"]
+    assert "no end-of-life announced" not in row["status"].lower()
+    assert output["summary"]["n_active"] == 0
+    assert output["risks"][0]["evidence_confidence"] == "not-assessed"
+
+
+def test_unverified_retained_source_chain_withholds_a_dated_band(monkeypatch):
+    """The inline row can still be returned when retained fixture verification fails. Its citation
+    diagnostics remain visible, but its unverified dates must neither publish nor drive a band/risk."""
+    cited = eoldb.lifecycle_for("WS-C4948E-F")
+    assert cited and cited["source_authoritative"] is True
+    cited["source_authoritative"] = False
+    cited["citation_status"] = "primary-url-unverified"
+    monkeypatch.setattr(eoldb, "lifecycle_for", lambda _model: dict(cited))
+
+    output = compute_lifecycle_risk(_dev("WS-C4948E-F"), asof=ASOF)
+    row = output["per_device"][0]
+    assert row["band"] == "Unknown"
+    assert row["eos"] == "" and row["ldos"] == ""
+    assert row["citation_status"] == "primary-url-unverified"
+    assert "lifecycle band withheld" in row["status"]
+    assert output["summary"]["n_past_ldos"] == 0
+    assert output["summary"]["n_unknown"] == 1
+    assert output["summary"]["by_platform"][0]["ldos"] == ""
+    assert [risk["evidence_confidence"] for risk in output["risks"]] == ["not-assessed"]
+    assert "matched an offline row whose source authority" in output["risks"][0]["detail"]
+    assert "no retained exact Cisco EoX bulletin match" not in output["risks"][0]["detail"]
+
+
+def test_lifecycle_note_discloses_bulletin_dates_are_not_generically_derived():
+    note = compute_lifecycle_risk(_dev("WS-C4948E-F"), asof=ASOF)["note"]
+    assert "no lifecycle date is derived from a generic support-window rule" in note
+    assert "only when the retained source chain verifies" in note
+    assert "often derived" not in note
+    assert "+ 5yr" not in note
 
 
 def test_confirmed_dates_can_create_a_critical_past_support_risk():
@@ -86,6 +157,33 @@ def test_confirmed_dates_can_create_a_critical_past_support_risk():
     assert output["risks"][0]["severity"] == "Critical"
     assert output["risks"][0]["evidence_confidence"] == "confirmed"
     assert output["kb_reviewed_at"] == eoldb._EOL_REVIEWED
+
+
+def test_past_eos_creates_a_medium_refresh_risk_without_inferring_entitlement():
+    output = compute_lifecycle_risk(_dev("WS-C2960X-48FPD-L"), asof=ASOF)
+    assert output["summary"]["n_past_eos"] == 1
+    assert [risk["severity"] for risk in output["risks"]] == ["Medium"]
+    risk = output["risks"][0]
+    assert "LDoS still future" in risk["title"]
+    assert "does not establish" in risk["remediation"]
+    assert "entitlement" in risk["remediation"]
+
+
+def test_lifecycle_risk_rows_follow_canonical_urgency_order():
+    output = compute_lifecycle_risk(
+        {
+            "ldos": {"model": "WS-C4948E-F"},
+            "near": {"model": "WS-C3650-48P"},
+            "eos": {"model": "WS-C2960X-48FPD-L"},
+            "unknown": {"model": "TOTALLY-MADE-UP"},
+        },
+        asof=ASOF,
+    )
+    assert [risk["severity"] for risk in output["risks"]] == [
+        "Critical", "High", "Medium", "Medium"
+    ]
+    assert output["risks"][2]["title"].startswith("Hardware past end-of-sale")
+    assert output["risks"][3]["evidence_confidence"] == "not-assessed"
 
 
 def test_empty_and_deterministic():
@@ -331,6 +429,9 @@ def test_the_coverage_risk_detail_reaches_a_RENDERED_surface():
     b = compute_executive_brief(health_scores=[{"band": "Good", "score": 85}], lifecycle_risk=lc)
     ax = next(a for a in b["axes"] if a["axis"] == "Hardware lifecycle (EoL)")
     assert "NOT ASSESSED" in ax["detail"], ax["detail"]
+    assert "retained source chain verified" in ax["detail"]
+    assert "no EoS/LDoS date is derived from a generic support-window rule" in ax["detail"]
+    assert "end-of-sale + 5yr" not in ax["detail"]
     assert "TOTALLY-MADE-UP" in ax["detail"] and "ALSO-MADE-UP" in ax["detail"], ax["detail"]
 
     # NON-VACUITY: a fully-banded fleet must gain no not-assessed clause, or the sentence is

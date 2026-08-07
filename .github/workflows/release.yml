@@ -205,6 +205,9 @@ jobs:
         run: |
           cisco-assess --help
           assesshub --selftest
+          # EoL has no wheel-context authority exception: its compact retained Cisco fixture ships
+          # in the wheel and must verify. The cannot-check-here disclosure below is only for the
+          # much larger IEEE/IANA source corpus used to build the OUI/port packs.
           # Routed through registry_integrity.pack_is_usable — the ONE owner of this question
           # (same fix ci.yml received; this copy survived because this workflow's smoke gate had
           # never executed). The old inline conjunction required official_source_authoritative,
@@ -213,7 +216,7 @@ jobs:
           # cannot-check-here case pack_is_usable exists to accept and disclose. Proven on the
           # fleet (run 30819857934): `assesshub --selftest` PASSED via the owner predicate while
           # this very next line exited 1 on the same facts.
-          python -c "import sys; from cisco_toolkit import ouidb, portdb, registry_integrity as R; pairs = (('oui', ouidb.registry_health()), ('port', portdb.registry_health())); bad = [(n, h) for n, h in pairs if not R.pack_is_usable(h)]; [print(f'{n}: usable on bytes + build provenance; retained official sources not present in this install form (repo/sdist only)') for n, h in pairs if h.get('official_sources_available') is False and not bad]; sys.exit('registry pack unusable: %r' % (bad,)) if bad else None"
+          python -c "import sys; from cisco_toolkit import eoldb, ouidb, portdb, registry_integrity as R; pairs = (('oui', ouidb.registry_health()), ('port', portdb.registry_health()), ('eol', eoldb.registry_health())); bad = [(n, h) for n, h in pairs if not R.pack_is_usable(h)]; [print(f'{n}: usable on bytes + build provenance; retained official sources not present in this install form (repo/sdist only)') for n, h in pairs if h.get('official_sources_available') is False and not bad]; sys.exit('registry pack unusable: %r' % (bad,)) if bad else None"
       - name: Final immutable-tagged-source proof before release
         run: >-
           python .github/scripts/verify_checkout_immutable.py

@@ -193,6 +193,9 @@ def test_every_lifecycle_band_the_producer_emits_has_a_raw_basis_guard():
         f"reconcile guards a band the producer cannot emit: {sorted(guarded - produced)}")
     # every guarded field must also be a canonical fact or the guard has no published value to check
     assert "n_unknown" in ssot.CANONICAL_FACTS
+    unknown_description = ssot.CANONICAL_FACTS["n_unknown"][1]
+    assert "no exact EoX row matched" in unknown_description
+    assert "source/date authority was withheld" in unknown_description
 
 
 def _lc_snapshot(**summary):

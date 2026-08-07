@@ -1,7 +1,7 @@
 {
   "schema": "collect_parse_snapshot/1",
   "script_version": "V3.23.0",
-  "generated_at": "2026-08-01T15:48:18.007110",
+  "generated_at": "2026-08-07T08:09:13.872054",
   "devices": {
     "core1": {
       "hostname": "core1",
@@ -2917,7 +2917,7 @@
       }
     }
   },
-  "collected_at": "2026-08-01T15:48:14.999591",
+  "collected_at": "2026-08-07T00:00:00",
   "physical_health": [
     {
       "switch": "access1",
@@ -6002,7 +6002,7 @@
         "ldos": "",
         "band": "Unknown",
         "years_to_ldos": null,
-        "status": "Unknown model \u2014 verify on Cisco's EoL portal",
+        "status": "No retained Cisco EoX bulletin match for the collected model - support state undetermined; verify the exact PID on Cisco's EoX portal",
         "source": "",
         "conf": "",
         "matched_pattern": "",
@@ -6019,7 +6019,7 @@
         "ldos": "",
         "band": "Unknown",
         "years_to_ldos": null,
-        "status": "Unknown model \u2014 verify on Cisco's EoL portal",
+        "status": "No retained Cisco EoX bulletin match for the collected model - support state undetermined; verify the exact PID on Cisco's EoX portal",
         "source": "",
         "conf": "",
         "matched_pattern": "",
@@ -6053,7 +6053,7 @@
         "ldos": "",
         "band": "Unknown",
         "years_to_ldos": null,
-        "status": "Unknown model \u2014 verify on Cisco's EoL portal",
+        "status": "No retained Cisco EoX bulletin match for the collected model - support state undetermined; verify the exact PID on Cisco's EoX portal",
         "source": "",
         "conf": "",
         "matched_pattern": "",
@@ -6070,7 +6070,7 @@
         "ldos": "",
         "band": "Unknown",
         "years_to_ldos": null,
-        "status": "Unknown model \u2014 verify on Cisco's EoL portal",
+        "status": "No retained Cisco EoX bulletin match for the collected model - support state undetermined; verify the exact PID on Cisco's EoX portal",
         "source": "",
         "conf": "",
         "matched_pattern": "",
@@ -6104,7 +6104,7 @@
         "ldos": "",
         "band": "Unknown",
         "years_to_ldos": null,
-        "status": "Unknown model \u2014 verify on Cisco's EoL portal",
+        "status": "No retained Cisco EoX bulletin match for the collected model - support state undetermined; verify the exact PID on Cisco's EoX portal",
         "source": "",
         "conf": "",
         "matched_pattern": "",
@@ -6121,7 +6121,7 @@
         "ldos": "",
         "band": "Unknown",
         "years_to_ldos": null,
-        "status": "Unknown model \u2014 verify on Cisco's EoL portal",
+        "status": "No retained Cisco EoX bulletin match for the collected model - support state undetermined; verify the exact PID on Cisco's EoX portal",
         "source": "",
         "conf": "",
         "matched_pattern": "",
@@ -6138,7 +6138,7 @@
         "ldos": "",
         "band": "Unknown",
         "years_to_ldos": null,
-        "status": "Unknown model \u2014 verify on Cisco's EoL portal",
+        "status": "No retained Cisco EoX bulletin match for the collected model - support state undetermined; verify the exact PID on Cisco's EoX portal",
         "source": "",
         "conf": "",
         "matched_pattern": "",
@@ -6172,7 +6172,7 @@
         "ldos": "",
         "band": "Unknown",
         "years_to_ldos": null,
-        "status": "Unknown model \u2014 verify on Cisco's EoL portal",
+        "status": "No retained Cisco EoX bulletin match for the collected model - support state undetermined; verify the exact PID on Cisco's EoX portal",
         "source": "",
         "conf": "",
         "matched_pattern": "",
@@ -6189,7 +6189,7 @@
         "ldos": "",
         "band": "Unknown",
         "years_to_ldos": null,
-        "status": "Unknown model \u2014 verify on Cisco's EoL portal",
+        "status": "No retained Cisco EoX bulletin match for the collected model - support state undetermined; verify the exact PID on Cisco's EoX portal",
         "source": "",
         "conf": "",
         "matched_pattern": "",
@@ -6223,7 +6223,7 @@
         "ldos": "",
         "band": "Unknown",
         "years_to_ldos": null,
-        "status": "Unknown model \u2014 verify on Cisco's EoL portal",
+        "status": "No retained Cisco EoX bulletin match for the collected model - support state undetermined; verify the exact PID on Cisco's EoX portal",
         "source": "",
         "conf": "",
         "matched_pattern": "",
@@ -6240,7 +6240,7 @@
         "ldos": "",
         "band": "Unknown",
         "years_to_ldos": null,
-        "status": "Unknown model \u2014 verify on Cisco's EoL portal",
+        "status": "No retained Cisco EoX bulletin match for the collected model - support state undetermined; verify the exact PID on Cisco's EoX portal",
         "source": "",
         "conf": "",
         "matched_pattern": "",
@@ -6291,7 +6291,7 @@
         "ldos": "",
         "band": "Unknown",
         "years_to_ldos": null,
-        "status": "Unknown model \u2014 verify on Cisco's EoL portal",
+        "status": "No retained Cisco EoX bulletin match for the collected model - support state undetermined; verify the exact PID on Cisco's EoX portal",
         "source": "",
         "conf": "",
         "matched_pattern": "",
@@ -6308,7 +6308,7 @@
         "ldos": "",
         "band": "Unknown",
         "years_to_ldos": null,
-        "status": "Unknown model \u2014 verify on Cisco's EoL portal",
+        "status": "No retained Cisco EoX bulletin match for the collected model - support state undetermined; verify the exact PID on Cisco's EoX portal",
         "source": "",
         "conf": "",
         "matched_pattern": "",
@@ -6325,7 +6325,7 @@
         "ldos": "",
         "band": "Unknown",
         "years_to_ldos": null,
-        "status": "Unknown model \u2014 verify on Cisco's EoL portal",
+        "status": "No retained Cisco EoX bulletin match for the collected model - support state undetermined; verify the exact PID on Cisco's EoX portal",
         "source": "",
         "conf": "",
         "matched_pattern": "",
@@ -6342,7 +6342,7 @@
         "ldos": "",
         "band": "Unknown",
         "years_to_ldos": null,
-        "status": "Unknown model \u2014 verify on Cisco's EoL portal",
+        "status": "No retained Cisco EoX bulletin match for the collected model - support state undetermined; verify the exact PID on Cisco's EoX portal",
         "source": "",
         "conf": "",
         "matched_pattern": "",
@@ -6359,7 +6359,7 @@
         "ldos": "",
         "band": "Unknown",
         "years_to_ldos": null,
-        "status": "Unknown model \u2014 verify on Cisco's EoL portal",
+        "status": "No retained Cisco EoX bulletin match for the collected model - support state undetermined; verify the exact PID on Cisco's EoX portal",
         "source": "",
         "conf": "",
         "matched_pattern": "",
@@ -6400,7 +6400,7 @@
           "ldos": ""
         }
       ],
-      "asof": "2026-08-01"
+      "asof": "2026-08-07"
     },
     "risks": [
       {
@@ -6409,8 +6409,23 @@
           "core1"
         ],
         "title": "Hardware past Cisco end-of-support (no TAC / no fixes)",
-        "detail": "1 device(s) on Catalyst 3850; lifecycle evidence is confirmed.",
+        "detail": "1 device(s) on Catalyst 3850; lifecycle dates are bulletin-confirmed.",
         "remediation": "Prioritize these in the migration / hardware refresh and verify each exact PID against Cisco EoX.",
+        "evidence_confidence": "confirmed"
+      },
+      {
+        "severity": "Medium",
+        "devices": [
+          "access1",
+          "access12",
+          "access15",
+          "access3",
+          "access6",
+          "access9"
+        ],
+        "title": "Hardware past end-of-sale with LDoS still future",
+        "detail": "6 device(s) on Catalyst 2960-X; lifecycle dates are bulletin-confirmed.",
+        "remediation": "Plan refresh before the recorded LDoS; verify the exact PID and serial-numbered support entitlement separately because this date band does not establish it.",
         "evidence_confidence": "confirmed"
       },
       {
@@ -6433,15 +6448,15 @@
           "podacc1",
           "podacc2"
         ],
-        "title": "Hardware lifecycle NOT ASSESSED (no EoX match \u2014 support state undetermined)",
-        "detail": "16 device(s) on C9300-24T, C9300-48P, N9K-C93180YC-EX, WS-C3560-48TS could not be matched to an EoX bulletin in the offline knowledge base, so no support band could be assigned. Their end-of-support exposure is UNKNOWN, not nil \u2014 an empty lifecycle risk list would otherwise read as a clean fleet.",
+        "title": "Hardware lifecycle NOT ASSESSED (support state undetermined)",
+        "detail": "No support band could be assigned to 16 device(s) on C9300-24T, C9300-48P, N9K-C93180YC-EX, WS-C3560-48TS: 16 had no retained exact Cisco EoX bulletin match. Their end-of-support exposure is UNKNOWN, not nil \u2014 an empty lifecycle risk list would otherwise read as a clean fleet.",
         "remediation": "Resolve each exact PID against Cisco's published EoX data and re-run the assessment; until then treat these devices as un-costed for refresh.",
         "evidence_confidence": "not-assessed"
       }
     ],
-    "asof": "2026-08-01",
+    "asof": "2026-08-07",
     "kb_reviewed_at": "2026-07-30",
-    "note": "Reference dates from a curated offline KB (Cisco EoL bulletins); last-day-of-support is often derived = end-of-sale + 5yr. Derived dates are never promoted to Critical without confirmed evidence, and an uncited 'active' row is reported Unknown rather than healthy. Verify exact PIDs on Cisco's End-of-Life portal."
+    "note": "EoS and LDoS dates are copied from exact Cisco EoL bulletin claims retained in the offline KB; no lifecycle date is derived from a generic support-window rule. A date-bearing band is emitted only when the retained source chain verifies, then computed relative to the assessment date. 'Active' is the schema label for a row whose recorded EoS has not passed and whose LDoS is not within one year; it does not assert support entitlement or that Cisco has announced no EoL. Verify exact PIDs on Cisco's End-of-Life portal."
   },
   "remediation_plan": {
     "items": [
@@ -20399,14 +20414,29 @@
         "key": "lifecycle-past-ldos",
         "title": "Device past last-day-of-support (LDoS)",
         "family": "Lifecycle",
-        "checks": "A device whose model's LDoS date is in the past relative to the assessment date \u2014 no vendor support of any kind remains.",
-        "healthy_value": "band == Active (LDoS in the future)",
-        "threshold": "band == Past-LDoS (LDoS date <= asof)",
+        "checks": "A device whose assessment date is after the LDoS date in its authoritative exact-model row. This is a lifecycle date band, not proof of contract entitlement or support availability.",
+        "healthy_value": "band == Active (authoritative EoS date is in the future; entitlement not inferred)",
+        "threshold": "band == Past-LDoS (asof > LDoS; the LDoS date itself is not past)",
         "cited_fields": [
           "lifecycle_risk.per_device[].band",
           "lifecycle_risk.summary.n_past_ldos"
         ],
-        "abstains_when": "model not resolvable in the offline eoldb KB, or device model not collected (band == Unknown, never a silent Active)",
+        "abstains_when": "device model not collected, no exact model row exists, or the matched row's retained source/date authority is incomplete (band == Unknown, never silently Active)",
+        "evidence_gated": true,
+        "source_command": "show version"
+      },
+      {
+        "key": "lifecycle-near-ldos",
+        "title": "Device within one year of last-day-of-support (LDoS)",
+        "family": "Lifecycle",
+        "checks": "A device whose authoritative exact-model LDoS date is on or after the assessment date and no more than one year away. This is a lifecycle date band, not proof of contract entitlement or support availability.",
+        "healthy_value": "band in (Past-EoS, Active) (LDoS is more than one year away; entitlement not inferred)",
+        "threshold": "band == Near-LDoS (0 <= (LDoS - asof) / 365.25 <= 1.0)",
+        "cited_fields": [
+          "lifecycle_risk.per_device[].band",
+          "lifecycle_risk.summary.n_near"
+        ],
+        "abstains_when": "device model not collected, no exact model row exists, or the matched row's retained source/date authority is incomplete (band == Unknown, never silently Active)",
         "evidence_gated": true,
         "source_command": "show version"
       },
@@ -20414,14 +20444,14 @@
         "key": "lifecycle-past-eos",
         "title": "Device past end-of-sale but not yet LDoS",
         "family": "Lifecycle",
-        "checks": "A device past its end-of-sale date but still within the support tail (a distinct, smaller population than Past-LDoS).",
-        "healthy_value": "band == Active",
-        "threshold": "band == Past-EoS (EoS <= asof < LDoS)",
+        "checks": "A device whose authoritative exact-model EoS date has strictly passed while its LDoS date remains more than one year away. This is a lifecycle date band, not proof of contract entitlement or support availability.",
+        "healthy_value": "band == Active (authoritative EoS date is in the future; entitlement not inferred)",
+        "threshold": "band == Past-EoS (asof > EoS and LDoS is more than one year away)",
         "cited_fields": [
           "lifecycle_risk.per_device[].band",
           "lifecycle_risk.summary.n_past_eos"
         ],
-        "abstains_when": "model not resolvable in the eoldb KB, or device model not collected (band == Unknown)",
+        "abstains_when": "device model not collected, no exact model row exists, or the matched row's retained source/date authority is incomplete (band == Unknown, never silently Active)",
         "evidence_gated": true,
         "source_command": "show version"
       },
@@ -20641,15 +20671,15 @@
       }
     ],
     "summary": {
-      "n_detectors": 32,
-      "n_with_threshold": 12,
-      "n_evidence_gated": 32,
+      "n_detectors": 33,
+      "n_with_threshold": 13,
+      "n_evidence_gated": 33,
       "families": {
         "Capacity": 2,
         "Hygiene": 3,
         "L1": 4,
         "L3": 4,
-        "Lifecycle": 2,
+        "Lifecycle": 3,
         "Platform": 2,
         "QoS": 2,
         "STP": 2,
@@ -24755,7 +24785,7 @@
       ],
       "wave": "",
       "title": "CR-01: End-of-support keystone",
-      "detail": "Hardware is past/near last-day-of-support AND removal strands 45 endpoint(s) across 3 VLAN(s) \u2014 an unsupportable box the network cannot lose.",
+      "detail": "Hardware is past last-day-of-support AND removal strands 45 endpoint(s) across 3 VLAN(s) \u2014 an unsupportable box the network cannot lose.",
       "remediation": "Stacked independent risks on one asset \u2014 clear at least one leg before this device's migration window.",
       "priority": 1
     },
@@ -24805,7 +24835,7 @@
       ],
       "wave": "",
       "title": "CR-02: Failing hardware past support",
-      "detail": "Critical health score on hardware that is past/near end-of-support \u2014 no TAC escalation path when it degrades further.",
+      "detail": "Critical health score on hardware that is past last-day-of-support \u2014 no standard TAC escalation path when it degrades further.",
       "remediation": "Stacked independent risks on one asset \u2014 clear at least one leg before this device's migration window.",
       "priority": 4
     },
@@ -27193,7 +27223,7 @@
   },
   "attestation": {
     "schema": "attestation/1",
-    "generated_at": "2026-08-01T12:48:17.960952+00:00",
+    "generated_at": "2026-08-07T05:09:13.760804+00:00",
     "claims": [
       {
         "id": "read_only_command_surface",
@@ -31855,8 +31885,8 @@
       {
         "axis": "Hardware lifecycle (EoL)",
         "severity": "Critical",
-        "headline": "1 past end-of-support, 0 within 1yr (14% of 7 assessable) \u00b7 16 unknown model(s) not assessed",
-        "detail": "Reference dates from the offline KB; bands are time-relative, computed as-of 2026-08-01 (they shift as time passes), and an LDoS absent from the KB is derived as end-of-sale + 5yr \u2014 re-verify on Cisco's EoX portal before acting."
+        "headline": "1 past end-of-support, 0 within 1yr (14% of 7 assessable) \u00b7 6 past end-of-sale (LDoS still future) \u00b7 16 NOT ASSESSED (no authoritative lifecycle band)",
+        "detail": "Date-bearing bands use only exact Cisco bulletin claims whose retained source chain verified; no EoS/LDoS date is derived from a generic support-window rule. Bands are time-relative, computed as-of 2026-08-07 (they shift as time passes). Re-verify the exact PID on Cisco's EoX portal before acting. Past-EoS is a recorded date position; contract entitlement is not inferred. NOT ASSESSED \u2014 No support band could be assigned to 16 device(s) on C9300-24T, C9300-48P, N9K-C93180YC-EX, WS-C3560-48TS: 16 had no retained exact Cisco EoX bulletin match. Their end-of-support exposure is UNKNOWN, not nil \u2014 an empty lifecycle risk list would otherwise read as a clean fleet."
       },
       {
         "axis": "Asset risk register",
@@ -31916,7 +31946,7 @@
     "top_gating": [
       "50/100 avg \u00b7 6 Critical, 12 Poor band",
       "108 item(s) \u00b7 3 Critical, 70 High",
-      "1 past end-of-support, 0 within 1yr (14% of 7 assessable) \u00b7 16 unknown model(s) not assessed",
+      "1 past end-of-support, 0 within 1yr (14% of 7 assessable) \u00b7 6 past end-of-sale (LDoS still future) \u00b7 16 NOT ASSESSED (no authoritative lifecycle band)",
       "14 Severe, 4 Elevated of 23 asset(s) \u00b7 worst: core1, access13, access15",
       "37 detection(s) \u00b7 0 critical event(s) on 18 device(s)",
       "3 exposed advisory surface(s) \u00b7 trains 10\u00d7 Current-era, 5\u00d7 Replace/Upgrade, 1\u00d7 Unknown, 7\u00d7 Verify EoL"
@@ -31942,8 +31972,9 @@
       "provenance_status": "generated-from-retained-ieee-primary-sources",
       "build_provenance_verified": true,
       "retained_source_bytes_verified": true,
+      "official_sources_available": true,
       "source_retrieved_at": "2026-07-30T12:47:53Z",
-      "source_age_days": 2.000262,
+      "source_age_days": 7.681447,
       "source_max_age_days": 180,
       "source_max_future_skew_seconds": 300,
       "source_future_dated": false,
@@ -31978,8 +32009,9 @@
       "provenance_status": "generated-from-retained-iana-primary-source",
       "build_provenance_verified": true,
       "retained_source_bytes_verified": true,
+      "official_sources_available": true,
       "source_retrieved_at": "2026-07-30T12:47:53Z",
-      "source_age_days": 2.000264,
+      "source_age_days": 7.681452,
       "source_max_age_days": 180,
       "source_max_future_skew_seconds": 300,
       "source_future_dated": false,
@@ -31999,6 +32031,9 @@
       "path": "eoldb.py",
       "fixture_path": "reference-data/official-sources/cisco/eol-bulletins.json",
       "fixture_sha256": "7683b29e66d3e5b39d89407e60a5f08ffbf8ef9f19ab029279ffc9d0861349c3",
+      "evidence_distribution": "repository-retained-official-source",
+      "inventory_verified": true,
+      "code_pinned_contract_verified": true,
       "semantic_sha256": "dbbd00ce46789baeb62fee6abf56fbd366ca51d190d33c63603093cb61d2af5b",
       "reviewed_at": "2026-07-30",
       "row_count": 44,
@@ -32010,7 +32045,7 @@
       "active_unresolved_rows": 0,
       "error": "",
       "source_retrieved_at": "2026-07-30T13:48:46Z",
-      "source_age_days": 1.957984,
+      "source_age_days": 7.639172,
       "source_max_age_days": 180,
       "source_max_future_skew_seconds": 300,
       "source_future_dated": false,
@@ -32105,13 +32140,13 @@
             "code": "CR-01",
             "title": "End-of-support keystone",
             "severity": "Critical",
-            "basis": "Hardware is past/near last-day-of-support AND removal strands 45 endpoint(s) across 3 VLAN(s) \u2014 an unsupportable box the network cannot lose."
+            "basis": "Hardware is past last-day-of-support AND removal strands 45 endpoint(s) across 3 VLAN(s) \u2014 an unsupportable box the network cannot lose."
           },
           {
             "code": "CR-02",
             "title": "Failing hardware past support",
             "severity": "High",
-            "basis": "Critical health score on hardware that is past/near end-of-support \u2014 no TAC escalation path when it degrades further."
+            "basis": "Critical health score on hardware that is past last-day-of-support \u2014 no standard TAC escalation path when it degrades further."
           },
           {
             "code": "CR-03",
@@ -32164,7 +32199,7 @@
           {
             "axis": "Hardware EoL",
             "state": "na",
-            "label": "model not in the EoL KB"
+            "label": "no authoritative lifecycle band \u2014 either no exact EoX row matched or the matched row's source/date authority was withheld"
           },
           {
             "axis": "Software risk",
@@ -32352,7 +32387,7 @@
           {
             "axis": "Hardware EoL",
             "state": "na",
-            "label": "model not in the EoL KB"
+            "label": "no authoritative lifecycle band \u2014 either no exact EoX row matched or the matched row's source/date authority was withheld"
           },
           {
             "axis": "Software risk",
@@ -32533,7 +32568,7 @@
           {
             "axis": "Hardware EoL",
             "state": "na",
-            "label": "model not in the EoL KB"
+            "label": "no authoritative lifecycle band \u2014 either no exact EoX row matched or the matched row's source/date authority was withheld"
           },
           {
             "axis": "Software risk",
@@ -32708,7 +32743,7 @@
           {
             "axis": "Hardware EoL",
             "state": "na",
-            "label": "model not in the EoL KB"
+            "label": "no authoritative lifecycle band \u2014 either no exact EoX row matched or the matched row's source/date authority was withheld"
           },
           {
             "axis": "Software risk",
@@ -32799,7 +32834,7 @@
           {
             "axis": "Hardware EoL",
             "state": "na",
-            "label": "model not in the EoL KB"
+            "label": "no authoritative lifecycle band \u2014 either no exact EoX row matched or the matched row's source/date authority was withheld"
           },
           {
             "axis": "Software risk",
@@ -32974,7 +33009,7 @@
           {
             "axis": "Hardware EoL",
             "state": "na",
-            "label": "model not in the EoL KB"
+            "label": "no authoritative lifecycle band \u2014 either no exact EoX row matched or the matched row's source/date authority was withheld"
           },
           {
             "axis": "Software risk",
@@ -33149,7 +33184,7 @@
           {
             "axis": "Hardware EoL",
             "state": "na",
-            "label": "model not in the EoL KB"
+            "label": "no authoritative lifecycle band \u2014 either no exact EoX row matched or the matched row's source/date authority was withheld"
           },
           {
             "axis": "Software risk",
@@ -33324,7 +33359,7 @@
           {
             "axis": "Hardware EoL",
             "state": "na",
-            "label": "model not in the EoL KB"
+            "label": "no authoritative lifecycle band \u2014 either no exact EoX row matched or the matched row's source/date authority was withheld"
           },
           {
             "axis": "Software risk",
@@ -33408,7 +33443,7 @@
           {
             "axis": "Hardware EoL",
             "state": "na",
-            "label": "model not in the EoL KB"
+            "label": "no authoritative lifecycle band \u2014 either no exact EoX row matched or the matched row's source/date authority was withheld"
           },
           {
             "axis": "Software risk",
@@ -33492,7 +33527,7 @@
           {
             "axis": "Hardware EoL",
             "state": "na",
-            "label": "model not in the EoL KB"
+            "label": "no authoritative lifecycle band \u2014 either no exact EoX row matched or the matched row's source/date authority was withheld"
           },
           {
             "axis": "Software risk",
@@ -33576,7 +33611,7 @@
           {
             "axis": "Hardware EoL",
             "state": "na",
-            "label": "model not in the EoL KB"
+            "label": "no authoritative lifecycle band \u2014 either no exact EoX row matched or the matched row's source/date authority was withheld"
           },
           {
             "axis": "Software risk",
@@ -33660,7 +33695,7 @@
           {
             "axis": "Hardware EoL",
             "state": "na",
-            "label": "model not in the EoL KB"
+            "label": "no authoritative lifecycle band \u2014 either no exact EoX row matched or the matched row's source/date authority was withheld"
           },
           {
             "axis": "Software risk",
@@ -33744,7 +33779,7 @@
           {
             "axis": "Hardware EoL",
             "state": "na",
-            "label": "model not in the EoL KB"
+            "label": "no authoritative lifecycle band \u2014 either no exact EoX row matched or the matched row's source/date authority was withheld"
           },
           {
             "axis": "Software risk",
@@ -33828,7 +33863,7 @@
           {
             "axis": "Hardware EoL",
             "state": "na",
-            "label": "model not in the EoL KB"
+            "label": "no authoritative lifecycle band \u2014 either no exact EoX row matched or the matched row's source/date authority was withheld"
           },
           {
             "axis": "Software risk",
@@ -33912,7 +33947,7 @@
           {
             "axis": "Hardware EoL",
             "state": "na",
-            "label": "model not in the EoL KB"
+            "label": "no authoritative lifecycle band \u2014 either no exact EoX row matched or the matched row's source/date authority was withheld"
           },
           {
             "axis": "Software risk",
@@ -33996,7 +34031,7 @@
           {
             "axis": "Hardware EoL",
             "state": "na",
-            "label": "model not in the EoL KB"
+            "label": "no authoritative lifecycle band \u2014 either no exact EoX row matched or the matched row's source/date authority was withheld"
           },
           {
             "axis": "Software risk",
@@ -34518,19 +34553,13 @@
       {
         "id": "LC-1",
         "domain": "Lifecycle & software",
-        "title": "No hardware past end-of-support",
+        "title": "Hardware lifecycle exposure is controlled",
         "verdict": "critical",
-        "observed": "1 device(s) are past LAST-DAY-OF-SUPPORT (and 6 more past end-of-sale): access1, access12, access15, access3, access6, access9, core1. Separately, 16 device(s) could NOT be lifecycle-banded \u2014 no EoX bulletin in the offline KB covers their platform, so their support state is UNKNOWN, never determined, and this check is unanswered for them.",
-        "implication": "Past LDoS there is NO TAC escalation path and no software fix \u2014 a fault during a migration window on these devices has no vendor backstop. The undetermined device(s) carry no evidence of vendor support in either direction; absent lifecycle data is not a pass, and a plan that assumes it is may stage a platform with no TAC path into a change window.",
-        "recommendation": "Replace (not upgrade) the LDoS devices as the first migration waves; stage spares for any that must briefly remain. Resolve every undetermined platform against Cisco's EoX portal and re-run, or record them as an accepted risk in the engagement RAID log.",
-        "reference": "Cisco EoX policy \u2014 no TAC/software support past last-day-of-support",
+        "observed": "1 device(s) are past LAST-DAY-OF-SUPPORT: core1. Separately, 6 device(s) are past end-of-sale with LDoS still future: access1, access12, access15, access3, access6, access9. Separately, 16 device(s) could NOT be lifecycle-banded \u2014 either no exact EoX bulletin row matched or the matched row's retained source authority/complete dates did not verify, so their support state is UNKNOWN and this check is unanswered for them.",
+        "implication": "For the Past-LDoS devices there is NO standard TAC escalation path or software fix \u2014 a fault during a migration window on those devices has no vendor backstop. The Past-EoS-only date band does not establish contract entitlement. The undetermined device(s) carry no evidence of vendor support in either direction; absent lifecycle data is not a pass, and a plan that assumes it is may stage a platform with no TAC path into a change window.",
+        "recommendation": "Replace (not upgrade) the LDoS devices as the first migration waves; stage spares for any that must briefly remain. Schedule Near-LDoS and EoS-only devices for refresh before their recorded LDoS dates. Resolve every undetermined platform against Cisco's EoX portal and re-run, or record them as an accepted risk in the engagement RAID log.",
+        "reference": "Cisco EoX policy \u2014 exact EoS/LDoS date bands; support entitlement assessed separately",
         "evidence": [
-          "access1",
-          "access12",
-          "access15",
-          "access3",
-          "access6",
-          "access9",
           "core1"
         ]
       },
@@ -34552,14 +34581,8 @@
         "id": "LC-1",
         "domain": "Lifecycle & software",
         "verdict": "critical",
-        "action": "Replace (not upgrade) the LDoS devices as the first migration waves; stage spares for any that must briefly remain. Resolve every undetermined platform against Cisco's EoX portal and re-run, or record them as an accepted risk in the engagement RAID log.",
+        "action": "Replace (not upgrade) the LDoS devices as the first migration waves; stage spares for any that must briefly remain. Schedule Near-LDoS and EoS-only devices for refresh before their recorded LDoS dates. Resolve every undetermined platform against Cisco's EoX portal and re-run, or record them as an accepted risk in the engagement RAID log.",
         "evidence": [
-          "access1",
-          "access12",
-          "access15",
-          "access3",
-          "access6",
-          "access9",
           "core1"
         ]
       },
@@ -34903,7 +34926,7 @@
         "confidence": "Observed",
         "driver": "Supportability: the target fabric must not inherit end-of-support assets.",
         "evidence": {
-          "summary": "1 device(s) are past last-day-of-support (6 more approaching LDoS or past-EoS) -- unsupported hardware/software in forwarding roles cannot be safely relied on in the target design.",
+          "summary": "1 device(s) are past last-day-of-support -- those end-of-support assets in forwarding roles cannot be safely relied on in the target design.",
           "count": 1,
           "devices": [
             "core1"
@@ -36919,6 +36942,45 @@
         "requirements_needed": []
       },
       {
+        "id": "lifecycle-past-eos-refresh-planning",
+        "title": "Place Past-EoS hardware in an owned refresh plan while recorded LDoS remains future",
+        "domain": "methodology",
+        "priority": "Medium",
+        "status": "recommended",
+        "confidence": "Observed",
+        "driver": "Investment planning: act before sourcing and migration choices narrow.",
+        "evidence": {
+          "summary": "6 device(s) are past end-of-sale with recorded LDoS still future. Place each in an owned, dated refresh plan; this is not an immediate-removal or support-entitlement claim.",
+          "count": 6,
+          "devices": [
+            "access1",
+            "access12",
+            "access15",
+            "access3",
+            "access6",
+            "access9"
+          ],
+          "fields": [
+            "lifecycle_risk.per_device[].band",
+            "lifecycle_risk.per_device[].eos",
+            "lifecycle_risk.per_device[].ldos"
+          ]
+        },
+        "principle": {
+          "id": "lifecycle-past-eos-refresh-planning",
+          "title": "Place Past-EoS hardware in an owned refresh plan while recorded LDoS remains future",
+          "citation": "Cisco Product Lifecycle Policy; engine lifecycle_risk retained EoX evidence"
+        },
+        "recommended_action": "Record an owner, budget horizon, target disposition, and refresh date before recorded LDoS; verify exact PID/serial and any required contract entitlement in separate evidence.",
+        "alternatives": "Retain as a carry-forward candidate only through an explicit, dated risk acceptance that is reviewed against the approaching LDoS and available spares.",
+        "tradeoffs": "Planned refresh consumes future budget and engineering capacity; deferral may be reasonable while LDoS remains future, but narrows sourcing and migration choices over time.",
+        "axes": [
+          "cost",
+          "manageability"
+        ],
+        "requirements_needed": []
+      },
+      {
         "id": "migration-gateway-cutover-order",
         "title": "Move the default gateway (SVI) LAST for any subnet whose endpoints straddle multiple switches",
         "domain": "scenario-pattern",
@@ -36947,6 +37009,51 @@
         "tradeoffs": "A safe, reversible per-subnet cutover (gateway-move-last, build-before-break) vs a longer window where the subnet's L3 is split across legacy and target and must be kept consistent on both.",
         "axes": [
           "availability",
+          "manageability"
+        ],
+        "requirements_needed": []
+      },
+      {
+        "id": "lifecycle-unknown-resolve-authority",
+        "title": "Resolve lifecycle authority before approving hardware carry-forward or procurement",
+        "domain": "methodology",
+        "priority": "Medium",
+        "status": "recommended",
+        "confidence": "Coverage-gap",
+        "driver": "Coverage honesty: an unclassified asset needs evidence closure, not a healthy default.",
+        "evidence": {
+          "summary": "16 lifecycle row(s) are Unknown and 0 fleet asset(s) received no lifecycle row. Resolve exact PID/serial before carry-forward or procurement. Accept either a verified dated bulletin match, or a time-stamped authoritative EoX no-notice check with an owner and review date; no lifecycle or support-entitlement conclusion is inferred from absence.",
+          "count": 16,
+          "devices": [
+            "access10",
+            "access11",
+            "access13",
+            "access14",
+            "access16",
+            "access17",
+            "access2",
+            "access4",
+            "access5",
+            "access7",
+            "access8",
+            "core2"
+          ],
+          "fields": [
+            "lifecycle_risk.per_device[].band",
+            "devices",
+            "collection_completeness.summary.inventory"
+          ]
+        },
+        "principle": {
+          "id": "lifecycle-unknown-resolve-authority",
+          "title": "Resolve lifecycle authority before approving hardware carry-forward or procurement",
+          "citation": "Cisco Product Lifecycle Policy; engine lifecycle_risk coverage and provenance contract"
+        },
+        "recommended_action": "Collect exact PID and serial and resolve normalization. Either match a verified dated bulletin, or preserve a time-stamped authoritative EoX no-notice check with an owner, review date, and contingency/risk acceptance; verify entitlement separately and keep no-notice assets Unknown.",
+        "alternatives": "Carry the device only as an explicit unknown with contingency budget and a dated evidence-closure owner; do not classify it as Active or place it in a procurement bucket by subtraction.",
+        "tradeoffs": "Closing inventory and evidence gaps costs discovery time; proceeding without it may understate CapEx, retain obsolete hardware, or order against an incorrectly normalized platform.",
+        "axes": [
+          "cost",
           "manageability"
         ],
         "requirements_needed": []
@@ -37240,7 +37347,7 @@
         "label": "Cost / affordability",
         "score": 1,
         "posture": "Pressure",
-        "evidence": "1 past-LDoS + 6 near-LDoS/past-EoS asset(s) imply refresh CapEx. 16 asset(s) could NOT be lifecycle-banded -- their refresh exposure is UNDETERMINED, not nil, so this axis cannot read 'Comfortable'."
+        "evidence": "1 past-LDoS + 6 near-LDoS/past-EoS asset(s) imply refresh CapEx. 16 asset(s) could NOT be lifecycle-banded (16 had no exact EoX match or their matched source/date authority was withheld) -- their refresh exposure is UNDETERMINED, not nil, so this axis cannot read 'Comfortable'."
       }
     ],
     "requirements_model": {
@@ -37433,14 +37540,14 @@
       }
     ],
     "summary": {
-      "n_decisions": 69,
-      "n_recommended": 60,
+      "n_decisions": 71,
+      "n_recommended": 62,
       "n_needs_requirement": 9,
       "n_critical": 5,
       "by_domain": {
         "management": 3,
         "aci": 4,
-        "methodology": 6,
+        "methodology": 8,
         "security": 17,
         "ipv6": 3,
         "qos": 3,
@@ -38803,6 +38910,14 @@
           "citation": "Cisco NX-OS operational-health guidance (a 'show'-level healthy state can mask a real gap); Cisco Advanced Services pre-cutover baseline discipline (design from verified current state)."
         },
         {
+          "id": "lifecycle-near-ldos-refresh-before-deadline",
+          "title": "Schedule Near-LDoS hardware replacement before the recorded support deadline",
+          "priority": "High",
+          "engine_actionable": true,
+          "recommended_action": "Assign an owner, approved target disposition, budget, and implementation window before the recorded LDoS; verify exact PID/serial and any required contract entitlement separately.",
+          "citation": "Cisco Product Lifecycle Policy; engine lifecycle_risk retained EoX evidence"
+        },
+        {
           "id": "methodology-minimize-accidental-complexity",
           "title": "Minimize accidental complexity: every feature is one you must operate",
           "priority": "High",
@@ -38889,6 +39004,22 @@
           "engine_actionable": true,
           "recommended_action": "Size the target from observed port_util/poe_util plus a documented growth headroom (e.g. +30-50%) AND the build-before-break overhead; prefer higher-density or modular platforms where switches are saturated; verify the PoE budget covers the powered-endpoint load with margin. Carry the headroom assumption into the BoM, not just the slide.",
           "citation": "Cisco Enterprise Campus / CVD capacity & oversubscription planning (size for growth, not 1:1); IEEE 802.3af/at/bt PoE power budgeting."
+        },
+        {
+          "id": "lifecycle-past-eos-refresh-planning",
+          "title": "Place Past-EoS hardware in an owned refresh plan while recorded LDoS remains future",
+          "priority": "Medium",
+          "engine_actionable": true,
+          "recommended_action": "Record an owner, budget horizon, target disposition, and refresh date before recorded LDoS; verify exact PID/serial and any required contract entitlement in separate evidence.",
+          "citation": "Cisco Product Lifecycle Policy; engine lifecycle_risk retained EoX evidence"
+        },
+        {
+          "id": "lifecycle-unknown-resolve-authority",
+          "title": "Resolve lifecycle authority before approving hardware carry-forward or procurement",
+          "priority": "Medium",
+          "engine_actionable": true,
+          "recommended_action": "Collect exact PID and serial and resolve normalization. Either match a verified dated bulletin, or preserve a time-stamped authoritative EoX no-notice check with an owner, review date, and contingency/risk acceptance; verify entitlement separately and keep no-notice assets Unknown.",
+          "citation": "Cisco Product Lifecycle Policy; engine lifecycle_risk coverage and provenance contract"
         },
         {
           "id": "redistribution-avoid-or-fence",
@@ -40066,13 +40197,14 @@
         },
         {
           "area": "Hardware lifecycle disposition",
-          "current": "1 past-LDoS, 6 approaching-LDoS or past-EoS, 0 not-collected of 23 inventoried. 16 of the 23 lifecycle-assessed asset(s) carry an UNDETERMINED band.",
-          "target": "Replace the 1 past-LDoS asset(s); plan refresh for the 6 approaching LDoS or past-EoS (the replacement BoM's refresh_soon line -- they are NOT in the carry-forward figure); carry ~0 fully-supported asset(s) forward; collect the 0 un-assessed device(s) before finalising -- do not design resilience on unseen gear. 16 asset(s) have an UNDETERMINED lifecycle band (the model did not match Cisco's EoL data) -- they are NOT counted as supportable: resolve each model on the EoL portal before the carry-forward list is final.",
+          "current": "1 past-LDoS, 6 approaching-LDoS or past-EoS (0 Near-LDoS; 6 Past-EoS), 0 not-collected of 23 inventoried. 16 of the 23 lifecycle-assessed asset(s) carry an UNDETERMINED band.",
+          "target": "Replace the 1 past-LDoS asset(s); schedule the 0 Near-LDoS asset(s) before recorded LDoS and place the 6 Past-EoS asset(s) in an owned refresh plan while LDoS remains future (together these are the replacement BoM's 6 refresh_soon asset(s) -- they are NOT in the carry-forward figure); identify ~0 pre-EoS date-band asset(s) as carry-forward candidates (schema: Active; support entitlement not assessed); collect the 0 un-assessed device(s) before finalising -- do not design resilience on unseen gear. 16 asset(s) have an UNDETERMINED lifecycle band (no exact EoX row matched or the matched row's source/date authority was withheld) -- they are not included among carry-forward candidates: resolve each model on the EoL portal before the list is final.",
           "rationale": "The target fabric must not inherit end-of-support hardware; coverage gaps are unknowns, not health.",
           "confidence": "Recommended",
           "drivers": [
             "lifecycle-eol-out-of-critical-roles",
-            "fhrp-not-observed-is-not-healthy"
+            "lifecycle-past-eos-refresh-planning",
+            "lifecycle-unknown-resolve-authority"
           ]
         },
         {
@@ -40120,8 +40252,11 @@
         ],
         "n_replace": 1,
         "n_refresh": 6,
+        "n_near": 0,
+        "n_past_eos": 6,
         "n_undetermined": 16,
-        "note": "Quantities are the current models at/near end-of-support; a supported successor SKU is selected at detailed design (not auto-chosen here). Supportable assets carry forward. Undetermined models could not be banded \u2014 no EoX bulletin in the offline KB matched them \u2014 so they are listed for resolution, not costed: their support state is unknown, which is not the same as supportable."
+        "n_not_assessed": 0,
+        "note": "Quantities separate Past-LDoS replace-now assets from Near-LDoS and Past-EoS refresh-planning assets; a successor SKU is selected at detailed design (not auto-chosen here). Pre-EoS date-band assets are carry-forward candidates only; support entitlement was not assessed. Undetermined models either had no lifecycle row, no exact EoX row matched, or the matched row's source/date authority was withheld, so they are listed for evidence resolution, not costed. A time-stamped authoritative no-notice check may close the explanation while the asset correctly remains Unknown."
       },
       "segmentation_plan": {
         "observed": "5 VLAN(s) across 2 VRFs -- partially segmented.",
@@ -40304,13 +40439,55 @@
         "title": "Drive EoL/EoS hardware out of critical roles and protect against the upgrade flag-day",
         "priority": "Critical",
         "phase": "pre-cutover",
-        "description": "Verify every past-LDoS device has been replaced with a supported successor and is NOT in the forwarding path; 'show version' must confirm supported model and active SW contract.",
-        "pass_criteria": "'show version' on every replacement confirms a Cisco model with an active support contract; no past-LDoS device appears in 'show cdp neighbors' or the management inventory.",
-        "setup": "Replacement hardware is on site with an active support contract and staged for install.",
+        "description": "Verify every past-LDoS device has been replaced and is NOT in the forwarding path. Use 'show version' only to confirm the exact replacement PID/software; confirm any required active coverage from a separate serial-numbered contract or entitlement record.",
+        "pass_criteria": "'show version' confirms the exact PID/software on every replacement; a separate serial-numbered contract or entitlement record confirms any required active coverage; no past-LDoS device appears in 'show cdp neighbors' or the management inventory.",
+        "setup": "Replacement hardware is on site and staged for install; serial-numbered procurement and any required support-entitlement evidence are available for review.",
         "devices": [
           "core1"
         ],
         "principle_citation": "CCDE In Depth Ch.2 Scalability (scale-out avoids the Flag Day) & Cost/TCO; engine EoL/software_risk axes"
+      },
+      {
+        "decision_id": "lifecycle-past-eos-refresh-planning",
+        "title": "Place Past-EoS hardware in an owned refresh plan while recorded LDoS remains future",
+        "priority": "Medium",
+        "phase": "pre-cutover",
+        "description": "Verify every Past-EoS device has an owned, approved refresh disposition dated before its recorded LDoS; do not require immediate removal while LDoS remains future. Confirm exact PID/serial and any required coverage from separate entitlement evidence.",
+        "pass_criteria": "The inventory records exact PID/serial, EoS, and future LDoS for every Past-EoS device; each has an approved owner, target disposition, budget horizon, and review or implementation date before LDoS; any support entitlement is evidenced separately.",
+        "setup": "The authoritative EoX row is matched to exact PID/serial and shows LDoS still future; an owner and budget horizon are assigned, with any required support-entitlement evidence available separately.",
+        "devices": [
+          "access1",
+          "access12",
+          "access15",
+          "access3",
+          "access6",
+          "access9"
+        ],
+        "principle_citation": "Cisco Product Lifecycle Policy; engine lifecycle_risk retained EoX evidence"
+      },
+      {
+        "decision_id": "lifecycle-unknown-resolve-authority",
+        "title": "Resolve lifecycle authority before approving hardware carry-forward or procurement",
+        "priority": "Medium",
+        "phase": "pre-cutover",
+        "description": "Verify every Unknown or missing lifecycle asset has an exact PID/serial and an explained evidence outcome before approving carry-forward, refresh, or replacement: either a verified dated bulletin match, or a time-stamped authoritative EoX no-notice check with owner/review date. Do not infer a procurement disposition or support entitlement from missing evidence.",
+        "pass_criteria": "Missing lifecycle-row count is zero and every Unknown is explained: exact PID/serial plus either a verified dated bulletin match, or a time-stamped authoritative EoX no-notice record with owner, review date, and contingency/risk acceptance. Zero unexplained Unknowns remain; entitlement is evidenced separately and a no-notice result remains Unknown, never false Active.",
+        "setup": "A fresh inventory collection contains exact PID and serial for every unresolved asset; the retained EoX database is available, and current authoritative EoX lookup evidence can be time-stamped when no published notice exists.",
+        "devices": [
+          "access10",
+          "access11",
+          "access13",
+          "access14",
+          "access16",
+          "access17",
+          "access2",
+          "access4",
+          "access5",
+          "access7",
+          "access8",
+          "core2"
+        ],
+        "principle_citation": "Cisco Product Lifecycle Policy; engine lifecycle_risk coverage and provenance contract"
       },
       {
         "decision_id": "aci-critical-fault-raised",
@@ -41246,7 +41423,7 @@
         "principle_citation": "CCDE Ornio scenario (MPLS L3VPN migration step ordering); engine --compare/--trend snapshot diff"
       }
     ],
-    "n_items": 60,
+    "n_items": 62,
     "evpn_acceptance": [
       {
         "decision_id": "evpn-pre-nxos-1023-gateway-coexistence",
@@ -41294,7 +41471,7 @@
         "principle_citation": "derived from the documented loop / gateway-MAC / control-plane failure modes (migration white papers)"
       }
     ],
-    "note": "Design-driven NRFU/ATP checklist: 60 acceptance-test item(s), one per recommended design decision, each traceable to the CCDE principle and the evidence that triggered it. Run after each migration wave; the pass/fail verdict for each item is independent of the design authors (proposer \u2260 verifier). Items phased: pre-cutover \u2192 post-cutover-functional \u2192 post-cutover-operational."
+    "note": "Design-driven NRFU/ATP checklist: 62 acceptance-test item(s), one per recommended design decision, each traceable to the CCDE principle and the evidence that triggered it. Run after each migration wave; the pass/fail verdict for each item is independent of the design authors (proposer \u2260 verifier). Items phased: pre-cutover \u2192 post-cutover-functional \u2192 post-cutover-operational."
   },
   "architecture_coverage": {
     "classes": [
@@ -44354,13 +44531,6 @@
         "basis": "devices past last-day-of-support (the past-SUPPORT population)"
       },
       {
-        "name": "n_past_eos",
-        "value": 6,
-        "path": "lifecycle_risk.summary.n_past_eos",
-        "state": "published",
-        "basis": "devices past end-of-sale but NOT yet past LDoS (a different, smaller set)"
-      },
-      {
         "name": "n_near",
         "value": 0,
         "path": "lifecycle_risk.summary.n_near",
@@ -44368,22 +44538,29 @@
         "basis": "devices within 1yr of LDoS (Near-LDoS band)"
       },
       {
+        "name": "n_past_eos",
+        "value": 6,
+        "path": "lifecycle_risk.summary.n_past_eos",
+        "state": "published",
+        "basis": "devices past end-of-sale but NOT yet past LDoS (a disjoint date-band population)"
+      },
+      {
         "name": "n_active",
         "value": 0,
         "path": "lifecycle_risk.summary.n_active",
         "state": "collected_but_empty",
-        "basis": "devices in active support (Active band)"
+        "basis": "devices in the pre-EoS date-position band (public schema value: Active; not a support-entitlement claim)"
       },
       {
         "name": "n_unknown",
         "value": 16,
         "path": "lifecycle_risk.summary.n_unknown",
         "state": "published",
-        "basis": "devices whose support state was NOT determined (no EoX bulletin matched the platform) \u2014 absence of a finding, never a clean result"
+        "basis": "devices whose support state was NOT determined (no exact EoX row matched or matched source/date authority was withheld) \u2014 absence of a finding, never a clean result"
       },
       {
         "name": "n_design_decisions",
-        "value": 69,
+        "value": 71,
         "path": "design_blueprint.summary.n_decisions",
         "state": "published",
         "basis": "ranked target-state design decisions"

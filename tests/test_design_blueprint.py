@@ -320,6 +320,12 @@ def _maximal_snap():
     """A snapshot seeded to trigger EVERY evidence-gated detector at once (no requirements supplied,
     so the requirement-gated open questions also surface)."""
     return _snap(
+        lifecycle_risk={"per_device": [
+            {"host": "d0", "band": "Past-LDoS", "model": "OLD-REPLACE"},
+            {"host": "d1", "band": "Near-LDoS", "model": "NEAR-DEADLINE"},
+            {"host": "d2", "band": "Past-EoS", "model": "EOS-REFRESH"},
+            {"host": "d3", "band": "Unknown", "model": "UNRESOLVED"},
+        ]},
         security={
             "d0": {"findings": [{"id": "vty-hardening", "status": "fail"},
                                 {"id": "insecure-snmp", "status": "fail"},
@@ -692,6 +698,9 @@ def test_target_state_replacement_bom_and_segmentation_plan():
     bom = ts["replacement_bom"]
     assert bom["n_replace"] == 2 and ["WS-C4948E", 2] in bom["replace_now"]
     assert bom["n_refresh"] == 1 and ["N5K-C56128P", 1] in bom["refresh_soon"]
+    assert "Past-LDoS replace-now assets" in bom["note"]
+    assert "Near-LDoS and Past-EoS refresh-planning assets" in bom["note"]
+    assert "models at/near end-of-support" not in bom["note"]
     seg = ts["segmentation_plan"]
     assert seg["status"] == "needs-requirement" and seg["requirement_needed"] == "data_classification"
     assert "target_zones" not in seg                                 # zones NOT invented absent the requirement
@@ -963,6 +972,21 @@ def test_compute_design_nrfu_generates_acceptance_items_from_decisions():
     assert isinstance(empty["items"], list)
 
 
+def test_lifecycle_nrfu_does_not_infer_support_entitlement_from_show_version():
+    """Device CLI proves PID/software; contract coverage requires separate serial-keyed evidence."""
+    from cisco_toolkit.design_advisor import compute_design_nrfu
+
+    items = compute_design_nrfu(compute_design_blueprint(_snap()))["items"]
+    item = next(i for i in items if i["decision_id"] == "lifecycle-eol-out-of-critical-roles")
+    assert "show version" in item["description"]
+    assert "exact replacement PID/software" in item["description"]
+    assert "separate serial-numbered" in item["description"]
+    assert "show version" in item["pass_criteria"]
+    assert "contract or entitlement record" in item["pass_criteria"]
+    assert "support-entitlement evidence" in item["setup"]
+    assert "show version' must confirm supported model and active SW contract" not in item["description"]
+
+
 def test_requirements_model_surfaces_all_requirement_keys():
     """SSOT gap fix: requirements_model.fields must surface EVERY REQUIREMENTS_KEY — including
     address_space and vlan_zones, which are the two keys that unlock the net-new IP addressing plan
@@ -1006,21 +1030,27 @@ def test_addressing_plan_has_census_vlans_when_needs_requirement():
     assert "n_census_vlans" in ap2 and "n_unsizable" in ap2
 
 
-def test_eol_signal_and_bom_separate_past_ldos_from_supported_past_eos():
-    """REVIEW #3: still-supported Past-EoS devices (past end-of-SALE, in support until LDoS -- the engine
-    emits this band, see test_lifecycle) must NOT be counted/labelled as past-LDoS/unsupported nor placed
-    in the replace-now BoM. sig['eol'] / the EoL decision / dim-4 label count Past-LDoS only; Past-EoS is
-    refresh-class."""
+def test_eol_signal_and_bom_separate_past_ldos_from_past_eos():
+    """REVIEW #3: Past-EoS devices (past end-of-SALE with LDoS still future; entitlement unassessed)
+    must NOT be counted/labelled as past-LDoS nor placed in the replace-now BoM. The three ranked
+    decisions remain distinct so Past-LDoS is Critical, Near-LDoS is High, and Past-EoS is Medium."""
     snap = _snap(lifecycle_risk={"per_device": [
         {"host": "a", "band": "Past-LDoS", "model": "WS-C4948E"},
         {"host": "b", "band": "Past-LDoS", "model": "WS-C4948E"},
-        {"host": "e", "band": "Past-EoS", "model": "WS-C2960X-48FPD-L"},   # supported -> NOT replace, NOT eol
+        {"host": "e", "band": "Past-EoS", "model": "WS-C2960X-48FPD-L"},   # refresh -> NOT replace, NOT past-LDoS
         {"host": "c", "band": "Near-LDoS", "model": "N5K-C56128P"},
         {"host": "d", "band": "Active", "model": "C9300"}]})
     bp = compute_design_blueprint(snap)
-    eol = next(d for d in bp["decisions"] if d["id"] == "lifecycle-eol-out-of-critical-roles")
+    by = {d["id"]: d for d in bp["decisions"]}
+    eol = by["lifecycle-eol-out-of-critical-roles"]
+    near = by["lifecycle-near-ldos-refresh-before-deadline"]
+    past_eos = by["lifecycle-past-eos-refresh-planning"]
     assert eol["evidence"]["count"] == 2, eol["evidence"]["count"]              # the 2 Past-LDoS, NOT 3
     assert "2 device(s) are past last-day-of-support" in eol["evidence"]["summary"]
+    assert near["priority"] == "High" and near["evidence"]["devices"] == ["c"]
+    assert past_eos["priority"] == "Medium" and past_eos["evidence"]["devices"] == ["e"]
+    order = [d["id"] for d in bp["decisions"]]
+    assert order.index(eol["id"]) < order.index(near["id"]) < order.index(past_eos["id"])
     bom = bp["target_state"]["replacement_bom"]
     assert bom["n_replace"] == 2 and ["WS-C4948E", 2] in bom["replace_now"]
     assert ["WS-C2960X-48FPD-L", 1] not in bom["replace_now"]                   # Past-EoS is NOT replace-now
@@ -1028,6 +1058,82 @@ def test_eol_signal_and_bom_separate_past_ldos_from_supported_past_eos():
     assert bom["n_refresh"] == 2                                                # Near-LDoS + Past-EoS
     dim = next(d for d in bp["target_state"]["dimensions"] if d.get("area") == "Hardware lifecycle disposition")
     assert "2 past-LDoS" in dim["current"], dim["current"]
+    assert "1 Near-LDoS; 1 Past-EoS" in dim["current"], dim["current"]
+
+
+def test_refresh_lifecycle_decisions_fire_independently_with_band_specific_nrfu():
+    """Near/Past-EoS-only fleets must not disappear or inherit the Past-LDoS removal contract."""
+    cases = (
+        ("Near-LDoS", "near1", "lifecycle-near-ldos-refresh-before-deadline", "High", "before LDoS"),
+        ("Past-EoS", "eos1", "lifecycle-past-eos-refresh-planning", "Medium", "LDoS remains future"),
+    )
+    for band, host, decision_id, priority, nrfu_phrase in cases:
+        snap = _snap(
+            devices={host: {"hostname": host}},
+            collection_completeness={"summary": {
+                "inventory": 1, "complete": 1, "partial": 0, "not_collected": 0,
+            }},
+            lifecycle_risk={"per_device": [{"host": host, "band": band, "model": "MODEL-1"}]},
+        )
+        bp = compute_design_blueprint(snap)
+        decision = next(d for d in bp["decisions"] if d["id"] == decision_id)
+        assert decision["priority"] == priority
+        assert decision["evidence"]["count"] == 1
+        assert decision["evidence"]["devices"] == [host]
+        assert any(phrase in decision["evidence"]["summary"].lower()
+                   for phrase in ("does not establish contract entitlement", "not an immediate-removal"))
+        dimension = next(d for d in bp["target_state"]["dimensions"]
+                         if d["area"] == "Hardware lifecycle disposition")
+        assert dimension["drivers"] == [decision_id]
+        item = next(i for i in compute_design_nrfu(bp)["items"] if i["decision_id"] == decision_id)
+        assert nrfu_phrase in item["description"] or nrfu_phrase in item["pass_criteria"]
+        assert "replaced and is NOT in the forwarding path" not in item["description"]
+
+
+def test_unknown_lifecycle_gets_evidence_closure_decision_without_procurement_inference():
+    snap = _snap(
+        devices={"u1": {"hostname": "u1"}},
+        collection_completeness={"summary": {
+            "inventory": 1, "complete": 1, "partial": 0, "not_collected": 0,
+        }},
+        lifecycle_risk={"per_device": [{"host": "u1", "band": "Unknown", "model": "C9300-48T"}]},
+    )
+    bp = compute_design_blueprint(snap)
+    decision_id = "lifecycle-unknown-resolve-authority"
+    decision = next(d for d in bp["decisions"] if d["id"] == decision_id)
+    assert decision["priority"] == "Medium" and decision["confidence"] == "Coverage-gap"
+    assert decision["evidence"]["count"] == 1 and decision["evidence"]["devices"] == ["u1"]
+    assert "before carry-forward or procurement" in decision["evidence"]["summary"]
+    assert "no lifecycle or support-entitlement conclusion is inferred" in decision["evidence"]["summary"]
+    dimension = next(d for d in bp["target_state"]["dimensions"]
+                     if d["area"] == "Hardware lifecycle disposition")
+    assert dimension["drivers"] == [decision_id]
+    item = next(i for i in compute_design_nrfu(bp)["items"] if i["decision_id"] == decision_id)
+    assert "Do not infer a procurement disposition" in item["description"]
+    assert "Zero unexplained Unknowns remain" in item["pass_criteria"]
+    assert "no-notice result remains Unknown, never false Active" in item["pass_criteria"]
+    assert "Unknown and missing-row counts are zero" not in item["pass_criteria"]
+
+
+def test_past_eos_precedes_larger_unknown_population_at_equal_medium_priority():
+    snap = _snap(
+        devices={host: {"hostname": host} for host in ("eos1", "u1", "u2")},
+        collection_completeness={"summary": {
+            "inventory": 3, "complete": 3, "partial": 0, "not_collected": 0,
+        }},
+        lifecycle_risk={"per_device": [
+            {"host": "eos1", "band": "Past-EoS", "model": "EOS-MODEL"},
+            {"host": "u1", "band": "Unknown", "model": "UNKNOWN-1"},
+            {"host": "u2", "band": "Unknown", "model": "UNKNOWN-2"},
+        ]},
+    )
+    decisions = compute_design_blueprint(snap)["decisions"]
+    order = [d["id"] for d in decisions]
+    assert order.index("lifecycle-past-eos-refresh-planning") < order.index(
+        "lifecycle-unknown-resolve-authority")
+    by = {d["id"]: d for d in decisions}
+    assert by["lifecycle-past-eos-refresh-planning"]["priority"] == "Medium"
+    assert by["lifecycle-unknown-resolve-authority"]["priority"] == "Medium"
 
 
 def test_alloc_zone_aware_sizes_blocks_by_demand_not_uniformly():
@@ -2689,7 +2795,7 @@ def test_lifecycle_undetermined_band_is_not_carried_forward_as_supported():
     """[#50 sibling] compute_lifecycle_risk emits band 'Unknown' ("Unknown model -- verify on Cisco's EoL
     portal") for every device whose model it could NOT match. The target state derived the carry-forward
     figure by SUBTRACTION (assessed - eol - near), so an UNDETERMINED support status was rendered as a
-    "fully-supported asset(s) forward" -- absence as health, in the procurement line, in the same dimension
+    clean carry-forward output -- absence as health, in the procurement line, in the same dimension
     whose rationale says coverage gaps are unknowns not health. retain must be counted POSITIVELY and the
     undetermined residue disclosed; the four buckets must partition the lifecycle census exactly."""
     from cisco_toolkit.design_advisor import compute_target_state, _signals
@@ -2700,20 +2806,25 @@ def test_lifecycle_undetermined_band_is_not_carried_forward_as_supported():
         {"host": "d", "band": "Unknown", "model": "(unknown)"},
         {"host": "e", "band": "Active", "model": "C9300"}]}}
     sig = _signals(snap)
-    assert sig["lifecycle_supported"] == 1 and sig["lifecycle_unknown"] == 3
-    assert sig["eol"] + sig["near"] + sig["lifecycle_supported"] + sig["lifecycle_unknown"] \
+    assert sig["lifecycle_pre_eos"] == 1 and sig["lifecycle_unknown"] == 3
+    assert sig["eol"] + sig["near"] + sig["lifecycle_pre_eos"] + sig["lifecycle_unknown"] \
         == sig["lifecycle_assessed"]                                     # the buckets PARTITION the census
     assert sorted(sig["lifecycle_unknown_hosts"]) == ["b", "c", "d"]
     dim = [d for d in compute_target_state(snap)["dimensions"]
            if d["area"].startswith("Hardware")][0]
-    assert "carry ~1 fully-supported" in dim["target"], dim["target"]     # NOT ~4
+    assert "identify ~1 pre-EoS date-band" in dim["target"], dim["target"]     # NOT ~4
+    assert "support entitlement not assessed" in dim["target"]
+    assert "fully-supported" not in dim["target"]
     assert "UNDETERMINED lifecycle band" in dim["target"] and "UNDETERMINED band" in dim["current"]
+    assert "no exact EoX row matched" in dim["target"]
+    assert "source/date authority was withheld" in dim["target"]
     # refutation: a fully-determined census renders exactly as before -- no undetermined disclosure at all
     det = {"lifecycle_risk": {"per_device": [{"host": "a", "band": "Past-LDoS"},
                                              {"host": "b", "band": "Near-LDoS"},
                                              {"host": "c", "band": "Active"}]}}
     dim2 = [d for d in compute_target_state(det)["dimensions"] if d["area"].startswith("Hardware")][0]
-    assert "carry ~1 fully-supported" in dim2["target"] and "UNDETERMINED" not in dim2["target"]
+    assert "identify ~1 pre-EoS date-band" in dim2["target"] and "UNDETERMINED" not in dim2["target"]
+    assert "support entitlement not assessed" in dim2["target"]
     assert "UNDETERMINED" not in dim2["current"]
 
 
@@ -2834,14 +2945,24 @@ def test_replacement_bom_lists_UNDETERMINED_platforms_instead_of_omitting_the_se
     assert b["n_replace"] == 0 and b["n_refresh"] == 0, "undetermined must not be costed as replace"
     assert ["WS-C6509-E", 2] in b["undetermined"], b["undetermined"]
     assert "undetermined" in (b.get("note") or "").lower()
+    assert "no exact EoX row matched" in b["note"]
+    assert "source/date authority was withheld" in b["note"]
     # the §5.1 heading gate in design.py
     assert b["n_replace"] or b["n_refresh"] or b["n_undetermined"], "section would still be omitted"
 
 
 def test_replacement_bom_still_omits_the_section_for_a_genuinely_clean_fleet():
-    """Non-vacuity: a fully-assessed Active fleet must not gain an empty procurement section."""
+    """Non-vacuity: a fully date-banded Active fleet must not gain an empty procurement section."""
     b = _bom_for([("Active", "C9300-48P"), ("Active", "C9300-48P")])
     assert not (b["n_replace"] or b["n_refresh"] or b["n_undetermined"]), b
+    assert "support entitlement was not assessed" in b["note"]
+
+
+def test_replacement_bom_fails_closed_on_a_future_unrecognized_band():
+    b = _bom_for([("Future-Band", "MODEL-FUTURE")])
+    assert b["n_replace"] == 0 and b["n_refresh"] == 0
+    assert b["n_undetermined"] == 1
+    assert b["undetermined"] == [["MODEL-FUTURE", 1]]
 
 
 def test_replacement_bom_keeps_real_replacements_separate_from_undetermined():

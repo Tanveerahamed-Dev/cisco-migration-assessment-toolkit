@@ -1114,9 +1114,13 @@ def compute_architecture_review(snap: dict) -> dict:
     # Published by analyze.compute_lifecycle_risk (analyze.py:6199) and, until now, read by nothing
     # in this chain — which is exactly how an all-Unknown fleet reached the `conforms` branch below.
     n_unknown = _as_int(lc_sum.get("n_unknown"))
-    lc_dev = [str(_as_dict(r).get("host")) for r in
-              _as_list(_as_dict(snap.get("lifecycle_risk")).get("per_device"))
-              if _as_dict(r).get("band") in ("Past-EoS", "Past-LDoS")]
+    lc_rows = _as_list(_as_dict(snap.get("lifecycle_risk")).get("per_device"))
+    lc_ldos_dev = [str(_as_dict(r).get("host")) for r in lc_rows
+                   if _as_dict(r).get("band") == "Past-LDoS"]
+    lc_eos_dev = [str(_as_dict(r).get("host")) for r in lc_rows
+                  if _as_dict(r).get("band") == "Past-EoS"]
+    lc_near_dev = [str(_as_dict(r).get("host")) for r in lc_rows
+                   if _as_dict(r).get("band") == "Near-LDoS"]
     # COVERAGE is ORTHOGONAL to what was FOUND, so it must not be chained behind the findings.
     # Subordinated as an `elif` (the shape crd.py carried until this round), the coverage disclosure
     # fired only when every adverse count was zero — so the BROWNFIELD fleet, some gear banded and
@@ -1127,9 +1131,9 @@ def compute_architecture_review(snap: dict) -> dict:
     #
     # Build the coverage sentence ONCE and append it through a wrapper, so EVERY LC-1 exit carries
     # it by construction rather than by each branch remembering to. A future branch cannot forget.
-    _lc_cov_obs = (f" Separately, {n_unknown} device(s) could NOT be lifecycle-banded — no EoX "
-                   "bulletin in the offline KB covers their platform, so their support state is "
-                   "UNKNOWN, never determined, and this check is unanswered for them."
+    _lc_cov_obs = (f" Separately, {n_unknown} device(s) could NOT be lifecycle-banded — either no exact "
+                   "EoX bulletin row matched or the matched row's retained source authority/complete dates "
+                   "did not verify, so their support state is UNKNOWN and this check is unanswered for them."
                    if n_unknown else "")
     _lc_cov_imp = (" The undetermined device(s) carry no evidence of vendor support in either "
                    "direction; absent lifecycle data is not a pass, and a plan that assumes it is "
@@ -1140,49 +1144,60 @@ def compute_architecture_review(snap: dict) -> dict:
                    if n_unknown else "")
 
     def add_lc(verdict, observed, implication, recommendation, evidence=()):
-        add("LC-1", D8, "No hardware past end-of-support", verdict,
+        add("LC-1", D8, "Hardware lifecycle exposure is controlled", verdict,
             observed + _lc_cov_obs, implication + _lc_cov_imp, recommendation + _lc_cov_rec,
-            "Cisco EoX policy — no TAC/software support past last-day-of-support", evidence=evidence)
+            "Cisco EoX policy — exact EoS/LDoS date bands; support entitlement assessed separately",
+            evidence=evidence)
 
     if not lc_sum:
         add_lc("not-assessable", "Lifecycle analysis is absent from this snapshot.", "—",
                "Re-run the assessment with the current engine (offline EoL KB).")
     elif n_ldos:
         add_lc("critical",
-               f"{n_ldos} device(s) are past LAST-DAY-OF-SUPPORT"
-               # bands are EXCLUSIVE: n_eos is the Past-EoS-ONLY count. Every Past-LDoS device is ALSO past
-               # end-of-sale, so a bare "(and 0 past end-of-sale)" reads as "nothing is past EoS" — omit it
-               # when 0, and say "more" when >0 (the additional EoS-only devices).
-               + (f" (and {n_eos} more past end-of-sale)" if n_eos else "")
-               + ": " + _ev(lc_dev) + ".",
-               "Past LDoS there is NO TAC escalation path and no software fix — a fault during a "
-               "migration window on these devices has no vendor backstop.",
+               f"{n_ldos} device(s) are past LAST-DAY-OF-SUPPORT: {_ev(lc_ldos_dev)}."
+               + (f" Separately, {n_near} device(s) are within one year of LDoS: "
+                  f"{_ev(lc_near_dev)}." if n_near else "")
+               + (f" Separately, {n_eos} device(s) are past end-of-sale with LDoS still future: "
+                  f"{_ev(lc_eos_dev)}." if n_eos else ""),
+               "For the Past-LDoS devices there is NO standard TAC escalation path or software fix — "
+               "a fault during a migration window on those devices has no vendor backstop. The "
+               "Past-EoS-only date band does not establish contract entitlement.",
                "Replace (not upgrade) the LDoS devices as the first migration waves; stage spares for "
-               "any that must briefly remain.",
-               evidence=lc_dev)
-    elif n_eos:
-        add_lc("deviation",
-               f"{n_eos} device(s) past end-of-sale" + (f", {n_near} approaching LDoS" if n_near else "") + ".",
-               "Support windows are closing; replacement lead times belong in the plan now.",
-               "Schedule the EoS platforms into the early waves of the replacement plan.",
-               evidence=lc_dev)
+               "any that must briefly remain. Schedule Near-LDoS and EoS-only devices for refresh "
+               "before their recorded LDoS dates.",
+               evidence=lc_ldos_dev)
     elif n_near:
+        add_lc("deviation",
+               f"{n_near} device(s) are within one year of LDoS: {_ev(lc_near_dev)}."
+               + (f" Separately, {n_eos} device(s) are past end-of-sale with LDoS still future: "
+                  f"{_ev(lc_eos_dev)}." if n_eos else ""),
+               "The Near-LDoS replacement window is short; Past-EoS also requires refresh planning. "
+               "Neither date band establishes contract entitlement.",
+               "Schedule Near-LDoS devices before their recorded deadline and place EoS-only devices "
+               "in the refresh plan.", evidence=lc_near_dev)
+    elif n_eos:
         add_lc("advisory",
-               f"{n_near} device(s) approaching last-day-of-support.",
-               "The window to plan replacement on normal lead times is open but finite.",
-               "Track the dates in the engagement RAID log.")
+               f"{n_eos} device(s) are past end-of-sale with LDoS still future: {_ev(lc_eos_dev)}.",
+               "The recorded refresh window is finite; support entitlement is not inferred.",
+               "Track exact LDoS dates and schedule the EoS platforms in the replacement plan.",
+               evidence=lc_eos_dev)
     else:
         # Nothing adverse was found. Whether that is a PASS depends entirely on coverage: with any
         # undetermined device the honest verdict is `not-assessable`, because the sentence "every
-        # device with lifecycle data is in an Active support band" is VACUOUSLY true of a fleet
+        # lifecycle-banded device is in the pre-EoS date band" is VACUOUSLY true of a fleet
         # nothing could band — a true sentence under a false verdict, the hardest form of
         # "absence rendered as health" to spot. Measured on Catalyst 6500s years past support,
         # banded Unknown because no retained bulletin covers them.
         add_lc("not-assessable" if n_unknown else "conforms",
-               ("Every device that COULD be lifecycle-banded is in an Active support band."
-                if n_unknown else "Every device with lifecycle data is in an Active support band."),
-               ("Vendor support backs the banded devices only."
-                if n_unknown else "Vendor support backs the whole migration."),
+               ("Every device that COULD be lifecycle-banded is in the pre-EoS date band "
+                "(public schema value: Active)."
+                if n_unknown else
+                "Every lifecycle-banded device is in the pre-EoS date band (public schema value: Active)."),
+               ("For the banded devices, retained bulletin dates show EoS has not passed; support "
+                "entitlement was not assessed."
+                if n_unknown else
+                "Retained bulletin dates show no assessed device past EoS or within one year of LDoS; "
+                "support entitlement was not assessed."),
                "Re-check EoX bulletins at each engagement gate (statuses move).")
 
     sw_by_model = defaultdict(set)

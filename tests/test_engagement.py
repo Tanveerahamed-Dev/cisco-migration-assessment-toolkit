@@ -150,17 +150,24 @@ def test_engagement_wave_schedule_reconciles_to_evidence(tmp_path):
 def test_engagement_raid_is_seeded_from_findings(tmp_path):
     out = str(tmp_path / "e.docx")
     write_engagement_docx(out, _snap(), "Unit Test Fleet")
-    text = _all_text(Document(out))
+    d = Document(out)
+    text = _all_text(d)
     assert "RSK-001" in text and "VLAN 30 has a single gateway" in text     # risk from punch-list
     assert "past last-day-of-support (LDoS)" in text                        # risk from lifecycle (LDoS band)
     assert "ISS-001" in text and "show cdp neighbors detail" in text        # issue from blind spot
     assert "ASM-001" in text and "DEP-001" in text                          # assumptions + dependencies
     assert "DEC-001" in text and "PROPOSED" in text                         # decision log seeded
+    lifecycle_rows = [
+        [cell.text for cell in row.cells]
+        for table in d.tables for row in table.rows
+        if any("past last-day-of-support (LDoS)" in cell.text for cell in row.cells)
+    ]
+    assert lifecycle_rows and "Critical" in lifecycle_rows[0][0]
 
 
 def test_engagement_gate_and_raid_key_on_past_ldos_not_past_eos(tmp_path):
-    """A2 (coverage-honesty): the band that LOSES TAC is Past-LDoS, not Past-EoS (end-of-sale,
-    support window still open). A fleet with 152 past-LDoS and 0 past-EoS must surface the 152 in
+    """A2 (coverage-honesty): the date band beyond LDoS is Past-LDoS, not Past-EoS (end-of-sale,
+    with LDoS still future and entitlement unassessed). A fleet with 152 past-LDoS and 0 Past-EoS must surface the 152 in
     BOTH the go/no-go conditions and the RAID risk — reading n_past_eos (=0) silently drops the 152
     (the exact Meridian defect). Discriminating fixture: n_past_eos=0 so only an n_past_ldos reader passes."""
     snap = _snap()
@@ -172,6 +179,41 @@ def test_engagement_gate_and_raid_key_on_past_ldos_not_past_eos(tmp_path):
     assert "152 device(s) are past last-day-of-support (LDoS)" in text       # go/no-go condition
     assert "152 device(s) past last-day-of-support (LDoS)" in text           # RAID risk row
     assert "152 device(s) are past end-of-support" not in text               # old conflated wording gone
+
+
+def test_engagement_unknown_lifecycle_names_match_and_authority_causes(tmp_path):
+    snap = _snap()
+    snap["lifecycle_risk"] = {"summary": {"n_devices": 2, "n_unknown": 2}}
+    out = str(tmp_path / "unknown-lifecycle.docx")
+    write_engagement_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "either no exact EoX row matched" in text
+    assert "matched row's retained source/date authority was incomplete" in text
+    assert "support entitlement are UNDETERMINED" in text
+
+
+def test_engagement_past_eos_is_refresh_window_not_support_entitlement(tmp_path):
+    snap = _snap()
+    snap["lifecycle_risk"] = {"summary": {"n_devices": 2, "n_past_eos": 2}}
+    out = str(tmp_path / "past-eos.docx")
+    write_engagement_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "finite recorded refresh window before LDoS" in text
+    assert "date band does not establish support entitlement" in text
+    assert "past end-of-sale with LDoS still future" in text
+    assert "verify serial-numbered support entitlement separately" in text
+    assert "support window closing" not in text
+
+
+def test_engagement_near_ldos_is_seeded_into_conditions_and_raid(tmp_path):
+    snap = _snap()
+    snap["lifecycle_risk"] = {"summary": {"n_devices": 2, "n_near": 2}}
+    out = str(tmp_path / "near-ldos.docx")
+    write_engagement_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "2 device(s) reach last-day-of-support within the planning horizon" in text
+    assert "2 device(s) are within one year of recorded LDoS" in text
+    assert "date band does not establish it" in text
 
 
 def test_engagement_no_waves_fallback(tmp_path):

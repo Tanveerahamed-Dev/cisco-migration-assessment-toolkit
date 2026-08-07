@@ -44,9 +44,14 @@ def bundle_datas(root: Path) -> List[Tuple[str, str]]:
     """(source, bundle-dest-dir) pairs for every non-code asset the frozen app needs."""
     root = Path(root)
     return [
-        # The two gzipped knowledge packs (silent-degrade class: lookups go empty without them).
+        # The two gzipped knowledge packs and their required adjacent manifest
+        # (silent-degrade class: lookups go empty without them).
         (str(root / "cisco_toolkit" / "data" / "oui_registry.tsv.gz"), "cisco_toolkit/data"),
         (str(root / "cisco_toolkit" / "data" / "port_registry.tsv.gz"), "cisco_toolkit/data"),
+        (str(root / "cisco_toolkit" / "data" / "registry_manifest.json"), "cisco_toolkit/data"),
+        # Compact, code-pinned Cisco EoL evidence.  Unlike the large registry source
+        # inventories, this 13 KiB semantic fixture is required for runtime authority.
+        (str(root / "cisco_toolkit" / "data" / "eol-bulletins.json"), "cisco_toolkit/data"),
         # The single-file explorer template every explorer render patches.
         (str(root / "cisco_toolkit" / "blast_radius_explorer.html"), "cisco_toolkit"),
         # The built SPA — the "one door" UI.

@@ -3282,8 +3282,10 @@ def write_lifecycle_risk_sheet(wb, lr: dict) -> None:
     s = L.get("summary") or {}
     ws.cell(1, 1, "Hardware lifecycle (EoL / End-of-Support) — replacement urgency").font = Font(bold=True, size=11)
     ws.cell(2, 1, f"Lifecycle bands as of collection date {L.get('asof', '')}: {s.get('n_past_ldos', 0)} past end-of-support · "
-                  f"{s.get('n_near', 0)} within 1yr · {s.get('n_active', 0)} active · "
-                  f"{s.get('n_unknown', 0)} unknown (of {s.get('n_devices', 0)}).").font = Font(size=10)
+                  f"{s.get('n_near', 0)} within 1yr · {s.get('n_past_eos', 0)} past end-of-sale "
+                  f"(LDoS still future; entitlement not inferred) · {s.get('n_active', 0)} pre-EoS date band "
+                  f"(schema: Active) · {s.get('n_unknown', 0)} NOT ASSESSED "
+                  f"(of {s.get('n_devices', 0)}).").font = Font(size=10)
     ws.cell(3, 1, L.get("note", "")).font = Font(size=9, italic=True, color="808080")
     BANDFILL = {"Past-LDoS": "F4CCCC", "Near-LDoS": "FCE4D6", "Past-EoS": "FFF2CC",
                 "Active": "D9EAD3", "Unknown": "EFEFEF"}

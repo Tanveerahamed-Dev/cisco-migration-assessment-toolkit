@@ -43,7 +43,7 @@ export default function AboutPage() {
         <div className="dim" style={{ fontSize: 13 }}>
           Before an engagement, run <span className="mono">assesshub --selftest</span> (or{" "}
           <span className="mono">python -m webapp.backend.serve --selftest</span>). It fails loud on
-          the assets that otherwise degrade silently: the explorer template, the OUI/port knowledge
+          the assets that otherwise degrade silently: the explorer template, the OUI/port/EoL knowledge
           packs, the DOCX/PPTX generators, the built frontend, the engine entry point and the data
           directory. Collection stays explicit and read-only — this app never writes to a device.
         </div>

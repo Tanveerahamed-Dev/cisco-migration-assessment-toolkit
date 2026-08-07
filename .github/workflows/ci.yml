@@ -290,6 +290,9 @@ jobs:
         run: |
           cisco-assess --help
           assesshub --selftest
+          # The selftest and this independent release assertion both require the compact Cisco EoL
+          # fixture to verify in the installed wheel. Only the much larger IEEE/IANA source corpus
+          # may use pack_is_usable's explicitly disclosed cannot-check-here state.
           # Routed through registry_integrity.pack_is_usable — the ONE owner of this question.
           # This line used to carry its own inline conjunction with a comment saying "keep in step
           # with COLLECT_PARSE and serve.py; there are four consumers" — the hand-sync instruction
@@ -300,7 +303,7 @@ jobs:
           # selftest above printed PASS 9/9 and this very next line exited 1 on the same facts
           # (proven on run 30744547871). A duplicated predicate in a workflow file is still a
           # duplicated predicate. Degraded installs are disclosed, not silently passed.
-          python -c "import sys; from cisco_toolkit import ouidb, portdb, registry_integrity as R; pairs = (('oui', ouidb.registry_health()), ('port', portdb.registry_health())); bad = [(n, h) for n, h in pairs if not R.pack_is_usable(h)]; [print(f'{n}: usable on bytes + build provenance; retained official sources not present in this install form (repo/sdist only)') for n, h in pairs if h.get('official_sources_available') is False and not bad]; sys.exit('registry pack unusable: %r' % (bad,)) if bad else None"
+          python -c "import sys; from cisco_toolkit import eoldb, ouidb, portdb, registry_integrity as R; pairs = (('oui', ouidb.registry_health()), ('port', portdb.registry_health()), ('eol', eoldb.registry_health())); bad = [(n, h) for n, h in pairs if not R.pack_is_usable(h)]; [print(f'{n}: usable on bytes + build provenance; retained official sources not present in this install form (repo/sdist only)') for n, h in pairs if h.get('official_sources_available') is False and not bad]; sys.exit('registry pack unusable: %r' % (bad,)) if bad else None"
       - name: Final immutable-source proof before preserving archives
         run: >-
           python .github/scripts/verify_checkout_immutable.py

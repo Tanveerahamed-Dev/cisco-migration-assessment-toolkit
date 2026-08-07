@@ -198,6 +198,39 @@ def test_ci_distribution_job_pins_tools_and_rechecks_immutable_source():
     assert "Reverify the exact archive bytes immediately before preservation" in body
 
 
+@pytest.mark.parametrize(
+    ("workflow", "install_command", "selftest_line"),
+    (
+        (
+            "ci.yml",
+            "pip install --force-reinstall dist/*.whl",
+            "          assesshub --selftest\n",
+        ),
+        (
+            "release.yml",
+            "pip install --force-reinstall dist/*.whl",
+            "          assesshub --selftest\n",
+        ),
+        (
+            "release-selfhosted.yml",
+            "pip install --quiet $wheel",
+            '          & "$env:RUNNER_TEMP\\smoke-venv\\Scripts\\assesshub.exe" --selftest\n',
+        ),
+    ),
+)
+def test_installed_wheel_selftest_gates_every_release_path(
+    workflow, install_command, selftest_line
+):
+    """The EoL authority check is meaningful only if every built-wheel path executes it."""
+    body = _workflow(workflow)
+    install_at = body.index(install_command)
+    selftest_at = body.index(selftest_line)
+
+    assert install_at < selftest_at
+    assert "('eol', eoldb.registry_health())" in body[selftest_at:]
+    assert "registry_integrity as R" in body[selftest_at:]
+
+
 def test_immutable_checkout_helper_accepts_only_a_stable_clean_tree(tmp_path):
     root, commit, tree = _clean_repository(tmp_path)
     helper = _checkout_module()

@@ -3496,11 +3496,10 @@ def main():
     # uncollected devices/ports are [NOT OBSERVED] neutral, never a fake green).
     cable_map = _run_phase("Cable map", compute_cable_map, all_interfaces, health_scores, _default={})
     _run_phase("Cabling Schedule sheet", write_cabling_schedule_sheet, wb, cable_map)   # EDA-style cable schedule (op-status + LAG) from the cable-map SSOT
-    # NEW-V3.23.117: lifecycle risk is kept as its OWN axis (sheet / cockpit / runbook §4.1), NOT folded into
-    # the punch-list -- its band is date-relative, which would make the frozen golden punch-list date-dependent.
-    # (The V3.23.172 compound patterns MAY reference the EoL band, but only when stacked with a second
-    # independent risk axis -- the synthetic golden fleet's models are outside the EoL KB, so the frozen
-    # golden punch-list stays date-free.)
+    # NEW-V3.23.117: lifecycle risk stays its OWN axis (sheet / cockpit / runbook §4.1). V3.23.172
+    # compound patterns may also fold a lifecycle band into the punch-list when it stacks with another
+    # risk axis. The golden harness therefore pins the synthetic collection timestamp: lifecycle and
+    # every legitimate downstream fold are deterministic as-of the evidence date, not the test date.
     _actx.device_dossiers = device_dossiers          # feed the just-computed dossiers into the punch-list
     _actx.cross_layer = cross_layer
     _actx.l3_forwarding = l3_forwarding

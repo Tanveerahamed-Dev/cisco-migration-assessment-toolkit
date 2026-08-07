@@ -31,6 +31,9 @@
 # re-materialization — here the pinned bytes happen to be CRLF, so the only safe rule is "do not
 # touch". Never "fix" trailing whitespace in these files either; it is publisher data and is hashed.
 reference-data/official-sources/** -text
+# The installed-wheel/Atlas EoL fixture is an exact byte-for-byte copy of the
+# retained source above and is checked against the same SHA-256 at runtime.
+cisco_toolkit/data/eol-bulletins.json -text
 
 # The built AssessHub SPA is TRACKED so the wheel's bytes can be bound to a commit (without it,
 # `distribution_verify --require-source-binding` exits 3 when shipped SPA members are outside the

@@ -471,7 +471,7 @@ def as_list(x) -> list:
 DEFAULT_GLOSSARY = (
     ("SVI", "Switched Virtual Interface — a VLAN's Layer-3 gateway on a switch."),
     ("FHRP", "First-Hop Redundancy Protocol (HSRP/VRRP/GLBP) — gateway redundancy across two devices."),
-    ("LDoS / EoS", "Last Date of Support / End of Sale — hardware lifecycle milestones. Past-LDoS is migration-critical."),
+    ("LDoS / EoS", "Last Day of Support / End of Sale — hardware lifecycle milestones. Past-LDoS is migration-critical."),
     ("Blast radius", "The set of devices/endpoints affected if a given node or link fails."),
     ("Keystone device", "A device whose failure strands a disproportionate share of the fleet."),
     ("Move group", "A set of devices migrated together within one maintenance window."),
@@ -507,13 +507,20 @@ def _glance_rows(snap):
          f"average health {v(f.get('avg_health'))}/100 — {v(f.get('n_critical'))} Critical, {v(f.get('n_poor'))} Poor"),
         # The unknown count rides WITH the headline, not in a footnote. `v()` maps only None to
         # [NOT OBSERVED], so a real 0 passed straight through and the first page of every
-        # deliverable led with "0 device(s) past last-date-of-support" for a fleet whose platforms
+        # deliverable led with "0 device(s) past last-day-of-support" for a fleet whose platforms
         # the offline EoX KB never matched. Zero findings and zero coverage are different facts.
         ("Biggest lifecycle exposure?",
-         f"{v(f.get('n_past_ldos'))} device(s) past last-date-of-support (migration-critical)"
-         + (f" — plus {f['n_unknown']} device(s) NOT ASSESSED: no EoX bulletin matched their "
-            f"platform, so their support state is undetermined, not clear"
-            if f.get("n_unknown") else "")),
+         f"{v(f.get('n_past_ldos'))} device(s) past last-day-of-support (migration-critical)"
+         f" · {v(f.get('n_near'))} within one year of LDoS"
+         f" · {v(f.get('n_past_eos'))} past end-of-sale with LDoS still future "
+         "(date band only; entitlement not inferred)"
+         + (f" — plus {f['n_unknown']} device(s) NOT ASSESSED: no authoritative lifecycle band "
+            f"was assigned because either no exact EoX row matched or the matched row's source/date "
+            f"authority was withheld; their support state is undetermined, not clear"
+            if f.get("n_unknown") else
+            " — lifecycle coverage count [NOT OBSERVED]: the summary did not publish n_unknown, so "
+            "zero adverse findings cannot be read as complete assessment"
+            if f.get("n_unknown") is None else "")),
         ("Scale (VLANs / endpoints)?",
          f"{v(f.get('n_vlans'))} production VLANs · {v(f.get('n_endpoints'))} evidenced endpoints"),
     ]

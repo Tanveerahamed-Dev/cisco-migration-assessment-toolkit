@@ -14,8 +14,9 @@ Harness guarantees (pinned by tests/test_golden_guard.py — Plan A / Move-0.1):
   (removed snapshot sections / sheets / header cells) unless the removal is
   made explicit with ALLOW_GOLDEN_SHRINK=1.
 
-Determinism: we run with --workers 1 (sequential) and strip the only volatile
-field (`generated_at`) before comparing.
+Determinism: we run with --workers 1 (sequential), give the synthetic collection
+a fixed collection timestamp (the lifecycle assessment boundary), and strip the
+remaining wall-clock field (`generated_at`) before comparing.
 """
 import json
 import os
@@ -30,6 +31,7 @@ import synthetic_fixtures as fx
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(ROOT, "COLLECT_PARSE_V3_23_0.py")
 GOLDEN_DIR = os.path.join(ROOT, "tests", "golden")
+_GOLDEN_COLLECTION_STAMP = "20260807_000000"
 
 
 def _make_template(path):
@@ -43,7 +45,11 @@ def _make_template(path):
 
 
 def _run_pipeline(tmp_path, out_xlsx=None, extra_args=None):
-    collection = fx.write_collection(str(tmp_path / "collection"))
+    # The collection-dir stamp is the pipeline's authoritative lifecycle `asof`. A plain temporary
+    # directory falls back to member mtimes, so lifecycle-derived punch-list/compound-risk rows drift
+    # as the test date crosses a retained LDoS. Pin the evidence date, not just the sections stripped
+    # below, because those sections have legitimate downstream consumers that remain in the golden.
+    collection = fx.write_collection(str(tmp_path / _GOLDEN_COLLECTION_STAMP))
     devices = tmp_path / "devices.json"
     devices.write_text(json.dumps(fx.DEVICES), encoding="utf-8")
     template = tmp_path / "template.xlsx"
@@ -79,10 +85,9 @@ def _run_pipeline(tmp_path, out_xlsx=None, extra_args=None):
     # executive_brief rolls up lifecycle (its EoL headline is date-relative) -> exclude too; pinned by
     # tests/test_executive_brief.py with synthetic summaries. (V3.23.120)
     snap.pop("executive_brief", None)
-    # device_dossiers embeds the EoL band per asset (eol_band / exposure labels / risk_band shift as
-    # dates pass) -> exclude like its lifecycle source; pinned by tests/test_device_dossiers.py with
-    # synthetic axes. Its PUNCH-LIST fold stays frozen: the CR basis text is deliberately band-agnostic
-    # ("past/near end-of-support"), so band transitions never reword a folded row. (V3.23.172)
+    # device_dossiers embeds the EoL band per asset (eol_band / exposure labels / risk_band), so exclude
+    # it like its lifecycle source; pinned by tests/test_device_dossiers.py with synthetic axes. Its
+    # downstream punch-list fold remains frozen because the synthetic evidence date above is fixed.
     snap.pop("device_dossiers", None)
     # design_blueprint folds the date-relative lifecycle/EoL bands (its EoL decision count shifts as dates
     # pass) -> exclude like its lifecycle source; the blueprint logic is pinned deterministically by

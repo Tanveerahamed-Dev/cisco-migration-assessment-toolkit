@@ -1190,6 +1190,7 @@ def _expected_runtime_inventory(root: Path) -> dict[str, str]:
 
     for relative in (
         "COLLECT_PARSE_V3_23_0.py",
+        "cisco_toolkit/data/eol-bulletins.json",
         "cisco_toolkit/data/oui_registry.tsv.gz",
         "cisco_toolkit/data/port_registry.tsv.gz",
         "cisco_toolkit/data/registry_manifest.json",

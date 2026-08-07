@@ -461,6 +461,7 @@ def _lay_out_probe_project(project: Path) -> None:
     for relative in (
         "COLLECT_PARSE_V3_23_0.py",
         "cisco_toolkit/__init__.py",
+        "cisco_toolkit/data/eol-bulletins.json",
         "cisco_toolkit/data/oui_registry.tsv.gz",
         "cisco_toolkit/data/port_registry.tsv.gz",
         "cisco_toolkit/data/registry_manifest.json",

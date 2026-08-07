@@ -47,6 +47,18 @@ per change, with verification evidence) lives in
   for. CI-only; no shipped bytes are affected, so v3.32.1's artifacts are unchanged.
 
 ### Fixed
+- **Installed distributions now retain authoritative lifecycle evidence.** Wheels and the frozen
+  Atlas bundle carry the exact 13,261-byte, SHA-pinned Cisco EoL semantic fixture; runtime verification
+  binds its schema, 44 PID/date claims, 17 exact bulletin URLs, and freshness to the inline lifecycle
+  table. Partial or tampered evidence fails closed. `assesshub --selftest` and every installed-wheel
+  CI/release smoke path now gate EoL authority, and Atlas also explicitly bundles the adjacent registry
+  manifest that its existing OUI/port loaders require.
+- **Lifecycle output no longer turns a date band into a support-entitlement claim.** The stable
+  machine value `Active` is rendered as a pre-EoS date position across the workbook, DOCX, explorer,
+  architecture review, SSOT descriptions, and AssessHub. Missing or non-authoritative source proof
+  withholds the band and dates as `NOT ASSESSED`; exact bulletin dates are never replaced by a generic
+  EoS-plus-five-years inference. AssessHub's target-state BoM also lists undetermined models for
+  evidence resolution instead of hiding an all-Unknown fleet or dropping unresolved rows from a mixed fleet.
 - **CSS and token changes now face a real design-system pixel gate.** A source-driven Playwright
   harness renders all 21 tracked component cards and 42 authored preview variants through the real
   barrel, synthetic provider, theme, and component CSS. Forty-two reviewed 900px and 728px baseline

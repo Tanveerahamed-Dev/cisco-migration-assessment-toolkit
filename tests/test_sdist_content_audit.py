@@ -15,8 +15,10 @@ _REQUIRED = {
     "pyproject.toml": b"[build-system]\n",
     "COLLECT_PARSE_V3_23_0.py": b"def main(): pass\n",
     "cisco_toolkit/blast_radius_explorer.html": b"<!doctype html>\n",
+    "cisco_toolkit/data/eol-bulletins.json": b"synthetic-eol-evidence",
     "cisco_toolkit/data/oui_registry.tsv.gz": b"synthetic-oui-pack",
     "cisco_toolkit/data/port_registry.tsv.gz": b"synthetic-port-pack",
+    "cisco_toolkit/data/registry_manifest.json": b"{}\n",
     "tests/fixtures/show_version.txt": b"synthetic fixture only\n",
     "tests/fixtures/device_info.json": b'{"synthetic": true}\n',
 }
@@ -76,9 +78,19 @@ def test_client_or_generated_source_members_are_rejected(tmp_path: Path, member:
     assert any(member in error for error in errors)
 
 
-def test_required_source_inputs_cannot_silently_disappear(tmp_path: Path) -> None:
-    errors = audit_sdist(_sdist(tmp_path, omit={"pyproject.toml"}))
-    assert "required source member missing from sdist: pyproject.toml" in errors
+@pytest.mark.parametrize(
+    "required",
+    (
+        "pyproject.toml",
+        "cisco_toolkit/data/eol-bulletins.json",
+        "cisco_toolkit/data/registry_manifest.json",
+    ),
+)
+def test_required_source_inputs_cannot_silently_disappear(
+    tmp_path: Path, required: str
+) -> None:
+    errors = audit_sdist(_sdist(tmp_path, omit={required}))
+    assert f"required source member missing from sdist: {required}" in errors
 
 
 def test_source_distribution_must_have_one_root(tmp_path: Path) -> None:

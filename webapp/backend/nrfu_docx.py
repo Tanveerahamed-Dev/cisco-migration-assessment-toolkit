@@ -246,7 +246,20 @@ def write_nrfu_docx(output_path: str, snap_dict: Dict[str, Any], label: str) -> 
         model = d.get("model", "") or "—"
         ver = d.get("sw_version", "") or "—"
         band = d.get("band", "")
-        note = "Past end-of-support — replacement, not just verification" if "Past" in str(band) else (band or "")
+        if band == "Past-LDoS":
+            note = "Past last-day-of-support — replacement, not just verification"
+        elif band == "Past-EoS":
+            note = ("Past end-of-sale with LDoS still future — plan refresh; this date band does not "
+                    "establish support entitlement")
+        elif band == "Near-LDoS":
+            note = "Within one year of LDoS — schedule refresh before the recorded deadline"
+        elif band == "Active":
+            note = "Pre-EoS date band (schema: Active); support entitlement not assessed"
+        elif band == "Unknown":
+            note = ("NOT ASSESSED — either no exact EoX row matched or the matched row's retained "
+                    "source/date authority was withheld or incomplete")
+        else:
+            note = band or ""
         rows1.append([f"NRFU-I-{n:03d}", host,
                       "Device reachable; model & software match the as-built baseline",
                       "show version | i Model number|Version|System image",

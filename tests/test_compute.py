@@ -1028,7 +1028,11 @@ def test_exec_brief_eol_axis_distinguishes_blind_from_verified_clean():
     clean = {a["axis"]: a for a in compute_executive_brief(
         health_scores=[{"switch": f"ACC-{i:02d}", "band": "Good", "score": 85} for i in range(10)],
         lifecycle_risk=compute_lifecycle_risk({f"ACC-{i:02d}": {"model": "C9300-48P", "sw_version": "17.09.04"} for i in range(10)}))["axes"]}["Hardware lifecycle (EoL)"]
-    assert blind["severity"] == "Info" and "unknown model" in blind["headline"]
+    assert blind["severity"] == "Info" and "NOT ASSESSED" in blind["headline"]
+    assert "no authoritative lifecycle band" in blind["headline"]
+    assert "retained source chain verified" in blind["detail"]
+    assert "no EoS/LDoS date is derived from a generic support-window rule" in blind["detail"]
+    assert "end-of-sale + 5yr" not in blind["detail"]
     assert not (blind["headline"] == clean["headline"] and blind["severity"] == clean["severity"])
 
 

@@ -22,6 +22,8 @@ def test_datas_cover_every_selftest_guarded_asset():
     sources = {Path(src).name: dest for src, dest in atlas_bundle.bundle_datas(ROOT)}
     assert sources["oui_registry.tsv.gz"] == "cisco_toolkit/data"
     assert sources["port_registry.tsv.gz"] == "cisco_toolkit/data"
+    assert sources["registry_manifest.json"] == "cisco_toolkit/data"
+    assert sources["eol-bulletins.json"] == "cisco_toolkit/data"
     assert sources["blast_radius_explorer.html"] == "cisco_toolkit"
     assert sources["dist"] == atlas_bundle.DIST_DEST
     assert sources["sample_fleet.snapshot.json"] == "webapp/sample_data"

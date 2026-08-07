@@ -183,6 +183,65 @@ describe("DesignBlueprintPanel (render)", () => {
     expect(screen.queryByText(/more row\(s\)/)).not.toBeInTheDocument();
   });
 
+  it("renders an all-undetermined lifecycle BoM instead of hiding it as a healthy zero", async () => {
+    vi.spyOn(api, "design").mockResolvedValue({
+      ...design,
+      target_state: {
+        dimensions: [],
+        replacement_bom: {
+          replace_now: [],
+          refresh_soon: [],
+          undetermined: [["WS-C6509-E", 2], ["(lifecycle row missing)", 1]],
+          n_replace: 0,
+          n_refresh: 0,
+          n_undetermined: 3,
+          n_not_assessed: 1,
+          note: "Undetermined models require authoritative lifecycle evidence before procurement.",
+        },
+      },
+    } as never);
+    vi.spyOn(api, "architectureCoverage").mockResolvedValue(archCoverage as never);
+    vi.spyOn(api, "domainPacks").mockResolvedValue(domainPacks as never);
+    render(<DesignBlueprintPanel snapId={1} />);
+    await screen.findByText("Right-size to requirements (the WHY)");
+
+    expect(screen.getByText("Lifecycle disposition BoM · 0 replace / 0 refresh / 3 resolve")).toBeInTheDocument();
+    expect(screen.getByText("WS-C6509-E")).toBeInTheDocument();
+    expect(screen.getByText("(lifecycle row missing)")).toBeInTheDocument();
+    expect(screen.getAllByText("Resolve before procurement")).toHaveLength(2);
+    expect(screen.getByText(/authoritative lifecycle evidence before procurement/)).toBeInTheDocument();
+  });
+
+  it("keeps undetermined models visible beside costed replace and refresh rows", async () => {
+    vi.spyOn(api, "design").mockResolvedValue({
+      ...design,
+      target_state: {
+        dimensions: [],
+        replacement_bom: {
+          replace_now: [["PAST-LDOS", 1]],
+          refresh_soon: [["PAST-EOS", 2]],
+          undetermined: [["NO-AUTHORITY", 3]],
+          n_replace: 1,
+          n_refresh: 2,
+          n_undetermined: 3,
+          note: "Each lifecycle disposition remains separate.",
+        },
+      },
+    } as never);
+    vi.spyOn(api, "architectureCoverage").mockResolvedValue(archCoverage as never);
+    vi.spyOn(api, "domainPacks").mockResolvedValue(domainPacks as never);
+    render(<DesignBlueprintPanel snapId={1} />);
+    await screen.findByText("Right-size to requirements (the WHY)");
+
+    expect(screen.getByText("Lifecycle disposition BoM · 1 replace / 2 refresh / 3 resolve")).toBeInTheDocument();
+    expect(screen.getByText("PAST-LDOS")).toBeInTheDocument();
+    expect(screen.getByText("PAST-EOS")).toBeInTheDocument();
+    expect(screen.getByText("NO-AUTHORITY")).toBeInTheDocument();
+    expect(screen.getByText("Replace")).toBeInTheDocument();
+    expect(screen.getByText("Refresh")).toBeInTheDocument();
+    expect(screen.getByText("Resolve before procurement")).toBeInTheDocument();
+  });
+
   it("ArchitectureCoveragePanel resolves colors from real theme tokens, never the dead #888/#ccc fallbacks", async () => {
     vi.spyOn(api, "design").mockResolvedValue(design as never);
     vi.spyOn(api, "architectureCoverage").mockResolvedValue(archCoverageWithRow as never);

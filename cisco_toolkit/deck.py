@@ -34,7 +34,7 @@ _GRID = (0xE5, 0xE7, 0xEB)
 _SEV_COLOR = {"Critical": _CRIT, "High": _HIGH, "Medium": _MED, "Low": _OK, "Info": _MUTED}
 _BAND_COLOR = {"Excellent": _OK, "Good": (0x5C, 0xB8, 0x5C), "Fair": _MED, "Poor": _HIGH,
                "Critical": _CRIT, "Insufficient Data": _MUTED}
-_LC_BAND_COLOR = {"Past-LDoS": _CRIT, "Past-EoS": _HIGH, "Near-LDoS": _MED, "Active": _OK, "Unknown": _MUTED}
+_LC_BAND_COLOR = {"Past-LDoS": _CRIT, "Past-EoS": _MED, "Near-LDoS": _HIGH, "Active": _OK, "Unknown": _MUTED}
 
 _HEAD = "Calibri"   # universally rendered (Office default); hierarchy comes from size / weight / colour
 _BODY = "Calibri"
@@ -473,14 +473,16 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     elif lsum.get("n_devices"):
         s = slide()
         header(s, "A primary migration driver", "Hardware end-of-support exposure")
-        # "Past end-of-support" is the Past-LDoS band ALONE (no TAC) — Past-EoS is end-of-SALE with
-        # the support window still open. Mirror the canonical executive_brief lifecycle axis
+        # "Past end-of-support" is the Past-LDoS band ALONE (no standard TAC path) — Past-EoS is
+        # end-of-SALE while recorded LDoS remains future; neither proves contract entitlement. Mirror
+        # the canonical executive_brief lifecycle axis
         # (compute_executive_brief's lc_pe / lc_known pair) so the deck headline agrees with every
         # other surface (A3 SSOT fix). Past-EoS is not lost: it keeps its own segment below.
         past = _as_num(lsum.get("n_past_ldos"))
         near = _as_num(lsum.get("n_near"))
-        # Denominator == KNOWN-model (EoL-assessable) devices == full fleet minus unidentified-model
-        # devices, mirroring compute_executive_brief's lc_known. Dividing by the full n_devices diluted
+        # Denominator == lifecycle-assessable devices == full fleet minus Unknown devices (no exact
+        # match OR withheld retained source/date authority), mirroring compute_executive_brief's
+        # lc_known. Dividing by the full n_devices diluted
         # the headline and made THIS slide the sole set-wide outlier (70% of 303) while the workbook,
         # design, MOP, runbook and engagement all report "86% of 247 assessable" (QA scorecard row 12,
         # residual #1). The Unknown count stays visible in the band-distribution legend below, so the
@@ -489,16 +491,25 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
         pct = round(100 * (past + near) / assessable) if assessable else 0
         stat(s, 0.7, 2.1, f"{pct}%", f"of {assessable} assessable, past or nearing end-of-support", _HIGH)
         stat(s, 3.6, 2.1, past, "past end-of-support", _CRIT)
-        stat(s, 6.2, 2.1, near, "within 1 year", _MED)
-        lc_order = ["Past-LDoS", "Past-EoS", "Near-LDoS", "Active", "Unknown"]
+        stat(s, 6.2, 2.1, near, "within 1 year", _HIGH)
+        lc_order = ["Past-LDoS", "Near-LDoS", "Past-EoS", "Active", "Unknown"]
         byb = _D(lsum.get("by_band"))
         segs = [(byb.get(b, 0), _LC_BAND_COLOR.get(b, _MUTED)) for b in lc_order]
         if any(c for c, _ in segs):
             text(s, 0.7, 3.6, W - 1.4, 0.3, [("Lifecycle band distribution", 12, _MUTED, True)])
             propbar(s, 0.7, 3.95, W - 1.4, segs)
             legend = [b for b in lc_order if byb.get(b, 0)]
+            display_band = {
+                "Past-EoS": "Past end-of-sale (LDoS future)",
+                "Active": "Pre-EoS date band (schema: Active)",
+                "Unknown": "NOT ASSESSED (schema: Unknown)",
+            }
             text(s, 0.7, 4.4, W - 1.4, 0.4,
-                 [[(f"{b}: {byb.get(b, 0)}   ", 11, _LC_BAND_COLOR.get(b, _MUTED), True) for b in legend]])
+                 [[(f"{display_band.get(b, b)}: {byb.get(b, 0)}   ", 11,
+                    _LC_BAND_COLOR.get(b, _MUTED), True) for b in legend]])
+            text(s, 0.7, 4.82, W - 1.4, 0.32,
+                 [("Support entitlement is not assessed. Unknown includes no exact row or withheld "
+                   "retained source/date authority.", 10, _MUTED, False)])
         text(s, 0.7, 5.3, W - 1.4, 0.5,
              [("Aging hardware is one of the top reasons to migrate — and a hard constraint on how long the "
                "current fabric can safely run. Detail in the Lifecycle Risk workbook sheet.", 12, _INK, False, True)])

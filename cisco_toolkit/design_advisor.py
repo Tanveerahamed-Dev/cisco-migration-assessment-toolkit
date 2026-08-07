@@ -25,6 +25,34 @@ from . import design_kb
 
 PRANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
 _SCORE = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1, "Info": 0}
+_LIFECYCLE_DECISION_RANK = {
+    "lifecycle-eol-out-of-critical-roles": 0,
+    "lifecycle-near-ldos-refresh-before-deadline": 1,
+    "lifecycle-past-eos-refresh-planning": 2,
+    "lifecycle-unknown-resolve-authority": 3,
+}
+
+
+def _stabilize_lifecycle_ties(decisions, *, effective=False):
+    """Keep canonical lifecycle urgency inside equal-priority decision slots.
+
+    Evidence count is normally a useful blast-radius tiebreaker. Unknown and Past-EoS are both Medium,
+    though, and a large coverage gap must not jump ahead of a real adverse date band. Reordering only the
+    lifecycle decisions' existing, exactly tied slots preserves every unrelated decision's position and any
+    requirements-derived effective-priority distinction.
+    """
+    groups = {}
+    for index, decision in enumerate(decisions):
+        if decision.get("id") not in _LIFECYCLE_DECISION_RANK:
+            continue
+        key = (decision.get("priority"), decision.get("effective_priority") if effective else None)
+        groups.setdefault(key, []).append(index)
+    for slots in groups.values():
+        ordered = sorted((decisions[index] for index in slots),
+                         key=lambda d: _LIFECYCLE_DECISION_RANK[d["id"]])
+        for index, decision in zip(slots, ordered):
+            decisions[index] = decision
+    return decisions
 
 # Security-finding ids (config-security / CIS axis) that bear on the MANAGEMENT plane vs general
 # device hardening -- kept aligned with the auditor's emitted ids.
@@ -60,16 +88,17 @@ def is_access_mode(mode) -> bool:
 
 
 def _is_refresh_band(band) -> bool:
-    """ONE owner for the REFRESH lifecycle class: approaching LDoS, or past end-of-SALE but still supported
-    until LDoS (analyze emits both bands). Past-LDoS is the separate REPLACE class and is never refresh.
+    """ONE owner for the REFRESH lifecycle class: approaching LDoS, or past end-of-SALE while LDoS
+    remains future (analyze emits both bands; neither establishes contract entitlement). Past-LDoS is
+    the separate REPLACE class and is never refresh.
     Shared by `_signals` (sig['near'], the narrative + cost axis) and `_replacement_bom` (refresh_soon) so a
-    Past-EoS asset cannot be procured as a refresh AND carried forward as supportable in one blueprint
+    Past-EoS asset cannot be procured as a refresh AND carried forward without a lifecycle decision
     (review 2026-07-28 #50). This is a derived UNION of two registered facts, not a restatement of either:
     the owner of the lifecycle bands is `cisco_toolkit/ssot.py :: CANONICAL_FACTS` -> n_near
     (`lifecycle_risk.summary.n_near`) + n_past_eos (`lifecycle_risk.summary.n_past_eos`), read here from
     their raw basis `lifecycle_risk.per_device[].band` (docs/ssot.md, Assessment headline facts)."""
     b = str(band or "").strip().lower()
-    return "near" in b or b == "past-eos"
+    return b in {"near-ldos", "past-eos"}
 
 
 def _vrf_phrase(sig, single, multiple, unknown):
@@ -1201,28 +1230,29 @@ def _signals(snap):
     sig["nobackup_high"] = sum(1 for x in fi if x.get("severity") == "High" and not _as_int(x.get("backup")))
 
     life = _dict_rows(_as_dict(snap.get("lifecycle_risk")).get("per_device"))
-    # Past-LDoS = unsupported (no TAC / no fixes) -> "eol"/replace. Past-EoS (past end-of-SALE but STILL
-    # supported until LDoS -- analyze emits both bands) is DISTINCT and refresh-class; matching the band
-    # exactly (not startswith "past") keeps supported gear from being mislabelled unsupported/past-LDoS.
+    # Past-LDoS = beyond the recorded support date -> "eol"/replace. Past-EoS (after end-of-SALE but
+    # before the recorded LDoS -- analyze emits both bands) is DISTINCT and refresh-class; matching the
+    # band exactly (not startswith "past") keeps the two date positions from being conflated.
     # ONE owner for the three disjoint lifecycle dispositions, so the BoM and the narrative cannot order to
     # different numbers (review 2026-07-28 #50): Past-EoS used to land in _replacement_bom's `refresh_soon`
     # (procure a replacement) while `near` matched only "near", so the SAME device was simultaneously counted
-    # by `retain = collected - eol` as a supportable asset to carry forward. The refresh CLASS is defined here
+    # by `retain = collected - eol` as an asset to carry forward. The refresh CLASS is defined here
     # exactly as _replacement_bom defines it -- near-LDoS OR past-EoS -- and `retain` now subtracts both.
     sig["eol"] = sum(1 for d in life if str(d.get("band", "")).strip().lower() == "past-ldos")
-    sig["near"] = sum(1 for d in life if _is_refresh_band(d.get("band")))
+    sig["near_ldos"] = sum(1 for d in life if str(d.get("band", "")).strip().lower() == "near-ldos")
+    sig["past_eos"] = sum(1 for d in life if str(d.get("band", "")).strip().lower() == "past-eos")
+    sig["near"] = sig["near_ldos"] + sig["past_eos"]
     sig["lifecycle_assessed"] = len(life)
     # The FOURTH lifecycle disposition, and the one the three-way split silently swallowed:
-    # compute_lifecycle_risk emits band "Unknown" ("Unknown model -- verify on Cisco's EoL portal") for every
-    # device whose model it could NOT match against the EoL data. `retain = assessed - eol - near` therefore
-    # counted an UNDETERMINED support status as a fully-supported asset and the target state told the customer
-    # to "carry ~N fully-supported asset(s) forward" -- absence rendered as health, in the procurement line,
-    # in the same sentence that preaches "coverage gaps are unknowns, not health". Count the SUPPORTED band
-    # positively (band == "Active") instead of by subtraction, and make the residue an explicit
-    # not-determined bucket so eol + near + supported + undetermined == lifecycle_assessed exactly.
-    sig["lifecycle_supported"] = sum(1 for d in life
-                                     if str(d.get("band", "")).strip().lower() == "active")
-    sig["lifecycle_unknown"] = max(0, len(life) - sig["eol"] - sig["near"] - sig["lifecycle_supported"])
+    # compute_lifecycle_risk emits band "Unknown" when no exact EoX row matched OR the matched row's
+    # source/date authority was withheld. `retain = assessed - eol - near` therefore counted an
+    # UNDETERMINED status as a carry-forward asset. Count the pre-EoS DATE band positively (schema value
+    # "Active") instead, without turning that date position into a support-entitlement claim. The residue
+    # is explicit, so eol + near + pre_eos + undetermined == lifecycle_assessed exactly.
+    sig["lifecycle_pre_eos"] = sum(1 for d in life
+                                   if str(d.get("band", "")).strip().lower() == "active")
+    sig["lifecycle_unknown"] = max(
+        0, len(life) - sig["eol"] - sig["near"] - sig["lifecycle_pre_eos"])
     # ...and the FIFTH disposition, the one `lifecycle_unknown` itself cannot express: a device the
     # lifecycle axis produced NO ROW FOR AT ALL. `lifecycle_unknown` is derived from len(life), so it
     # is 0 both when every device is banded Active AND when the axis emitted nothing -- the two cases
@@ -1235,7 +1265,9 @@ def _signals(snap):
     # census is whichever enumeration is larger -- the device inventory or the collection census --
     # so a lifecycle axis that ran on a subset cannot hide behind the smaller one.
     _lc_hosts = {str(d.get("host")).strip().lower() for d in life if str(d.get("host") or "").strip()}
-    _fleet_hosts = {str(h).strip().lower() for h in _as_dict(snap.get("devices")) if str(h).strip()}
+    _fleet_host_labels = {str(h).strip().lower(): str(h) for h in _as_dict(snap.get("devices"))
+                          if str(h).strip()}
+    _fleet_hosts = set(_fleet_host_labels)
     _cc_inv = _as_int(_as_dict(_as_dict(snap.get("collection_completeness")).get("summary")).get("inventory"))
     _lc_census = max(len(_fleet_hosts), _cc_inv)
     sig["lifecycle_not_assessed"] = max(0, _lc_census - len(_lc_hosts))
@@ -1245,8 +1277,16 @@ def _signals(snap):
         str(d.get("host")) for d in life
         if str(d.get("band", "")).strip().lower() not in ("active", "past-ldos")
         and not _is_refresh_band(d.get("band")) and d.get("host") and _scalar(d.get("host")))[:12]
+    sig["lifecycle_not_assessed_hosts"] = sorted(
+        _fleet_host_labels[h] for h in (_fleet_hosts - _lc_hosts))[:12]
+    sig["lifecycle_undetermined_devices"] = list(dict.fromkeys(
+        sig["lifecycle_unknown_hosts"] + sig["lifecycle_not_assessed_hosts"]))[:12]
     sig["eol_devices"] = [d.get("host") for d in life
                           if str(d.get("band", "")).strip().lower() == "past-ldos"][:12]
+    sig["near_ldos_devices"] = [d.get("host") for d in life
+                                if str(d.get("band", "")).strip().lower() == "near-ldos"][:12]
+    sig["past_eos_devices"] = [d.get("host") for d in life
+                               if str(d.get("band", "")).strip().lower() == "past-eos"][:12]
 
     qos = _dict_rows(_as_dict(snap.get("qos_audit")).get("per_device"))
     sig["qos_assessable"] = sum(1 for d in qos if d.get("assessable"))
@@ -3124,15 +3164,60 @@ def _d_spof(snap, sig):
 def _d_eol(snap, sig):
     if sig["eol"] <= 0:
         return None
-    extra = f" ({sig['near']} more approaching LDoS or past-EoS)" if sig["near"] else ""
     return _decision(
         "lifecycle-eol-out-of-critical-roles",
-        f"{sig['eol']} device(s) are past last-day-of-support{extra} -- unsupported hardware/software "
-        f"in forwarding roles cannot be safely relied on in the target design.",
+        f"{sig['eol']} device(s) are past last-day-of-support -- those end-of-support assets in "
+        "forwarding roles cannot be safely relied on in the target design.",
         sig["eol"], ["availability", "cost"],
         ["lifecycle_risk.per_device[].band", "software_risk.per_device[].train_band"],
         priority="Critical", driver="Supportability: the target fabric must not inherit end-of-support assets.",
         devices=sig["eol_devices"])
+
+
+def _d_near_ldos(snap, sig):
+    if sig["near_ldos"] <= 0:
+        return None
+    return _decision(
+        "lifecycle-near-ldos-refresh-before-deadline",
+        f"{sig['near_ldos']} device(s) are within one year of recorded LDoS. Give each an owned, "
+        "approved replacement disposition and implementation window before that deadline; the date band "
+        "does not establish contract entitlement.",
+        sig["near_ldos"], ["availability", "cost"],
+        ["lifecycle_risk.per_device[].band", "lifecycle_risk.per_device[].ldos"],
+        priority="High", driver="Deadline risk: preserve time for a staged replacement before recorded LDoS.",
+        devices=sig["near_ldos_devices"])
+
+
+def _d_past_eos(snap, sig):
+    if sig["past_eos"] <= 0:
+        return None
+    return _decision(
+        "lifecycle-past-eos-refresh-planning",
+        f"{sig['past_eos']} device(s) are past end-of-sale with recorded LDoS still future. Place each "
+        "in an owned, dated refresh plan; this is not an immediate-removal or support-entitlement claim.",
+        sig["past_eos"], ["cost", "manageability"],
+        ["lifecycle_risk.per_device[].band", "lifecycle_risk.per_device[].eos",
+         "lifecycle_risk.per_device[].ldos"],
+        priority="Medium", driver="Investment planning: act before sourcing and migration choices narrow.",
+        devices=sig["past_eos_devices"])
+
+
+def _d_lifecycle_unknown(snap, sig):
+    if sig["lifecycle_undetermined"] <= 0:
+        return None
+    banded = sig["lifecycle_unknown"]
+    missing = sig["lifecycle_not_assessed"]
+    return _decision(
+        "lifecycle-unknown-resolve-authority",
+        f"{banded} lifecycle row(s) are Unknown and {missing} fleet asset(s) received no lifecycle row. "
+        "Resolve exact PID/serial before carry-forward or procurement. Accept either a verified dated "
+        "bulletin match, or a time-stamped authoritative EoX no-notice check with an owner and review date; "
+        "no lifecycle or support-entitlement conclusion is inferred from absence.",
+        sig["lifecycle_undetermined"], ["cost", "manageability"],
+        ["lifecycle_risk.per_device[].band", "devices", "collection_completeness.summary.inventory"],
+        priority="Medium", confidence="Coverage-gap",
+        driver="Coverage honesty: an unclassified asset needs evidence closure, not a healthy default.",
+        devices=sig["lifecycle_undetermined_devices"])
 
 
 def _d_qos(snap, sig):
@@ -3701,7 +3786,8 @@ _DETECTORS = [_d_fhrp, _d_fhrp_state, _d_fhrp_resilience, _d_nve_peer_health, _d
               _d_fortigate_ha_degraded,  # MULTI-VENDOR: Fortinet FortiGate HA cluster sync -- the THIRD non-Cisco vendor ('get system ha status')
               _d_mcast_rpf_failure,  # CISCO DEPTH: multicast RPF integrity -- (S,G) Null incoming-interface (the benign (*,G)-Null case excluded)
               _d_pim_rp_health, _d_ipv6_fhs, _d_ntp_sync, _d_port_security_errdisable, _d_storm_control_action, _d_storm_control_active, _d_qos_runtime_drops, _d_shadow_infra,
-              _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
+              _d_spof, _d_eol, _d_near_ldos, _d_past_eos, _d_lifecycle_unknown,
+              _d_qos, _d_mgmt, _d_harden, _d_coverage,
               _d_flat_l2, _d_stp_lag, _d_stp_det, _d_igp, _d_mcast,
               _d_timesync, _d_voice_qos, _d_phased, _d_l2_faildomain,
               _d_stp_mst_scale, _d_oncrit_seg,
@@ -3892,12 +3978,16 @@ def _scorecard(snap, sig):
     lc_undet = _as_int(sig.get("lifecycle_undetermined")) or (lc_unknown + lc_missing)
     if lc_undet:
         co = min(co, 2)
+    lc_gap_parts = []
+    if lc_unknown:
+        lc_gap_parts.append(
+            f"{lc_unknown} had no exact EoX match or their matched source/date authority was withheld")
+    if lc_missing:
+        lc_gap_parts.append(f"{lc_missing} were never assessed by the lifecycle axis at all")
     out.append(_axis_entry("cost", co, "Pressure" if co <= 2 else "Comfortable",
                f"{sig['eol']} past-LDoS + {sig['near']} near-LDoS/past-EoS asset(s) imply refresh CapEx."
                + (f" {lc_undet} asset(s) could NOT be lifecycle-banded"
-                  + (f" ({lc_unknown} matched no EoX bulletin; {lc_missing} were never assessed by the "
-                     "lifecycle axis at all)" if lc_unknown and lc_missing
-                     else " (never assessed by the lifecycle axis at all)" if lc_missing else "")
+                  + (f" ({'; '.join(lc_gap_parts)})" if lc_gap_parts else "")
                   + " -- their refresh exposure is UNDETERMINED, not nil, so this axis cannot read "
                     "'Comfortable'." if lc_undet else "")
                + cov_note))
@@ -4157,25 +4247,56 @@ def _ts_dim(area, current, target, rationale, confidence, drivers=None, requirem
 
 
 def _replacement_bom(snap):
-    """Target procurement: assets at/near end-of-support that must be replaced/refreshed, grouped by their
-    CURRENT model. Read straight from lifecycle_risk.per_device (band + model). A supported successor SKU
-    is chosen at detailed design -- not invented here. Supportable assets carry forward."""
+    """Target procurement: Past-LDoS assets to replace and Near-LDoS/Past-EoS assets to place in
+    refresh planning, grouped by CURRENT model. Devices absent from lifecycle_risk.per_device are added
+    to the undetermined bucket from the device/collection census. A successor SKU is chosen at detailed
+    design -- not invented here. Date bands do not establish serial-numbered support entitlement."""
     life = _dict_rows(_as_dict(snap.get("lifecycle_risk")).get("per_device"))
     replace, refresh, undetermined = {}, {}, {}
+    n_near = 0
+    n_past_eos = 0
+    life_hosts = set()
     for d in life:
         band = str(d.get("band", "")).strip().lower()
         model = d.get("model") or "Unknown"
-        if band == "past-ldos":                          # unsupported (no TAC/fixes) -> must replace now
+        host = str(d.get("host") or "").strip().lower()
+        if host:
+            life_hosts.add(host)
+        if band == "past-ldos":                          # beyond recorded LDoS -> must replace now
             replace[model] = replace.get(model, 0) + 1
-        elif _is_refresh_band(band):                     # approaching LDoS, or past-sale but STILL supported
+        elif _is_refresh_band(band):                     # approaching LDoS, or after EoS but before recorded LDoS
             refresh[model] = refresh.get(model, 0) + 1    # -> refresh, NOT replace-now (one owner: #50)
-        elif band == "unknown":
-            # A THIRD disposition, because "not banded" is not "carries forward". Unknown fell
+            if band == "near-ldos":
+                n_near += 1
+            elif band == "past-eos":
+                n_past_eos += 1
+        elif band != "active":
+            # A THIRD disposition, because "not banded" is not "carries forward". Unknown (and any
+            # future/noncanonical band this version cannot interpret) fell
             # through both branches, so an all-Unknown fleet produced two empty lists and §5.1 was
             # omitted ENTIRELY (design.py gates the heading on n_replace or n_refresh) — the
             # customer was never offered a procurement decision on hardware nobody could assess.
             # These are NOT counted as replace-now: nothing observed says they are past support.
             undetermined[model] = undetermined.get(model, 0) + 1
+    # A missing lifecycle row is distinct from an explicit Unknown row, but both need the same
+    # pre-procurement evidence-resolution table. Reconcile by host so explicit Unknown is not counted twice.
+    # If collection inventory exceeds the named device mapping, retain the anonymous residue too.
+    devices = _as_dict(snap.get("devices"))
+    n_missing_rows = 0
+    for device_host, raw in devices.items():
+        if str(device_host).strip().lower() in life_hosts:
+            continue
+        meta = _as_dict(raw)
+        model = meta.get("model") or meta.get("pid") or meta.get("platform") or "Unknown"
+        undetermined[model] = undetermined.get(model, 0) + 1
+        n_missing_rows += 1
+    inventory = _as_int(
+        _as_dict(_as_dict(snap.get("collection_completeness")).get("summary")).get("inventory"))
+    anonymous_missing = max(0, max(len(devices), inventory) - len(life_hosts) - n_missing_rows)
+    if anonymous_missing:
+        undetermined["(lifecycle row missing)"] = (
+            undetermined.get("(lifecycle row missing)", 0) + anonymous_missing)
+        n_missing_rows += anonymous_missing
     def _rows(m):
         return sorted(([model, qty] for model, qty in m.items()), key=lambda r: (-r[1], r[0]))
     return {
@@ -4184,12 +4305,19 @@ def _replacement_bom(snap):
         "undetermined": _rows(undetermined),
         "n_replace": sum(replace.values()),
         "n_refresh": sum(refresh.values()),
+        "n_near": n_near,
+        "n_past_eos": n_past_eos,
         "n_undetermined": sum(undetermined.values()),
-        "note": "Quantities are the current models at/near end-of-support; a supported successor SKU is "
-                "selected at detailed design (not auto-chosen here). Supportable assets carry forward."
-                + (" Undetermined models could not be banded — no EoX bulletin in the offline KB "
-                   "matched them — so they are listed for resolution, not costed: their support state "
-                   "is unknown, which is not the same as supportable."
+        "n_not_assessed": n_missing_rows,
+        "note": "Quantities separate Past-LDoS replace-now assets from Near-LDoS and Past-EoS "
+                "refresh-planning assets; a successor SKU is selected at detailed design (not "
+                "auto-chosen here). Pre-EoS date-band assets are carry-forward candidates only; "
+                "support entitlement was not assessed."
+                + (" Undetermined models either had no lifecycle row, no exact EoX row matched, or the "
+                   "matched row's source/date authority was withheld, so they are listed for evidence "
+                   "resolution, not costed. A "
+                   "time-stamped authoritative no-notice check may close the explanation while the asset "
+                   "correctly remains Unknown."
                    if undetermined else ""),
     }
 
@@ -4665,16 +4793,14 @@ def compute_target_state(snap, requirements=None, sig=None):
             or sig.get("lifecycle_not_assessed")):
         # The dispositions must PARTITION the lifecycle-assessed fleet, or procurement orders to one
         # number while the migration plan assumes another (#50). replace = past-LDoS, refresh = the
-        # _is_refresh_band class (near-LDoS + past-EoS -- exactly _replacement_bom.refresh_soon), retain = the
-        # OBSERVED-supported band. Derive them from the SAME census as the bands (lifecycle_risk.per_device),
+        # _is_refresh_band class (near-LDoS + past-EoS -- exactly _replacement_bom.refresh_soon), pre_eos = the
+        # observed pre-EoS DATE band. Derive them from the SAME census as the bands (lifecycle_risk.per_device),
         # not from collection_completeness -- mixing the two censuses is what let a device be in two buckets.
-        # `retain` is now counted POSITIVELY (band == Active), not as the subtraction remainder: the remainder
-        # also contains compute_lifecycle_risk's band "Unknown" (model not matched on Cisco's EoL data), and
-        # calling an UNDETERMINED support status a "fully-supported asset to carry forward" is absence
-        # rendered as health -- the exact thing the rationale line below forbids. It is now its own bucket.
-        # (retain == lifecycle_assessed - eol - near whenever nothing is undetermined, so a fleet with a fully
-        # determined lifecycle census renders exactly as before -- the disclosure only appears when it is real.)
-        retain, undet = sig["lifecycle_supported"], sig.get("lifecycle_unknown", 0)
+        # `pre_eos` is counted POSITIVELY (band == Active), not as the subtraction remainder: the remainder
+        # also contains compute_lifecycle_risk's band "Unknown" (no exact row OR source/date authority
+        # withheld). Active describes date position only, so it can identify a carry-forward candidate but
+        # cannot certify support entitlement. The undetermined residue is its own bucket.
+        pre_eos, undet = sig["lifecycle_pre_eos"], sig.get("lifecycle_unknown", 0)
         # The devices the lifecycle axis never produced a row for are a DIFFERENT population from the
         # ones it banded Unknown, and neither is covered by `not_collected` (a device can be fully
         # collected and still never reach the lifecycle axis). Name it separately.
@@ -4683,22 +4809,38 @@ def compute_target_state(snap, requirements=None, sig=None):
                       f"UNDETERMINED band." if undet else "")
                      + (f" {never} asset(s) of the fleet census were NOT lifecycle-assessed at all "
                         f"(the axis produced no row for them)." if never else ""))
-        undet_tgt = ((f" {undet} asset(s) have an UNDETERMINED lifecycle band (the model did not match Cisco's "
-                      f"EoL data) -- they are NOT counted as supportable: resolve each model on the EoL portal "
-                      f"before the carry-forward list is final." if undet else "")
+        undet_tgt = ((f" {undet} asset(s) have an UNDETERMINED lifecycle band (no exact EoX row matched or "
+                      f"the matched row's source/date authority was withheld) -- they are not included among "
+                      f"carry-forward candidates: resolve each model on the EoL portal before the list is "
+                      f"final." if undet else "")
                      + (f" A further {never} asset(s) were never lifecycle-assessed -- re-run the lifecycle "
-                        f"axis before the carry-forward list is final; they are NOT supportable by default."
+                        f"axis before the carry-forward list is final; do not carry them forward by default."
                         if never else ""))
+        lifecycle_drivers = []
+        if sig["eol"]:
+            lifecycle_drivers.append("lifecycle-eol-out-of-critical-roles")
+        if sig["near_ldos"]:
+            lifecycle_drivers.append("lifecycle-near-ldos-refresh-before-deadline")
+        if sig["past_eos"]:
+            lifecycle_drivers.append("lifecycle-past-eos-refresh-planning")
+        if sig["lifecycle_undetermined"]:
+            lifecycle_drivers.append("lifecycle-unknown-resolve-authority")
+        if sig["not_collected"]:
+            lifecycle_drivers.append("fhrp-not-observed-is-not-healthy")
         dims.append(_ts_dim(
             "Hardware lifecycle disposition",
-            f"{sig['eol']} past-LDoS, {sig['near']} approaching-LDoS or past-EoS, {sig['not_collected']} "
+            f"{sig['eol']} past-LDoS, {sig['near']} approaching-LDoS or past-EoS "
+            f"({sig['near_ldos']} Near-LDoS; {sig['past_eos']} Past-EoS), {sig['not_collected']} "
             f"not-collected of {sig['inventory']} inventoried." + undet_cur,
-            f"Replace the {sig['eol']} past-LDoS asset(s); plan refresh for the {sig['near']} approaching LDoS "
-            f"or past-EoS (the replacement BoM's refresh_soon line -- they are NOT in the carry-forward "
-            f"figure); carry ~{retain} fully-supported asset(s) forward; collect the {sig['not_collected']} "
+            f"Replace the {sig['eol']} past-LDoS asset(s); schedule the {sig['near_ldos']} Near-LDoS asset(s) "
+            f"before recorded LDoS and place the {sig['past_eos']} Past-EoS asset(s) in an owned refresh plan "
+            f"while LDoS remains future (together these are the replacement BoM's {sig['near']} refresh_soon "
+            f"asset(s) -- they are NOT in the carry-forward "
+            f"figure); identify ~{pre_eos} pre-EoS date-band asset(s) as carry-forward candidates "
+            f"(schema: Active; support entitlement not assessed); collect the {sig['not_collected']} "
             f"un-assessed device(s) before finalising -- do not design resilience on unseen gear.{undet_tgt}",
             "The target fabric must not inherit end-of-support hardware; coverage gaps are unknowns, not health.",
-            "Recommended", drivers=["lifecycle-eol-out-of-critical-roles", "fhrp-not-observed-is-not-healthy"]))
+            "Recommended", drivers=lifecycle_drivers))
 
     # 5. Migration approach -- planning, from move-groups + the derived wave plan
     if sig["move_groups"]:
@@ -4879,9 +5021,11 @@ def compute_design_blueprint(snap, requirements=None):
         _apply_requirements(decisions, scorecard, req)
         decisions.sort(key=lambda d: (-d.get("effective_priority", 0.0),
                                        PRANK.get(d["priority"], 9), d["id"]))
+        _stabilize_lifecycle_ties(decisions, effective=True)
     else:
         decisions.sort(key=lambda d: (PRANK.get(d["priority"], 9),
                                       -_as_int(_as_dict(d.get("evidence")).get("count")), d["id"]))
+        _stabilize_lifecycle_ties(decisions)
 
     by_domain = {}
     for d in decisions:
@@ -4933,8 +5077,23 @@ _NRFU_DESC = {
         "Verify all physical redundant uplinks are ACTIVE (not STP-blocked); confirm multi-chassis LAG "
         "(vPC/VSS/SVL/MLAG) is in service on every dual-homed device pair.",
     "lifecycle-eol-out-of-critical-roles":
-        "Verify every past-LDoS device has been replaced with a supported successor and is NOT in the "
-        "forwarding path; 'show version' must confirm supported model and active SW contract.",
+        "Verify every past-LDoS device has been replaced and is NOT in the forwarding path. Use "
+        "'show version' only to confirm the exact replacement PID/software; confirm any required active "
+        "coverage from a separate serial-numbered contract or entitlement record.",
+    "lifecycle-near-ldos-refresh-before-deadline":
+        "Verify every Near-LDoS device has an approved replacement disposition, owner, budget, and dated "
+        "implementation window before its recorded LDoS. Use 'show version' only to confirm the exact "
+        "replacement PID/software; confirm any required coverage from a separate serial-numbered contract "
+        "or entitlement record.",
+    "lifecycle-past-eos-refresh-planning":
+        "Verify every Past-EoS device has an owned, approved refresh disposition dated before its recorded "
+        "LDoS; do not require immediate removal while LDoS remains future. Confirm exact PID/serial and any "
+        "required coverage from separate entitlement evidence.",
+    "lifecycle-unknown-resolve-authority":
+        "Verify every Unknown or missing lifecycle asset has an exact PID/serial and an explained evidence "
+        "outcome before approving carry-forward, refresh, or replacement: either a verified dated bulletin "
+        "match, or a time-stamped authoritative EoX no-notice check with owner/review date. Do not infer a "
+        "procurement disposition or support entitlement from missing evidence.",
     "qos-trust-boundary-end-to-end":
         "Verify a QoS trust boundary (DSCP/CoS mark-and-trust) is applied at the access edge on ALL "
         "access switches; confirm class-based forwarding end-to-end — no traffic should be best-effort.",
@@ -4991,8 +5150,22 @@ _NRFU_PASS = {
         "'show etherchannel summary' shows all uplink bundle members in P state; 'show spanning-tree "
         "active' shows zero Blocking/Discarding uplinks; failover test passes within the SLA window.",
     "lifecycle-eol-out-of-critical-roles":
-        "'show version' on every replacement confirms a Cisco model with an active support contract; "
-        "no past-LDoS device appears in 'show cdp neighbors' or the management inventory.",
+        "'show version' confirms the exact PID/software on every replacement; a separate serial-numbered "
+        "contract or entitlement record confirms any required active coverage; no past-LDoS device "
+        "appears in 'show cdp neighbors' or the management inventory.",
+    "lifecycle-near-ldos-refresh-before-deadline":
+        "The inventory records exact PID/serial and recorded LDoS for every Near-LDoS device; an approved "
+        "change or refresh record names the owner, funded target, and implementation date before LDoS; a "
+        "separate contract or entitlement record confirms any required active coverage.",
+    "lifecycle-past-eos-refresh-planning":
+        "The inventory records exact PID/serial, EoS, and future LDoS for every Past-EoS device; each has an "
+        "approved owner, target disposition, budget horizon, and review or implementation date before LDoS; "
+        "any support entitlement is evidenced separately.",
+    "lifecycle-unknown-resolve-authority":
+        "Missing lifecycle-row count is zero and every Unknown is explained: exact PID/serial plus either a "
+        "verified dated bulletin match, or a time-stamped authoritative EoX no-notice record with owner, "
+        "review date, and contingency/risk acceptance. Zero unexplained Unknowns remain; entitlement is "
+        "evidenced separately and a no-notice result remains Unknown, never false Active.",
     "qos-trust-boundary-end-to-end":
         "'show policy-map interface <access-port>' shows DSCP trust and class queuing applied; a DSCP "
         "EF-marked packet traverses the campus and exits at the same DSCP value.",
@@ -5044,6 +5217,9 @@ _NRFU_PASS = {
 _NRFU_PHASE = {
     "fhrp-not-observed-is-not-healthy": "pre-cutover",          # must verify BEFORE wave executes
     "lifecycle-eol-out-of-critical-roles": "pre-cutover",
+    "lifecycle-near-ldos-refresh-before-deadline": "pre-cutover",
+    "lifecycle-past-eos-refresh-planning": "pre-cutover",
+    "lifecycle-unknown-resolve-authority": "pre-cutover",
     "dc-vpc-mlag-peer-fabric-integrity": "pre-cutover",         # reconcile the peer fabric before baselining
     "scenario-build-before-break-phased-cutover": "post-cutover-operational",
     "mgmt-time-sync-logging-baseline": "post-cutover-operational",
@@ -5066,7 +5242,18 @@ _NRFU_SETUP = {
     "fhrp-not-observed-is-not-healthy":
         "A fresh engine collection has been run against every previously-uncollected device.",
     "lifecycle-eol-out-of-critical-roles":
-        "Replacement hardware is on site with an active support contract and staged for install.",
+        "Replacement hardware is on site and staged for install; serial-numbered procurement and any "
+        "required support-entitlement evidence are available for review.",
+    "lifecycle-near-ldos-refresh-before-deadline":
+        "The authoritative EoX row is matched to exact PID/serial; the refresh owner, target, budget, and "
+        "pre-LDoS change window are approved; any required support-entitlement evidence is available separately.",
+    "lifecycle-past-eos-refresh-planning":
+        "The authoritative EoX row is matched to exact PID/serial and shows LDoS still future; an owner and "
+        "budget horizon are assigned, with any required support-entitlement evidence available separately.",
+    "lifecycle-unknown-resolve-authority":
+        "A fresh inventory collection contains exact PID and serial for every unresolved asset; the retained "
+        "EoX database is available, and current authoritative EoX lookup evidence can be time-stamped when no "
+        "published notice exists.",
     "dc-vpc-mlag-peer-fabric-integrity":
         "Both peers of every vPC/MLAG domain are reachable and 'show vpc' output is available from each.",
 }

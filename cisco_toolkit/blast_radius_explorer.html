@@ -2089,11 +2089,11 @@ function demoSnapshot(){
   device_dossiers:{
     per_device:[
       {host:"DIST-1",model:"WS-C3850-48P",platform:"cat3850",sw_version:"16.6(8)",role:"distribution",wave:"Group A",
-       health_score:58,health_band:"Poor",eol_band:"Past-EoS",train_band:"Verify EoL",platform_band:"OK",
+       health_score:58,health_band:"Poor",eol_band:"Unknown",train_band:"Verify EoL",platform_band:"OK",
        vpc_role:"",stp_root_vlans:1,impact_score:10,impact_severity:"High",stranded:120,vlans_impacted:3,
-       exposure_score:6,n_risk:1,n_watch:4,n_na:2,
+       exposure_score:6,n_risk:1,n_watch:4,n_na:3,
        exposures:[{axis:"Health",state:"watch",label:"health Poor (58/100)"},
-                  {axis:"Hardware EoL",state:"watch",label:"hardware past end-of-sale"},
+                  {axis:"Hardware EoL",state:"na",label:"not lifecycle-assessed — no lifecycle row was produced"},
                   {axis:"Software risk",state:"risk",label:"open advisory surface"},
                   {axis:"Control plane",state:"ok",label:"control-plane capacity OK"},
                   {axis:"Operational logs",state:"watch",label:"operational events to review in the logs"},
@@ -2110,19 +2110,19 @@ function demoSnapshot(){
        risk_index:60,risk_band:"Severe",
        verdict:"Stabilize or replace before migration — open advisory surface; health Poor (58/100); 2 CIS check(s) failing; removal strands 120 endpoint(s) across 3 VLAN(s)."},
       {host:"DIST-2",model:"WS-C3850-48P",platform:"cat3850",sw_version:"16.6(8)",role:"distribution",wave:"Group A",
-       health_score:81,health_band:"Fair",eol_band:"Past-EoS",train_band:"Verify EoL",platform_band:"Hot",
+       health_score:81,health_band:"Fair",eol_band:"Unknown",train_band:"Verify EoL",platform_band:"Hot",
        vpc_role:"",stp_root_vlans:0,impact_score:9,impact_severity:"High",stranded:80,vlans_impacted:2,
-       exposure_score:4,n_risk:1,n_watch:2,n_na:1,
+       exposure_score:3,n_risk:1,n_watch:1,n_na:2,
        exposures:[{axis:"Health",state:"ok",label:"health Fair (81/100)"},
-                  {axis:"Hardware EoL",state:"watch",label:"hardware past end-of-sale"},
+                  {axis:"Hardware EoL",state:"na",label:"not lifecycle-assessed — no lifecycle row was produced"},
                   {axis:"Control plane",state:"risk",label:"control plane Hot (CPU 84%)"},
                   {axis:"Operational logs",state:"watch",label:"operational events to review in the logs"}],
        compound:[{code:"CR-05",title:"Stressed control plane at a single point of failure",severity:"High",
                   basis:"Control plane is already Hot AND removal strands 80 endpoint(s) across 2 VLAN(s) — migration protocol churn lands on a box with no headroom."}],
-       risk_index:36,risk_band:"Elevated",
-       verdict:"Remediate inside the migration plan — control plane Hot (CPU 84%); hardware past end-of-sale; removal strands 80 endpoint(s) across 2 VLAN(s)."},
+       risk_index:27,risk_band:"Elevated",
+       verdict:"Remediate inside the migration plan — control plane Hot (CPU 84%); removal strands 80 endpoint(s) across 2 VLAN(s)."},
       {host:"ACC-3",model:"WS-C2960X-24",platform:"cat2960x",sw_version:"15.2(7)",role:"access",wave:"Group B",
-       health_score:88,health_band:"Good",eol_band:"Active",train_band:"Current-era",platform_band:"Elevated",
+       health_score:88,health_band:"Good",eol_band:"Unknown",train_band:"Current-era",platform_band:"Elevated",
        vpc_role:"",stp_root_vlans:1,impact_score:4,impact_severity:"Low",stranded:0,vlans_impacted:1,
        exposure_score:3,n_risk:0,n_watch:3,n_na:1,
        exposures:[{axis:"Control plane",state:"watch",label:"control plane Elevated (CPU 22%)"},
@@ -2131,12 +2131,12 @@ function demoSnapshot(){
        compound:[],risk_index:12,risk_band:"Guarded",
        verdict:"Watch items only — control plane Elevated (CPU 22%); 1 CIS check(s) failing; protocol-health finding(s) to review."},
       {host:"CORE-9K",model:"N9K-C93180YC-EX",platform:"n9k",sw_version:"9.3(8)",role:"distribution",wave:"Group A",
-       health_score:95,health_band:"Excellent",eol_band:"Active",train_band:"Current-era",platform_band:"OK",
+       health_score:95,health_band:"Excellent",eol_band:"Unknown",train_band:"Current-era",platform_band:"OK",
        vpc_role:"primary",stp_root_vlans:0,impact_score:6,impact_severity:"Medium",stranded:0,vlans_impacted:2,
        exposure_score:0,n_risk:0,n_watch:0,n_na:3,exposures:[],compound:[],risk_index:0,risk_band:"Low",
        verdict:"No stacked risk — routine migration handling."},
       {host:"ACC-1",model:"WS-C2960X-48",platform:"cat2960x",sw_version:"15.2(7)",role:"access",wave:"Group B",
-       health_score:92,health_band:"Excellent",eol_band:"Active",train_band:"Current-era",platform_band:"OK",
+       health_score:92,health_band:"Excellent",eol_band:"Unknown",train_band:"Current-era",platform_band:"OK",
        vpc_role:"",stp_root_vlans:0,impact_score:3,impact_severity:"Low",stranded:0,vlans_impacted:1,
        exposure_score:1,n_risk:0,n_watch:1,n_na:2,
        exposures:[{axis:"Operational logs",state:"watch",label:"operational events to review in the logs"}],
@@ -2147,7 +2147,7 @@ function demoSnapshot(){
        exposure_score:0,n_risk:0,n_watch:0,n_na:7,exposures:[],compound:[],risk_index:0,risk_band:"Low",
        verdict:"No stacked risk — routine migration handling."},
     ],
-    summary:{n_devices:6,bands:{Severe:1,Elevated:1,Guarded:1,Low:3},n_compound:3,worst:["DIST-1","DIST-2"],avg_risk_index:19},
+    summary:{n_devices:6,bands:{Severe:1,Elevated:1,Guarded:1,Low:3},n_compound:3,worst:["DIST-1","DIST-2"],avg_risk_index:17},
     note:"Risk index = topology impact (1-10) x stacked exposure (0-10) per asset, mirroring asset-risk practice (likelihood x impact). Synthesis of already-computed axes only; an axis without evidence is 'not assessed', never red."},
   // V3.23.62: STP root placement. VLAN 10 is rooted at DIST-1 on a deliberate priority and DIST-1 hosts the
   // gateway -> aligned + clean. VLAN 30 is rooted at ACC-3 on the DEFAULT priority (32798 = 32768+30) -> an
@@ -4256,6 +4256,28 @@ function endpointsSec(h){const eps=endpointsOf(h);if(!eps.length)return "";
   return `<div class="sec"><h3>Endpoints on this switch <span class="ct">${eps.length}</span></h3>
     <p class="faint" style="margin:0 0 8px">Vendor is the MAC-OUI owner (a fact); class is inferred.</p>
     <table><thead><tr><th>Port</th><th>VLAN</th><th>IP</th><th>MAC</th><th>Vendor</th><th>Class</th></tr></thead><tbody>${rows}</tbody></table></div>`;}
+/* Lifecycle keeps `Active` as a machine-facing schema value, but that name must never leak into a
+   human claim of support entitlement. It means only a position relative to retained bulletin dates.
+   Unknown is similarly a CLASS: no exact match and a matched row withheld for failed source proof both
+   land there, so consumers must not reduce it to "no bulletin matched". */
+const LIFECYCLE_BAND_ORDER=["Past-LDoS","Near-LDoS","Past-EoS","Active","Unknown"];
+const LIFECYCLE_BAND_SET=new Set(LIFECYCLE_BAND_ORDER);
+function lifecycleBandEntries(obj){const o=(obj&&typeof obj==="object")?obj:{};
+  const known=LIFECYCLE_BAND_ORDER.filter(k=>Object.prototype.hasOwnProperty.call(o,k)).map(k=>[k,o[k]]);
+  const future=Object.keys(o).filter(k=>!LIFECYCLE_BAND_SET.has(k)).sort().map(k=>[k,o[k]]);
+  return known.concat(future);}
+function lifecycleBandLabel(b){return b==="Active"?"Pre-EoS date band":b==="Unknown"?"NOT ASSESSED":
+  LIFECYCLE_BAND_SET.has(b)?String(b||""):`NOT ASSESSED (unrecognized band: ${String(b||"blank")})`;}
+function lifecycleUnknownExplanation(){return "No authoritative lifecycle band was assigned — either no exact EoX bulletin row matched or the matched row's retained source proof/complete dates did not verify; support state is undetermined.";}
+function lifecycleStatusText(r){
+  if(!r)return "";
+  if(r.band==="Active"){
+    const ds=[r.eos?`bulletin EoS ${r.eos}`:"",r.ldos?`LDoS ${r.ldos}`:""].filter(Boolean).join("; ");
+    return `${ds?`Bulletin date position (${ds})`:"Pre-EoS date position"}; support entitlement not assessed`;
+  }
+  if(r.band==="Unknown")return lifecycleUnknownExplanation();
+  return String(r.status||r.band||"");
+}
 /* Device-intelligence dossier (V3.23.79): on the selected switch, fold together every per-device finding
    the collector already computed — health score (SNAP.health_scores), physical port errors
    (SNAP.physical_health, previously NEVER surfaced in the explorer), protocol-health issues
@@ -4311,7 +4333,7 @@ function deviceIntelSection(host){
   if(rem.length)pills.push(`<span class="pill pl-ok">${rem.length} fix snippet${rem.length===1?"":"s"}</span>`);
   const lcTok=b=>b==="Past-LDoS"?"crit":b==="Near-LDoS"?"risk":b==="Past-EoS"?"watch":b==="Active"?"ok":"neutral";
   // "EoL: Unknown" reads as a shrug; name it as a coverage gap so it is not mistaken for a mild band.
-  if(lc&&lc.band&&lc.band!=="Active")pills.push(`<span class="pill pl-${lcTok(lc.band)}" title="${lc.band==="Unknown"?"No EoX bulletin matched this platform — its support state was not determined, which is not the same as supported.":""}">EoL: ${lc.band==="Unknown"?"NOT ASSESSED":esc(lc.band)}</span>`);
+  if(lc&&lc.band&&lc.band!=="Active")pills.push(`<span class="pill pl-${lcTok(lc.band)}" title="${lc.band==="Unknown"?esc(lifecycleUnknownExplanation()):""}">EoL: ${esc(lifecycleBandLabel(lc.band))}</span>`);
   let phyDetail="";
   if(phy.length){const byRisk={}; phy.forEach(r=>{const k=r.risk||"issue";(byRisk[k]=byRisk[k]||[]).push(r.port);});
     phyDetail=Object.entries(byRisk).slice(0,4).map(([risk,ports])=>
@@ -9016,7 +9038,7 @@ function cockpitCard(){
   // V3.23.117: fleet hardware-lifecycle (EoL) rollup from SNAP.lifecycle_risk
   const lr=(SNAP&&SNAP.lifecycle_risk&&SNAP.lifecycle_risk.summary)||null;
   const eolLine=lr&&lr.n_devices?`<div style="margin-top:12px"><div class="kv" style="border:0;padding:0 0 5px"><span class="k">Hardware lifecycle (EoL)</span><span class="v faint">${lr.n_devices} devices${lr.asof?` · as of ${esc(lr.asof)}`:""}</span></div>
-    <div class="row" style="flex-wrap:wrap;gap:5px">${lr.n_past_ldos?`<span class="pill pl-crit">${lr.n_past_ldos} past end-of-support</span>`:""}${lr.n_near?`<span class="pill pl-risk">${lr.n_near} within 1yr</span>`:""}${lr.n_past_eos?`<span class="pill pl-watch">${lr.n_past_eos} past end-of-sale</span>`:""}${lr.n_active?`<span class="pill pl-ok">${lr.n_active} active</span>`:""}${lr.n_unknown?`<span class="pill pl-neutral">${lr.n_unknown} unknown</span>`:""}</div></div>`:"";
+    <div class="row" style="flex-wrap:wrap;gap:5px">${lr.n_past_ldos?`<span class="pill pl-crit">${lr.n_past_ldos} past end-of-support</span>`:""}${lr.n_near?`<span class="pill pl-risk">${lr.n_near} within 1yr</span>`:""}${lr.n_past_eos?`<span class="pill pl-watch">${lr.n_past_eos} past end-of-sale</span>`:""}${lr.n_active?`<span class="pill pl-ok" title="Date position only; support entitlement was not assessed">${lr.n_active} Pre-EoS date band</span>`:""}${lr.n_unknown?`<span class="pill pl-neutral" title="${esc(lifecycleUnknownExplanation())}">${lr.n_unknown} NOT ASSESSED</span>`:""}</div></div>`:"";
   if(!tierRows&&!catRows&&!eolLine)return "";
   return `<div class="sec"><h3>Risk cockpit <span class="badge b-neutral">${MODEL.hosts.length} switches</span></h3>
     <div class="sub" style="margin-bottom:7px">Where the migration risk concentrates and what shape the work is — distilled from the per-switch health scores and the ${pl.length}-item punch-list.${tierRows?" Click a tier to highlight its switches on the map.":""}</div>
@@ -9786,6 +9808,10 @@ const AB_PILL={severe:"pl-crit",critical:"pl-crit","past-ldos":"pl-crit",high:"p
   "not-assessable":"pl-watch","on-air critical":"pl-crit",support:"pl-ok"};
 function abPill(t){if(t==null||t==="")return"";
   return `<span class="pill ${AB_PILL[String(t).toLowerCase()]||"pl-watch"}">${esc(String(t))}</span>`;}
+function lifecycleBandPill(b){
+  const cls=b==="Active"?"pl-ok":(b==="Unknown"||!LIFECYCLE_BAND_SET.has(b))?"pl-neutral":"";
+  return cls?`<span class="pill ${cls}">${esc(lifecycleBandLabel(b))}</span>`:abPill(b);
+}
 function abShort(h){return String(h||"").split("-")[0]||String(h||"");}
 function abAttr(s){return esc(s).replace(/"/g,"&quot;");}   // esc() covers &<> only; attributes need quotes dead too
 function abKv(k,v){return v==null||v===""?"":`<div class="ab-kv"><span class="k">${esc(k)}</span><span class="v">${v}</span></div>`;}
@@ -10006,7 +10032,7 @@ function abH_profile(h){const d=((SNAP||{}).devices||{})[h]||{};const hs=abHS(h)
   if(cap)b+=abKv("Ports",`${cap.active_ports}/${cap.total_ports} active (${cap.port_util}% used, ${cap.free_ports} free)`);
   if(hs)b+=abKv("Health",`${abPill(hs.band)} ${hs.score}/100`+(hs.deductions&&hs.deductions.length?` — top issue: ${esc(hs.deductions[0])}`:""));
   if(dos)b+=abKv("Compound risk",`${abDosPill(dos)} index ${dos.risk_index}/100 — impact ${dos.impact_score}/10 × exposure ${dos.exposure_score}/10`);
-  if(lr)b+=abKv("Hardware lifecycle",`${abPill(lr.band)} ${esc(lr.status||"")}`);
+  if(lr)b+=abKv("Hardware lifecycle",`${lifecycleBandPill(lr.band)} ${esc(lifecycleStatusText(lr))}`);
   const doms=abDoms(h);if(doms.length)b+=abKv("App domain(s)",doms.map(x=>esc(x.domain)+" ("+esc(x.tier)+")").join("; "));
   const w=abWave(h);if(w)b+=abKv("Migration wave",esc(w));
   const eps=abEps(h);b+=abKv("Endpoints",String(eps.length));
@@ -10079,7 +10105,7 @@ function abH_migrate(h){const dos=abDos(h),fi=failureImpact(MODEL,h),hs=abHS(h),
   let b=`<h4>Migration briefing — ${esc(h)}</h4>`;
   if(dos)b+=abKv("Compound risk",`${abDosPill(dos)} index ${dos.risk_index}/100${dos.verdict?" — "+esc(dos.verdict):""}`);
   if(hs)b+=abKv("Health today",`${abPill(hs.band)} ${hs.score}/100`);
-  if(lr)b+=abKv("Hardware",`${abPill(lr.band)} ${esc(lr.status||lr.band||"")}`);
+  if(lr)b+=abKv("Hardware",`${lifecycleBandPill(lr.band)} ${esc(lifecycleStatusText(lr))}`);
   if(sr&&sr.train_band)b+=abKv("Software train",`${abPill(sr.train_band)} ${esc(sr.train||sr.sw_version||"")}`);
   if(doms.length)b+=abKv("App domain(s)",doms.map(x=>`${esc(x.domain)} ${abPill(x.tier)}`).join(" · "));
   if(w)b+=abKv("Planned wave",esc(w));
@@ -10134,7 +10160,7 @@ function abH_fleet(){const dd=((SNAP||{}).device_dossiers||{}).summary||{};const
   if(Object.keys(bands).length)b+=abKv("Health bands",Object.entries(bands).map(([k,n])=>`${abPill(k)} ${n}`).join(" "));
   if(dd.bands)b+=abKv("Risk bands",Object.entries(dd.bands).map(([k,n])=>`${abPill(k)} ${n}`).join(" ")+` · avg index ${dd.avg_risk_index??"?"}`+
     abDosCovPill(abDosCovStats(((SNAP||{}).device_dossiers||{}).per_device)));
-  if(lrs.by_band)b+=abKv("Hardware lifecycle",Object.entries(lrs.by_band).map(([k,n])=>`${abPill(k)} ${n}`).join(" "));
+  if(lrs.by_band)b+=abKv("Hardware lifecycle",lifecycleBandEntries(lrs.by_band).map(([k,n])=>`${lifecycleBandPill(k)} ${n}`).join(" "));
   if(srs.trains)b+=abKv("Software trains",Object.entries(srs.trains).map(([k,n])=>`${esc(k)}: ${n}`).join(" · "));
   if(eb.posture_statement)b+=`<div class="ab-note">${esc(eb.posture_statement)}</div>`;
   if(Array.isArray(dd.worst)&&dd.worst.length)b+=abKv("Highest-risk assets",dd.worst.map(abHostLink).join(", "));
@@ -10157,12 +10183,14 @@ function abH_risky(){const pd=((SNAP||{}).device_dossiers||{}).per_device||[];
 function abH_eol(){const lr=(SNAP||{}).lifecycle_risk||{};const sm=lr.summary||{};const pd=lr.per_device||[];
   if(!pd.length)return {html:`<h4>Hardware lifecycle</h4><div class="ab-note">No lifecycle data in this snapshot.</div>`,acts:[]};
   let b=`<h4>Hardware lifecycle (${esc(lr.asof||"offline KB")})</h4>`;
-  if(sm.by_band)b+=abKv("Fleet",Object.entries(sm.by_band).map(([k,n])=>`${abPill(k)} ${n}`).join(" "));
+  if(sm.by_band)b+=abKv("Fleet",lifecycleBandEntries(sm.by_band).map(([k,n])=>`${lifecycleBandPill(k)} ${n}`).join(" "));
   if(Array.isArray(sm.by_platform)&&sm.by_platform.length){
     b+=`<table><tr><th>Platform</th><th>Count</th><th>Band</th><th>LDoS</th></tr>`+
-      sm.by_platform.slice(0,8).map(p=>`<tr><td>${esc(p.platform)}</td><td><b>${p.count}</b></td><td>${abPill(p.band)}</td><td class="mono">${esc(p.ldos||"")}</td></tr>`).join("")+`</table>`;}
-  const past=pd.filter(r=>/past/i.test(r.band||"")).slice(0,8);
-  if(past.length)b+=abKv("Past end-of-support",past.map(r=>abHostLink(r.host)).join(", "));
+      sm.by_platform.slice(0,8).map(p=>`<tr><td>${esc(p.platform)}</td><td><b>${p.count}</b></td><td>${lifecycleBandPill(p.band)}</td><td class="mono">${esc(p.ldos||"")}</td></tr>`).join("")+`</table>`;}
+  const pastLdos=pd.filter(r=>r.band==="Past-LDoS").slice(0,8);
+  const pastEos=pd.filter(r=>r.band==="Past-EoS").slice(0,8);
+  if(pastLdos.length)b+=abKv("Past end-of-support",pastLdos.map(r=>abHostLink(r.host)).join(", "));
+  if(pastEos.length)b+=abKv("Past end-of-sale (LDoS still future)",pastEos.map(r=>abHostLink(r.host)).join(", "));
   return {html:b,acts:[{label:"Top risky devices",run:abAskAct("top risky devices")}]};}
 function abH_software(){const sr=(SNAP||{}).software_risk||{};const sm=sr.summary||{};
   const vers={};for(const [h,d] of Object.entries((SNAP||{}).devices||{}))if(d&&d.sw_version)vers[d.sw_version]=(vers[d.sw_version]||0)+1;
@@ -10576,13 +10604,14 @@ function abqFindDomain(t){for(const [re,d] of ABQ_ALIAS)if(re.test(t))return d;r
      (a) refuses to auto-answer at all when NOTHING was assessed — the question goes back to the humans, and
      (b) labels a partially-assessed census as coverage-qualified, so it renders neutral and is counted apart. */
 const ABQ_NOT_ASSESSED_KEY=/^\s*(unknown|unclassified|undetermined|indeterminate|insufficient(\s*data)?|no\s*data|n\s*\/?\s*a|not[\s_\-]*(assessed|observed|collected|determined|evaluated|matched|applicable))\s*$/i;
-function abqCensus(obj,unit){
+function abqCensus(obj,unit,keyLabel,notAssessedKey){
   const es=Object.entries(obj||{}).filter(([k,v])=>k&&(typeof v==="number"||typeof v==="string"));
   if(!es.length)return null;
   let gap=0,tot=0;
-  for(const [k,v] of es){const n=+v||0;if(n<0)continue;tot+=n;if(ABQ_NOT_ASSESSED_KEY.test(k))gap+=n;}
+  for(const [k,v] of es){const n=+v||0;if(n<0)continue;tot+=n;
+    if(notAssessedKey?notAssessedKey(k):ABQ_NOT_ASSESSED_KEY.test(k))gap+=n;}
   if(!tot)return null;
-  const text=es.map(([k,n])=>k+": "+n).join(" · ");
+  const text=es.map(([k,n])=>(keyLabel?keyLabel(k):k)+": "+n).join(" · ");
   if(gap>=tot)return null;   // nothing was assessed -> this is a coverage gap, not an answer
   if(gap>0)return {ev:text+" — ⚠ "+gap+" of "+tot+" "+(unit||"device(s)")+
     " NOT ASSESSED; this census does not answer the question for them (coverage gap, not a clean result)",
@@ -10599,7 +10628,8 @@ const ABQ_AUTO=[
       surface flags it) -- the old summary counted only c/s and silently dropped these, reading as 'all fine'. */
    return `${c} VLAN(s) FHRP-covered · ${s} single-gateway · ${h} multi-gateway but NO FHRP — first-hop redundancy gap (in-scan view)`;}],
  [/end[- ]of[- ](life|support)|\beol\b|ldos|lifecycle|hardware (refresh|age)/i,()=>{const sm=((SNAP||{}).lifecycle_risk||{}).summary;if(!sm)return null;
-   return abqCensus(sm.by_band,"device(s)");}],
+   return abqCensus(Object.fromEntries(lifecycleBandEntries(sm.by_band)),"device(s)",lifecycleBandLabel,
+     k=>k==="Unknown"||!LIFECYCLE_BAND_SET.has(k));}],
  [/port (capacity|util|density)|free ports|poe (budget|head)/i,()=>{const c=(SNAP||{}).capacity||[];if(!c.length)return null;
    const t=c.reduce((s,r)=>s+(+r.total_ports||0),0),a=c.reduce((s,r)=>s+(+r.active_ports||0),0);return `${a}/${t} ports active (${t-a} free fleet-wide)`;}],
  [/single[- ]homed|single point|spof|redundant (uplink|path)/i,()=>{let s=0;for(const h of MODEL.hosts){const nb=abNbrs(h);if(nb.peers.size+nb.off.size<=1)s++;}

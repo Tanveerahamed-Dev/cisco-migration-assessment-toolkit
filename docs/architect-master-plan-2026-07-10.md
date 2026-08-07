@@ -66,7 +66,7 @@ rather than pretending code can hold them alone.
 | Doc | Disposition | Where / boundary |
 |---|---|---|
 | MASTER_PLAN_2026-07-05 | **ABSORBED** | trust/calibration frontier superseded as-built; its §2 secure&tidy, §4.1–4.4, §5 platform/vault land as P3 backlog feed (P3-M*) |
-| deliverable-excellence-plan | **STILL-AUTHORITATIVE** for the Excellence laws (sole owner, ssot.md:36) | its P2/P3 status table is STALE (most targets landed per Dim H) → P3-E4 refreshes it; law ownership unchanged |
+| deliverable-excellence-plan | **STILL-AUTHORITATIVE** for the Excellence laws (sole owner, ssot.md:36) | implementation status reconciled 2026-08-07 (P0–P2 and visible P3 provenance shipped); law ownership unchanged |
 | autonomous-brain-plan-v4-final | **STILL-AUTHORITATIVE** as the decision ledger (D1–D13) | roadmap phases ABSORBED (built); decisions bind this plan (D6 packs≠agents, D11 floor, D12 tier) |
 | autonomous-brain-v3-validation | **ABSORBED** (evidence base; external figures stay treat-as-reported) | — |
 | agent-brain-selfmem-upgrade | **ABSORBED** | its genuine delta (SelfMem write-vocab, deferred SQLite index per ADR-0003) → P3-B1; its "per-dimension ECE" label corrected (calibration-gap) |

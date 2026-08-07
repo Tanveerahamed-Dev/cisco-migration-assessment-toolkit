@@ -247,6 +247,23 @@ def test_source_commands_reuse_the_shared_punchlist_map_where_a_family_maps():
     assert by_key["stp-accidental-root"]["source_command"] == P["STP"]
 
 
+def test_lifecycle_detectors_abstain_when_matched_authority_is_incomplete():
+    """Unknown includes exact matches whose retained source/date evidence cannot support a date band."""
+    by_key = {d["key"]: d for d in compute_detector_schema()["detectors"]}
+    for key in ("lifecycle-past-ldos", "lifecycle-near-ldos", "lifecycle-past-eos"):
+        detector = by_key[key]
+        assert "source/date authority is incomplete" in detector["abstains_when"]
+        assert "band == Unknown" in detector["abstains_when"]
+        assert "not proof of contract entitlement" in detector["checks"]
+
+    assert "asof > LDoS" in by_key["lifecycle-past-ldos"]["threshold"]
+    assert "LDoS date itself is not past" in by_key["lifecycle-past-ldos"]["threshold"]
+    assert "asof > EoS" in by_key["lifecycle-past-eos"]["threshold"]
+    assert "more than one year away" in by_key["lifecycle-past-eos"]["threshold"]
+    assert "0 <= (LDoS - asof) / 365.25 <= 1.0" in by_key["lifecycle-near-ldos"]["threshold"]
+    assert "lifecycle_risk.summary.n_near" in by_key["lifecycle-near-ldos"]["cited_fields"]
+
+
 # ---------------------------------------------------------------- compute-fn shape + reconcile ---
 def test_compute_shape_and_summary_reconciles():
     s = compute_detector_schema()

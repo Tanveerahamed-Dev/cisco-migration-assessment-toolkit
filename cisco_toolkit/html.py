@@ -887,7 +887,8 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
 # Migration CAMPAIGN trend (NEW-V3.23.145). Where compute_snapshot_delta diffs a PAIR (pre/post a single
 # cutover), the campaign tracker ingests a SERIES of collections taken across the whole migration and shows
 # the trajectory: is the network actually getting healthier wave by wave? It extracts the headline metrics
-# per collection (avg health, band mix, punch-list size + Critical/High count, NOT-READY groups, past-EoS),
+# per collection (avg health, band mix, punch-list size + Critical/High count, NOT-READY groups,
+# Past-LDoS),
 # computes the first->last trajectory per metric + an overall IMPROVING/MIXED/REGRESSING verdict, and reuses
 # compute_snapshot_delta for the per-step findings burndown (opened vs resolved). Pure read of N snapshot
 # dicts; tolerant of older snapshots that lack a metric -- it is omitted from the trajectory, never scored as
@@ -956,12 +957,14 @@ def _trend_point(snap: dict) -> dict:
         "n_punchlist": len(pl) if have_pl else "",
         "n_crit_high": sum(1 for f in pl if f.get("severity") in ("Critical", "High")) if have_pl else "",
         "n_not_ready": readiness["NOT READY"] if have_mr else "",
-        # "Past end-of-support" = Past-LDoS (no TAC / no fixes) — the migration-critical count the
-        # brief/deck/explorer/workbook all headline. NOT Past-EoS (end-of-SALE, still supported): reading
+        # "Past end-of-support" = Past-LDoS — the migration-critical date-band count the
+        # brief/deck/explorer/workbook all headline. NOT Past-EoS (end-of-SALE while LDoS remains future;
+        # neither band proves entitlement): reading
         # n_past_eos here showed 0 while 152 boxes were past support (the EoS/LDoS silent-drop class).
         # A count over PARTIAL coverage must not be trended as if it were complete. `past_ldos` is
-        # lower-is-better in _TREND_METRICS, so a fleet whose platforms the offline EoX KB never
-        # matched reports 0 and scores as the BEST possible value — an un-assessed campaign step
+        # lower-is-better in _TREND_METRICS, so a fleet whose platforms lack an exact EoX match or
+        # complete retained source/date authority reports 0 and scores as the BEST possible value —
+        # an un-assessed campaign step
         # reads as an improvement over a fully-assessed earlier one. That is absence converted into
         # a positive signal, which is worse than absence rendered as neutral.
         #

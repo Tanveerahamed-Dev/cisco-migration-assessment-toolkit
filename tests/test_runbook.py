@@ -169,6 +169,34 @@ def test_runbook_scope_distinguishes_collected_from_inventory(tmp_path):
     assert "inventoried" in text                            # the honest inventoried/collected framing
 
 
+def test_runbook_lifecycle_active_is_a_date_band_not_support_entitlement(tmp_path):
+    snap = _snap()
+    snap["lifecycle_risk"] = {
+        "asof": "2026-08-07",
+        "note": "Bulletin date position only; support entitlement was not assessed.",
+        "summary": {
+            "n_devices": 6,
+            "n_past_ldos": 0,
+            "n_near": 0,
+            "n_past_eos": 3,
+            "n_active": 2,
+            "n_unknown": 1,
+            "by_platform": [],
+        },
+    }
+    out = str(tmp_path / "rb_lifecycle_wording.docx")
+    write_runbook_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "3 are past end-of-sale with LDoS still future" in text
+    assert "support entitlement not inferred" in text
+    assert "2 are in the pre-EoS date band (schema: Active; not a support-entitlement claim)" in text
+    assert "1 device(s) are NOT ASSESSED" in text
+    assert "either no exact EoX row matched the collected PID" in text
+    assert "retained source/date authority was withheld or incomplete" in text
+    assert "support entitlement remain undetermined" in text
+    assert "2 are active" not in text.lower()
+
+
 def test_runbook_renders_device_risk_register_section(tmp_path):
     """NEW-V3.23.174: a snapshot carrying the Device Risk Register renders §10.1 with the
     ranked table + compound bullets; without the key the section is absent (data-gated)."""

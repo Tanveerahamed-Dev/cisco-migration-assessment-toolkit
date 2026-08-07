@@ -33,6 +33,7 @@ describe("AboutPage", () => {
     expect(screen.getByText(/3\.31\.0 \(checkout\)/)).toBeInTheDocument();
     expect(screen.getByText(/3\.23\.0/)).toBeInTheDocument(); // engine schema
     expect(screen.getByText(/2 documents/)).toBeInTheDocument(); // from meta.deliverables, not a literal
+    expect(screen.getByText(/OUI\/port\/EoL knowledge packs/)).toBeInTheDocument();
   });
 
   it("surfaces a load error instead of a blank page", async () => {

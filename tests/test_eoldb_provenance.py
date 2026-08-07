@@ -145,6 +145,108 @@ def test_retained_eol_fixture_is_byte_and_semantically_bound():
     assert proof["source_fresh"] is True
 
 
+def test_bundled_eol_fixture_is_the_exact_retained_evidence_bytes():
+    root = Path(__file__).resolve().parent.parent
+    retained = root / Path(eoldb._EOL_FIXTURE_RELATIVE_PATH)
+    bundled = root / Path(eoldb._EOL_BUNDLED_FIXTURE_RELATIVE_PATH)
+    assert bundled.read_bytes() == retained.read_bytes()
+    assert bundled.stat().st_size == eoldb._EOL_FIXTURE_BYTES
+    assert hashlib.sha256(bundled.read_bytes()).hexdigest() == eoldb._EOL_FIXTURE_SHA256
+
+
+def _lay_out_wheel_eol_fixture(tmp_path: Path, raw: bytes) -> Path:
+    package = tmp_path / "cisco_toolkit"
+    fixture = package / "data" / "eol-bulletins.json"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_bytes(raw)
+    module = package / "eoldb.py"
+    module.write_text("# installed-wheel path probe\n", encoding="utf-8")
+    return module
+
+
+def test_installed_wheel_fixture_preserves_full_eol_authority(monkeypatch, tmp_path):
+    root = Path(__file__).resolve().parent.parent
+    raw = (root / Path(eoldb._EOL_FIXTURE_RELATIVE_PATH)).read_bytes()
+    module = _lay_out_wheel_eol_fixture(tmp_path, raw)
+    monkeypatch.setattr(eoldb, "__file__", str(module))
+
+    proof = eoldb.verify_retained_eol_source_chain()
+    assert proof["verified"] is True
+    assert proof["fixture_path"] == "cisco_toolkit/data/eol-bulletins.json"
+    assert proof["evidence_distribution"] == "bundled-authoritative-evidence"
+    assert proof["inventory_verified"] is False
+    assert proof["code_pinned_contract_verified"] is True
+    assert proof["semantic_sha256"] == eoldb._EOL_SEMANTIC_SHA256
+
+    monkeypatch.setattr(eoldb, "_runtime_source_proof", lambda: proof)
+    health = eoldb.registry_health()
+    assert health["integrity_verified"] is True
+    assert health["retained_source_bytes_verified"] is True
+    assert health["build_provenance_verified"] is True
+    assert health["source_authoritative"] is True
+    assert health["authoritative"] is True
+    assert health["fixture_bound_rows"] == 44
+
+
+def test_installed_wheel_fixture_tamper_fails_closed(monkeypatch, tmp_path):
+    root = Path(__file__).resolve().parent.parent
+    raw = (root / Path(eoldb._EOL_FIXTURE_RELATIVE_PATH)).read_bytes()
+    module = _lay_out_wheel_eol_fixture(tmp_path, raw + b"\n")
+    monkeypatch.setattr(eoldb, "__file__", str(module))
+
+    with pytest.raises(PackIntegrityError, match="byte-size mismatch"):
+        eoldb.verify_retained_eol_source_chain()
+
+
+def test_partial_repository_evidence_never_falls_back_to_bundle(
+    monkeypatch, tmp_path
+):
+    root = Path(__file__).resolve().parent.parent
+    raw = (root / Path(eoldb._EOL_FIXTURE_RELATIVE_PATH)).read_bytes()
+    module = _lay_out_wheel_eol_fixture(tmp_path, raw)
+    inventory = tmp_path / Path(eoldb.SOURCE_INVENTORY_RELATIVE_PATH)
+    inventory.parent.mkdir(parents=True)
+    inventory.write_bytes(
+        (root / Path(eoldb.SOURCE_INVENTORY_RELATIVE_PATH)).read_bytes()
+    )
+    monkeypatch.setattr(eoldb, "__file__", str(module))
+
+    with pytest.raises(PackIntegrityError, match="fixture is unavailable"):
+        eoldb.verify_retained_eol_source_chain()
+
+
+def test_repository_layout_with_both_evidence_files_missing_never_falls_back_to_bundle(
+    monkeypatch, tmp_path
+):
+    root = Path(__file__).resolve().parent.parent
+    raw = (root / Path(eoldb._EOL_FIXTURE_RELATIVE_PATH)).read_bytes()
+    module = _lay_out_wheel_eol_fixture(tmp_path, raw)
+    (tmp_path / "setup.py").write_text("# repository layout marker\n", encoding="utf-8")
+    monkeypatch.setattr(eoldb, "__file__", str(module))
+
+    with pytest.raises(PackIntegrityError, match="official-source inventory unavailable"):
+        eoldb.verify_retained_eol_source_chain()
+
+
+def test_atlas_layout_uses_bundled_fixture_even_with_release_pyproject(
+    monkeypatch, tmp_path
+):
+    """Atlas carries pyproject solely as its release-version source; it is not a checkout marker."""
+    root = Path(__file__).resolve().parent.parent
+    raw = (root / Path(eoldb._EOL_FIXTURE_RELATIVE_PATH)).read_bytes()
+    module = _lay_out_wheel_eol_fixture(tmp_path, raw)
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "atlas"\nversion = "3.31.0"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(eoldb, "__file__", str(module))
+
+    proof = eoldb.verify_retained_eol_source_chain()
+    assert proof["verified"] is True
+    assert proof["fixture_path"] == "cisco_toolkit/data/eol-bulletins.json"
+    assert proof["evidence_distribution"] == "bundled-authoritative-evidence"
+
+
 def test_eol_health_requires_retained_bytes_and_exact_semantic_binding():
     health = eoldb.registry_health()
     assert health["schema_verified"] is True
@@ -207,7 +309,7 @@ def test_eol_source_authority_requires_freshness(now, status):
         eoldb.verify_retained_eol_source_chain(now=now)
 
 
-def test_wheel_without_retained_fixture_never_claims_eol_source_authority(
+def test_missing_or_invalid_runtime_fixture_never_claims_eol_source_authority(
     monkeypatch,
 ):
     def unavailable():

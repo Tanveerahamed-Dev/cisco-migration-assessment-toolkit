@@ -149,7 +149,7 @@ def test_build_detail_svi_and_uplink_lists_disclose_their_cut(tmp_path):
 # --------------------------------------------------------------------------------------------------
 # design.py §3.5 — the software / replacement recommendations
 # --------------------------------------------------------------------------------------------------
-def test_software_recommendations_disclose_the_models_they_dropped(tmp_path):
+def test_lifecycle_recommendations_disclose_the_models_they_dropped(tmp_path):
     snap = _golden()
     snap["devices"] = {}
     per_device = []
@@ -165,7 +165,7 @@ def test_software_recommendations_disclose_the_models_they_dropped(tmp_path):
     mixed = _find(blocks, "further model(s) running MIXED images")
     assert mixed, "3 of 11 mixed-image models got no standardization recommendation, undisclosed"
     assert "…and 3 further" in mixed[0] and "(11 in total)" in mixed[0], mixed[0]
-    eol = _find(blocks, "Hardware past end-of-support gets replacement")
+    eol = _find(blocks, "Hardware in the past-end-of-sale date band needs a planned refresh decision")
     assert eol and "(+2 more)" in eol[0] and "10 model(s) in total" in eol[0], eol[0] if eol else "missing"
 
 

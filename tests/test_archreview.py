@@ -178,8 +178,14 @@ def test_weak_cis_grade_is_a_security_deviation():
 
 def test_lifecycle_bands_map_to_verdicts():
     snap = _snap()
-    assert _check(compute_architecture_review(snap), "LC-1")["verdict"] == "deviation"  # past-EoS
+    assert _check(compute_architecture_review(snap), "LC-1")["verdict"] == "advisory"  # past-EoS
+    snap["lifecycle_risk"] = {
+        "per_device": [{"host": "near1", "band": "Near-LDoS"}],
+        "summary": {"n_past_eos": 0, "n_past_ldos": 0, "n_near": 1},
+    }
+    assert _check(compute_architecture_review(snap), "LC-1")["verdict"] == "deviation"
     snap["lifecycle_risk"]["summary"]["n_past_ldos"] = 1
+    snap["lifecycle_risk"]["per_device"] = [{"host": "ldos1", "band": "Past-LDoS"}]
     assert _check(compute_architecture_review(snap), "LC-1")["verdict"] == "critical"
     snap["lifecycle_risk"]["summary"] = {"n_past_eos": 0, "n_past_ldos": 0, "n_near": 0}
     assert _check(compute_architecture_review(snap), "LC-1")["verdict"] == "conforms"
@@ -199,7 +205,28 @@ def test_lc1_detail_omits_misleading_zero_past_eos():
     assert "0 past end-of-sale" not in obs and "and 0" not in obs
     snap["lifecycle_risk"]["summary"] = {"n_past_eos": 3, "n_past_ldos": 2, "n_near": 0}
     obs2 = _check(compute_architecture_review(snap), "LC-1")["observed"]
-    assert "3 more past end-of-sale" in obs2
+    assert "Separately, 3 device(s) are past end-of-sale with LDoS still future" in obs2
+
+
+def test_lc1_mixed_bands_reserve_no_vendor_backstop_for_past_ldos_hosts():
+    snap = _snap()
+    snap["lifecycle_risk"] = {
+        "summary": {"n_past_ldos": 1, "n_past_eos": 1, "n_near": 1, "n_unknown": 1},
+        "per_device": [
+            {"host": "ldos1", "band": "Past-LDoS"},
+            {"host": "eos1", "band": "Past-EoS"},
+            {"host": "near1", "band": "Near-LDoS"},
+            {"host": "unknown1", "band": "Unknown"},
+        ],
+    }
+    check = _check(compute_architecture_review(snap), "LC-1")
+    assert "past LAST-DAY-OF-SUPPORT: ldos1" in check["observed"]
+    assert "past end-of-sale with LDoS still future: eos1" in check["observed"]
+    assert "within one year of LDoS: near1" in check["observed"]
+    assert "1 device(s) could NOT be lifecycle-banded" in check["observed"]
+    assert check["evidence"] == ["ldos1"]
+    assert "For the Past-LDoS devices" in check["implication"]
+    assert "Past-EoS-only date band does not establish contract entitlement" in check["implication"]
 
 
 def test_hier2_not_assessable_without_neighbour_evidence():
@@ -532,8 +559,8 @@ def test_lc1_does_not_certify_a_fleet_whose_lifecycle_is_UNKNOWN():
 
     `analyze.py:6199` publishes `n_unknown` in the lifecycle summary, and the LC-1 chain
     (`if n_past_ldos / elif n_past_eos / elif n_near / else conforms`) never consulted it. So a fleet
-    of Catalyst 6500s years past support — every one banded Unknown because no retained bulletin
-    covers them — fell to the `else` and was certified:
+    of Catalyst 6500s years past support — every one banded Unknown because no authoritative lifecycle
+    band could be assigned — fell to the `else` and was certified:
 
         VERDICT: conforms — "Every device with lifecycle data is in an Active support band."
                             "Vendor support backs the whole migration."
@@ -555,9 +582,23 @@ def test_lc1_does_not_certify_a_fleet_whose_lifecycle_is_UNKNOWN():
 
 
 def test_lc1_still_conforms_when_every_device_IS_assessed_and_active():
-    """Non-vacuity: the fix must not turn a genuinely clean fleet into a deviation."""
+    """Non-vacuity: a fully banded pre-EoS fleet still conforms, without claiming entitlement."""
     f = _lc1(compute_architecture_review(_lc_snap(n_past_ldos=0, n_past_eos=0, n_near=0, n_unknown=0)))
     assert f["verdict"] == "conforms", f"a fully-assessed Active fleet must still conform: {f}"
+    rendered = f["observed"] + " " + f["implication"]
+    assert "pre-EoS date band" in rendered
+    assert "public schema value: Active" in rendered
+    assert "support entitlement was not assessed" in rendered
+    assert "Active support band" not in rendered
+    assert "Vendor support backs" not in rendered
+
+
+def test_lc1_unknown_wording_covers_no_match_and_provenance_withheld_states():
+    f = _lc1(compute_architecture_review(
+        _lc_snap(n_past_ldos=0, n_past_eos=0, n_near=0, n_unknown=2)))
+    assert "either no exact EoX bulletin row matched" in f["observed"]
+    assert "retained source authority/complete dates did not verify" in f["observed"]
+    assert "no EoX bulletin in the offline KB covers" not in f["observed"]
 
 
 def test_lc1_reports_the_real_finding_when_both_unknown_and_past_ldos_exist():

@@ -6219,8 +6219,10 @@ def compute_platform_health(metrics: Optional[Dict[str, dict]] = None) -> dict:
 # =============================================================================
 # Hardware lifecycle (EoL / End-of-Support) risk (NEW-V3.23.117). A new assessment AXIS: per-device
 # replacement urgency from the offline `eoldb` knowledge base (a top REASON orgs migrate). Reference
-# dates (curated KB, not device-read); LDoS is often derived = EoS+5yr. The robust output is the BAND
-# (Past-LDoS / Near / Past-EoS / Active / Unknown) -- correct even if an exact date is off by months.
+# dates are copied from exact Cisco bulletin claims retained by the KB, never inferred from a generic
+# support-window rule. Bands are relative to the assessment date. `Active` is retained as the public
+# schema label for the pre-EoS date band; it is not a claim about service entitlement or an absence of
+# an EoL announcement.
 # =============================================================================
 _LIFECYCLE_BAND_RANK = {"Past-LDoS": 0, "Near-LDoS": 1, "Past-EoS": 2, "Active": 3, "Unknown": 4}
 
@@ -6228,8 +6230,9 @@ _LIFECYCLE_BAND_RANK = {"Past-LDoS": 0, "Near-LDoS": 1, "Past-EoS": 2, "Active":
 def compute_lifecycle_risk(devices: Optional[dict] = None, asof: Optional[object] = None) -> dict:
     """NEW-V3.23.117: per-device hardware lifecycle (EoL/End-of-Support) risk from the offline eoldb KB,
     classified relative to `asof` (the assessment date; ISO 'YYYY-MM-DD' / date / datetime, default today).
-    Reference dates from a curated KB (not device-read); LDoS often derived = EoS+5yr. Pure read;
-    deterministic; tolerant of empty input. Returns {per_device, summary, risks, asof, note}."""
+    EoS/LDoS dates are bulletin-backed records (not device-read and never derived from a generic support
+    window). Pure read; deterministic; tolerant of empty input. Returns {per_device, summary, risks, asof,
+    note}."""
     from collections import Counter
     from datetime import date, datetime
     from cisco_toolkit import eoldb
@@ -6260,26 +6263,38 @@ def compute_lifecycle_risk(devices: Optional[dict] = None, asof: Optional[object
         if rec is None:
             per_device.append({"host": host, "model": model or "(unknown)", "platform": "", "sw_version": sw,
                                "eos": "", "ldos": "", "band": "Unknown", "years_to_ldos": None,
-                               "status": "Unknown model — verify on Cisco's EoL portal", "source": "", "conf": "",
+                               "status": "No retained Cisco EoX bulletin match for the collected model - "
+                                         "support state undetermined; verify the exact PID on Cisco's EoX portal",
+                               "source": "", "conf": "",
                                "matched_pattern": "", "match_kind": "none",
                                "reviewed_at": eoldb._EOL_REVIEWED, "citation_status": "missing"})
             continue
-        eos, ldos = _d(rec["eos"]), _d(rec["ldos"])
-        if rec["conf"] == "active" or (not eos and not ldos):
-            if rec.get("citation_status") != "bulletin-id":
-                band = "Unknown"
-                status = (
-                    "Unverified active claim - no resolvable Cisco bulletin/reference is bound "
-                    "to this offline row"
-                )
-                yrs = None
-            else:
-                band, status, yrs = "Active", "Active (no end-of-life announced)", None
+        eos, ldos = _d(rec.get("eos")), _d(rec.get("ldos"))
+        # The eoldb contract admits only exact, bulletin-confirmed rows with both dates and a verified
+        # retained-source chain. Enforce that authority at the consumer boundary: lifecycle_for()
+        # deliberately returns the inline record with source_authoritative=False when the fixture is
+        # missing, stale, or fails integrity, but those unverified dates must not drive a band. This also
+        # prevents a future malformed/legacy row from turning a missing date into "no EoL announced".
+        if rec.get("source_authoritative") is not True:
+            band = "Unknown"
+            status = (
+                "Retained primary-source proof was not verified for the matched Cisco EoX row; "
+                "lifecycle band withheld - verify the exact PID and repair the offline source chain"
+            )
+            yrs = None
+        elif rec.get("conf") != "confirmed" or not eos or not ldos:
+            band = "Unknown"
+            status = (
+                "Complete EoS/LDoS dates were not established by a bulletin-confirmed offline row; "
+                "support state undetermined - verify the exact PID on Cisco's EoX portal"
+            )
+            yrs = None
         else:
             # Decide the band from the UNROUNDED delta; the rounded `yrs` is for DISPLAY only. Rounding first
             # let a device genuinely ~1.05 yr out round to 1.0 and fall into Near-LDoS (the band ~18 days too
-            # wide). (Past-LDoS keeps the STRICT `>`: LDoS = Last Day of Support, so support still exists ON
-            # that date -- it becomes past only the day after. test_lifecycle_boundary_drift_guard locks this.)
+            # wide). Past-LDoS keeps the STRICT `>` boundary: the recorded LDoS date itself is not
+            # past; the Past-LDoS band begins on the following day. This date comparison makes no
+            # claim about contract entitlement. test_lifecycle_boundary_drift_guard locks the rule.
             yrs_exact = ((ldos - today).days / 365.25) if ldos else None
             yrs = round(yrs_exact, 1) if yrs_exact is not None else None
             if ldos and today > ldos:
@@ -6289,9 +6304,18 @@ def compute_lifecycle_risk(devices: Optional[dict] = None, asof: Optional[object
             elif eos and today > eos:
                 band = "Past-EoS"; status = f"Past end-of-sale (EoS {rec['eos']}; LDoS {rec['ldos']})"
             else:
-                band = "Active"; status = f"In support (LDoS {rec['ldos']})"
+                band = "Active"
+                status = (
+                    f"EoS not yet passed as of assessment (bulletin EoS {rec['eos']}; "
+                    f"LDoS {rec['ldos']}); support entitlement not assessed"
+                )
+        # Withheld rows keep match/citation diagnostics, but not unverified dates. Publishing dates
+        # beside band=Unknown would let Excel/explorer present authoritative-looking EoS/LDoS values
+        # after this function had explicitly refused to classify from them.
+        published_eos = rec["eos"] if band != "Unknown" else ""
+        published_ldos = rec["ldos"] if band != "Unknown" else ""
         per_device.append({"host": host, "model": model, "platform": rec["platform"], "sw_version": sw,
-                           "eos": rec["eos"], "ldos": rec["ldos"], "band": band, "years_to_ldos": yrs,
+                           "eos": published_eos, "ldos": published_ldos, "band": band, "years_to_ldos": yrs,
                            "status": status, "source": rec["source"], "conf": rec["conf"],
                            "matched_pattern": rec["matched_pattern"], "match_kind": rec["match_kind"],
                            "reviewed_at": rec["reviewed_at"], "citation_status": rec["citation_status"]})
@@ -6308,62 +6332,70 @@ def compute_lifecycle_risk(devices: Optional[dict] = None, asof: Optional[object
                          key=lambda r: (_LIFECYCLE_BAND_RANK[r["band"]], -r["count"], r["platform"]))
 
     risks: List[dict] = []
-    for band, base_severity, title, remediation in (
+    for band, severity, title, remediation in (
         ("Past-LDoS", "Critical", "Hardware past Cisco end-of-support (no TAC / no fixes)",
          "Prioritize these in the migration / hardware refresh and verify each exact PID against Cisco EoX."),
         ("Near-LDoS", "High", "Hardware within 1 year of end-of-support",
          "Schedule replacement before LDoS and verify each exact PID against Cisco EoX."),
+        ("Past-EoS", "Medium", "Hardware past end-of-sale with LDoS still future",
+         "Plan refresh before the recorded LDoS; verify the exact PID and serial-numbered support "
+         "entitlement separately because this date band does not establish it."),
     ):
         matching = [d for d in per_device if d["band"] == band]
-        for evidence_class, subset in (
-            ("confirmed", [d for d in matching if d["conf"] == "confirmed"]),
-            ("derived", [d for d in matching if d["conf"] != "confirmed"]),
-        ):
-            if not subset:
-                continue
-            severity = base_severity
-            if evidence_class == "derived":
-                severity = "High" if band == "Past-LDoS" else "Medium"
-            devices_for_risk = sorted(d["host"] for d in subset)
-            platforms = sorted({d["platform"] for d in subset})
-            risks.append({
-                "severity": severity,
-                "devices": devices_for_risk,
-                "title": title if evidence_class == "confirmed" else f"{title} (derived date; verify)",
-                "detail": (
-                    f"{len(devices_for_risk)} device(s) on {', '.join(platforms)}; "
-                    f"lifecycle evidence is {evidence_class}."
-                ),
-                "remediation": remediation,
-                "evidence_confidence": evidence_class,
-            })
+        if not matching:
+            continue
+        # Non-confirmed or incomplete rows were already abstained above. Consequently every adverse
+        # band here is based on dates copied from a retained bulletin claim; there is no "derived date"
+        # population to downgrade or describe.
+        devices_for_risk = sorted(d["host"] for d in matching)
+        platforms = sorted({d["platform"] for d in matching})
+        risks.append({
+            "severity": severity,
+            "devices": devices_for_risk,
+            "title": title,
+            "detail": (
+                f"{len(devices_for_risk)} device(s) on {', '.join(platforms)}; "
+                "lifecycle dates are bulletin-confirmed."
+            ),
+            "remediation": remediation,
+            "evidence_confidence": "confirmed",
+        })
 
-    # The loop above enumerates only the two ADVERSE bands, so a fleet whose platforms matched no EoX
+    # The loop above enumerates the three adverse date bands, so a fleet whose platforms matched no EoX
     # bulletin produced `risks == []` -- and every downstream consumer (punch-list, workbook, explorer)
     # renders an empty risk list as "no lifecycle risk found". That is absence rendered as health: the
     # support state was never determined, which is not the same as determined-to-be-fine. Emitted after
-    # the loop so it never outranks a real Past-LDoS/Near-LDoS finding, and deliberately NOT Critical --
+    # the loop so it never outranks a real Past-LDoS/Near-LDoS/Past-EoS finding, and deliberately NOT Critical --
     # nothing observed says these are out of support, only that we cannot say they are in it.
     unknown_devices = [d for d in per_device if d["band"] == "Unknown"]
     if unknown_devices:
         _u_hosts = sorted(d["host"] for d in unknown_devices)
-        # `platform` is the EoX bulletin's platform family and is "" for exactly the devices this
-        # risk is about (no bulletin matched -> nothing to name it with), so joining it rendered
-        # "3 device(s) on  could not be matched" -- a blank where the reader expects the platform
-        # list. Fall back to the collected MODEL string, which is the identifier that failed to
-        # match and the one an engineer resolves against Cisco's EoX portal; only when even that is
-        # empty do we say so explicitly rather than printing nothing.
+        # `platform` is empty for no-match rows but present for rows whose band was withheld because
+        # the retained source chain failed. Fall back to the collected model only for the former, and
+        # distinguish those two causes below so a provenance failure is never mislabeled as no match.
         _u_platforms = sorted({(d["platform"] or d["model"] or "").strip() for d in unknown_devices}
                               - {""})
         _u_where = (", ".join(_u_platforms) if _u_platforms
                     else "platforms whose model string was not collected")
+        _u_unmatched = [d for d in unknown_devices if d.get("match_kind") == "none"]
+        _u_withheld = [d for d in unknown_devices if d.get("match_kind") != "none"]
+        _u_causes = []
+        if _u_unmatched:
+            _u_causes.append(
+                f"{len(_u_unmatched)} had no retained exact Cisco EoX bulletin match"
+            )
+        if _u_withheld:
+            _u_causes.append(
+                f"{len(_u_withheld)} matched an offline row whose source authority or complete dates "
+                "were not verified"
+            )
         risks.append({
             "severity": "Medium",
             "devices": _u_hosts,
-            "title": "Hardware lifecycle NOT ASSESSED (no EoX match — support state undetermined)",
+            "title": "Hardware lifecycle NOT ASSESSED (support state undetermined)",
             "detail": (
-                f"{len(_u_hosts)} device(s) on {_u_where} could not be matched to an EoX "
-                "bulletin in the offline knowledge base, so no support band could be assigned. Their "
+                f"No support band could be assigned to {len(_u_hosts)} device(s) on {_u_where}: "
+                f"{'; '.join(_u_causes)}. Their "
                 "end-of-support exposure is UNKNOWN, not nil — an empty lifecycle risk list would "
                 "otherwise read as a clean fleet."
             ),
@@ -6378,10 +6410,12 @@ def compute_lifecycle_risk(devices: Optional[dict] = None, asof: Optional[object
                "n_unknown": by_band.get("Unknown", 0), "by_platform": by_platform, "asof": today.isoformat()}
     return {"per_device": per_device, "summary": summary, "risks": risks, "asof": today.isoformat(),
             "kb_reviewed_at": eoldb._EOL_REVIEWED,
-            "note": "Reference dates from a curated offline KB (Cisco EoL bulletins); last-day-of-support is "
-                    "often derived = end-of-sale + 5yr. Derived dates are never promoted to Critical without "
-                    "confirmed evidence, and an uncited 'active' row is reported Unknown rather than healthy. "
-                    "Verify exact PIDs on Cisco's End-of-Life portal."}
+            "note": "EoS and LDoS dates are copied from exact Cisco EoL bulletin claims retained in the "
+                    "offline KB; no lifecycle date is derived from a generic support-window rule. A date-bearing "
+                    "band is emitted only when the retained source chain verifies, then computed relative to the "
+                    "assessment date. 'Active' is the schema label for a row whose recorded EoS has not passed "
+                    "and whose LDoS is not within one year; it does not assert support entitlement or that Cisco "
+                    "has announced no EoL. Verify exact PIDs on Cisco's End-of-Life portal."}
 
 
 # =============================================================================
@@ -6562,10 +6596,11 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
             sev_pl[it["severity"]] += 1
     not_ready = sum(1 for r in mr if r.get("readiness") == "NOT READY")
     lc_tot = lc.get("n_devices", 0)                               # EoL rollup -- shared by the axis + the posture flag
-    lc_unknown = lc.get("n_unknown", 0)                           # devices whose model couldn't be identified (uncollected/unknown PID)
+    lc_unknown = lc.get("n_unknown", 0)                           # no exact EoX match, or retained source/date authority withheld
     lc_known = lc_tot - lc_unknown                                # only KNOWN-model devices are EoL-assessable
-    lc_pe = lc.get("n_past_ldos", 0) + lc.get("n_near", 0)        # past-LDoS + near-LDoS = "past/near end-of-support"
-    lc_pct = round(100 * lc_pe / lc_known) if lc_known else 0     # % over ASSESSABLE devices, not diluted by unknowns (audit-3 #5)
+    lc_support = lc.get("n_past_ldos", 0) + lc.get("n_near", 0)   # recorded LDoS passed, or falls within one year
+    lc_eos = lc.get("n_past_eos", 0)                              # separate date band: LDoS remains future
+    lc_pct = round(100 * lc_support / lc_known) if lc_known else 0 # % over ASSESSABLE devices, not diluted by unknowns (audit-3 #5)
     # COVERAGE, as a boolean, independent of what was found. `lc_unknown` counts devices whose
     # support state was never determined; `lc_coverage_risks` is the producer's own not-assessed
     # disclosure. Either one means this axis does not cover the whole fleet.
@@ -6609,13 +6644,17 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
            # High outrank Info), so this only bites the case where nothing adverse was found and the
            # reason may simply be that nothing was looked at.
            "Critical" if lc.get("n_past_ldos") else "High" if lc.get("n_near")
+           else "Medium" if lc_eos
            else "Info" if (lc_incomplete or not lc_known) else "Low",
            f"{lc.get('n_past_ldos', 0)} past end-of-support, {lc.get('n_near', 0)} within 1yr "
            f"({lc_pct}% of {lc_known} assessable)"
-           + (f" · {lc_unknown} unknown model(s) not assessed" if lc_unknown else ""),
-           f"Reference dates from the offline KB; bands are time-relative, computed as-of "
-           f"{lc.get('asof') or 'the analysis date'} (they shift as time passes), and an LDoS absent from "
-           f"the KB is derived as end-of-sale + 5yr — re-verify on Cisco's EoX portal before acting."
+           + (f" · {lc_eos} past end-of-sale (LDoS still future)" if lc_eos else "")
+           + (f" · {lc_unknown} NOT ASSESSED (no authoritative lifecycle band)" if lc_unknown else ""),
+           f"Date-bearing bands use only exact Cisco bulletin claims whose retained source chain verified; "
+           f"no EoS/LDoS date is derived from a generic support-window rule. Bands are time-relative, "
+           f"computed as-of {lc.get('asof') or 'the analysis date'} (they shift as time passes). Re-verify "
+           f"the exact PID on Cisco's EoX portal before acting. Past-EoS is a recorded date position; "
+           f"contract entitlement is not inferred."
            # The NOT-ASSESSED row's own sentence, verbatim, on a RENDERED surface (this detail reaches
            # the workbook / deck / explorer / brief). It names the model strings that failed to match,
            # which is the actionable half of the disclosure and was previously visible only to a
@@ -6899,14 +6938,20 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
 
         lcr = lc_by.get(host)
         lcb = (lcr or {}).get("band", "Unknown")
-        if lcr is None or lcb == "Unknown":
-            ax("Hardware EoL", "na", "model not in the EoL KB")
+        if lcr is None:
+            ax("Hardware EoL", "na", "not lifecycle-assessed — no lifecycle row was produced")
+        elif lcb == "Unknown":
+            ax("Hardware EoL", "na", "no authoritative lifecycle band — either no exact EoX row "
+               "matched or the matched row's source/date authority was withheld")
         elif lcb in ("Past-LDoS", "Near-LDoS"):
             ax("Hardware EoL", "risk", f"hardware {lcb.replace('-', ' ')}")
         elif lcb == "Past-EoS":
             ax("Hardware EoL", "watch", "hardware past end-of-sale")
+        elif lcb == "Active":
+            ax("Hardware EoL", "ok", "pre-EoS date position (schema: Active; support entitlement "
+               "not assessed)")
         else:
-            ax("Hardware EoL", "ok", "hardware lifecycle Active")
+            ax("Hardware EoL", "na", f"unrecognized lifecycle band {lcb!r} — not assessed")
 
         swr = sw_by.get(host)
         sw_sevs = {f.get("severity") for f in sw_find.get(host, [])}
@@ -7080,14 +7125,22 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
         impact_phrase = (f"removal strands {stranded} endpoint(s) across {vlans_imp} VLAN(s)"
                          if stranded else f"removal impacts {vlans_imp} VLAN(s)" if vlans_imp
                          else "no modeled reachability impact")
-        if state.get("Hardware EoL") == "risk" and fi_sev == "High":
+        if lcb == "Past-LDoS" and fi_sev == "High":
             cr("CR-01", "End-of-support keystone", "Critical",
-               f"Hardware is past/near last-day-of-support AND {impact_phrase} — "
+               f"Hardware is past last-day-of-support AND {impact_phrase} — "
                "an unsupportable box the network cannot lose.")
-        if state.get("Hardware EoL") == "risk" and state.get("Health") == "risk":
+        elif lcb == "Near-LDoS" and fi_sev == "High":
+            cr("CR-01", "Near-LDoS keystone", "High",
+               f"Hardware reaches LDoS within one year AND {impact_phrase} — the replacement window "
+               "is finite; support entitlement is not inferred from the date band.")
+        if lcb == "Past-LDoS" and state.get("Health") == "risk":
             cr("CR-02", "Failing hardware past support", "High",
-               "Critical health score on hardware that is past/near end-of-support — "
-               "no TAC escalation path when it degrades further.")
+               "Critical health score on hardware that is past last-day-of-support — "
+               "no standard TAC escalation path when it degrades further.")
+        elif lcb == "Near-LDoS" and state.get("Health") == "risk":
+            cr("CR-02", "Critical health near LDoS", "High",
+               "Critical health score on hardware within one year of LDoS — stabilize it and schedule "
+               "replacement before the deadline; support entitlement is not inferred from the date band.")
         if root_vlans and (state.get("Health") == "risk" or state.get("Physical") == "risk"):
             cr("CR-03", "Root bridge on degraded hardware", "High",
                f"STP root for {root_vlans} VLAN(s) on a device with "

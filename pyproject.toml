@@ -136,7 +136,12 @@ include = ["cisco_toolkit*", "webapp", "webapp.backend"]
 # Ship the runtime data inside any built distribution: the gzipped KB files portdb/ouidb load, and the
 # single-file explorer template, verified registry manifest, complete AssessHub SPA, and synthetic
 # demo snapshot. Every installed entry point is usable from an isolated wheel.
-cisco_toolkit = ["data/*.tsv.gz", "data/registry_manifest.json", "blast_radius_explorer.html"]
+cisco_toolkit = [
+    "data/*.tsv.gz",
+    "data/registry_manifest.json",
+    "data/eol-bulletins.json",
+    "blast_radius_explorer.html",
+]
 webapp = ["frontend/dist/index.html", "frontend/dist/assets/*", "sample_data/*.json"]
 
 [tool.coverage.run]

@@ -296,7 +296,7 @@ def _lc_snap(**summary):
 
 
 def test_at_a_glance_does_not_report_zero_past_ldos_when_the_answer_is_UNDETERMINED():
-    """"0 device(s) past last-date-of-support" on the front page of EVERY deliverable.
+    """"0 device(s) past last-day-of-support" on the front page of EVERY deliverable.
 
     `ssot.CANONICAL_FACTS` carried slots for n_past_ldos / n_past_eos / n_near / n_active and NONE
     for n_unknown, so no consumer had a path to say "not determined" — `v()` maps only `None` to
@@ -325,4 +325,13 @@ def test_at_a_glance_still_reads_clean_when_every_device_WAS_assessed():
     rows = dict(docmeta._glance_rows(_lc_snap(n_past_ldos=0, n_past_eos=0, n_near=0, n_unknown=0)))
     lifecycle = rows["Biggest lifecycle exposure?"]
     assert "unknown" not in lifecycle.lower(), f"clean fleet gained an unknown caveat: {lifecycle!r}"
-    assert "0 device(s) past last-date-of-support" in lifecycle
+    assert "0 device(s) past last-day-of-support" in lifecycle
+
+
+def test_at_a_glance_partial_lifecycle_summary_discloses_missing_coverage_count():
+    """Published zero adverse counts are not a clean result when n_unknown itself was omitted."""
+    from cisco_toolkit import docmeta
+    rows = dict(docmeta._glance_rows(_lc_snap(n_past_ldos=0, n_past_eos=0, n_near=0)))
+    lifecycle = rows["Biggest lifecycle exposure?"]
+    assert "lifecycle coverage count [NOT OBSERVED]" in lifecycle
+    assert "did not publish n_unknown" in lifecycle

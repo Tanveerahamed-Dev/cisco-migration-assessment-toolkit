@@ -1,5 +1,6 @@
 """Small build guard: a published AssessHub entry point must include its runtime UI."""
 
+import hashlib
 import re
 from pathlib import Path
 
@@ -12,6 +13,8 @@ _REQUIRED_RUNTIME_ASSETS = (
     _ROOT / "cisco_toolkit" / "data" / "registry_manifest.json",
     _ROOT / "cisco_toolkit" / "data" / "oui_registry.tsv.gz",
     _ROOT / "cisco_toolkit" / "data" / "port_registry.tsv.gz",
+    _ROOT / "cisco_toolkit" / "data" / "eol-bulletins.json",
+    _ROOT / "reference-data" / "official-sources" / "cisco" / "eol-bulletins.json",
 )
 _missing = [str(path.relative_to(_ROOT)) for path in _REQUIRED_RUNTIME_ASSETS if not path.is_file()]
 _frontend_index = _ROOT / "webapp" / "frontend" / "dist" / "index.html"
@@ -38,6 +41,24 @@ if _missing:
         "refusing to build an incomplete distribution; missing runtime assets: "
         + ", ".join(_missing)
         + ". Build the AssessHub frontend before packaging."
+    )
+
+_runtime_eol_evidence = _ROOT / "cisco_toolkit" / "data" / "eol-bulletins.json"
+_retained_eol_evidence = (
+    _ROOT / "reference-data" / "official-sources" / "cisco" / "eol-bulletins.json"
+)
+_expected_eol_sha256 = (
+    "7683b29e66d3e5b39d89407e60a5f08ffbf8ef9f19ab029279ffc9d0861349c3"
+)
+_runtime_eol_bytes = _runtime_eol_evidence.read_bytes()
+if (
+    _runtime_eol_bytes != _retained_eol_evidence.read_bytes()
+    or hashlib.sha256(_runtime_eol_bytes).hexdigest() != _expected_eol_sha256
+):
+    raise RuntimeError(
+        "refusing to build with divergent Cisco EoL evidence; "
+        "cisco_toolkit/data/eol-bulletins.json must be the exact code-pinned copy "
+        "of reference-data/official-sources/cisco/eol-bulletins.json"
     )
 
 setup()

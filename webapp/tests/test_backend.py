@@ -841,7 +841,10 @@ def test_design_blueprint_endpoint_and_requirements_overlay(client):
     for k in ("dimensions", "replacement_bom", "addressing_plan", "wave_plan", "segmentation_plan"):
         assert k in ts, k
     assert isinstance(ts["dimensions"], list)
-    assert {"n_replace", "n_refresh", "replace_now", "refresh_soon"} <= set(ts["replacement_bom"])
+    assert {
+        "n_replace", "n_refresh", "n_near", "n_past_eos", "n_undetermined", "n_not_assessed",
+        "replace_now", "refresh_soon", "undetermined",
+    } <= set(ts["replacement_bom"])
     assert ts["addressing_plan"].get("status") in ("candidate", "needs-requirement")
     assert {"waves", "n_waves", "wave_cap"} <= set(ts["wave_plan"])
     # segmentation_plan is the field the dashboards' "Target segmentation" block reads (SSOT, no client recompute)
@@ -1108,6 +1111,40 @@ def test_nrfu_devices_in_scope_reads_canonical_scale(tmp_path):
     rows0 = [c.text for t in Document(out0).tables for row in t.rows for c in row.cells]
     j = next(k for k, c in enumerate(rows0) if "Devices in scope" in c)
     assert rows0[j + 1] == "0"     # canonical 0 honoured, NOT len(devices)=3
+
+
+def test_nrfu_lifecycle_notes_map_all_bands_without_entitlement_inference(tmp_path):
+    pytest.importorskip("docx")
+    from docx import Document
+
+    from backend.nrfu_docx import write_nrfu_docx
+
+    snap = {
+        "devices": {"ldos": {}, "eos": {}, "near": {}, "active": {}, "unknown": {}},
+        "executive_brief": {"scale": {"n_devices": 5}},
+        "lifecycle_risk": {"per_device": [
+            {"host": "ldos", "model": "OLD", "sw_version": "1", "band": "Past-LDoS"},
+            {"host": "eos", "model": "SALE", "sw_version": "2", "band": "Past-EoS"},
+            {"host": "near", "model": "NEAR", "sw_version": "3", "band": "Near-LDoS"},
+            {"host": "active", "model": "NEW", "sw_version": "4", "band": "Active"},
+            {"host": "unknown", "model": "?", "sw_version": "5", "band": "Unknown"},
+        ]},
+        "validation_plan": {"items": []},
+        "design_blueprint": {"decisions": [], "design_nrfu": {"items": []}},
+    }
+    out = str(tmp_path / "nrfu-lifecycle.docx")
+    write_nrfu_docx(out, snap, "Unit Test Fleet")
+    cells = [c.text for t in Document(out).tables for row in t.rows for c in row.cells]
+    assert any("Past last-day-of-support — replacement" in c for c in cells)
+    eos_note = next(c for c in cells if "Past end-of-sale with LDoS still future" in c)
+    assert "plan refresh" in eos_note
+    assert "does not establish support entitlement" in eos_note
+    assert "Past end-of-support — replacement" not in eos_note
+    assert any("Within one year of LDoS — schedule refresh" in c for c in cells)
+    assert any("Pre-EoS date band (schema: Active); support entitlement not assessed" in c for c in cells)
+    unknown = next(c for c in cells if "NOT ASSESSED" in c)
+    assert "either no exact EoX row matched" in unknown
+    assert "source/date authority was withheld or incomplete" in unknown
 
 
 def test_snapshot_meta_n_devices_reads_canonical_scale(client):

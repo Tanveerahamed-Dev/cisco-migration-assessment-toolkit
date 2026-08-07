@@ -228,6 +228,13 @@ function Capped({ shown, total, where }: { shown: number; total: number; where: 
 
 function TargetState({ ts }: { ts: DesignTargetState }) {
   const bom = ts.replacement_bom, ap = ts.addressing_plan, wp = ts.wave_plan, sp = ts.segmentation_plan, amg = ts.aci_move_groups;
+  const undeterminedRows = bom?.undetermined ?? [];
+  // Historical snapshots may predate n_undetermined. Never let a missing/stale aggregate hide
+  // explicit rows: unresolved lifecycle evidence is a third disposition, not a healthy zero.
+  const nUndetermined = Math.max(
+    bom?.n_undetermined ?? 0,
+    undeterminedRows.reduce((total, [, qty]) => total + qty, 0),
+  );
   return (
     <div style={{ marginTop: 14 }}>
       {ts.dimensions && ts.dimensions.length > 0 && (
@@ -249,13 +256,20 @@ function TargetState({ ts }: { ts: DesignTargetState }) {
           })}
         </>
       )}
-      {bom && (bom.n_replace > 0 || bom.n_refresh > 0) && (
+      {bom && (bom.n_replace > 0 || bom.n_refresh > 0 || nUndetermined > 0) && (
         <>
-          <div style={{ fontSize: 13, fontWeight: 700, margin: "12px 0 6px" }}>Replacement BoM · {bom.n_replace} replace / {bom.n_refresh} refresh</div>
+          {nUndetermined > 0 ? (
+            <div style={{ fontSize: 13, fontWeight: 700, margin: "12px 0 6px" }}>Lifecycle disposition BoM · {bom.n_replace} replace / {bom.n_refresh} refresh / {nUndetermined} resolve</div>
+          ) : (
+            // Preserve the historical zero-undetermined DOM/text-node shape, and therefore its
+            // reviewed pixels, for payloads whose only dispositions are replace and refresh.
+            <div style={{ fontSize: 13, fontWeight: 700, margin: "12px 0 6px" }}>Replacement BoM · {bom.n_replace} replace / {bom.n_refresh} refresh</div>
+          )}
           <table className="tbl"><thead><tr><th>Current model</th><th>Disposition</th><th className="num">Qty</th></tr></thead>
             <tbody>
               {bom.replace_now.map(([m, q]) => <tr key={"r" + m}><td className="mono">{m}</td><td style={{ color: "var(--crit)" }}>Replace</td><td className="num">{q}</td></tr>)}
               {bom.refresh_soon.map(([m, q]) => <tr key={"f" + m}><td className="mono">{m}</td><td style={{ color: "var(--watch)" }}>Refresh</td><td className="num">{q}</td></tr>)}
+              {undeterminedRows.map(([m, q]) => <tr key={"u" + m}><td className="mono">{m}</td><td style={{ color: "var(--watch)" }}>Resolve before procurement</td><td className="num">{q}</td></tr>)}
             </tbody></table>
           <div className="faint" style={{ fontSize: 11, marginTop: 4 }}>{bom.note}</div>
         </>

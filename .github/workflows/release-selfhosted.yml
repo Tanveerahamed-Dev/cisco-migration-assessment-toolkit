@@ -174,9 +174,10 @@ jobs:
           & "$env:RUNNER_TEMP\smoke-venv\Scripts\python.exe" -m pip install --quiet $wheel
       # Routed through registry_integrity.pack_is_usable — the ONE owner of the usability
       # question (mirrors ci.yml and the hosted release.yml after the same fix). The wheel
-      # install structurally lacks the retained official-source corpus (repo/sdist evidence,
-      # not shipped), which is the cannot-check-here case the owner predicate accepts and
-      # discloses; `assesshub --selftest` above already judges via the same owner.
+      # install structurally lacks the large retained IEEE/IANA source corpus (repo/sdist
+      # evidence, not shipped), which is the cannot-check-here case the owner predicate accepts
+      # and discloses. The compact Cisco EoL fixture DOES ship and must verify fully here and in
+      # `assesshub --selftest`; lifecycle authority has no installed-context exception.
       - name: Verify the installed runtime outside the checkout
         working-directory: ${{ runner.temp }}
         run: |
@@ -184,7 +185,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           & "$env:RUNNER_TEMP\smoke-venv\Scripts\assesshub.exe" --selftest
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          & "$env:RUNNER_TEMP\smoke-venv\Scripts\python.exe" -c "import sys; from cisco_toolkit import ouidb, portdb, registry_integrity as R; pairs = (('oui', ouidb.registry_health()), ('port', portdb.registry_health())); bad = [(n, h) for n, h in pairs if not R.pack_is_usable(h)]; [print(f'{n}: usable on bytes + build provenance; retained official sources not present in this install form (repo/sdist only)') for n, h in pairs if h.get('official_sources_available') is False and not bad]; sys.exit('registry pack unusable: %r' % (bad,)) if bad else None"
+          & "$env:RUNNER_TEMP\smoke-venv\Scripts\python.exe" -c "import sys; from cisco_toolkit import eoldb, ouidb, portdb, registry_integrity as R; pairs = (('oui', ouidb.registry_health()), ('port', portdb.registry_health()), ('eol', eoldb.registry_health())); bad = [(n, h) for n, h in pairs if not R.pack_is_usable(h)]; [print(f'{n}: usable on bytes + build provenance; retained official sources not present in this install form (repo/sdist only)') for n, h in pairs if h.get('official_sources_available') is False and not bad]; sys.exit('registry pack unusable: %r' % (bad,)) if bad else None"
       - name: Final immutable-tagged-source proof before release
         run: '& "$env:RUNNER_TEMP\rel-venv\Scripts\python.exe" .github/scripts/verify_checkout_immutable.py --expected-commit "${{ steps.source.outputs.commit }}" --expected-tree "${{ steps.source.outputs.tree }}" --allow-untracked-prefix webapp/frontend/node_modules --allow-untracked-prefix build --allow-untracked-prefix cisco_migration_assessment_toolkit.egg-info --allow-untracked-prefix dist'
       - name: Reverify exact bytes and create the GitHub Release
