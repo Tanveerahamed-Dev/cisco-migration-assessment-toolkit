@@ -474,6 +474,10 @@ def test_release_family_is_deterministic_and_explicitly_unsigned(tmp_path: Path)
     assert manifest_a["independent_verification_verdict"] == "BLOCK"
     assert manifest_a["gates"]["ed25519_signature"] == "pending_external_owner_key"
     assert _all_files(first) == _all_files(second)
+    engineering = (first / "engineering-dossier.md").read_text(encoding="utf-8")
+    engineering_text = " ".join(engineering.split())
+    assert "does not attest whether the producer used a full or incremental rebuild" in engineering_text
+    assert "run a full rebuild before relying on edge completeness" in engineering_text
 
     inventory = json.loads((first / "artifact-inventory.json").read_text(encoding="utf-8"))
     for artifact in inventory["artifacts"]:

@@ -1059,8 +1059,8 @@
       "interaction": "Classify a synthetic edge as static, runtime-only, expected dynamic, stale, forbidden, unsupported inference, or unresolved.",
       "data_policy": "Repository-owned architecture and source metadata only; no runtime client evidence, network call, or dynamic code execution.",
       "proves": "How Atlas keeps static inference distinct from runtime truth and requires disposition for unexplained consequential edges.",
-      "does_not_prove": "Runtime coverage, dynamic dispatch resolution, production behavior, or Graphify semantic completeness.",
-      "owner_refs": ["owner.reference.contract", "owner.ssot.registry", "owner.engine.entry"],
+      "does_not_prove": "Runtime coverage, dynamic dispatch resolution, production behavior, Graphify semantic completeness, or cross-file edge completeness after an incremental rebuild; a full Graphify rebuild is required before relying on edge completeness.",
+      "owner_refs": ["owner.reference.contract", "owner.ssot.registry", "owner.engine.entry", "owner.operating.doctrine"],
       "gap_refs": ["gap.training-labs", "gap.observability-signals"],
       "deterministic_definition": {
         "execution_state": "definition_only",

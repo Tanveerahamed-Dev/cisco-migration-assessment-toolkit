@@ -352,6 +352,10 @@ class CompilerTests(unittest.TestCase):
             self.assertFalse(graph_metadata["stale"])
             self.assertEqual(graph_metadata["projected_nodes"], 2)
             self.assertEqual(graph_metadata["projected_edge_modes"], {"inferred": 1})
+            self.assertIn(
+                "graphify_incremental_rebuild_may_evict_cross_file_edges_until_full_rebuild",
+                graph_metadata["unresolved_reasons"],
+            )
 
             ledger = json.loads((first_output / "completeness.json").read_text(encoding="utf-8"))
             architecture = json.loads(

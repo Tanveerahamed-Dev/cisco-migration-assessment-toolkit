@@ -713,6 +713,7 @@ def project_graphify(
         "unresolved_reasons": [
             "graphify_is_optional_secondary_projection",
             "graphify_hyperedges_not_projected" if raw_hyperedges else "graphify_has_no_hyperedges",
+            "graphify_incremental_rebuild_may_evict_cross_file_edges_until_full_rebuild",
         ],
     }
     validate_graphify_metadata(metadata)

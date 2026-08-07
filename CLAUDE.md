@@ -164,6 +164,14 @@ Rules:
   `update . --force`, then verify the only nodes dropped are the excluded paths (precedent: 2026-07-03 cleanup
   removed ~1.9k scratch/side-engagement nodes; 2026-06-25 removed the `_ref/` copy).
 
+  **Known incremental-rebuild limitation (current producer residual, not a claim that the present graph is
+  truncated):** Graphify's incremental `changed_paths` rebuild can retain the full node census while evicting
+  cross-file edges for a re-extracted file. `built_at_commit` and node count therefore do not prove edge
+  completeness. Consumers must report missing declared edges, and a reference/release build must first run a
+  full `python -m graphify update .`, which heals this producer state. Executable evidence:
+  `cisco_toolkit/d10_eval_set.py` and
+  `tests/test_d10_eval_set.py::test_verify_multi_hop_edges_reports_on_an_edge_truncated_graph`.
+
 ## Single source of truth (SSOT)
 
 Before hardcoding or restating ANY shared fact (device counts, VLANs, versions, #decisions, prices),

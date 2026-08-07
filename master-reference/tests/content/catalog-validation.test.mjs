@@ -189,6 +189,12 @@ test("contains all requested domains, six architecture planes, eight traffic pla
       "lab.14-white-label-propagation",
     ],
   );
+  const architectureLab = governance.labs.find(
+    (lab) => lab.id === "lab.11-static-runtime-architecture",
+  );
+  assert.ok(architectureLab.owner_refs.includes("owner.operating.doctrine"));
+  assert.match(architectureLab.does_not_prove, /incremental rebuild/i);
+  assert.match(architectureLab.does_not_prove, /full Graphify rebuild/i);
 });
 
 test("keeps every mandated breadth denominator explicit", () => {

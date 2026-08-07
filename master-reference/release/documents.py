@@ -250,6 +250,10 @@ Lines with explicit unresolved reasons:
 
 Graphify remains a static/extracted view and cannot establish runtime truth.
 Synthetic runtime receipts must remain independently labelled.
+The receipt binds Graphify bytes and source commit but does not attest whether
+the producer used a full or incremental rebuild. Incremental rebuilds may
+retain the full node census while evicting cross-file edges; run a full rebuild
+before relying on edge completeness.
 
 ## Supply chain
 
