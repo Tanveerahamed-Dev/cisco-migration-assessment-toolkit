@@ -5,8 +5,8 @@ export const FindingsByCategory = () => (
   <div className="panel">
     <h3>Findings by category</h3>
     <Bars
-      data={{ "No FHRP": 18, "Past EoS": 7, "Single-homed": 5, "AAA gap": 4, "Stale archive": 2 }}
-      colorFor={(k) => (k === "No FHRP" ? sevColor("Critical") : k === "Past EoS" ? sevColor("High") : sevColor("Medium"))}
+      data={{ "No FHRP": 18, "Past-LDoS": 7, "Single-homed": 5, "AAA gap": 4, "Stale archive": 2 }}
+      colorFor={(k) => (k === "No FHRP" || k === "Past-LDoS" ? sevColor("Critical") : sevColor("Medium"))}
     />
   </div>
 );

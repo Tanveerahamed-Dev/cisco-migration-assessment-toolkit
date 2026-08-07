@@ -5,6 +5,12 @@ items) is now DONE, so this plan covers **everything still remaining** across al
 (validation/quality, agent-brain, autonomy) plus the strategic frame, with the real gating decisions made.
 Plan-only — no engine code changed by authoring it. Guardrails intact: read-only, no-egress, no device writes.*
 
+> **Status reconciliation (2026-08-07):** the real-cutover / first-REAL-row
+> dependency below remains a genuine external-data gate. Phase 0a’s two citation
+> tasks are complete (`cc240411`; current text in `docs/quality/README.md`). Treat
+> every other dated status as a planning record and revalidate it against its
+> owner before resuming work.
+
 ---
 
 ## 0. Verdict in one line
@@ -38,7 +44,7 @@ Five commits on `chore/scorecard-first-real-rows`, all pushed: `c5c1f1d` (ADR 00
 | Act 4 — freeze the 278-item breadth register + recall/RRF behind a flag | none | mine | **later**; relabel self-scored matrix ●→measured/unverified |
 | Act 5 — clock arm-or-not decision | REAL calibration **separation** | gated | far off — see §3; shadow-first, ROI-killed |
 | **B. Agent-brain** — *ADR 0003 / SelfMem plan* | | | |
-| Phase 0a — 2 remaining citations (`2607.03726` at the N-floor; `2601.15778` in `calibration.py`) | none | mine | **DO now** — cheap grounding |
+| Phase 0a — citation grounding (`2607.03726` + `2601.15778`) | none | mine | **COMPLETE** — landed in `cc240411`; current wording is owned by `docs/quality/README.md` |
 | Phase 0b — SelfMem write-operator lint in `learnings.py` | memory store grows | mine | **DEFER** (store ~13 entries; not yet needed) |
 | Phase 2 — hybrid SQLite enforcement/query index | memory volume + real-row need | gated | **don't build speculatively** — hardening, not a gap |
 | Phase 3 — RRF retrieval (= v4 **D10**) | Ollama install + first sanitized vault digest | gated | **eval now specified + citation-verified** (`docs/d10-retrieval-eval-design-2026-07-08.md`); ships with that eval, not as SOTA |
@@ -106,9 +112,9 @@ can manufacture. So the honest plan is *narrow now, wide after the cutover*.
 
 ## 6. The single next action
 
-**A real cutover (Act 1).** It is perishable, unsubstitutable, and unlocks the rest. Absent a scheduled window,
-the *only* autonomous value that isn't pull-forward is **Phase 0a (the two citations, ~10 min)** — everything
-else legitimately waits on real signal. Do not manufacture more.
+**A real cutover (Act 1).** It is perishable, unsubstitutable, and unlocks the rest. Phase 0a's citations
+subsequently landed, so absent a scheduled window there is no remaining autonomous task in this plan that
+should be pulled forward: everything else legitimately waits on real signal. Do not manufacture more.
 
 ## 7. Verification basis
 

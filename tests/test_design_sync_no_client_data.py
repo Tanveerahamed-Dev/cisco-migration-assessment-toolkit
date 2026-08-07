@@ -34,6 +34,7 @@ _REPO = Path(__file__).resolve().parents[1]
 _DS = _REPO / ".design-sync"
 _FRONTEND = _REPO / "webapp" / "frontend"
 _BARREL = _FRONTEND / "ds.entry.ts"
+_SAMPLE = _DS / "providers" / "sample-data.ts"
 
 # These are intentionally public from ds.entry.ts, but they are helpers rather than Design cards.
 # Keeping the list explicit makes a new barrel export fail closed until it is classified. The
@@ -380,3 +381,234 @@ def test_dts_props_for_never_uses_the_unknown_index_placeholder():
         "dtsPropsFor must publish concrete props, not the converter's "
         f"[key: string]: unknown placeholder: {placeholders}"
     )
+
+
+def test_topology_fixture_preserves_bridge_assessment_authority():
+    """A claimed bridge is unusable unless the fixture also carries its assessed bits.
+
+    TopologyGraph intentionally discards ``is_bridge`` when the edge-level authority flag is
+    absent. The fleet-level flag separately controls its incomplete-assessment notice. A fixture
+    that says "2 bridges" while omitting either class of authority therefore contradicts the
+    surrounding Design cards, even though only ``bridge_assessed`` gates red SPOF styling.
+    """
+    text = _SAMPLE.read_text(encoding="utf-8")
+    graph = text.split("const GRAPH =", 1)[1].split("const CABLE_MAP =", 1)[0]
+    edges = graph.split("edges: [", 1)[1].split("],", 1)[0]
+    edge_count = len(re.findall(r"\{\s*source:", edges))
+
+    assert edge_count > 0, "GRAPH fixture has no edges; authority assertions would be vacuous"
+    assert graph.count("link_centrality_assessed: true") == 1
+    assert len(re.findall(r"\bbridge_assessed:\s*true\b", edges)) == edge_count, (
+        "every GRAPH edge must explicitly carry bridge_assessed: true when bridge claims are used"
+    )
+    assert len(re.findall(r"\bis_bridge:\s*true\b", edges)) == 2, (
+        "the fictional Meridian evidence and D-02 both claim exactly two assessed bridge links"
+    )
+
+
+def test_sample_fleet_collection_counts_are_self_consistent():
+    """Derive switch collection coverage instead of trusting duplicated display totals."""
+    text = _SAMPLE.read_text(encoding="utf-8")
+    cable_map = text.split("const CABLE_MAP =", 1)[1].split("const CAUSAL_FLOWS =", 1)[0]
+    collection_states = re.findall(
+        r'host:\s*"[^"]+"[^\n]*kind:\s*"switch"[^\n]*collected:\s*(true|false)',
+        cable_map,
+    )
+    assert collection_states == ["true"] * 8 + ["false"], (
+        "the fictional fleet must contain eight collected switches and one uncollected switch"
+    )
+
+    assert 'summary: "aaa new-model absent on 4 of 8 collected devices"' in text
+    assert re.search(
+        r"coverage:\s*\{\s*inventory:\s*9,\s*collected:\s*8,\s*not_collected:\s*1",
+        text,
+    )
+    provider_preview = (_DS / "previews" / "DemoDataProvider.tsx").read_text(encoding="utf-8")
+    assert 'value={9} hint="8 collected · 1 not"' in provider_preview
+
+
+def test_design_fixture_uses_the_canonical_lifecycle_contract():
+    """Keep the upload fixture aligned with the server-owned lifecycle decision semantics."""
+    text = _SAMPLE.read_text(encoding="utf-8")
+    blueprint = text.split("const DESIGN =", 1)[1].split("const NRFU =", 1)[0]
+    decisions = blueprint.split("decisions: [", 1)[1].split("tradeoff_scorecard:", 1)[0]
+    decision_matches = list(re.finditer(r'^\s{6}id:\s*"([^"]+)"', decisions, re.MULTILINE))
+    decision_ids = [match.group(1) for match in decision_matches]
+    assert decision_ids == [
+        "D-01",
+        "lifecycle-eol-out-of-critical-roles",
+        "fhrp-not-observed-is-not-healthy",
+        "D-02",
+        "lifecycle-near-ldos-refresh-before-deadline",
+        "D-04",
+        "lifecycle-past-eos-refresh-planning",
+        "lifecycle-unknown-resolve-authority",
+        "D-05",
+    ], "baseline priority/count ordering and the lifecycle tie stabilizer must stay deterministic"
+
+    blocks = {}
+    for index, match in enumerate(decision_matches):
+        end = decision_matches[index + 1].start() if index + 1 < len(decision_matches) else len(decisions)
+        blocks[match.group(1)] = decisions[match.start():end]
+
+    expected = {
+        "lifecycle-eol-out-of-critical-roles": (
+            "Critical",
+            "Observed",
+            "Supportability: the target fabric must not inherit end-of-support assets.",
+            "2 device(s) are past last-day-of-support -- those end-of-support assets in forwarding roles "
+            "cannot be safely relied on in the target design.",
+        ),
+        "lifecycle-near-ldos-refresh-before-deadline": (
+            "High",
+            "Observed",
+            "Deadline risk: preserve time for a staged replacement before recorded LDoS.",
+            "1 device(s) are within one year of recorded LDoS. Give each an owned, approved replacement "
+            "disposition and implementation window before that deadline; the date band does not establish "
+            "contract entitlement.",
+        ),
+        "lifecycle-past-eos-refresh-planning": (
+            "Medium",
+            "Observed",
+            "Investment planning: act before sourcing and migration choices narrow.",
+            "1 device(s) are past end-of-sale with recorded LDoS still future. Place each in an owned, dated "
+            "refresh plan; this is not an immediate-removal or support-entitlement claim.",
+        ),
+        "lifecycle-unknown-resolve-authority": (
+            "Medium",
+            "Coverage-gap",
+            "Coverage honesty: an unclassified asset needs evidence closure, not a healthy default.",
+            "1 lifecycle row(s) are Unknown and 1 fleet asset(s) received no lifecycle row. Resolve exact "
+            "PID/serial before carry-forward or procurement. Accept either a verified dated bulletin match, "
+            "or a time-stamped authoritative EoX no-notice check with an owner and review date; no lifecycle "
+            "or support-entitlement conclusion is inferred from absence.",
+        ),
+    }
+    for decision_id, (priority, confidence, driver, summary) in expected.items():
+        block = blocks[decision_id]
+        assert 'domain: "methodology"' in block
+        assert f'priority: "{priority}"' in block
+        assert f'confidence: "{confidence}"' in block
+        assert f'driver: "{driver}"' in block
+        assert f'evidence: {{ summary: "{summary}"' in block
+        assert "effective_priority" not in block
+
+    coverage_block = blocks["fhrp-not-observed-is-not-healthy"]
+    assert 'domain: "methodology"' in coverage_block
+    assert 'priority: "Critical", status: "recommended", confidence: "Coverage-gap"' in coverage_block
+    assert 'driver: "Coverage honesty: do not design resilience on devices you have not seen."' in coverage_block
+    assert (
+        'evidence: { summary: "1 of 9 inventoried device(s) were not collected -- their role and '
+        'redundancy are UNKNOWN.' in coverage_block
+    )
+    assert 'count: 1, devices: [], fields: ["collection_completeness.summary.not_collected"]' in coverage_block
+    assert "effective_priority" not in decisions, (
+        "requirements_provided=false uses baseline priority/count ordering and must not publish weights"
+    )
+
+    assert re.search(
+        r"n_decisions:\s*9,\s*n_recommended:\s*7,\s*n_needs_requirement:\s*2,\s*n_critical:\s*3",
+        blueprint,
+    )
+    assert "by_domain: { resiliency: 2, methodology: 5, segmentation: 1, capacity: 1 }" in blueprint
+    assert (
+        'headline: "3 critical recommended target-state design decision(s); leading: Deploy first-hop '
+        'redundancy (HSRP) on all user VLANs."' in blueprint
+    )
+
+
+def test_design_fixture_lifecycle_target_state_reconciles_overlapping_censuses():
+    """Keep lifecycle bands disjoint while retaining the independent not-collected overlap."""
+    text = _SAMPLE.read_text(encoding="utf-8")
+    blueprint = text.split("const DESIGN =", 1)[1].split("const NRFU =", 1)[0]
+
+    assert (
+        'current: "2 past-LDoS, 2 approaching-LDoS or past-EoS (1 Near-LDoS; 1 Past-EoS), '
+        '1 not-collected of 9 inventoried. 1 of the 8 lifecycle-assessed asset(s) carry an '
+        'UNDETERMINED band. 1 asset(s) of the fleet census were NOT lifecycle-assessed at all '
+        '(the axis produced no row for them)."' in blueprint
+    )
+    assert "identify ~3 pre-EoS date-band asset(s) as carry-forward candidates" in blueprint
+    assert "collect the 1 un-assessed device(s) before finalising" in blueprint
+    assert "A further 1 asset(s) were never lifecycle-assessed" in blueprint
+    assert (
+        'drivers: ["lifecycle-eol-out-of-critical-roles", '
+        '"lifecycle-near-ldos-refresh-before-deadline", '
+        '"lifecycle-past-eos-refresh-planning", "lifecycle-unknown-resolve-authority", '
+        '"fhrp-not-observed-is-not-healthy"]' in blueprint
+    )
+
+    assert 'replace_now: [["WS-C2960S-48", 2]]' in blueprint
+    assert 'refresh_soon: [["N5K-C56128P", 1], ["WS-C2960X-48FPD-L", 1]]' in blueprint
+    assert 'undetermined: [["C9300-48P", 1], ["Unknown", 1]]' in blueprint
+    assert re.search(
+        r"n_replace:\s*2,\s*n_refresh:\s*2,\s*n_near:\s*1,\s*"
+        r"n_past_eos:\s*1,\s*n_undetermined:\s*2,\s*n_not_assessed:\s*1",
+        blueprint,
+    )
+    assert "support entitlement was not assessed" in blueprint
+
+    causal = text.split("const CAUSAL_FLOWS =", 1)[1].split("const ARCH_REVIEW =", 1)[0]
+    assert 'key: "lifecycle-past-ldos-access"' in causal
+    assert 'title: "Past-LDoS access switches carry production video"' in causal
+    assert 'fields: ["lifecycle_risk.per_device[].band"]' in causal
+    assert 'fields: ["lifecycle"]' not in causal
+    assert re.search(
+        r"summary:\s*\{\s*n_flows:\s*5,\s*n_families:\s*5,\s*n_critical:\s*2,\s*"
+        r"by_severity:\s*\{\s*Critical:\s*2,\s*High:\s*1,\s*Medium:\s*1,\s*Info:\s*1",
+        causal,
+    )
+    provider_preview = (_DS / "previews" / "DemoDataProvider.tsx").read_text(encoding="utf-8")
+    assert '<Kpi label="critical findings" value={2} tone="crit" />' in provider_preview, (
+        "the canonical sample-fleet composition must agree with both critical-count summaries"
+    )
+
+
+def test_design_fixture_nrfu_tracks_every_recommended_decision_and_owner_citation():
+    """NRFU generation is one-to-one, deterministically phased, and principle-traceable."""
+    text = _SAMPLE.read_text(encoding="utf-8")
+    nrfu = text.split("const NRFU =", 1)[1].split("const COVERAGE =", 1)[0]
+    item_ids = re.findall(r'^\s{6}decision_id:\s*"([^"]+)"', nrfu, re.MULTILINE)
+    assert item_ids == [
+        "D-01",
+        "fhrp-not-observed-is-not-healthy",
+        "lifecycle-eol-out-of-critical-roles",
+        "lifecycle-near-ldos-refresh-before-deadline",
+        "lifecycle-past-eos-refresh-planning",
+        "lifecycle-unknown-resolve-authority",
+        "D-02",
+    ]
+    assert "n_items: 7" in nrfu
+    assert "evpn_acceptance: []" in nrfu
+    assert "proposer ≠ verifier" in nrfu
+
+    expected_citations = {
+        "lifecycle-eol-out-of-critical-roles": (
+            "CCDE In Depth Ch.2 Scalability (scale-out avoids the Flag Day) & Cost/TCO; "
+            "engine EoL/software_risk axes"
+        ),
+        "lifecycle-near-ldos-refresh-before-deadline": (
+            "Cisco Product Lifecycle Policy; engine lifecycle_risk retained EoX evidence"
+        ),
+        "lifecycle-past-eos-refresh-planning": (
+            "Cisco Product Lifecycle Policy; engine lifecycle_risk retained EoX evidence"
+        ),
+        "lifecycle-unknown-resolve-authority": (
+            "Cisco Product Lifecycle Policy; engine lifecycle_risk coverage and provenance contract"
+        ),
+        "fhrp-not-observed-is-not-healthy": (
+            "Repo doctrine (evidence-grounded, coverage-honest); commits ee3a362/642ee31 "
+            "(FHRP false-health fix); analyze.py:1886 canonical FHRP gate"
+        ),
+    }
+    item_matches = list(re.finditer(r'^\s{6}decision_id:\s*"([^"]+)"', nrfu, re.MULTILINE))
+    blocks = {}
+    for index, match in enumerate(item_matches):
+        end = item_matches[index + 1].start() if index + 1 < len(item_matches) else len(nrfu)
+        blocks[match.group(1)] = nrfu[match.start():end]
+    for decision_id, citation in expected_citations.items():
+        assert f'principle_citation: "{citation}"' in blocks[decision_id]
+
+    coverage = text.split("const COVERAGE =", 1)[1].split("const DOMAIN_PACKS =", 1)[0]
+    assert "Representative nine-class visual subset only" in coverage
+    assert "27-class /architecture_coverage response" in coverage

@@ -110,7 +110,7 @@ def test_registry_names_the_core_federated_owners():
     that silently drops a domain from the map is caught."""
     txt = _registry_text()
     for token in ("ssot.py", "graphify", "pyproject.toml", "__version__", "CHANGELOG.md",
-                  "manifest.py", "MEMORY.md", "CLAUDE.md"):
+                  "manifest.py", "AGENTS.md", "learnings.md", "CLAUDE.md"):
         assert token in txt, f"registry no longer names the '{token}' owner"
 
 

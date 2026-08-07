@@ -1,5 +1,12 @@
 # Architect Master Plan — 2026-07-10 @ e3b2bd5
 
+> **Implementation-status reconciliation (2026-08-07):** this remains the
+> decision and dependency record, but its phase task lists are a historical
+> implementation plan, not the current work queue. In particular, P3-E1/E2/E3,
+> P3-E4, and P3-W1/W2 subsequently shipped. Resolve present work from live owner
+> code/tests, current Git state, and `CLAUDE.md`; never resume an unchecked row
+> merely because it is written in future tense below.
+
 > Stage B artifact of `/architect-plan` (v5). Upstream gate input: docs/architect-understanding-2026-07-10.md
 > (Stage A dimensions A–G+R, PLUS the Dimension H report appended to that same artifact after the
 > engine-scope answer — H was dispatched at Stage B start per the command) + the P0 interview
@@ -61,7 +68,7 @@ rather than pretending code can hold them alone.
   the repo's own named recurring bug class); --compare/--trend silently diffs mismatched schema
   versions; deck/excel provenance genuinely open; frontend untested. Must change: P3-E1..E5.
 
-## 3. Prior-plan disposition (13 plan docs + 3 ADRs — this plan becomes the active work-plan index)
+## 3. Prior-plan disposition (13 plan docs + 3 ADRs — historical plan index)
 
 | Doc | Disposition | Where / boundary |
 |---|---|---|

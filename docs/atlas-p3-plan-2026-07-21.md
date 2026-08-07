@@ -1,6 +1,8 @@
 # Atlas P3 — Field discipline: implementation plan (2026-07-21)
 
-**Status:** proposed — awaiting owner approval before implementation.
+**Status (reconciled 2026-08-07): SHIPPED.** This is the historical implementation
+plan, not a current approval gate or work queue. Runtime authority now lives in
+`portable/`, `portable/README.md`, `portable/README-FIELD.txt`, and their tests.
 **Upstream:** ADR-0004 (P0 decisions, D5 amendment), Project Atlas artifact §15 (the trusted
 roadmap), P1 complete (PRs #404/#405), P2 complete session-side (PRs #406/#409; stick built and
 selftest-proven on-stick 2026-07-20).

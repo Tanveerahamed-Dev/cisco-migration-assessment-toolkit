@@ -459,3 +459,40 @@
   state. Run 2026-08-04: 5/5 PASS, 0 page errors — verified/partial/unverified badges and the
   warning's documented `null`. Harness kept at
   `.design-sync/.cache/` scratch only; re-create it from this recipe when a doc example changes.
+
+- ✅ **2026-08-07 CODEX LOCAL RECONCILIATION COMPLETE; LIVE CLAUDE DESIGN RE-SYNC STILL REQUIRES AN
+  AUTHENTICATED SESSION.** The tracked topology/lifecycle Design samples had drifted from the current product authority in two
+  material ways and is now repaired: topology edges carry both fleet-level `link_centrality_assessed` and
+  per-edge `bridge_assessed` authority, so the two claimed bridge links render as assessed SPOFs; lifecycle
+  fixtures now keep Past-LDoS (Critical / replace now), Near-LDoS (High / replace before deadline), Past-EoS
+  with future LDoS (Medium / owned refresh plan), and Unknown or missing authority (resolve before disposition)
+  separate. Support entitlement remains separate evidence and is never inferred from a date band. The sample
+  fleet's duplicated totals were also reconciled to 9 switches, 8 collected, 1 uncollected, and 2 Critical
+  findings. The blueprint separately and correctly carries 9 decisions / 7 recommended / 3 Critical, including
+  the independent not-collected coverage-honesty decision; its architecture-coverage grid remains an explicitly
+  representative nine-class visual subset, not a literal 27-class API response. `tests/test_design_sync_no_client_data.py`
+  now derives the topology-authority and collection-count invariants and ratchets the lifecycle/BOM/NRFU contract.
+
+  Fresh local driver receipt: `ok:true`, build/diff/validate/capture all exit 0, 21/21 previews render cleanly,
+  `pendingGrade:[]`, and `upload.components` = Bars, DemoDataProvider, DesignBlueprintPanel, TopologyGraph with
+  bundle + styling and no deletes. Full-resolution sheets for those four were read and graded good. Because
+  `sample-data.ts` can evade component source keys, CausalFlowPanel and CutoverPlanner were also force-captured
+  and visually checked; both were clean. The sole validator warning is the already accepted system-font
+  fallback for JetBrains Mono. Current local anchor: `styleSha=667aa3363a393efceb2a4c5b301f91418a466ee15654786d99ed2aa519099e45`,
+  `bundleSha12=608b31d8ee97`, `auxSha=15010bbe539f529c`.
+
+  The canonical visual comparison correctly reports intentional pixel drift on Bars, CausalFlowPanel,
+  CutoverPlanner, DemoDataProvider, DesignBlueprintPanel, and TopologyGraph; its manifest gate and the other
+  16 cards pass. `test:visual:update` then rendered all 22 checks successfully into the ignored workstation
+  candidate directory. Both 900px and 728px candidates for all six changed cards were inspected and are clean.
+  No tracked baseline PNG was changed: repository policy requires the GitHub `windows-2025` capture artifact,
+  privacy-pin refresh, and human review before those six canonical pairs can be promoted.
+
+  Do **not** call the remote synchronized from the cached sidecar: `.design-sync/.cache/remote-sync.json` was
+  last written 2026-08-04 18:41 local time and records `styleSha=719392c869065ec210c3e652ede7405b0dc8aba5e1b1d8e9b9ae35790483b115`,
+  `bundleSha12=c209df1288c8`, `auxSha=15010bbe539f529c`. This Codex session had no authenticated Claude Design
+  connector/CLI, and the project URL redirected to Claude login, so live `list_files`, anchor fetch, upload, and
+  post-upload re-fetch were not performed. In the next authenticated session: inventory the pinned project,
+  fetch its live `_ds_sync.json`, preserve remote-only `templates/**` exactly (outside the sync globs), compare
+  against this receipt, apply the driver's no-delete upload plan with `_ds_sync.json` last, then re-list and
+  re-fetch before declaring the remote synchronized.

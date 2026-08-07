@@ -1,5 +1,9 @@
 # Session Closeout — 2026-07-23
 
+> **HISTORICAL ARCHIVE — all branch, PR, merge-order, and “resume” instructions
+> below are spent.** This file preserves the point-in-time disposition on
+> 2026-07-23; use current Git/GitHub state and `CLAUDE.md` for present work.
+
 Single durable record of the state of every prior/parallel session as of 2026-07-23. **Every open PR has a
 disposition; no work was lost.** After this, resume from a clean baseline: merge the ready PRs, work the swarm
 runbook, and revive-or-discard the preserved orphans at your leisure.

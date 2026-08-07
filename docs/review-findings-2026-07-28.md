@@ -1,8 +1,9 @@
 # Whole-repo code review — 2026-07-28
 
-> **Historical record:** for the live, loss-preserving checkpoint,
-> completed-versus-unfinished status, and continuation plan, read
+> **Historical record:** the former loss-preserving checkpoint and its closure
+> reasoning are preserved in
 > [`review-hardening-handoff-2026-07-30.md`](review-hardening-handoff-2026-07-30.md).
+> That handoff is closed and is not a continuation plan.
 
 Register of every finding from the repo-wide review sweep (307 Python files, ~111k lines,
 27 reviewer agents partitioned by subsystem). **All 98 are closed.** Tranche 1 in `1f0e652`,

@@ -6,8 +6,8 @@ export const WrappedDashboardRegion = () => (
   <DemoDataProvider>
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <div className="grid cols-3">
-        <Kpi label="switches" value={9} hint="7 collected · 2 not" />
-        <Kpi label="critical findings" value={1} tone="crit" />
+        <Kpi label="switches" value={9} hint="8 collected · 1 not" />
+        <Kpi label="critical findings" value={2} tone="crit" />
         <Kpi label="readiness" value="CAUTION" tone="watch" />
       </div>
       <div className="panel">

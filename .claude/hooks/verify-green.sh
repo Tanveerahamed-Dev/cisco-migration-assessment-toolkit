@@ -82,8 +82,8 @@ fi
 
 log=$(mktemp 2>/dev/null || echo "${TMP:-/tmp}/verify-green.$$")
 
-# Bound the run so a hung or pathologically slow test can never wedge the turn:
-# fail OPEN on timeout (exit 0) instead of blocking until the 600s hook ceiling.
+# Bound the run below the hook framework's 600s ceiling. A pytest timeout is
+# still RED and exits 2: incomplete evidence must block without wedging forever.
 TIMEOUT=$(command -v timeout || true)
 VERIFY_SECONDS="${VERIFY_GREEN_TIMEOUT_SECONDS:-540}"
 

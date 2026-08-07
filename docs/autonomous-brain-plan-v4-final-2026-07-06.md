@@ -3,6 +3,13 @@
 **Supersedes the open questions in** [`autonomous-brain-plan-2026-07-06.md`](autonomous-brain-plan-2026-07-06.md) (v3) · **grounded by** [`autonomous-brain-plan-v3-validation-2026-07-06.md`](autonomous-brain-plan-v3-validation-2026-07-06.md)
 **Date:** 2026-07-06 · **Status:** APPROVED FOR BUILD — every fork resolved below; no sign-off pending.
 
+> **Implementation-status reconciliation (2026-08-07):** the D1–D13 decision
+> ledger remains authoritative, but the phase labels and “first move” below are
+> historical build sequencing, not a current queue. The eval harness, scorecard
+> appender, protected tier, and learnings discipline that constituted Phase 0
+> are present and tested. Re-derive later phase status from current owner files,
+> tests, and Git before proposing work.
+
 > **The system in one sentence:** wire **six nerves** — a clock, a feedback nerve, eyes, recall, a **remediation nerve** (self-healing), and a **domain-knowledge layer** (the DC/Enterprise/SP/Security "team") — onto the existing top-tier foundation, each nerve nailed to ground truth, each unattended action propose-only.
 
 ---
@@ -141,4 +148,6 @@ On the morning briefing, every value a number or a link:
 
 ## 6. The first move
 
-Phase 0 is two-thirds done. The single highest-impact next build is the **golden-snapshot eval harness + wiring the scorecard appender** — until a `/qa` verdict persists a row, "improvement" is unfalsifiable and nothing downstream can be trusted to compound. Everything else waits on being able to measure.
+Historical first move: finish the **golden-snapshot eval harness + scorecard
+appender** so a `/qa` verdict persists a row. That work subsequently shipped;
+this sentence records the dependency that justified it, not a task to resume.
