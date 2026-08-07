@@ -504,3 +504,29 @@
   upload plan; write only the 113 sync-owned paths with the sentinel first, content next, sentinel re-armed, and
   `_ds_sync.json` last; then re-list and re-fetch exact hashes before declaring synchronization. If the refreshed
   diff contains any deletion, stop for review instead of executing or silently omitting it.
+
+- ✅ **2026-08-07 CODEX AUTHENTICATED LIVE RE-SYNC COMPLETE.** After the user signed in, the pinned project
+  `fae0df7f-7a5d-4bce-8744-5c73a3e189fe` resolved as the published, organization-default **Atlas Design System**
+  with all 21 components. The live pre-write anchor was fetched twice and remained byte-identical to the
+  2026-08-04 cache (`styleSha=719392c869065ec210c3e652ede7405b0dc8aba5e1b1d8e9b9ae35790483b115`,
+  `bundleSha12=c209df1288c8`, `auxSha=15010bbe539f529c`), proving the remote was stale and that no concurrent
+  sync had superseded the local plan. The live file tree also proved the only remote-owned additions remain the
+  five topology artifacts under `templates/**`; each was read for awareness and its pre/post served hash stayed
+  unchanged. The two server-owned data files were likewise untouched. No deletion was planned or performed.
+
+  An exact all-path comparison found only seven content files different from the fresh local bundle:
+  `_ds_bundle.js`, `_vendor/react.js`, `_preview/Bars.js`, `_preview/DemoDataProvider.js`, and the Bars,
+  DesignBlueprintPanel, and TopologyGraph `.prompt.md` files. Those seven text files were updated through the
+  authenticated raw editor with a local-hash readback after every save; the 4.2 MB bundle was additionally
+  polled until its served hash changed to the local value. `_ds_sync.json` was written alone and last. Final
+  verification covered all 113 upload-manifest paths: all 112 persistent sync-owned files match local exactly,
+  while `_ds_needs_recompile` correctly returns 404 after compilation. The live receipt now equals local at
+  `styleSha=667aa3363a393efceb2a4c5b301f91418a466ee15654786d99ed2aa519099e45`,
+  `bundleSha12=608b31d8ee97`, `auxSha=15010bbe539f529c` (receipt SHA-256
+  `a5b18c9e710ae912c3baadddfcc3f4a17161c81badf806ebf65cd158ac19bcea`). A fresh published preview then rendered
+  `9 switches · 8 collected · 1 not`, `2` Critical findings, and the assessed-SPOF topology wording. The ignored
+  `.design-sync/.cache/remote-sync.json` was refreshed only after that readback.
+
+  Remote Design synchronization is therefore complete. The separate canonical visual-baseline handoff remains:
+  promote the six intentional card pairs only from the GitHub `windows-2025` capture artifact after privacy-pin
+  refresh and human review; do not substitute the already-reviewed workstation candidates.

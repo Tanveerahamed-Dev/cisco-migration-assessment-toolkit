@@ -56,11 +56,11 @@ required source for a future Codex session. A fresh `git fetch` on 2026-08-07 pr
 commits behind `origin/main` at that receipt; re-fetch rather than treating that observation as permanent.
 
 The tracked Claude Design inputs are locally reconciled and the 21-card bundle builds, validates, renders, and
-grades with no pending local card. Exact local/remote anchors and the upload receipt live in
-`.design-sync/NOTES.md`. Two external handoffs remain before claiming end-to-end Design synchronization:
-an authenticated Claude Design inventory/re-sync (preserving remote-only `templates/**`) and promotion of the
-six intentional card pixel changes from the GitHub `windows-2025` capture artifact. Workstation candidates are
-reviewed evidence only and must not replace the canonical hosted-runner baselines.
+grades with no pending local card. The authenticated Claude Design inventory/re-sync is also complete; exact
+local/remote anchors, the preservation check for remote-only `templates/**`, and the upload receipt live in
+`.design-sync/NOTES.md`. One external handoff remains before claiming end-to-end Design synchronization:
+promotion of the six intentional card pixel changes from the GitHub `windows-2025` capture artifact.
+Workstation candidates are reviewed evidence only and must not replace the canonical hosted-runner baselines.
 
 A future whole-repo review should start fresh rather than reopening this one. Its most reusable
 output is the defect *shapes*, not its findings: absence rendered as health, a guard scoped to a
