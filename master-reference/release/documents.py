@@ -78,7 +78,8 @@ def machine_reference(
             "Synthetic evidence is not field validation.",
             "Graphify extraction is not runtime truth.",
             "Python dependency declarations are not a transitive lock resolution.",
-            "This release contains no raw Vault, client, device, credential, or machine-local memory content.",
+            "Raw Vault and machine-local memory are outside the corpus by construction; restricted and binary payloads remain opaque.",
+            "The allowlisted-text and generated-output high-confidence scans found no matching credential patterns; contextual, encoded, client/device, and container review remains pending.",
         ],
     }
 

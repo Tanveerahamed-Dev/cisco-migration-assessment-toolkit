@@ -677,6 +677,18 @@ def _bounded_impact_closure(
                         continue
                     target = retained.get(reference)
                     if target is None:
+                        target_group_hint = _id_group(reference)
+                        if target_group_hint not in IMPACT_GROUPS:
+                            unresolved_add(
+                                {
+                                    "category": "unresolved_compiler_reference",
+                                    "record_id": identifier,
+                                    "record_type": group,
+                                    "field": reference_field,
+                                    "reference": reference,
+                                }
+                            )
+                            continue
                         target = _find_id(bundle, reference, scans)
                     if target is None or target[0] not in IMPACT_GROUPS:
                         unresolved_add(

@@ -59,6 +59,30 @@ RECORD_GROUPS = (
     "graph_edges",
     "claims",
 )
+FALLBACK_ENTITY_TYPE_BY_GROUP = {
+    "files": "file",
+    "lines": "line",
+    "source_text": "source_text",
+    "symbols": "symbol",
+    "structural_entities": "structural_entity",
+    "imports": "import",
+    "calls": "call",
+    "markdown": "markdown",
+    "structured": "structured_record",
+    "documents": "document",
+    "routes": "route",
+    "components": "component",
+    "tests": "test",
+    "workflows": "workflow",
+    "datasets": "dataset",
+    "binaries": "binary",
+    "manifests": "manifest",
+    "configs": "config",
+    "dependencies": "dependency",
+    "graph_nodes": "graph_node",
+    "graph_edges": "graph_edge",
+    "claims": "claim",
+}
 
 GUI_DOSSIER_FIELDS = (
     "persona_journey",
@@ -602,8 +626,12 @@ def _assign_entity_types(records: dict[str, list[dict[str, Any]]]) -> None:
     claims behavioral understanding.
     """
 
+    if set(FALLBACK_ENTITY_TYPE_BY_GROUP) != set(RECORD_GROUPS):
+        missing = sorted(set(RECORD_GROUPS) - set(FALLBACK_ENTITY_TYPE_BY_GROUP))
+        extra = sorted(set(FALLBACK_ENTITY_TYPE_BY_GROUP) - set(RECORD_GROUPS))
+        raise CompilationError([f"fallback entity-type registry mismatch: missing={missing}, extra={extra}"])
     for group in RECORD_GROUPS:
-        singular = group[:-1] if group.endswith("s") else group
+        singular = FALLBACK_ENTITY_TYPE_BY_GROUP[group]
         for record in records[group]:
             if record.get("entity_type"):
                 continue
@@ -1990,6 +2018,11 @@ def _ledger(
             },
             "runtime_trace_state": "not_collected",
             "coverage_evidence_state": "structural_links_only",
+            "consequential_claim_denominator_state": "not_declared",
+            "typed_claim_records": len(records["claims"]),
+            "bitemporal_event_ledger_state": "not_populated",
+            "bitemporal_event_records": 0,
+            "release_lifecycle_transition_receipt_state": "not_integrated",
         },
         "record_counts": {
             **{group: len(records[group]) for group in RECORD_GROUPS},
@@ -2096,6 +2129,24 @@ def _ledger(
                 "actual": sum(
                     1 for row in records["lines"] if row.get("runtime_trace_state") == "runtime_observed"
                 ),
+            },
+            {
+                "name": "consequential_claim_denominator_closed",
+                "passed": False,
+                "expected": True,
+                "actual": False,
+            },
+            {
+                "name": "bitemporal_event_ledger_populated_and_replayable",
+                "passed": False,
+                "expected": True,
+                "actual": False,
+            },
+            {
+                "name": "release_lifecycle_transitions_integrated_and_receipted",
+                "passed": False,
+                "expected": True,
+                "actual": False,
             },
         ],
     }

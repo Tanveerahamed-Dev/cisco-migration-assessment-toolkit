@@ -58,8 +58,14 @@ The resulting package contains:
 Traversal is streaming, bounded and deterministic. Stable URN kinds route to a
 single compiler group; the command does not construct an all-record index or a
 global graph. It lazily validates only scanned content-hashed chunks and
-discloses per-group passes, chunk reads and bytes in `scan_counts`. Source-text
-URN seeds abstain because they can be unbounded; use a file or line query.
+discloses logical group passes separately from physical receipt reads, bytes,
+cache hits and cache bytes in `scan_counts`. A request-scoped immutable snapshot
+caches validated raw chunks only for impact groups, so reference multiplicity
+and traversal depth cannot reread the same chunk from disk. The hard request
+budgets are 512 physical receipts, 1 GiB of validated receipt bytes and 512 MiB
+of cached raw chunks; a request fails before the read that would exceed a
+budget. Source text is never cached. Source-text URN seeds abstain because they
+can be unbounded; use a file or line query.
 Defaults are depth 4, 250 records and 2,000 edges; hard maxima are depth 8,
 2,000 records and 10,000 edges. Seed values are capped at 4 KiB, serialized seed
 records at 256 KiB and serialized packages at 8 MiB. Override traversal bounds
@@ -67,6 +73,12 @@ with `--max-depth`, `--max-records` and `--max-edges`. Reaching a bound is
 reported as truncation and blocks the slice scaffold. Missing seeds or gap
 evidence abstain. Stale, dirty, preview, malformed or census-divergent inputs
 fail closed.
+
+The raw snapshot bounds physical I/O; it does not make repeated JSON decoding
+or record scans interactive. The emitted scan ledger remains the performance
+evidence, and this CLI does not claim the browser's sub-100 ms search/impact
+budget. A future receipt-bound sharded ID/reverse-reference/name index is still
+required for that class of latency.
 
 The package is not a code proposal or authorization. Static/name/import and
 Graphify edges remain possible dependencies, a gap does not imply code impact,

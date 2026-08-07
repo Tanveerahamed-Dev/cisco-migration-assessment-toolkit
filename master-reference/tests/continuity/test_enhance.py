@@ -17,6 +17,7 @@ MASTER_REFERENCE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(MASTER_REFERENCE))
 
 import continuity.__main__ as continuity_main  # noqa: E402
+import continuity.corpus as corpus_module  # noqa: E402
 import continuity.enhance as enhance_module  # noqa: E402
 import continuity.git_state as git_state  # noqa: E402
 from continuity.enhance import build_enhancement_package  # noqa: E402
@@ -787,6 +788,34 @@ def test_lazy_corpus_validates_only_scanned_group_chunks(tmp_path: Path) -> None
     assert after["validated_group_passes"] == {"symbols": 1}
     assert after["validated_chunk_reads"] == initial["validated_chunk_reads"] + 1
     assert "source_text" not in after["validated_group_passes"]
+
+    symbols_again = list(corpus.iter_group("symbols"))
+    cached = corpus.io_scan_counts()
+    assert symbols_again == symbols
+    assert cached["validated_group_passes"] == {"symbols": 2}
+    assert cached["validated_chunk_reads"] == after["validated_chunk_reads"]
+    assert cached["validated_chunk_bytes"] == after["validated_chunk_bytes"]
+    assert cached["validated_chunk_cache_hits"] == 1
+    assert cached["validated_chunk_cache_bytes"] > 0
+    assert cached["request_snapshot"] is True
+
+
+def test_lazy_corpus_rejects_receipt_budget_before_chunk_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _repo, bundle = _fixture(tmp_path)
+    compiler_output = _compiler_output(tmp_path / "compiler", bundle)
+    corpus = load_enhancement_corpus(compiler_output)
+    before = corpus.io_scan_counts()
+    monkeypatch.setattr(corpus_module, "MAX_VALIDATED_RECEIPT_BYTES", before["validated_chunk_bytes"])
+
+    with pytest.raises(ContinuityInputError, match="receipt-byte budget"):
+        list(corpus.iter_group("symbols"))
+
+    after = corpus.io_scan_counts()
+    assert after["validated_chunk_reads"] == before["validated_chunk_reads"]
+    assert after["validated_chunk_bytes"] == before["validated_chunk_bytes"]
 
 
 def test_cr_only_compiler_source_terminators_are_accepted(tmp_path: Path) -> None:

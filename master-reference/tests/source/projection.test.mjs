@@ -626,8 +626,17 @@ test("projection is deterministic, lazy, privacy-gated, and exact-source preserv
 
     const indexA = await readFile(join(outputA, "index.mjs"), "utf8");
     const indexB = await readFile(join(outputB, "index.mjs"), "utf8");
+    const identityA = await readFile(join(outputA, "identity.mjs"), "utf8");
+    const identityB = await readFile(join(outputB, "identity.mjs"), "utf8");
     assert.equal(indexA, indexB, "same compiler corpus must produce byte-identical index modules");
+    assert.equal(identityA, identityB, "same compiler corpus must produce byte-identical identity modules");
     assert.equal(manifestA.index.sha256, manifestB.index.sha256);
+    assert.equal(manifestA.identity.sha256, manifestB.identity.sha256);
+    assert.equal(manifestA.identity.bytes, Buffer.byteLength(identityA));
+    assert.ok(
+      manifestA.identity.bytes <= manifestA.budgets.identityModuleMaxBytes,
+      "the landing identity receipt must remain independently bounded",
+    );
     assert.equal(indexA.includes('return "Atlas"'), false, "source text must not enter metadata index");
     assert.equal(indexA.includes("repository.greeting"), false, "claim records must remain lazy");
     assert.equal(indexA.includes("actions/upload-artifact@v4"), false, "workflow entities must remain lazy");
@@ -664,6 +673,15 @@ test("projection is deterministic, lazy, privacy-gated, and exact-source preserv
     );
 
     const loaded = await import(`${pathToFileURL(join(outputA, "index.mjs")).href}?test=1`);
+    const loadedIdentity = await import(`${pathToFileURL(join(outputA, "identity.mjs")).href}?test=1`);
+    assert.equal(loadedIdentity.identity.sourceCommit, loaded.projection.sourceCommit);
+    assert.equal(loadedIdentity.identity.sourceTreeDigest, loaded.projection.sourceTreeDigest);
+    assert.deepEqual(
+      loadedIdentity.identity.failedAcceptanceGates,
+      loaded.projection.completeness.acceptance_gates
+        .filter((gate) => !gate.passed)
+        .map((gate) => ({ name: gate.name })),
+    );
     assert.deepEqual(loaded.projection.groupCounts, expectedMetadataCounts);
     assert.deepEqual(Object.keys(loaded.metadataLoaders).sort(), Object.keys(expectedMetadataCounts));
     for (const [group, expected] of Object.entries(expectedMetadataCounts)) {

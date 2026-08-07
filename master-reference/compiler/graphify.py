@@ -142,6 +142,9 @@ def project_graphify(
     duplicate_raw_ids: set[str] = set()
     seen_raw_ids: set[str] = set()
     node_origins: dict[str, int] = {}
+    node_dispositions: dict[str, str] = {}
+    raw_community_ids: set[int] = set()
+    projected_community_ids: set[int] = set()
     for raw_node in raw_nodes:
         if not isinstance(raw_node, dict):
             raise GraphifyFailure("graphify-out/graph.json: node must be an object")
@@ -153,6 +156,9 @@ def project_graphify(
             duplicate_raw_ids.add(raw_id)
             continue
         seen_raw_ids.add(raw_id)
+        community = raw_node.get("community")
+        if isinstance(community, int):
+            raw_community_ids.add(community)
         declared_origin = raw_node.get("_origin")
         origin = (
             str(declared_origin).lower() if declared_origin is not None and declared_origin != "" else "undisclosed"
@@ -163,13 +169,18 @@ def project_graphify(
         source_file = _safe_source_path(raw_node.get("source_file"))
         if source_file is None:
             excluded_unsafe_source += 1
+            node_dispositions[raw_id] = "excluded_unsafe_source"
             continue
         file_id = safe_files.get(source_file)
         if file_id is None:
             excluded_untracked_or_private += 1
+            node_dispositions[raw_id] = "excluded_untracked_or_private"
             continue
         node_id = stable_id("graph-node", built_commit or "unknown", raw_id)
         retained[raw_id] = node_id
+        node_dispositions[raw_id] = "retained"
+        if isinstance(community, int):
+            projected_community_ids.add(community)
         metadata = raw_node.get("metadata") if isinstance(raw_node.get("metadata"), dict) else {}
         extraction_mode = (
             "extracted"
@@ -187,7 +198,7 @@ def project_graphify(
                 "file_type": text_preview(str(raw_node.get("file_type") or "")),
                 "language": text_preview(str(metadata.get("language") or "")),
                 "kind": text_preview(str(metadata.get("kind") or "")),
-                "community": raw_node.get("community") if isinstance(raw_node.get("community"), int) else None,
+                "community": community if isinstance(community, int) else None,
                 "origin": origin,
                 "extraction_mode": extraction_mode,
                 "unresolved_reasons": []
@@ -202,6 +213,7 @@ def project_graphify(
     edges: list[dict[str, Any]] = []
     all_modes: dict[str, int] = {}
     projected_modes: dict[str, int] = {}
+    excluded_edge_endpoint_dispositions: dict[str, int] = {}
     for index, raw_edge in enumerate(raw_edges):
         if not isinstance(raw_edge, dict):
             raise GraphifyFailure("graphify-out/graph.json: link must be an object")
@@ -210,6 +222,13 @@ def project_graphify(
         source = str(raw_edge.get("source"))
         target = str(raw_edge.get("target"))
         if source not in retained or target not in retained:
+            disposition = (
+                f"source_{node_dispositions.get(source, 'missing_node')}__"
+                f"target_{node_dispositions.get(target, 'missing_node')}"
+            )
+            excluded_edge_endpoint_dispositions[disposition] = (
+                excluded_edge_endpoint_dispositions.get(disposition, 0) + 1
+            )
             continue
         edge_source_file = _safe_source_path(raw_edge.get("source_file"))
         if raw_edge.get("source_file") not in {None, ""} and edge_source_file not in safe_files:
@@ -256,11 +275,26 @@ def project_graphify(
         "total_hyperedges": len(raw_hyperedges),
         "projected_nodes": len(nodes),
         "projected_edges": len(edges),
+        "excluded_edges": len(raw_edges) - len(edges),
+        "excluded_edge_endpoint_dispositions": dict(
+            sorted(excluded_edge_endpoint_dispositions.items())
+        ),
         "all_edge_modes": dict(sorted(all_modes.items())),
         "projected_edge_modes": dict(sorted(projected_modes.items())),
         "node_origins": dict(sorted(node_origins.items())),
         "excluded_nodes_unsafe_source": excluded_unsafe_source,
         "excluded_nodes_untracked_or_private": excluded_untracked_or_private,
+        "node_disposition_counts": {
+            "retained": len(nodes),
+            "excluded_unsafe_source": excluded_unsafe_source,
+            "excluded_untracked_or_private": excluded_untracked_or_private,
+        },
+        "total_communities": len(raw_community_ids),
+        "projected_communities": len(projected_community_ids),
+        "excluded_communities": len(raw_community_ids - projected_community_ids),
+        "all_community_ids": sorted(raw_community_ids),
+        "projected_community_ids": sorted(projected_community_ids),
+        "excluded_community_ids": sorted(raw_community_ids - projected_community_ids),
         "projection_policy": "tracked_full_exposure_files_only",
         "unresolved_reasons": [
             "graphify_is_optional_secondary_projection",

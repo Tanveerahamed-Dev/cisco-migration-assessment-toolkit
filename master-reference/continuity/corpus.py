@@ -19,6 +19,31 @@ from .model import ContinuityInputError, canonical_json, digest_object, safe_rel
 
 
 COMPILER_SCHEMA_VERSION = "1.1.0"
+MAX_VALIDATED_RECEIPT_READS = 512
+MAX_VALIDATED_RECEIPT_BYTES = 1024 * 1024 * 1024
+MAX_VALIDATED_CHUNK_CACHE_BYTES = 512 * 1024 * 1024
+CACHEABLE_ENHANCEMENT_GROUPS = frozenset(
+    {
+        "binaries",
+        "calls",
+        "claims",
+        "components",
+        "configs",
+        "datasets",
+        "dependencies",
+        "documents",
+        "files",
+        "graph_edges",
+        "graph_nodes",
+        "imports",
+        "manifests",
+        "routes",
+        "structural_entities",
+        "symbols",
+        "tests",
+        "workflows",
+    }
+)
 REQUIRED_INVARIANTS = (
     "every_safe_line_structurally_mapped",
     "every_gui_surface_has_standardized_evidence_honest_dossier",
@@ -180,6 +205,9 @@ class LazyCompilerCorpus:
     _chunk_reads: int = 0
     _chunk_bytes: int = 0
     _group_passes: dict[str, int] = field(default_factory=dict)
+    _validated_raw_chunk_cache: dict[tuple[str, int, str], bytes] = field(default_factory=dict)
+    _chunk_cache_hits: int = 0
+    _chunk_cache_bytes: int = 0
 
     @property
     def source_commit(self) -> str:
@@ -200,16 +228,52 @@ class LazyCompilerCorpus:
             raise ContinuityInputError(f"compiler receipt escapes corpus root: {relative}")
         return path
 
-    def _receipt(self, receipt: object, label: str) -> tuple[str, dict[str, Any]]:
+    def _receipt(
+        self,
+        receipt: object,
+        label: str,
+        *,
+        cache_validated_raw: bool = False,
+    ) -> tuple[str, dict[str, Any]]:
         if not isinstance(receipt, dict):
             raise ContinuityInputError(f"compiler {label} receipt is not an object")
         relative = safe_relative(receipt.get("path"))
-        raw = self._path(relative).read_bytes()
-        if receipt.get("bytes") != len(raw) or receipt.get("sha256") != sha256_bytes(raw):
-            raise ContinuityInputError(f"compiler {label} receipt mismatch: {relative}")
+        expected_bytes = receipt.get("bytes")
+        expected_digest = receipt.get("sha256")
+        if (
+            type(expected_bytes) is not int
+            or expected_bytes < 0
+            or not isinstance(expected_digest, str)
+            or len(expected_digest) != 64
+            or any(character not in "0123456789abcdef" for character in expected_digest)
+        ):
+            raise ContinuityInputError(f"compiler {label} receipt metadata is invalid: {relative}")
+        cache_key = (relative, expected_bytes, expected_digest)
+        raw = self._validated_raw_chunk_cache.get(cache_key) if cache_validated_raw else None
+        if raw is not None:
+            self._chunk_cache_hits += 1
+            return relative, _canonical_object(raw, f"{label} {relative}")
+        if self._chunk_reads + 1 > MAX_VALIDATED_RECEIPT_READS:
+            raise ContinuityInputError("compiler request exceeds the validated receipt-read budget")
+        if self._chunk_bytes + expected_bytes > MAX_VALIDATED_RECEIPT_BYTES:
+            raise ContinuityInputError("compiler request exceeds the validated receipt-byte budget")
+        if (
+            cache_validated_raw
+            and self._chunk_cache_bytes + expected_bytes > MAX_VALIDATED_CHUNK_CACHE_BYTES
+        ):
+            raise ContinuityInputError("compiler request exceeds the validated raw-chunk cache budget")
+        path = self._path(relative)
+        with path.open("rb") as handle:
+            raw = handle.read(expected_bytes + 1)
         self._chunk_reads += 1
         self._chunk_bytes += len(raw)
-        return relative, _canonical_object(raw, f"{label} {relative}")
+        if expected_bytes != len(raw) or expected_digest != sha256_bytes(raw):
+            raise ContinuityInputError(f"compiler {label} receipt mismatch: {relative}")
+        value = _canonical_object(raw, f"{label} {relative}")
+        if cache_validated_raw:
+            self._validated_raw_chunk_cache[cache_key] = raw
+            self._chunk_cache_bytes += len(raw)
+        return relative, value
 
     def iter_group(self, group_name: str) -> Iterator[dict[str, Any]]:
         group = self.groups.get(group_name)
@@ -224,7 +288,11 @@ class LazyCompilerCorpus:
         count = 0
         receipt_count = 0
         for expected_index, receipt in enumerate(chunks):
-            _relative, envelope = self._receipt(receipt, f"{group_name} chunk")
+            _relative, envelope = self._receipt(
+                receipt,
+                f"{group_name} chunk",
+                cache_validated_raw=group_name in CACHEABLE_ENHANCEMENT_GROUPS,
+            )
             if (
                 envelope.get("schema_version") != COMPILER_SCHEMA_VERSION
                 or envelope.get("record_type") != group_name
@@ -265,6 +333,18 @@ class LazyCompilerCorpus:
             "validated_chunk_reads": self._chunk_reads,
             "validated_chunk_bytes": self._chunk_bytes,
             "validated_group_passes": dict(sorted(self._group_passes.items())),
+            "validated_unique_chunk_reads": self._chunk_reads,
+            "validated_chunk_cache_hits": self._chunk_cache_hits,
+            "validated_chunk_cache_bytes": self._chunk_cache_bytes,
+            "validated_receipt_read_limit": MAX_VALIDATED_RECEIPT_READS,
+            "validated_receipt_reads_remaining": MAX_VALIDATED_RECEIPT_READS - self._chunk_reads,
+            "validated_receipt_byte_limit": MAX_VALIDATED_RECEIPT_BYTES,
+            "validated_receipt_bytes_remaining": MAX_VALIDATED_RECEIPT_BYTES - self._chunk_bytes,
+            "validated_chunk_cache_byte_limit": MAX_VALIDATED_CHUNK_CACHE_BYTES,
+            "validated_chunk_cache_bytes_remaining": (
+                MAX_VALIDATED_CHUNK_CACHE_BYTES - self._chunk_cache_bytes
+            ),
+            "request_snapshot": True,
         }
 
 

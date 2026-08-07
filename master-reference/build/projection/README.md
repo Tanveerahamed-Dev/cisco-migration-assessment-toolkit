@@ -21,7 +21,12 @@ state remains embedded in `index.mjs`; it is not made publishable by the flag.
 
 Output layout:
 
-- `index.mjs` — small source-bound manifest plus static lazy-loader maps.
+- `identity.mjs` — an independently capped (8 KiB raw) exact-source and
+  semantic-verdict receipt used by the landing page without loading explorer
+  registries.
+- `index.mjs` — the complete source-bound manifest and static lazy-loader
+  registry. It is loaded only by workspaces that request repository records;
+  its size is reported rather than described as an initial-page payload.
 - `metadata/<group>/*.mjs` — content-hashed lazy chunks for every compiler
   metadata group except per-line and source-text records. This includes claims,
   imports, calls, dependencies, Markdown, structured data and manifests.
@@ -44,9 +49,9 @@ Output layout:
 The generated directory is a release product, not authored source. Ignore only
 `/master-reference/public/atlas-projection/`; do not ignore the adapter itself.
 
-The projection manifest records executable raw-byte ceilings for every metadata
-module, every dossier module, search shards and indexes, source chunks and
-indexes, and graph summaries/shards/indexes. Metadata and dossier modules split
+The projection manifest records executable raw-byte ceilings for the landing
+identity module, every metadata module, every dossier module, search shards and
+indexes, source chunks and indexes, and graph summaries/shards/indexes. Metadata and dossier modules split
 recursively at 256 KiB. A single record above the ceiling is serialized once,
 split into content-hashed UTF-8 fragment modules, and reassembled only when its
 metadata group or stable-ID dossier is requested. Metadata and dossier views

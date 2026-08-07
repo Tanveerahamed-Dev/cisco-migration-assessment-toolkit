@@ -140,7 +140,15 @@ test("keeps the landing payload within the declared performance envelope", async
     if (path.endsWith(".js")) scripts += gzipSync(bytes).byteLength;
     if (path.endsWith(".css")) styles += gzipSync(bytes).byteLength;
   }
-  assert.ok(scripts <= 120 * 1024, `initial JS is ${scripts} bytes gzip`);
+  const identitySource = await readFile(new URL("app/atlas/BuildIdentity.tsx", root), "utf8");
+  assert.match(identitySource, /loadProjectionIdentity\(\)/);
+  assert.doesNotMatch(identitySource, /\bloadProjection\(\)/);
+  const identityModule = await readFile(
+    new URL("public/atlas-projection/identity.mjs", root),
+  );
+  assert.ok(identityModule.byteLength <= 8 * 1024, "identity module exceeds 8 KiB raw");
+  scripts += gzipSync(identityModule).byteLength;
+  assert.ok(scripts <= 120 * 1024, `true immediate JS is ${scripts} bytes gzip`);
   assert.ok(styles <= 20 * 1024, `initial CSS is ${styles} bytes gzip`);
 });
 

@@ -1,21 +1,21 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { loadProjection } from "./SourceExplorerData";
-import type { ProjectionIndex } from "./SourceExplorerTypes";
+import { loadProjectionIdentity } from "./SourceExplorerData";
+import type { ProjectionIdentity } from "./SourceExplorerTypes";
 
 type IdentityState =
   | { state: "loading" }
   | { state: "missing" }
-  | { state: "ready"; index: ProjectionIndex };
+  | { state: "ready"; identity: ProjectionIdentity };
 
 export function BuildIdentity() {
   const [state, setState] = useState<IdentityState>({ state: "loading" });
   useEffect(() => {
     let active = true;
-    void loadProjection()
+    void loadProjectionIdentity()
       .then((module) => {
-        if (active) setState({ state: "ready", index: module.projection });
+        if (active) setState({ state: "ready", identity: module.identity });
       })
       .catch(() => {
         if (active) setState({ state: "missing" });
@@ -31,13 +31,12 @@ export function BuildIdentity() {
   if (state.state === "missing") {
     return <div><span>Source binding</span><strong>Pending</strong><small>no exact projection in this build</small></div>;
   }
-  const acceptance = state.index.completeness.acceptance_gates ?? [];
-  const failed = acceptance.filter((gate) => !gate.passed);
+  const failed = state.identity.failedAcceptanceGates;
   return (
     <div title={failed.length ? `Blocked: ${failed.map((gate) => gate.name).join(", ")}` : "All emitted semantic gates passed"}>
       <span>Source / verdict</span>
-      <strong>{state.index.sourceCommit.slice(0, 12)}</strong>
-      <small>{failed.length} semantic gate{failed.length === 1 ? "" : "s"} blocked · {state.index.releaseClass}</small>
+      <strong>{state.identity.sourceCommit.slice(0, 12)}</strong>
+      <small>{failed.length} semantic gate{failed.length === 1 ? "" : "s"} blocked · {state.identity.releaseClass}</small>
     </div>
   );
 }

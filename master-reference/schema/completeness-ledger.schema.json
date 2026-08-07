@@ -82,7 +82,12 @@
         "gui_dossier_evidence_state_counts",
         "gui_dossier_field_state_counts",
         "runtime_trace_state",
-        "coverage_evidence_state"
+        "coverage_evidence_state",
+        "consequential_claim_denominator_state",
+        "typed_claim_records",
+        "bitemporal_event_ledger_state",
+        "bitemporal_event_records",
+        "release_lifecycle_transition_receipt_state"
       ],
       "properties": {
         "symbol_records": {"type": "integer", "minimum": 0},
@@ -100,7 +105,12 @@
         "gui_dossier_evidence_state_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
         "gui_dossier_field_state_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
         "runtime_trace_state": {"type": "string"},
-        "coverage_evidence_state": {"type": "string"}
+        "coverage_evidence_state": {"type": "string"},
+        "consequential_claim_denominator_state": {"const": "not_declared"},
+        "typed_claim_records": {"type": "integer", "minimum": 0},
+        "bitemporal_event_ledger_state": {"const": "not_populated"},
+        "bitemporal_event_records": {"const": 0},
+        "release_lifecycle_transition_receipt_state": {"const": "not_integrated"}
       },
       "additionalProperties": false
     },

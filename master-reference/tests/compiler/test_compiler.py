@@ -16,6 +16,7 @@ if str(MASTER_REFERENCE) not in sys.path:
 
 from compiler import CompilationError, compile_repository  # noqa: E402
 from compiler import compiler as compiler_module  # noqa: E402
+from compiler.graphify import project_graphify  # noqa: E402
 from compiler.schema_validation import SchemaValidationError, validate_compiler_output  # noqa: E402
 
 
@@ -298,9 +299,11 @@ class CompilerTests(unittest.TestCase):
             self.assertTrue(all("gui_dossier" in row for row in gui_surfaces))
             self.assertTrue(all(row["gui_dossier"]["field_count"] == 15 for row in gui_surfaces))
             self.assertTrue(any(row["name"] == "dashboard" for row in group_records(first_output, "tests")))
-            self.assertTrue(
-                any(row["name"] == "example-package" for row in group_records(first_output, "dependencies"))
+            dependency = next(
+                row for row in group_records(first_output, "dependencies")
+                if row["name"] == "example-package"
             )
+            self.assertEqual(dependency["entity_type"], "dependency")
 
             claims = group_records(first_output, "claims")
             required_claim_fields = {
@@ -394,6 +397,22 @@ class CompilerTests(unittest.TestCase):
                     if item["name"] == "exact_clean_commit_binding"
                 )["passed"]
             )
+            self.assertEqual(
+                ledger["semantic_accounting"]["consequential_claim_denominator_state"],
+                "not_declared",
+            )
+            self.assertEqual(ledger["semantic_accounting"]["bitemporal_event_records"], 0)
+            for gate_name in (
+                "consequential_claim_denominator_closed",
+                "bitemporal_event_ledger_populated_and_replayable",
+                "release_lifecycle_transitions_integrated_and_receipted",
+            ):
+                gate = next(
+                    item for item in ledger["acceptance_gates"] if item["name"] == gate_name
+                )
+                self.assertFalse(gate["passed"])
+                self.assertIs(gate["expected"], True)
+                self.assertIs(gate["actual"], False)
             self.assertEqual(architecture, ledger["architecture_conformance"])
             self.assertEqual(architecture["status"], "not_declared")
             self.assertEqual(
@@ -472,6 +491,48 @@ class CompilerTests(unittest.TestCase):
             )
             self.assertTrue(gate["passed"])
             self.assertEqual((gate["expected"], gate["actual"]), (1, 1))
+
+    def test_graphify_projection_accounts_for_excluded_edges_and_communities(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            write(
+                repository,
+                "graphify-out/graph.json",
+                json.dumps(
+                    {
+                        "built_at_commit": "a" * 40,
+                        "nodes": [
+                            {"id": "safe", "source_file": "safe.py", "community": 1, "_origin": "ast"},
+                            {"id": "private", "source_file": "private.py", "community": 2, "_origin": "ast"},
+                            {"id": "unsafe", "source_file": "../escape.py", "community": 3, "_origin": "ast"},
+                        ],
+                        "links": [
+                            {"source": "safe", "target": "safe", "relation": "self", "confidence": "extracted"},
+                            {"source": "safe", "target": "private", "relation": "hidden"},
+                            {"source": "unsafe", "target": "missing", "relation": "opaque"},
+                        ],
+                        "hyperedges": [],
+                    },
+                    sort_keys=True,
+                ),
+            )
+            metadata, nodes, edges = project_graphify(
+                repository,
+                "a" * 40,
+                "b" * 64,
+                {"safe.py": "urn:atlas:file:safe"},
+            )
+            self.assertEqual((len(nodes), len(edges)), (1, 1))
+            self.assertEqual(metadata["node_disposition_counts"], {
+                "retained": 1,
+                "excluded_unsafe_source": 1,
+                "excluded_untracked_or_private": 1,
+            })
+            self.assertEqual(metadata["excluded_edges"], 2)
+            self.assertEqual(sum(metadata["excluded_edge_endpoint_dispositions"].values()), 2)
+            self.assertEqual(metadata["all_community_ids"], [1, 2, 3])
+            self.assertEqual(metadata["projected_community_ids"], [1])
+            self.assertEqual(metadata["excluded_community_ids"], [2, 3])
 
     def test_mismatched_graphify_source_binding_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1029,6 +1090,7 @@ class CompilerTests(unittest.TestCase):
 
             file_record = group_records(output, "files")[0]
             binary = group_records(output, "binaries")[0]
+            self.assertEqual(binary["entity_type"], "binary")
             self.assertEqual(file_record["privacy_exposure"], "metadata_only")
             self.assertEqual(file_record["content_source"], "metadata_only_git_object")
             self.assertIsNone(file_record["content_digest"])

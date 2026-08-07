@@ -287,6 +287,21 @@ export type ProjectionIndex = {
   disclosure: Record<string, string>;
 };
 
+export type ProjectionIdentity = {
+  schemaVersion: string;
+  status: string;
+  releaseClass: string;
+  sourceCommit: string;
+  sourceTreeDigest: string;
+  trackedWorktreeDirty: boolean;
+  failedAcceptanceGates: Array<{ name: string }>;
+};
+
+export type ProjectionIdentityModule = {
+  identity: ProjectionIdentity;
+  default?: ProjectionIdentity;
+};
+
 export type SourceLine = {
   number: number;
   text: string;

@@ -85,6 +85,7 @@ const DOSSIER_GROUPS = {
 };
 const METADATA_CHUNK_SIZE = 2_000;
 const LAZY_MODULE_MAX_BYTES = 256 * 1024;
+const IDENTITY_MODULE_MAX_BYTES = 8 * 1024;
 const RECORD_FRAGMENT_TEXT_BYTES = 96 * 1024;
 const DOSSIER_BASE_PREFIX_LENGTH = 2;
 const SEARCH_GROUPS = [
@@ -1972,6 +1973,27 @@ export async function buildProjection({ input, output, allowPreview = false }) {
       semanticLimit: "structural mapping is not behavioral or verified understanding",
     },
   };
+  const identity = {
+    schemaVersion: projection.schemaVersion,
+    status: projection.status,
+    releaseClass: projection.releaseClass,
+    sourceCommit: projection.sourceCommit,
+    sourceTreeDigest: projection.sourceTreeDigest,
+    trackedWorktreeDirty: projection.trackedWorktreeDirty,
+    failedAcceptanceGates: (projection.completeness.acceptance_gates ?? [])
+      .filter((gate) => !gate.passed)
+      .map((gate) => ({ name: gate.name })),
+  };
+  const identityBytes = Buffer.from(
+    `export const identity = ${stableJson(identity)};\nexport default identity;\n`,
+    "utf8",
+  );
+  if (identityBytes.byteLength > IDENTITY_MODULE_MAX_BYTES) {
+    throw new Error(
+      `projection identity module exceeds ${IDENTITY_MODULE_MAX_BYTES} bytes: ${identityBytes.byteLength}`,
+    );
+  }
+  await writeFile(join(staging, "identity.mjs"), identityBytes);
   const bucketLoaderLines = Object.entries(recordBucketEntries)
     .map(
       ([kind, entries]) =>
@@ -2040,6 +2062,11 @@ export async function buildProjection({ input, output, allowPreview = false }) {
     releaseClass: manifest.release_class,
     compilerIndexDigest: manifest.index_digest,
     groupCounts: projection.groupCounts,
+    identity: {
+      path: "identity.mjs",
+      bytes: identityBytes.byteLength,
+      sha256: sha256(identityBytes),
+    },
     index: { path: "index.mjs", bytes: indexBytes.byteLength, sha256: sha256(indexBytes) },
     metadataModules,
     recordFragments,
@@ -2051,6 +2078,7 @@ export async function buildProjection({ input, output, allowPreview = false }) {
     sourceFileCount: sourceProjection.files,
     sourceModules: sourceEntries,
     budgets: {
+      identityModuleMaxBytes: IDENTITY_MODULE_MAX_BYTES,
       searchShardMaxBytes: SEARCH_SHARD_MAX_BYTES,
       searchIndexMaxBytes: SEARCH_INDEX_MAX_BYTES,
       sourceChunkMaxBytes: SOURCE_CHUNK_MAX_BYTES,

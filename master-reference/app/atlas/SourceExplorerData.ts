@@ -1,8 +1,31 @@
-import type { ProjectionModule } from "./SourceExplorerTypes";
+import type { ProjectionIdentityModule, ProjectionModule } from "./SourceExplorerTypes";
 
 export const PROJECTION_MODULE_URL = "/atlas-projection/index.mjs";
+export const PROJECTION_IDENTITY_URL = "/atlas-projection/identity.mjs";
 
 let cachedProjection: Promise<ProjectionModule> | null = null;
+let cachedProjectionIdentity: Promise<ProjectionIdentityModule> | null = null;
+
+export async function loadProjectionIdentity(): Promise<ProjectionIdentityModule> {
+  cachedProjectionIdentity ??= import(
+    /* @vite-ignore */ PROJECTION_IDENTITY_URL
+  ) as Promise<ProjectionIdentityModule>;
+  try {
+    const loaded = await cachedProjectionIdentity;
+    if (
+      !loaded.identity ||
+      loaded.identity.status !== "complete" ||
+      loaded.identity.releaseClass !== "exact_commit" ||
+      loaded.identity.trackedWorktreeDirty
+    ) {
+      throw new Error("The projection identity is not bound to an exact clean commit.");
+    }
+    return loaded;
+  } catch (error) {
+    cachedProjectionIdentity = null;
+    throw error;
+  }
+}
 
 export async function loadProjection(): Promise<ProjectionModule> {
   cachedProjection ??= import(
