@@ -392,11 +392,12 @@ def _fixture(tmp_path: Path, *, metadata_terminator: str = "\n") -> tuple[Path, 
         ],
         "acceptance_gates": [
             {
-                "name": "runtime_trace_evidence_joined_to_source_records",
-                "passed": False,
-                "expected": 1,
-                "actual": 0,
+                "name": name,
+                "passed": name != "runtime_trace_evidence_joined_to_source_records",
+                "expected": True,
+                "actual": name != "runtime_trace_evidence_joined_to_source_records",
             }
+            for name in sorted(corpus_module.REQUIRED_ACCEPTANCE_GATES)
         ],
         "semantic_accounting": {
             "runtime_trace_state": "not_collected",
@@ -797,6 +798,8 @@ def test_lazy_corpus_validates_only_scanned_group_chunks(tmp_path: Path) -> None
     assert cached["validated_chunk_bytes"] == after["validated_chunk_bytes"]
     assert cached["validated_chunk_cache_hits"] == 1
     assert cached["validated_chunk_cache_bytes"] > 0
+    assert cached["validated_physical_receipt_reads"] == cached["validated_chunk_reads"]
+    assert cached["validated_unique_receipt_reads"] == cached["validated_physical_receipt_reads"]
     assert cached["request_snapshot"] is True
 
 
@@ -920,6 +923,12 @@ def test_stale_missing_and_duplicate_compiler_gates_fail_closed(tmp_path: Path) 
     no_acceptance = copy.deepcopy(bundle)
     no_acceptance.completeness["acceptance_gates"] = []
     cases.append((no_acceptance, "semantic acceptance gates are absent"))
+
+    missing_acceptance = copy.deepcopy(bundle)
+    missing_acceptance.completeness["acceptance_gates"] = (
+        missing_acceptance.completeness["acceptance_gates"][:-1]
+    )
+    cases.append((missing_acceptance, "acceptance gate registry is incomplete or stale"))
 
     for candidate, message in cases:
         with pytest.raises(ContinuityInputError, match=message):

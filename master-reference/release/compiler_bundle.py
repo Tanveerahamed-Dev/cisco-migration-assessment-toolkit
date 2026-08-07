@@ -17,6 +17,22 @@ REQUIRED_STRUCTURAL_INVARIANTS = frozenset(
         "every_gui_surface_has_standardized_evidence_honest_dossier",
     }
 )
+REQUIRED_ACCEPTANCE_GATES = frozenset(
+    {
+        "architecture_contract_declared_and_conformant",
+        "runtime_architecture_edges_observed_and_reconciled",
+        "every_symbol_has_dossier_fields",
+        "every_gui_surface_has_standardized_evidence_honest_dossier",
+        "every_safe_line_behaviorally_explained",
+        "every_critical_or_public_symbol_level_four_reviewed",
+        "exact_clean_commit_binding",
+        "every_binary_has_format_aware_privacy_review",
+        "runtime_trace_evidence_joined_to_source_records",
+        "consequential_claim_denominator_closed",
+        "bitemporal_event_ledger_populated_and_replayable",
+        "release_lifecycle_transitions_integrated_and_receipted",
+    }
+)
 GUI_DOSSIER_FIELDS = frozenset(
     {
         "persona_journey",
@@ -225,6 +241,11 @@ def load_compiler_bundle(root: Path, *, retained_groups: Iterable[str] | None = 
         for item in acceptance_gates
     ):
         raise ReleaseInputError("completeness ledger semantic acceptance gates are malformed")
+    acceptance_names = [str(item["name"]) for item in acceptance_gates]
+    if len(acceptance_names) != len(set(acceptance_names)):
+        raise ReleaseInputError("completeness ledger semantic acceptance gates are duplicated")
+    if set(acceptance_names) != REQUIRED_ACCEPTANCE_GATES:
+        raise ReleaseInputError("completeness ledger semantic acceptance gate registry is incomplete or stale")
     if architecture != completeness.get("architecture_conformance"):
         raise ReleaseInputError("architecture conformance differs from the completeness ledger")
     if (

@@ -11,7 +11,7 @@
     "support_rule": "Catalog inclusion means the topic is understood and classified, not that Atlas implements it. Only state=current is an end-to-end support claim, and every such claim cites a live owner.",
     "partial_rule": "State=partial names the implemented slice and links the remainder to an actionable gap.",
     "training_rule": "Labs, primers, and external-source summaries are advisory learning content only. They never become assessment evidence, alter the canonical snapshot, or establish vendor support.",
-    "client_data_rule": "This layer contains no client, device, personal-vault, credential, or raw collection content."
+    "client_data_rule": "Policy boundary: this curated reference layer must not intentionally admit client, device, personal-vault, credential, or raw collection content; compiler privacy receipts define what was actually scanned and what remains opaque or pending review."
   },
   "controlled_states": [
     {

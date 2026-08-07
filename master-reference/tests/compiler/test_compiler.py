@@ -505,6 +505,8 @@ class CompilerTests(unittest.TestCase):
                             {"id": "safe", "source_file": "safe.py", "community": 1, "_origin": "ast"},
                             {"id": "private", "source_file": "private.py", "community": 2, "_origin": "ast"},
                             {"id": "unsafe", "source_file": "../escape.py", "community": 3, "_origin": "ast"},
+                            {"id": "mixed-safe", "source_file": "safe.py", "community": 4, "_origin": "ast"},
+                            {"id": "mixed-private", "source_file": "private.py", "community": 4, "_origin": "ast"},
                         ],
                         "links": [
                             {"source": "safe", "target": "safe", "relation": "self", "confidence": "extracted"},
@@ -522,17 +524,28 @@ class CompilerTests(unittest.TestCase):
                 "b" * 64,
                 {"safe.py": "urn:atlas:file:safe"},
             )
-            self.assertEqual((len(nodes), len(edges)), (1, 1))
+            self.assertEqual((len(nodes), len(edges)), (2, 1))
             self.assertEqual(metadata["node_disposition_counts"], {
-                "retained": 1,
+                "retained": 2,
                 "excluded_unsafe_source": 1,
-                "excluded_untracked_or_private": 1,
+                "excluded_untracked_or_private": 2,
             })
             self.assertEqual(metadata["excluded_edges"], 2)
             self.assertEqual(sum(metadata["excluded_edge_endpoint_dispositions"].values()), 2)
-            self.assertEqual(metadata["all_community_ids"], [1, 2, 3])
-            self.assertEqual(metadata["projected_community_ids"], [1])
+            self.assertEqual(metadata["all_community_ids"], [1, 2, 3, 4])
+            self.assertEqual(metadata["projected_community_ids"], [1, 4])
             self.assertEqual(metadata["excluded_community_ids"], [2, 3])
+            self.assertEqual(metadata["partial_community_ids"], [4])
+            self.assertEqual(metadata["community_status_counts"], {
+                "projected_complete": 1,
+                "projected_partial": 1,
+                "excluded": 2,
+            })
+            disposition = {
+                item["community"]: item for item in metadata["community_dispositions"]
+            }
+            self.assertEqual(disposition[4]["retained_nodes"], 1)
+            self.assertEqual(disposition[4]["excluded_nodes"], 1)
 
     def test_mismatched_graphify_source_binding_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1041,6 +1054,24 @@ class CompilerTests(unittest.TestCase):
             self.assertEqual(ledger["parsing"]["status_counts"]["parser_error"], 1)
             self.assertFalse(
                 next(item for item in ledger["invariants"] if item["name"] == "no_silent_parser_failure")["passed"]
+            )
+            with self.assertRaises(SchemaValidationError):
+                validate_compiler_output(output)
+
+    def test_schema_rejects_an_incomplete_semantic_acceptance_gate_registry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            repository = base / "repo"
+            initialize_repository(repository, {"README.md": "# Gate registry\n"})
+            output = base / "compiled"
+            compile_repository(repository, output)
+            ledger_path = output / "completeness.json"
+            ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+            ledger["acceptance_gates"] = ledger["acceptance_gates"][:-1]
+            ledger_path.write_text(
+                json.dumps(ledger, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+                newline="\n",
             )
             with self.assertRaises(SchemaValidationError):
                 validate_compiler_output(output)

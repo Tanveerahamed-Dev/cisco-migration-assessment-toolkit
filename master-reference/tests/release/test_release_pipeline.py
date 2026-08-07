@@ -15,7 +15,7 @@ MASTER_REFERENCE = Path(__file__).resolve().parents[2]
 if str(MASTER_REFERENCE) not in sys.path:
     sys.path.insert(0, str(MASTER_REFERENCE))
 
-from release.compiler_bundle import REQUIRED_GROUPS  # noqa: E402
+from release.compiler_bundle import REQUIRED_ACCEPTANCE_GATES, REQUIRED_GROUPS  # noqa: E402
 from release.model import canonical_json, digest_object, sha256_bytes  # noqa: E402
 import release.pipeline as release_pipeline  # noqa: E402
 from release.pipeline import ReleaseError, build_release  # noqa: E402
@@ -401,7 +401,13 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
             },
         ],
         "acceptance_gates": [
-            {"name": "fixture-semantic-review", "passed": False, "expected": 1, "actual": 0}
+            {
+                "name": name,
+                "passed": name != "runtime_trace_evidence_joined_to_source_records",
+                "expected": True,
+                "actual": name != "runtime_trace_evidence_joined_to_source_records",
+            }
+            for name in sorted(REQUIRED_ACCEPTANCE_GATES)
         ],
     }
     graphify = {

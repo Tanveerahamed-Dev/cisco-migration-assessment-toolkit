@@ -42,6 +42,20 @@ const GUI_DOSSIER_FIELD_NAMES = [
   "downstream_consumers",
   "known_gaps",
 ];
+const REQUIRED_ACCEPTANCE_GATE_NAMES = [
+  "architecture_contract_declared_and_conformant",
+  "runtime_architecture_edges_observed_and_reconciled",
+  "every_symbol_has_dossier_fields",
+  "every_gui_surface_has_standardized_evidence_honest_dossier",
+  "every_safe_line_behaviorally_explained",
+  "every_critical_or_public_symbol_level_four_reviewed",
+  "exact_clean_commit_binding",
+  "every_binary_has_format_aware_privacy_review",
+  "runtime_trace_evidence_joined_to_source_records",
+  "consequential_claim_denominator_closed",
+  "bitemporal_event_ledger_populated_and_replayable",
+  "release_lifecycle_transitions_integrated_and_receipted",
+];
 
 function guiDossier(surfaceId, surfaceKind) {
   const citation = {
@@ -592,9 +606,12 @@ async function makeCompilerFixture(root) {
       { name: "every_gui_surface_has_standardized_evidence_honest_dossier", expected: 2, actual: 2, passed: true },
       { name: "graphify_receipt_exact_source_bound", expected: 1, actual: 1, passed: true },
     ],
-    acceptance_gates: [
-      { name: "fixture_semantic_depth", expected: 2, actual: 2, passed: true },
-    ],
+    acceptance_gates: REQUIRED_ACCEPTANCE_GATE_NAMES.map((name) => ({
+      name,
+      expected: true,
+      actual: name !== "runtime_trace_evidence_joined_to_source_records",
+      passed: name !== "runtime_trace_evidence_joined_to_source_records",
+    })),
   };
   const completeness = await writeDescriptor(input, "completeness.json", completenessValue);
   const graphify = await writeDescriptor(input, "graphify-metadata.json", graphifyValue);
@@ -872,6 +889,32 @@ test("projection refuses compiler receipt traversal outside the input root", asy
     await assert.rejects(
       buildProjection({ input, output: join(scratch, "projection") }),
       /unsafe compiler input path/,
+    );
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("projection rejects a missing semantic acceptance gate before rendering identity", async () => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-gate-missing-"));
+  try {
+    const { input } = await makeCompilerFixture(scratch);
+    const manifestPath = join(input, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    const completeness = JSON.parse(
+      await readFile(join(input, ...manifest.completeness.path.split("/")), "utf8"),
+    );
+    completeness.acceptance_gates = completeness.acceptance_gates.slice(1);
+    manifest.completeness = await writeVerifiedValue(
+      input,
+      manifest.completeness,
+      completeness,
+    );
+    await writeFile(manifestPath, `${stableJson(manifest)}\n`, "utf8");
+
+    await assert.rejects(
+      buildProjection({ input, output: join(scratch, "projection") }),
+      /semantic acceptance gate registry differs from schema 1\.1\.0/,
     );
   } finally {
     await rm(scratch, { recursive: true, force: true });

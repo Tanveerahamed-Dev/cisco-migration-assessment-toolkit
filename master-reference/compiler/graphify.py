@@ -145,6 +145,8 @@ def project_graphify(
     node_dispositions: dict[str, str] = {}
     raw_community_ids: set[int] = set()
     projected_community_ids: set[int] = set()
+    raw_community_node_counts: dict[int, int] = {}
+    projected_community_node_counts: dict[int, int] = {}
     for raw_node in raw_nodes:
         if not isinstance(raw_node, dict):
             raise GraphifyFailure("graphify-out/graph.json: node must be an object")
@@ -159,6 +161,7 @@ def project_graphify(
         community = raw_node.get("community")
         if isinstance(community, int):
             raw_community_ids.add(community)
+            raw_community_node_counts[community] = raw_community_node_counts.get(community, 0) + 1
         declared_origin = raw_node.get("_origin")
         origin = (
             str(declared_origin).lower() if declared_origin is not None and declared_origin != "" else "undisclosed"
@@ -181,6 +184,9 @@ def project_graphify(
         node_dispositions[raw_id] = "retained"
         if isinstance(community, int):
             projected_community_ids.add(community)
+            projected_community_node_counts[community] = (
+                projected_community_node_counts.get(community, 0) + 1
+            )
         metadata = raw_node.get("metadata") if isinstance(raw_node.get("metadata"), dict) else {}
         extraction_mode = (
             "extracted"
@@ -258,6 +264,28 @@ def project_graphify(
 
     nodes.sort(key=lambda row: row["id"])
     edges.sort(key=lambda row: row["id"])
+    community_dispositions = []
+    for community in sorted(raw_community_ids):
+        total_nodes = raw_community_node_counts[community]
+        retained_nodes = projected_community_node_counts.get(community, 0)
+        status = (
+            "excluded"
+            if retained_nodes == 0
+            else ("projected_complete" if retained_nodes == total_nodes else "projected_partial")
+        )
+        community_dispositions.append(
+            {
+                "community": community,
+                "status": status,
+                "total_nodes": total_nodes,
+                "retained_nodes": retained_nodes,
+                "excluded_nodes": total_nodes - retained_nodes,
+            }
+        )
+    community_status_counts = {
+        status: sum(1 for item in community_dispositions if item["status"] == status)
+        for status in ("projected_complete", "projected_partial", "excluded")
+    }
     metadata = {
         "schema_version": SCHEMA_VERSION,
         "available": True,
@@ -295,6 +323,13 @@ def project_graphify(
         "all_community_ids": sorted(raw_community_ids),
         "projected_community_ids": sorted(projected_community_ids),
         "excluded_community_ids": sorted(raw_community_ids - projected_community_ids),
+        "partial_community_ids": [
+            item["community"]
+            for item in community_dispositions
+            if item["status"] == "projected_partial"
+        ],
+        "community_status_counts": community_status_counts,
+        "community_dispositions": community_dispositions,
         "projection_policy": "tracked_full_exposure_files_only",
         "unresolved_reasons": [
             "graphify_is_optional_secondary_projection",

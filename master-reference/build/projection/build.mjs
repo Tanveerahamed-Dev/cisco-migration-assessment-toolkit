@@ -52,6 +52,20 @@ const REQUIRED_INVARIANTS = Object.freeze([
   "every_gui_surface_has_standardized_evidence_honest_dossier",
   "graphify_receipt_exact_source_bound",
 ]);
+const REQUIRED_ACCEPTANCE_GATES = Object.freeze([
+  "architecture_contract_declared_and_conformant",
+  "runtime_architecture_edges_observed_and_reconciled",
+  "every_symbol_has_dossier_fields",
+  "every_gui_surface_has_standardized_evidence_honest_dossier",
+  "every_safe_line_behaviorally_explained",
+  "every_critical_or_public_symbol_level_four_reviewed",
+  "exact_clean_commit_binding",
+  "every_binary_has_format_aware_privacy_review",
+  "runtime_trace_evidence_joined_to_source_records",
+  "consequential_claim_denominator_closed",
+  "bitemporal_event_ledger_populated_and_replayable",
+  "release_lifecycle_transitions_integrated_and_receipted",
+]);
 const GUI_DOSSIER_FIELDS = Object.freeze([
   "persona_journey",
   "data_snapshot_sources",
@@ -561,6 +575,33 @@ function validateCompilerContract(manifest, completeness, graphify) {
     const expected = requireCount(invariant.expected, `${name} expected`);
     const actual = requireCount(invariant.actual, `${name} actual`);
     if (expected !== actual) throw new Error(`required compiler invariant denominator differs: ${name}`);
+  }
+  const acceptanceGates = completeness.acceptance_gates;
+  if (!Array.isArray(acceptanceGates)) {
+    throw new Error("compiler semantic acceptance gates are absent");
+  }
+  const acceptanceNames = [];
+  const seenAcceptanceNames = new Set();
+  for (const gate of acceptanceGates) {
+    const name = gate?.name;
+    if (
+      typeof name !== "string" ||
+      !name ||
+      seenAcceptanceNames.has(name) ||
+      typeof gate.passed !== "boolean" ||
+      !(typeof gate.expected === "boolean" || Number.isSafeInteger(gate.expected) || gate.expected === null) ||
+      !(typeof gate.actual === "boolean" || Number.isSafeInteger(gate.actual) || gate.actual === null)
+    ) {
+      throw new Error("compiler semantic acceptance gates are malformed or duplicated");
+    }
+    seenAcceptanceNames.add(name);
+    acceptanceNames.push(name);
+  }
+  if (
+    stableJson(acceptanceNames.sort()) !==
+    stableJson([...REQUIRED_ACCEPTANCE_GATES].sort())
+  ) {
+    throw new Error("compiler semantic acceptance gate registry differs from schema 1.1.0");
   }
   return invariantByName;
 }
@@ -1980,7 +2021,7 @@ export async function buildProjection({ input, output, allowPreview = false }) {
     sourceCommit: projection.sourceCommit,
     sourceTreeDigest: projection.sourceTreeDigest,
     trackedWorktreeDirty: projection.trackedWorktreeDirty,
-    failedAcceptanceGates: (projection.completeness.acceptance_gates ?? [])
+    failedAcceptanceGates: projection.completeness.acceptance_gates
       .filter((gate) => !gate.passed)
       .map((gate) => ({ name: gate.name })),
   };

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError
 from referencing import Registry, Resource
 
 
@@ -20,6 +21,20 @@ def _read_object(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise SchemaValidationError(f"expected JSON object: {path.name}")
     return value
+
+
+def _validate_schema(
+    validator: Draft202012Validator,
+    value: dict[str, Any],
+    label: str,
+) -> None:
+    try:
+        validator.validate(value)
+    except ValidationError as exc:
+        location = "/".join(str(part) for part in exc.absolute_path) or "<root>"
+        raise SchemaValidationError(
+            f"{label} differs from its tracked schema at {location}: {exc.message}"
+        ) from exc
 
 
 def validate_compiler_output(output: Path, schema_root: Path | None = None) -> dict[str, int]:
@@ -36,18 +51,26 @@ def validate_compiler_output(output: Path, schema_root: Path | None = None) -> d
         (schema["$id"], Resource.from_contents(schema)) for schema in schemas.values()
     )
     completeness = _read_object(output / "completeness.json")
-    Draft202012Validator(schemas["completeness-ledger.schema.json"], registry=registry).validate(completeness)
+    _validate_schema(
+        Draft202012Validator(schemas["completeness-ledger.schema.json"], registry=registry),
+        completeness,
+        "completeness.json",
+    )
     manifest_path = output / "manifest.json"
     if not manifest_path.is_file():
         raise SchemaValidationError(
             "compiler output has no manifest.json; a failure ledger is not a publishable schema-validated corpus"
         )
     manifest = _read_object(manifest_path)
-    Draft202012Validator(schemas["manifest.schema.json"], registry=registry).validate(manifest)
+    _validate_schema(
+        Draft202012Validator(schemas["manifest.schema.json"], registry=registry),
+        manifest,
+        "manifest.json",
+    )
     record_validator = Draft202012Validator(schemas["atlas-records.schema.json"], registry=registry)
     chunks = 0
     for chunk in sorted((output / "chunks").rglob("*.json")):
-        record_validator.validate(_read_object(chunk))
+        _validate_schema(record_validator, _read_object(chunk), chunk.relative_to(output).as_posix())
         chunks += 1
     expected_chunks = sum(int(group.get("chunk_count", 0)) for group in manifest["groups"].values())
     if chunks != expected_chunks:

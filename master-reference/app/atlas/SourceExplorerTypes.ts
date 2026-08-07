@@ -277,7 +277,7 @@ export type ProjectionIndex = {
     privacy: Record<string, unknown>;
     record_counts: Record<string, number>;
     invariants: CompletenessInvariant[];
-    acceptance_gates?: CompletenessInvariant[];
+    acceptance_gates: CompletenessInvariant[];
     semantic_accounting?: Record<string, unknown>;
     graphify?: Record<string, unknown>;
   };

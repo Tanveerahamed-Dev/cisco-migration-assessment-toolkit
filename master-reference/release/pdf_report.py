@@ -742,7 +742,7 @@ def _source_and_truth(
             _heading("Purpose and protected boundary", styles["h2"]),
             _paragraph(content.core.get("scope", "No scope declared."), styles["body"]),
             _paragraph(
-                "No raw Vault pages, client snapshots, device evidence, credentials, untracked private inputs, or machine-local agent memory are admitted. The reference is private, read-only, offline-capable, and cannot mutate the assessed estate.",
+                "Policy boundary: raw Vault pages and machine-local agent memory are outside the compiler corpus; restricted and binary payloads remain opaque. High-confidence allowlisted-text and generated-output scans found no matching credential patterns, while contextual, encoded, client/device, and container review remains pending. The reference is private, read-only, offline-capable, and cannot mutate the assessed estate.",
                 styles["body"],
             ),
         ]

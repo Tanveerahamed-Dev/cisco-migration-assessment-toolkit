@@ -62,9 +62,11 @@ discloses logical group passes separately from physical receipt reads, bytes,
 cache hits and cache bytes in `scan_counts`. A request-scoped immutable snapshot
 caches validated raw chunks only for impact groups, so reference multiplicity
 and traversal depth cannot reread the same chunk from disk. The hard request
-budgets are 512 physical receipts, 1 GiB of validated receipt bytes and 512 MiB
-of cached raw chunks; a request fails before the read that would exceed a
-budget. Source text is never cached. Source-text URN seeds abstain because they
+budgets are 512 physical compiler receipts, 1 GiB of validated compiler-receipt
+bytes (including the one-byte overrun probe) and 512 MiB of cached raw chunks;
+a request fails before the read that would exceed a budget. Manifest and tracked
+Git-state/tree/blob observation use separate bounded readers and are explicitly
+outside these compiler-receipt counters. Source text is never cached. Source-text URN seeds abstain because they
 can be unbounded; use a file or line query.
 Defaults are depth 4, 250 records and 2,000 edges; hard maxima are depth 8,
 2,000 records and 10,000 edges. Seed values are capped at 4 KiB, serialized seed

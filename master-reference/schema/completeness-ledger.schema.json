@@ -150,7 +150,120 @@
         }
       ]
     },
-    "acceptance_gates": {"$ref": "#/$defs/gates"}
+    "acceptance_gates": {
+      "allOf": [
+        {"$ref": "#/$defs/gates"},
+        {"minItems": 12, "maxItems": 12},
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "architecture_contract_declared_and_conformant"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "runtime_architecture_edges_observed_and_reconciled"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "every_symbol_has_dossier_fields"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "every_gui_surface_has_standardized_evidence_honest_dossier"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "every_safe_line_behaviorally_explained"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "every_critical_or_public_symbol_level_four_reviewed"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "exact_clean_commit_binding"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "every_binary_has_format_aware_privacy_review"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "runtime_trace_evidence_joined_to_source_records"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "consequential_claim_denominator_closed"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "bitemporal_event_ledger_populated_and_replayable"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "release_lifecycle_transitions_integrated_and_receipted"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      ]
+    }
   },
   "$defs": {
     "sourceBoundCompilerReceipt": {

@@ -49,6 +49,22 @@ REQUIRED_INVARIANTS = (
     "every_gui_surface_has_standardized_evidence_honest_dossier",
     "every_safe_parsed_source_has_one_structural_root",
 )
+REQUIRED_ACCEPTANCE_GATES = frozenset(
+    {
+        "architecture_contract_declared_and_conformant",
+        "runtime_architecture_edges_observed_and_reconciled",
+        "every_symbol_has_dossier_fields",
+        "every_gui_surface_has_standardized_evidence_honest_dossier",
+        "every_safe_line_behaviorally_explained",
+        "every_critical_or_public_symbol_level_four_reviewed",
+        "exact_clean_commit_binding",
+        "every_binary_has_format_aware_privacy_review",
+        "runtime_trace_evidence_joined_to_source_records",
+        "consequential_claim_denominator_closed",
+        "bitemporal_event_ledger_populated_and_replayable",
+        "release_lifecycle_transitions_integrated_and_receipted",
+    }
+)
 REQUIRED_GROUPS = frozenset(
     {
         "files",
@@ -191,6 +207,8 @@ def _validate_gate_contract(manifest: dict[str, Any], completeness: dict[str, An
         ):
             raise ContinuityInputError("compiler semantic acceptance gates are malformed or duplicated")
         acceptance_names.add(name)
+    if acceptance_names != REQUIRED_ACCEPTANCE_GATES:
+        raise ContinuityInputError("compiler semantic acceptance gate registry is incomplete or stale")
 
 
 @dataclass
@@ -208,6 +226,7 @@ class LazyCompilerCorpus:
     _validated_raw_chunk_cache: dict[tuple[str, int, str], bytes] = field(default_factory=dict)
     _chunk_cache_hits: int = 0
     _chunk_cache_bytes: int = 0
+    _physically_read_receipts: set[tuple[str, int, str]] = field(default_factory=set)
 
     @property
     def source_commit(self) -> str:
@@ -255,7 +274,7 @@ class LazyCompilerCorpus:
             return relative, _canonical_object(raw, f"{label} {relative}")
         if self._chunk_reads + 1 > MAX_VALIDATED_RECEIPT_READS:
             raise ContinuityInputError("compiler request exceeds the validated receipt-read budget")
-        if self._chunk_bytes + expected_bytes > MAX_VALIDATED_RECEIPT_BYTES:
+        if self._chunk_bytes + expected_bytes + 1 > MAX_VALIDATED_RECEIPT_BYTES:
             raise ContinuityInputError("compiler request exceeds the validated receipt-byte budget")
         if (
             cache_validated_raw
@@ -267,6 +286,7 @@ class LazyCompilerCorpus:
             raw = handle.read(expected_bytes + 1)
         self._chunk_reads += 1
         self._chunk_bytes += len(raw)
+        self._physically_read_receipts.add(cache_key)
         if expected_bytes != len(raw) or expected_digest != sha256_bytes(raw):
             raise ContinuityInputError(f"compiler {label} receipt mismatch: {relative}")
         value = _canonical_object(raw, f"{label} {relative}")
@@ -333,7 +353,8 @@ class LazyCompilerCorpus:
             "validated_chunk_reads": self._chunk_reads,
             "validated_chunk_bytes": self._chunk_bytes,
             "validated_group_passes": dict(sorted(self._group_passes.items())),
-            "validated_unique_chunk_reads": self._chunk_reads,
+            "validated_physical_receipt_reads": self._chunk_reads,
+            "validated_unique_receipt_reads": len(self._physically_read_receipts),
             "validated_chunk_cache_hits": self._chunk_cache_hits,
             "validated_chunk_cache_bytes": self._chunk_cache_bytes,
             "validated_receipt_read_limit": MAX_VALIDATED_RECEIPT_READS,
@@ -345,6 +366,7 @@ class LazyCompilerCorpus:
                 MAX_VALIDATED_CHUNK_CACHE_BYTES - self._chunk_cache_bytes
             ),
             "request_snapshot": True,
+            "budget_scope": "compiler_receipts_only_manifest_and_git_observation_excluded",
         }
 
 
