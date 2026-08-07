@@ -47,5 +47,8 @@ The generated directory is a release product, not authored source. Ignore only
 The projection manifest records executable raw-byte ceilings for every metadata
 module, every dossier module, search shards and indexes, source chunks and
 indexes, and graph summaries/shards/indexes. Metadata and dossier modules split
-recursively at 256 KiB; a single record above the ceiling fails closed rather
-than producing an oversized module.
+recursively at 256 KiB. A single record above the ceiling is serialized once,
+split into content-hashed UTF-8 fragment modules, and reassembled only when its
+metadata group or stable-ID dossier is requested. Metadata and dossier views
+share the same fragment set, preserve the complete projected record, and fail
+closed if any fragment or fragment-loader index cannot satisfy the ceiling.

@@ -85,6 +85,7 @@ const DOSSIER_GROUPS = {
 };
 const METADATA_CHUNK_SIZE = 2_000;
 const LAZY_MODULE_MAX_BYTES = 256 * 1024;
+const RECORD_FRAGMENT_TEXT_BYTES = 96 * 1024;
 const DOSSIER_BASE_PREFIX_LENGTH = 2;
 const SEARCH_GROUPS = [
   "files",
@@ -704,6 +705,66 @@ function moduleText(name, value) {
   return `export const ${name} = ${stableJson(value)};\nexport default ${name};\n`;
 }
 
+function getRecordFragmentPlan(record, registry) {
+  const id = String(record?.id ?? "");
+  if (!id) throw new Error("cannot fragment a record without a stable ID");
+  const serialized = stableJson(record);
+  const serializedDigest = sha256(Buffer.from(serialized, "utf8"));
+  const existing = registry.get(id);
+  if (existing) {
+    if (existing.serializedDigest !== serializedDigest) {
+      throw new Error(`stable record ID resolves to different projected content: ${id}`);
+    }
+    return existing;
+  }
+  const fragments = splitUtf8(serialized, RECORD_FRAGMENT_TEXT_BYTES).map((text, index) => {
+    const bytes = Buffer.from(moduleText("recordFragment", text), "utf8");
+    if (bytes.byteLength > LAZY_MODULE_MAX_BYTES) {
+      throw new Error(`record fragment ${id}:${index} exceeds ${LAZY_MODULE_MAX_BYTES} bytes`);
+    }
+    const digest = sha256(bytes);
+    return {
+      index,
+      module: `fragments/${sha256(id).slice(0, 24)}-${serializedDigest.slice(0, 16)}/${String(index).padStart(5, "0")}-${digest.slice(0, 16)}.mjs`,
+      bytes: bytes.byteLength,
+      textBytes: Buffer.byteLength(text, "utf8"),
+      sha256: digest,
+      value: bytes,
+    };
+  });
+  const plan = {
+    id,
+    serializedBytes: Buffer.byteLength(serialized, "utf8"),
+    serializedDigest,
+    fragments,
+  };
+  registry.set(id, plan);
+  return plan;
+}
+
+function fragmentedRecordIndexText(plan, { dossier = false } = {}) {
+  const loaderText = plan.fragments
+    .map((fragment) => `() => import(${JSON.stringify(`../../${fragment.module}`)})`)
+    .join(",");
+  return (
+    "export const records = Object.freeze([]);\n" +
+    `const expectedId = ${JSON.stringify(plan.id)};\n` +
+    `const expectedFragmentCount = ${plan.fragments.length};\n` +
+    `const fragmentLoaders = Object.freeze([${loaderText}]);\n` +
+    "export async function loadRecords() {\n" +
+    "  const modules = await Promise.all(fragmentLoaders.map((loader) => loader()));\n" +
+    "  if (modules.length !== expectedFragmentCount) throw new Error(`fragment denominator differs for ${expectedId}`);\n" +
+    "  const serialized = modules.map((module) => module.recordFragment ?? module.default).join(\"\");\n" +
+    "  const record = JSON.parse(serialized);\n" +
+    "  if (!record || record.id !== expectedId) throw new Error(`fragmented record identity differs for ${expectedId}`);\n" +
+    "  return [record];\n" +
+    "}\n" +
+    (dossier
+      ? "export async function loadFragmentedRecord(id) { return id === expectedId ? (await loadRecords())[0] : null; }\n"
+      : "")
+  );
+}
+
 function fnv1a(value) {
   let hash = 0x811c9dc5;
   for (let index = 0; index < value.length; index += 1) {
@@ -998,15 +1059,46 @@ function packSourceSegments(header, segments) {
   return chunks;
 }
 
-function splitRecordsToBudget(name, records, maximumBytes, label = name) {
+function splitRecordsToBudget(
+  name,
+  records,
+  maximumBytes,
+  label = name,
+  fragmentRegistry = null,
+) {
   if (!records.length) return [];
   const bytes = Buffer.from(moduleText(name, records), "utf8");
   if (bytes.byteLength <= maximumBytes) return [{ records, bytes }];
-  if (records.length === 1) throw new Error(`${label} record exceeds ${maximumBytes} bytes`);
+  if (records.length === 1) {
+    if (!fragmentRegistry) throw new Error(`${label} record exceeds ${maximumBytes} bytes`);
+    const fragmentPlan = getRecordFragmentPlan(records[0], fragmentRegistry);
+    const fragmentIndexBytes = Buffer.from(fragmentedRecordIndexText(fragmentPlan), "utf8");
+    if (fragmentIndexBytes.byteLength > maximumBytes) {
+      throw new Error(`${label} fragment index exceeds ${maximumBytes} bytes`);
+    }
+    return [{
+      records: [],
+      bytes: fragmentIndexBytes,
+      recordCount: 1,
+      fragmentPlan,
+    }];
+  }
   const midpoint = Math.ceil(records.length / 2);
   return [
-    ...splitRecordsToBudget(name, records.slice(0, midpoint), maximumBytes, label),
-    ...splitRecordsToBudget(name, records.slice(midpoint), maximumBytes, label),
+    ...splitRecordsToBudget(
+      name,
+      records.slice(0, midpoint),
+      maximumBytes,
+      label,
+      fragmentRegistry,
+    ),
+    ...splitRecordsToBudget(
+      name,
+      records.slice(midpoint),
+      maximumBytes,
+      label,
+      fragmentRegistry,
+    ),
   ];
 }
 
@@ -1022,16 +1114,31 @@ function dossierPrefixFor(id, splitPrefixes) {
   return prefix;
 }
 
-function splitDossierBucket(kind, records, prefix, splitPrefixes, leaves) {
+function splitDossierBucket(kind, records, prefix, splitPrefixes, leaves, fragmentRegistry) {
   const bytes = Buffer.from(moduleText("records", records), "utf8");
   if (bytes.byteLength <= LAZY_MODULE_MAX_BYTES) {
     leaves.push({ prefix, records, bytes });
     return;
   }
   if (records.length === 1) {
-    throw new Error(
-      `dossier ${kind} record ${records[0].id} exceeds ${LAZY_MODULE_MAX_BYTES} bytes`,
+    const fragmentPlan = getRecordFragmentPlan(records[0], fragmentRegistry);
+    const fragmentIndexBytes = Buffer.from(
+      fragmentedRecordIndexText(fragmentPlan, { dossier: true }),
+      "utf8",
     );
+    if (fragmentIndexBytes.byteLength > LAZY_MODULE_MAX_BYTES) {
+      throw new Error(
+        `dossier ${kind} fragment index ${records[0].id} exceeds ${LAZY_MODULE_MAX_BYTES} bytes`,
+      );
+    }
+    leaves.push({
+      prefix,
+      records: [],
+      bytes: fragmentIndexBytes,
+      recordCount: 1,
+      fragmentPlan,
+    });
+    return;
   }
   if (prefix.length >= 8) {
     throw new Error(`dossier ${kind} hash bucket ${prefix} exceeds ${LAZY_MODULE_MAX_BYTES} bytes`);
@@ -1043,7 +1150,14 @@ function splitDossierBucket(kind, records, prefix, splitPrefixes, leaves) {
   );
   for (const [childPrefix, childRecords] of [...children.entries()].sort(([left], [right]) =>
     left.localeCompare(right))) {
-    splitDossierBucket(kind, childRecords, childPrefix, splitPrefixes, leaves);
+    splitDossierBucket(
+      kind,
+      childRecords,
+      childPrefix,
+      splitPrefixes,
+      leaves,
+      fragmentRegistry,
+    );
   }
 }
 
@@ -1675,6 +1789,7 @@ export async function buildProjection({ input, output, allowPreview = false }) {
   }
   const sourceEntries = sourceProjection.modules;
 
+  const recordFragmentPlans = new Map();
   const metadataModules = [];
   const metadataLoaderEntries = {};
   for (const [group, groupRecords] of Object.entries(groups)) {
@@ -1690,6 +1805,7 @@ export async function buildProjection({ input, output, allowPreview = false }) {
           groupRecords.slice(start, start + METADATA_CHUNK_SIZE),
           LAZY_MODULE_MAX_BYTES,
           `metadata ${group}`,
+          recordFragmentPlans,
         ));
       }
     }
@@ -1704,12 +1820,26 @@ export async function buildProjection({ input, output, allowPreview = false }) {
       const entry = {
         group,
         module: modulePath,
-        recordCount: chunk.length,
+        recordCount: piece.recordCount ?? chunk.length,
         bytes: bytes.byteLength,
         sha256: digest,
+        ...(piece.fragmentPlan
+          ? {
+              fragmentedRecordId: piece.fragmentPlan.id,
+              fragmentCount: piece.fragmentPlan.fragments.length,
+              serializedBytes: piece.fragmentPlan.serializedBytes,
+              serializedDigest: piece.fragmentPlan.serializedDigest,
+            }
+          : {}),
       };
       metadataModules.push(entry);
       metadataLoaderEntries[group].push(entry);
+    }
+    if (
+      metadataLoaderEntries[group].reduce((total, entry) => total + entry.recordCount, 0) !==
+      groupRecords.length
+    ) {
+      throw new Error(`metadata module denominator differs for ${group}`);
     }
   }
 
@@ -1726,7 +1856,14 @@ export async function buildProjection({ input, output, allowPreview = false }) {
     const leaves = [];
     for (const [prefix, bucketRecords] of [...buckets.entries()].sort(([left], [right]) =>
       left.localeCompare(right))) {
-      splitDossierBucket(kind, bucketRecords, prefix, splitPrefixes, leaves);
+      splitDossierBucket(
+        kind,
+        bucketRecords,
+        prefix,
+        splitPrefixes,
+        leaves,
+        recordFragmentPlans,
+      );
     }
     recordBucketEntries[kind] = [];
     recordBucketSplitPrefixes[kind] = [...splitPrefixes].sort();
@@ -1734,7 +1871,12 @@ export async function buildProjection({ input, output, allowPreview = false }) {
     const leafByPrefix = new Map(leaves.map((leaf) => [leaf.prefix, leaf]));
     for (const record of records) {
       const routedPrefix = dossierPrefixFor(record.id, splitPrefixes);
-      if (!leafByPrefix.get(routedPrefix)?.records.some((candidate) => candidate.id === record.id)) {
+      const routedLeaf = leafByPrefix.get(routedPrefix);
+      if (
+        !routedLeaf ||
+        (!routedLeaf.records.some((candidate) => candidate.id === record.id) &&
+          routedLeaf.fragmentPlan?.id !== record.id)
+      ) {
         throw new Error(`dossier prefix routing lost ${kind}:${record.id}`);
       }
     }
@@ -1748,9 +1890,50 @@ export async function buildProjection({ input, output, allowPreview = false }) {
       recordBucketEntries[kind].push({
         prefix,
         module: modulePath,
-        recordCount: leafRecords.length,
+        recordCount: leaf.recordCount ?? leafRecords.length,
         bytes: bytes.byteLength,
         sha256: sha256(bytes),
+        ...(leaf.fragmentPlan
+          ? {
+              fragmentedRecordId: leaf.fragmentPlan.id,
+              fragmentCount: leaf.fragmentPlan.fragments.length,
+              serializedBytes: leaf.fragmentPlan.serializedBytes,
+              serializedDigest: leaf.fragmentPlan.serializedDigest,
+            }
+          : {}),
+      });
+    }
+    if (
+      recordBucketEntries[kind].reduce((total, entry) => total + entry.recordCount, 0) !==
+      records.length
+    ) {
+      throw new Error(`dossier module denominator differs for ${kind}`);
+    }
+  }
+
+  const recordFragments = [];
+  const writtenFragmentPaths = new Map();
+  for (const plan of [...recordFragmentPlans.values()].sort((left, right) =>
+    left.id.localeCompare(right.id))) {
+    for (const fragment of plan.fragments) {
+      const priorDigest = writtenFragmentPaths.get(fragment.module);
+      if (priorDigest && priorDigest !== fragment.sha256) {
+        throw new Error(`record fragment module collision: ${fragment.module}`);
+      }
+      if (!priorDigest) {
+        await mkdir(dirname(join(staging, ...fragment.module.split("/"))), { recursive: true });
+        await writeFile(join(staging, ...fragment.module.split("/")), fragment.value);
+        writtenFragmentPaths.set(fragment.module, fragment.sha256);
+      }
+      recordFragments.push({
+        recordId: plan.id,
+        serializedDigest: plan.serializedDigest,
+        fragmentIndex: fragment.index,
+        fragmentCount: plan.fragments.length,
+        module: fragment.module,
+        bytes: fragment.bytes,
+        textBytes: fragment.textBytes,
+        sha256: fragment.sha256,
       });
     }
   }
@@ -1784,6 +1967,7 @@ export async function buildProjection({ input, output, allowPreview = false }) {
       searchLoading: "query_token_hash_selective_bounded_shards",
       sourceLoading: "per_file_bounded_line_and_byte_chunks",
       graphLoading: "bounded_summary_then_selected_community_shards",
+      oversizedRecordLoading: "lossless_content_hashed_utf8_fragments_reassembled_on_demand",
       restrictedContent: "metadata_only_never_embedded",
       semanticLimit: "structural mapping is not behavioral or verified understanding",
     },
@@ -1824,13 +2008,16 @@ export async function buildProjection({ input, output, allowPreview = false }) {
       "  const loaders = metadataLoaders[group];\n" +
       "  if (!loaders) return [];\n" +
       "  const modules = await Promise.all(loaders.map((loader) => loader()));\n" +
-      "  return modules.flatMap((module) => module.records ?? module.default ?? []);\n" +
+      "  const batches = await Promise.all(modules.map((module) => typeof module.loadRecords === \"function\" ? module.loadRecords() : (module.records ?? module.default ?? [])));\n" +
+      "  return batches.flat();\n" +
       "}\n" +
       "export async function loadRecord(kind, id) {\n" +
       "  const loader = recordBucketLoaders[kind]?.[bucketFor(kind, id)];\n" +
       "  if (!loader) return null;\n" +
       "  const module = await loader();\n" +
-      "  return (module.records ?? module.default ?? []).find((record) => record.id === id) ?? null;\n" +
+      "  const direct = (module.records ?? module.default ?? []).find((record) => record.id === id);\n" +
+      "  if (direct) return direct;\n" +
+      "  return typeof module.loadFragmentedRecord === \"function\" ? module.loadFragmentedRecord(id) : null;\n" +
       "}\n" +
       `async function sourceProjection() { return import(${JSON.stringify(`./${sourceProjection.index.module}`)}); }\n` +
       "export async function loadSource(path) { const module = await sourceProjection(); return module.getSourceFile(path); }\n" +
@@ -1855,6 +2042,7 @@ export async function buildProjection({ input, output, allowPreview = false }) {
     groupCounts: projection.groupCounts,
     index: { path: "index.mjs", bytes: indexBytes.byteLength, sha256: sha256(indexBytes) },
     metadataModules,
+    recordFragments,
     recordBuckets: recordBucketEntries,
     recordBucketSplitPrefixes,
     search: searchProjection,
@@ -1871,6 +2059,7 @@ export async function buildProjection({ input, output, allowPreview = false }) {
       graphIndexMaxBytes: GRAPH_INDEX_MAX_BYTES,
       metadataModuleMaxBytes: LAZY_MODULE_MAX_BYTES,
       dossierModuleMaxBytes: LAZY_MODULE_MAX_BYTES,
+      recordFragmentModuleMaxBytes: LAZY_MODULE_MAX_BYTES,
     },
   };
   await writeFile(

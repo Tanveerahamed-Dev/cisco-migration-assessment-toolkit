@@ -658,6 +658,10 @@ test("projection is deterministic, lazy, privacy-gated, and exact-source preserv
       Object.values(manifestA.recordBuckets).flat().every((entry) => entry.bytes <= manifestA.budgets.dossierModuleMaxBytes),
       "every dossier module must obey the recursive raw-byte ceiling",
     );
+    assert.ok(
+      manifestA.recordFragments.every((entry) => entry.bytes <= manifestA.budgets.recordFragmentModuleMaxBytes),
+      "every lossless record fragment must obey the raw-byte ceiling",
+    );
 
     const loaded = await import(`${pathToFileURL(join(outputA, "index.mjs")).href}?test=1`);
     assert.deepEqual(loaded.projection.groupCounts, expectedMetadataCounts);
@@ -1002,22 +1006,49 @@ test("metadata and dossier modules split recursively, deterministically, and rem
   }
 });
 
-test("a single oversized lazy record fails instead of exceeding the raw-byte ceiling", async () => {
+test("a single oversized lazy record is losslessly fragmented below the raw-byte ceiling", async () => {
   const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-single-record-cap-"));
   try {
     const { input } = await makeCompilerFixture(scratch);
+    const oversizedPurpose = "x ".repeat(140_000);
     await mutateCompilerGroup(input, "symbols", (envelope) => {
       envelope.records = [{
         ...structuredClone(envelope.records[0]),
         id: "urn:atlas:symbol:oversized",
         stable_urn: "urn:atlas:symbol:oversized",
-        purpose: "x ".repeat(140_000),
+        purpose: oversizedPurpose,
       }];
     });
-    await assert.rejects(
-      buildProjection({ input, output: join(scratch, "projection") }),
-      /metadata symbols record exceeds 262144 bytes/,
+    const outputA = join(scratch, "projection-a");
+    const outputB = join(scratch, "projection-b");
+    const manifestA = await buildProjection({ input, output: outputA });
+    const manifestB = await buildProjection({ input, output: outputB });
+    assert.deepEqual(manifestA.recordFragments, manifestB.recordFragments);
+    assert.ok(manifestA.recordFragments.length > 1);
+    assert.ok(
+      manifestA.recordFragments.every((entry) =>
+        entry.bytes <= manifestA.budgets.recordFragmentModuleMaxBytes),
     );
+    assert.equal(
+      new Set(manifestA.recordFragments.map((entry) => entry.module)).size,
+      manifestA.recordFragments.length,
+      "metadata and dossier views must share one fragment set",
+    );
+    assert.equal(
+      manifestA.metadataModules.find((entry) => entry.fragmentedRecordId)?.recordCount,
+      1,
+    );
+    assert.equal(
+      manifestA.recordBuckets.symbol.find((entry) => entry.fragmentedRecordId)?.recordCount,
+      1,
+    );
+    const loaded = await import(`${pathToFileURL(join(outputA, "index.mjs")).href}?oversized=1`);
+    const metadata = await loaded.loadMetadata("symbols");
+    assert.equal(metadata.length, 1);
+    assert.equal(metadata[0].id, "urn:atlas:symbol:oversized");
+    assert.equal(metadata[0].purpose, oversizedPurpose);
+    const dossier = await loaded.loadRecord("symbol", "urn:atlas:symbol:oversized");
+    assert.deepEqual(dossier, metadata[0]);
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
