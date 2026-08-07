@@ -482,8 +482,8 @@
   `bundleSha12=608b31d8ee97`, `auxSha=15010bbe539f529c`.
 
   The canonical visual comparison correctly reports intentional pixel drift on Bars, CausalFlowPanel,
-  CutoverPlanner, DemoDataProvider, DesignBlueprintPanel, and TopologyGraph; its manifest gate and the other
-  16 cards pass. `test:visual:update` then rendered all 22 checks successfully into the ignored workstation
+  CutoverPlanner, DemoDataProvider, DesignBlueprintPanel, and TopologyGraph; its manifest gate and all 15
+  unchanged cards pass. `test:visual:update` then rendered all 22 checks successfully into the ignored workstation
   candidate directory. Both 900px and 728px candidates for all six changed cards were inspected and are clean.
   No tracked baseline PNG was changed: repository policy requires the GitHub `windows-2025` capture artifact,
   privacy-pin refresh, and human review before those six canonical pairs can be promoted.
