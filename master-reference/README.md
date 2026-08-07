@@ -35,6 +35,15 @@ remains static and dependency-light. Oxlint enforces correctness,
 accessibility, import, Node.js, React, and Next.js rules with warnings treated
 as failures. The audit covers runtime and build-time dependencies.
 
+Production builds also create a lossless Sites packaging profile. The tracked
+projection manifest remains unchanged, while every generated `.mjs` payload in
+`dist` is replaced by a deterministic, receipt-bound `.mjs.gz` member. The
+Worker serves that member at the original virtual module URL with explicit gzip
+and JavaScript response headers. Build tests require exact module-census and
+SHA-256 agreement, gunzip equivalence, no uncompressed deployment duplicate,
+and a complete expanded `dist` below the Sites limit. The authored `public`
+projection and offline reference corpus remain uncompressed and source-bound.
+
 The Python side is independently gated:
 
 ```powershell

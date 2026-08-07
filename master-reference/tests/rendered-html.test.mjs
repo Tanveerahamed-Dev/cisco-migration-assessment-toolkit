@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { gzipSync } from "node:zlib";
-import { readFile, readdir } from "node:fs/promises";
+import { gunzipSync, gzipSync } from "node:zlib";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -57,6 +57,66 @@ test("hardens every HTML response at the Worker boundary", async () => {
     { waitUntil() {}, passThroughOnException() {} },
   );
   assert.match(projectionResponse.headers.get("cache-control") ?? "", /no-store/);
+});
+
+test("serves every virtual projection module from its exact gzip asset", async () => {
+  const source = Buffer.from("export const exact = 'source-bound';\n", "utf8");
+  const encoded = gzipSync(source, { level: 9 });
+  let requestedPath = "";
+  const response = await worker.fetch(
+    new Request("http://localhost/atlas-projection/identity.mjs"),
+    {
+      ASSETS: {
+        fetch: async (request) => {
+          requestedPath = new URL(request.url).pathname;
+          return new Response(encoded, {
+            headers: {
+              "content-length": String(encoded.byteLength),
+              "content-type": "application/gzip",
+            },
+          });
+        },
+      },
+    },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+
+  assert.equal(requestedPath, "/atlas-projection/identity.mjs.gz");
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-encoding"), "gzip");
+  assert.match(response.headers.get("content-type") ?? "", /^text\/javascript\b/i);
+  assert.match(response.headers.get("cache-control") ?? "", /no-store/);
+  assert.deepEqual(gunzipSync(Buffer.from(await response.arrayBuffer())), source);
+});
+
+test("keeps the complete compressed projection inside the Sites expanded limit", async () => {
+  const distDirectory = fileURLToPath(new URL("../dist/", import.meta.url));
+  const projectionDirectory = fileURLToPath(
+    new URL("../dist/client/atlas-projection/", import.meta.url),
+  );
+  const [distPaths, projectionPaths, receiptText, projectionManifestText] = await Promise.all([
+    sourceFiles(distDirectory),
+    sourceFiles(projectionDirectory),
+    readFile(join(projectionDirectory, "compression-manifest.json"), "utf8"),
+    readFile(join(projectionDirectory, "projection-manifest.json"), "utf8"),
+  ]);
+  const receipt = JSON.parse(receiptText);
+  const projectionManifest = JSON.parse(projectionManifestText);
+  const compressed = projectionPaths.filter((path) => path.endsWith(".mjs.gz"));
+  const originals = projectionPaths.filter((path) => path.endsWith(".mjs"));
+  const sizes = await Promise.all(distPaths.map(async (path) => (await stat(path)).size));
+  const expandedBytes = sizes.reduce((total, size) => total + size, 0);
+
+  assert.equal(originals.length, 0, "deployable dist retained uncompressed projection modules");
+  assert.equal(compressed.length, receipt.moduleCount);
+  assert.equal(receipt.modules.length, receipt.moduleCount);
+  assert.equal(receipt.sourceCommit, projectionManifest.sourceCommit);
+  assert.equal(receipt.sourceTreeDigest, projectionManifest.sourceTreeDigest);
+  assert.ok(receipt.originalBytes > receipt.compressedBytes);
+  assert.ok(
+    expandedBytes <= 248 * 1024 * 1024,
+    `Sites expanded payload is ${(expandedBytes / 1024 / 1024).toFixed(1)} MiB`,
+  );
 });
 
 test("server-renders every owner workspace with its proof boundary", async () => {

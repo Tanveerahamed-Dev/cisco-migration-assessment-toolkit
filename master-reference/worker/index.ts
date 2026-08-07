@@ -47,13 +47,46 @@ function harden(request: Request, response: Response): Response {
   return hardened;
 }
 
+async function compressedProjectionModule(
+  request: Request,
+  env: WorkerEnv,
+): Promise<Response | null> {
+  const url = new URL(request.url);
+  if (
+    !env.ASSETS ||
+    !["GET", "HEAD"].includes(request.method) ||
+    !url.pathname.startsWith("/atlas-projection/") ||
+    !url.pathname.endsWith(".mjs")
+  ) {
+    return null;
+  }
+
+  const compressedUrl = new URL(url);
+  compressedUrl.pathname = `${url.pathname}.gz`;
+  const compressed = await env.ASSETS.fetch(
+    new Request(compressedUrl, { method: request.method }),
+  );
+  if (!compressed.ok) return null;
+
+  const headers = new Headers(compressed.headers);
+  headers.set("Content-Encoding", "gzip");
+  headers.set("Content-Type", "text/javascript; charset=utf-8");
+  headers.set("Vary", "Accept-Encoding");
+  return new Response(compressed.body, {
+    status: compressed.status,
+    statusText: compressed.statusText,
+    headers,
+  });
+}
+
 const worker = {
   async fetch(
     request: Request,
     env: WorkerEnv,
     ctx: WorkerContext,
   ): Promise<Response> {
-    return harden(request, await handler.fetch(request, env, ctx));
+    const compressed = await compressedProjectionModule(request, env);
+    return harden(request, compressed ?? (await handler.fetch(request, env, ctx)));
   },
 };
 
