@@ -7,6 +7,7 @@
   },
   "scripts": {
     "dev": "vinext dev",
+    "prebuild": "node build/prepare-deployment.mjs",
     "build": "vinext build",
     "postbuild": "node build/finalize-deployment.mjs",
     "start": "vinext start",

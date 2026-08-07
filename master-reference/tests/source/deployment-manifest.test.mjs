@@ -18,6 +18,7 @@ import {
   buildDeploymentManifest,
   verifyDeploymentManifest,
 } from "../../build/deployment-manifest.mjs";
+import { prepareDeployment } from "../../build/prepare-deployment.mjs";
 
 const execFileAsync = promisify(execFile);
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
@@ -182,6 +183,31 @@ test("outer deployment receipt refuses a dirty tracked Git tree", async () => {
       /tracked Git tree is not clean; deployment receipt refused/,
     );
     await assert.rejects(readFile(join(deployment.dist, "deployment-manifest.json")), /ENOENT/);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("prebuild removes only a prior regular deployment receipt", async () => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-deployment-prepare-"));
+  try {
+    const dist = join(scratch, "dist");
+    await mkdir(dist, { recursive: true });
+    assert.deepEqual(await prepareDeployment({ distDir: dist }), {
+      path: join(dist, "deployment-manifest.json"),
+      removed: false,
+    });
+    await writeFile(join(dist, "deployment-manifest.json"), "generated\n");
+    assert.deepEqual(await prepareDeployment({ distDir: dist }), {
+      path: join(dist, "deployment-manifest.json"),
+      removed: true,
+    });
+    await assert.rejects(readFile(join(dist, "deployment-manifest.json")), /ENOENT/);
+    await mkdir(join(dist, "deployment-manifest.json"));
+    await assert.rejects(
+      prepareDeployment({ distDir: dist }),
+      /prior deployment receipt is not a regular file/,
+    );
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
