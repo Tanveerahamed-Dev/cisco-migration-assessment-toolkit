@@ -16,7 +16,8 @@ if str(MASTER_REFERENCE) not in sys.path:
 
 from compiler import CompilationError, compile_repository  # noqa: E402
 from compiler import compiler as compiler_module  # noqa: E402
-from compiler.graphify import project_graphify  # noqa: E402
+from compiler import graphify as graphify_module  # noqa: E402
+from compiler.graphify import GraphifyFailure, project_graphify  # noqa: E402
 from compiler.schema_validation import SchemaValidationError, validate_compiler_output  # noqa: E402
 
 
@@ -530,8 +531,35 @@ class CompilerTests(unittest.TestCase):
                 "excluded_unsafe_source": 1,
                 "excluded_untracked_or_private": 2,
             })
+            self.assertEqual(metadata["excluded_nodes"], 3)
             self.assertEqual(metadata["excluded_edges"], 2)
             self.assertEqual(sum(metadata["excluded_edge_endpoint_dispositions"].values()), 2)
+            node_dispositions = metadata["excluded_node_dispositions"]
+            edge_dispositions = metadata["excluded_edge_dispositions"]
+            self.assertEqual(len(node_dispositions), metadata["excluded_nodes"])
+            self.assertEqual(len(edge_dispositions), metadata["excluded_edges"])
+            self.assertEqual({item["raw_index"] for item in node_dispositions}, {1, 2, 4})
+            self.assertEqual({item["raw_index"] for item in edge_dispositions}, {1, 2})
+            self.assertEqual(len({item["id"] for item in node_dispositions}), 3)
+            self.assertEqual(len({item["opaque_record_hash"] for item in node_dispositions}), 3)
+            self.assertEqual(len({item["id"] for item in edge_dispositions}), 2)
+            self.assertEqual(len({item["opaque_record_hash"] for item in edge_dispositions}), 2)
+            private_disposition = next(item for item in node_dispositions if item["raw_index"] == 1)
+            hidden_edge = next(item for item in edge_dispositions if item["raw_index"] == 1)
+            self.assertEqual(hidden_edge["target_endpoint"]["record_id"], private_disposition["id"])
+            self.assertEqual(
+                hidden_edge["target_endpoint"]["opaque_identifier_hash"],
+                private_disposition["opaque_identifier_hash"],
+            )
+            missing_edge = next(item for item in edge_dispositions if item["raw_index"] == 2)
+            self.assertEqual(missing_edge["target_endpoint"]["state"], "missing_node")
+            self.assertIsNone(missing_edge["target_endpoint"]["record_id"])
+            serialized_dispositions = json.dumps(
+                {"nodes": node_dispositions, "edges": edge_dispositions},
+                sort_keys=True,
+            )
+            for forbidden in ("private.py", "../escape.py", "mixed-private", '"hidden"', '"opaque"'):
+                self.assertNotIn(forbidden, serialized_dispositions)
             self.assertEqual(metadata["all_community_ids"], [1, 2, 3, 4])
             self.assertEqual(metadata["projected_community_ids"], [1, 4])
             self.assertEqual(metadata["excluded_community_ids"], [2, 3])
@@ -546,6 +574,45 @@ class CompilerTests(unittest.TestCase):
             }
             self.assertEqual(disposition[4]["retained_nodes"], 1)
             self.assertEqual(disposition[4]["excluded_nodes"], 1)
+
+    def test_graphify_exclusion_disposition_uniqueness_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            write(
+                repository,
+                "graphify-out/graph.json",
+                json.dumps(
+                    {
+                        "built_at_commit": "a" * 40,
+                        "nodes": [
+                            {"id": "private-a", "source_file": "private-a.py", "_origin": "ast"},
+                            {"id": "private-b", "source_file": "private-b.py", "_origin": "ast"},
+                        ],
+                        "links": [],
+                        "hyperedges": [],
+                    },
+                    sort_keys=True,
+                ),
+            )
+            duplicate = {
+                "id": "urn:atlas:graph-node-disposition:" + "a" * 24,
+                "disposition": "excluded",
+                "raw_index": 0,
+                "opaque_record_hash": "b" * 64,
+                "opaque_identifier_hash": "c" * 64,
+                "raw_record_digest": "d" * 64,
+                "reason": "excluded_untracked_or_private",
+            }
+            with mock.patch.object(
+                graphify_module,
+                "_excluded_node_record",
+                return_value=duplicate,
+            ):
+                with self.assertRaisesRegex(
+                    GraphifyFailure,
+                    "exclusion disposition reconciliation failed",
+                ):
+                    project_graphify(repository, "a" * 40, "b" * 64, {})
 
     def test_mismatched_graphify_source_binding_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1076,6 +1143,60 @@ class CompilerTests(unittest.TestCase):
             with self.assertRaises(SchemaValidationError):
                 validate_compiler_output(output)
 
+    def test_schema_validation_rejects_missing_graphify_exclusion_disposition(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            repository = base / "repo"
+            commit = initialize_repository(repository, {"README.md": "# Graph ledger\n"})
+            write(
+                repository,
+                "graphify-out/graph.json",
+                json.dumps(
+                    {
+                        "built_at_commit": commit,
+                        "nodes": [
+                            {"id": "safe", "source_file": "README.md", "_origin": "ast"},
+                            {"id": "secret", "source_file": "client/secret.txt", "_origin": "ast"},
+                        ],
+                        "links": [
+                            {"source": "safe", "target": "secret", "relation": "hidden"},
+                        ],
+                        "hyperedges": [],
+                    },
+                    sort_keys=True,
+                ),
+            )
+            output = base / "compiled"
+            compile_repository(repository, output)
+            validate_compiler_output(output)
+
+            metadata_path = output / "graphify-metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            out_of_range = json.loads(json.dumps(metadata))
+            out_of_range["excluded_node_dispositions"][0]["raw_index"] = 999
+            metadata_path.write_text(
+                json.dumps(out_of_range, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            with self.assertRaisesRegex(
+                SchemaValidationError,
+                "disposition reconciliation",
+            ):
+                validate_compiler_output(output)
+
+            metadata["excluded_node_dispositions"].clear()
+            metadata_path.write_text(
+                json.dumps(metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            with self.assertRaisesRegex(
+                SchemaValidationError,
+                "disposition reconciliation",
+            ):
+                validate_compiler_output(output)
+
     def test_typescript_failure_is_stable_and_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
@@ -1201,6 +1322,18 @@ class CompilerTests(unittest.TestCase):
         self.assertIn("lineRecord", records_schema["$defs"])
         self.assertIn("structuralEntityRecord", records_schema["$defs"])
         self.assertEqual(records_schema["properties"]["schema_version"]["const"], "1.1.0")
+        graphify_schema = json.loads(
+            (MASTER_REFERENCE / "schema" / "graphify-metadata.schema.json").read_text(encoding="utf-8")
+        )
+        available_contract = graphify_schema["allOf"][1]["then"]["required"]
+        self.assertIn("excluded_node_dispositions", available_contract)
+        self.assertIn("excluded_edge_dispositions", available_contract)
+        self.assertFalse(
+            graphify_schema["$defs"]["excludedNodeDisposition"]["additionalProperties"]
+        )
+        self.assertFalse(
+            graphify_schema["$defs"]["excludedEdgeDisposition"]["additionalProperties"]
+        )
 
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)

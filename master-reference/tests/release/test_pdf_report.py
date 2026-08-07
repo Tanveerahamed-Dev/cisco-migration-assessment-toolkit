@@ -371,6 +371,8 @@ def test_pdf_is_deterministic_source_bound_polished_and_never_embeds_source(tmp_
     assert "BLOCKED" in extracted
     assert "every_safe_line_behaviorally_explained" in extracted
     assert "/source/[path]" in extracted
+    assert "CLIENT-DATA INGESTION PROHIBITED" in extracted
+    assert "NO CLIENT DATA" not in extracted
     assert RAW_SOURCE_SENTINEL not in extracted
 
     inspected = inspect_pdf_report(first, expected_commit=COMMIT, expected_tree_digest=TREE)

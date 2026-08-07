@@ -403,7 +403,11 @@ class _AtlasDocTemplate(BaseDocTemplate):
         canv.line(_LEFT, 11.5 * mm, _PAGE_WIDTH - _RIGHT, 11.5 * mm)
         canv.setFillColor(_MUTED)
         canv.setFont("Helvetica", 6.5)
-        canv.drawString(_LEFT, 7.5 * mm, "PRIVATE / READ-ONLY / NO CLIENT DATA")
+        canv.drawString(
+            _LEFT,
+            7.5 * mm,
+            "PRIVATE / READ-ONLY / CLIENT-DATA INGESTION PROHIBITED",
+        )
         canv.drawRightString(_PAGE_WIDTH - _RIGHT, 7.5 * mm, f"Page {doc.page}")
         canv.restoreState()
 

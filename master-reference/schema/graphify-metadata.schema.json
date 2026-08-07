@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.local/schema/graphify-metadata.schema.json",
+  "title": "Atlas privacy-filtered Graphify projection metadata",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "source_commit",
+    "source_tree_digest",
+    "available",
+    "status",
+    "stale",
+    "unresolved_reasons"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.1.0"},
+    "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "source_tree_digest": {"$ref": "#/$defs/digest"},
+    "available": {"type": "boolean"},
+    "status": {"enum": ["absent", "current", "stale"]},
+    "stale": {"type": ["boolean", "null"]},
+    "excluded_nodes": {"type": "integer", "minimum": 0},
+    "excluded_edges": {"type": "integer", "minimum": 0},
+    "excluded_node_dispositions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/excludedNodeDisposition"}
+    },
+    "excluded_edge_dispositions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/excludedEdgeDisposition"}
+    },
+    "unresolved_reasons": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["available"],
+        "properties": {"available": {"const": false}}
+      },
+      "then": {
+        "properties": {
+          "status": {"const": "absent"},
+          "stale": {"type": "null"}
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["available"],
+        "properties": {"available": {"const": true}}
+      },
+      "then": {
+        "required": [
+          "source_digest",
+          "total_nodes",
+          "total_edges",
+          "projected_nodes",
+          "projected_edges",
+          "excluded_nodes",
+          "excluded_edges",
+          "excluded_node_dispositions",
+          "excluded_edge_dispositions",
+          "node_disposition_counts",
+          "excluded_edge_endpoint_dispositions"
+        ],
+        "properties": {
+          "status": {"enum": ["current", "stale"]},
+          "stale": {"type": "boolean"},
+          "source_digest": {"$ref": "#/$defs/digest"},
+          "total_nodes": {"type": "integer", "minimum": 0},
+          "total_edges": {"type": "integer", "minimum": 0},
+          "projected_nodes": {"type": "integer", "minimum": 0},
+          "projected_edges": {"type": "integer", "minimum": 0},
+          "node_disposition_counts": {
+            "type": "object",
+            "required": [
+              "retained",
+              "excluded_unsafe_source",
+              "excluded_untracked_or_private"
+            ],
+            "properties": {
+              "retained": {"type": "integer", "minimum": 0},
+              "excluded_unsafe_source": {"type": "integer", "minimum": 0},
+              "excluded_untracked_or_private": {"type": "integer", "minimum": 0}
+            },
+            "additionalProperties": false
+          },
+          "excluded_edge_endpoint_dispositions": {
+            "type": "object",
+            "additionalProperties": {"type": "integer", "minimum": 1}
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "atlasId": {
+      "type": "string",
+      "pattern": "^urn:atlas:[a-z-]+:[0-9a-f]{24}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "endpoint": {
+      "type": "object",
+      "required": ["state", "record_id", "opaque_identifier_hash"],
+      "properties": {
+        "state": {
+          "enum": [
+            "retained",
+            "excluded_unsafe_source",
+            "excluded_untracked_or_private",
+            "missing_node"
+          ]
+        },
+        "record_id": {
+          "oneOf": [
+            {"$ref": "#/$defs/atlasId"},
+            {"type": "null"}
+          ]
+        },
+        "opaque_identifier_hash": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    },
+    "excludedNodeDisposition": {
+      "type": "object",
+      "required": [
+        "id",
+        "disposition",
+        "raw_index",
+        "opaque_record_hash",
+        "opaque_identifier_hash",
+        "raw_record_digest",
+        "reason"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/atlasId"},
+        "disposition": {"const": "excluded"},
+        "raw_index": {"type": "integer", "minimum": 0},
+        "opaque_record_hash": {"$ref": "#/$defs/digest"},
+        "opaque_identifier_hash": {"$ref": "#/$defs/digest"},
+        "raw_record_digest": {"$ref": "#/$defs/digest"},
+        "reason": {
+          "enum": [
+            "excluded_unsafe_source",
+            "excluded_untracked_or_private"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "excludedEdgeDisposition": {
+      "type": "object",
+      "required": [
+        "id",
+        "disposition",
+        "raw_index",
+        "opaque_record_hash",
+        "raw_record_digest",
+        "reason",
+        "source_endpoint",
+        "target_endpoint"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/atlasId"},
+        "disposition": {"const": "excluded"},
+        "raw_index": {"type": "integer", "minimum": 0},
+        "opaque_record_hash": {"$ref": "#/$defs/digest"},
+        "raw_record_digest": {"$ref": "#/$defs/digest"},
+        "reason": {"const": "endpoint_not_projected"},
+        "source_endpoint": {"$ref": "#/$defs/endpoint"},
+        "target_endpoint": {"$ref": "#/$defs/endpoint"}
+      },
+      "additionalProperties": false
+    }
+  }
+}
