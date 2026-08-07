@@ -49,11 +49,11 @@ function harden(request: Request, response: Response): Response {
 
 async function compressedProjectionModule(
   request: Request,
-  env: WorkerEnv,
+  env: WorkerEnv | undefined,
 ): Promise<Response | null> {
   const url = new URL(request.url);
   if (
-    !env.ASSETS ||
+    !env?.ASSETS ||
     !["GET", "HEAD"].includes(request.method) ||
     !url.pathname.startsWith("/atlas-projection/") ||
     !url.pathname.endsWith(".mjs")

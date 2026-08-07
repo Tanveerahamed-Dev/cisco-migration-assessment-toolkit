@@ -59,6 +59,17 @@ test("hardens every HTML response at the Worker boundary", async () => {
   assert.match(projectionResponse.headers.get("cache-control") ?? "", /no-store/);
 });
 
+test("renders normal routes when the local production adapter omits Worker bindings", async () => {
+  const response = await worker.fetch(
+    new Request("http://localhost/", { headers: { accept: "text/html" } }),
+    undefined,
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
+  assert.match(await response.text(), /Master Reference/);
+});
+
 test("serves every virtual projection module from its exact gzip asset", async () => {
   const source = Buffer.from("export const exact = 'source-bound';\n", "utf8");
   const encoded = gzipSync(source, { level: 9 });
