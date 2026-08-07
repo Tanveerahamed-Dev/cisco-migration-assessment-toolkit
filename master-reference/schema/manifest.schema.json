@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.local/schema/manifest.schema.json",
+  "title": "Atlas repository intelligence manifest",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "status",
+    "release_class",
+    "source_commit",
+    "head_tree_oid",
+    "index_digest",
+    "source_tree_digest",
+    "tracked_worktree_dirty",
+    "chunk_size",
+    "groups",
+    "completeness",
+    "graphify_metadata",
+    "architecture_conformance"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "status": {"const": "complete"},
+    "release_class": {"enum": ["exact_commit", "dirty_preview"]},
+    "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "head_tree_oid": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "index_digest": {"$ref": "#/$defs/digest"},
+    "source_tree_digest": {"$ref": "#/$defs/digest"},
+    "tracked_worktree_dirty": {"type": "boolean"},
+    "chunk_size": {"type": "integer", "minimum": 1},
+    "groups": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"$ref": "#/$defs/groupReceipt"}
+    },
+    "completeness": {"$ref": "#/$defs/fileReceipt"},
+    "graphify_metadata": {"$ref": "#/$defs/fileReceipt"},
+    "architecture_conformance": {"$ref": "#/$defs/fileReceipt"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"release_class": {"const": "exact_commit"}}},
+      "then": {"properties": {"tracked_worktree_dirty": {"const": false}}}
+    },
+    {
+      "if": {"properties": {"release_class": {"const": "dirty_preview"}}},
+      "then": {"properties": {"tracked_worktree_dirty": {"const": true}}}
+    }
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"
+    },
+    "fileReceipt": {
+      "type": "object",
+      "required": ["path", "sha256", "bytes"],
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "sha256": {"$ref": "#/$defs/digest"},
+        "bytes": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "chunkReceipt": {
+      "type": "object",
+      "required": ["path", "record_count", "sha256", "bytes"],
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "record_count": {"type": "integer", "minimum": 0},
+        "sha256": {"$ref": "#/$defs/digest"},
+        "bytes": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "groupReceipt": {
+      "type": "object",
+      "required": ["record_count", "chunk_count", "records_digest", "chunks"],
+      "properties": {
+        "record_count": {"type": "integer", "minimum": 0},
+        "chunk_count": {"type": "integer", "minimum": 0},
+        "records_digest": {"$ref": "#/$defs/digest", "description": "SHA-256 of canonical ordered record-ID array; chunk byte receipts bind complete record content."},
+        "chunks": {"type": "array", "items": {"$ref": "#/$defs/chunkReceipt"}}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

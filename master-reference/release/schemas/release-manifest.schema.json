@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.local/schema/release-manifest/1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "release_status", "publication_status", "source_binding", "compiler", "gates", "independent_verification_verdict", "artifacts", "signing", "privacy", "honest_limits", "manifest_self_exclusion"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "id": {"type": "string", "minLength": 1},
+    "release_status": {"type": "string", "minLength": 1},
+    "publication_status": {"const": "not_authorized"},
+    "source_binding": {"type": "object"},
+    "compiler": {"type": "object"},
+    "gates": {"type": "object"},
+    "independent_verification_verdict": {"const": "BLOCK"},
+    "artifacts": {"type": "array", "minItems": 1},
+    "signing": {"type": "object"},
+    "privacy": {"type": "object"},
+    "honest_limits": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "manifest_self_exclusion": {"type": "string", "minLength": 1}
+  }
+}

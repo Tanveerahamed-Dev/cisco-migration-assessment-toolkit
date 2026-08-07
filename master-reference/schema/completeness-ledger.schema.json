@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.local/schema/completeness-ledger.schema.json",
+  "title": "Atlas repository compilation completeness ledger",
+  "type": "object",
+  "required": [
+    "id",
+    "schema_version",
+    "source_commit",
+    "head_tree_oid",
+    "index_digest",
+    "source_tree_digest",
+    "tracked_status_digest",
+    "tracked_worktree_dirty",
+    "hard_failure",
+    "fatal_errors",
+    "census",
+    "parsing",
+    "semantic_accounting",
+    "record_counts",
+    "graphify",
+    "architecture_conformance",
+    "privacy",
+    "invariants",
+    "acceptance_gates"
+  ],
+  "properties": {
+    "id": {"$ref": "atlas-records.schema.json#/$defs/atlasId"},
+    "schema_version": {"const": "1.0.0"},
+    "source_commit": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40,64}$"},
+    "head_tree_oid": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40,64}$"},
+    "index_digest": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "source_tree_digest": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "tracked_status_digest": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "tracked_worktree_dirty": {"type": ["boolean", "null"]},
+    "hard_failure": {"type": "boolean"},
+    "fatal_errors": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "census": {
+      "type": "object",
+      "required": ["tracked_files", "classified_files", "full_exposure_files", "metadata_only_files"],
+      "properties": {
+        "tracked_files": {"type": "integer", "minimum": 0},
+        "classified_files": {"type": "integer", "minimum": 0},
+        "full_exposure_files": {"type": "integer", "minimum": 0},
+        "metadata_only_files": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "parsing": {
+      "type": "object",
+      "required": [
+        "status_counts",
+        "parser_counts",
+        "expected_nonblank_lines",
+        "line_records",
+        "lines_with_explicit_unresolved_reasons"
+      ],
+      "properties": {
+        "status_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "parser_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "expected_nonblank_lines": {"type": "integer", "minimum": 0},
+        "line_records": {"type": "integer", "minimum": 0},
+        "lines_with_explicit_unresolved_reasons": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "semantic_accounting": {
+      "type": "object",
+      "required": [
+        "symbol_records",
+        "symbol_dossiers",
+        "line_explanation_depth_counts",
+        "symbol_explanation_depth_counts",
+        "critical_or_public_symbols",
+        "critical_level_four_reviews",
+        "runtime_trace_state",
+        "coverage_evidence_state"
+      ],
+      "properties": {
+        "symbol_records": {"type": "integer", "minimum": 0},
+        "symbol_dossiers": {"type": "integer", "minimum": 0},
+        "line_explanation_depth_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "symbol_explanation_depth_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "critical_or_public_symbols": {"type": "integer", "minimum": 0},
+        "critical_level_four_reviews": {"type": "integer", "minimum": 0},
+        "runtime_trace_state": {"type": "string"},
+        "coverage_evidence_state": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "record_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+    "graphify": {"type": "object"},
+    "architecture_conformance": {"type": "object"},
+    "privacy": {"type": "object"},
+    "invariants": {"$ref": "#/$defs/gates"},
+    "acceptance_gates": {"$ref": "#/$defs/gates"}
+  },
+  "$defs": {
+    "gateValue": {"type": ["integer", "boolean", "null"]},
+    "gate": {
+      "type": "object",
+      "required": ["name", "passed", "expected", "actual"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "passed": {"type": "boolean"},
+        "expected": {"$ref": "#/$defs/gateValue"},
+        "actual": {"$ref": "#/$defs/gateValue"}
+      },
+      "additionalProperties": false
+    },
+    "gates": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/gate"}}
+  },
+  "additionalProperties": false
+}

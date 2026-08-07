@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.local/schema/preservation-coverage/1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "source_commit", "status", "present_in_preservation_pack", "intentionally_outside_pack", "missing_required_for_recovery_claim", "external_human_custody", "gate", "claim_boundary"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "id": {"type": "string", "minLength": 1},
+    "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "status": {"type": "string", "minLength": 1},
+    "present_in_preservation_pack": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "intentionally_outside_pack": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "missing_required_for_recovery_claim": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "external_human_custody": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "gate": {"const": "BLOCK"},
+    "claim_boundary": {"type": "string", "minLength": 1}
+  }
+}

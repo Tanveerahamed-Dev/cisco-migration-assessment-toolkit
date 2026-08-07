@@ -67,6 +67,24 @@ output is the defect *shapes*, not its findings: absence rendered as health, a g
 hand-maintained list standing in for the class it means, and gates whose success path was never
 executed.
 
+### Atlas whole-repository master reference (candidate 2026-08-07)
+
+`master-reference/` now owns the private, read-only Atlas reference implementation: the exact-Git-tree
+compiler, line/symbol/entity projection, executable architecture and claim contracts, closed capability
+and gap catalogs, Source Explorer/Ask Atlas/labs, deterministic PDF and offline/release family, SBOM,
+preservation coverage, and the local read-only continuity validator. `docs/ssot.md` names each derivative
+and its live owner. The compiler manifest for the selected commit is the only valid census; do not cache
+its file, line, symbol, Graphify, dependency, or artifact counts in this doctrine.
+
+A structurally complete compiler run is deliberately not semantic approval. Behavioral depth, runtime
+and branch evidence, field validation, format-aware binary privacy review, independent Level-4 review,
+the owner Ed25519 ceremony/recovery materials, complete Python/toolchain preservation, and public
+publication authority remain explicit acceptance gates. The release manifest must remain `BLOCK` while
+any of those gates is absent. The self-contained HTML is an executive navigation view; complete safe
+source records live in lazy hosted modules and the offline compiler projection. Neither the reference nor
+its continuity CLI may collect client evidence, write devices or the Vault, call runtime external AI, or
+grant publication authority.
+
 ## Shared Git and host operating doctrine
 
 - This repository currently preserves PR work with merge commits. Do not assume squash semantics;

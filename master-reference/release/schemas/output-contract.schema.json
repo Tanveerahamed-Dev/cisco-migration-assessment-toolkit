@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.local/schema/output-contract/1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "catalog_version", "purpose", "members", "external_signature_member", "disclosure"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "id": {"type": "string", "minLength": 1},
+    "catalog_version": {"type": "string", "minLength": 1},
+    "purpose": {"type": "string", "minLength": 1},
+    "external_signature_member": {"const": "release-manifest.sig.json"},
+    "disclosure": {"type": "string", "minLength": 1},
+    "members": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "label", "manifest_member", "emission", "ui_surface", "gate"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "label": {"type": "string", "minLength": 1},
+          "manifest_member": {"type": ["string", "null"]},
+          "emission": {"enum": ["always", "when_pdf", "external"]},
+          "ui_surface": {"type": "boolean"},
+          "gate": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

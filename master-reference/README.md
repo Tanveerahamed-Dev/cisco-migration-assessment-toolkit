@@ -35,6 +35,110 @@ remains static and dependency-light. Oxlint enforces correctness,
 accessibility, import, Node.js, React, and Next.js rules with warnings treated
 as failures. The audit covers runtime and build-time dependencies.
 
+The Python side is independently gated:
+
+```powershell
+python -m pytest tests -q
+python -m ruff check atlas_privacy.py compiler governance continuity release cli tests
+```
+
+## Whole-repository compiler
+
+The exact tracked Git tree is the census. From this directory, compile a clean
+commit and validate every emitted envelope against the tracked schemas:
+
+```powershell
+python -m compiler --repo-root .. --output C:\tmp\atlas-compiler
+python -m compiler.schema_validation --input C:\tmp\atlas-compiler
+node build/projection/build.mjs --input C:\tmp\atlas-compiler --output public\atlas-projection
+```
+
+`manifest.json` binds the commit, HEAD tree, index census, derived source-tree
+digest, every record group and every chunk. `completeness.json` keeps hard
+structural invariants separate from semantic acceptance gates. The compiler
+may therefore prove 100% tracked-file and safe nonblank-line accounting while
+still blocking behavioral, runtime, coverage, binary-review or Level-4 claims.
+
+Safe UTF-8 source is emitted only in per-file content-hashed chunks. Restricted
+paths, symlinks, Git links and all decoded binary payloads remain metadata-only.
+Binary records retain Git object identity, size and media type, and explicitly
+remain pending format-aware or manual privacy review.
+
+## Read-only continuity CLI
+
+The continuity package reads an exact compiler bundle without mutating the
+repository or making network calls:
+
+```powershell
+python -m continuity query --compiler-output C:\tmp\atlas-compiler --id urn:atlas:...
+python -m continuity query --compiler-output C:\tmp\atlas-compiler --path cisco_toolkit/ssot.py --line 1
+python -m continuity validate-envelope --repo-root .. --compiler-output C:\tmp\atlas-compiler --envelope task-envelope.json
+python -m continuity validate-completion --repo-root .. --compiler-output C:\tmp\atlas-compiler --envelope task-envelope.json --receipt completion-receipt.json
+```
+
+Device writes, Vault writes, client-data ingestion and public publication are
+unwaivable. See `continuity/README.md` for the schemas and abstention behavior.
+
+## Exact-source release outputs
+
+The deterministic release builder consumes a **complete, clean** output from
+`master-reference/compiler` plus the five curated content contracts. It
+revalidates every manifest receipt and chunk before emitting the machine
+reference, owner handbook, engineering dossier, source/symbol indexes,
+capability and decision reports, enhancement brief, agent pack, CycloneDX
+SBOM, provenance, self-contained HTML, offline ZIP, preservation pack,
+preservation-coverage ledger and family attestation. `content/output-contract.json`
+is the shared denominator for UI labels and emitted member names.
+
+Run from `master-reference` after producing the compiler output:
+
+```powershell
+python -m cli build `
+  --repo-root .. `
+  --compiler-output C:\path\to\compiler-output `
+  --output C:\path\to\new-empty-release-directory
+```
+
+The release command generates the deterministic source-bound Master Reference
+PDF by default and records its renderer/input receipt. `--no-pdf` is an
+explicitly incomplete preview; `--pdf` accepts a separately rendered input.
+Successful PDF generation is not independent visual approval. An external PDF
+also leaves binary-container privacy review explicitly blocked.
+
+The builder revalidates HEAD, tree, clean tracked status, index mode/blob/path
+census and every full-exposure file hash before, after and at finalization.
+Metadata-only content is never opened. Artifacts are assembled in a sibling
+staging directory and atomically published only after schema, privacy, output
+contract and exact-source reconciliation succeeds; a failed build leaves no
+plausible partial family.
+
+The builder never generates keys or stores secrets. An owner may separately
+sign the exact canonical manifest with an existing off-repository Ed25519 key:
+
+```powershell
+python -m cli sign --manifest C:\release\release-manifest.json `
+  --private-key D:\offline-owner-key\atlas-ed25519.pem `
+  --signature C:\release\release-manifest.sig.json --prompt-passphrase
+
+python -m cli verify --manifest C:\release\release-manifest.json `
+  --signature C:\release\release-manifest.sig.json `
+  --public-key C:\trusted\atlas-ed25519.pub
+
+# Unsigned previews can still be checked for byte-for-byte internal integrity:
+python -m cli verify-family --manifest C:\release\release-manifest.json
+```
+
+Verification checks the signature, the independently trusted public-key
+fingerprint, and every artifact byte count/SHA-256 receipt in the manifest; it
+also rejects undeclared sibling files and inventory divergence. It does not
+convert an unsigned or visually unreviewed preview into an approved publication.
+
+Without that signature, the family remains a blocked unsigned preview. Failed
+semantic acceptance, missing/current Graphify, omitted PDF, or pending
+independent review keeps the manifest at `unsigned_preview_incomplete` and the
+corresponding gate explains why. Public publication and private-key recovery
+remain separate explicit owner decisions.
+
 ## Design contract
 
 - repository-owned content; no runtime content fetch

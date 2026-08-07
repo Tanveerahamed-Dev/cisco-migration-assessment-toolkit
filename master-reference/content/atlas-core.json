@@ -1,0 +1,623 @@
+{
+  "schema_version": "1.0.0",
+  "id": "atlas.core.2026-08-07",
+  "catalog_version": "2026.08.07",
+  "title": "Atlas master-reference knowledge contract",
+  "as_of": "2026-08-07",
+  "scope": "Repository-owned, client-free reference model for the Atlas network-assessment and migration platform.",
+  "truth_contract": {
+    "declared_scope_promise": "Nothing in this versioned declared scope is left unclassified.",
+    "open_world_promise": "Emerging, estate-specific, and not-yet-classified signals remain visible in a separate Open Horizon Register; no percentage claims completeness for the industry.",
+    "support_rule": "Catalog inclusion means the topic is understood and classified, not that Atlas implements it. Only state=current is an end-to-end support claim, and every such claim cites a live owner.",
+    "partial_rule": "State=partial names the implemented slice and links the remainder to an actionable gap.",
+    "training_rule": "Labs, primers, and external-source summaries are advisory learning content only. They never become assessment evidence, alter the canonical snapshot, or establish vendor support.",
+    "client_data_rule": "This layer contains no client, device, personal-vault, credential, or raw collection content."
+  },
+  "controlled_states": [
+    {
+      "id": "state.current",
+      "value": "current",
+      "meaning": "Implemented for the explicitly bounded scope and grounded in a live owner."
+    },
+    {
+      "id": "state.partial",
+      "value": "partial",
+      "meaning": "A cited implementation exists, but breadth, depth, evidence stages, or surfaces remain incomplete."
+    },
+    {
+      "id": "state.missing",
+      "value": "missing",
+      "meaning": "The capability belongs in the declared catalog but no implementation is claimed."
+    },
+    {
+      "id": "state.gated",
+      "value": "gated",
+      "meaning": "Deliberately unavailable until a named human, evidence, safety, dependency, or authority gate clears."
+    },
+    {
+      "id": "state.excluded",
+      "value": "excluded",
+      "meaning": "Intentionally outside the product boundary; the exclusion and rationale are explicit."
+    },
+    {
+      "id": "state.unknown",
+      "value": "unknown",
+      "meaning": "The repository cannot currently establish implementation, applicability, or estate adoption."
+    }
+  ],
+  "owners": [
+    {
+      "id": "owner.ssot.registry",
+      "path": "docs/ssot.md",
+      "kind": "owner-registry",
+      "claim_scope": "Maps each shared fact domain to its authoritative owner and defines the federation rule."
+    },
+    {
+      "id": "owner.operating.doctrine",
+      "path": "CLAUDE.md",
+      "kind": "operating-doctrine",
+      "claim_scope": "Current safety boundaries, engine scope, gate sequence, entry points, and host doctrine."
+    },
+    {
+      "id": "owner.ssot.engine",
+      "path": "cisco_toolkit/ssot.py",
+      "symbol": "canonical_facts / reconcile / summary",
+      "kind": "code-owner",
+      "claim_scope": "Canonical assessment facts and reconciliation verdict."
+    },
+    {
+      "id": "owner.engine.entry",
+      "path": "COLLECT_PARSE_V3_23_0.py",
+      "symbol": "main",
+      "kind": "code-owner",
+      "claim_scope": "Primary collect, parse, analyze, and deliver engine entry point."
+    },
+    {
+      "id": "owner.intake.bounds",
+      "path": "cisco_toolkit/path_assertions.py",
+      "kind": "code-owner",
+      "claim_scope": "Filesystem and bounded-input assertions."
+    },
+    {
+      "id": "owner.custody",
+      "path": "cisco_toolkit/input_custody.py",
+      "kind": "code-owner",
+      "claim_scope": "Same-read custody, identity, digest, and mutation detection."
+    },
+    {
+      "id": "owner.analysis",
+      "path": "cisco_toolkit/analyze.py",
+      "symbol": "compute_protocol_health and analysis functions",
+      "kind": "code-owner",
+      "claim_scope": "Protocol health, L1-L4 bounded path reasoning, operational findings, and scores."
+    },
+    {
+      "id": "owner.architecture.coverage",
+      "path": "cisco_toolkit/design_advisor.py",
+      "symbol": "_ARCH_COVERAGE_REGISTRY / compute_architecture_coverage",
+      "kind": "code-owner",
+      "claim_scope": "Architecture-class detector catalog and observed/clean/finding/not-observed semantics."
+    },
+    {
+      "id": "owner.protocol.knowledge",
+      "path": "cisco_toolkit/protocol_kb.py",
+      "symbol": "_PROTOCOL_STATES / advise",
+      "kind": "code-owner",
+      "claim_scope": "Bounded expected-versus-abnormal state advice for selected protocols."
+    },
+    {
+      "id": "owner.rest.collection",
+      "path": "cisco_toolkit/rest_collect.py",
+      "symbol": "collect_apic / collect_vmanage",
+      "kind": "code-owner",
+      "claim_scope": "Opt-in, HTTPS, GET-after-login APIC and vManage collection."
+    },
+    {
+      "id": "owner.explorer",
+      "path": "cisco_toolkit/blast_radius_explorer.html",
+      "symbol": "MODES",
+      "kind": "code-owner",
+      "claim_scope": "Fourteen interactive Explorer modes and digital design-token owner."
+    },
+    {
+      "id": "owner.deliverable.family",
+      "path": "cisco_toolkit/docmeta.py",
+      "symbol": "FAMILY / CLI_ARTIFACT_SUFFIX / WEB_ONLY_KINDS",
+      "kind": "code-owner",
+      "claim_scope": "Twelve-member deliverable family, ten CLI artifacts, and two web-only artifacts."
+    },
+    {
+      "id": "owner.manifest",
+      "path": "cisco_toolkit/manifest.py",
+      "kind": "code-owner",
+      "claim_scope": "Per-run artifact inventory, chain, sealing, and receiver verification."
+    },
+    {
+      "id": "owner.distribution",
+      "path": "cisco_toolkit/distribution_verify.py",
+      "kind": "code-owner",
+      "claim_scope": "Built-archive inventory and clean-environment distribution verification."
+    },
+    {
+      "id": "owner.registry.authority",
+      "path": "cisco_toolkit/registry_integrity.py",
+      "kind": "code-owner",
+      "claim_scope": "Registry integrity, provenance, authority, and scoped-authority semantics."
+    },
+    {
+      "id": "owner.lifecycle",
+      "path": "cisco_toolkit/eoldb.py",
+      "kind": "code-owner",
+      "claim_scope": "Exact bounded lifecycle mapping and abstention."
+    },
+    {
+      "id": "owner.web.trust",
+      "path": "webapp/backend/app.py",
+      "kind": "code-owner",
+      "claim_scope": "AssessHub routes, intake limits, server-owned trust labels, and decision APIs."
+    },
+    {
+      "id": "owner.web.summary",
+      "path": "webapp/backend/summary.py",
+      "kind": "code-owner",
+      "claim_scope": "Web summary and presentation mapping."
+    },
+    {
+      "id": "owner.redaction.verify",
+      "path": "webapp/backend/redaction_verify.py",
+      "kind": "code-owner",
+      "claim_scope": "Independent redaction verification for supported outputs."
+    },
+    {
+      "id": "owner.repository.privacy",
+      "path": ".github/scripts/verify_repository_privacy.py",
+      "kind": "gate-owner",
+      "claim_scope": "Repository and release privacy scanning."
+    },
+    {
+      "id": "owner.research.producer",
+      "path": "research_lane/producer.py",
+      "kind": "code-owner",
+      "claim_scope": "Quarantined, sanitized external advisory-feed production."
+    },
+    {
+      "id": "owner.research.http",
+      "path": "research_lane/http_guard.py",
+      "kind": "code-owner",
+      "claim_scope": "HTTPS, SSRF, redirect, address, time, and byte controls for the research lane."
+    },
+    {
+      "id": "owner.brand",
+      "path": "cisco_toolkit/brand_tokens.py",
+      "kind": "code-owner",
+      "claim_scope": "Portable application identity and print brand tokens."
+    },
+    {
+      "id": "owner.reference.contract",
+      "path": "master-reference/README.md",
+      "kind": "surface-contract",
+      "claim_scope": "Static, local, repository-owned, non-operational master-reference boundary."
+    },
+    {
+      "id": "owner.learnings",
+      "path": "docs/quality/learnings.md",
+      "kind": "knowledge-owner",
+      "claim_scope": "Cited, verified, client-generic engine lessons."
+    },
+    {
+      "id": "owner.release.version",
+      "path": "pyproject.toml",
+      "kind": "manifest-owner",
+      "claim_scope": "Release version and package entry points."
+    }
+  ],
+  "current_baseline": [
+    {
+      "id": "baseline.product.scope",
+      "statement": "Atlas is an automated senior-network-engineer platform for read-only L1-L4 brownfield assessment and migration governance.",
+      "value": "L1-L4 brownfield assessment and migration",
+      "owner_refs": ["owner.operating.doctrine"]
+    },
+    {
+      "id": "baseline.architecture.coverage",
+      "statement": "The architecture registry currently declares 27 classes and 46 coverage-honest detectors across SSH and JSON evidence channels.",
+      "value": {
+        "classes": 27,
+        "detectors": 46,
+        "channels": ["ssh", "json"]
+      },
+      "owner_refs": ["owner.architecture.coverage", "owner.ssot.registry"]
+    },
+    {
+      "id": "baseline.protocol.health",
+      "statement": "Protocol-health rows are currently produced for STP, EtherChannel, VTP, OSPF, BGP, EIGRP, and FHRP when their evidence is usable.",
+      "value": ["STP", "EtherChannel", "VTP", "OSPF", "BGP", "EIGRP", "FHRP"],
+      "owner_refs": ["owner.analysis"]
+    },
+    {
+      "id": "baseline.explorer.modes",
+      "statement": "The offline Explorer registry currently owns fourteen interactive modes.",
+      "value": ["blast", "trace", "compare", "flow", "health", "protocols", "xlayer", "causality", "waves", "apps", "review", "design", "cablemap", "3d"],
+      "owner_refs": ["owner.explorer"]
+    },
+    {
+      "id": "baseline.deliverables",
+      "statement": "The deliverable family has twelve members: ten produced by a complete engine CLI run and two rendered only by AssessHub.",
+      "value": {
+        "family": 12,
+        "cli": 10,
+        "web_only": 2
+      },
+      "owner_refs": ["owner.deliverable.family", "owner.ssot.registry"]
+    },
+    {
+      "id": "baseline.reference.boundary",
+      "statement": "The master-reference site is static documentation: it accepts no evidence, stores no state, calls no runtime API, and is not another source of truth.",
+      "value": "static-reference-only",
+      "owner_refs": ["owner.reference.contract"]
+    }
+  ],
+  "outcomes": [
+    {
+      "id": "outcome.explainable-truth",
+      "title": "Explainable current-state truth",
+      "success_signal": "A reader can traverse source evidence, custody, normalized fact, finding, decision, artifact, and proof without losing provenance."
+    },
+    {
+      "id": "outcome.coverage-honesty",
+      "title": "Coverage-honest assessment",
+      "success_signal": "Missing, malformed, conflicting, unsupported, and not-observed inputs remain distinguishable from healthy observations."
+    },
+    {
+      "id": "outcome.safe-change",
+      "title": "Safer migration decisions",
+      "success_signal": "Recommendations remain separate from approval, execution, validation, rollback, and PIR evidence."
+    },
+    {
+      "id": "outcome.one-delivery-set",
+      "title": "One consistent delivery set",
+      "success_signal": "Executive, engineering, field, and machine-readable artifacts derive from the same canonical snapshot and identifiers."
+    },
+    {
+      "id": "outcome.portable-field-use",
+      "title": "Portable, offline field use",
+      "success_signal": "Core assessment and verification work runs without external egress or ambient cloud dependencies."
+    },
+    {
+      "id": "outcome.targetable-roadmap",
+      "title": "A targetable improvement map",
+      "success_signal": "Every incomplete capability links to a disposition, owner role, next action, and acceptance evidence."
+    },
+    {
+      "id": "outcome.white-label",
+      "title": "Controlled white-label reuse",
+      "success_signal": "Identity, terminology, theme, artifact furniture, and deployment policy change through owned contracts rather than scattered literals."
+    },
+    {
+      "id": "outcome.learning-with-boundaries",
+      "title": "Learning without contaminating truth",
+      "success_signal": "Internal lessons and external research can improve the product only through sanitization, provenance, evaluation, and explicit promotion."
+    },
+    {
+      "id": "outcome.business-value",
+      "title": "Business-value traceability",
+      "success_signal": "Technical findings connect to service impact, risk avoided, change effort, lifecycle cost, and acceptance outcomes without inventing financial precision."
+    }
+  ],
+  "maturity_model": [
+    {
+      "id": "maturity.m0",
+      "level": 0,
+      "label": "Unclassified",
+      "exit_criteria": "Scope, evidence, owner, and uncertainty are named."
+    },
+    {
+      "id": "maturity.m1",
+      "level": 1,
+      "label": "Cataloged",
+      "exit_criteria": "The capability has a stable ID, bounded definition, state, and gap disposition."
+    },
+    {
+      "id": "maturity.m2",
+      "level": 2,
+      "label": "Observed",
+      "exit_criteria": "Supported evidence can be collected or ingested with custody and coverage signals."
+    },
+    {
+      "id": "maturity.m3",
+      "level": 3,
+      "label": "Assessed",
+      "exit_criteria": "Deterministic parsing and analysis distinguish positive, negative, absent, malformed, and conflicting evidence."
+    },
+    {
+      "id": "maturity.m4",
+      "level": 4,
+      "label": "Governed",
+      "exit_criteria": "Findings drive traceable recommendations, human gates, artifacts, verification, and release evidence."
+    },
+    {
+      "id": "maturity.m5",
+      "level": 5,
+      "label": "Measured learning",
+      "exit_criteria": "Real outcomes calibrate the system through pre-registered, privacy-safe evaluation; no automatic policy mutation."
+    },
+    {
+      "id": "maturity.m6",
+      "level": 6,
+      "label": "Autonomous closed loop",
+      "exit_criteria": "Excluded by the current safety doctrine: Atlas does not write devices or self-approve changes."
+    }
+  ],
+  "current_maturity": [
+    {
+      "id": "maturity.current.evidence",
+      "dimension": "evidence-and-custody",
+      "level": 4,
+      "state": "current",
+      "basis": "Bounded intake, same-read custody, canonical reconciliation, and manifest verification are implemented for supported shapes.",
+      "owner_refs": ["owner.intake.bounds", "owner.custody", "owner.ssot.engine", "owner.manifest"]
+    },
+    {
+      "id": "maturity.current.network-depth",
+      "dimension": "network-domain-depth",
+      "level": 3,
+      "state": "partial",
+      "basis": "The engine has strong bounded campus and selected architecture detectors, while many enterprise, stateful, cloud, OT, and provider domains remain catalog gaps.",
+      "owner_refs": ["owner.analysis", "owner.architecture.coverage"],
+      "gap_refs": ["gap.enterprise-breadth", "gap.flow-stateful", "gap.cloud-native", "gap.ot", "gap.service-provider"]
+    },
+    {
+      "id": "maturity.current.delivery",
+      "dimension": "delivery-and-governance",
+      "level": 4,
+      "state": "current",
+      "basis": "The governed workflow and twelve-member deliverable family have explicit owners and verification boundaries.",
+      "owner_refs": ["owner.operating.doctrine", "owner.deliverable.family", "owner.manifest"]
+    },
+    {
+      "id": "maturity.current.observability",
+      "dimension": "continuous-observability",
+      "level": 1,
+      "state": "partial",
+      "basis": "Atlas reasons over captured snapshots and selected logs; it does not claim a continuous metrics, flow, trace, packet, or synthetic telemetry platform.",
+      "owner_refs": ["owner.engine.entry", "owner.analysis"],
+      "gap_refs": ["gap.observability-signals", "gap.observability-slo-closed-loop"]
+    },
+    {
+      "id": "maturity.current.learning",
+      "dimension": "measured-learning",
+      "level": 2,
+      "state": "gated",
+      "basis": "Quality ledgers and evaluation contracts exist, but real-data calibration and vault-derived recall remain deliberately gated and coverage-honest.",
+      "owner_refs": ["owner.learnings", "owner.ssot.registry"],
+      "gap_refs": ["gap.knowledge-real-evidence", "gap.knowledge-vault-local"]
+    },
+    {
+      "id": "maturity.current.autonomy",
+      "dimension": "autonomous-device-change",
+      "level": 0,
+      "state": "excluded",
+      "basis": "Device writes and self-approved closed loops are non-goals.",
+      "owner_refs": ["owner.operating.doctrine"],
+      "gap_refs": ["gap.excluded-device-writes"]
+    }
+  ],
+  "non_goals": [
+    {
+      "id": "non-goal.device-write",
+      "statement": "No device configuration write, template push, remediation execution, or autonomous rollback.",
+      "owner_refs": ["owner.operating.doctrine"]
+    },
+    {
+      "id": "non-goal.self-approval",
+      "statement": "No recommendation may approve itself or bypass human PR, peer-review, CAB, maintenance-window, and acceptance gates.",
+      "owner_refs": ["owner.operating.doctrine"]
+    },
+    {
+      "id": "non-goal.vault-write",
+      "statement": "Repository sessions neither read nor write the personal vault; only a one-way sanitized digest may be consumed when separately produced on the owner machine.",
+      "owner_refs": ["owner.operating.doctrine", "owner.ssot.registry"]
+    },
+    {
+      "id": "non-goal.engine-egress",
+      "statement": "The assessment engine and AST graph do not browse or call cloud models; connected research stays in a quarantined producer lane.",
+      "owner_refs": ["owner.operating.doctrine", "owner.research.producer"]
+    },
+    {
+      "id": "non-goal.false-completeness",
+      "statement": "No catalog, score, test slice, or horizon watchlist may imply complete industry, estate, or repository proof beyond its denominator.",
+      "owner_refs": ["owner.operating.doctrine", "owner.ssot.registry"]
+    },
+    {
+      "id": "non-goal.reference-runtime",
+      "statement": "The master reference is not an operational console, evidence store, telemetry sink, analytics surface, or alternate source of truth.",
+      "owner_refs": ["owner.reference.contract"]
+    },
+    {
+      "id": "non-goal.financial-invention",
+      "statement": "Business-value views may expose inputs and ranges but never fabricate customer cost, revenue, probability, or risk-reduction figures."
+    },
+    {
+      "id": "non-goal.training-as-proof",
+      "statement": "A lab, protocol primer, vendor page, or external link never establishes current product support or a device-state fact."
+    }
+  ],
+  "lifecycle_stages": [
+    {"id": "stage.discover", "order": 1, "label": "Discover", "question": "Can the shape or domain be identified without invention?"},
+    {"id": "stage.collect", "order": 2, "label": "Collect", "question": "Can evidence be acquired safely and with explicit authority?"},
+    {"id": "stage.custody", "order": 3, "label": "Bind custody", "question": "Are the exact bytes and their identity bound to the run?"},
+    {"id": "stage.parse", "order": 4, "label": "Parse", "question": "Are raw observations normalized deterministically and unknowns preserved?"},
+    {"id": "stage.analyze", "order": 5, "label": "Analyze", "question": "Can healthy, unhealthy, absent, malformed, and conflicting states be distinguished?"},
+    {"id": "stage.recommend", "order": 6, "label": "Recommend", "question": "Does the output explain evidence, consequence, action, caution, and uncertainty?"},
+    {"id": "stage.visualize", "order": 7, "label": "Visualize", "question": "Can a user explore the result without losing its evidence boundary?"},
+    {"id": "stage.deliver", "order": 8, "label": "Deliver", "question": "Do all relevant artifacts share identifiers, provenance, and completeness rules?"},
+    {"id": "stage.validate", "order": 9, "label": "Validate", "question": "Does independent positive and negative proof cover the supported slice?"},
+    {"id": "stage.operate", "order": 10, "label": "Operate", "question": "Are ownership, SLO, lifecycle, incident, and improvement signals defined?"}
+  ],
+  "system_architecture": {
+    "id": "architecture.six-plane",
+    "planes": [
+      {
+        "id": "plane.evidence",
+        "order": 1,
+        "title": "Evidence and custody plane",
+        "purpose": "Constrain intake, collect read-only evidence, bind identity and bytes, preserve raw observations, and surface coverage.",
+        "inputs": ["authorized captures", "supported archives", "controller exports", "repository-owned fixtures"],
+        "outputs": ["custody records", "bounded raw evidence", "coverage and parse-yield signals"],
+        "owner_refs": ["owner.engine.entry", "owner.intake.bounds", "owner.custody", "owner.rest.collection"]
+      },
+      {
+        "id": "plane.truth",
+        "order": 2,
+        "title": "Canonical truth and authority plane",
+        "purpose": "Normalize observations into one snapshot while preserving provenance, conflict, confidence, registry integrity, and source authority.",
+        "inputs": ["custody-bound observations", "immutable registry packs"],
+        "outputs": ["canonical snapshot", "reconciliation verdict", "authority and freshness state"],
+        "owner_refs": ["owner.ssot.engine", "owner.registry.authority", "owner.lifecycle"]
+      },
+      {
+        "id": "plane.reasoning",
+        "order": 3,
+        "title": "Analysis and reasoning plane",
+        "purpose": "Compute bounded health, topology, blast radius, architecture conformance, protocol behavior, causal relationships, and abstentions.",
+        "inputs": ["canonical snapshot", "design and protocol knowledge"],
+        "outputs": ["findings", "confidence", "gaps", "design options", "prioritized remediation"],
+        "owner_refs": ["owner.analysis", "owner.architecture.coverage", "owner.protocol.knowledge"]
+      },
+      {
+        "id": "plane.decision",
+        "order": 4,
+        "title": "Decision and governance plane",
+        "purpose": "Keep recommendation, approval, execution, validation, rollback, acceptance, and PIR as distinct human-gated states.",
+        "inputs": ["findings", "requirements", "risk", "change policy"],
+        "outputs": ["decision records", "gate verdicts", "MOP and rollback", "acceptance evidence"],
+        "owner_refs": ["owner.operating.doctrine", "owner.web.trust"]
+      },
+      {
+        "id": "plane.experience",
+        "order": 5,
+        "title": "Experience and delivery plane",
+        "purpose": "Render the same truth for field operators, engineers, reviewers, executives, and machine consumers across offline and web surfaces.",
+        "inputs": ["snapshot", "findings", "decision state", "artifact policy"],
+        "outputs": ["AssessHub", "Explorer", "workbooks", "documents", "deck", "machine-readable evidence"],
+        "owner_refs": ["owner.explorer", "owner.deliverable.family", "owner.web.summary"]
+      },
+      {
+        "id": "plane.assurance",
+        "order": 6,
+        "title": "Assurance, release, and learning plane",
+        "purpose": "Verify privacy, determinism, archive contents, clean installation, quality trends, incident learning, and controlled knowledge promotion.",
+        "inputs": ["source", "tests", "artifacts", "release candidate", "sanitized lessons"],
+        "outputs": ["verification evidence", "release verdict", "quality ledgers", "promoted generic learnings"],
+        "owner_refs": ["owner.manifest", "owner.distribution", "owner.repository.privacy", "owner.learnings"]
+      }
+    ],
+    "flow": [
+      {"from": "plane.evidence", "to": "plane.truth", "contract": "Only bounded, custody-bound observations enter canonical truth."},
+      {"from": "plane.truth", "to": "plane.reasoning", "contract": "Reasoning consumes normalized facts and explicit uncertainty, never ambient memory."},
+      {"from": "plane.reasoning", "to": "plane.decision", "contract": "Findings propose; they do not approve or execute."},
+      {"from": "plane.decision", "to": "plane.experience", "contract": "Artifacts render gate state and provenance rather than replacing them."},
+      {"from": "plane.experience", "to": "plane.assurance", "contract": "The produced bytes, not only source intent, are verified."},
+      {"from": "plane.assurance", "to": "plane.evidence", "contract": "Verified generic learning raises future controls without importing client evidence."}
+    ]
+  },
+  "traffic_model": {
+    "id": "traffic.eight-plane",
+    "warning": "These planes are investigative lenses, not OSI-layer replacements. A flow is only as complete as the evidence present in every traversed plane.",
+    "planes": [
+      {
+        "id": "traffic.physical",
+        "order": 1,
+        "title": "Physical, optical, power, and timing",
+        "questions": ["Are links, members, transceivers, errors, power, and timing observed?", "What is physically redundant?"],
+        "state": "partial",
+        "current_scope": "Interface, cable-map, neighbor, selected error, PoE, and platform evidence; no full optical/power/facilities model.",
+        "owner_refs": ["owner.analysis", "owner.explorer"],
+        "gap_refs": ["gap.operations-lifecycle-facilities"]
+      },
+      {
+        "id": "traffic.l2",
+        "order": 2,
+        "title": "Layer-2 forwarding and failure domains",
+        "questions": ["Which VLANs and links forward or block?", "What partitions, reconverges, loops, or shares fate?"],
+        "state": "partial",
+        "current_scope": "Strong bounded STP, VLAN, trunk, EtherChannel, shared-domain, blast-radius, and cable-map reasoning from captured evidence.",
+        "owner_refs": ["owner.analysis", "owner.explorer"],
+        "gap_refs": ["gap.protocol-depth"]
+      },
+      {
+        "id": "traffic.l3-underlay",
+        "order": 3,
+        "title": "Layer-3 underlay, routing, and gateway behavior",
+        "questions": ["How are prefixes, adjacencies, gateways, and failover paths selected?", "Where are route or convergence uncertainties?"],
+        "state": "partial",
+        "current_scope": "Selected IPv4/IPv6 routing, OSPF/BGP/EIGRP, FHRP, BFD, and topology reasoning; not a complete RIB/FIB or Internet-routing verifier.",
+        "owner_refs": ["owner.analysis", "owner.architecture.coverage"],
+        "gap_refs": ["gap.protocol-depth", "gap.service-provider"]
+      },
+      {
+        "id": "traffic.overlay-segmentation",
+        "order": 4,
+        "title": "Overlay, tenant, and segmentation",
+        "questions": ["Which virtual networks and policy domains carry the flow?", "Where can route leaking or shared fate cross a tenant boundary?"],
+        "state": "partial",
+        "current_scope": "Selected VXLAN-EVPN, ACI, TrustSec, LISP, MPLS VPN, and SD-WAN evidence detectors; incomplete policy and tenant path proof.",
+        "owner_refs": ["owner.architecture.coverage"],
+        "gap_refs": ["gap.protocol-advanced", "gap.flow-stateful"]
+      },
+      {
+        "id": "traffic.stateful-policy",
+        "order": 5,
+        "title": "Stateful policy, identity, NAT, and service chaining",
+        "questions": ["Do forward and return sessions survive ACL, firewall, identity, NAT, proxy, and chain state?", "Which policy decision and provenance allowed or denied the flow?"],
+        "state": "partial",
+        "current_scope": "Explorer provides bounded ACL-oriented L4 simulation and the engine has selected firewall/identity detectors; no authoritative stateful session or NAT path engine.",
+        "owner_refs": ["owner.explorer", "owner.architecture.coverage"],
+        "gap_refs": ["gap.flow-stateful"]
+      },
+      {
+        "id": "traffic.application-service",
+        "order": 6,
+        "title": "Application, service-delivery, and experience",
+        "questions": ["Do DNS, load balancing, proxy, TLS, application dependencies, and user experience succeed?", "What latency, jitter, loss, MOS, and synthetic evidence exists?"],
+        "state": "missing",
+        "current_scope": "Application-domain grouping is a visualization aid, not end-to-end application-delivery verification.",
+        "gap_refs": ["gap.flow-application"]
+      },
+      {
+        "id": "traffic.management-observability",
+        "order": 7,
+        "title": "Management, control, and observability",
+        "questions": ["Can control and management traffic reach authoritative services?", "Are metrics, logs, flows, packets, traces, and time aligned?"],
+        "state": "partial",
+        "current_scope": "Snapshot, selected controller, syslog, NTP, and protocol-state evidence exist; continuous telemetry and multi-signal correlation do not.",
+        "owner_refs": ["owner.analysis", "owner.rest.collection", "owner.architecture.coverage"],
+        "gap_refs": ["gap.observability-signals", "gap.observability-slo-closed-loop"]
+      },
+      {
+        "id": "traffic.external-hybrid",
+        "order": 8,
+        "title": "External, Internet, hybrid, and cloud transit",
+        "questions": ["How does the service cross providers, clouds, SaaS, Internet, and organizational trust boundaries?", "What are resilience, sovereignty, security, and egress-cost implications?"],
+        "state": "partial",
+        "current_scope": "A bounded AWS security-group exposure detector exists; no complete multi-cloud, SaaS, Internet, or egress-economics path model.",
+        "owner_refs": ["owner.architecture.coverage"],
+        "gap_refs": ["gap.cloud-native", "gap.flow-external"]
+      }
+    ]
+  },
+  "domain_registry": [
+    {"id": "domain.outcomes", "title": "Outcomes and governance"},
+    {"id": "domain.architecture", "title": "System architecture and evidence lifecycle"},
+    {"id": "domain.protocols", "title": "Protocols and control planes"},
+    {"id": "domain.traffic", "title": "Traffic and reachability"},
+    {"id": "domain.enterprise-design", "title": "Enterprise design domains"},
+    {"id": "domain.security-privacy", "title": "Security, identity, privacy, and trust"},
+    {"id": "domain.observability-operations", "title": "Observability and operations"},
+    {"id": "domain.vendors-channels", "title": "Vendors, controllers, and evidence channels"},
+    {"id": "domain.gui-white-label", "title": "GUI, experience, accessibility, and white-label"},
+    {"id": "domain.artifacts-deliverables", "title": "Artifacts and deliverables"},
+    {"id": "domain.code-tests-release-knowledge", "title": "Code, tests, release, and knowledge"},
+    {"id": "domain.product-business", "title": "Product, business, and adoption"}
+  ]
+}

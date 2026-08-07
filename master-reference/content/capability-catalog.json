@@ -1,0 +1,1443 @@
+{
+  "schema_version": "1.0.0",
+  "id": "atlas.capability-catalog.2026-08-07",
+  "catalog_version": "2026.08.07",
+  "kind": "closed-world-capability-catalog",
+  "denominator_rule": "Every entry in this finite version is classified. Adding or removing an entry changes the denominator and must be disclosed as scope evolution, never disguised as progress or regression.",
+  "entry_contract": {
+    "current": "Requires at least one live owner reference and a bounded support statement.",
+    "partial": "Requires owner references for the implemented slice plus at least one actionable gap reference.",
+    "incomplete": "Missing, gated, excluded, and unknown entries require at least one dispositioned gap reference.",
+    "catalog_presence": "An entry documents the landscape; it is not a support promise unless state=current."
+  },
+  "domains": [
+    {
+      "id": "domain.outcomes",
+      "entity_role": "reference",
+      "entries": [
+        {
+          "id": "cap.outcomes.evidence-to-decision",
+          "title": "Evidence-to-decision traceability",
+          "state": "current",
+          "current_scope": "Supported observations retain a path through canonical facts, findings, recommendations, gates, and produced artifacts.",
+          "owner_refs": ["owner.ssot.engine", "owner.manifest", "owner.operating.doctrine"]
+        },
+        {
+          "id": "cap.outcomes.coverage-honesty",
+          "title": "Coverage-honest conclusions",
+          "state": "current",
+          "current_scope": "Observed, clean, finding, not-observed, missing, malformed, and unknown are not intentionally collapsed for supported evidence contracts.",
+          "owner_refs": ["owner.architecture.coverage", "owner.analysis", "owner.operating.doctrine"]
+        },
+        {
+          "id": "cap.outcomes.migration-governance",
+          "title": "Phase-gated migration governance",
+          "state": "current",
+          "current_scope": "Assess, approval, design, peer review, MOP/rollback, dry-run/CAB, acceptance, cutover, and PIR remain distinct governed steps.",
+          "owner_refs": ["owner.operating.doctrine", "owner.web.trust"]
+        },
+        {
+          "id": "cap.outcomes.cross-artifact-consistency",
+          "title": "Cross-artifact consistency",
+          "state": "current",
+          "current_scope": "The owned deliverable family derives from the same snapshot and uses explicit completeness and manifest controls.",
+          "owner_refs": ["owner.deliverable.family", "owner.manifest", "owner.ssot.engine"]
+        },
+        {
+          "id": "cap.outcomes.portable-offline",
+          "title": "Portable offline assessment",
+          "state": "current",
+          "current_scope": "The core engine and portable Atlas path are designed to operate without external egress; live collection remains explicit and authorized.",
+          "owner_refs": ["owner.operating.doctrine", "owner.engine.entry"]
+        },
+        {
+          "id": "cap.outcomes.business-service-impact",
+          "title": "Business-service impact traceability",
+          "state": "partial",
+          "current_scope": "Application domains, criticality, blast radius, and migration groups exist, but a complete service catalog, dependency graph, and value model do not.",
+          "owner_refs": ["owner.explorer", "owner.analysis"],
+          "gap_refs": ["gap.business-traceability"]
+        },
+        {
+          "id": "cap.outcomes.real-estate-validation",
+          "title": "Real-estate outcome validation",
+          "state": "unknown",
+          "current_scope": "No client or owner-machine evidence is admitted to this repository-owned reference layer, so adoption and achieved business outcomes are unknown here.",
+          "gap_refs": ["gap.product-adoption"]
+        },
+        {
+          "id": "cap.outcomes.autonomous-remediation",
+          "title": "Autonomous remediation and closed-loop change",
+          "state": "excluded",
+          "current_scope": "Intentionally excluded: Atlas proposes and verifies but never writes devices or self-approves a change.",
+          "gap_refs": ["gap.excluded-device-writes"]
+        }
+      ]
+    },
+    {
+      "id": "domain.architecture",
+      "entity_role": "reference",
+      "entries": [
+        {
+          "id": "cap.architecture.bounded-intake",
+          "title": "Bounded evidence intake",
+          "state": "current",
+          "current_scope": "Supported files, directories, archives, and uploads are constrained before interpretation.",
+          "owner_refs": ["owner.intake.bounds", "owner.web.trust"]
+        },
+        {
+          "id": "cap.architecture.same-read-custody",
+          "title": "Same-read custody binding",
+          "state": "current",
+          "current_scope": "File identity, bytes, digest, length, and before/after metadata are bound around the read used for parsing.",
+          "owner_refs": ["owner.custody"]
+        },
+        {
+          "id": "cap.architecture.canonical-snapshot",
+          "title": "Canonical assessment snapshot",
+          "state": "current",
+          "current_scope": "One normalized snapshot owns shared assessment facts and reconciliation state for supported inputs.",
+          "owner_refs": ["owner.ssot.engine", "owner.ssot.registry"]
+        },
+        {
+          "id": "cap.architecture.architecture-coverage",
+          "title": "Architecture-class coverage accounting",
+          "state": "current",
+          "current_scope": "The registry reports observed, clean, finding, or not-observed for 27 declared architecture classes and 46 detectors.",
+          "owner_refs": ["owner.architecture.coverage", "owner.ssot.registry"]
+        },
+        {
+          "id": "cap.architecture.authority-separation",
+          "title": "Integrity, provenance, and authority separation",
+          "state": "current",
+          "current_scope": "Registry bytes may be integral without being authoritative; source scope and authority remain explicit.",
+          "owner_refs": ["owner.registry.authority", "owner.ssot.registry"]
+        },
+        {
+          "id": "cap.architecture.decision-state-machine",
+          "title": "Decision and gate state machine",
+          "state": "current",
+          "current_scope": "Recommendations, approvals, execution evidence, validation, and completion are separately recorded and fail closed.",
+          "owner_refs": ["owner.operating.doctrine", "owner.web.trust"]
+        },
+        {
+          "id": "cap.architecture.static-master-reference",
+          "title": "Static master-reference projection",
+          "state": "current",
+          "current_scope": "This reference is repository-owned static content with no evidence intake, runtime API, storage, cookies, or analytics.",
+          "owner_refs": ["owner.reference.contract"]
+        },
+        {
+          "id": "cap.architecture.unknown-signal-intake",
+          "title": "Cross-domain unknown-signal queue",
+          "state": "missing",
+          "current_scope": "Some parsers expose diagnostics and yield, but there is no one catalog-linked queue for unmapped protocols, platforms, shapes, and not-assessable axes.",
+          "gap_refs": ["gap.unknown-intake"]
+        }
+      ]
+    },
+    {
+      "id": "domain.protocols",
+      "entity_role": "reference",
+      "entries": [
+        {
+          "id": "cap.protocol.stp",
+          "title": "STP and loop-avoidance behavior",
+          "state": "partial",
+          "current_scope": "Captured STP state supports health, root placement, blocked-path, inconsistency, blast-radius, and advisory reasoning; full standards and vendor variance are not claimed.",
+          "owner_refs": ["owner.analysis", "owner.protocol.knowledge", "owner.explorer"],
+          "gap_refs": ["gap.protocol-depth"],
+          "traffic_plane_refs": ["traffic.l2"]
+        },
+        {
+          "id": "cap.protocol.etherchannel-lacp-pagp",
+          "title": "EtherChannel, LACP, and PAgP",
+          "state": "partial",
+          "current_scope": "Bundle membership and selected abnormal member flags are parsed and explained; timer, hashing, multi-chassis, and vendor depth are incomplete.",
+          "owner_refs": ["owner.analysis", "owner.protocol.knowledge"],
+          "gap_refs": ["gap.protocol-depth"],
+          "traffic_plane_refs": ["traffic.physical", "traffic.l2"]
+        },
+        {
+          "id": "cap.protocol.vtp",
+          "title": "VTP",
+          "state": "partial",
+          "current_scope": "Operating mode, domain, revision, and high-revision risk have bounded parsing and advice; complete version and pruning behavior are not modeled.",
+          "owner_refs": ["owner.analysis", "owner.protocol.knowledge"],
+          "gap_refs": ["gap.protocol-depth"],
+          "traffic_plane_refs": ["traffic.l2"]
+        },
+        {
+          "id": "cap.protocol.ospf",
+          "title": "OSPFv2",
+          "state": "partial",
+          "current_scope": "Neighbor state, selected stuck-state intelligence, and routing-topology views exist; LSDB, area design, policy, convergence, and scale verification are incomplete.",
+          "owner_refs": ["owner.analysis", "owner.protocol.knowledge", "owner.explorer"],
+          "gap_refs": ["gap.protocol-depth"],
+          "traffic_plane_refs": ["traffic.l3-underlay"]
+        },
+        {
+          "id": "cap.protocol.bgp",
+          "title": "BGP",
+          "state": "partial",
+          "current_scope": "Peer state and selected failure-state intelligence exist, with selected EVPN/VPN detectors; policy, RIB scale, best-path, security, RR, and convergence depth are incomplete.",
+          "owner_refs": ["owner.analysis", "owner.protocol.knowledge", "owner.architecture.coverage"],
+          "gap_refs": ["gap.protocol-depth", "gap.protocol-advanced"],
+          "traffic_plane_refs": ["traffic.l3-underlay", "traffic.overlay-segmentation", "traffic.external-hybrid"]
+        },
+        {
+          "id": "cap.protocol.eigrp",
+          "title": "EIGRP",
+          "state": "partial",
+          "current_scope": "Observed neighbor-up state contributes to protocol health and topology; topology table, feasibility, stubs, variance, authentication, and failure-state advice are incomplete.",
+          "owner_refs": ["owner.analysis", "owner.explorer"],
+          "gap_refs": ["gap.protocol-depth"],
+          "traffic_plane_refs": ["traffic.l3-underlay"]
+        },
+        {
+          "id": "cap.protocol.fhrp",
+          "title": "HSRP, VRRP, and GLBP first-hop redundancy",
+          "state": "partial",
+          "current_scope": "Gateway redundancy, split-brain/mismatch, tracking, preemption, and selected failure implications are assessed; timers and full vendor behavior are incomplete.",
+          "owner_refs": ["owner.analysis", "owner.architecture.coverage"],
+          "gap_refs": ["gap.protocol-depth"],
+          "traffic_plane_refs": ["traffic.l3-underlay"]
+        },
+        {
+          "id": "cap.protocol.ntp",
+          "title": "NTP",
+          "state": "partial",
+          "current_scope": "Time-synchronization presence and management baseline have selected assessment coverage; offset, jitter, stratum quality, authentication, and fleet chronology are incomplete.",
+          "owner_refs": ["owner.architecture.coverage", "owner.analysis"],
+          "gap_refs": ["gap.protocol-management-services"],
+          "traffic_plane_refs": ["traffic.management-observability"]
+        },
+        {
+          "id": "cap.protocol.vxlan-evpn",
+          "title": "VXLAN-EVPN",
+          "state": "partial",
+          "current_scope": "Selected NVE peer, EVPN control-plane, and VNI state detectors exist; route-type, multihoming, DF, policy, DCI, and endpoint validation are incomplete.",
+          "owner_refs": ["owner.architecture.coverage"],
+          "gap_refs": ["gap.protocol-advanced"],
+          "traffic_plane_refs": ["traffic.overlay-segmentation"]
+        },
+        {
+          "id": "cap.protocol.mpls",
+          "title": "MPLS LDP, L3VPN, and L2VPN",
+          "state": "partial",
+          "current_scope": "Selected LDP session, VPNv4, and pseudowire-down detectors exist; label forwarding, TE, OAM, route-target policy, and service assurance are incomplete.",
+          "owner_refs": ["owner.architecture.coverage"],
+          "gap_refs": ["gap.service-provider", "gap.protocol-security-oam"],
+          "traffic_plane_refs": ["traffic.l3-underlay", "traffic.overlay-segmentation"]
+        },
+        {
+          "id": "cap.protocol.pim",
+          "title": "PIM-SM and multicast RPF",
+          "state": "partial",
+          "current_scope": "Selected RP-resilience and RPF-failure detection exists; source discovery, SSM, MSDP, BSR, mVPN, BIER, and end-to-end receiver proof are incomplete.",
+          "owner_refs": ["owner.architecture.coverage"],
+          "gap_refs": ["gap.protocol-advanced"],
+          "traffic_plane_refs": ["traffic.l3-underlay", "traffic.application-service"]
+        },
+        {
+          "id": "cap.protocol.bfd",
+          "title": "BFD",
+          "state": "partial",
+          "current_scope": "A selected session-down/failover-degraded detector exists; interval design, echo, multihop, demand mode, scaling, and client correlation are incomplete.",
+          "owner_refs": ["owner.architecture.coverage"],
+          "gap_refs": ["gap.protocol-depth"],
+          "traffic_plane_refs": ["traffic.l3-underlay"]
+        },
+        {
+          "id": "cap.protocol.lisp",
+          "title": "LISP and SD-Access fabric state",
+          "state": "partial",
+          "current_scope": "Selected fabric-session-down detection exists; mapping systems, VN policy, border/control-plane design, and end-to-end SDA assurance are incomplete.",
+          "owner_refs": ["owner.architecture.coverage"],
+          "gap_refs": ["gap.protocol-advanced"],
+          "traffic_plane_refs": ["traffic.overlay-segmentation"]
+        },
+        {
+          "id": "cap.protocol.trustsec-cts",
+          "title": "TrustSec / CTS",
+          "state": "partial",
+          "current_scope": "Selected environment-data failure detection exists; SGT propagation, SGACL policy, pxGrid context, and path enforcement proof are incomplete.",
+          "owner_refs": ["owner.architecture.coverage"],
+          "gap_refs": ["gap.security-depth"],
+          "traffic_plane_refs": ["traffic.overlay-segmentation", "traffic.stateful-policy"]
+        },
+        {
+          "id": "cap.protocol.dmvpn",
+          "title": "DMVPN / NHRP",
+          "state": "partial",
+          "current_scope": "Selected tunnel-peer-down detection exists; phases, spoke-to-spoke behavior, routing interaction, crypto, QoS, and scale are incomplete.",
+          "owner_refs": ["owner.architecture.coverage"],
+          "gap_refs": ["gap.protocol-advanced"],
+          "traffic_plane_refs": ["traffic.overlay-segmentation"]
+        },
+        {
+          "id": "cap.protocol.ipsec",
+          "title": "IPsec encrypted WAN",
+          "state": "partial",
+          "current_scope": "Selected crypto-session-down detection exists; IKE negotiation, selectors, rekey, PKI, performance, remote access, and end-to-end policy are incomplete.",
+          "owner_refs": ["owner.architecture.coverage"],
+          "gap_refs": ["gap.security-depth"],
+          "traffic_plane_refs": ["traffic.stateful-policy", "traffic.external-hybrid"]
+        },
+        {
+          "id": "cap.protocol.ipv6-nd-routing",
+          "title": "IPv6 ND, DAD, OSPFv3, and BGP",
+          "state": "partial",
+          "current_scope": "Selected duplicate-address, adjacency, and first-hop-security detection exists; dual-stack design, RA/DHCPv6, policy, transition, and Internet reachability are incomplete.",
+          "owner_refs": ["owner.architecture.coverage"],
+          "gap_refs": ["gap.protocol-depth", "gap.enterprise-breadth"],
+          "traffic_plane_refs": ["traffic.l3-underlay", "traffic.stateful-policy"]
+        },
+        {
+          "id": "cap.protocol.syslog",
+          "title": "Syslog",
+          "state": "partial",
+          "current_scope": "Captured operational logs contribute selected event intelligence; reliable transport, facility/severity policy, collector delivery, retention, chronology, and SIEM integration are incomplete.",
+          "owner_refs": ["owner.analysis", "owner.engine.entry"],
+          "gap_refs": ["gap.protocol-management-services", "gap.observability-signals"],
+          "traffic_plane_refs": ["traffic.management-observability"]
+        },
+        {
+          "id": "cap.protocol.aaa-8021x",
+          "title": "TACACS+, RADIUS, 802.1X, and EAP",
+          "state": "partial",
+          "current_scope": "Configuration and selected ISE deployment evidence can expose posture; authentication transactions, EAP methods, authorization policy, accounting, and identity-path proof are incomplete.",
+          "owner_refs": ["owner.analysis", "owner.architecture.coverage"],
+          "gap_refs": ["gap.protocol-management-services", "gap.security-depth"],
+          "traffic_plane_refs": ["traffic.stateful-policy", "traffic.management-observability"]
+        },
+        {
+          "id": "cap.protocol.snmp",
+          "title": "SNMP",
+          "state": "missing",
+          "current_scope": "No continuous SNMP inventory, polling, trap, MIB-coverage, or credential-posture capability is claimed.",
+          "gap_refs": ["gap.protocol-management-services", "gap.observability-signals"]
+        },
+        {
+          "id": "cap.protocol.model-driven-telemetry",
+          "title": "NETCONF, RESTCONF, gNMI, gNOI, YANG, and OpenConfig",
+          "state": "missing",
+          "current_scope": "Controller-specific REST collection does not establish model-driven network-management support.",
+          "gap_refs": ["gap.protocol-management-services", "gap.observability-signals"]
+        },
+        {
+          "id": "cap.protocol.dns-dhcp-ipam",
+          "title": "DNS, DHCP, DHCPv6, and IPAM",
+          "state": "missing",
+          "current_scope": "No authoritative service health, lease, DDI dependency, DNSSEC, or address-governance model is claimed.",
+          "gap_refs": ["gap.protocol-management-services", "gap.flow-application"]
+        },
+        {
+          "id": "cap.protocol.wireless",
+          "title": "802.11, CAPWAP, roaming, and Passpoint",
+          "state": "missing",
+          "current_scope": "Access-point discovery in topology does not establish WLAN RF, controller, client, roaming, or authentication analysis.",
+          "gap_refs": ["gap.enterprise-breadth", "gap.vendor-parity"]
+        },
+        {
+          "id": "cap.protocol.macsec",
+          "title": "MACsec and MKA",
+          "state": "missing",
+          "current_scope": "No link-encryption, key-agreement, cipher, replay, or policy validation is claimed.",
+          "gap_refs": ["gap.protocol-security-oam"]
+        },
+        {
+          "id": "cap.protocol.oam",
+          "title": "CFM, Y.1731, TWAMP, IP SLA, and MPLS OAM",
+          "state": "missing",
+          "current_scope": "No end-to-end service OAM or active performance assurance is claimed.",
+          "gap_refs": ["gap.protocol-security-oam", "gap.service-provider"]
+        },
+        {
+          "id": "cap.protocol.routing-security",
+          "title": "RPKI/ROV, ASPA, BGPsec, source validation, RTBH, and FlowSpec",
+          "state": "missing",
+          "current_scope": "BGP peer-state assessment does not establish Internet routing security or DDoS signaling support.",
+          "gap_refs": ["gap.protocol-security-oam", "gap.security-depth"]
+        },
+        {
+          "id": "cap.protocol.advanced-bgp",
+          "title": "BGP route reflection, communities, add-path, GR, PIC, and labeled-unicast",
+          "state": "missing",
+          "current_scope": "No complete control-plane policy, scale, path-selection, or convergence model is claimed.",
+          "gap_refs": ["gap.protocol-advanced", "gap.service-provider"]
+        },
+        {
+          "id": "cap.protocol.advanced-multicast",
+          "title": "MSDP, BSR, Auto-RP, SSM, mVPN, and BIER",
+          "state": "missing",
+          "current_scope": "Selected PIM/RPF findings do not establish complete multicast service support.",
+          "gap_refs": ["gap.protocol-advanced", "gap.service-provider"]
+        },
+        {
+          "id": "cap.protocol.segment-routing",
+          "title": "SR-MPLS, SRv6, TI-LFA, and fast reroute",
+          "state": "missing",
+          "current_scope": "No segment-routing policy, SID, locator, repair-path, or convergence assessment is claimed.",
+          "gap_refs": ["gap.protocol-advanced", "gap.service-provider"]
+        },
+        {
+          "id": "cap.protocol.pcep-bgpls-rift-isis",
+          "title": "IS-IS, PCEP, BGP-LS, and RIFT",
+          "state": "missing",
+          "current_scope": "No link-state, topology export, path-computation, or fat-tree routing analysis is claimed for these families.",
+          "gap_refs": ["gap.protocol-advanced", "gap.service-provider"]
+        },
+        {
+          "id": "cap.protocol.precision-time-determinism",
+          "title": "PTP, SyncE, TSN, and DetNet",
+          "state": "missing",
+          "current_scope": "Application-domain hints do not establish precision-time, bounded-latency, or deterministic-network assurance.",
+          "gap_refs": ["gap.protocol-realtime-hpc"]
+        },
+        {
+          "id": "cap.protocol.roce-dcb",
+          "title": "RoCEv2, RDMA, DCB, PFC, and ECN",
+          "state": "missing",
+          "current_scope": "No lossless-fabric congestion, pause, queue, ECN, or RDMA behavior model is claimed.",
+          "gap_refs": ["gap.protocol-realtime-hpc"]
+        },
+        {
+          "id": "cap.protocol.ipv6-transition-cgnat",
+          "title": "NAT64, DNS64, 464XLAT, transition, and CGNAT",
+          "state": "missing",
+          "current_scope": "Selected IPv6 findings do not establish translation, subscriber NAT, logging, or application compatibility assessment.",
+          "gap_refs": ["gap.flow-stateful", "gap.service-provider"]
+        },
+        {
+          "id": "cap.protocol.quic-http3",
+          "title": "QUIC and HTTP/3",
+          "state": "missing",
+          "current_scope": "No encrypted application-transport classification, policy, performance, or troubleshooting support is claimed.",
+          "gap_refs": ["gap.flow-application"]
+        }
+      ]
+    },
+    {
+      "id": "domain.traffic",
+      "entity_role": "reference",
+      "entries": [
+        {
+          "id": "cap.traffic.physical-path",
+          "title": "Physical and cable path",
+          "state": "partial",
+          "current_scope": "Neighbor and interface evidence powers a role-tier cable map and selected link-health findings; optical, circuit, power, and facility dependencies are incomplete.",
+          "owner_refs": ["owner.analysis", "owner.explorer"],
+          "gap_refs": ["gap.enterprise-breadth"],
+          "traffic_plane_refs": ["traffic.physical"]
+        },
+        {
+          "id": "cap.traffic.l2-path-blast",
+          "title": "Per-VLAN L2 path and blast radius",
+          "state": "current",
+          "current_scope": "For supported captured topology, Explorer and analysis compute forwarding/blocked paths, partitions, backups, articulation points, and device-removal blast effects.",
+          "owner_refs": ["owner.analysis", "owner.explorer"],
+          "traffic_plane_refs": ["traffic.l2"]
+        },
+        {
+          "id": "cap.traffic.l3-gateway-path",
+          "title": "Gateway and bounded L3 dependency path",
+          "state": "partial",
+          "current_scope": "Gateway, FHRP, routing adjacency, and selected path dependencies are modeled; complete RIB/FIB recursion, ECMP, VRF leaking, and policy routing are incomplete.",
+          "owner_refs": ["owner.analysis", "owner.explorer"],
+          "gap_refs": ["gap.protocol-depth"],
+          "traffic_plane_refs": ["traffic.l3-underlay"]
+        },
+        {
+          "id": "cap.traffic.overlay-tenant-path",
+          "title": "Overlay and tenant path",
+          "state": "partial",
+          "current_scope": "Selected overlay health and architecture classes are observed, but an authoritative per-tenant overlay path and policy-provenance model is absent.",
+          "owner_refs": ["owner.architecture.coverage"],
+          "gap_refs": ["gap.protocol-advanced"],
+          "traffic_plane_refs": ["traffic.overlay-segmentation"]
+        },
+        {
+          "id": "cap.traffic.acl-l4-simulation",
+          "title": "ACL-oriented L4 simulation",
+          "state": "partial",
+          "current_scope": "Explorer can reason about a bounded ACL-oriented L4 lens; it is not an authoritative stateful firewall, NAT, return-path, or session simulator.",
+          "owner_refs": ["owner.explorer"],
+          "gap_refs": ["gap.flow-stateful"],
+          "traffic_plane_refs": ["traffic.stateful-policy"]
+        },
+        {
+          "id": "cap.traffic.actual-flow-telemetry",
+          "title": "Actual flow and packet evidence",
+          "state": "missing",
+          "current_scope": "No NetFlow/IPFIX/sFlow, packet-capture, session-table, or streaming flow datastore is claimed.",
+          "gap_refs": ["gap.flow-actual-telemetry"],
+          "traffic_plane_refs": ["traffic.stateful-policy", "traffic.application-service", "traffic.management-observability"]
+        },
+        {
+          "id": "cap.traffic.application-experience",
+          "title": "Application delivery and digital experience",
+          "state": "missing",
+          "current_scope": "No authoritative DNS/LB/proxy/TLS dependency, synthetic transaction, latency, jitter, loss, or MOS proof is claimed.",
+          "gap_refs": ["gap.flow-application"],
+          "traffic_plane_refs": ["traffic.application-service"]
+        },
+        {
+          "id": "cap.traffic.hybrid-saas-internet",
+          "title": "Hybrid, SaaS, Internet, and multicloud path",
+          "state": "missing",
+          "current_scope": "A bounded AWS security-group detector does not establish external routing, provider, SaaS, sovereignty, resilience, or egress-cost paths.",
+          "gap_refs": ["gap.flow-external", "gap.cloud-native"],
+          "traffic_plane_refs": ["traffic.external-hybrid"]
+        },
+        {
+          "id": "cap.traffic.capacity-forecast",
+          "title": "Demand, capacity, microburst, and growth forecasting",
+          "state": "partial",
+          "current_scope": "Snapshot port/PoE/capacity signals exist; time-series demand, buffer/microburst behavior, forecasts, confidence bounds, and cost curves are incomplete.",
+          "owner_refs": ["owner.analysis"],
+          "gap_refs": ["gap.observability-signals"]
+        }
+      ]
+    },
+    {
+      "id": "domain.enterprise-design",
+      "entity_role": "reference",
+      "entries": [
+        {
+          "id": "cap.design.campus",
+          "title": "Campus hierarchical architecture",
+          "state": "partial",
+          "current_scope": "Captured access/distribution/core topology, L2/L3 resilience, capacity, security posture, and selected leading-practice conformance are assessed; no claim spans every campus technology.",
+          "owner_refs": ["owner.analysis", "owner.architecture.coverage", "owner.explorer"],
+          "gap_refs": ["gap.enterprise-breadth"]
+        },
+        {
+          "id": "cap.design.branch-remote",
+          "title": "Branch, remote workforce, and Internet edge",
+          "state": "missing",
+          "current_scope": "Selected WAN, VPN, and firewall detectors do not constitute a branch or remote-work architecture assessment.",
+          "gap_refs": ["gap.enterprise-breadth"]
+        },
+        {
+          "id": "cap.design.wan-sdwan",
+          "title": "WAN and SD-WAN",
+          "state": "partial",
+          "current_scope": "DMVPN, IPsec, BFD, selected MPLS, and vManage/SD-WAN evidence have bounded detection; transport diversity, SLA policy, application routing, QoS, Internet exit, and operations are incomplete.",
+          "owner_refs": ["owner.architecture.coverage", "owner.rest.collection"],
+          "gap_refs": ["gap.enterprise-breadth", "gap.service-provider"]
+        },
+        {
+          "id": "cap.design.datacenter",
+          "title": "Data-center fabric and ACI",
+          "state": "partial",
+          "current_scope": "Selected VXLAN-EVPN and APIC/ACI health, tenant, fault, enforcement, and move-group evidence are supported; complete fabric policy, DCI, services, compute, and storage are not.",
+          "owner_refs": ["owner.architecture.coverage", "owner.rest.collection"],
+          "gap_refs": ["gap.enterprise-breadth", "gap.protocol-advanced"]
+        },
+        {
+          "id": "cap.design.network-services",
+          "title": "DNS, DHCP, IPAM, NTP, AAA, PKI, proxy, and load-balancing services",
+          "state": "partial",
+          "current_scope": "NTP, AAA/config, and selected identity evidence exist; no unified network-services dependency or resiliency model is claimed.",
+          "owner_refs": ["owner.analysis", "owner.architecture.coverage"],
+          "gap_refs": ["gap.protocol-management-services", "gap.flow-application"]
+        },
+        {
+          "id": "cap.design.wireless-mobility",
+          "title": "Enterprise wireless, location, and private cellular",
+          "state": "missing",
+          "current_scope": "No RF, WLAN controller, roaming, location, private-5G, or mobility design assessment is claimed.",
+          "gap_refs": ["gap.enterprise-breadth", "gap.vendor-parity"]
+        },
+        {
+          "id": "cap.design.ipv6-transition",
+          "title": "IPv6 and transition architecture",
+          "state": "partial",
+          "current_scope": "Selected ND, DAD, FHS, OSPFv3, and BGP evidence is assessed; addressing, dual-stack, translation, security parity, DNS, application readiness, and Internet strategy are incomplete.",
+          "owner_refs": ["owner.architecture.coverage"],
+          "gap_refs": ["gap.enterprise-breadth", "gap.protocol-management-services"]
+        },
+        {
+          "id": "cap.design.dci-multiregion",
+          "title": "DCI, multisite, and multiregion resilience",
+          "state": "missing",
+          "current_scope": "No complete failure-domain, data-replication, route-policy, application-consistency, or recovery-point/time architecture is claimed.",
+          "gap_refs": ["gap.enterprise-breadth", "gap.cloud-native"]
+        },
+        {
+          "id": "cap.design.multicloud",
+          "title": "Hybrid and multicloud networking",
+          "state": "partial",
+          "current_scope": "A bounded AWS security-group exposure detector exists; no Azure/GCP, transit, interconnect, DNS, firewall, identity, route, sovereignty, or cost architecture is complete.",
+          "owner_refs": ["owner.architecture.coverage"],
+          "gap_refs": ["gap.cloud-native"]
+        },
+        {
+          "id": "cap.design.kubernetes-service-mesh",
+          "title": "Kubernetes CNI, service mesh, eBPF, and multicluster",
+          "state": "missing",
+          "current_scope": "No cluster-network, workload-identity, service-policy, eBPF, or mesh dependency assessment is claimed.",
+          "gap_refs": ["gap.cloud-native"]
+        },
+        {
+          "id": "cap.design.ai-hpc-fabric",
+          "title": "AI/HPC Ethernet and lossless fabrics",
+          "state": "missing",
+          "current_scope": "No GPU-fabric topology, RoCE/RDMA, DCB/PFC/ECN, congestion, incast, or job-impact analysis is claimed.",
+          "gap_refs": ["gap.protocol-realtime-hpc"]
+        },
+        {
+          "id": "cap.design.storage-san",
+          "title": "Storage and SAN fabrics",
+          "state": "missing",
+          "current_scope": "No Fibre Channel, FCoE, NVMe/TCP, multipathing, zoning, replication, or storage-service dependency assessment is claimed.",
+          "gap_refs": ["gap.enterprise-breadth"]
+        },
+        {
+          "id": "cap.design.collaboration-realtime",
+          "title": "Voice, video, collaboration, broadcast, and real-time media",
+          "state": "partial",
+          "current_scope": "QoS posture and application-domain hints exist; call control, media path, MOS, multicast, PTP, jitter, loss, and admission control are incomplete.",
+          "owner_refs": ["owner.analysis", "owner.explorer"],
+          "gap_refs": ["gap.flow-application", "gap.protocol-realtime-hpc"]
+        },
+        {
+          "id": "cap.design.oob-facilities",
+          "title": "Out-of-band management, cabling, optics, power, and facilities",
+          "state": "partial",
+          "current_scope": "Cable, interface, PoE, and selected platform signals exist; console/OOB reachability, circuits, racks, PDUs, UPS, environmental sensors, optics budgets, and physical diversity are incomplete.",
+          "owner_refs": ["owner.analysis", "owner.explorer"],
+          "gap_refs": ["gap.operations-lifecycle-facilities"]
+        },
+        {
+          "id": "cap.design.sase-zero-trust",
+          "title": "SASE, SSE, zero trust, and remote access",
+          "state": "missing",
+          "current_scope": "TrustSec, ISE, firewall, and IPsec slices do not establish a complete identity-to-application SASE or zero-trust architecture.",
+          "gap_refs": ["gap.security-depth", "gap.flow-external"]
+        },
+        {
+          "id": "cap.design.resilience-dr",
+          "title": "Business continuity, disaster recovery, and survivability",
+          "state": "partial",
+          "current_scope": "Topology failure simulation, redundancy, migration rollback, and acceptance gates exist; business-service RTO/RPO, multi-site exercises, backup restoration, and crisis communications are incomplete.",
+          "owner_refs": ["owner.analysis", "owner.explorer", "owner.operating.doctrine"],
+          "gap_refs": ["gap.business-traceability", "gap.operations-lifecycle-facilities"]
+        },
+        {
+          "id": "cap.design.sustainability-finops",
+          "title": "Energy, sustainability, licensing, and network FinOps",
+          "state": "missing",
+          "current_scope": "No energy/carbon baseline, license optimization, carrier/cloud cost, or lifecycle-TCO model is claimed.",
+          "gap_refs": ["gap.product-packaging", "gap.business-traceability"]
+        }
+      ]
+    },
+    {
+      "id": "domain.security-privacy",
+      "entity_role": "reference",
+      "entries": [
+        {
+          "id": "cap.security.read-only-boundary",
+          "title": "Read-only assessment boundary",
+          "state": "current",
+          "current_scope": "Device changes are forbidden; controller collection is opt-in and GET-only after authentication with a dedicated read-only RBAC account.",
+          "owner_refs": ["owner.operating.doctrine", "owner.rest.collection"]
+        },
+        {
+          "id": "cap.security.server-owned-trust",
+          "title": "Server-owned trust labels",
+          "state": "current",
+          "current_scope": "Uploaded content cannot self-assert server verification or trusted provenance.",
+          "owner_refs": ["owner.web.trust", "owner.web.summary"]
+        },
+        {
+          "id": "cap.security.redaction-verification",
+          "title": "Independent redaction verification",
+          "state": "current",
+          "current_scope": "Supported JSON, HTML, and OOXML outputs receive independent verification rather than producer self-attestation.",
+          "owner_refs": ["owner.redaction.verify"]
+        },
+        {
+          "id": "cap.security.repository-privacy",
+          "title": "Repository and release privacy gate",
+          "state": "current",
+          "current_scope": "Tracked, untracked, ignored, and packaged content is scanned under the repository privacy contract and bounded exception policy.",
+          "owner_refs": ["owner.repository.privacy", "owner.ssot.registry"]
+        },
+        {
+          "id": "cap.security.config-hardening",
+          "title": "Configuration hardening and CIS posture",
+          "state": "partial",
+          "current_scope": "Selected Cisco configuration and CIS checks contribute findings; full platform, benchmark-version, compensating-control, and remediation validation coverage is incomplete.",
+          "owner_refs": ["owner.analysis", "owner.engine.entry"],
+          "gap_refs": ["gap.security-depth"]
+        },
+        {
+          "id": "cap.security.l2-first-hop",
+          "title": "Layer-2 and IPv6 first-hop protections",
+          "state": "partial",
+          "current_scope": "Port security, storm control, and selected IPv6 first-hop-security suites have detectors; DHCP snooping, DAI, RA guard, source guard, and vendor parity are incomplete.",
+          "owner_refs": ["owner.architecture.coverage", "owner.analysis"],
+          "gap_refs": ["gap.security-depth"]
+        },
+        {
+          "id": "cap.security.firewall-ha-capacity",
+          "title": "Firewall HA and capacity",
+          "state": "partial",
+          "current_scope": "Selected Cisco ASA/FTD HA and resource-exhaustion detectors exist; rules, objects, NAT, sessions, threats, VPN, upgrades, and multi-vendor policy proof are incomplete.",
+          "owner_refs": ["owner.architecture.coverage"],
+          "gap_refs": ["gap.flow-stateful", "gap.security-depth"]
+        },
+        {
+          "id": "cap.security.identity-ise",
+          "title": "Identity, NAC, and Cisco ISE",
+          "state": "partial",
+          "current_scope": "ISE node reachability and deployment redundancy detectors exist; authentication journeys, policy sets, posture, guest/BYOD, pxGrid, and authorization outcomes are incomplete.",
+          "owner_refs": ["owner.architecture.coverage"],
+          "gap_refs": ["gap.security-depth", "gap.controller-channels"]
+        },
+        {
+          "id": "cap.security.lifecycle-authority",
+          "title": "Exact product lifecycle authority",
+          "state": "current",
+          "current_scope": "A product is classified only when an exact bounded scope maps to the owned lifecycle evidence; unresolved products abstain.",
+          "owner_refs": ["owner.lifecycle", "owner.registry.authority", "owner.ssot.registry"]
+        },
+        {
+          "id": "cap.security.advisory-intel",
+          "title": "External vulnerability and advisory intelligence",
+          "state": "partial",
+          "current_scope": "A sanitized hash-sealed, unauthenticated advisory feed path exists; exact platform applicability, source authentication, SBOM, KEV/EPSS fusion, and closed-loop remediation are incomplete.",
+          "owner_refs": ["owner.research.producer", "owner.research.http", "owner.ssot.registry"],
+          "gap_refs": ["gap.security-advisory-authority", "gap.knowledge-external-promotion"]
+        },
+        {
+          "id": "cap.security.pki-crypto-agility",
+          "title": "PKI, certificates, keys, MACsec, and crypto agility",
+          "state": "missing",
+          "current_scope": "No certificate inventory, chain validation, expiry, key custody, algorithm posture, PQC migration, or MACsec assurance is claimed.",
+          "gap_refs": ["gap.security-depth"]
+        },
+        {
+          "id": "cap.security.routing-ddos",
+          "title": "Routing security, source validation, and DDoS controls",
+          "state": "missing",
+          "current_scope": "No RPKI/ROV, ASPA, BGPsec, SAV, RTBH, FlowSpec, scrubbing, or DDoS readiness assessment is claimed.",
+          "gap_refs": ["gap.security-depth", "gap.service-provider"]
+        },
+        {
+          "id": "cap.security.wireless",
+          "title": "Wireless security",
+          "state": "missing",
+          "current_scope": "No WPA3, 802.1X/EAP, rogue, segmentation, guest, Passpoint, RF-security, or WLAN-controller policy assessment is claimed.",
+          "gap_refs": ["gap.security-depth", "gap.enterprise-breadth"]
+        },
+        {
+          "id": "cap.security.cloud-kubernetes",
+          "title": "Cloud IAM, KMS, workload identity, and Kubernetes network policy",
+          "state": "missing",
+          "current_scope": "A security-group exposure detector does not establish identity, encryption, workload, cluster, secret, or admission-control security coverage.",
+          "gap_refs": ["gap.security-cloud-native", "gap.cloud-native"]
+        },
+        {
+          "id": "cap.security.ids-ndr-waf-edr",
+          "title": "IDS/IPS, NDR, WAF, proxy, EDR, and posture correlation",
+          "state": "missing",
+          "current_scope": "No threat-detection event, signature, behavioral, endpoint, web, or response correlation platform is claimed.",
+          "gap_refs": ["gap.security-depth", "gap.observability-signals"]
+        },
+        {
+          "id": "cap.security.incident-forensics",
+          "title": "Incident response, forensics, and threat hunting",
+          "state": "missing",
+          "current_scope": "Operational logs can inform findings, but Atlas does not claim case management, forensic preservation, hunting, containment, or response orchestration.",
+          "gap_refs": ["gap.security-incident-ai"]
+        },
+        {
+          "id": "cap.security.ot-safety",
+          "title": "OT/IoT security with safety and availability constraints",
+          "state": "missing",
+          "current_scope": "No ISA/IEC 62443 zone/conduit, passive discovery, safety-impact, OT protocol, or change-freeze assessment is claimed.",
+          "gap_refs": ["gap.ot", "gap.security-depth"]
+        },
+        {
+          "id": "cap.security.privacy-regulatory",
+          "title": "Privacy, data residency, retention, and regulatory profiles",
+          "state": "partial",
+          "current_scope": "Repository and artifact privacy controls are strong; product-level retention, sovereignty, legal basis, regional hosting, and sector profiles are not complete.",
+          "owner_refs": ["owner.repository.privacy", "owner.redaction.verify"],
+          "gap_refs": ["gap.product-compliance"]
+        },
+        {
+          "id": "cap.security.ai-agent",
+          "title": "AI and agent security",
+          "state": "missing",
+          "current_scope": "Local and quarantined knowledge controls exist, but no formal prompt-injection, model, agent-tool, data-exfiltration, evaluation, or AI governance capability is claimed.",
+          "gap_refs": ["gap.security-incident-ai", "gap.knowledge-external-promotion"]
+        }
+      ]
+    },
+    {
+      "id": "domain.observability-operations",
+      "entity_role": "reference",
+      "entries": [
+        {
+          "id": "cap.ops.snapshot-observability",
+          "title": "Point-in-time canonical snapshot",
+          "state": "current",
+          "current_scope": "Supported collected evidence is normalized into a canonical snapshot with reconciliation and coverage state.",
+          "owner_refs": ["owner.ssot.engine", "owner.engine.entry"]
+        },
+        {
+          "id": "cap.ops.collection-completeness",
+          "title": "Collection completeness and parse yield",
+          "state": "partial",
+          "current_scope": "Coverage, completeness, integrity, and parse-yield signals exist for supported evidence; cross-domain unknown aggregation and continuous freshness are incomplete.",
+          "owner_refs": ["owner.engine.entry", "owner.analysis", "owner.ssot.engine"],
+          "gap_refs": ["gap.unknown-intake"]
+        },
+        {
+          "id": "cap.ops.health-risk",
+          "title": "Health, risk, readiness, and causality views",
+          "state": "current",
+          "current_scope": "Snapshot health, grouped readiness, cross-layer findings, causal flows, and priority views exist for supported evidence.",
+          "owner_refs": ["owner.analysis", "owner.explorer"]
+        },
+        {
+          "id": "cap.ops.config-drift",
+          "title": "Configuration drift and compliance",
+          "state": "partial",
+          "current_scope": "Golden and feature-level configuration compliance signals exist; configuration backup, GitOps source, intended-state reconciliation, and fleet change history are incomplete.",
+          "owner_refs": ["owner.analysis", "owner.engine.entry"],
+          "gap_refs": ["gap.operations-integration"]
+        },
+        {
+          "id": "cap.ops.logs-events",
+          "title": "Logs and operational events",
+          "state": "partial",
+          "current_scope": "Captured syslog events contribute bounded intelligence; centralized streaming, normalization, correlation, retention, search, and case linkage are incomplete.",
+          "owner_refs": ["owner.analysis"],
+          "gap_refs": ["gap.observability-signals"]
+        },
+        {
+          "id": "cap.ops.metrics-time-series",
+          "title": "Metrics and time-series telemetry",
+          "state": "missing",
+          "current_scope": "No continuous metrics store, polling, cardinality policy, retention, alerting, or dashboard platform is claimed.",
+          "gap_refs": ["gap.observability-signals"]
+        },
+        {
+          "id": "cap.ops.flows",
+          "title": "Flow telemetry",
+          "state": "missing",
+          "current_scope": "No NetFlow, IPFIX, sFlow, cloud-flow-log, or long-lived flow analytics pipeline is claimed.",
+          "gap_refs": ["gap.observability-signals", "gap.flow-actual-telemetry"]
+        },
+        {
+          "id": "cap.ops.packets",
+          "title": "Packet evidence",
+          "state": "missing",
+          "current_scope": "No packet-capture acquisition, indexing, protocol decode, payload privacy, or replay workflow is claimed.",
+          "gap_refs": ["gap.observability-signals", "gap.flow-actual-telemetry"]
+        },
+        {
+          "id": "cap.ops.distributed-traces",
+          "title": "Distributed traces and application spans",
+          "state": "missing",
+          "current_scope": "No OpenTelemetry trace, span, service dependency, or network-to-application correlation is claimed.",
+          "gap_refs": ["gap.observability-signals", "gap.flow-application"]
+        },
+        {
+          "id": "cap.ops.synthetics-dem",
+          "title": "Synthetics and digital-experience monitoring",
+          "state": "missing",
+          "current_scope": "No scheduled application transaction, endpoint experience, Internet vantage, or MOS monitoring is claimed.",
+          "gap_refs": ["gap.flow-application", "gap.observability-slo-closed-loop"]
+        },
+        {
+          "id": "cap.ops.service-maps-slo",
+          "title": "Business service maps, SLOs, and error budgets",
+          "state": "missing",
+          "current_scope": "Application grouping does not establish a live service graph, owner, SLI, SLO, burn rate, or error budget.",
+          "gap_refs": ["gap.business-traceability", "gap.observability-slo-closed-loop"]
+        },
+        {
+          "id": "cap.ops.anomaly-rca",
+          "title": "Anomaly detection and root-cause assistance",
+          "state": "partial",
+          "current_scope": "Deterministic cross-layer and causal synthesis exists for captured snapshots; statistical baselines, time-series anomalies, uncertainty calibration, and multi-domain RCA are incomplete.",
+          "owner_refs": ["owner.analysis", "owner.explorer"],
+          "gap_refs": ["gap.observability-signals", "gap.knowledge-real-evidence"]
+        },
+        {
+          "id": "cap.ops.capacity-forecasting",
+          "title": "Capacity and failure forecasting",
+          "state": "partial",
+          "current_scope": "Snapshot capacity signals and lifecycle bands exist; trend models, growth horizons, seasonality, failure prediction, and calibration are incomplete.",
+          "owner_refs": ["owner.analysis", "owner.lifecycle"],
+          "gap_refs": ["gap.observability-signals", "gap.knowledge-real-evidence"]
+        },
+        {
+          "id": "cap.ops.itsm-fcaps",
+          "title": "FCAPS and ITSM integration",
+          "state": "missing",
+          "current_scope": "No incident, problem, change, request, asset, event, or ticket-system integration is claimed.",
+          "gap_refs": ["gap.operations-integration", "gap.product-integrations"]
+        },
+        {
+          "id": "cap.ops.cmdb-source-of-truth",
+          "title": "CMDB, NetBox, inventory, and intended-state integration",
+          "state": "missing",
+          "current_scope": "Devices files and snapshots are evidence inputs, not an enterprise CMDB or intended-state authority.",
+          "gap_refs": ["gap.operations-integration", "gap.product-integrations"]
+        },
+        {
+          "id": "cap.ops.lifecycle-maintenance",
+          "title": "Lifecycle, maintenance, upgrades, contracts, and spares",
+          "state": "partial",
+          "current_scope": "Exact bounded lifecycle classification and migration artifacts exist; entitlement, warranty, licensing, spares, maintenance, upgrade cadence, and TAC readiness are incomplete.",
+          "owner_refs": ["owner.lifecycle", "owner.deliverable.family"],
+          "gap_refs": ["gap.operations-lifecycle-facilities"]
+        },
+        {
+          "id": "cap.ops.backup-restore-dr",
+          "title": "Backup, restore, DR exercises, and decommission",
+          "state": "missing",
+          "current_scope": "Runbook rollback is not a complete configuration backup, restore exercise, disaster recovery, secure decommission, or disposal capability.",
+          "gap_refs": ["gap.operations-lifecycle-facilities"]
+        },
+        {
+          "id": "cap.ops.safe-closed-loop",
+          "title": "Safe closed-loop remediation",
+          "state": "excluded",
+          "current_scope": "Automated device writes are outside the current safety boundary; any future proposal would require a separate authorization and enforcement architecture.",
+          "gap_refs": ["gap.excluded-device-writes"]
+        }
+      ]
+    },
+    {
+      "id": "domain.vendors-channels",
+      "entity_role": "reference",
+      "entries": [
+        {
+          "id": "cap.vendor.cisco-ios-iosxe-nxos",
+          "title": "Cisco IOS, IOS-XE, and NX-OS show-text channel",
+          "state": "partial",
+          "current_scope": "The primary engine collects and replays supported show-text evidence for core campus and selected data-center functions; command, release, and platform coverage is finite.",
+          "owner_refs": ["owner.engine.entry", "owner.analysis", "owner.architecture.coverage"],
+          "gap_refs": ["gap.vendor-parity", "gap.vendor-lab-evidence"]
+        },
+        {
+          "id": "cap.vendor.cisco-asa-ftd",
+          "title": "Cisco ASA and FTD",
+          "state": "partial",
+          "current_scope": "Selected HA and resource detectors exist; policy, NAT, session, VPN, threat, and upgrade coverage is incomplete.",
+          "owner_refs": ["owner.architecture.coverage"],
+          "gap_refs": ["gap.flow-stateful", "gap.vendor-lab-evidence"]
+        },
+        {
+          "id": "cap.vendor.cisco-apic",
+          "title": "Cisco ACI / APIC",
+          "state": "partial",
+          "current_scope": "Opt-in authenticated HTTPS collection writes selected APIC class JSON for offline parsing and bounded fabric/fault/enforcement detectors.",
+          "owner_refs": ["owner.rest.collection", "owner.architecture.coverage"],
+          "gap_refs": ["gap.controller-channels", "gap.vendor-lab-evidence"]
+        },
+        {
+          "id": "cap.vendor.cisco-vmanage",
+          "title": "Cisco Catalyst SD-WAN / vManage",
+          "state": "partial",
+          "current_scope": "Opt-in authenticated HTTPS collection writes selected device/control/counter JSON for offline parsing and bounded SD-WAN detectors.",
+          "owner_refs": ["owner.rest.collection", "owner.architecture.coverage"],
+          "gap_refs": ["gap.controller-channels", "gap.vendor-lab-evidence"]
+        },
+        {
+          "id": "cap.vendor.cisco-ise",
+          "title": "Cisco ISE",
+          "state": "partial",
+          "current_scope": "The architecture registry includes selected JSON-based deployment reachability and redundancy detectors; no live collector or policy-transaction coverage is claimed here.",
+          "owner_refs": ["owner.architecture.coverage"],
+          "gap_refs": ["gap.controller-channels", "gap.vendor-lab-evidence"]
+        },
+        {
+          "id": "cap.vendor.cisco-fmc",
+          "title": "Cisco FMC-managed Secure Firewall",
+          "state": "partial",
+          "current_scope": "The architecture registry includes selected JSON-based HA, connection, deployment, manager, and version detectors; full policy and live collection are incomplete.",
+          "owner_refs": ["owner.architecture.coverage"],
+          "gap_refs": ["gap.controller-channels", "gap.flow-stateful"]
+        },
+        {
+          "id": "cap.vendor.arista-eos",
+          "title": "Arista EOS",
+          "state": "partial",
+          "current_scope": "The architecture registry contains selected SSH-evidence MLAG and BGP-EVPN detectors; broad platform and feature parity is not claimed.",
+          "owner_refs": ["owner.architecture.coverage"],
+          "gap_refs": ["gap.vendor-parity", "gap.vendor-lab-evidence"]
+        },
+        {
+          "id": "cap.vendor.juniper-srx",
+          "title": "Juniper SRX",
+          "state": "partial",
+          "current_scope": "The architecture registry contains a selected SSH-evidence chassis-cluster HA detector; broad Junos routing, switching, security, and policy coverage is not claimed.",
+          "owner_refs": ["owner.architecture.coverage"],
+          "gap_refs": ["gap.vendor-parity", "gap.vendor-lab-evidence"]
+        },
+        {
+          "id": "cap.vendor.fortigate",
+          "title": "Fortinet FortiGate",
+          "state": "partial",
+          "current_scope": "The architecture registry contains a selected SSH-evidence HA synchronization detector; broad FortiOS policy, NAT, SD-WAN, threat, and VPN coverage is not claimed.",
+          "owner_refs": ["owner.architecture.coverage"],
+          "gap_refs": ["gap.vendor-parity", "gap.vendor-lab-evidence"]
+        },
+        {
+          "id": "cap.vendor.aws",
+          "title": "AWS networking",
+          "state": "partial",
+          "current_scope": "A JSON-based public-cloud security-group open-ingress detector exists; VPC routing, Transit Gateway, Direct Connect, NACL, load balancer, DNS, IAM, flow, and cost coverage is incomplete.",
+          "owner_refs": ["owner.architecture.coverage"],
+          "gap_refs": ["gap.cloud-native", "gap.vendor-lab-evidence"]
+        },
+        {
+          "id": "cap.vendor.azure",
+          "title": "Microsoft Azure networking",
+          "state": "missing",
+          "current_scope": "No VNet, vWAN, ExpressRoute, NSG, route, firewall, load balancer, DNS, flow-log, or identity channel is claimed.",
+          "gap_refs": ["gap.cloud-native", "gap.vendor-parity"]
+        },
+        {
+          "id": "cap.vendor.gcp",
+          "title": "Google Cloud networking",
+          "state": "missing",
+          "current_scope": "No VPC, NCC, Interconnect, firewall, route, load balancer, DNS, flow-log, or identity channel is claimed.",
+          "gap_refs": ["gap.cloud-native", "gap.vendor-parity"]
+        },
+        {
+          "id": "cap.vendor.other-firewalls",
+          "title": "Palo Alto, Check Point, and other enterprise firewalls",
+          "state": "missing",
+          "current_scope": "No platform-specific collection, parse, policy, NAT, session, HA, or threat-analysis support is claimed.",
+          "gap_refs": ["gap.vendor-parity", "gap.flow-stateful"]
+        },
+        {
+          "id": "cap.vendor.wlan-private-cellular",
+          "title": "WLAN controllers and private cellular platforms",
+          "state": "missing",
+          "current_scope": "No controller-specific wireless, RF, client, roaming, location, NPN, or slicing channel is claimed.",
+          "gap_refs": ["gap.vendor-parity", "gap.enterprise-breadth"]
+        },
+        {
+          "id": "cap.channel.offline-show-text",
+          "title": "Offline show-text replay",
+          "state": "current",
+          "current_scope": "Authorized captures can be re-analyzed offline with deterministic filename and parser contracts.",
+          "owner_refs": ["owner.engine.entry", "owner.operating.doctrine"]
+        },
+        {
+          "id": "cap.channel.live-ssh",
+          "title": "Explicit live SSH collection",
+          "state": "current",
+          "current_scope": "The primary collector is read-only by doctrine and only runs live when explicitly authorized; a bare assessment command is therefore operationally gated by the human.",
+          "owner_refs": ["owner.engine.entry", "owner.operating.doctrine"]
+        },
+        {
+          "id": "cap.channel.controller-rest",
+          "title": "Controller REST collection",
+          "state": "partial",
+          "current_scope": "APIC and vManage have opt-in HTTPS collectors with same-host/no-downgrade redirect controls; ISE, FMC, cloud, and other controllers lack equivalent live channels.",
+          "owner_refs": ["owner.rest.collection", "owner.architecture.coverage"],
+          "gap_refs": ["gap.controller-channels"]
+        },
+        {
+          "id": "cap.channel.streaming-apis",
+          "title": "Streaming telemetry and event APIs",
+          "state": "missing",
+          "current_scope": "No Kafka, webhook, gNMI subscription, cloud event, or long-running controller event channel is claimed.",
+          "gap_refs": ["gap.observability-signals", "gap.controller-channels"]
+        }
+      ]
+    },
+    {
+      "id": "domain.gui-white-label",
+      "entity_role": "reference",
+      "entries": [
+        {
+          "id": "cap.gui.engine-cli",
+          "title": "Engine CLI",
+          "state": "current",
+          "current_scope": "Assessment, offline replay, comparison, trend, verification, and artifact flags have owned entry points and field doctrine.",
+          "owner_refs": ["owner.engine.entry", "owner.operating.doctrine", "owner.release.version"]
+        },
+        {
+          "id": "cap.gui.assesshub",
+          "title": "AssessHub web application",
+          "state": "current",
+          "current_scope": "The repository contains an operational web surface for bounded intake, snapshots, campaigns, gates, execution, summaries, Explorer, and deliverables.",
+          "owner_refs": ["owner.web.trust", "owner.web.summary"]
+        },
+        {
+          "id": "cap.gui.explorer",
+          "title": "Fourteen-mode offline Explorer",
+          "state": "current",
+          "current_scope": "Blast radius, trace, compare, flow, health, protocols, cross-layer, causal flow, waves, apps, review, design, cable map, and 3-D modes share one registry.",
+          "owner_refs": ["owner.explorer"]
+        },
+        {
+          "id": "cap.gui.portable-atlas",
+          "title": "Portable Atlas field application",
+          "state": "current",
+          "current_scope": "A one-folder Windows bundle exposes AssessHub and the engine through one Atlas entry point with self-test and verified redaction workflow.",
+          "owner_refs": ["owner.operating.doctrine"]
+        },
+        {
+          "id": "cap.gui.master-reference",
+          "title": "Static interactive master reference",
+          "state": "partial",
+          "current_scope": "The static surface and its no-runtime-data contract exist; the comprehensive catalog, horizon, labs, gap, and opportunity navigation are being integrated from this content layer.",
+          "owner_refs": ["owner.reference.contract"],
+          "gap_refs": ["gap.catalog-ui"]
+        },
+        {
+          "id": "cap.gui.evidence-drilldown",
+          "title": "Evidence and provenance drilldown",
+          "state": "partial",
+          "current_scope": "Explorer and deliverables expose selected evidence and provenance; a universal click-through chain for every fact, finding, decision, artifact, and test is incomplete.",
+          "owner_refs": ["owner.explorer", "owner.manifest", "owner.web.summary"],
+          "gap_refs": ["gap.catalog-ui"]
+        },
+        {
+          "id": "cap.gui.accessibility",
+          "title": "Keyboard, screen-reader, motion, contrast, and responsive accessibility",
+          "state": "partial",
+          "current_scope": "The master-reference contract requires keyboard operation, semantic HTML, responsive layout, and reduced motion; complete automated and assisted-technology conformance evidence remains incomplete.",
+          "owner_refs": ["owner.reference.contract", "owner.explorer"],
+          "gap_refs": ["gap.accessibility-performance"]
+        },
+        {
+          "id": "cap.gui.performance",
+          "title": "Large-estate UI performance and progressive disclosure",
+          "state": "partial",
+          "current_scope": "Explorer includes decluttering and multiple views, but the master reference lacks a declared performance budget and large-catalog benchmark.",
+          "owner_refs": ["owner.explorer", "owner.reference.contract"],
+          "gap_refs": ["gap.accessibility-performance"]
+        },
+        {
+          "id": "cap.gui.identity-token",
+          "title": "Single application identity and design-token owners",
+          "state": "current",
+          "current_scope": "Portable identity and print/digital design tokens have explicit owners and reconciliation guards.",
+          "owner_refs": ["owner.brand", "owner.explorer", "owner.ssot.registry"]
+        },
+        {
+          "id": "cap.gui.white-label-pack",
+          "title": "Complete white-label brand pack",
+          "state": "partial",
+          "current_scope": "Core application identity and token owners exist; tenant-specific naming, logos, typography, tone, artifact furniture, legal text, and deployment policies are not one validated pack.",
+          "owner_refs": ["owner.brand", "owner.explorer"],
+          "gap_refs": ["gap.white-label"]
+        },
+        {
+          "id": "cap.gui.localization",
+          "title": "Localization, RTL, terminology, and regional formatting",
+          "state": "missing",
+          "current_scope": "No locale packs, translation workflow, RTL validation, or terminology governance is claimed.",
+          "gap_refs": ["gap.white-label", "gap.accessibility-performance"]
+        },
+        {
+          "id": "cap.gui.tenancy-auth",
+          "title": "Multi-tenancy, authentication, and RBAC",
+          "state": "missing",
+          "current_scope": "Server-owned trust labels do not establish a product tenancy, identity-provider, role, permission, or tenant-isolation model.",
+          "gap_refs": ["gap.product-packaging", "gap.security-cloud-native"]
+        }
+      ]
+    },
+    {
+      "id": "domain.artifacts-deliverables",
+      "entity_role": "reference",
+      "entries": [
+        {"id": "cap.artifact.engagement", "title": "Engagement Workflow and Plan of Record", "state": "current", "current_scope": "CLI-produced DOCX family member.", "owner_refs": ["owner.deliverable.family"]},
+        {"id": "cap.artifact.crd", "title": "Customer Requirements Document", "state": "current", "current_scope": "CLI-produced DOCX family member.", "owner_refs": ["owner.deliverable.family"]},
+        {"id": "cap.artifact.workbook", "title": "Assessment workbook", "state": "current", "current_scope": "CLI-produced XLSX family member and evidence-rich tabular view.", "owner_refs": ["owner.deliverable.family"]},
+        {"id": "cap.artifact.explorer", "title": "Blast-Radius Explorer", "state": "current", "current_scope": "CLI-produced interactive HTML family member.", "owner_refs": ["owner.deliverable.family", "owner.explorer"]},
+        {"id": "cap.artifact.runbook", "title": "Assessment and Migration Runbook", "state": "current", "current_scope": "CLI-produced DOCX family member.", "owner_refs": ["owner.deliverable.family"]},
+        {"id": "cap.artifact.design", "title": "As-Built Network Design Document", "state": "current", "current_scope": "CLI-produced HLD/LLD DOCX family member.", "owner_refs": ["owner.deliverable.family"]},
+        {"id": "cap.artifact.archreview", "title": "Architecture Review and Conformance Report", "state": "current", "current_scope": "CLI-produced DOCX family member.", "owner_refs": ["owner.deliverable.family"]},
+        {"id": "cap.artifact.mop", "title": "Per-Wave Method of Procedure", "state": "current", "current_scope": "CLI-produced DOCX family member with validation and rollback.", "owner_refs": ["owner.deliverable.family"]},
+        {"id": "cap.artifact.cutover", "title": "Cutover Plan / Run-of-Show", "state": "current", "current_scope": "AssessHub-rendered DOCX family member; intentionally not part of a complete offline CLI set.", "owner_refs": ["owner.deliverable.family", "owner.web.trust"]},
+        {"id": "cap.artifact.nrfu", "title": "NRFU / Acceptance Test Plan", "state": "current", "current_scope": "AssessHub-rendered DOCX family member; intentionally not part of a complete offline CLI set.", "owner_refs": ["owner.deliverable.family", "owner.web.trust"]},
+        {"id": "cap.artifact.opshandbook", "title": "Operations Handbook", "state": "current", "current_scope": "CLI-produced DOCX family member.", "owner_refs": ["owner.deliverable.family"]},
+        {"id": "cap.artifact.deck", "title": "Executive Presentation Deck", "state": "current", "current_scope": "CLI-produced PPTX family member.", "owner_refs": ["owner.deliverable.family"]},
+        {
+          "id": "cap.artifact.snapshot",
+          "title": "Canonical snapshot JSON",
+          "state": "current",
+          "current_scope": "Machine-readable canonical assessment state owned and reconciled by the engine.",
+          "owner_refs": ["owner.ssot.engine", "owner.engine.entry"]
+        },
+        {
+          "id": "cap.artifact.run-manifest",
+          "title": "Per-run manifest and chain root",
+          "state": "current",
+          "current_scope": "Produced artifact inventory, step chain, metadata, bytes, and gate verdicts can be independently verified.",
+          "owner_refs": ["owner.manifest", "owner.ssot.registry"]
+        },
+        {
+          "id": "cap.artifact.topology-exports",
+          "title": "Mermaid and Graphviz topology exports",
+          "state": "current",
+          "current_scope": "Topology exports are included in the engine-owned candidate artifact set.",
+          "owner_refs": ["owner.deliverable.family"]
+        },
+        {
+          "id": "cap.artifact.channel-parity",
+          "title": "CLI, web, portable, and reference-channel parity",
+          "state": "partial",
+          "current_scope": "The family explicitly identifies CLI and web-only producers; capability and evidence parity across every surface is not complete.",
+          "owner_refs": ["owner.deliverable.family", "owner.operating.doctrine"],
+          "gap_refs": ["gap.artifact-channel-parity"]
+        },
+        {
+          "id": "cap.artifact.machine-api",
+          "title": "Versioned external report API and SDK",
+          "state": "missing",
+          "current_scope": "Snapshot JSON and internal routes do not establish a supported external API, SDK, webhook, or compatibility lifecycle.",
+          "gap_refs": ["gap.artifact-api", "gap.product-integrations"]
+        }
+      ]
+    },
+    {
+      "id": "domain.code-tests-release-knowledge",
+      "entity_role": "reference",
+      "entries": [
+        {
+          "id": "cap.engine.ssot-reconciliation",
+          "title": "SSOT reconciliation and federation",
+          "state": "current",
+          "current_scope": "Shared fact ownership is registered and canonical assessment facts have reconciliation contracts.",
+          "owner_refs": ["owner.ssot.registry", "owner.ssot.engine"]
+        },
+        {
+          "id": "cap.engine.coverage-tests",
+          "title": "Positive, negative, totality, and false-health tests",
+          "state": "current",
+          "current_scope": "The supported engine contract includes repository-wide tests and explicit non-vacuity/coverage-honesty discipline; exact suite membership remains live code, not a cached count.",
+          "owner_refs": ["owner.operating.doctrine", "owner.ssot.registry"]
+        },
+        {
+          "id": "cap.engine.deterministic-artifacts",
+          "title": "Deterministic artifact generation",
+          "state": "current",
+          "current_scope": "Artifact family, metadata, manifests, structural validation, and reproducible release controls have named owners.",
+          "owner_refs": ["owner.deliverable.family", "owner.manifest", "owner.distribution"]
+        },
+        {
+          "id": "cap.engine.release-archive-proof",
+          "title": "Archive-as-release verification",
+          "state": "current",
+          "current_scope": "Wheel and source archive inventories, bytes, and clean-environment behavior are verified as release subjects.",
+          "owner_refs": ["owner.distribution", "owner.manifest"]
+        },
+        {
+          "id": "cap.engine.registry-packs",
+          "title": "Immutable registry packs and scoped authority",
+          "state": "current",
+          "current_scope": "Official-source components, curated overlays, integrity, authority scope, provenance, and freshness are separately represented.",
+          "owner_refs": ["owner.registry.authority", "owner.ssot.registry"]
+        },
+        {
+          "id": "cap.engine.ast-graph",
+          "title": "Offline AST-only code knowledge graph",
+          "state": "current",
+          "current_scope": "Graphify indexes code and repository documentation without cloud egress or LLM-derived graph nodes under the current doctrine.",
+          "owner_refs": ["owner.operating.doctrine"]
+        },
+        {
+          "id": "cap.engine.research-quarantine",
+          "title": "Quarantined external research lane",
+          "state": "current",
+          "current_scope": "External intake is produced outside the engine with HTTPS/SSRF controls, recursive sanitization, bounded envelopes, and hash-sealed output before consumption.",
+          "owner_refs": ["owner.research.producer", "owner.research.http", "owner.ssot.registry"]
+        },
+        {
+          "id": "cap.engine.vault-digest",
+          "title": "Owner-machine vault digest",
+          "state": "gated",
+          "current_scope": "A one-way sanitized digest can be produced and consumed on the owner machine, but it is gitignored, absent from clean clones, and never a repository prerequisite.",
+          "owner_refs": ["owner.ssot.registry", "owner.operating.doctrine"],
+          "gap_refs": ["gap.knowledge-vault-local"]
+        },
+        {
+          "id": "cap.engine.quality-ledgers",
+          "title": "Quality scorecard, calibration, holdout, and nightly-run ledgers",
+          "state": "partial",
+          "current_scope": "Schema and guardrails exist for quality trends and calibrated learning; real-data floors, sealed holdouts, hardware-limited evaluation, and human gates keep broad claims unavailable.",
+          "owner_refs": ["owner.ssot.registry", "owner.learnings"],
+          "gap_refs": ["gap.knowledge-real-evidence"]
+        },
+        {
+          "id": "cap.engine.generic-learnings",
+          "title": "Cited client-generic learnings",
+          "state": "current",
+          "current_scope": "Verified engine lessons are kept concise, cited, repository-owned, and separate from personal-domain and client evidence.",
+          "owner_refs": ["owner.learnings", "owner.operating.doctrine"]
+        },
+        {
+          "id": "cap.engine.external-promotion",
+          "title": "External knowledge promotion into assessment truth",
+          "state": "gated",
+          "current_scope": "Sanitized advisory feeds may inform a quarantined advisory lane, but promotion into assessment truth requires authority, applicability, tests, and a reviewed owner change.",
+          "owner_refs": ["owner.research.producer", "owner.registry.authority"],
+          "gap_refs": ["gap.knowledge-external-promotion"]
+        },
+        {
+          "id": "cap.engine.training-curriculum",
+          "title": "Interactive training and lab curriculum",
+          "state": "partial",
+          "current_scope": "This master-reference layer defines fourteen advisory lab contracts; lab execution harnesses, fixtures, answer keys, and assessment-safe promotion remain incomplete.",
+          "owner_refs": ["owner.reference.contract"],
+          "gap_refs": ["gap.training-labs"],
+          "content_role": "advisory",
+          "mutates_assessment_truth": false
+        },
+        {
+          "id": "cap.engine.performance-proof",
+          "title": "Performance budgets and large-estate proof",
+          "state": "partial",
+          "current_scope": "Bounded intake and selected UI scaling controls exist; end-to-end fleet-size, memory, latency, artifact, and browser budgets are not one versioned contract.",
+          "owner_refs": ["owner.intake.bounds", "owner.web.trust", "owner.explorer"],
+          "gap_refs": ["gap.accessibility-performance"]
+        },
+        {
+          "id": "cap.engine.platform-matrix",
+          "title": "Supported interpreter, OS, browser, and portable-host matrix",
+          "state": "partial",
+          "current_scope": "Repository and portable gates exercise declared environments, but the master catalog does not yet expose one compatibility/deprecation matrix.",
+          "owner_refs": ["owner.operating.doctrine", "owner.release.version", "owner.distribution"],
+          "gap_refs": ["gap.release-platform-matrix"]
+        },
+        {
+          "id": "cap.engine.sbom-attestation",
+          "title": "SBOM, provenance attestation, and remote verification",
+          "state": "partial",
+          "current_scope": "Archives, manifests, dependency audits, and source bindings are verified; a standard SBOM and signed provenance/remote-attestation lifecycle is incomplete.",
+          "owner_refs": ["owner.distribution", "owner.manifest"],
+          "gap_refs": ["gap.security-advisory-authority"]
+        },
+        {
+          "id": "cap.engine.public-reference",
+          "title": "Public master-reference publication",
+          "state": "gated",
+          "current_scope": "The site exists but public publication remains an explicit human decision, not an implied release action.",
+          "owner_refs": ["owner.operating.doctrine", "owner.reference.contract"],
+          "gap_refs": ["gap.product-compliance"]
+        }
+      ]
+    },
+    {
+      "id": "domain.product-business",
+      "entity_role": "reference",
+      "entries": [
+        {
+          "id": "cap.product.white-label-positioning",
+          "title": "White-label product positioning",
+          "state": "partial",
+          "current_scope": "A portable application identity and shared brand tokens exist; market, tenant, partner, and contract-level white-label packaging is incomplete.",
+          "owner_refs": ["owner.brand", "owner.explorer"],
+          "gap_refs": ["gap.white-label", "gap.product-packaging"]
+        },
+        {
+          "id": "cap.product.packaging-licensing",
+          "title": "Packaging, editions, licensing, pricing, and entitlement",
+          "state": "missing",
+          "current_scope": "No product edition, licensing, metering, entitlement, or pricing model is claimed.",
+          "gap_refs": ["gap.product-packaging"]
+        },
+        {
+          "id": "cap.product.onboarding",
+          "title": "Onboarding, templates, guided setup, and sample policy",
+          "state": "partial",
+          "current_scope": "Field documentation, sample fixtures, portable self-test, and bounded inputs exist; persona-led onboarding and tenant templates are incomplete.",
+          "owner_refs": ["owner.operating.doctrine", "owner.engine.entry"],
+          "gap_refs": ["gap.product-adoption"]
+        },
+        {
+          "id": "cap.product.support-success",
+          "title": "Support, customer success, SLA, and escalation",
+          "state": "missing",
+          "current_scope": "Engineering runbooks and operational artifacts do not establish a commercial support organization, SLA, success plan, or escalation policy.",
+          "gap_refs": ["gap.product-adoption"]
+        },
+        {
+          "id": "cap.product.api-sdk-plugin",
+          "title": "Public API, SDK, plugin, and extension ecosystem",
+          "state": "missing",
+          "current_scope": "Internal modules and web routes are not a supported external API or plugin contract.",
+          "gap_refs": ["gap.artifact-api", "gap.product-integrations"]
+        },
+        {
+          "id": "cap.product.integrations-marketplace",
+          "title": "ITSM, CMDB, SIEM, observability, cloud, and marketplace integrations",
+          "state": "missing",
+          "current_scope": "No supported connector catalog, marketplace, compatibility policy, or integration certification is claimed.",
+          "gap_refs": ["gap.product-integrations"]
+        },
+        {
+          "id": "cap.product.data-governance",
+          "title": "Data retention, residency, deletion, export, and tenant governance",
+          "state": "partial",
+          "current_scope": "Repository, redaction, and static-reference boundaries are explicit; deployed-product retention, tenant isolation, region, export, deletion, and audit policy are incomplete.",
+          "owner_refs": ["owner.repository.privacy", "owner.redaction.verify", "owner.reference.contract"],
+          "gap_refs": ["gap.product-compliance", "gap.product-packaging"]
+        },
+        {
+          "id": "cap.product.telemetry-privacy",
+          "title": "Privacy-preserving product telemetry",
+          "state": "gated",
+          "current_scope": "The master reference deliberately uses no analytics; any future product telemetry requires purpose, minimization, consent, retention, residency, and opt-out decisions.",
+          "owner_refs": ["owner.reference.contract", "owner.repository.privacy"],
+          "gap_refs": ["gap.product-adoption", "gap.product-compliance"]
+        },
+        {
+          "id": "cap.product.roi-tco",
+          "title": "ROI, TCO, risk avoided, and value realization",
+          "state": "missing",
+          "current_scope": "No customer-specific financial model is claimed; any future model must expose assumptions and ranges rather than a hidden score.",
+          "gap_refs": ["gap.business-traceability"]
+        },
+        {
+          "id": "cap.product.compatibility-migrations",
+          "title": "Compatibility, deprecation, migration, and upgrade policy",
+          "state": "partial",
+          "current_scope": "Release and schema versions are intentionally distinct and distribution verification exists; public compatibility, support-window, deprecation, and customer migration policy is incomplete.",
+          "owner_refs": ["owner.release.version", "owner.operating.doctrine", "owner.distribution"],
+          "gap_refs": ["gap.release-platform-matrix", "gap.product-adoption"]
+        },
+        {
+          "id": "cap.product.vertical-profiles",
+          "title": "Industry and regulatory solution profiles",
+          "state": "missing",
+          "current_scope": "No validated financial, healthcare, public-sector, education, retail, manufacturing, utility, building, media, or service-provider product profile is claimed.",
+          "gap_refs": ["gap.product-compliance", "gap.ot", "gap.service-provider"]
+        },
+        {
+          "id": "cap.product.legal-export-ip",
+          "title": "Legal, IP, export-control, accessibility, and third-party content policy",
+          "state": "missing",
+          "current_scope": "Repository licensing and privacy controls do not establish a complete commercial legal, export, content-rights, or product-accessibility policy.",
+          "gap_refs": ["gap.product-compliance"]
+        },
+        {
+          "id": "cap.product.adoption-outcomes",
+          "title": "Adoption, usage, support burden, and realized outcomes",
+          "state": "unknown",
+          "current_scope": "This client-free repository reference has no authority to claim customer usage or outcomes.",
+          "gap_refs": ["gap.product-adoption"]
+        }
+      ]
+    }
+  ]
+}

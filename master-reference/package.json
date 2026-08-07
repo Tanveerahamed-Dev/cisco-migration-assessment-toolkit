@@ -9,7 +9,8 @@
     "dev": "vinext dev",
     "build": "vinext build",
     "start": "vinext start",
-    "test": "npm run typecheck && npm run build && node --test tests/rendered-html.test.mjs",
+    "test": "npm run typecheck && npm run test:contracts && npm run build && node --test tests/rendered-html.test.mjs",
+    "test:contracts": "node --test tests/content/catalog-validation.test.mjs tests/source/projection.test.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --deny-warnings --react-plugin --jsx-a11y-plugin --nextjs-plugin --import-plugin --node-plugin app worker build tests vite.config.ts next.config.ts"
   },
@@ -19,7 +20,7 @@
     "react-dom": "19.2.8"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "1.48.0",
+    "@cloudflare/vite-plugin": "1.51.1",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
@@ -30,9 +31,10 @@
     "typescript": "5.9.3",
     "vinext": "0.0.50",
     "vite": "8.2.0",
-    "wrangler": "4.115.0"
+    "wrangler": "4.120.0"
   },
   "overrides": {
+    "fast-uri": "3.1.5",
     "next": {
       "postcss": "8.5.25",
       "sharp": "0.35.3"

@@ -1,0 +1,390 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.local/schema/atlas-records.schema.json",
+  "title": "Atlas repository intelligence records",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "record_type",
+    "source_commit",
+    "source_tree_digest",
+    "chunk_index",
+    "chunk_count",
+    "record_count",
+    "records_digest",
+    "records"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "record_type": {"type": "string", "minLength": 1},
+    "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "source_tree_digest": {"$ref": "#/$defs/digest"},
+    "chunk_index": {"type": "integer", "minimum": 0},
+    "chunk_count": {"type": "integer", "minimum": 1},
+    "record_count": {"type": "integer", "minimum": 0},
+    "records_digest": {"$ref": "#/$defs/digest", "description": "SHA-256 of canonical ordered record-ID array; the compiler manifest receipt binds complete chunk bytes."},
+    "records": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/baseRecord"}
+    }
+  },
+  "allOf": [
+    {"if": {"properties": {"record_type": {"const": "files"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/fileRecord"}}}}},
+    {"if": {"properties": {"record_type": {"const": "lines"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/lineRecord"}}}}},
+    {"if": {"properties": {"record_type": {"const": "source_text"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/sourceTextRecord"}}}}},
+    {"if": {"properties": {"record_type": {"const": "symbols"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/symbolRecord"}}}}},
+    {"if": {"properties": {"record_type": {"const": "claims"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/claimRecord"}}}}},
+    {"if": {"properties": {"record_type": {"const": "graph_edges"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/graphEdgeRecord"}}}}}
+  ],
+  "$defs": {
+    "atlasId": {
+      "type": "string",
+      "pattern": "^urn:atlas:[a-z-]+:[0-9a-f]{24}$"
+    },
+    "repositoryPath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "range": {
+      "type": "object",
+      "required": ["start_line", "start_column", "end_line", "end_column"],
+      "properties": {
+        "start_line": {"type": ["integer", "null"], "minimum": 1},
+        "start_column": {"type": ["integer", "null"], "minimum": 0},
+        "end_line": {"type": ["integer", "null"], "minimum": 1},
+        "end_column": {"type": ["integer", "null"], "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "baseRecord": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": {"$ref": "#/$defs/atlasId"}
+      }
+    },
+    "fileRecord": {
+      "allOf": [
+        {"$ref": "#/$defs/baseRecord"},
+        {
+          "type": "object",
+          "required": [
+            "path",
+            "git_mode",
+            "git_blob_oid",
+            "language",
+            "roles",
+            "privacy_exposure",
+            "parse_status",
+            "unresolved_reasons"
+          ],
+          "properties": {
+            "path": {"$ref": "#/$defs/repositoryPath"},
+            "git_mode": {"type": "string", "pattern": "^[0-7]{6}$"},
+            "git_blob_oid": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+            "git_stage": {"const": 0},
+            "language": {"type": "string", "minLength": 1},
+            "roles": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+            "privacy_exposure": {"enum": ["full", "metadata_only"]},
+            "privacy_reasons": {"type": "array", "items": {"type": "string"}},
+            "classification_errors": {"type": "array", "items": {"type": "string"}},
+            "size_bytes": {"type": ["integer", "null"], "minimum": 0},
+            "content_digest": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+            "parse_status": {
+              "enum": ["pending", "parsed", "binary_inventory", "metadata_only", "classification_error", "parser_error"]
+            },
+            "parser": {"type": ["string", "null"]},
+            "parser_mode": {"type": ["string", "null"]},
+            "parser_version": {"type": ["string", "null"]},
+            "line_count": {"type": ["integer", "null"], "minimum": 0},
+            "nonblank_line_count": {"type": "integer", "minimum": 0},
+            "documentation_status": {"type": ["string", "null"]},
+            "documentation_status_reasons": {"type": "array", "items": {"type": "string"}},
+            "unresolved_reasons": {"type": "array", "items": {"type": "string"}}
+          }
+        }
+      ]
+    },
+    "lineRecord": {
+      "allOf": [
+        {"$ref": "#/$defs/baseRecord"},
+        {
+          "type": "object",
+          "required": [
+            "file_id",
+            "path",
+            "line",
+            "language",
+            "syntax_kind",
+            "depth",
+            "text_digest",
+            "line_digest",
+            "text_bytes",
+            "source_commit",
+            "line_number",
+            "semantic_entity",
+            "owner",
+            "behavior_group",
+            "inputs_and_outputs",
+            "claims_influenced",
+            "callers_and_dependencies",
+            "tests_covering_it",
+            "runtime_trace_state",
+            "GUI_or_artifact_consumers",
+            "security_and_privacy_effect",
+            "current_or_historical",
+            "explanation_depth",
+            "unresolved_reasons"
+          ],
+          "properties": {
+            "file_id": {"$ref": "#/$defs/atlasId"},
+            "path": {"$ref": "#/$defs/repositoryPath"},
+            "line": {"type": "integer", "minimum": 1},
+            "language": {"type": "string"},
+            "syntax_kind": {"type": "string", "minLength": 1},
+            "containing_symbol": {"type": ["string", "null"]},
+            "depth": {"type": "integer", "minimum": 0},
+            "text_digest": {"$ref": "#/$defs/digest"},
+            "text_bytes": {"type": "integer", "minimum": 1},
+            "text_preview": {"type": "string", "maxLength": 240},
+            "line_digest": {"$ref": "#/$defs/digest"},
+            "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+            "line_number": {"type": "integer", "minimum": 1},
+            "syntax_depth": {"type": "integer", "minimum": 0},
+            "semantic_entity": {"$ref": "#/$defs/atlasId"},
+            "owner": {"$ref": "#/$defs/atlasId"},
+            "behavior_group": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+            "inputs_and_outputs": {"type": "object"},
+            "claims_influenced": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true},
+            "callers_and_dependencies": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true},
+            "tests_covering_it": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true},
+            "test_coverage_state": {"type": "string"},
+            "runtime_trace_state": {"type": "string"},
+            "GUI_or_artifact_consumers": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true},
+            "security_and_privacy_effect": {"type": "object"},
+            "current_or_historical": {"type": "string"},
+            "explanation_depth": {"type": "integer", "minimum": 0, "maximum": 4},
+            "unresolved_reasons": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+          }
+        }
+      ]
+    },
+    "sourceTextRecord": {
+      "allOf": [
+        {"$ref": "#/$defs/baseRecord"},
+        {
+          "type": "object",
+          "required": ["file_id", "path", "encoding", "byte_count", "content_digest", "line_count", "lines"],
+          "properties": {
+            "file_id": {"$ref": "#/$defs/atlasId"},
+            "path": {"$ref": "#/$defs/repositoryPath"},
+            "encoding": {"const": "utf-8"},
+            "byte_count": {"type": "integer", "minimum": 0},
+            "content_digest": {"$ref": "#/$defs/digest"},
+            "line_count": {"type": "integer", "minimum": 0},
+            "lines": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["number", "text", "terminator", "text_digest", "line_digest"],
+                "properties": {
+                  "number": {"type": "integer", "minimum": 1},
+                  "text": {"type": "string"},
+                  "terminator": {"enum": ["", "\n", "\r", "\r\n"]},
+                  "text_digest": {"$ref": "#/$defs/digest"},
+                  "line_digest": {"$ref": "#/$defs/digest"}
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      ]
+    },
+    "symbolRecord": {
+      "allOf": [
+        {"$ref": "#/$defs/baseRecord"},
+        {
+          "type": "object",
+          "required": [
+            "file_id", "path", "name", "qualified_name", "kind", "language", "range", "exported", "digest",
+            "stable_urn", "path_and_range", "purpose", "responsibility", "parameters_and_types", "return_or_output",
+            "state_read", "state_written", "external_effects", "failure_and_exception_behavior", "abstention_behavior",
+            "callers", "callees", "data_dependencies", "claims_produced_or_consumed", "tests", "runtime_trace_evidence",
+            "performance_characteristics", "security_boundary", "downstream_surfaces", "limitations",
+            "known_impact_if_changed", "history", "criticality", "explanation_depth", "review_state"
+          ],
+          "properties": {
+            "file_id": {"$ref": "#/$defs/atlasId"},
+            "path": {"$ref": "#/$defs/repositoryPath"},
+            "name": {"type": "string"},
+            "qualified_name": {"type": "string"},
+            "kind": {"type": "string"},
+            "language": {"type": "string"},
+            "range": {"$ref": "#/$defs/range"},
+            "exported": {"type": "boolean"},
+            "digest": {"$ref": "#/$defs/digest"}
+            ,"stable_urn": {"$ref": "#/$defs/atlasId"}
+            ,"path_and_range": {"type": "object"}
+            ,"purpose": {"type": "string"}
+            ,"responsibility": {"type": "string"}
+            ,"parameters_and_types": {"type": "array"}
+            ,"return_or_output": true
+            ,"state_read": {"type": "array"}
+            ,"state_written": {"type": "array"}
+            ,"external_effects": {"type": "array"}
+            ,"failure_and_exception_behavior": {"type": "string"}
+            ,"abstention_behavior": {"type": "string"}
+            ,"callers": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true}
+            ,"callees": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true}
+            ,"data_dependencies": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true}
+            ,"claims_produced_or_consumed": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true}
+            ,"tests": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true}
+            ,"runtime_trace_evidence": {"type": "array"}
+            ,"performance_characteristics": {"type": "string"}
+            ,"security_boundary": {"type": "string"}
+            ,"downstream_surfaces": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true}
+            ,"limitations": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+            ,"known_impact_if_changed": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true}
+            ,"history": {"type": "array"}
+            ,"criticality": {"enum": ["internal", "review_required"]}
+            ,"explanation_depth": {"type": "integer", "minimum": 0, "maximum": 4}
+            ,"review_state": {"type": "string"}
+          }
+        }
+      ]
+    },
+    "claimRecord": {
+      "allOf": [
+        {"$ref": "#/$defs/baseRecord"},
+        {
+          "type": "object",
+          "required": [
+            "subject",
+            "predicate",
+            "value",
+            "unit",
+            "basis",
+            "scope",
+            "effective_time",
+            "recorded_time",
+            "owner",
+            "evidence_ids",
+            "evidence_class",
+            "transformation",
+            "denominator",
+            "verdict",
+            "freshness",
+            "lineage",
+            "derived_from",
+            "origin",
+            "extraction_mode",
+            "confidence",
+            "status",
+            "revoked_by",
+            "revocation_reason",
+            "conflicts_with",
+            "current_view",
+            "satisfies_evidence_requirement",
+            "source_commit",
+            "unresolved_reasons"
+          ],
+          "properties": {
+            "subject": {"$ref": "#/$defs/atlasId"},
+            "predicate": {"type": "string", "minLength": 1},
+            "value": true,
+            "unit": {"type": ["string", "null"]},
+            "basis": {"type": "string", "minLength": 1},
+            "scope": {
+              "type": "object",
+              "minProperties": 1,
+              "properties": {
+                "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"},
+                "source_tree_digest": {"$ref": "#/$defs/digest"}
+              }
+            },
+            "effective_time": {
+              "oneOf": [
+                {"type": "string", "format": "date-time"},
+                {"const": "unknown"}
+              ]
+            },
+            "recorded_time": {
+              "oneOf": [
+                {"type": "string", "format": "date-time"},
+                {"const": "unknown"}
+              ]
+            },
+            "temporal_basis": {"type": "string", "minLength": 1},
+            "owner": {"$ref": "#/$defs/atlasId"},
+            "evidence_ids": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true},
+            "evidence_class": {"enum": ["observed", "derived", "inferred", "advisory", "decided"]},
+            "transformation": {
+              "type": "object",
+              "required": ["id", "version"],
+              "properties": {
+                "id": {"$ref": "#/$defs/atlasId"},
+                "version": {"type": "string", "minLength": 1}
+              },
+              "additionalProperties": false
+            },
+            "denominator": {
+              "type": "object",
+              "required": ["value", "unit", "basis", "status"],
+              "properties": {
+                "value": {"type": ["number", "null"], "minimum": 0},
+                "unit": {"type": "string", "minLength": 1},
+                "basis": {"type": "string", "minLength": 1},
+                "status": {"enum": ["known", "unknown", "not_applicable"]}
+              },
+              "additionalProperties": false
+            },
+            "verdict": {"enum": ["proven", "refuted", "not_observed", "indeterminate", "conflicting"]},
+            "freshness": {"enum": ["current", "stale", "unknown", "revoked"]},
+            "lineage": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true},
+            "derived_from": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true},
+            "origin": {"type": "string", "minLength": 1},
+            "extraction_mode": {"enum": ["verified", "extracted", "inferred", "structural", "undisclosed"]},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "status": {"enum": ["candidate", "current", "historical", "superseded", "revoked"]},
+            "revoked_by": {
+              "oneOf": [
+                {"$ref": "#/$defs/atlasId"},
+                {"type": "null"}
+              ]
+            },
+            "revocation_reason": {"type": ["string", "null"]},
+            "conflicts_with": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true},
+            "current_view": {"type": "boolean"},
+            "satisfies_evidence_requirement": {"type": "boolean"},
+            "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"},
+            "unresolved_reasons": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+          }
+        }
+      ]
+    },
+    "graphEdgeRecord": {
+      "allOf": [
+        {"$ref": "#/$defs/baseRecord"},
+        {
+          "type": "object",
+          "required": ["source", "target", "relation", "extraction_mode", "unresolved_reasons"],
+          "properties": {
+            "source": {"$ref": "#/$defs/atlasId"},
+            "target": {"$ref": "#/$defs/atlasId"},
+            "relation": {"type": "string", "minLength": 1},
+            "extraction_mode": {"enum": ["extracted", "inferred", "ambiguous", "undisclosed"]},
+            "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+            "unresolved_reasons": {"type": "array", "items": {"type": "string"}}
+          }
+        }
+      ]
+    }
+  },
+  "additionalProperties": false
+}
