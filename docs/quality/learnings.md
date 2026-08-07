@@ -41,6 +41,13 @@ falsifiable fact and cite where it is checkable (a file, a test, or a commit).
 - Piping pytest through `| tail` masks its exit code (the pipe returns tail's 0), hiding real failures;
   run `python -m pytest` unpiped or capture `$?` before any pipe. Evidence: `.claude/hooks/verify-green.sh`
   (the Stop gate runs pytest unpiped for exactly this reason).
+- The local full suite and `.github/workflows/main-selfhosted.yml` use the same physical Windows host;
+  overlapping them can starve a healthy run into a timeout. Check the live workflow before starting a
+  local full suite, and inspect its step conclusions after an admin merge. Evidence: workflow run
+  `30980535490` + `docs/review-hardening-handoff-2026-07-30.md` section 5.17.
+- Release provenance, privacy, correctness, and reproducibility are separate proof axes. The old release
+  gate proved origin exhaustively but never ran the tagged code's suite, so v3.32.0 shipped from a red
+  commit; the current gate tests the tag's own content. Evidence: `.github/workflows/release-selfhosted.yml`.
 - Memory consolidation deletes "superseded" facts on a schedule, so a rarely-referenced safety
   constraint survives only via the protected tier marker `protected: true`. Evidence:
   `cisco_toolkit/memory_guard.py` (D12) + the out-of-repo `anthropic-skills:consolidate-memory` skill.

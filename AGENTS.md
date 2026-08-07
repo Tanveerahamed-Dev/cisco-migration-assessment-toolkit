@@ -26,6 +26,13 @@ Dated records preserve reasoning; they are not automatically current work
 queues. Never execute their `next`, `remaining`, `resume`, phase, branch, or PR
 instructions without revalidating them against the live owners and Git state.
 
+## Verified host continuity
+
+`CLAUDE.md` section **Shared Git and host operating doctrine** owns the current
+merge, self-hosted-CI contention, PowerShell 5.1 handoff, and Windows graphify-
+hook rules. Read that tracked owner rather than relying on Claude's machine-local
+memory copy.
+
 ## Cross-agent continuity
 
 - `.claude/settings.json`, Claude hooks, slash commands, custom agents, and

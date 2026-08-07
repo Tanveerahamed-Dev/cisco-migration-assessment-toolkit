@@ -49,6 +49,12 @@ the remaining old artifacts are committed equivalents or obsolete conflict state
 Root `AGENTS.md` now routes Codex into this shared doctrine and `docs/ssot.md`; Claude memory and hooks remain
 platform-specific aids, never the sole cross-agent owner.
 
+The audit also read the project-scoped Claude transcripts through their latest local event (2026-08-05) and
+the six newer, uncommitted Claude memory updates. Their durable host/release lessons are now represented in
+root `AGENTS.md` and `docs/quality/learnings.md`; the machine-local memory repository remains a cache, not a
+required source for a future Codex session. A fresh `git fetch` on 2026-08-07 proved local `main` was zero
+commits behind `origin/main` at that receipt; re-fetch rather than treating that observation as permanent.
+
 The tracked Claude Design inputs are locally reconciled and the 21-card bundle builds, validates, renders, and
 grades with no pending local card. Exact local/remote anchors and the upload receipt live in
 `.design-sync/NOTES.md`. Two external handoffs remain before claiming end-to-end Design synchronization:
@@ -61,9 +67,29 @@ output is the defect *shapes*, not its findings: absence rendered as health, a g
 hand-maintained list standing in for the class it means, and gates whose success path was never
 executed.
 
+## Shared Git and host operating doctrine
+
+- This repository currently preserves PR work with merge commits. Do not assume squash semantics;
+  inspect `git log --merges origin/main` and preserve the established method unless the user explicitly
+  chooses another. When hosted required checks are structurally dead (`steps: 0`), an admin bypass still
+  requires exact-head scope review, the relevant local gate with recorded evidence, and explicit user
+  authority; then read the merged-main `main-selfhosted` verdict.
+- `main-selfhosted` runs on the same physical Windows development host as local verification. Before
+  starting a full local pytest run, check whether that workflow is active; concurrent suites can starve
+  an otherwise healthy job into a timeout. A long step with a null conclusion is cancellation/timeout
+  evidence, not a test assertion failure.
+- Commands handed to the user are normally pasted into Windows PowerShell 5.1 from an arbitrary
+  directory. Prefer performing authorized actions directly; otherwise provide one command at a time,
+  avoid `&&`, and establish the repository with an absolute `cd` or `git -C`.
+- On this host, the Microsoft Store `python` alias can satisfy a PATH probe but cannot import graphify.
+  Repair an existing stale Git hook with graphify hook uninstall then install (install alone is a no-op),
+  pin the real interpreter, and verify a positive rebuild by graph mtime/log rather than the absence of a
+  warning. Use a POSIX-form path in `graphify-out/.graphify_python`; the generated hook's allowlist rejects
+  native Windows backslashes.
+
 ## graphify
 
-This project has a knowledge graph at graphify-out/ (12,864 nodes / 22,817 edges as of 2026-08-07 — `graphify-out/GRAPH_REPORT.md` header is the authoritative count and this figure is only a cache of it, so re-read the header rather than trusting this line; after the 2026-07-03 de-pollution that also
+This project has a knowledge graph at graphify-out/ (12,866 nodes / 22,828 edges as of 2026-08-07 — `graphify-out/GRAPH_REPORT.md` header is the authoritative count and this figure is only a cache of it, so re-read the header rather than trusting this line; after the 2026-07-03 de-pollution that also
 excluded untracked scratch + side-engagement dirs — `ds-bundle/`+`.ds-sync/` (design-sync output), `*_DC_Design/`,
 `compass_artifact_*`, `scratch_*` — which had diluted it ~27%; the earlier 2026-06-25 pass excluded the stale `_ref/`
 engine copy + the graph's own `graphify-out/` dumps — see `.graphifyignore`). The live graph is

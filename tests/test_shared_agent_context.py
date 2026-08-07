@@ -26,6 +26,21 @@ def test_root_agents_bootstraps_codex_into_shared_owners() -> None:
     assert "Current owner code, tests, manifests" in text
 
 
+def test_root_agents_carries_verified_host_continuity() -> None:
+    bootstrap = _read("AGENTS.md")
+    text = _read("CLAUDE.md")
+
+    assert "Shared Git and host operating doctrine" in bootstrap
+    assert "machine-local" in bootstrap
+    assert "main-selfhosted" in text
+    assert "same physical Windows development host" in text
+    assert "PowerShell 5.1" in text
+    assert "avoid `&&`" in text
+    assert "merge commits" in text
+    assert "graphify hook uninstall then" in text
+    assert "POSIX-form path" in text
+
+
 def test_ssot_does_not_make_claude_memory_the_cross_agent_owner() -> None:
     text = _read("docs/ssot.md")
     state_row = next(

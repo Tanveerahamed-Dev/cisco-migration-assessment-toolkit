@@ -490,9 +490,17 @@
 
   Do **not** call the remote synchronized from the cached sidecar: `.design-sync/.cache/remote-sync.json` was
   last written 2026-08-04 18:41 local time and records `styleSha=719392c869065ec210c3e652ede7405b0dc8aba5e1b1d8e9b9ae35790483b115`,
-  `bundleSha12=c209df1288c8`, `auxSha=15010bbe539f529c`. This Codex session had no authenticated Claude Design
-  connector/CLI, and the project URL redirected to Claude login, so live `list_files`, anchor fetch, upload, and
-  post-upload re-fetch were not performed. In the next authenticated session: inventory the pinned project,
-  fetch its live `_ds_sync.json`, preserve remote-only `templates/**` exactly (outside the sync globs), compare
-  against this receipt, apply the driver's no-delete upload plan with `_ds_sync.json` last, then re-list and
-  re-fetch before declaring the remote synchronized.
+  `bundleSha12=c209df1288c8`, `auxSha=15010bbe539f529c`. A fresh 2026-08-07 live-access audit found the Claude CLI
+  installed and logged into a Max account, but its strictly read-only DesignSync request was rejected before
+  inference with HTTP 403 (`organization has disabled Claude subscription access for Claude Code`); it exposes
+  no DesignSync MCP/plugin. The only connected browser redirected the pinned project to Claude login. Therefore
+  live `list_files`, anchor fetch, upload, and post-upload readback were not performed.
+
+  The last authenticated inventory recorded five remote-only Design artifacts that must be fetched for awareness
+  and preserved byte-for-byte: `templates/topology-panel/.thumbnail`, `TopologyPanel.dc.html`, `ds-base.js`,
+  `support.js`, and `templates/topology-restyle-notes.md`. In the next authenticated session: get the project and
+  full file inventory; fetch every `templates/**` file plus the live `_ds_sync.json`; rerun the driver and require
+  `ok:true`, `pendingGrade:[]`, `removed:[]`, and `deletePaths:[]`; re-fetch the anchor immediately before the
+  upload plan; write only the 113 sync-owned paths with the sentinel first, content next, sentinel re-armed, and
+  `_ds_sync.json` last; then re-list and re-fetch exact hashes before declaring synchronization. If the refreshed
+  diff contains any deletion, stop for review instead of executing or silently omitting it.
