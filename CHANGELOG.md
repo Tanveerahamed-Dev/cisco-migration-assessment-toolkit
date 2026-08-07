@@ -47,6 +47,11 @@ per change, with verification evidence) lives in
   for. CI-only; no shipped bytes are affected, so v3.32.1's artifacts are unchanged.
 
 ### Fixed
+- **Graphify MCP startup now resolves a real interpreter instead of trusting the Windows Store
+  `python` alias.** The tracked MCP configuration launches a small cross-platform Node resolver that
+  prefers the repository's local Graphify interpreter pin, verifies `graphify.serve` is importable,
+  and falls back through platform-appropriate Python launchers. It never installs packages or uses
+  the network, and `GRAPHIFY_PYTHON` remains an explicit operator override.
 - **Installed distributions now retain authoritative lifecycle evidence.** Wheels and the frozen
   Atlas bundle carry the exact 13,261-byte, SHA-pinned Cisco EoL semantic fixture; runtime verification
   binds its schema, 44 PID/date claims, 17 exact bulletin URLs, and freshness to the inline lifecycle
