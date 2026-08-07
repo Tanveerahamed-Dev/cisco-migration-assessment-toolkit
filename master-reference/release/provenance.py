@@ -54,6 +54,7 @@ def provenance_statement(
                 "internalParameters": {
                     "canonicalJson": "sorted-keys-compact-utf8-lf",
                     "archiveProfile": "sorted-fixed-epoch-0644-deflate9",
+                    "repositoryInputBasis": "raw-selected-commit-git-blobs",
                 },
                 "resolvedDependencies": materials,
             },

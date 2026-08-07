@@ -131,13 +131,15 @@ def observe_git_state(repository_root: Path, baseline_commit: str) -> dict[str, 
     baseline_tree_id = _git(root, "rev-parse", f"{baseline}^{{tree}}").decode("ascii").strip()
     head_commit = _git(root, "rev-parse", "HEAD").decode("ascii").strip()
     head_tree_id = _git(root, "rev-parse", "HEAD^{tree}").decode("ascii").strip()
+    tracked_status = _git(root, "status", "--porcelain=v1", "-z", "--untracked-files=no")
     changed = set(_decode_paths(_git(root, "diff", "--name-only", "-z", baseline, "--")))
     changed.update(_decode_paths(_git(root, "diff", "--name-only", "--diff-filter=D", "-z", baseline, "--")))
-    changed.update(_decode_paths(_git(root, "ls-files", "--others", "--exclude-standard", "-z")))
     baseline_tree = _tree(root, baseline)
     head_tree = _tree(root, "HEAD")
     rows: list[dict[str, Any]] = []
     errors: list[str] = []
+    if tracked_status:
+        errors.append("tracked_status_not_clean")
     for path in sorted(changed):
         material = _material(root, path)
         if material["restricted"]:
@@ -159,6 +161,8 @@ def observe_git_state(repository_root: Path, baseline_commit: str) -> dict[str, 
         "head_tree": head_tree_id,
         "changed_paths": sorted(changed),
         "diff_digest": digest_object(rows),
+        "tracked_status_digest": sha256_bytes(tracked_status),
+        "tracked_status_clean": not tracked_status,
         "material_rows": rows,
         "errors": sorted(set(errors)),
     }

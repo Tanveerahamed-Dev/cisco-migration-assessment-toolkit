@@ -24,7 +24,7 @@ export type Capability = {
 };
 
 export type CapabilityDomain = {
-  domain_ref: string;
+  id: string;
   entries: Capability[];
 };
 
@@ -71,6 +71,22 @@ export type Invariant = {
   id: string;
   statement: string;
   owner_refs: string[];
+  formal_rule: string;
+  scope: string[];
+  enforcement_points: string[];
+  supporting_tests: string[];
+  counterexample_test: string;
+  exceptions_allowed: string[];
+  residual_risk: string;
+  independent_verifier: string;
+};
+
+export type LabDefinition = {
+  execution_state: "definition_only";
+  deterministic_inputs: string[];
+  expected_observations: string[];
+  reset_rule: string;
+  source_binding: string;
 };
 
 export type Lab = {
@@ -86,6 +102,8 @@ export type Lab = {
   proves: string;
   does_not_prove: string;
   owner_refs: string[];
+  gap_refs: string[];
+  deterministic_definition: LabDefinition;
 };
 
 export type DeliveryGovernance = {
@@ -101,6 +119,8 @@ export type DeliveryGovernance = {
 
 export type CoreModel = {
   schema_version: string;
+  id: string;
+  catalog_version: string;
   title: string;
   as_of: string;
   scope: string;
@@ -135,6 +155,20 @@ export type CoreModel = {
     label: string;
     question: string;
   }>;
+  digital_thread: {
+    id: string;
+    abstention_rule: string;
+    stages: Array<{
+      id: string;
+      order: number;
+      label: string;
+      entity_type: string;
+      question: string;
+      owner_refs: string[];
+      abstention: string;
+      relation_to_next: string | null;
+    }>;
+  };
   system_architecture: {
     id: string;
     planes: Array<{

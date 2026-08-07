@@ -8,7 +8,7 @@ import stat
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .model import sha256_bytes, stable_id, text_preview
+from .model import SCHEMA_VERSION, sha256_bytes, stable_id, text_preview
 
 
 MAX_GRAPH_BYTES = 256 * 1024 * 1024
@@ -78,6 +78,7 @@ def _safe_source_location(value: Any) -> str:
 def project_graphify(
     repository_root: Path,
     source_commit: str,
+    source_tree_digest: str,
     safe_files: dict[str, str],
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     """Project only nodes grounded in fully readable tracked repository files.
@@ -91,6 +92,9 @@ def project_graphify(
     if graph_path is None:
         return (
             {
+                "schema_version": SCHEMA_VERSION,
+                "source_commit": source_commit,
+                "source_tree_digest": source_tree_digest,
                 "available": False,
                 "status": "absent",
                 "source": "graphify-out/graph.json",
@@ -236,6 +240,7 @@ def project_graphify(
     nodes.sort(key=lambda row: row["id"])
     edges.sort(key=lambda row: row["id"])
     metadata = {
+        "schema_version": SCHEMA_VERSION,
         "available": True,
         "status": "stale" if stale else "current",
         "source": "graphify-out/graph.json",
@@ -244,6 +249,7 @@ def project_graphify(
         "report_available": report_path is not None,
         "built_at_commit": built_commit,
         "source_commit": source_commit,
+        "source_tree_digest": source_tree_digest,
         "stale": stale,
         "total_nodes": len(raw_nodes),
         "total_edges": len(raw_edges),

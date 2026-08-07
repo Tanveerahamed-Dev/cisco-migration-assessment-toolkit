@@ -439,6 +439,8 @@ function extractFile(sourceFile, input) {
 
     if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
       const tagName = node.tagName.getText(sourceFile);
+      const attributeNames = node.attributes.properties.map((property) =>
+        ts.isJsxAttribute(property) ? property.name.getText(sourceFile) : "spread_attributes");
       result.components.push({
         id: stableId("component", path, "jsx-element", node.getStart(sourceFile), node.getEnd()),
         file_id: fileId,
@@ -447,6 +449,7 @@ function extractFile(sourceFile, input) {
         kind: "jsx_element",
         entity_type: "jsx_element",
         component_role: /^[a-z]/.test(tagName) ? "intrinsic_element" : "component_reference",
+        attribute_names: [...new Set(attributeNames)].sort(),
         exported: false,
         range: rangeFor(sourceFile, node),
         detection: "typescript_compiler_api_jsx_opening_element",

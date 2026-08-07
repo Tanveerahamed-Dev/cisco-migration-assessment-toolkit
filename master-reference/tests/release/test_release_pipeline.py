@@ -197,6 +197,7 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
     _git(repo, "init", "--quiet")
     _git(repo, "config", "user.name", "Atlas Fixture")
     _git(repo, "config", "user.email", "atlas-fixture@example.invalid")
+    _git(repo, "config", "core.autocrlf", "false")
     _git(repo, "add", "--all")
     commit_environment = os.environ.copy()
     commit_environment.update(
@@ -222,8 +223,8 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
     assert set(tracked_paths) == set(git_entries)
     files = []
     for index, relative in enumerate(sorted(tracked_paths)):
-        raw = (repo / relative).read_bytes()
         mode, blob_oid, stage = git_entries[relative]
+        raw = _git(repo, "cat-file", "blob", blob_oid)
         files.append(
             {
                 "id": f"file-{index}",
@@ -231,6 +232,7 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
                 "git_mode": mode,
                 "git_blob_oid": blob_oid,
                 "git_stage": stage,
+                "content_source": "selected_commit_git_blob",
                 "language": "json" if relative.endswith(".json") else "text",
                 "roles": ["dataset"] if "/content/" in relative else ["manifest"],
                 "privacy_exposure": "full",
@@ -259,13 +261,76 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
     compiler = tmp_path / "compiler"
     records: dict[str, list[dict[str, object]]] = {name: [] for name in REQUIRED_GROUPS}
     records["files"] = files
+    records["structural_entities"] = [
+        {
+            "id": f"root-{file_index}",
+            "file_id": file_record["id"],
+            "path": file_record["path"],
+            "name": file_record["path"],
+            "kind": "configuration_document",
+            "entity_type": "structural_root_configuration_document",
+            "root_scope": "parsed_source",
+            "range": {
+                "start_line": 1,
+                "start_column": 0,
+                "end_line": file_record["line_count"],
+                "end_column": len(
+                    _git(repo, "cat-file", "blob", str(file_record["git_blob_oid"]))
+                    .decode("utf-8")
+                    .splitlines()[-1]
+                ),
+            },
+            "range_state": "exact_source_lines",
+            "line_count": file_record["line_count"],
+            "nonblank_line_count": file_record["nonblank_line_count"],
+            "parser": file_record["parser"],
+            "parser_mode": file_record["parser_mode"],
+            "parser_version": file_record.get("parser_version"),
+            "parser_owned": True,
+            "language": file_record["language"],
+            "roles": file_record["roles"],
+            "source_basis": file_record["content_source"],
+            "git_blob_oid": file_record["git_blob_oid"],
+            "content_digest": file_record["content_digest"],
+            "generation_provenance": {
+                "state": "not_declared",
+                "basis": "no_generated_role_or_generator_declaration",
+                "generator_record_ids": [],
+            },
+            "extraction_disposition": "parser_structural_root",
+            "explanation_depth": 1,
+            "uncertainty": ["structural_root_does_not_establish_behavior_or_execution"],
+            "unresolved_reasons": ["structural_root_does_not_establish_behavior_or_execution"],
+        }
+        for file_index, file_record in enumerate(files)
+    ]
+    roots_by_file = {
+        root["file_id"]: root for root in records["structural_entities"]
+    }
+    records["lines"] = [
+        {
+            "id": f"line-{file_index}-{line_number}",
+            "file_id": file_record["id"],
+            "path": file_record["path"],
+            "line": line_number,
+            "explanation_depth": 1,
+            "semantic_entity": roots_by_file[file_record["id"]]["id"],
+            "structural_mapping_basis": "parser_structural_root",
+        }
+        for file_index, file_record in enumerate(files)
+        for line_number, line in enumerate(
+            _git(repo, "cat-file", "blob", str(file_record["git_blob_oid"])).splitlines(),
+            start=1,
+        )
+        if line.strip()
+    ]
     groups: dict[str, object] = {}
     for group_name in sorted(records):
         rows = records[group_name]
         chunks = []
         if rows:
             envelope = {
-                "schema_version": "1.0.0",
+                "schema_version": "1.1.0",
                 "record_type": group_name,
                 "source_commit": commit,
                 "source_tree_digest": source_tree_digest,
@@ -287,7 +352,7 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
         }
 
     architecture = {
-        "schema_version": "1.0.0",
+        "schema_version": "1.1.0",
         "source_commit": commit,
         "source_tree_digest": source_tree_digest,
         "status": "passed",
@@ -297,7 +362,7 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
     }
     completeness = {
         "id": "completeness-fixture",
-        "schema_version": "1.0.0",
+        "schema_version": "1.1.0",
         "source_commit": commit,
         "source_tree_digest": source_tree_digest,
         "tracked_worktree_dirty": False,
@@ -307,12 +372,49 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
         "graphify": {"available": True, "status": "current", "stale": False, "projected_nodes": 0, "projected_edges": 0},
         "architecture_conformance": architecture,
         "privacy": {"vault": "not_read", "client_state": "not_read", "network": "not_used"},
-        "invariants": [{"name": "fixture-complete", "passed": True, "expected": 1, "actual": 1}],
+        "semantic_accounting": {
+            "safe_parsed_sources": len(files),
+            "structural_root_entities": len(records["structural_entities"]),
+            "structurally_mapped_lines": len(records["lines"]),
+            "gui_surface_records": 0,
+            "gui_dossiers": 0,
+        },
+        "invariants": [
+            {"name": "fixture-complete", "passed": True, "expected": 1, "actual": 1},
+            {
+                "name": "every_safe_parsed_source_has_one_structural_root",
+                "passed": True,
+                "expected": len(files),
+                "actual": len(records["structural_entities"]),
+            },
+            {
+                "name": "every_safe_line_structurally_mapped",
+                "passed": True,
+                "expected": len(records["lines"]),
+                "actual": len(records["lines"]),
+            },
+            {
+                "name": "every_gui_surface_has_standardized_evidence_honest_dossier",
+                "passed": True,
+                "expected": 0,
+                "actual": 0,
+            },
+        ],
         "acceptance_gates": [
             {"name": "fixture-semantic-review", "passed": False, "expected": 1, "actual": 0}
         ],
     }
-    graphify = {"available": True, "status": "current", "stale": False, "projected_nodes": 0, "projected_edges": 0}
+    graphify = {
+        "schema_version": "1.1.0",
+        "source_commit": commit,
+        "source_tree_digest": source_tree_digest,
+        "available": True,
+        "status": "current",
+        "stale": False,
+        "projected_nodes": 0,
+        "projected_edges": 0,
+    }
+    completeness["graphify"] = graphify
     completeness_raw = canonical_json(completeness)
     graphify_raw = canonical_json(graphify)
     architecture_raw = canonical_json(architecture)
@@ -320,7 +422,7 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
     _write(compiler / "graphify-metadata.json", graphify_raw)
     _write(compiler / "architecture-conformance.json", architecture_raw)
     manifest = {
-        "schema_version": "1.0.0",
+        "schema_version": "1.1.0",
         "status": "complete",
         "source_commit": commit,
         "head_tree_oid": head_tree_oid,
@@ -378,6 +480,39 @@ def test_release_family_is_deterministic_and_explicitly_unsigned(tmp_path: Path)
     assert subjects["owner-handbook.md"] == hashlib.sha256((first / "owner-handbook.md").read_bytes()).hexdigest()
     assert all(value != compiler_manifest["source_tree_digest"] for value in subjects.values())
     assert provenance["predicate"]["runDetails"]["metadata"]["reproducible"] is False
+
+
+def test_release_inputs_and_preservation_use_git_blobs_across_checkout_eol(tmp_path: Path) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    lf_output = tmp_path / "release-lf"
+    build_release(repo, compiler, lf_output)
+
+    requirement_oid = _git(repo, "rev-parse", "HEAD:requirements.txt").decode("ascii").strip()
+    canonical_requirement = _git(repo, "cat-file", "blob", requirement_oid)
+    assert b"\r\n" not in canonical_requirement
+
+    _git(repo, "config", "core.autocrlf", "true")
+    tracked = [row.decode("utf-8") for row in _git(repo, "ls-files", "-z").split(b"\0") if row]
+    for relative in tracked:
+        (repo / relative).unlink()
+    _git(repo, "checkout", "--", ".")
+    assert b"\r\n" in (repo / "requirements.txt").read_bytes()
+    assert not _git(repo, "status", "--porcelain=v1")
+
+    crlf_output = tmp_path / "release-crlf"
+    build_release(repo, compiler, crlf_output)
+    assert _all_files(lf_output) == _all_files(crlf_output)
+
+    with zipfile.ZipFile(crlf_output / "atlas-master-reference-preservation.zip") as archive:
+        preserved = archive.read("dependency-inputs/requirements.txt")
+    assert preserved == canonical_requirement
+    provenance = json.loads((crlf_output / "provenance.json").read_text(encoding="utf-8"))
+    material = next(
+        item
+        for item in provenance["predicate"]["buildDefinition"]["resolvedDependencies"]
+        if item["uri"] == "requirements.txt"
+    )
+    assert material["digest"]["sha256"] == hashlib.sha256(canonical_requirement).hexdigest()
 
 
 def test_archives_are_safe_sorted_fixed_epoch_and_preserve_compiler(tmp_path: Path) -> None:
@@ -459,6 +594,106 @@ def test_missing_architecture_conformance_receipt_blocks_release(tmp_path: Path)
     _json(manifest_path, manifest)
     output = tmp_path / "release"
     with pytest.raises(ReleaseError, match="architecture conformance"):
+        build_release(repo, compiler, output)
+    assert not output.exists()
+
+
+def test_missing_structural_line_mapping_gate_blocks_release(tmp_path: Path) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    completeness_path = compiler / "completeness.json"
+    completeness = json.loads(completeness_path.read_text(encoding="utf-8"))
+    completeness["invariants"] = [
+        item
+        for item in completeness["invariants"]
+        if item["name"] != "every_safe_line_structurally_mapped"
+    ]
+    completeness_raw = canonical_json(completeness)
+    completeness_path.write_bytes(completeness_raw)
+    manifest_path = compiler / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["completeness"].update(
+        {"sha256": sha256_bytes(completeness_raw), "bytes": len(completeness_raw)}
+    )
+    manifest_path.write_bytes(canonical_json(manifest))
+
+    output = tmp_path / "release"
+    with pytest.raises(ReleaseError, match="structural line-mapping invariant"):
+        build_release(repo, compiler, output)
+    assert not output.exists()
+
+
+def test_legacy_compiler_corpus_schema_is_rejected(tmp_path: Path) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    manifest_path = compiler / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["schema_version"] = "1.0.0"
+    manifest_path.write_bytes(canonical_json(manifest))
+
+    output = tmp_path / "release"
+    with pytest.raises(ReleaseError, match="unsupported compiler schema"):
+        build_release(repo, compiler, output)
+    assert not output.exists()
+
+
+def test_missing_gui_dossier_invariant_blocks_release(tmp_path: Path) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    completeness_path = compiler / "completeness.json"
+    completeness = json.loads(completeness_path.read_text(encoding="utf-8"))
+    completeness["invariants"] = [
+        item
+        for item in completeness["invariants"]
+        if item["name"]
+        != "every_gui_surface_has_standardized_evidence_honest_dossier"
+    ]
+    completeness_raw = canonical_json(completeness)
+    completeness_path.write_bytes(completeness_raw)
+    manifest_path = compiler / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["completeness"].update(
+        {"sha256": sha256_bytes(completeness_raw), "bytes": len(completeness_raw)}
+    )
+    manifest_path.write_bytes(canonical_json(manifest))
+
+    output = tmp_path / "release"
+    with pytest.raises(ReleaseError, match="GUI/root denominator is missing"):
+        build_release(repo, compiler, output)
+    assert not output.exists()
+
+
+def test_duplicate_named_compiler_invariant_blocks_release(tmp_path: Path) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    completeness_path = compiler / "completeness.json"
+    completeness = json.loads(completeness_path.read_text(encoding="utf-8"))
+    completeness["invariants"].append(dict(completeness["invariants"][0]))
+    completeness_raw = canonical_json(completeness)
+    completeness_path.write_bytes(completeness_raw)
+    manifest_path = compiler / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["completeness"].update(
+        {"sha256": sha256_bytes(completeness_raw), "bytes": len(completeness_raw)}
+    )
+    manifest_path.write_bytes(canonical_json(manifest))
+
+    output = tmp_path / "release"
+    with pytest.raises(ReleaseError, match="invalid or duplicate name"):
+        build_release(repo, compiler, output)
+    assert not output.exists()
+
+
+def test_missing_structural_root_group_denominator_blocks_release(tmp_path: Path) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    manifest_path = compiler / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["groups"]["structural_entities"] = {
+        "record_count": 0,
+        "chunk_count": 0,
+        "records_digest": digest_object([]),
+        "chunks": [],
+    }
+    manifest_path.write_bytes(canonical_json(manifest))
+
+    output = tmp_path / "release"
+    with pytest.raises(ReleaseError, match="structural-entity group"):
         build_release(repo, compiler, output)
     assert not output.exists()
 

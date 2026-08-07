@@ -17,7 +17,7 @@ export const deliveryGovernance = deliveryJson as unknown as DeliveryGovernance;
 export const horizon = horizonJson as unknown as HorizonModel;
 
 export const capabilities = capabilityCatalog.domains.flatMap((domain) =>
-  domain.entries.map((entry) => ({ ...entry, domain_id: domain.domain_ref })),
+  domain.entries.map((entry) => ({ ...entry, domain_id: domain.id })),
 );
 
 export const capabilityCounts = capabilities.reduce<Record<CapabilityState, number>>(

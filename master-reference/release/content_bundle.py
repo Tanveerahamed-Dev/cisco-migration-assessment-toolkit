@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from .model import ReleaseInputError, read_bytes, read_json, sha256_bytes
+from .model import ReleaseInputError, read_bytes, sha256_bytes
 
 
 CONTENT_FILES = (
@@ -27,21 +28,38 @@ class ContentBundle:
     horizon: dict[str, Any]
     output_contract: dict[str, Any]
     receipts: tuple[dict[str, Any], ...]
+    raw_files: dict[str, bytes]
 
 
-def _object(root: Path, name: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    value = read_json(root, name)
+def _object(
+    root: Path,
+    name: str,
+    source_reader: Callable[[str], bytes] | None,
+) -> tuple[dict[str, Any], dict[str, Any], bytes]:
+    raw = source_reader(name) if source_reader is not None else read_bytes(root, name)
+    try:
+        value = json.loads(raw.decode("utf-8", errors="strict"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ReleaseInputError(f"curated content is not valid UTF-8 JSON: {name}") from exc
     if not isinstance(value, dict) or value.get("schema_version") != "1.0.0":
         raise ReleaseInputError(f"curated content has an unsupported schema: {name}")
-    raw = read_bytes(root, name)
-    return value, {"path": f"master-reference/content/{name}", "sha256": sha256_bytes(raw), "bytes": len(raw)}
+    return (
+        value,
+        {"path": f"master-reference/content/{name}", "sha256": sha256_bytes(raw), "bytes": len(raw)},
+        raw,
+    )
 
 
-def load_content_bundle(root: Path) -> ContentBundle:
+def load_content_bundle(
+    root: Path,
+    *,
+    source_reader: Callable[[str], bytes] | None = None,
+) -> ContentBundle:
     root = root.resolve(strict=True)
-    loaded = [_object(root, name) for name in CONTENT_FILES]
+    loaded = [_object(root, name, source_reader) for name in CONTENT_FILES]
     core, capabilities, governance, horizon, output_contract = (item[0] for item in loaded)
     receipts = tuple(item[1] for item in loaded)
+    raw_files = {name: item[2] for name, item in zip(CONTENT_FILES, loaded, strict=True)}
 
     if not isinstance(capabilities.get("domains"), list) or any(
         not isinstance(domain, dict) or not isinstance(domain.get("entries"), list)
@@ -105,4 +123,13 @@ def load_content_bundle(root: Path) -> ContentBundle:
             if identifier in ids:
                 raise ReleaseInputError(f"duplicate curated id {identifier!r} in {ids[identifier]} and {label}")
             ids[identifier] = label
-    return ContentBundle(root, core, capabilities, governance, horizon, output_contract, receipts)
+    return ContentBundle(
+        root,
+        core,
+        capabilities,
+        governance,
+        horizon,
+        output_contract,
+        receipts,
+        raw_files,
+    )

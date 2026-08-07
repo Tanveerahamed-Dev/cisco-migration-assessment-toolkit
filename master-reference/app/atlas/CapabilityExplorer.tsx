@@ -48,7 +48,7 @@ export function CapabilityExplorer({
   const entries = useMemo(
     () =>
       catalog.domains.flatMap((item) =>
-        item.entries.map((entry) => ({ ...entry, domain: item.domain_ref })),
+        item.entries.map((entry) => ({ ...entry, domain: item.id })),
       ),
     [catalog],
   );
@@ -89,8 +89,8 @@ export function CapabilityExplorer({
           <select value={domain} onChange={(event) => selectDomain(event.target.value)}>
             <option value="all">All declared domains</option>
             {catalog.domains.map((item) => (
-              <option value={item.domain_ref} key={item.domain_ref}>
-                {domainTitles[item.domain_ref] ?? item.domain_ref}
+              <option value={item.id} key={item.id}>
+                {domainTitles[item.id] ?? item.id}
               </option>
             ))}
           </select>

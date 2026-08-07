@@ -73,6 +73,13 @@
       "claim_scope": "Primary collect, parse, analyze, and deliver engine entry point."
     },
     {
+      "id": "owner.assessment.mcp",
+      "path": "cisco_toolkit/mcp_server.py",
+      "symbol": "build_server / main",
+      "kind": "code-owner",
+      "claim_scope": "Optional read-only MCP tools over an already-produced snapshot, including explicit stdio and loopback-listener transport boundaries."
+    },
+    {
       "id": "owner.intake.bounds",
       "path": "cisco_toolkit/path_assertions.py",
       "kind": "code-owner",
@@ -454,6 +461,29 @@
     {"id": "stage.validate", "order": 9, "label": "Validate", "question": "Does independent positive and negative proof cover the supported slice?"},
     {"id": "stage.operate", "order": 10, "label": "Operate", "question": "Are ownership, SLO, lifecycle, incident, and improvement signals defined?"}
   ],
+  "digital_thread": {
+    "id": "thread.project-digital-thread",
+    "abstention_rule": "A trace stops at the first missing owner, source, evidence, transformation, gate, or typed relationship. The reference never invents a downstream edge to complete a story.",
+    "stages": [
+      {"id": "thread.business-outcome", "order": 1, "label": "Business outcome", "entity_type": "OutcomeContract", "question": "Which measurable owner-visible outcome justifies the work?", "owner_refs": ["owner.operating.doctrine", "owner.reference.contract"], "abstention": "Stop when the outcome or measurement authority is not declared.", "relation_to_next": "motivates"},
+      {"id": "thread.stakeholder-concern", "order": 2, "label": "Stakeholder concern", "entity_type": "StakeholderConcern", "question": "Whose decision, risk, obligation, or operating concern is in scope?", "owner_refs": ["owner.operating.doctrine"], "abstention": "Stop when the stakeholder or decision authority is unknown.", "relation_to_next": "constrains"},
+      {"id": "thread.requirement", "order": 3, "label": "Requirement", "entity_type": "Requirement", "question": "What bounded behavior, evidence, quality, or governance obligation must hold?", "owner_refs": ["owner.operating.doctrine", "owner.ssot.registry"], "abstention": "Stop when the requirement lacks scope or acceptance evidence.", "relation_to_next": "decided-by"},
+      {"id": "thread.architecture-decision", "order": 4, "label": "Architecture decision", "entity_type": "DecisionRecord", "question": "Which accepted decision and protected constraints shape the solution?", "owner_refs": ["owner.operating.doctrine", "owner.ssot.registry"], "abstention": "Stop when a dated plan is the only source or the decision remains unresolved.", "relation_to_next": "enables"},
+      {"id": "thread.capability", "order": 5, "label": "Capability", "entity_type": "CapabilityCell", "question": "Which closed-catalog capability owns the promised slice and its gaps?", "owner_refs": ["owner.reference.contract"], "abstention": "Stop when no stable capability ID or support state exists.", "relation_to_next": "requires"},
+      {"id": "thread.input-evidence", "order": 6, "label": "Input or evidence", "entity_type": "EvidenceRecord", "question": "Which authorized observation, fixture, registry, or declared input can support the capability?", "owner_refs": ["owner.intake.bounds", "owner.custody"], "abstention": "Stop when evidence is missing, malformed, unauthorized, stale, or outside custody.", "relation_to_next": "acquired-by"},
+      {"id": "thread.collector-importer", "order": 7, "label": "Collector or importer", "entity_type": "ReferenceEntity", "question": "Which read-only channel acquires the evidence and preserves its boundary?", "owner_refs": ["owner.engine.entry", "owner.rest.collection"], "abstention": "Stop when the channel, permission, or versioned shape is unsupported.", "relation_to_next": "supplies"},
+      {"id": "thread.parser-normalizer", "order": 8, "label": "Parser or normalizer", "entity_type": "SymbolDossier", "question": "Which deterministic parser produces normalized observations while retaining unknowns?", "owner_refs": ["owner.engine.entry", "owner.ssot.engine"], "abstention": "Stop when the parser fails, silently drops input, or lacks a structural mapping.", "relation_to_next": "populates"},
+      {"id": "thread.snapshot-field", "order": 9, "label": "Model or snapshot field", "entity_type": "ReferenceEntity", "question": "Which canonical field owns the normalized fact and reconciliation state?", "owner_refs": ["owner.ssot.engine", "owner.ssot.registry"], "abstention": "Stop when a field has no canonical owner or conflicting observations remain unresolved.", "relation_to_next": "consumed-by"},
+      {"id": "thread.detector-analysis", "order": 10, "label": "Detector or analysis", "entity_type": "SymbolDossier", "question": "Which bounded algorithm distinguishes observed, healthy, finding, absent, malformed, and unknown?", "owner_refs": ["owner.analysis", "owner.architecture.coverage"], "abstention": "Stop when prerequisites or denominator evidence are incomplete.", "relation_to_next": "produces"},
+      {"id": "thread.fact-recommendation", "order": 11, "label": "Fact or recommendation", "entity_type": "TypedClaim", "question": "Which sourced claim or advisory recommendation follows, at what scope and freshness?", "owner_refs": ["owner.ssot.engine", "owner.protocol.knowledge"], "abstention": "Stop when lineage is cyclic, evidence is insufficient, or advisory content would be rendered as fact.", "relation_to_next": "informs"},
+      {"id": "thread.design-plan", "order": 12, "label": "Design or plan", "entity_type": "DecisionRecord", "question": "Which target design, migration slice, MOP, rollback, or acceptance plan consumes the claim?", "owner_refs": ["owner.architecture.coverage", "owner.operating.doctrine"], "abstention": "Stop when the recommendation is treated as approval or required design evidence is absent.", "relation_to_next": "submitted-to"},
+      {"id": "thread.human-gate", "order": 13, "label": "Human gate", "entity_type": "VerificationReceipt", "question": "Which independent human authority may approve, reject, revoke, or require more evidence?", "owner_refs": ["owner.operating.doctrine", "owner.web.trust"], "abstention": "Stop when author and verifier are not independent or a mandatory receipt is absent.", "relation_to_next": "authorizes-rendering-of"},
+      {"id": "thread.gui-artifact", "order": 14, "label": "GUI or artifact", "entity_type": "ReferenceEntity", "question": "Which source-bound surface communicates the decision without recalculating truth?", "owner_refs": ["owner.explorer", "owner.deliverable.family", "owner.web.summary"], "abstention": "Stop when the surface lacks provenance, redaction, completeness, or deterministic validation.", "relation_to_next": "guides"},
+      {"id": "thread.execution-validation", "order": 15, "label": "Execution or validation", "entity_type": "VerificationReceipt", "question": "Which human-owned execution and independent positive/negative validation evidence exists?", "owner_refs": ["owner.operating.doctrine", "owner.manifest"], "abstention": "Stop when execution failed, rollback triggered, or validation evidence is synthetic, stale, or absent.", "relation_to_next": "measured-by"},
+      {"id": "thread.pir-outcome", "order": 16, "label": "PIR or outcome", "entity_type": "DigitalThreadEvent", "question": "Which genuine post-implementation result was recorded with authority and denominator?", "owner_refs": ["owner.operating.doctrine", "owner.learnings"], "abstention": "Stop when completion is substituted for outcome or business value is fabricated.", "relation_to_next": "may-promote"},
+      {"id": "thread.learning", "order": 17, "label": "Learning", "entity_type": "DigitalThreadEvent", "question": "Which privacy-safe, independently reviewed generic lesson may improve future controls?", "owner_refs": ["owner.learnings", "owner.ssot.registry"], "abstention": "Do not promote client evidence, self-validating recommendations, or underpowered outcomes into product truth.", "relation_to_next": null}
+    ]
+  },
   "system_architecture": {
     "id": "architecture.six-plane",
     "planes": [
@@ -523,7 +553,7 @@
   },
   "traffic_model": {
     "id": "traffic.eight-plane",
-    "warning": "These planes are investigative lenses, not OSI-layer replacements. A flow is only as complete as the evidence present in every traversed plane.",
+    "warning": "These eight planes are separate investigative lenses, not OSI-layer replacements. Stateless permission is not stateful session proof, and modeled reachability is not measured traffic. A flow is only as complete as the evidence present in every traversed plane.",
     "planes": [
       {
         "id": "traffic.physical",
@@ -548,8 +578,8 @@
       {
         "id": "traffic.l3-underlay",
         "order": 3,
-        "title": "Layer-3 underlay, routing, and gateway behavior",
-        "questions": ["How are prefixes, adjacencies, gateways, and failover paths selected?", "Where are route or convergence uncertainties?"],
+        "title": "Layer-3 routing, RIB/FIB, and gateway behavior",
+        "questions": ["How are prefixes, adjacencies, gateways, RIB entries, and FIB paths selected?", "Where are route, recursion, convergence, or forwarding uncertainties?"],
         "state": "partial",
         "current_scope": "Selected IPv4/IPv6 routing, OSPF/BGP/EIGRP, FHRP, BFD, and topology reasoning; not a complete RIB/FIB or Internet-routing verifier.",
         "owner_refs": ["owner.analysis", "owner.architecture.coverage"],
@@ -558,51 +588,49 @@
       {
         "id": "traffic.overlay-segmentation",
         "order": 4,
-        "title": "Overlay, tenant, and segmentation",
-        "questions": ["Which virtual networks and policy domains carry the flow?", "Where can route leaking or shared fate cross a tenant boundary?"],
+        "title": "Overlay, VRF, tenant, and segmentation",
+        "questions": ["Which overlays, VRFs, virtual networks, and policy domains carry the flow?", "Where can route leaking or shared fate cross a tenant boundary?"],
         "state": "partial",
         "current_scope": "Selected VXLAN-EVPN, ACI, TrustSec, LISP, MPLS VPN, and SD-WAN evidence detectors; incomplete policy and tenant path proof.",
         "owner_refs": ["owner.architecture.coverage"],
         "gap_refs": ["gap.protocol-advanced", "gap.flow-stateful"]
       },
       {
-        "id": "traffic.stateful-policy",
+        "id": "traffic.stateless-policy",
         "order": 5,
-        "title": "Stateful policy, identity, NAT, and service chaining",
-        "questions": ["Do forward and return sessions survive ACL, firewall, identity, NAT, proxy, and chain state?", "Which policy decision and provenance allowed or denied the flow?"],
+        "title": "Stateless policy and reachability permission",
+        "questions": ["Does the modeled source, destination, protocol, and port tuple match a stateless permit or deny rule?", "Which ACL or security rule and provenance produced the bounded decision?"],
         "state": "partial",
-        "current_scope": "Explorer provides bounded ACL-oriented L4 simulation and the engine has selected firewall/identity detectors; no authoritative stateful session or NAT path engine.",
+        "current_scope": "Explorer provides bounded ACL-oriented L4 simulation and selected configuration checks. It does not imply session establishment, NAT correctness, return-path viability, or runtime rule hits.",
         "owner_refs": ["owner.explorer", "owner.architecture.coverage"],
+        "gap_refs": ["gap.protocol-depth", "gap.flow-actual-telemetry"]
+      },
+      {
+        "id": "traffic.stateful-policy",
+        "order": 6,
+        "title": "Stateful policy, NAT, and return path",
+        "questions": ["Do forward and return sessions survive firewall state, NAT, identity, proxy, and service-chain behavior?", "Which runtime policy decision and translation provenance allowed, denied, or invalidated the session?"],
+        "state": "missing",
+        "current_scope": "Selected firewall and identity detectors exist, but Atlas has no authoritative stateful session, NAT translation, rule-hit, or asymmetric return-path engine.",
         "gap_refs": ["gap.flow-stateful"]
       },
       {
         "id": "traffic.application-service",
-        "order": 6,
-        "title": "Application, service-delivery, and experience",
-        "questions": ["Do DNS, load balancing, proxy, TLS, application dependencies, and user experience succeed?", "What latency, jitter, loss, MOS, and synthetic evidence exists?"],
+        "order": 7,
+        "title": "Application, service identity, and experience",
+        "questions": ["Do DNS, load balancing, proxy, TLS, application dependencies, and workload identity succeed?", "Which service and user journey is in scope, and what experience evidence constrains the conclusion?"],
         "state": "missing",
-        "current_scope": "Application-domain grouping is a visualization aid, not end-to-end application-delivery verification.",
+        "current_scope": "Application-domain grouping is a visualization aid, not end-to-end application identity, delivery, dependency, or experience verification.",
         "gap_refs": ["gap.flow-application"]
       },
       {
-        "id": "traffic.management-observability",
-        "order": 7,
-        "title": "Management, control, and observability",
-        "questions": ["Can control and management traffic reach authoritative services?", "Are metrics, logs, flows, packets, traces, and time aligned?"],
-        "state": "partial",
-        "current_scope": "Snapshot, selected controller, syslog, NTP, and protocol-state evidence exist; continuous telemetry and multi-signal correlation do not.",
-        "owner_refs": ["owner.analysis", "owner.rest.collection", "owner.architecture.coverage"],
-        "gap_refs": ["gap.observability-signals", "gap.observability-slo-closed-loop"]
-      },
-      {
-        "id": "traffic.external-hybrid",
+        "id": "traffic.measured-performance",
         "order": 8,
-        "title": "External, Internet, hybrid, and cloud transit",
-        "questions": ["How does the service cross providers, clouds, SaaS, Internet, and organizational trust boundaries?", "What are resilience, sovereignty, security, and egress-cost implications?"],
-        "state": "partial",
-        "current_scope": "A bounded AWS security-group exposure detector exists; no complete multi-cloud, SaaS, Internet, or egress-economics path model.",
-        "owner_refs": ["owner.architecture.coverage"],
-        "gap_refs": ["gap.cloud-native", "gap.flow-external"]
+        "title": "Measured flows, packets, and performance",
+        "questions": ["What flows, packets, metrics, logs, traces, probes, latency, jitter, loss, MOS, and sampling metadata were actually observed?", "Are clocks, denominators, retention, and privacy constraints sufficient for the claimed correlation?"],
+        "state": "missing",
+        "current_scope": "Point-in-time snapshots and selected logs exist, but Atlas has no unified measured-flow, packet, trace, time-series, synthetic, or application-performance evidence plane.",
+        "gap_refs": ["gap.flow-actual-telemetry", "gap.observability-signals", "gap.observability-slo-closed-loop"]
       }
     ]
   },

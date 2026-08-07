@@ -7,6 +7,8 @@ import type {
   ClaimRecord,
   DatasetRecord,
   DossierRecord,
+  GuiDossierField,
+  GuiSurfaceRecord,
   ProjectionIndex,
   SymbolRecord,
   TestRecord,
@@ -25,6 +27,12 @@ function title(kind: DossierKind, record: DossierRecord): string {
   if (kind === "test") return (record as TestRecord).name;
   if (kind === "workflow") return (record as WorkflowRecord).name;
   if (kind === "claim") return (record as ClaimRecord).predicate;
+  if ("gui_dossier" in record) {
+    const surface = record as GuiSurfaceRecord;
+    return surface.gui_dossier.surface_kind === "route"
+      ? `${surface.method ?? "VIEW"} ${surface.route ?? surface.id}`
+      : surface.name ?? surface.id;
+  }
   return (record as DatasetRecord).path;
 }
 
@@ -113,6 +121,71 @@ function DatasetDetails({ record }: { record: DatasetRecord }) {
           <div><dt>Integrity validation</dt><dd>Content digest only</dd></div>
         </dl>
       </section>
+    </>
+  );
+}
+
+const guiFieldLabels: Array<[keyof GuiSurfaceRecord["gui_dossier"], string]> = [
+  ["persona_journey", "Persona and journey"],
+  ["data_snapshot_sources", "Data / snapshot sources"],
+  ["props_contract", "Props contract"],
+  ["state_model", "State model"],
+  ["loading_empty_error_unknown_stale_states", "Loading / empty / error / unknown / stale states"],
+  ["user_actions", "User actions"],
+  ["accessibility", "Accessibility"],
+  ["responsive_behavior", "Responsive behavior"],
+  ["design_tokens", "Design tokens"],
+  ["white_label_inputs", "White-label inputs"],
+  ["design_sync_receipt", "DesignSync receipt"],
+  ["visual_baseline", "Visual baseline"],
+  ["tests", "Tests"],
+  ["downstream_consumers", "Downstream consumers"],
+  ["known_gaps", "Known gaps"],
+];
+
+function GuiField({ field, label }: { field: GuiDossierField; label: string }) {
+  return (
+    <section>
+      <h3>{label}</h3>
+      <dl className={styles.factList}>
+        <div><dt>Evidence state</dt><dd><span className={styles.badge} data-state={field.state === "not_evidenced" ? "metadata_only" : "parsed"}>{field.state.replaceAll("_", " ")}</span></dd></div>
+        <div><dt>Value</dt><dd>{field.value == null ? <MissingField>Not evidenced</MissingField> : <code>{JSON.stringify(field.value)}</code>}</dd></div>
+        <div>
+          <dt>Citations</dt>
+          <dd>{field.citations.length ? field.citations.map((citation) => (
+            <a href={sourceHref(citation.path, citation.start_line ?? undefined)} key={`${citation.record_id}-${citation.evidence_role}`}>
+              [{citation.record_id}] {citation.path}{citation.start_line ? `:${citation.start_line}` : ""} · {citation.evidence_role.replaceAll("_", " ")}
+            </a>
+          )) : <MissingField>No field-specific structural citation</MissingField>}</dd>
+        </div>
+        <div><dt>Gap dispositions</dt><dd>{field.gap_ids.map((gap) => <a href={`/gaps?q=${encodeURIComponent(gap)}`} key={gap}>[{gap}]</a>)}</dd></div>
+      </dl>
+      {field.unresolved_reasons.length ? <ul>{field.unresolved_reasons.map((reason) => <li key={reason}>{reason.replaceAll("_", " ")}</li>)}</ul> : null}
+    </section>
+  );
+}
+
+function GuiDetails({ record }: { record: GuiSurfaceRecord }) {
+  const dossier = record.gui_dossier;
+  return (
+    <>
+      <section>
+        <h2>GUI surface declaration</h2>
+        <dl className={styles.factList}>
+          <div><dt>Surface kind</dt><dd>{dossier.surface_kind}</dd></div>
+          <div><dt>Entity type</dt><dd>{record.entityType.replaceAll("_", " ")}</dd></div>
+          <div><dt>Route / method</dt><dd>{record.route ? `${record.method ?? "VIEW"} ${record.route}` : <MissingField>Not a route record</MissingField>}</dd></div>
+          <div><dt>Handler</dt><dd>{record.handler ?? <MissingField />}</dd></div>
+          <div><dt>Framework</dt><dd>{record.framework ?? <MissingField />}</dd></div>
+          <div><dt>Parser attributes</dt><dd>{record.attributeNames.join(" · ") || <MissingField />}</dd></div>
+          <div><dt>Dossier evidence</dt><dd>{dossier.evidence_state.replaceAll("_", " ")}</dd></div>
+          <div><dt>Dossier denominator</dt><dd>{dossier.field_count} required fields</dd></div>
+          <div><dt>Dossier stable ID</dt><dd><code>{dossier.id}</code></dd></div>
+          <div><dt>Source citation</dt><dd><a href={sourceHref(dossier.source_citation.path, dossier.source_citation.start_line ?? undefined)}>[{dossier.source_citation.record_id}] {dossier.source_citation.path}:{dossier.source_citation.start_line}</a></dd></div>
+        </dl>
+        <p className={styles.missingValue}>Structural attributes, same-path dependencies, tracked pixels, and configuration mappings do not prove runtime behavior, accessibility conformance, field validation, or human review.</p>
+      </section>
+      {guiFieldLabels.map(([key, label]) => <GuiField field={dossier[key] as GuiDossierField} label={label} key={String(key)} />)}
     </>
   );
 }
@@ -294,7 +367,8 @@ export function RecordDossier({ kind, id }: { kind: DossierKind; id: string }) {
 
       <div className={styles.dossierSections}>
         {kind === "symbol" ? <SymbolDetails record={record as SymbolRecord} /> : null}
-        {kind === "data" ? <DatasetDetails record={record as DatasetRecord} /> : null}
+        {kind === "data" && "gui_dossier" in record ? <GuiDetails record={record as GuiSurfaceRecord} /> : null}
+        {kind === "data" && !("gui_dossier" in record) ? <DatasetDetails record={record as DatasetRecord} /> : null}
         {kind === "test" ? <TestDetails record={record as TestRecord} /> : null}
         {kind === "workflow" ? <WorkflowDetails record={record as WorkflowRecord} /> : null}
         {kind === "claim" ? <ClaimDetails record={record as ClaimRecord} /> : null}

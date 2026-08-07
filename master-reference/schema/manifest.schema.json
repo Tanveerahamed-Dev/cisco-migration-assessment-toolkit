@@ -19,7 +19,7 @@
     "architecture_conformance"
   ],
   "properties": {
-    "schema_version": {"const": "1.0.0"},
+    "schema_version": {"const": "1.1.0"},
     "status": {"const": "complete"},
     "release_class": {"enum": ["exact_commit", "dirty_preview"]},
     "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
@@ -31,6 +31,30 @@
     "groups": {
       "type": "object",
       "minProperties": 1,
+      "required": [
+        "files",
+        "lines",
+        "source_text",
+        "symbols",
+        "structural_entities",
+        "imports",
+        "calls",
+        "markdown",
+        "structured",
+        "documents",
+        "routes",
+        "components",
+        "tests",
+        "workflows",
+        "datasets",
+        "binaries",
+        "manifests",
+        "configs",
+        "dependencies",
+        "graph_nodes",
+        "graph_edges",
+        "claims"
+      ],
       "additionalProperties": {"$ref": "#/$defs/groupReceipt"}
     },
     "completeness": {"$ref": "#/$defs/fileReceipt"},

@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { access, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import test from "node:test";
+
+const execFileAsync = promisify(execFile);
 
 const contentRoot = new URL("../../content/", import.meta.url);
 const repositoryRoot = new URL("../../../", import.meta.url);
@@ -148,11 +152,159 @@ test("contains all requested domains, six architecture planes, eight traffic pla
     core.traffic_model.planes.map((plane) => plane.order),
     [1, 2, 3, 4, 5, 6, 7, 8],
   );
+  assert.deepEqual(
+    core.traffic_model.planes.map((plane) => plane.id),
+    [
+      "traffic.physical",
+      "traffic.l2",
+      "traffic.l3-underlay",
+      "traffic.overlay-segmentation",
+      "traffic.stateless-policy",
+      "traffic.stateful-policy",
+      "traffic.application-service",
+      "traffic.measured-performance",
+    ],
+  );
   assert.equal(governance.labs.length, 14);
   assert.deepEqual(
     governance.labs.map((lab) => lab.number),
     Array.from({ length: 14 }, (_, index) => index + 1),
   );
+  assert.deepEqual(
+    governance.labs.map((lab) => lab.id),
+    [
+      "lab.01-evidence-to-artifact",
+      "lab.02-claim-coverage-honesty",
+      "lab.03-protocol-intelligence",
+      "lab.04-traffic-flow-engines",
+      "lab.05-topology-failure",
+      "lab.06-enterprise-patterns",
+      "lab.07-cutover-nrfu-pir",
+      "lab.08-lifecycle-authority",
+      "lab.09-custody-redaction-privacy",
+      "lab.10-ssot-freshness",
+      "lab.11-static-runtime-architecture",
+      "lab.12-decision-voi",
+      "lab.13-line-to-output",
+      "lab.14-white-label-propagation",
+    ],
+  );
+});
+
+test("keeps every mandated breadth denominator explicit", () => {
+  const capabilityIds = new Set(capabilities.map((entry) => entry.id));
+  const required = [
+    "cap.architecture.assessment-mcp",
+    "cap.protocol.discovery-endpoint-learning",
+    "cap.protocol.static-routing",
+    "cap.protocol.rip-ripng",
+    "cap.protocol.pbr-route-policy",
+    "cap.design.sda-catalyst-center",
+    "cap.design.datacenter",
+    "cap.design.vxlan-evpn",
+    "cap.design.aci",
+    "cap.design.service-provider-transport",
+    "cap.design.ot-iot",
+    "cap.design.automation-source-of-truth",
+    "cap.design.sovereignty-residency",
+    "cap.vendor.cisco-catalyst-center",
+    "cap.vendor.f5",
+    "cap.vendor.aruba-hpe",
+    "cap.vendor.nokia",
+    "cap.vendor.huawei",
+    "cap.vendor.vmware-nsx",
+    "cap.channel.netbox-nautobot",
+    "cap.channel.openconfig",
+    "cap.channel.kubernetes",
+  ];
+  for (const id of required) assert.ok(capabilityIds.has(id), `${id} missing from denominator`);
+
+  const joined = required.map((id) => capabilities.find((entry) => entry.id === id)?.title).join(" ");
+  for (const term of [
+    "CDP", "LLDP", "ARP", "Static", "RIP", "Policy-based", "Catalyst Center",
+    "VXLAN-EVPN", "ACI", "Service-provider", "OT", "source-of-truth", "Sovereignty",
+    "F5", "Aruba", "HPE", "Nokia", "Huawei", "VMware", "NSX", "Nautobot", "OpenConfig", "Kubernetes",
+  ]) {
+    assert.match(joined, new RegExp(term, "i"), `${term} is not explicit in the closed denominator`);
+  }
+});
+
+test("declares the complete typed digital thread with deterministic abstention", () => {
+  const thread = core.digital_thread;
+  assert.equal(thread.id, "thread.project-digital-thread");
+  assert.match(thread.abstention_rule, /stop|abstain/i);
+  assert.deepEqual(
+    thread.stages.map((stage) => stage.id),
+    [
+      "thread.business-outcome",
+      "thread.stakeholder-concern",
+      "thread.requirement",
+      "thread.architecture-decision",
+      "thread.capability",
+      "thread.input-evidence",
+      "thread.collector-importer",
+      "thread.parser-normalizer",
+      "thread.snapshot-field",
+      "thread.detector-analysis",
+      "thread.fact-recommendation",
+      "thread.design-plan",
+      "thread.human-gate",
+      "thread.gui-artifact",
+      "thread.execution-validation",
+      "thread.pir-outcome",
+      "thread.learning",
+    ],
+  );
+  assert.deepEqual(
+    thread.stages.map((stage) => stage.order),
+    Array.from({ length: 17 }, (_, index) => index + 1),
+  );
+  assert.deepEqual(
+    thread.stages.map((stage) => stage.entity_type),
+    [
+      "OutcomeContract",
+      "StakeholderConcern",
+      "Requirement",
+      "DecisionRecord",
+      "CapabilityCell",
+      "EvidenceRecord",
+      "ReferenceEntity",
+      "SymbolDossier",
+      "ReferenceEntity",
+      "SymbolDossier",
+      "TypedClaim",
+      "DecisionRecord",
+      "VerificationReceipt",
+      "ReferenceEntity",
+      "VerificationReceipt",
+      "DigitalThreadEvent",
+      "DigitalThreadEvent",
+    ],
+  );
+  for (const [index, stage] of thread.stages.entries()) {
+    assert.ok(stage.question.length >= 20, `${stage.id} needs a useful trace question`);
+    assert.ok(stage.abstention.length >= 30, `${stage.id} needs an explicit stop condition`);
+    assert.ok(stage.owner_refs.length >= 1, `${stage.id} needs a live owner`);
+    if (index < thread.stages.length - 1) {
+      assert.ok(stage.relation_to_next, `${stage.id} needs a typed outgoing relation`);
+    } else {
+      assert.equal(stage.relation_to_next, null);
+    }
+  }
+});
+
+test("uses the catalog domain id in Atlas filtering and search context", async () => {
+  const [typesSource, dataSource, explorerSource] = await Promise.all([
+    readFile(new URL("master-reference/app/atlas/types.ts", repositoryRoot), "utf8"),
+    readFile(new URL("master-reference/app/atlas/data.ts", repositoryRoot), "utf8"),
+    readFile(new URL("master-reference/app/atlas/CapabilityExplorer.tsx", repositoryRoot), "utf8"),
+  ]);
+  assert.match(typesSource, /type CapabilityDomain = \{\s*id: string;/);
+  assert.doesNotMatch(typesSource, /type CapabilityDomain = \{\s*domain_ref:/);
+  assert.match(dataSource, /domain_id: domain\.id/);
+  assert.doesNotMatch(dataSource, /domain_id: domain\.domain_ref/);
+  assert.match(explorerSource, /domain: item\.id/);
+  assert.doesNotMatch(explorerSource, /item\.domain_ref/);
 });
 
 test("uses only controlled support states and demonstrates every state", () => {
@@ -351,6 +503,12 @@ test("keeps labs and external horizon content advisory-only", () => {
     assert.equal(lab.content_role, "advisory");
     assert.equal(lab.mutates_assessment_truth, false);
     assert.ok(lab.does_not_prove.length >= 25);
+    assert.equal(lab.deterministic_definition.execution_state, "definition_only");
+    assert.ok(lab.deterministic_definition.deterministic_inputs.length >= 2);
+    assert.ok(lab.deterministic_definition.expected_observations.length >= 2);
+    assert.ok(lab.deterministic_definition.reset_rule.length >= 25);
+    assert.match(lab.deterministic_definition.source_binding, /tracked|exact-tree|owner/i);
+    assert.ok(lab.gap_refs.includes("gap.training-labs"));
   }
   assert.equal(horizon.content_role, "advisory");
   assert.equal(horizon.support_claim, "none");
@@ -373,6 +531,51 @@ test("keeps labs and external horizon content advisory-only", () => {
   assert.match(horizon.promise, /never reports an industry-completeness percentage/i);
 });
 
+test("gives every invariant an auditable formal contract with tracked enforcement and tests", async () => {
+  const { stdout } = await execFileAsync("git", ["ls-files", "-z"], {
+    cwd: fileURLToPath(repositoryRoot),
+    encoding: "utf8",
+  });
+  const tracked = new Set(stdout.split("\0").filter(Boolean).map((path) => path.replaceAll("\\", "/")));
+  const requiredFields = [
+    "formal_rule",
+    "scope",
+    "enforcement_points",
+    "supporting_tests",
+    "counterexample_test",
+    "exceptions_allowed",
+    "residual_risk",
+    "independent_verifier",
+  ];
+  assert.ok(governance.invariants.length >= 20);
+  for (const invariant of governance.invariants) {
+    for (const field of requiredFields) {
+      assert.ok(Object.hasOwn(invariant, field), `${invariant.id} missing ${field}`);
+    }
+    assert.ok(invariant.formal_rule.length >= 40);
+    assert.ok(invariant.scope.length >= 2);
+    assert.ok(invariant.enforcement_points.length >= 1);
+    assert.ok(invariant.supporting_tests.length >= 1);
+    assert.ok(Array.isArray(invariant.exceptions_allowed));
+    assert.ok(invariant.residual_risk.length >= 30);
+    assert.ok(invariant.independent_verifier.length >= 10);
+    for (const path of [
+      ...invariant.enforcement_points,
+      ...invariant.supporting_tests,
+      invariant.counterexample_test,
+    ]) {
+      assert.ok(tracked.has(path), `${invariant.id} cites untracked path ${path}`);
+    }
+  }
+});
+
+test("renders rejected and revoked governance branches", async () => {
+  const source = await readFile(new URL("master-reference/app/exports/page.tsx", repositoryRoot), "utf8");
+  assert.match(source, /state: "REJECTED"/);
+  assert.match(source, /state: "REVOKED"/);
+  assert.match(source, /Rejected and revoked lifecycle branches/i);
+});
+
 test("contains no raw-client or runtime-external-content mechanism", async () => {
   const [readme, indexSource] = await Promise.all([
     readFile(new URL("README.md", contentRoot), "utf8"),
@@ -389,6 +592,33 @@ test("contains no raw-client or runtime-external-content mechanism", async () =>
 
 test("uses one output contract for UI labels and deterministic release member names", () => {
   assert.equal(outputContract.members.length, 21);
+  assert.deepEqual(
+    outputContract.members.map((item) => item.id),
+    [
+      "output.private-site",
+      "output.reference-json",
+      "output.owner-handbook",
+      "output.engineering-dossier",
+      "output.source-index-json",
+      "output.source-index-markdown",
+      "output.capability-gap",
+      "output.decisions-opportunities",
+      "output.enhancement-brief",
+      "output.agent-pack",
+      "output.sbom",
+      "output.executive-html",
+      "output.pdf-gate",
+      "output.pdf",
+      "output.provenance",
+      "output.offline-zip",
+      "output.preservation",
+      "output.preservation-coverage",
+      "output.artifact-inventory",
+      "output.family-attestation",
+      "output.release-manifest",
+    ],
+    "the canonical output denominator changed without an explicit contract update",
+  );
   const members = outputContract.members.filter((item) => item.emission !== "external");
   assert.equal(new Set(members.map((item) => item.manifest_member)).size, members.length);
   assert.ok(members.every((item) => typeof item.manifest_member === "string" && item.manifest_member.length > 0));
@@ -397,4 +627,71 @@ test("uses one output contract for UI labels and deterministic release member na
   assert.ok(outputContract.members.some((item) => item.manifest_member === "master-reference.pdf"));
   assert.ok(outputContract.members.some((item) => item.manifest_member === "release-manifest.json"));
   assert.ok(outputContract.members.filter((item) => item.ui_surface).every((item) => item.label && item.gate));
+});
+
+test("gives every canonical output a complete artifact dossier and tracked writer", async () => {
+  const { stdout } = await execFileAsync("git", ["ls-files", "-z"], {
+    cwd: fileURLToPath(repositoryRoot),
+    encoding: "utf8",
+  });
+  const tracked = new Set(stdout.split("\0").filter(Boolean).map((path) => path.replaceAll("\\", "/")));
+  const outputIds = new Set(outputContract.members.map((item) => item.id));
+  const requiredFields = [
+    "audience",
+    "decision_supported",
+    "inputs",
+    "owner_refs",
+    "producing_writer",
+    "gate_behavior",
+    "redaction",
+    "cross_artifact_ids",
+    "validation",
+    "distribution_inclusion",
+    "safe_sample_status",
+    "human_owned_evidence",
+    "limitations",
+  ];
+  const safeSampleStates = new Set(["generated-preview", "synthetic-template", "not-provided"]);
+  const writerStates = new Set(["current", "conditional", "external"]);
+
+  for (const item of outputContract.members) {
+    assert.ok(item.dossier, `${item.id} has no artifact dossier`);
+    for (const field of requiredFields) {
+      assert.ok(Object.hasOwn(item.dossier, field), `${item.id} dossier missing ${field}`);
+    }
+    for (const field of [
+      "audience",
+      "inputs",
+      "owner_refs",
+      "cross_artifact_ids",
+      "validation",
+      "human_owned_evidence",
+      "limitations",
+    ]) {
+      assert.ok(Array.isArray(item.dossier[field]) && item.dossier[field].length > 0, `${item.id} needs nonempty ${field}`);
+    }
+    assert.ok(item.dossier.decision_supported.length >= 30);
+    assert.ok(item.dossier.gate_behavior.length >= 30);
+    assert.ok(item.dossier.redaction.length >= 20);
+    assert.ok(item.dossier.distribution_inclusion.length >= 20);
+    assert.ok(safeSampleStates.has(item.dossier.safe_sample_status));
+    assert.ok(writerStates.has(item.dossier.producing_writer.state));
+    for (const ref of item.dossier.cross_artifact_ids) {
+      assert.ok(outputIds.has(ref), `${item.id} cites unknown output ${ref}`);
+    }
+    if (item.dossier.producing_writer.state === "external") {
+      assert.equal(item.dossier.producing_writer.path, null);
+      assert.equal(item.dossier.producing_writer.symbol, null);
+    } else {
+      assert.ok(tracked.has(item.dossier.producing_writer.path), `${item.id} cites untracked writer ${item.dossier.producing_writer.path}`);
+      assert.ok(item.dossier.producing_writer.symbol?.length > 0, `${item.id} needs a writer symbol`);
+      const writerSource = await readFile(
+        new URL(item.dossier.producing_writer.path, repositoryRoot),
+        "utf8",
+      );
+      for (const symbol of item.dossier.producing_writer.symbol.split("/").map((value) => value.trim())) {
+        assert.ok(writerSource.includes(`def ${symbol}(`), `${item.id} cites missing writer symbol ${symbol}`);
+      }
+    }
+  }
 });

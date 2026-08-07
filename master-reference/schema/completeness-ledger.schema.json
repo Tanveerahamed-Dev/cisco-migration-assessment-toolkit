@@ -26,7 +26,7 @@
   ],
   "properties": {
     "id": {"$ref": "atlas-records.schema.json#/$defs/atlasId"},
-    "schema_version": {"const": "1.0.0"},
+    "schema_version": {"const": "1.1.0"},
     "source_commit": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40,64}$"},
     "head_tree_oid": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40,64}$"},
     "index_digest": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
@@ -69,33 +69,89 @@
       "required": [
         "symbol_records",
         "symbol_dossiers",
+        "safe_parsed_sources",
+        "structural_root_entities",
+        "structural_root_kind_counts",
+        "structurally_mapped_lines",
         "line_explanation_depth_counts",
         "symbol_explanation_depth_counts",
         "critical_or_public_symbols",
         "critical_level_four_reviews",
+        "gui_surface_records",
+        "gui_dossiers",
+        "gui_dossier_evidence_state_counts",
+        "gui_dossier_field_state_counts",
         "runtime_trace_state",
         "coverage_evidence_state"
       ],
       "properties": {
         "symbol_records": {"type": "integer", "minimum": 0},
         "symbol_dossiers": {"type": "integer", "minimum": 0},
+        "safe_parsed_sources": {"type": "integer", "minimum": 0},
+        "structural_root_entities": {"type": "integer", "minimum": 0},
+        "structural_root_kind_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "structurally_mapped_lines": {"type": "integer", "minimum": 0},
         "line_explanation_depth_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
         "symbol_explanation_depth_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
         "critical_or_public_symbols": {"type": "integer", "minimum": 0},
         "critical_level_four_reviews": {"type": "integer", "minimum": 0},
+        "gui_surface_records": {"type": "integer", "minimum": 0},
+        "gui_dossiers": {"type": "integer", "minimum": 0},
+        "gui_dossier_evidence_state_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "gui_dossier_field_state_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
         "runtime_trace_state": {"type": "string"},
         "coverage_evidence_state": {"type": "string"}
       },
       "additionalProperties": false
     },
     "record_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
-    "graphify": {"type": "object"},
-    "architecture_conformance": {"type": "object"},
+    "graphify": {"$ref": "#/$defs/sourceBoundCompilerReceipt"},
+    "architecture_conformance": {"$ref": "#/$defs/sourceBoundCompilerReceipt"},
     "privacy": {"type": "object"},
-    "invariants": {"$ref": "#/$defs/gates"},
+    "invariants": {
+      "allOf": [
+        {"$ref": "#/$defs/gates"},
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "every_safe_parsed_source_has_one_structural_root"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "every_safe_line_structurally_mapped"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "every_gui_surface_has_standardized_evidence_honest_dossier"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      ]
+    },
     "acceptance_gates": {"$ref": "#/$defs/gates"}
   },
   "$defs": {
+    "sourceBoundCompilerReceipt": {
+      "type": "object",
+      "required": ["schema_version", "source_commit", "source_tree_digest"],
+      "properties": {
+        "schema_version": {"const": "1.1.0"},
+        "source_commit": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40,64}$"},
+        "source_tree_digest": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
     "gateValue": {"type": ["integer", "boolean", "null"]},
     "gate": {
       "type": "object",
@@ -108,7 +164,7 @@
       },
       "additionalProperties": false
     },
-    "gates": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/gate"}}
+    "gates": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/gate"}}
   },
   "additionalProperties": false
 }

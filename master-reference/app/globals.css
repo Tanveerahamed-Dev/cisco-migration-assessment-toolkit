@@ -1987,6 +1987,32 @@ pre,
   font-size: 0.65rem;
 }
 
+.release-branch-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 1rem;
+}
+
+.release-branch-grid article {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--red);
+  display: grid;
+  gap: 0.5rem;
+  padding: 1rem;
+}
+
+.release-branch-grid span,
+.release-branch-grid small {
+  color: var(--ink-faint);
+  font-size: 0.68rem;
+}
+
+.release-branch-grid strong {
+  color: var(--red);
+  font-size: 0.82rem;
+}
+
 .release-caveat {
   align-items: start;
   background: var(--red-soft);
@@ -2589,6 +2615,7 @@ pre,
   }
 
   .release-lifecycle,
+  .release-branch-grid,
   .recovery-grid,
   .publication-boundary {
     grid-template-columns: 1fr;

@@ -214,6 +214,7 @@ def test_task_envelope_binds_exact_baseline_authority_scope_and_constraints(tmp_
     assert "protected_action_not_explicitly_prohibited:device-write" in result["errors"]
 
     _write(repo, "outside.py", "UNAUTHORIZED = True\n")
+    _git(repo, "add", "outside.py")
     result = validate_task_envelope(envelope, repo, _bundle(commit, tree), now=NOW)
     assert "changed_path_outside_scope:outside.py" in result["errors"]
 

@@ -1,7 +1,8 @@
 /* oxlint-disable nextjs/no-html-link-for-pages -- full-document navigation preserves the connect-src 'none' privacy boundary. */
 import type { Metadata } from "next";
 import outputContract from "../../content/output-contract.json";
-import { AtlasShell, SectionHeading, StateMark } from "../atlas/Shell";
+import { AtlasShell, OwnerLinks, SectionHeading, StateMark } from "../atlas/Shell";
+import styles from "./Exports.module.css";
 
 export const metadata: Metadata = {
   title: "Export, Verification & Recovery · Atlas Master Reference",
@@ -9,7 +10,11 @@ export const metadata: Metadata = {
     "The single-manifest output family, exact-source release gates, offline verification, signing, and preservation contract.",
 };
 
-const OUTPUTS = outputContract.members.filter((item) => item.ui_surface);
+const OUTPUTS = outputContract.members;
+
+function sourceHref(path: string): string {
+  return `/source/${path.split("/").map(encodeURIComponent).join("/")}`;
+}
 
 const LIFECYCLE = [
   "DRAFT",
@@ -18,6 +23,19 @@ const LIFECYCLE = [
   "PUBLISHED",
   "SUPERSEDED",
   "ARCHIVED",
+] as const;
+
+const LIFECYCLE_BRANCHES = [
+  {
+    from: "CANDIDATE",
+    state: "REJECTED",
+    detail: "The proposal and evidence remain durable; rejection does not disappear from history.",
+  },
+  {
+    from: "VERIFIED or PUBLISHED",
+    state: "REVOKED",
+    detail: "Invalidated proof leaves the current view while the revocation event and reason remain auditable.",
+  },
 ] as const;
 
 export default function ExportsPage() {
@@ -45,7 +63,7 @@ export default function ExportsPage() {
             <tbody>
               {OUTPUTS.map((item) => (
                 <tr key={item.id}>
-                  <th scope="row">{item.label}</th>
+                  <th scope="row"><a href={`#${item.id}`}>{item.label}</a></th>
                   <td><code>{item.manifest_member ?? "external private deployment"}</code></td>
                   <td><StateMark state={item.gate} /></td>
                 </tr>
@@ -58,6 +76,62 @@ export default function ExportsPage() {
       <section className="workspace-section">
         <SectionHeading
           index="02"
+          title="Canonical artifact dossiers"
+          description="Every member names its audience, decision, inputs, real writer or explicit external boundary, release behavior, proof, redaction, and limitations. Unknown human evidence remains visible."
+        />
+        <div className={styles.dossierGrid}>
+          {OUTPUTS.map((item) => (
+            <article className={styles.dossier} id={item.id} key={item.id}>
+              <header>
+                <div>
+                  <code>{item.id}</code>
+                  <h3>{item.label}</h3>
+                </div>
+                <StateMark state={item.gate} />
+              </header>
+              <p className={styles.decision}>{item.dossier.decision_supported}</p>
+              <dl>
+                <div><dt>Audience</dt><dd>{item.dossier.audience.join(" / ")}</dd></div>
+                <div><dt>Manifest member</dt><dd><code>{item.manifest_member ?? "external-only"}</code></dd></div>
+                <div><dt>Input owners</dt><dd><OwnerLinks ownerRefs={item.dossier.owner_refs} /></dd></div>
+                <div>
+                  <dt>Producing writer</dt>
+                  <dd>
+                    <StateMark state={item.dossier.producing_writer.state} />{" "}
+                    {item.dossier.producing_writer.path ? (
+                      <a href={sourceHref(item.dossier.producing_writer.path)}>
+                        {item.dossier.producing_writer.path}
+                        {item.dossier.producing_writer.symbol ? `::${item.dossier.producing_writer.symbol}` : ""}
+                      </a>
+                    ) : "No repository writer; owner-controlled external action"}
+                  </dd>
+                </div>
+                <div><dt>Gate behavior</dt><dd>{item.dossier.gate_behavior}</dd></div>
+                <div><dt>Redaction</dt><dd>{item.dossier.redaction}</dd></div>
+                <div><dt>Distribution</dt><dd>{item.dossier.distribution_inclusion}</dd></div>
+                <div><dt>Safe sample</dt><dd>{item.dossier.safe_sample_status.replaceAll("-", " ")}</dd></div>
+              </dl>
+              <details>
+                <summary>Inputs, validation, evidence, relationships, and limitations</summary>
+                <div className={styles.detailGrid}>
+                  <section><h4>Inputs</h4><ul>{item.dossier.inputs.map((value) => <li key={value}>{value}</li>)}</ul></section>
+                  <section><h4>Validation</h4><ul>{item.dossier.validation.map((value) => <li key={value}>{value}</li>)}</ul></section>
+                  <section><h4>Human-owned evidence</h4><ul>{item.dossier.human_owned_evidence.map((value) => <li key={value}>{value}</li>)}</ul></section>
+                  <section><h4>Limitations</h4><ul>{item.dossier.limitations.map((value) => <li key={value}>{value}</li>)}</ul></section>
+                  <section>
+                    <h4>Cross-artifact IDs</h4>
+                    <p>{item.dossier.cross_artifact_ids.map((id) => <a href={`#${id}`} key={id}>{id}</a>)}</p>
+                  </section>
+                </div>
+              </details>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="workspace-section">
+        <SectionHeading
+          index="03"
           title="Executable lifecycle"
           description="There is no draft-to-published shortcut. Rejection and revocation remain durable events even when current views move on."
         />
@@ -76,6 +150,15 @@ export default function ExportsPage() {
             </li>
           ))}
         </ol>
+        <div className="release-branch-grid" aria-label="Rejected and revoked lifecycle branches">
+          {LIFECYCLE_BRANCHES.map((branch) => (
+            <article key={branch.state}>
+              <span>{branch.from} -&gt;</span>
+              <strong>{branch.state}</strong>
+              <small>{branch.detail}</small>
+            </article>
+          ))}
+        </div>
         <div className="release-caveat">
           <StateMark state="blocked" />
           <div>
@@ -92,7 +175,7 @@ export default function ExportsPage() {
       <section className="workspace-section recovery-grid">
         <div>
           <SectionHeading
-            index="03"
+            index="04"
             title="Offline verification"
             description="A receiver can prove which bytes, tree, schemas and exception set a bundle declares without contacting Atlas."
           />
@@ -106,7 +189,7 @@ export default function ExportsPage() {
         </div>
         <div>
           <SectionHeading
-            index="04"
+            index="05"
             title="Preservation and recovery"
             description="Recoverability is demonstrated by exercises, not by the presence of a ZIP file."
           />
@@ -122,7 +205,7 @@ export default function ExportsPage() {
 
       <section className="workspace-section">
         <SectionHeading
-          index="05"
+          index="06"
           title="Publication is deliberately separate"
           description="Private deployment, public release and GitHub publication are three different authorities."
         />

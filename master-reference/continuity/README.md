@@ -8,11 +8,70 @@ Run from `master-reference/` so the package is importable as `continuity`:
 python -m continuity query --compiler-output .atlas-compiler/<commit> --id urn:atlas:symbol:...
 python -m continuity query --compiler-output .atlas-compiler/<commit> --path cisco_toolkit/ssot.py --line 42
 python -m continuity query --compiler-output .atlas-compiler/<commit> --impact urn:atlas:symbol:...
+python -m continuity enhance --repo-root .. --compiler-output .atlas-compiler/<commit> --id urn:atlas:symbol:...
+python -m continuity enhance --repo-root .. --compiler-output .atlas-compiler/<commit> --file cisco_toolkit/ssot.py
+python -m continuity enhance --repo-root .. --compiler-output .atlas-compiler/<commit> --gap gap.catalog-ui
 python -m continuity validate-envelope --repo-root .. --compiler-output .atlas-compiler/<baseline> --envelope task-envelope.json
 python -m continuity validate-completion --repo-root .. --compiler-output .atlas-compiler/<completion> --envelope task-envelope.json --receipt completion-receipt.json
 ```
 
 All output is canonical, sorted JSON. A missing query result returns `status: "abstained"`; the tool never invents an answer. Impact traversal is one-hop structural evidence and is not runtime truth.
+
+## Deterministic enhancement package
+
+`enhance` accepts exactly one seed:
+
+- `--id` for a stable compiler record, including an entity or symbol.
+- `--file` for an exact tracked path, resolved to its stable compiler file ID.
+- `--gap` for a stable gap ID in the exact tracked
+  `master-reference/content/delivery-governance.json`.
+
+The command independently reconciles the compiler file census, Git index and
+selected commit tree; verifies a clean current HEAD/tree; rejects hidden index
+flags; and reconstructs architecture and governance only from compiler-approved
+raw Git blobs. Git observation is intentionally tracked-only: untracked paths
+are never enumerated, opened, hashed or included in the state digest. CR-only,
+LF and CRLF source terminators are all preserved exactly. The tracked Git state
+is observed again after traversal, and any mutation or source-binding change
+fails the request. Restricted or metadata-only source never becomes enhancement
+evidence.
+
+`enhance` accepts only an exact, clean compiler schema `1.1.0` corpus. It
+requires unique, exact-denominator invariants for every safe structural line,
+every GUI route/component dossier and every parsed-source structural root, plus
+non-empty acceptance gates and current source-bound Graphify and static
+architecture receipts. Stale schemas, missing or duplicate gates, denominator
+drift and failed architecture conformance are rejected before traversal.
+
+The resulting package contains:
+
+- the exact seed record and source citation;
+- a typed dependency/impact closure across file membership, explicit compiler
+  references, static import/call candidates, Graphify, claims, tests, routes,
+  components and workflows;
+- affected architecture owners and known GUI/artifact surfaces;
+- explicit unresolved impact categories and compiler evidence limits;
+- a smallest-safe-slice scaffold, existing tests/workflows, current compiler
+  gates, and unfilled test/rollback/kill-condition placeholders;
+- exact source binding and a canonical package digest.
+
+Traversal is streaming, bounded and deterministic. Stable URN kinds route to a
+single compiler group; the command does not construct an all-record index or a
+global graph. It lazily validates only scanned content-hashed chunks and
+discloses per-group passes, chunk reads and bytes in `scan_counts`. Source-text
+URN seeds abstain because they can be unbounded; use a file or line query.
+Defaults are depth 4, 250 records and 2,000 edges; hard maxima are depth 8,
+2,000 records and 10,000 edges. Seed values are capped at 4 KiB, serialized seed
+records at 256 KiB and serialized packages at 8 MiB. Override traversal bounds
+with `--max-depth`, `--max-records` and `--max-edges`. Reaching a bound is
+reported as truncation and blocks the slice scaffold. Missing seeds or gap
+evidence abstain. Stale, dirty, preview, malformed or census-divergent inputs
+fail closed.
+
+The package is not a code proposal or authorization. Static/name/import and
+Graphify edges remain possible dependencies, a gap does not imply code impact,
+tests are not executed, and rollback commands or success thresholds are never
+invented. The command writes nothing; canonical JSON is emitted only to stdout.
 
 ## TaskEnvelope 1.0.0
 

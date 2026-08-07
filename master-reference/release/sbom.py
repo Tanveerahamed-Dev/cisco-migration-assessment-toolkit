@@ -1,20 +1,22 @@
-"""CycloneDX 1.5 inventory from repository-owned dependency declarations.
+"""CycloneDX 1.5 inventory from source-bound dependency declaration bytes.
 
 NPM package-lock v3 files provide direct and transitive resolution.  Python
 dependencies are explicitly marked as declarations because this repository has
 no hash-locked Python resolution file; the SBOM never invents transitive or
-installed-environment versions.
+installed-environment versions. Callers supply raw selected-commit Git-blob
+bytes so checkout filters cannot change parsing or provenance.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import re
-from pathlib import Path, PurePosixPath
-from typing import Any
+from pathlib import PurePosixPath
+from typing import Any, Mapping
 from urllib.parse import quote
 
-from .model import ReleaseInputError, read_json, safe_input, stable_id
+from .model import ReleaseInputError, stable_id
 
 
 NPM_LOCKFILES = (
@@ -67,12 +69,19 @@ def _purl_npm(name: str, version: str) -> str:
     return f"pkg:npm/{encoded_name}@{quote(version, safe='')}"
 
 
-def _npm_components(repo_root: Path) -> tuple[list[dict[str, Any]], dict[str, set[str]], list[dict[str, Any]]]:
+def _npm_components(
+    source_files: Mapping[str, bytes],
+) -> tuple[list[dict[str, Any]], dict[str, set[str]], list[dict[str, Any]]]:
     components: list[dict[str, Any]] = []
     dependency_map: dict[str, set[str]] = {}
     roots: list[dict[str, Any]] = []
     for relative in NPM_LOCKFILES:
-        lock = read_json(repo_root, relative)
+        try:
+            lock = json.loads(source_files[relative].decode("utf-8", errors="strict"))
+        except KeyError as exc:
+            raise ReleaseInputError(f"missing npm lockfile source bytes: {relative}") from exc
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ReleaseInputError(f"could not parse npm lockfile: {relative}") from exc
         if not isinstance(lock, dict) or lock.get("lockfileVersion") not in {2, 3} or not isinstance(lock.get("packages"), dict):
             raise ReleaseInputError(f"unsupported or malformed npm lockfile: {relative}")
         packages: dict[str, Any] = lock["packages"]
@@ -166,17 +175,20 @@ def _requirement_component(raw: str, origin: str, scope: str) -> dict[str, Any] 
     }
 
 
-def _python_components(repo_root: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _python_components(
+    source_files: Mapping[str, bytes],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     components: list[dict[str, Any]] = []
     declarations: list[dict[str, Any]] = []
-    pyproject = safe_input(repo_root, "pyproject.toml")
     try:
         import tomllib  # type: ignore[attr-defined]
     except ImportError:  # pragma: no cover - Python 3.10 compatibility
         import tomli as tomllib  # type: ignore[no-redef]
     try:
-        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        data = tomllib.loads(source_files["pyproject.toml"].decode("utf-8", errors="strict"))
+    except KeyError as exc:
+        raise ReleaseInputError("missing pyproject.toml source bytes") from exc
+    except (UnicodeDecodeError, ValueError) as exc:
         raise ReleaseInputError(f"could not parse pyproject.toml: {exc}") from exc
     project = data.get("project", {})
     project_name = str(project.get("name") or "python-project")
@@ -203,10 +215,11 @@ def _python_components(repo_root: Path) -> tuple[list[dict[str, Any]], list[dict
                 components.append(component)
 
     for relative in PYTHON_DECLARATIONS[1:]:
-        path = safe_input(repo_root, relative)
         try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except (OSError, UnicodeDecodeError) as exc:
+            lines = source_files[relative].decode("utf-8", errors="strict").splitlines()
+        except KeyError as exc:
+            raise ReleaseInputError(f"missing dependency declaration source bytes: {relative}") from exc
+        except UnicodeDecodeError as exc:
             raise ReleaseInputError(f"could not read dependency declaration {relative}: {exc}") from exc
         for raw in lines:
             component = _requirement_component(raw, relative, "declared")
@@ -216,9 +229,13 @@ def _python_components(repo_root: Path) -> tuple[list[dict[str, Any]], list[dict
     return components, declarations
 
 
-def build_cyclonedx(repo_root: Path, source_commit: str, source_tree_digest: str) -> dict[str, Any]:
-    npm_components, npm_edges, npm_roots = _npm_components(repo_root)
-    python_components, python_roots = _python_components(repo_root)
+def build_cyclonedx(
+    source_files: Mapping[str, bytes],
+    source_commit: str,
+    source_tree_digest: str,
+) -> dict[str, Any]:
+    npm_components, npm_edges, npm_roots = _npm_components(source_files)
+    python_components, python_roots = _python_components(source_files)
     components = sorted(npm_components + python_components, key=lambda item: item["bom-ref"])
     for component in components:
         properties = component.setdefault("properties", [])

@@ -3,8 +3,10 @@ import type { ReactNode } from "react";
 
 const NAVIGATION = [
   ["overview", "/", "Owner cockpit"],
+  ["product", "/product", "Product & business"],
   ["outcomes", "/capabilities?domain=domain.outcomes", "Outcomes & maturity"],
   ["system", "/system", "System & assurance"],
+  ["trace", "/trace", "Digital thread & trace"],
   ["graph", "/graph", "Complete Graphify map"],
   ["capabilities", "/capabilities", "Capability matrix"],
   ["protocols", "/capabilities?domain=domain.protocols", "Protocol intelligence"],
@@ -13,8 +15,10 @@ const NAVIGATION = [
   ["security", "/capabilities?domain=domain.security-privacy", "Security & privacy"],
   ["operations", "/capabilities?domain=domain.observability-operations", "Operations & observability"],
   ["vendors", "/capabilities?domain=domain.vendors-channels", "Vendors & channels"],
-  ["product", "/capabilities?domain=domain.gui-white-label", "Product & GUI"],
+  ["gui", "/capabilities?domain=domain.gui-white-label", "GUI & white-label"],
   ["artifacts", "/capabilities?domain=domain.artifacts-deliverables", "Artifacts & deliverables"],
+  ["knowledge", "/knowledge", "Knowledge & authority"],
+  ["progress", "/progress", "Progress & debt"],
   ["gaps", "/gaps", "Decisions & gaps"],
   ["horizon", "/gaps#horizon", "Industry horizon"],
   ["source", "/source", "Source explorer"],

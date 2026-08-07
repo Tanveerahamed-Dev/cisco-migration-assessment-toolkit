@@ -54,15 +54,30 @@ node build/projection/build.mjs --input C:\tmp\atlas-compiler --output public\at
 ```
 
 `manifest.json` binds the commit, HEAD tree, index census, derived source-tree
-digest, every record group and every chunk. `completeness.json` keeps hard
-structural invariants separate from semantic acceptance gates. The compiler
-may therefore prove 100% tracked-file and safe nonblank-line accounting while
-still blocking behavioral, runtime, coverage, binary-review or Level-4 claims.
+digest, every record group and every chunk. Exact-clean compilation reads each
+fully exposed file from its raw selected-commit Git blob; checkout filters such
+as `core.autocrlf` therefore cannot change source, line, or tree digests. A
+separate worktree snapshot plus before/after Git checks still detects local
+changes. Restricted payloads are never read.
 
-Safe UTF-8 source is emitted only in per-file content-hashed chunks. Restricted
-paths, symlinks, Git links and all decoded binary payloads remain metadata-only.
-Binary records retain Git object identity, size and media type, and explicitly
-remain pending format-aware or manual privacy review.
+Compiler corpus contract `1.1.0` keeps hard structural invariants separate from
+semantic acceptance gates. Every successfully parsed safe source has exactly
+one typed, parser-owned `structural_entities` root (for example a Python module,
+TypeScript SourceFile, stylesheet, template, configuration, workflow, structured
+document, or plain-text document). Every safe nonblank line must resolve to a
+same-file symbol or that structural root; a file census ID can never satisfy
+Level 1. Roots carry exact source range, parser/language/role and raw-Git
+provenance plus explicit generated-origin uncertainty, but never claim runtime
+behavior. The compiler may therefore prove 100% tracked-file, exact-line, root,
+and structural-mapping coverage while still blocking behavioral, runtime,
+executed-coverage, binary-review, or Level-4 claims.
+
+Safe UTF-8 source is emitted only in per-file content-hashed chunks. Each source
+record carries its Git blob OID and byte basis. Restricted paths, symlinks, Git
+links and all decoded binary payloads remain metadata-only; their size comes
+from Git object metadata without reading the payload. Binary records retain Git
+object identity, size and media type, and explicitly remain pending format-aware
+or manual privacy review.
 
 ## Read-only continuity CLI
 

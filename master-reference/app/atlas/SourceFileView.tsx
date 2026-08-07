@@ -11,13 +11,12 @@ import {
 } from "./SourceExplorerData";
 import type {
   ProjectionModule,
+  SourceChunkPayload,
   SourceFilePayload,
   SourceFileRecord,
   SourceLine,
 } from "./SourceExplorerTypes";
 import styles from "./SourceExplorer.module.css";
-
-const PAGE_LINES = 400;
 
 type FileLoadState =
   | { state: "loading" }
@@ -27,6 +26,8 @@ type FileLoadState =
       module: ProjectionModule;
       file: SourceFileRecord;
       source: SourceFilePayload | null;
+      chunk: SourceChunkPayload | null;
+      chunkIndex: number | null;
     };
 
 function lineFromHash(): number | null {
@@ -74,6 +75,7 @@ function LineDossier({ line }: { line: SourceLine | null }) {
       <dl className={styles.factList}>
         <div><dt>Line record</dt><dd><Missing value={line.recordId} reason="Blank line: inventory only" /></dd></div>
         <div><dt>Syntax kind</dt><dd><Missing value={line.syntaxKind} reason="Not structurally mapped" /></dd></div>
+        <div><dt>Mapping basis</dt><dd><Missing value={line.structuralMappingBasis} reason="Blank line: inventory only" /></dd></div>
         <div>
           <dt>Containing symbol</dt>
           <dd>
@@ -110,7 +112,6 @@ function LineDossier({ line }: { line: SourceLine | null }) {
 export function SourceFileView({ path }: { path: string }) {
   const [loadState, setLoadState] = useState<FileLoadState>({ state: "loading" });
   const [selectedLine, setSelectedLine] = useState<number | null>(null);
-  const [pageStart, setPageStart] = useState(0);
 
   useEffect(() => {
     let active = true;
@@ -124,11 +125,14 @@ export function SourceFileView({ path }: { path: string }) {
         }
         const source = await module.loadSource(path);
         if (!active) return;
-        setLoadState({ state: "ready", module, file, source });
         const target = lineFromHash();
-        if (target && source && target <= source.lineCount) {
+        const requested = target && source && target <= source.lineCount ? target : 1;
+        const chunkIndex = source?.chunks.findIndex((chunk) => chunk.startLine <= requested && chunk.endLine >= requested) ?? -1;
+        const chunk = source && chunkIndex >= 0 ? await module.loadSourceChunk(path, chunkIndex) : null;
+        if (!active) return;
+        setLoadState({ state: "ready", module, file, source, chunk, chunkIndex: chunkIndex >= 0 ? chunkIndex : null });
+        if (target && chunk) {
           setSelectedLine(target);
-          setPageStart(Math.floor((target - 1) / PAGE_LINES) * PAGE_LINES);
           window.requestAnimationFrame(() => document.getElementById(`L${target}`)?.scrollIntoView());
         }
       })
@@ -142,8 +146,18 @@ export function SourceFileView({ path }: { path: string }) {
 
   const selected = useMemo(() => {
     if (loadState.state !== "ready" || !loadState.source || !selectedLine) return null;
-    return loadState.source.lines.find((line) => line.number === selectedLine) ?? null;
+    return loadState.chunk?.segments.find((line) => line.number === selectedLine) ?? null;
   }, [loadState, selectedLine]);
+
+  function openChunk(index: number, line?: number) {
+    if (loadState.state !== "ready" || !loadState.source) return;
+    const bounded = Math.max(0, Math.min(index, loadState.source.chunkCount - 1));
+    void loadState.module.loadSourceChunk(path, bounded).then((chunk) => {
+      setLoadState((current) => current.state === "ready" ? { ...current, chunk, chunkIndex: bounded } : current);
+      setSelectedLine(line ?? null);
+      if (line) window.requestAnimationFrame(() => document.getElementById(`L${line}`)?.scrollIntoView());
+    });
+  }
 
   if (loadState.state === "loading") {
     return <output className={styles.loading}><span className={styles.loadingPulse} /><strong>Loading file metadata…</strong></output>;
@@ -152,10 +166,12 @@ export function SourceFileView({ path }: { path: string }) {
     return <div className={styles.error}><strong>Source path unavailable</strong><p>{loadState.message}</p><a href="/source">Return to the tracked tree</a></div>;
   }
 
-  const { file, source, module } = loadState;
+  const { file, source, chunk, chunkIndex, module } = loadState;
   const pieces = file.path.split("/");
-  const pageLines = source?.lines.slice(pageStart, pageStart + PAGE_LINES) ?? [];
-  const lastVisible = Math.min(pageStart + PAGE_LINES, source?.lineCount ?? 0);
+  const pageLines = chunk?.segments ?? [];
+  const chunkDescriptor = source && chunkIndex != null ? source.chunks[chunkIndex] : null;
+  const firstVisible = chunkDescriptor?.startLine ?? 0;
+  const lastVisible = chunkDescriptor?.endLine ?? 0;
   return (
     <div>
       <header className={styles.sourceHeader}>
@@ -190,11 +206,11 @@ export function SourceFileView({ path }: { path: string }) {
       ) : (
         <>
           <div className={styles.resultCount}>
-            <span>Showing lines <strong>{pageStart + 1}–{lastVisible}</strong> of {source.lineCount.toLocaleString()}</span>
+            <span>Showing bounded chunk <strong>{(chunkIndex ?? 0) + 1}/{source.chunkCount}</strong> · lines <strong>{firstVisible}–{lastVisible}</strong> of {source.lineCount.toLocaleString()}</span>
             <span>
-              {pageStart > 0 ? <a href={sourceHref(path, Math.max(1, pageStart - PAGE_LINES + 1))} onClick={(event) => { event.preventDefault(); setPageStart(Math.max(0, pageStart - PAGE_LINES)); }}>← Previous</a> : null}
-              {pageStart > 0 && lastVisible < source.lineCount ? " · " : null}
-              {lastVisible < source.lineCount ? <a href={sourceHref(path, lastVisible + 1)} onClick={(event) => { event.preventDefault(); setPageStart(pageStart + PAGE_LINES); }}>Next →</a> : null}
+              {chunkIndex != null && chunkIndex > 0 ? <a href={sourceHref(path, source.chunks[chunkIndex - 1].startLine)} onClick={(event) => { event.preventDefault(); openChunk(chunkIndex - 1); }}>← Previous chunk</a> : null}
+              {chunkIndex != null && chunkIndex > 0 && chunkIndex + 1 < source.chunkCount ? " · " : null}
+              {chunkIndex != null && chunkIndex + 1 < source.chunkCount ? <a href={sourceHref(path, source.chunks[chunkIndex + 1].startLine)} onClick={(event) => { event.preventDefault(); openChunk(chunkIndex + 1); }}>Next chunk →</a> : null}
             </span>
           </div>
           <div className={styles.sourceLayout}>
@@ -212,18 +228,18 @@ export function SourceFileView({ path }: { path: string }) {
                 </thead>
                 <tbody>
                   {pageLines.map((line) => (
-                    <tr className={styles.codeLine} data-selected={selectedLine === line.number ? "true" : "false"} id={`L${line.number}`} key={line.number}>
+                    <tr className={styles.codeLine} data-selected={selectedLine === line.number ? "true" : "false"} id={line.fragmentIndex === 0 ? `L${line.number}` : `L${line.number}-part-${line.fragmentIndex + 1}`} key={`${line.number}-${line.fragmentIndex}`}>
                       <th className={styles.lineNumber} scope="row">
                         <a
                           aria-label={`Inspect line ${line.number}`}
                           href={sourceHref(path, line.number)}
                           onClick={() => setSelectedLine(line.number)}
                         >
-                          {line.number}
+                          {line.fragmentIndex === 0 ? line.number : `↳ ${line.number}.${line.fragmentIndex + 1}`}
                         </a>
                       </th>
                       <td className={styles.lineText}>{line.text || " "}</td>
-                      <td className={styles.lineKind}>{line.syntaxKind ?? ""}</td>
+                      <td className={styles.lineKind}>{line.fragmentCount > 1 ? `part ${line.fragmentIndex + 1}/${line.fragmentCount} · ` : ""}{line.syntaxKind ?? ""}</td>
                     </tr>
                   ))}
                 </tbody>

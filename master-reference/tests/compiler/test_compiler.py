@@ -15,6 +15,7 @@ if str(MASTER_REFERENCE) not in sys.path:
     sys.path.insert(0, str(MASTER_REFERENCE))
 
 from compiler import CompilationError, compile_repository  # noqa: E402
+from compiler import compiler as compiler_module  # noqa: E402
 from compiler.schema_validation import SchemaValidationError, validate_compiler_output  # noqa: E402
 
 
@@ -55,9 +56,27 @@ def git(root: Path, *arguments: str) -> str:
     return process.stdout.strip()
 
 
+def git_bytes(root: Path, *arguments: str) -> bytes:
+    environment = os.environ.copy()
+    environment["GIT_OPTIONAL_LOCKS"] = "0"
+    process = subprocess.run(
+        ["git", *arguments],
+        cwd=root,
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if process.returncode != 0:
+        raise AssertionError(process.stderr.decode("utf-8", errors="replace"))
+    return process.stdout
+
+
 def initialize_repository(root: Path, files: dict[str, str | bytes]) -> str:
     root.mkdir(parents=True)
     git(root, "init", "-q")
+    git(root, "config", "core.autocrlf", "false")
     for relative, content in files.items():
         write(root, relative, content)
     git(root, "add", "--all")
@@ -103,10 +122,12 @@ class CompilerTests(unittest.TestCase):
                         "      - run: echo ok\n"
                     ),
                     "docs/guide.md": "# Guide\n\nReference text.\n",
+                    "notes.txt": "Unstructured but safe.\n",
                     "docs/decisions/0001-proposed.md": "# Decision\n\n**Status:** proposed\n",
                     "reference-data/sample.json": b'\xef\xbb\xbf{"items":[{"name":"one"}],"enabled":true}\r\n',
                     "requirements.txt": "example-package==1.2.3\n",
                     "sample.py": (
+                        "# Parser-free comment remains parser-root-owned.\n"
                         "import json\n\n"
                         "def helper(value: str) -> str:\n"
                         "    return json.dumps(value)\n\n"
@@ -174,7 +195,8 @@ class CompilerTests(unittest.TestCase):
 
             self.assertEqual(output_bytes(first_output), output_bytes(second_output))
             self.assertEqual(first_manifest["source_commit"], commit)
-            self.assertEqual(first_manifest["groups"]["files"]["record_count"], 9)
+            self.assertEqual(first_manifest["schema_version"], "1.1.0")
+            self.assertEqual(first_manifest["groups"]["files"]["record_count"], 10)
             self.assertEqual(first_manifest["source_tree_digest"], second_manifest["source_tree_digest"])
 
             files = {record["path"]: record for record in group_records(first_output, "files")}
@@ -202,6 +224,9 @@ class CompilerTests(unittest.TestCase):
                 self.assertEqual(len(rebuilt), source["byte_count"])
                 self.assertEqual(hashlib.sha256(rebuilt).hexdigest(), source["content_digest"])
                 self.assertEqual(source["content_digest"], files[path]["content_digest"])
+                self.assertEqual(source["git_blob_oid"], files[path]["git_blob_oid"])
+                self.assertEqual(source["source_basis"], "selected_commit_git_blob")
+                self.assertEqual(files[path]["content_source"], "selected_commit_git_blob")
             self.assertTrue(str(source_records["reference-data/sample.json"]["lines"][0]["text"]).startswith("\ufeff"))
             self.assertEqual(source_records["reference-data/sample.json"]["lines"][0]["terminator"], "\r\n")
             self.assertEqual(
@@ -229,6 +254,32 @@ class CompilerTests(unittest.TestCase):
                     "unresolved_reasons",
                 }.issubset(lines[0])
             )
+            self.assertTrue(all(int(row["explanation_depth"]) >= 1 for row in lines))
+            self.assertEqual(
+                next(row for row in lines if row["path"] == "notes.txt")["structural_mapping_basis"],
+                "parser_context",
+            )
+            fallback = next(
+                row
+                for row in lines
+                if row["path"] == "sample.py" and row["syntax_kind"] == "unresolved_text"
+            )
+            structural_roots = {
+                row["path"]: row for row in group_records(first_output, "structural_entities")
+            }
+            self.assertEqual(set(structural_roots), set(source_records))
+            self.assertEqual(fallback["structural_mapping_basis"], "parser_structural_root")
+            self.assertEqual(fallback["semantic_entity"], structural_roots["sample.py"]["id"])
+            self.assertNotEqual(fallback["semantic_entity"], files["sample.py"]["id"])
+            self.assertEqual(structural_roots["sample.py"]["kind"], "python_module")
+            self.assertEqual(
+                structural_roots["webapp/src/view.test.tsx"]["kind"],
+                "typescript_source_file",
+            )
+            self.assertTrue(all(row["parser_owned"] for row in structural_roots.values()))
+            self.assertTrue(all(row["explanation_depth"] == 1 for row in structural_roots.values()))
+            self.assertTrue(all(row["generation_provenance"]["state"] == "not_declared" for row in structural_roots.values()))
+            self.assertIn("behavioral_semantics_not_verified", fallback["unresolved_reasons"])
 
             self.assertTrue(any(row["qualified_name"] == "helper" for row in group_records(first_output, "symbols")))
             helper = next(row for row in group_records(first_output, "symbols") if row["qualified_name"] == "helper")
@@ -239,6 +290,13 @@ class CompilerTests(unittest.TestCase):
             self.assertTrue(any(row["name"] == "Dashboard" for row in group_records(first_output, "components")))
             self.assertTrue(any(row["route"] == "/health" for row in group_records(first_output, "routes")))
             self.assertTrue(any(row["route"] == "/dashboard" for row in group_records(first_output, "routes")))
+            gui_surfaces = [
+                *group_records(first_output, "components"),
+                *group_records(first_output, "routes"),
+            ]
+            self.assertTrue(gui_surfaces)
+            self.assertTrue(all("gui_dossier" in row for row in gui_surfaces))
+            self.assertTrue(all(row["gui_dossier"]["field_count"] == 15 for row in gui_surfaces))
             self.assertTrue(any(row["name"] == "dashboard" for row in group_records(first_output, "tests")))
             self.assertTrue(
                 any(row["name"] == "example-package" for row in group_records(first_output, "dependencies"))
@@ -303,6 +361,32 @@ class CompilerTests(unittest.TestCase):
                 ledger["semantic_accounting"]["symbol_records"],
                 ledger["semantic_accounting"]["symbol_dossiers"],
             )
+            self.assertEqual(
+                ledger["semantic_accounting"]["gui_surface_records"],
+                ledger["semantic_accounting"]["gui_dossiers"],
+            )
+            self.assertEqual(
+                ledger["semantic_accounting"]["structurally_mapped_lines"],
+                ledger["parsing"]["line_records"],
+            )
+            self.assertEqual(
+                ledger["semantic_accounting"]["structural_root_entities"],
+                ledger["semantic_accounting"]["safe_parsed_sources"],
+            )
+            self.assertTrue(
+                next(
+                    item
+                    for item in ledger["invariants"]
+                    if item["name"] == "every_safe_parsed_source_has_one_structural_root"
+                )["passed"]
+            )
+            self.assertTrue(
+                next(
+                    item
+                    for item in ledger["invariants"]
+                    if item["name"] == "every_safe_line_structurally_mapped"
+                )["passed"]
+            )
             self.assertTrue(
                 next(
                     item
@@ -316,6 +400,113 @@ class CompilerTests(unittest.TestCase):
                 manifest["architecture_conformance"]["sha256"],
                 hashlib.sha256((first_output / "architecture-conformance.json").read_bytes()).hexdigest(),
             )
+
+    def test_exact_source_uses_raw_git_blobs_across_checkout_line_endings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            repository = base / "repo"
+            commit = initialize_repository(
+                repository,
+                {"portable.py": "def portable():\n    return 'git blob'\n"},
+            )
+            blob_oid = git(repository, "rev-parse", f"{commit}:portable.py")
+            blob = git_bytes(repository, "cat-file", "blob", blob_oid)
+            self.assertNotIn(b"\r\n", blob)
+
+            git(repository, "config", "core.autocrlf", "true")
+            (repository / "portable.py").unlink()
+            git(repository, "checkout", "--", "portable.py")
+            self.assertIn(b"\r\n", (repository / "portable.py").read_bytes())
+            self.assertEqual(git(repository, "status", "--porcelain=v1"), "")
+            crlf_output = base / "crlf"
+            compile_repository(repository, crlf_output)
+
+            git(repository, "config", "core.autocrlf", "false")
+            (repository / "portable.py").unlink()
+            git(repository, "checkout", "--", "portable.py")
+            self.assertNotIn(b"\r\n", (repository / "portable.py").read_bytes())
+            self.assertEqual(git(repository, "status", "--porcelain=v1"), "")
+            lf_output = base / "lf"
+            compile_repository(repository, lf_output)
+
+            self.assertEqual(output_bytes(crlf_output), output_bytes(lf_output))
+            source = group_records(crlf_output, "source_text")[0]
+            file_record = group_records(crlf_output, "files")[0]
+            rebuilt = "".join(
+                str(line["text"]) + str(line["terminator"])
+                for line in source["lines"]
+            ).encode("utf-8")
+            self.assertEqual(rebuilt, blob)
+            self.assertTrue(all(line["terminator"] == "\n" for line in source["lines"]))
+            self.assertEqual(source["git_blob_oid"], blob_oid)
+            self.assertEqual(source["source_basis"], "selected_commit_git_blob")
+            self.assertEqual(file_record["content_source"], "selected_commit_git_blob")
+            self.assertEqual(file_record["size_bytes"], len(blob))
+            self.assertEqual(file_record["content_digest"], hashlib.sha256(blob).hexdigest())
+
+    def test_absent_graphify_receipt_is_exact_source_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            repository = base / "repo"
+            commit = initialize_repository(repository, {"README.md": "# No Graphify\n"})
+            output = base / "compiled"
+            manifest = compile_repository(repository, output)
+
+            metadata = json.loads(
+                (output / "graphify-metadata.json").read_text(encoding="utf-8")
+            )
+            self.assertFalse(metadata["available"])
+            self.assertEqual(metadata["status"], "absent")
+            self.assertEqual(metadata["schema_version"], "1.1.0")
+            self.assertEqual(metadata["source_commit"], commit)
+            self.assertEqual(
+                metadata["source_tree_digest"], manifest["source_tree_digest"]
+            )
+            ledger = json.loads(
+                (output / "completeness.json").read_text(encoding="utf-8")
+            )
+            gate = next(
+                item
+                for item in ledger["invariants"]
+                if item["name"] == "graphify_receipt_exact_source_bound"
+            )
+            self.assertTrue(gate["passed"])
+            self.assertEqual((gate["expected"], gate["actual"]), (1, 1))
+
+    def test_mismatched_graphify_source_binding_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            repository = base / "repo"
+            initialize_repository(repository, {"README.md": "# Graphify mismatch\n"})
+            output = base / "failed"
+            mismatched = {
+                "schema_version": "1.1.0",
+                "source_commit": "0" * 40,
+                "source_tree_digest": "1" * 64,
+                "available": False,
+                "status": "absent",
+                "stale": None,
+                "unresolved_reasons": ["synthetic_mismatched_binding"],
+            }
+            with mock.patch.object(
+                compiler_module,
+                "project_graphify",
+                return_value=(mismatched, [], []),
+            ):
+                with self.assertRaises(CompilationError):
+                    compile_repository(repository, output)
+
+            ledger = json.loads(
+                (output / "completeness.json").read_text(encoding="utf-8")
+            )
+            gate = next(
+                item
+                for item in ledger["invariants"]
+                if item["name"] == "graphify_receipt_exact_source_bound"
+            )
+            self.assertFalse(gate["passed"])
+            self.assertEqual((gate["expected"], gate["actual"]), (1, 0))
+            self.assertFalse((output / "manifest.json").exists())
 
     def test_closed_entity_denominator_extracts_declared_entities_without_invented_depth(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -497,11 +688,266 @@ class CompilerTests(unittest.TestCase):
             )
 
             claims = group_records(preview, "claims")
+            self.assertTrue(
+                all(row["content_source"] == "dirty_preview_worktree" for row in group_records(preview, "files"))
+            )
+            self.assertTrue(
+                all(row["source_basis"] == "dirty_preview_worktree" for row in group_records(preview, "source_text"))
+            )
             self.assertTrue(all(row["status"] == "candidate" for row in claims))
             self.assertTrue(all(row["verdict"] == "indeterminate" for row in claims))
             self.assertTrue(all(row["freshness"] == "unknown" for row in claims))
             self.assertTrue(all(not row["current_view"] for row in claims))
             self.assertTrue(all("dirty_worktree_not_exact_commit_bound" in row["unresolved_reasons"] for row in claims))
+
+    def test_structural_line_gate_fails_closed_if_enrichment_drops_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            repository = base / "repo"
+            initialize_repository(repository, {"notes.txt": "A safe source line.\n"})
+            output = base / "failed"
+            original = compiler_module._enrich_semantic_records
+
+            def remove_mapping(*args: object, **kwargs: object) -> None:
+                original(*args, **kwargs)
+                records = args[0]
+                assert isinstance(records, dict)
+                records["lines"][0]["explanation_depth"] = 0
+                records["lines"][0].pop("structural_mapping_basis")
+
+            with mock.patch.object(
+                compiler_module,
+                "_enrich_semantic_records",
+                side_effect=remove_mapping,
+            ):
+                with self.assertRaises(CompilationError):
+                    compile_repository(repository, output)
+
+            ledger = json.loads((output / "completeness.json").read_text(encoding="utf-8"))
+            gate = next(
+                item
+                for item in ledger["invariants"]
+                if item["name"] == "every_safe_line_structurally_mapped"
+            )
+            self.assertFalse(gate["passed"])
+            self.assertEqual(gate["expected"], 1)
+            self.assertEqual(gate["actual"], 0)
+            self.assertTrue(ledger["hard_failure"])
+            self.assertFalse((output / "manifest.json").exists())
+
+    def test_structural_line_gate_rejects_file_record_as_semantic_entity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            repository = base / "repo"
+            initialize_repository(repository, {"notes.txt": "A safe source line.\n"})
+            output = base / "failed"
+            original = compiler_module._enrich_semantic_records
+
+            def orphan_mapping(*args: object, **kwargs: object) -> None:
+                original(*args, **kwargs)
+                records = args[0]
+                file_records = args[1]
+                assert isinstance(records, dict)
+                assert isinstance(file_records, list)
+                records["lines"][0]["semantic_entity"] = file_records[0]["id"]
+
+            with mock.patch.object(
+                compiler_module,
+                "_enrich_semantic_records",
+                side_effect=orphan_mapping,
+            ):
+                with self.assertRaises(CompilationError):
+                    compile_repository(repository, output)
+
+            ledger = json.loads((output / "completeness.json").read_text(encoding="utf-8"))
+            gate = next(
+                item
+                for item in ledger["invariants"]
+                if item["name"] == "every_safe_line_structurally_mapped"
+            )
+            self.assertFalse(gate["passed"])
+            self.assertEqual(gate["expected"], 1)
+            self.assertEqual(gate["actual"], 0)
+            self.assertFalse((output / "manifest.json").exists())
+
+    def test_missing_parser_owned_structural_root_fails_both_denominators(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            repository = base / "repo"
+            initialize_repository(repository, {"notes.txt": "A safe source line.\n"})
+            output = base / "failed"
+            original = compiler_module._enrich_semantic_records
+
+            def remove_root(*args: object, **kwargs: object) -> None:
+                original(*args, **kwargs)
+                records = args[0]
+                assert isinstance(records, dict)
+                records["structural_entities"].clear()
+
+            with mock.patch.object(
+                compiler_module,
+                "_enrich_semantic_records",
+                side_effect=remove_root,
+            ):
+                with self.assertRaises(CompilationError):
+                    compile_repository(repository, output)
+
+            ledger = json.loads((output / "completeness.json").read_text(encoding="utf-8"))
+            root_gate = next(
+                item
+                for item in ledger["invariants"]
+                if item["name"] == "every_safe_parsed_source_has_one_structural_root"
+            )
+            line_gate = next(
+                item
+                for item in ledger["invariants"]
+                if item["name"] == "every_safe_line_structurally_mapped"
+            )
+            self.assertFalse(root_gate["passed"])
+            self.assertEqual((root_gate["expected"], root_gate["actual"]), (1, 0))
+            self.assertFalse(line_gate["passed"])
+            self.assertEqual((line_gate["expected"], line_gate["actual"]), (1, 0))
+            self.assertFalse((output / "manifest.json").exists())
+
+    def test_gui_dossiers_use_only_structural_and_explicit_design_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            repository = base / "repo"
+            initialize_repository(
+                repository,
+                {
+                    ".design-sync/config.json": json.dumps(
+                        {
+                            "projectId": "fixture-design-project",
+                            "entry": "./webapp/frontend/ds.entry.ts",
+                            "cssEntry": "src/theme.css",
+                            "dtsPropsFor": {"Card": "label: string; onSelect?: () => void;"},
+                            "componentSrcMap": {"Card": "src/Card.test.tsx"},
+                        },
+                        indent=2,
+                    )
+                    + "\n",
+                    "webapp/frontend/ds.entry.ts": 'export { Card } from "./src/Card.test";\n',
+                    "webapp/frontend/src/theme.css": ":root { --accent: #4f46e5; }\n",
+                    "webapp/frontend/src/Card.test.tsx": (
+                        'import "./theme.css";\n'
+                        "export function Card({ label }: { label: string }) {\n"
+                        '  return <button aria-label={label} onClick={() => undefined}>{label}</button>;\n'
+                        "}\n"
+                        "export function Screen() {\n"
+                        '  return <Route path="/card" element={<Card label="Ready" />} />;\n'
+                        "}\n"
+                        'test("card", () => Card({ label: "Ready" }));\n'
+                    ),
+                    "webapp/frontend/visual-e2e/design-cards.visual.spec.ts": (
+                        "const EXPECTED_VARIANTS = {\n"
+                        '  Card: ["Default"],\n'
+                        "};\n"
+                        'test("visual manifest", () => EXPECTED_VARIANTS.Card);\n'
+                    ),
+                    "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/Card.png": b"\x89PNG\r\n\x1a\nfixture",
+                    "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/Card-728.png": b"\x89PNG\r\n\x1a\nfixture-728",
+                },
+            )
+            output = base / "compiled"
+            compile_repository(repository, output)
+            validate_compiler_output(output)
+
+            components = group_records(output, "components")
+            routes = group_records(output, "routes")
+            card = next(
+                row
+                for row in components
+                if row.get("name") == "Card" and row.get("entity_type") == "jsx_component_symbol"
+            )
+            dossier = card["gui_dossier"]
+            expected_fields = set(compiler_module.GUI_DOSSIER_FIELDS)
+            self.assertTrue(expected_fields.issubset(dossier))
+            self.assertEqual(dossier["field_count"], len(expected_fields))
+            self.assertEqual(dossier["evidence_state"], "explicitly_linked")
+            self.assertEqual(dossier["props_contract"]["state"], "explicitly_linked")
+            self.assertEqual(dossier["design_sync_receipt"]["state"], "structural_only")
+            self.assertIn(
+                "design_sync_configuration_is_not_a_sync_or_served_hash_receipt",
+                dossier["design_sync_receipt"]["unresolved_reasons"],
+            )
+            self.assertEqual(dossier["visual_baseline"]["state"], "structural_only")
+            self.assertEqual(dossier["responsive_behavior"]["state"], "structural_only")
+            self.assertEqual(dossier["user_actions"]["state"], "structural_only")
+            self.assertEqual(dossier["accessibility"]["state"], "structural_only")
+            self.assertEqual(dossier["tests"]["state"], "structural_only")
+            self.assertEqual(dossier["white_label_inputs"]["state"], "not_evidenced")
+            self.assertTrue(dossier["source_citation"]["start_line"])
+            self.assertTrue(all(field["gap_ids"] for name, field in dossier.items() if name in expected_fields))
+            self.assertTrue(routes)
+            self.assertTrue(all(row["gui_dossier"]["state_model"]["state"] == "not_evidenced" for row in routes))
+
+            ledger = json.loads((output / "completeness.json").read_text(encoding="utf-8"))
+            gui_gate = next(
+                item
+                for item in ledger["invariants"]
+                if item["name"] == "every_gui_surface_has_standardized_evidence_honest_dossier"
+            )
+            self.assertTrue(gui_gate["passed"])
+            self.assertEqual(gui_gate["expected"], len(components) + len(routes))
+            self.assertEqual(gui_gate["actual"], gui_gate["expected"])
+            field_states = ledger["semantic_accounting"]["gui_dossier_field_state_counts"]
+            self.assertEqual(sum(field_states.values()), gui_gate["expected"] * len(expected_fields))
+
+    def test_gui_dossier_coverage_gate_fails_closed_when_one_surface_is_unmapped(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            repository = base / "repo"
+            initialize_repository(
+                repository,
+                {"api.py": "@app.get('/health')\ndef health():\n    return {'ok': True}\n"},
+            )
+            output = base / "failed"
+            original = compiler_module._enrich_gui_dossiers
+
+            def remove_dossier(*args: object, **kwargs: object) -> None:
+                original(*args, **kwargs)
+                records = args[0]
+                assert isinstance(records, dict)
+                records["routes"][0].pop("gui_dossier")
+
+            with mock.patch.object(
+                compiler_module,
+                "_enrich_gui_dossiers",
+                side_effect=remove_dossier,
+            ):
+                with self.assertRaises(CompilationError):
+                    compile_repository(repository, output)
+
+            ledger = json.loads((output / "completeness.json").read_text(encoding="utf-8"))
+            gate = next(
+                item
+                for item in ledger["invariants"]
+                if item["name"] == "every_gui_surface_has_standardized_evidence_honest_dossier"
+            )
+            self.assertFalse(gate["passed"])
+            self.assertEqual(gate["expected"], 1)
+            self.assertEqual(gate["actual"], 0)
+            self.assertTrue(ledger["hard_failure"])
+            self.assertFalse((output / "manifest.json").exists())
+
+    def test_exact_compile_rejects_index_flags_that_hide_worktree_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            repository = base / "repo"
+            initialize_repository(repository, {"notes.txt": "Committed source.\n"})
+            git(repository, "update-index", "--assume-unchanged", "notes.txt")
+            write(repository, "notes.txt", "Hidden worktree change.\n")
+            self.assertEqual(git(repository, "status", "--porcelain=v1"), "")
+
+            output = base / "failed"
+            with self.assertRaisesRegex(CompilationError, "index flag"):
+                compile_repository(repository, output)
+
+            ledger = json.loads((output / "completeness.json").read_text(encoding="utf-8"))
+            self.assertTrue(ledger["hard_failure"])
+            self.assertTrue(any("index flag" in item for item in ledger["fatal_errors"]))
+            self.assertFalse((output / "manifest.json").exists())
 
     def test_compiler_blocks_publication_when_claim_algebra_rejects_projection(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -584,6 +1030,7 @@ class CompilerTests(unittest.TestCase):
             file_record = group_records(output, "files")[0]
             binary = group_records(output, "binaries")[0]
             self.assertEqual(file_record["privacy_exposure"], "metadata_only")
+            self.assertEqual(file_record["content_source"], "metadata_only_git_object")
             self.assertIsNone(file_record["content_digest"])
             self.assertEqual(binary["git_blob_oid"], file_record["git_blob_oid"])
             self.assertIsNone(binary["content_digest"])
@@ -659,6 +1106,8 @@ class CompilerTests(unittest.TestCase):
         )
         self.assertIn("claimRecord", records_schema["$defs"])
         self.assertIn("lineRecord", records_schema["$defs"])
+        self.assertIn("structuralEntityRecord", records_schema["$defs"])
+        self.assertEqual(records_schema["properties"]["schema_version"]["const"], "1.1.0")
 
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)

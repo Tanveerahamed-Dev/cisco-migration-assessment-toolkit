@@ -36,6 +36,7 @@ def _bundle(tmp_path: Path) -> CompilerBundle:
             "lines": 87,
             "source_text": 10,
             "symbols": 9,
+            "structural_entities": 10,
             "routes": 4,
             "components": 5,
             "tests": 7,
@@ -47,7 +48,7 @@ def _bundle(tmp_path: Path) -> CompilerBundle:
         }.items()
     }
     manifest = {
-        "schema_version": "1.0.0",
+        "schema_version": "1.1.0",
         "status": "complete",
         "source_commit": COMMIT,
         "head_tree_oid": "8" * 40,
@@ -58,7 +59,7 @@ def _bundle(tmp_path: Path) -> CompilerBundle:
     }
     completeness = {
         "id": "urn:atlas:completeness:fixture",
-        "schema_version": "1.0.0",
+        "schema_version": "1.1.0",
         "source_commit": COMMIT,
         "source_tree_digest": TREE,
         "tracked_worktree_dirty": False,
@@ -79,14 +80,25 @@ def _bundle(tmp_path: Path) -> CompilerBundle:
         "semantic_accounting": {
             "symbol_records": 9,
             "symbol_dossiers": 9,
+            "safe_parsed_sources": 10,
+            "structural_root_entities": 10,
+            "structural_root_kind_counts": {"documentation_document": 10},
+            "structurally_mapped_lines": 87,
             "line_explanation_depth_counts": {"0": 0, "1": 87, "2": 0, "3": 0, "4": 0},
             "symbol_explanation_depth_counts": {"0": 0, "1": 9, "2": 0, "3": 0, "4": 0},
             "critical_or_public_symbols": 4,
             "critical_level_four_reviews": 0,
+            "gui_surface_records": 9,
+            "gui_dossiers": 9,
+            "gui_dossier_evidence_state_counts": {"structural_only": 9},
+            "gui_dossier_field_state_counts": {"not_evidenced": 135},
             "runtime_trace_state": "not_collected",
             "coverage_evidence_state": "structural_links_only",
         },
         "graphify": {
+            "schema_version": "1.1.0",
+            "source_commit": COMMIT,
+            "source_tree_digest": TREE,
             "available": True,
             "status": "current",
             "stale": False,
@@ -102,6 +114,9 @@ def _bundle(tmp_path: Path) -> CompilerBundle:
         "invariants": [
             {"name": "every_tracked_file_classified", "passed": True, "expected": 12, "actual": 12},
             {"name": "every_nonblank_text_line_has_one_record", "passed": True, "expected": 87, "actual": 87},
+            {"name": "every_safe_parsed_source_has_one_structural_root", "passed": True, "expected": 10, "actual": 10},
+            {"name": "every_safe_line_structurally_mapped", "passed": True, "expected": 87, "actual": 87},
+            {"name": "every_gui_surface_has_standardized_evidence_honest_dossier", "passed": True, "expected": 9, "actual": 9},
             {"name": "no_silent_parser_failure", "passed": True, "expected": 0, "actual": 0},
         ],
         "acceptance_gates": [
@@ -275,6 +290,7 @@ def _content(tmp_path: Path) -> ContentBundle:
         horizon=horizon,
         output_contract={"schema_version": "1.0.0", "catalog_version": "fixture", "members": []},
         receipts=(),
+        raw_files={},
     )
 
 

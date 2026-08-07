@@ -39,15 +39,15 @@ function stepsFor(lab: Lab): WalkthroughStep[] {
       label: "Arrange",
       title: "Stage only synthetic inputs",
       instruction: lab.interaction,
-      resultLabel: "Data boundary",
-      result: lab.data_policy,
+      resultLabel: "Deterministic definition inputs",
+      result: lab.deterministic_definition.deterministic_inputs.join(" · "),
     },
     {
       label: "Observe",
       title: "Inspect the bounded learning result",
       instruction: "Follow the declared interaction without importing, collecting, or persisting evidence.",
       resultLabel: "This walkthrough can demonstrate",
-      result: lab.proves,
+      result: `${lab.proves} Expected observations: ${lab.deterministic_definition.expected_observations.join(" · ")}`,
     },
     {
       label: "Challenge",
@@ -152,6 +152,22 @@ export function LabsExplorer({ labs, owners, initialLab, initialStep }: LabsExpl
           <article><span>Objective</span><p>{selected.objective}</p></article>
           <article><span>Interaction</span><p>{selected.interaction}</p></article>
           <article><span>Data policy</span><p>{selected.data_policy}</p></article>
+          <article>
+            <span>Definition state</span>
+            <p>
+              <strong>{selected.deterministic_definition.execution_state.replaceAll("_", " ")}</strong>.{" "}
+              {selected.deterministic_definition.source_binding}
+            </p>
+          </article>
+          <article>
+            <span>Deterministic inputs</span>
+            <ul>{selected.deterministic_definition.deterministic_inputs.map((item) => <li key={item}>{item}</li>)}</ul>
+          </article>
+          <article>
+            <span>Expected observations</span>
+            <ul>{selected.deterministic_definition.expected_observations.map((item) => <li key={item}>{item}</li>)}</ul>
+          </article>
+          <article><span>Reset rule</span><p>{selected.deterministic_definition.reset_rule}</p></article>
           <article className={styles.canProve}><span>Can demonstrate</span><p>{selected.proves}</p></article>
           <article className={styles.cannotProve}><span>Cannot demonstrate</span><p>{selected.does_not_prove}</p></article>
         </div>
@@ -206,7 +222,7 @@ export function LabsExplorer({ labs, owners, initialLab, initialStep }: LabsExpl
         </div>
 
         <footer className={styles.ownerFooter}>
-          <span>Claim owners</span>
+          <span>Exact-tree source owners</span>
           <div>
             {selected.owner_refs.map((ownerId) => {
               const owner = ownerMap.get(ownerId);

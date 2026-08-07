@@ -9,6 +9,13 @@ from typing import Any
 
 from release.compiler_bundle import load_compiler_bundle
 
+from .corpus import load_enhancement_corpus
+from .enhance import (
+    DEFAULT_MAX_DEPTH,
+    DEFAULT_MAX_EDGES,
+    DEFAULT_MAX_RECORDS,
+    build_enhancement_package,
+)
 from .model import ContinuityInputError, canonical_json, read_json_object
 from .query import query_by_id, query_by_path, query_impact
 from .validation import validate_completion_receipt, validate_task_envelope
@@ -17,7 +24,7 @@ from .validation import validate_completion_receipt, validate_task_envelope
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m continuity",
-        description="Read-only exact-source Atlas queries and agent continuity validation",
+        description="Read-only exact-source Atlas queries, enhancement scaffolds, and continuity validation",
     )
     subcommands = parser.add_subparsers(dest="command", required=True)
 
@@ -28,6 +35,20 @@ def _parser() -> argparse.ArgumentParser:
     selection.add_argument("--path")
     selection.add_argument("--impact")
     query.add_argument("--line", type=int)
+
+    enhance = subcommands.add_parser(
+        "enhance",
+        help="compile one bounded evidence-cited enhancement scaffold",
+    )
+    enhance.add_argument("--repo-root", required=True)
+    enhance.add_argument("--compiler-output", required=True)
+    seed = enhance.add_mutually_exclusive_group(required=True)
+    seed.add_argument("--id")
+    seed.add_argument("--file")
+    seed.add_argument("--gap")
+    enhance.add_argument("--max-depth", type=int, default=DEFAULT_MAX_DEPTH)
+    enhance.add_argument("--max-records", type=int, default=DEFAULT_MAX_RECORDS)
+    enhance.add_argument("--max-edges", type=int, default=DEFAULT_MAX_EDGES)
 
     envelope = subcommands.add_parser("validate-envelope", help="validate a TaskEnvelope")
     envelope.add_argument("--repo-root", required=True)
@@ -43,6 +64,23 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _run(arguments: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    if arguments.command == "enhance":
+        bundle = load_enhancement_corpus(Path(arguments.compiler_output))
+        seed_kind, seed_value = next(
+            (kind, value)
+            for kind, value in (("id", arguments.id), ("file", arguments.file), ("gap", arguments.gap))
+            if value is not None
+        )
+        return build_enhancement_package(
+            bundle,
+            Path(arguments.repo_root),
+            seed_kind=seed_kind,
+            seed_value=seed_value,
+            max_depth=arguments.max_depth,
+            max_records=arguments.max_records,
+            max_edges=arguments.max_edges,
+        )
+
     bundle = load_compiler_bundle(Path(arguments.compiler_output))
     if arguments.command == "query":
         if arguments.line is not None and arguments.path is None:

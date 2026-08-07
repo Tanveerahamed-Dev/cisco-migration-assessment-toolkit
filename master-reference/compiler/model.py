@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-SCHEMA_VERSION = "1.0.0"
+# Corpus contract version.  This version is shared by the compiler manifest,
+# completeness ledger, and every record-chunk envelope.  It is intentionally
+# independent from the release-family document schemas.
+SCHEMA_VERSION = "1.1.0"
 PREVIEW_LIMIT = 240
 
 

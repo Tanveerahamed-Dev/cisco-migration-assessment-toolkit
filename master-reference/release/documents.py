@@ -272,11 +272,13 @@ Python resolution or vulnerability result is fabricated.
 
 ## Privacy boundary
 
-Only compiler-manifest-referenced files, four curated content contracts, two
-NPM lockfiles, `pyproject.toml`, and three requirements files are read. Symlink
-components and path traversal are refused. Source text already classified safe
-by the compiler is retained only inside its preservation projection; handbook,
-HTML, and machine summary outputs do not reproduce whole source files.
+Only compiler-manifest-referenced, full-exposure selected-commit Git blobs are
+read for curated contracts and dependency declarations. Metadata-only payloads,
+symlink components, Git links, and path traversal are refused. Checkout filters
+do not alter the preserved or provenance-bound bytes. Source text already
+classified safe by the compiler is retained only inside its preservation
+projection; handbook, HTML, and machine summary outputs do not reproduce whole
+source files.
 
 ## Known gates and honest limitations
 
@@ -301,6 +303,8 @@ def source_symbol_index(bundle: CompilerBundle) -> dict[str, Any]:
                     "id",
                     "path",
                     "git_mode",
+                    "git_blob_oid",
+                    "content_source",
                     "language",
                     "roles",
                     "privacy_exposure",

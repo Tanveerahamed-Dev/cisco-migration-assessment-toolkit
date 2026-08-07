@@ -16,6 +16,7 @@ export type SourceFileRecord = {
   nonblankLineCount: number;
   contentDigest: string | null;
   gitBlobOid: string | null;
+  contentSource: string | null;
   privacyExposure: string;
   privacyReasons: string[];
   parseStatus: string;
@@ -83,6 +84,69 @@ export type DatasetRecord = {
   sizeBytes: number;
   contentDigest: string | null;
   structuredRecordCount: number | null;
+  derivation: string;
+  unresolvedReasons: string[];
+};
+
+export type GuiDossierCitation = {
+  record_id: string;
+  path: string;
+  start_line: number | null;
+  end_line: number | null;
+  line_state: "source_range" | "source_line_not_resolved" | "not_applicable_binary";
+  evidence_role: string;
+};
+
+export type GuiDossierField = {
+  state: "explicitly_linked" | "structural_only" | "not_evidenced";
+  value: unknown;
+  citations: GuiDossierCitation[];
+  unresolved_reasons: string[];
+  gap_ids: string[];
+};
+
+export type GuiDossier = {
+  id: string;
+  surface_id: string;
+  surface_kind: "route" | "component";
+  source_commit: string;
+  source_citation: GuiDossierCitation;
+  evidence_state: "explicitly_linked" | "structural_only" | "not_evidenced";
+  derivation: "compiler_structural_evidence_only";
+  field_count: number;
+  persona_journey: GuiDossierField;
+  data_snapshot_sources: GuiDossierField;
+  props_contract: GuiDossierField;
+  state_model: GuiDossierField;
+  loading_empty_error_unknown_stale_states: GuiDossierField;
+  user_actions: GuiDossierField;
+  accessibility: GuiDossierField;
+  responsive_behavior: GuiDossierField;
+  design_tokens: GuiDossierField;
+  white_label_inputs: GuiDossierField;
+  design_sync_receipt: GuiDossierField;
+  visual_baseline: GuiDossierField;
+  tests: GuiDossierField;
+  downstream_consumers: GuiDossierField;
+  known_gaps: GuiDossierField;
+  unresolved_reasons: string[];
+  gap_ids: string[];
+};
+
+export type GuiSurfaceRecord = {
+  id: string;
+  fileId: string;
+  path: string;
+  name: string | null;
+  route: string | null;
+  method: string | null;
+  handler: string | null;
+  framework: string | null;
+  kind: string | null;
+  entityType: string;
+  range: SourceRange | null;
+  attributeNames: string[];
+  gui_dossier: GuiDossier;
   derivation: string;
   unresolvedReasons: string[];
 };
@@ -218,6 +282,7 @@ export type ProjectionIndex = {
     graphify?: Record<string, unknown>;
   };
   groupCounts: Record<string, number>;
+  sourceFileCount: number;
   sourceModuleCount: number;
   disclosure: Record<string, string>;
 };
@@ -226,10 +291,14 @@ export type SourceLine = {
   number: number;
   text: string;
   terminator: "" | "\n" | "\r" | "\r\n";
+  fragmentIndex: number;
+  fragmentCount: number;
+  fragmentDigest: string;
   textDigest: string;
   lineDigest: string;
   recordId: string | null;
   syntaxKind: string | null;
+  structuralMappingBasis: string | null;
   containingSymbol: string | null;
   containingSymbolId: string | null;
   syntaxDepth: number | null;
@@ -249,6 +318,18 @@ export type SourceLine = {
   unresolvedReasons: string[];
 };
 
+export type SourceChunkDescriptor = {
+  module: string;
+  sha256: string;
+  bytes: number;
+  chunkIndex: number;
+  startLine: number;
+  endLine: number;
+  startFragment: number;
+  endFragment: number;
+  segmentCount: number;
+};
+
 export type SourceFilePayload = {
   id: string;
   fileId: string;
@@ -257,11 +338,30 @@ export type SourceFilePayload = {
   byteCount: number;
   contentDigest: string;
   lineCount: number;
+  segmentCount: number;
+  chunkCount: number;
   derivation: string;
   verification: Record<string, string>;
-  symbols: SymbolRecord[];
-  declaredTests: TestRecord[];
-  lines: SourceLine[];
+  chunks: SourceChunkDescriptor[];
+};
+
+export type SourceChunkPayload = Omit<SourceFilePayload, "segmentCount" | "chunkCount" | "chunks"> & {
+  segments: SourceLine[];
+};
+
+export type SearchProjectionRecord = {
+  id: string;
+  kind: string;
+  title: string;
+  detail: string;
+  href: string;
+  score: number;
+};
+
+export type SearchProjectionResult = {
+  records: SearchProjectionRecord[];
+  truncatedTerms: Array<{ term: string; totalMatches: number; returned: number }>;
+  ignoredTokenCount: number;
 };
 
 export type ProjectionModule = {
@@ -270,15 +370,19 @@ export type ProjectionModule = {
     string,
     ReadonlyArray<() => Promise<{ records?: unknown[]; default?: unknown[] }>>
   >;
-  sourceLoaders: Record<string, () => Promise<{ source?: SourceFilePayload; default?: SourceFilePayload }>>;
   recordBucketLoaders: Record<string, Record<string, () => Promise<{ records?: DossierRecord[]; default?: DossierRecord[] }>>>;
   loadMetadata: (group: string) => Promise<unknown[]>;
   loadRecord: (kind: string, id: string) => Promise<DossierRecord | null>;
   loadSource: (path: string) => Promise<SourceFilePayload | null>;
+  loadSourceChunk: (path: string, chunkIndex: number) => Promise<SourceChunkPayload | null>;
+  loadSourceWindow: (path: string, line: number) => Promise<SourceChunkPayload | null>;
+  searchRecords: (tokens: string[]) => Promise<SearchProjectionResult>;
+  loadGraphSummary: () => Promise<unknown>;
+  loadGraphCommunity: (community: string) => Promise<unknown>;
   default: ProjectionIndex;
 };
 
-export type DossierRecord = SymbolRecord | DatasetRecord | TestRecord | WorkflowRecord | ClaimRecord;
+export type DossierRecord = SymbolRecord | DatasetRecord | GuiSurfaceRecord | TestRecord | WorkflowRecord | ClaimRecord;
 
 export type ProjectionLoadState =
   | { state: "loading" }

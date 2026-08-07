@@ -194,7 +194,7 @@ export function SourceExplorer({
 
       <p className={styles.resultCount} aria-live="polite">
         <span><strong>{filtered.length}</strong> of {files.length} tracked paths</span>
-        <span>{projection.sourceModuleCount} per-file source modules</span>
+        <span>{projection.sourceFileCount} safe source files · {projection.sourceModuleCount} bounded chunks</span>
       </p>
 
       {grouped.length ? (

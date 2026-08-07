@@ -1,7 +1,14 @@
 "use client";
 
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
+import {
+  beginCommunitySelection,
+  rejectCommunitySelection,
+  resolveCommunitySelection,
+} from "./GraphSelection.mjs";
+import type { CommunitySelection } from "./GraphSelection.mjs";
 import { loadProjection, sourceHref } from "./SourceExplorerData";
+import type { ProjectionModule } from "./SourceExplorerTypes";
 import styles from "./GraphExplorer.module.css";
 
 type GraphNode = {
@@ -34,7 +41,32 @@ type GraphEdge = {
 type GraphState =
   | { state: "loading" }
   | { state: "missing"; message: string }
-  | { state: "ready"; nodes: GraphNode[]; edges: GraphEdge[]; commit: string };
+  | {
+      state: "ready";
+      module: ProjectionModule;
+      summary: GraphSummary;
+      nodes: GraphNode[];
+      edges: GraphEdge[];
+      commit: string;
+      communitySelection:
+        | CommunitySelection<GraphNode, GraphEdge>
+        | {
+            state: "overview";
+            requestedCommunity: null;
+            loadedCommunity: null;
+            reason: null;
+            message: string;
+          };
+    };
+
+type GraphSummary = {
+  nodeCount: number;
+  edgeCount: number;
+  communities: Array<{ id: string; nodeCount: number; edgeCount: number; nodeShards: number; edgeShards: number }>;
+  sampleNodes: GraphNode[];
+  sampleEdges: GraphEdge[];
+  disclosure: string;
+};
 
 const DRAW_LIMIT = 48;
 const TABLE_PAGE_SIZE = 150;
@@ -67,11 +99,22 @@ export function GraphExplorer() {
         ) {
           throw new Error("Graphify receipt is missing, stale, or not bound to this exact source commit.");
         }
-        const [nodes, edges] = await Promise.all([
-          module.loadMetadata("graph_nodes") as Promise<GraphNode[]>,
-          module.loadMetadata("graph_edges") as Promise<GraphEdge[]>,
-        ]);
-        if (active) setLoadState({ state: "ready", nodes, edges, commit: module.projection.sourceCommit });
+        const summary = await module.loadGraphSummary() as GraphSummary;
+        if (active) setLoadState({
+          state: "ready",
+          module,
+          summary,
+          nodes: summary.sampleNodes,
+          edges: summary.sampleEdges,
+          commit: module.projection.sourceCommit,
+          communitySelection: {
+            state: "overview",
+            requestedCommunity: null,
+            loadedCommunity: null,
+            reason: null,
+            message: "Showing the deterministic all-community overview.",
+          },
+        });
       })
       .catch(() => {
         if (active) {
@@ -85,6 +128,61 @@ export function GraphExplorer() {
       active = false;
     };
   }, []);
+
+  const projectionModule = loadState.state === "ready" ? loadState.module : null;
+  const graphSummary = loadState.state === "ready" ? loadState.summary : null;
+  useEffect(() => {
+    if (!projectionModule || !graphSummary) return;
+    if (community === "all") {
+      setLoadState((current) => current.state === "ready" ? {
+        ...current,
+        nodes: current.summary.sampleNodes,
+        edges: current.summary.sampleEdges,
+        communitySelection: {
+          state: "overview",
+          requestedCommunity: null,
+          loadedCommunity: null,
+          reason: null,
+          message: "Showing the deterministic all-community overview.",
+        },
+      } : current);
+      return;
+    }
+    const started = beginCommunitySelection<GraphNode, GraphEdge>(
+      community,
+      graphSummary.communities.map((entry) => entry.id),
+    );
+    setLoadState((current) => current.state === "ready" ? {
+      ...current,
+      nodes: [],
+      edges: [],
+      communitySelection: started,
+    } : current);
+    if (started.state === "abstained") return;
+    let active = true;
+    void projectionModule.loadGraphCommunity(community)
+      .then((payload) => {
+        if (!active) return;
+        const selected = resolveCommunitySelection<GraphNode, GraphEdge>(community, payload);
+        setLoadState((current) => current.state === "ready" ? {
+          ...current,
+          nodes: selected.nodes,
+          edges: selected.edges,
+          communitySelection: selected,
+        } : current);
+      })
+      .catch(() => {
+        if (!active) return;
+        const selected = rejectCommunitySelection<GraphNode, GraphEdge>(community);
+        setLoadState((current) => current.state === "ready" ? {
+          ...current,
+          nodes: selected.nodes,
+          edges: selected.edges,
+          communitySelection: selected,
+        } : current);
+      });
+    return () => { active = false; };
+  }, [community, graphSummary, projectionModule]);
 
   useEffect(() => {
     const parameters = new URLSearchParams(window.location.search);
@@ -107,30 +205,34 @@ export function GraphExplorer() {
 
   const ready = loadState.state === "ready" ? loadState : null;
   const communities = useMemo(
-    () =>
-      ready
-        ? [...new Set(ready.nodes.map((node) => node.community).filter((value) => value !== null))]
-            .sort((left, right) => Number(left) - Number(right))
-        : [],
+    () => ready?.summary.communities.map((entry) => entry.id) ?? [],
     [ready],
   );
+  const unavailableCommunity = community !== "all" && !communities.includes(community);
+  const viewBound = Boolean(
+    ready && (
+      (community === "all" && ready.communitySelection.state === "overview") ||
+      (community !== "all" &&
+        ready.communitySelection.state === "ready" &&
+        ready.communitySelection.loadedCommunity === community)
+    ),
+  );
   const filtered = useMemo(() => {
-    if (!ready) return [];
+    if (!ready || !viewBound) return [];
     return ready.nodes.filter((node) => {
-      if (community !== "all" && String(node.community) !== community) return false;
       if (!deferredQuery) return true;
       return [node.label, node.source_file, node.language, node.kind, node.origin]
         .join(" ")
         .toLowerCase()
         .includes(deferredQuery);
     });
-  }, [community, deferredQuery, ready]);
+  }, [deferredQuery, ready, viewBound]);
   const filteredIds = useMemo(() => new Set(filtered.map((node) => node.id)), [filtered]);
   const filteredEdges = useMemo(() => {
-    if (!ready) return [];
-    if (community === "all" && !deferredQuery) return ready.edges;
+    if (!ready || !viewBound) return [];
+    if (!deferredQuery) return ready.edges;
     return ready.edges.filter((edge) => filteredIds.has(edge.source) || filteredIds.has(edge.target));
-  }, [community, deferredQuery, filteredIds, ready]);
+  }, [deferredQuery, filteredIds, ready, viewBound]);
   const nodeRows = filtered.slice(nodePage * TABLE_PAGE_SIZE, (nodePage + 1) * TABLE_PAGE_SIZE);
   const edgeRows = filteredEdges.slice(edgePage * TABLE_PAGE_SIZE, (edgePage + 1) * TABLE_PAGE_SIZE);
   const nodeById = useMemo(
@@ -140,17 +242,13 @@ export function GraphExplorer() {
   const drawn = filtered.slice(0, DRAW_LIMIT);
   const positions = new Map(drawn.map((node, index) => [node.id, point(index, drawn.length)]));
   const drawnEdges = ready?.edges.filter((edge) => positions.has(edge.source) && positions.has(edge.target)) ?? [];
-  const communityCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const node of ready?.nodes ?? []) {
-      const key = node.community === null ? "unassigned" : String(node.community);
-      counts.set(key, (counts.get(key) ?? 0) + 1);
-    }
-    return [...counts.entries()].sort((left, right) => right[1] - left[1]);
-  }, [ready]);
+  const communityCounts = useMemo(
+    () => (ready?.summary.communities ?? []).map((entry) => [entry.id, entry.nodeCount] as const).sort((left, right) => right[1] - left[1]),
+    [ready],
+  );
 
   if (loadState.state === "loading") {
-    return <output className={styles.state}><strong>Loading complete safe graph projection…</strong><span>Nodes and edges are lazy chunks, never landing-page payload.</span></output>;
+    return <output className={styles.state}><strong>Loading bounded graph overview…</strong><span>Complete node and edge partitions remain lazy until a community is selected.</span></output>;
   }
   if (loadState.state === "missing") {
     return <div className={styles.state}><strong>Graph unavailable</strong><span>{loadState.message}</span></div>;
@@ -159,19 +257,25 @@ export function GraphExplorer() {
   return (
     <div className={styles.workspace}>
       <div className={styles.proof}>
-        <div><strong>{loadState.nodes.length.toLocaleString()}</strong><span>safe nodes retained</span></div>
-        <div><strong>{loadState.edges.length.toLocaleString()}</strong><span>safe edges retained</span></div>
+        <div><strong>{loadState.summary.nodeCount.toLocaleString()}</strong><span>safe nodes retained</span></div>
+        <div><strong>{loadState.summary.edgeCount.toLocaleString()}</strong><span>safe edges retained</span></div>
         <div><strong>{communityCounts.length.toLocaleString()}</strong><span>communities incl. unassigned</span></div>
         <div><strong>{loadState.commit.slice(0, 12)}</strong><span>source commit</span></div>
       </div>
 
       <div className={styles.controls}>
         <label><span>Find node</span><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="symbol, path, language…" /></label>
-        <label><span>Community</span><select value={community} onChange={(event) => setCommunity(event.target.value)}><option value="all">All communities</option>{communities.map((value) => <option value={String(value)} key={value}>Community {value}</option>)}</select></label>
+        <label><span>Community</span><select value={community} onChange={(event) => setCommunity(event.target.value)}><option value="all">Bounded all-community overview</option>{unavailableCommunity ? <option value={community}>Unavailable: {community}</option> : null}{communities.map((value) => <option value={String(value)} key={value}>{value === "unassigned" ? "Unassigned" : `Community ${value}`}</option>)}</select></label>
       </div>
 
       <p className={styles.disclosure}>
-        Showing {filtered.length.toLocaleString()} matching nodes and {filteredEdges.length.toLocaleString()} connected edges. The visual draws the first {Math.min(DRAW_LIMIT, filtered.length)} deterministically; the paginated tables expose the complete filtered records. Static extraction is not runtime truth.
+        {loadState.communitySelection.state === "loading"
+          ? loadState.communitySelection.message
+          : loadState.communitySelection.state === "abstained"
+            ? loadState.communitySelection.message
+            : community === "all"
+              ? `Showing a deterministic ${loadState.nodes.length}-node / ${loadState.edges.length}-edge overview. Select one community to load its complete retained records; all ${loadState.summary.nodeCount.toLocaleString()} nodes and ${loadState.summary.edgeCount.toLocaleString()} edges remain reachable community by community.`
+              : `Showing ${filtered.length.toLocaleString()} matching nodes and ${filteredEdges.length.toLocaleString()} source-assigned edges for ${community === "unassigned" ? "the unassigned partition" : `community ${community}`}. Static extraction is not runtime truth.`}
       </p>
 
       <div className={styles.graphLayout}>
@@ -190,20 +294,24 @@ export function GraphExplorer() {
         </svg>
         <aside className={styles.communities} aria-label="Largest communities">
           <h2>Community shape</h2>
-          {communityCounts.slice(0, 16).map(([id, count]) => <button type="button" onClick={() => setCommunity(id === "unassigned" ? "all" : id)} key={id}><span>{id === "unassigned" ? "Unassigned" : `Community ${id}`}</span><i><i style={{ width: `${Math.max(3, (count / communityCounts[0][1]) * 100)}%` }} /></i><strong>{count}</strong></button>)}
+          {communityCounts.slice(0, 16).map(([id, count]) => <button type="button" onClick={() => setCommunity(id)} key={id}><span>{id === "unassigned" ? "Unassigned" : `Community ${id}`}</span><i><i style={{ width: `${Math.max(3, (count / communityCounts[0][1]) * 100)}%` }} /></i><strong>{count}</strong></button>)}
         </aside>
       </div>
 
-      {filtered.length ? (
+      {loadState.communitySelection.state === "loading" ? (
+        <output className={styles.state} aria-live="polite"><strong>Loading selected community…</strong><span>{loadState.communitySelection.message}</span></output>
+      ) : loadState.communitySelection.state === "abstained" ? (
+        <output className={styles.state} aria-live="polite"><strong>Community view abstained</strong><span>{loadState.communitySelection.message}</span><button type="button" onClick={() => setCommunity("all")}>Return to overview</button></output>
+      ) : filtered.length ? (
         <div className={styles.tableWrap}>
           <table>
-            <caption className="visually-hidden">Complete filtered Graphify node records</caption>
+            <caption className="visually-hidden">{community === "all" ? "Bounded Graphify node overview" : "Complete filtered Graphify community node records"}</caption>
             <thead><tr><th scope="col">Node</th><th scope="col">Source</th><th scope="col">Kind / language</th><th scope="col">Community</th><th scope="col">Origin</th></tr></thead>
             <tbody>{nodeRows.map((node) => <tr key={node.id}><th scope="row">{node.label || node.graphify_id}<code>{node.id}</code></th><td><a href={sourceHref(node.source_file)}>{node.source_file}{node.source_location ? `:${node.source_location}` : ""}</a></td><td>{node.kind || "unknown"} · {node.language || "unknown"}</td><td>{node.community ?? "unassigned"}</td><td>{node.extraction_mode}</td></tr>)}</tbody>
           </table>
           <TablePager label="node" page={nodePage} total={filtered.length} onPage={setNodePage} />
           <table>
-            <caption className="visually-hidden">Complete filtered Graphify edge records</caption>
+            <caption className="visually-hidden">{community === "all" ? "Bounded Graphify edge overview" : "Complete source-assigned Graphify community edge records"}</caption>
             <thead><tr><th scope="col">Source node</th><th scope="col">Relation</th><th scope="col">Target node</th><th scope="col">Extraction</th><th scope="col">Confidence</th></tr></thead>
             <tbody>{edgeRows.map((edge) => {
               const source = nodeById.get(edge.source);

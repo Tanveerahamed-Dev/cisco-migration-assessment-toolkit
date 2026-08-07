@@ -62,14 +62,19 @@ test("hardens every HTML response at the Worker boundary", async () => {
 test("server-renders every owner workspace with its proof boundary", async () => {
   const expectations = new Map([
     ["/", ["See the whole system", "Nine outcomes hold the project together", "Coverage debt has different meanings"]],
+    ["/product", ["What Atlas is, what it protects", "Operating surfaces and deployment boundary", "White-label and product gap ledger"]],
     ["/system", ["Living system map", "Eight traffic lenses keep different proofs separate", "Declared dependency directions"]],
-    ["/graph", ["Complete static graph", "Keep every safe node and edge", "Loading complete safe graph projection"]],
+    ["/trace", ["Traverse the declared chain", "Trace builder", "Ordered source-bound thread"]],
+    ["/trace?stage=not-real", ["Trace abstained: unknown stage", "No substitute relationship was inferred", "Ordered source-bound thread"]],
+    ["/graph", ["Complete static graph", "Keep every safe node and edge", "Loading bounded graph overview"]],
     ["/capabilities", ["Every declared capability has a state", "capability records", "Current bounded scope"]],
     ["/gaps", ["Choose with the uncertainty visible", "Owner decision queue", "Open Horizon Register"]],
     ["/labs", ["Learn the boundary without crossing it", "Fourteen deterministic labs", "Never mutates truth"]],
+    ["/knowledge", ["Knowledge may advise Atlas", "Source-of-truth and code-graph owners", "Vault and private-evidence boundary"]],
+    ["/progress", ["Current state comes from owners", "P0 and P1 gap queue", "Semantic change delta unavailable"]],
     ["/ask?q=stateful+traffic", ["Answers must show their records", "Deterministic answer", "cited records"]],
     ["/ask?target=gap.flow-stateful", ["Deterministic enhancement compiler", "Do nothing", "Rollback and kill criteria"]],
-    ["/exports", ["One manifest. Every output reconciled", "Mandatory output family", "Publication is deliberately separate"]],
+    ["/exports", ["One manifest. Every output reconciled", "Canonical artifact dossiers", "Publication is deliberately separate"]],
     ["/source", ["Find any tracked path", "Opening the source-bound projection", "File text remains in per-file lazy modules"]],
   ]);
 
@@ -81,6 +86,40 @@ test("server-renders every owner workspace with its proof boundary", async () =>
     assert.match(html, /No analytics/i, path);
     for (const phrase of phrases) assert.ok(html.includes(phrase), `${path} is missing: ${phrase}`);
     assert.doesNotMatch(html, /Starter Project|SkeletonPreview|taking shape/i, path);
+  }
+});
+
+test("exposes every dedicated owner workspace in shell navigation", async () => {
+  const response = await render();
+  const html = await response.text();
+  for (const href of ["/product", "/trace", "/knowledge", "/progress"]) {
+    assert.match(html, new RegExp(`href="${href}"`), `navigation is missing ${href}`);
+  }
+});
+
+test("renders the exact canonical output denominator as artifact dossiers", async () => {
+  const outputContract = JSON.parse(
+    await readFile(new URL("content/output-contract.json", root), "utf8"),
+  );
+  const response = await render("/exports");
+  const html = await response.text();
+  assert.equal(outputContract.members.length, 21);
+  for (const item of outputContract.members) {
+    assert.ok(html.includes(`id="${item.id}"`), `/exports is missing dossier ${item.id}`);
+    assert.ok(html.includes(item.dossier.decision_supported), `/exports omitted decision for ${item.id}`);
+  }
+});
+
+test("server-renders every capability domain deep link with its own records", async () => {
+  const catalog = JSON.parse(
+    await readFile(new URL("content/capability-catalog.json", root), "utf8"),
+  );
+  for (const domain of catalog.domains) {
+    const response = await render(`/capabilities?domain=${encodeURIComponent(domain.id)}`);
+    assert.equal(response.status, 200, domain.id);
+    const html = await response.text();
+    assert.ok(html.includes(domain.entries[0].title), `${domain.id} did not render its first record`);
+    assert.doesNotMatch(html, />0<\/strong> of \d+ capability records/, domain.id);
   }
 });
 
@@ -160,7 +199,7 @@ test("renders deterministic catalogs and never promotes advisory content", async
   const horizon = JSON.parse(horizonText);
   const capabilities = catalog.domains.flatMap((domain) => domain.entries);
 
-  assert.equal(capabilities.length, 189);
+  assert.equal(capabilities.length, 210);
   assert.equal(governance.gaps.length, 41);
   assert.equal(governance.decision_queue.length, 10);
   assert.equal(governance.labs.length, 14);

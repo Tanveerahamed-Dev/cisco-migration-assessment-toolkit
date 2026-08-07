@@ -10,7 +10,7 @@ from typing import Any, Iterable
 from atlas_privacy import forbidden_byte_findings
 
 from .compiler_bundle import CompilerBundle, load_compiler_bundle
-from .content_bundle import CONTENT_FILES, load_content_bundle
+from .content_bundle import load_content_bundle
 from .documents import (
     agent_pack,
     capability_gap_report,
@@ -38,7 +38,7 @@ from .model import (
 from .provenance import provenance_statement
 from .sbom import NPM_LOCKFILES, PYTHON_DECLARATIONS, build_cyclonedx
 from .schema_validation import validate_release_object
-from .source_binding import validate_exact_source
+from .source_binding import read_bound_source_blob, validate_exact_source
 
 
 class ReleaseError(RuntimeError):
@@ -105,7 +105,7 @@ def _artifact(root: Path, relative: str, value: bytes, role: str) -> dict[str, A
 
 def _bound_architecture(repo_root: Path, bundle: CompilerBundle) -> bytes:
     relative = "master-reference/governance/architecture.json"
-    value = read_bytes(repo_root, relative)
+    value = read_bound_source_blob(repo_root, bundle, relative)
     _bind_tracked_inputs(
         bundle,
         [{"path": relative, "sha256": sha256_bytes(value), "bytes": len(value)}],
@@ -135,10 +135,16 @@ def _validate_output_contract(content: Any, *, pdf_included: bool) -> set[str]:
     return expected
 
 
-def _dependency_receipts(repo_root: Path) -> tuple[dict[str, Any], ...]:
+def _dependency_sources(repo_root: Path, bundle: CompilerBundle) -> dict[str, bytes]:
+    return {
+        relative: read_bound_source_blob(repo_root, bundle, relative)
+        for relative in sorted(set(NPM_LOCKFILES + PYTHON_DECLARATIONS))
+    }
+
+
+def _dependency_receipts(source_files: dict[str, bytes]) -> tuple[dict[str, Any], ...]:
     rows: list[dict[str, Any]] = []
-    for relative in sorted(set(NPM_LOCKFILES + PYTHON_DECLARATIONS)):
-        value = read_bytes(repo_root, relative)
+    for relative, value in sorted(source_files.items()):
         rows.append({"path": relative, "sha256": sha256_bytes(value), "bytes": len(value)})
     return tuple(rows)
 
@@ -340,13 +346,21 @@ def build_release(
         repo_root = repo_root.resolve(strict=True)
         bundle = load_compiler_bundle(compiler_output)
         source_before = validate_exact_source(repo_root, bundle)
-        content = load_content_bundle(repo_root / "master-reference" / "content")
+        content = load_content_bundle(
+            repo_root / "master-reference" / "content",
+            source_reader=lambda name: read_bound_source_blob(
+                repo_root,
+                bundle,
+                f"master-reference/content/{name}",
+            ),
+        )
         validate_release_object(repo_root, "output-contract", content.output_contract)
-        dependency_receipts = _dependency_receipts(repo_root)
+        dependency_sources = _dependency_sources(repo_root, bundle)
+        dependency_receipts = _dependency_receipts(dependency_sources)
         architecture_bytes = _bound_architecture(repo_root, bundle)
         _bind_tracked_inputs(bundle, [*content.receipts, *dependency_receipts])
-        sbom = build_cyclonedx(repo_root, bundle.source_commit, bundle.source_tree_digest)
-        if _dependency_receipts(repo_root) != dependency_receipts:
+        sbom = build_cyclonedx(dependency_sources, bundle.source_commit, bundle.source_tree_digest)
+        if _dependency_receipts(_dependency_sources(repo_root, bundle)) != dependency_receipts:
             raise ReleaseInputError("dependency inputs changed during SBOM generation")
         if pdf_path is not None and generate_pdf:
             raise ReleaseInputError("choose either an external PDF or deterministic PDF generation, not both")
@@ -400,13 +414,10 @@ def build_release(
         # Validate a requested gap before any output is created.
         enhancement_value = enhancement_brief(content, enhancement_gap)
         compiler_preservation = _compiler_preservation_entries(bundle)
-        curated_preservation = {name: read_bytes(content.root, name) for name in CONTENT_FILES}
-        dependency_preservation: dict[str, bytes] = {}
-        for item in dependency_receipts:
-            value = read_bytes(repo_root, item["path"])
-            if sha256_bytes(value) != item["sha256"]:
-                raise ReleaseInputError(f"dependency input changed before preservation: {item['path']}")
-            dependency_preservation[item["path"]] = value
+        curated_preservation = dict(content.raw_files)
+        dependency_preservation = _dependency_sources(repo_root, bundle)
+        if _dependency_receipts(dependency_preservation) != dependency_receipts:
+            raise ReleaseInputError("dependency inputs changed before preservation")
         staged = prepare_output(output)
         target = staged.staging
 
@@ -563,6 +574,7 @@ def build_release(
                 "head_tree_oid": bundle.manifest["head_tree_oid"],
                 "index_digest": bundle.manifest["index_digest"],
                 "source_tree_digest": bundle.source_tree_digest,
+                "repository_input_basis": "raw_selected_commit_git_blobs",
                 "tracked_worktree_dirty": False,
                 "before_build": source_before.as_dict(),
                 "after_build": source_after_build.as_dict(),
