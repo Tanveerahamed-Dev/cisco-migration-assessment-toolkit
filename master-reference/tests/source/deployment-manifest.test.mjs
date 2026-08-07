@@ -186,3 +186,21 @@ test("outer deployment receipt refuses a dirty tracked Git tree", async () => {
     await rm(scratch, { recursive: true, force: true });
   }
 });
+
+test("outer deployment receipt refuses a stale reference on a clean newer commit", async () => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-deployment-stale-reference-"));
+  try {
+    const fixture = await initializeFixture(scratch);
+    const deployment = await writeDist(fixture.repo, "dist");
+    await writeFile(join(fixture.repo, "tracked.txt"), "new committed source\n");
+    await git(fixture.repo, "add", "tracked.txt");
+    await git(fixture.repo, "commit", "--quiet", "-m", "newer clean source");
+    await assert.rejects(
+      buildDeploymentManifest({ distDir: deployment.dist, repoRoot: fixture.repo }),
+      /reference projection commit does not equal clean build commit/,
+    );
+    await assert.rejects(readFile(join(deployment.dist, "deployment-manifest.json")), /ENOENT/);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});

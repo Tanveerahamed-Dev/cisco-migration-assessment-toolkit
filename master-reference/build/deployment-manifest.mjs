@@ -37,6 +37,12 @@ const HASH_RULE = Object.freeze({
   ordering: "ascending_utf16_code_unit_relative_posix_path",
   filesystem: "regular_files_only;symlinks_and_special_entries_forbidden",
 });
+const SOURCE_RULE = Object.freeze({
+  commitJoin: "source.commit_must_equal_referenceSource.commit",
+  gitTree: "source.treeOid_is_the_clean_HEAD_git_tree_object",
+  referenceTree:
+    "referenceSource.compilerTreeDigest_is_the_compiler_file_census_digest_not_a_git_tree_oid",
+});
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const compareText = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
@@ -214,12 +220,20 @@ async function readReferenceSource(distRoot) {
   }
   return {
     commit: projection.value.sourceCommit,
-    treeDigest: projection.value.sourceTreeDigest,
+    compilerTreeDigest: projection.value.sourceTreeDigest,
     projectionSchemaVersion: projection.value.schemaVersion,
     compressionSchemaVersion: compression.value.schemaVersion,
     projectionManifestSha256: sha256(projection.bytes),
     compressionManifestSha256: sha256(compression.bytes),
   };
+}
+
+function assertExactSourceJoin(source, referenceSource) {
+  if (source.commit !== referenceSource.commit) {
+    throw new Error(
+      `reference projection commit does not equal clean build commit: reference=${referenceSource.commit}; build=${source.commit}`,
+    );
+  }
 }
 
 async function censusMembers(distRoot) {
@@ -256,6 +270,7 @@ function createManifest({ source, referenceSource, members }) {
     ...payload,
     manifestRule: MANIFEST_RULE,
     hashRule: HASH_RULE,
+    sourceRule: SOURCE_RULE,
     membersDigest: sha256(canonicalBytes(members)),
     bundleDigest: sha256(canonicalBytes(payload)),
   };
@@ -309,6 +324,7 @@ export async function verifyDeploymentManifest({ distDir = "dist", repoRoot = ".
   });
   const source = await readCleanGitSource(repoRoot);
   const referenceSource = await readReferenceSource(distRoot);
+  assertExactSourceJoin(source, referenceSource);
   const expected = createManifest({ source, referenceSource, members: receipt.members });
   if (!canonicalBytes(receipt).equals(canonicalBytes(expected))) {
     throw new Error("deployment manifest does not match its recomputed source-bound receipt");
@@ -326,6 +342,7 @@ export async function buildDeploymentManifest({ distDir = "dist", repoRoot = "..
   }
   const source = await readCleanGitSource(repoRoot);
   const referenceSource = await readReferenceSource(distRoot);
+  assertExactSourceJoin(source, referenceSource);
   const members = await censusMembers(distRoot);
   const finalSource = await readCleanGitSource(repoRoot);
   if (stableJson(source) !== stableJson(finalSource)) {
