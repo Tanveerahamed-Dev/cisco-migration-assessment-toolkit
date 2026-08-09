@@ -99,12 +99,21 @@ async function compressedProjectionModule(
   }
   if (compressed.status === 404) return error(404, "Projection module not found");
   if (compressed.status !== 200) return error(502, "Projection asset lookup failed");
+  if (request.method === "GET" && compressed.body === null) {
+    return error(502, "Projection asset response was not an encoded module");
+  }
 
-  const upstreamEncoding = compressed.headers.get("content-encoding");
+  const upstreamEncoding = (
+    compressed.headers.get("content-encoding") ?? ""
+  ).trim().toLowerCase();
   const upstreamType = compressed.headers.get("content-type") ?? "";
+  const encodedAssetType =
+    /^application\/(?:gzip|x-gzip|octet-stream)(?:\s*;|$)/i.test(upstreamType);
+  const preencodedJavaScriptType =
+    /^(?:text|application)\/javascript(?:\s*;|$)/i.test(upstreamType);
   if (
-    upstreamEncoding ||
-    !/^application\/(?:gzip|x-gzip|octet-stream)(?:\s*;|$)/i.test(upstreamType)
+    !["", "gzip"].includes(upstreamEncoding) ||
+    (!encodedAssetType && !(upstreamEncoding === "gzip" && preencodedJavaScriptType))
   ) {
     return error(502, "Projection asset response was not an encoded module");
   }

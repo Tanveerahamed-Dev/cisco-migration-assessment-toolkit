@@ -108,6 +108,21 @@ test("fails closed for unavailable or invalid projection module assets", async (
       status: 502,
     },
     {
+      name: "bodyless 200",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: {
+        ASSETS: {
+          fetch: async () => new Response(null, {
+            headers: {
+              "content-encoding": "gzip",
+              "content-type": "text/javascript; charset=utf-8",
+            },
+          }),
+        },
+      },
+      status: 502,
+    },
+    {
       name: "lookup exception",
       request: new Request("http://localhost/atlas-projection/identity.mjs"),
       env: { ASSETS: { fetch: async () => { throw new Error("asset binding failed"); } } },
@@ -129,7 +144,10 @@ test("fails closed for unavailable or invalid projection module assets", async (
       env: {
         ASSETS: {
           fetch: async () => new Response("not gzip", {
-            headers: { "content-type": "application/gzip+json" },
+            headers: {
+              "content-encoding": "gzip",
+              "content-type": "application/gzip+json",
+            },
           }),
         },
       },
@@ -141,7 +159,46 @@ test("fails closed for unavailable or invalid projection module assets", async (
       env: {
         ASSETS: {
           fetch: async () => new Response("encoded", {
-            headers: { "content-encoding": "gzip", "content-type": "application/gzip" },
+            headers: { "content-encoding": "br", "content-type": "application/gzip" },
+          }),
+        },
+      },
+      status: 502,
+    },
+    {
+      name: "multiple upstream encodings",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: {
+        ASSETS: {
+          fetch: async () => new Response("encoded", {
+            headers: {
+              "content-encoding": "gzip, br",
+              "content-type": "application/gzip",
+            },
+          }),
+        },
+      },
+      status: 502,
+    },
+    {
+      name: "gzip-encoded HTML fallback",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: {
+        ASSETS: {
+          fetch: async () => new Response("encoded HTML", {
+            headers: { "content-encoding": "gzip", "content-type": "text/html" },
+          }),
+        },
+      },
+      status: 502,
+    },
+    {
+      name: "JavaScript MIME without gzip encoding",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: {
+        ASSETS: {
+          fetch: async () => new Response("not gzip", {
+            headers: { "content-type": "text/javascript" },
           }),
         },
       },
@@ -192,6 +249,41 @@ test("serves every virtual projection module from its exact gzip asset", async (
   assert.deepEqual(gunzipSync(Buffer.from(await response.arrayBuffer())), source);
 });
 
+test("accepts Sites metadata for already gzip-encoded projection assets", async () => {
+  const source = Buffer.from("export const exact = 'sites-source-bound';\n", "utf8");
+  const encoded = gzipSync(source, { level: 9 });
+  for (const contentType of [
+    "application/gzip",
+    "application/x-gzip",
+    "application/octet-stream",
+    "text/javascript; charset=utf-8",
+    "application/javascript",
+  ]) {
+    const response = await worker.fetch(
+      new Request("http://localhost/atlas-projection/identity.mjs"),
+      {
+        ASSETS: {
+          fetch: async () => new Response(encoded, {
+            headers: {
+              "content-encoding": "gzip",
+              "content-length": String(encoded.byteLength),
+              "content-type": contentType,
+            },
+          }),
+        },
+      },
+      { waitUntil() {}, passThroughOnException() {} },
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-encoding"), "gzip");
+    assert.match(response.headers.get("content-type") ?? "", /^text\/javascript\b/i);
+    assert.equal(response.headers.get("vary"), "Accept-Encoding");
+    assert.match(response.headers.get("cache-control") ?? "", /no-store/);
+    assert.deepEqual(gunzipSync(Buffer.from(await response.arrayBuffer())), source);
+  }
+});
+
 test("preserves fail-closed HEAD semantics for projection modules", async () => {
   let upstreamMethod = "";
   const success = await worker.fetch(
@@ -201,7 +293,11 @@ test("preserves fail-closed HEAD semantics for projection modules", async () => 
         fetch: async (request) => {
           upstreamMethod = request.method;
           return new Response(null, {
-            headers: { "content-length": "47", "content-type": "application/gzip" },
+            headers: {
+              "content-encoding": "gzip",
+              "content-length": "47",
+              "content-type": "text/javascript; charset=utf-8",
+            },
           });
         },
       },
@@ -235,6 +331,10 @@ test("serves projection gzip as browser-decodable JavaScript through Workerd", a
     await mkdir(projection, { recursive: true });
     const source = await readFile(new URL("../public/atlas-projection/identity.mjs", import.meta.url));
     await writeFile(join(projection, "identity.mjs.gz"), gzipSync(source, { level: 9 }));
+    await writeFile(
+      join(scratch, "_headers"),
+      "/atlas-projection/*.mjs.gz\n  Content-Encoding: gzip\n  Content-Type: text/javascript; charset=utf-8\n",
+    );
 
     const serverRoot = fileURLToPath(new URL("../dist/server/", import.meta.url));
     const entry = join(serverRoot, "index.js");
