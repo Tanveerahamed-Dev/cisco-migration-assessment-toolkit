@@ -1250,6 +1250,12 @@ def _horizon(content: ContentBundle, styles: dict[str, ParagraphStyle]) -> list[
     horizon = content.horizon
     signals = _items(horizon.get("signals"))
     watches = _items(horizon.get("watch_families"))
+    support_claim = _plain(horizon.get("support_claim")) or "not declared"
+    support_meaning = (
+        "no current product support is claimed by this advisory register."
+        if support_claim == "none"
+        else "this advisory register cannot establish current product support."
+    )
     story: list[Flowable] = [
         PageBreak(),
         _heading("9. Open-world Horizon Register", styles["h1"]),
@@ -1260,7 +1266,10 @@ def _horizon(content: ContentBundle, styles: dict[str, ParagraphStyle]) -> list[
             color=_AMBER,
         ),
         Spacer(1, 3 * mm),
-        _paragraph(horizon.get("support_claim", "No support claim."), styles["small"]),
+        _paragraph(
+            f"Support claim state: {support_claim} - {support_meaning}",
+            styles["small"],
+        ),
         _heading("Watch families", styles["h2"]),
     ]
     for watch in watches:

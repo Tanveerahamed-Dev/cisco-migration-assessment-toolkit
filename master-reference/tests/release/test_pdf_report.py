@@ -396,7 +396,8 @@ def test_curated_pdf_keeps_complete_records_together_and_extracts_clean_ascii(tm
         architecture_path=MASTER_REFERENCE / "governance" / "architecture.json",
     )
 
-    pages = [" ".join((page.extract_text() or "").split()) for page in PdfReader(str(pdf)).pages]
+    raw_pages = [page.extract_text() or "" for page in PdfReader(str(pdf)).pages]
+    pages = [" ".join(page.split()) for page in raw_pages]
     anchors = (
         (
             "Non-goals",
@@ -409,6 +410,16 @@ def test_curated_pdf_keeps_complete_records_together_and_extracts_clean_ascii(tm
     )
     for start, end in anchors:
         assert any(start in page and end in page for page in pages), f"record split across pages: {start}"
+    horizon_index = next(
+        index
+        for index, page in enumerate(pages)
+        if "Open-world Horizon Register" in page and "Advisory only" in page
+    )
+    assert (
+        "Support claim state: none - no current product support is claimed by this advisory register."
+        in pages[horizon_index]
+    )
+    assert "none" not in {line.strip() for line in raw_pages[horizon_index].splitlines()}
     assert all("\x7f" not in page and "\ufffd" not in page for page in pages)
 
 

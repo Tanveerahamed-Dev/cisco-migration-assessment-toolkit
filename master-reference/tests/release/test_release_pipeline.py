@@ -16,9 +16,10 @@ if str(MASTER_REFERENCE) not in sys.path:
     sys.path.insert(0, str(MASTER_REFERENCE))
 
 from release.compiler_bundle import REQUIRED_ACCEPTANCE_GATES, REQUIRED_GROUPS  # noqa: E402
-from release.model import canonical_json, digest_object, sha256_bytes  # noqa: E402
+from release.model import ReleaseInputError, canonical_json, digest_object, sha256_bytes  # noqa: E402
 import release.pipeline as release_pipeline  # noqa: E402
 from release.pipeline import ReleaseError, build_release  # noqa: E402
+from release.sbom import NPM_LOCKFILES, PYTHON_DECLARATIONS, build_cyclonedx  # noqa: E402
 from release.signing import sign_manifest, verify_artifact_family, verify_manifest  # noqa: E402
 from release.schema_validation import validate_release_object  # noqa: E402
 
@@ -148,10 +149,19 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
                 "name": "fixture",
                 "version": "1.0.0",
                 "dependencies": {"alpha": "1.0.0", "@scope/gamma": "3.0.0"},
+                "devDependencies": {"devtool": "4.0.0"},
             },
             "node_modules/alpha": {"version": "1.0.0", "license": "MIT", "dependencies": {"beta": "2.0.0"}},
             "node_modules/beta": {"version": "2.0.0", "license": "Apache-2.0"},
             "node_modules/@scope/gamma": {"version": "3.0.0", "license": "MIT"},
+            "node_modules/devtool": {
+                "version": "4.0.0",
+                "dev": True,
+                "dependencies": {"dev-leaf": "5.0.0"},
+                "peerDependencies": {"optional-peer": "^6.0.0"},
+                "peerDependenciesMeta": {"optional-peer": {"optional": True}},
+            },
+            "node_modules/dev-leaf": {"version": "5.0.0", "dev": True},
         },
     }
     _json(repo / "master-reference" / "package-lock.json", npm_lock)
@@ -636,6 +646,8 @@ def test_sbom_has_locked_npm_transitives_and_honest_python_declarations(tmp_path
     assert any(component.get("purl") == "pkg:npm/alpha@1.0.0" for component in sbom["components"])
     assert any(component.get("purl") == "pkg:npm/beta@2.0.0" for component in sbom["components"])
     assert any(component.get("purl") == "pkg:npm/%40scope/gamma@3.0.0" for component in sbom["components"])
+    assert any(component.get("purl") == "pkg:npm/devtool@4.0.0" for component in sbom["components"])
+    assert any(component.get("purl") == "pkg:npm/dev-leaf@5.0.0" for component in sbom["components"])
     python = [component for component in sbom["components"] if component.get("purl") == "pkg:pypi/alpha-py"]
     assert python
     assert all(
@@ -646,12 +658,99 @@ def test_sbom_has_locked_npm_transitives_and_honest_python_declarations(tmp_path
     dependency_map = {item["ref"]: set(item["dependsOn"]) for item in sbom["dependencies"]}
     atlas_ref = sbom["metadata"]["component"]["bom-ref"]
     assert dependency_map[atlas_ref]
+    component_refs = {component["bom-ref"] for component in sbom["components"]}
+    assert len(component_refs) == len(sbom["components"])
+    assert len(dependency_map) == len(sbom["dependencies"])
+    assert set(dependency_map) == component_refs | {atlas_ref}
+    assert {target for targets in dependency_map.values() for target in targets} <= component_refs
+
+    npm_refs = {}
+    for component in sbom["components"]:
+        properties = {item["name"]: item["value"] for item in component.get("properties", [])}
+        lockfile = properties.get("atlas:lockfile")
+        lockfile_path = properties.get("atlas:lockfilePath")
+        if lockfile and lockfile_path:
+            npm_refs[(lockfile, lockfile_path)] = component["bom-ref"]
+    for lockfile in ("master-reference/package-lock.json", "webapp/frontend/package-lock.json"):
+        root_ref = npm_refs[(lockfile, "<root>")]
+        alpha_ref = npm_refs[(lockfile, "node_modules/alpha")]
+        gamma_ref = npm_refs[(lockfile, "node_modules/@scope/gamma")]
+        devtool_ref = npm_refs[(lockfile, "node_modules/devtool")]
+        dev_leaf_ref = npm_refs[(lockfile, "node_modules/dev-leaf")]
+        assert {alpha_ref, gamma_ref, devtool_ref} <= dependency_map[root_ref]
+        assert dev_leaf_ref in dependency_map[devtool_ref]
+        assert root_ref not in dependency_map[devtool_ref]
+        devtool = next(component for component in sbom["components"] if component["bom-ref"] == devtool_ref)
+        assert {
+            item["value"]
+            for item in devtool["properties"]
+            if item["name"] == "atlas:unresolvedOptionalNpmDeclaration"
+        } == {"peerDependencies:optional-peer@^6.0.0"}
+    assert npm_refs[("master-reference/package-lock.json", "<root>")] != npm_refs[("webapp/frontend/package-lock.json", "<root>")]
+    assert npm_refs[("master-reference/package-lock.json", "node_modules/alpha")] != npm_refs[("webapp/frontend/package-lock.json", "node_modules/alpha")]
+
+    reachable = {atlas_ref}
+    pending = [atlas_ref]
+    while pending:
+        source_ref = pending.pop()
+        for target_ref in dependency_map[source_ref]:
+            if target_ref not in reachable:
+                reachable.add(target_ref)
+                pending.append(target_ref)
+    assert reachable == component_refs | {atlas_ref}
+    denominators = {item["name"]: item["value"] for item in sbom["properties"]}
+    assert int(denominators["atlas:componentGraphReachable"]) == len(component_refs)
+    assert denominators["atlas:componentGraphDisconnected"] == "0"
+    assert denominators["atlas:unresolvedOptionalNpmDeclarations"] == "2"
+    assert int(denominators["atlas:dependencyEdges"]) == sum(
+        len(targets) for targets in dependency_map.values()
+    )
     python_root = next(
         component["bom-ref"]
         for component in sbom["components"]
         if component.get("name") == "fixture-python"
     )
     assert any(ref in dependency_map[python_root] for ref in (component["bom-ref"] for component in python))
+
+
+def _sbom_source_bytes(repo: Path) -> dict[str, bytes]:
+    return {
+        relative: (repo / relative).read_bytes()
+        for relative in (*NPM_LOCKFILES, *PYTHON_DECLARATIONS)
+    }
+
+
+def test_sbom_rejects_duplicate_component_refs(tmp_path: Path) -> None:
+    repo, _ = _fixture_repo(tmp_path)
+    sources = _sbom_source_bytes(repo)
+    sources["requirements.txt"] += b"alpha-py>=1,<2\n"
+
+    with pytest.raises(ReleaseInputError, match="duplicate component refs"):
+        build_cyclonedx(sources, "a" * 40, "b" * 64)
+
+
+def test_sbom_rejects_disconnected_locked_components(tmp_path: Path) -> None:
+    repo, _ = _fixture_repo(tmp_path)
+    sources = _sbom_source_bytes(repo)
+    lockfile = NPM_LOCKFILES[0]
+    lock = json.loads(sources[lockfile].decode("utf-8"))
+    lock["packages"]["node_modules/orphan"] = {"version": "9.0.0", "dev": True}
+    sources[lockfile] = canonical_json(lock)
+
+    with pytest.raises(ReleaseInputError, match="1 disconnected components"):
+        build_cyclonedx(sources, "a" * 40, "b" * 64)
+
+
+def test_sbom_rejects_unresolved_required_npm_dependencies(tmp_path: Path) -> None:
+    repo, _ = _fixture_repo(tmp_path)
+    sources = _sbom_source_bytes(repo)
+    lockfile = NPM_LOCKFILES[0]
+    lock = json.loads(sources[lockfile].decode("utf-8"))
+    lock["packages"][""]["dependencies"]["missing-required"] = "1.0.0"
+    sources[lockfile] = canonical_json(lock)
+
+    with pytest.raises(ReleaseInputError, match="unresolved npm dependency"):
+        build_cyclonedx(sources, "a" * 40, "b" * 64)
 
 
 def test_html_is_self_contained_and_csp_blocks_connections(tmp_path: Path) -> None:

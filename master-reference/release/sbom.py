@@ -71,10 +71,12 @@ def _purl_npm(name: str, version: str) -> str:
 
 def _npm_components(
     source_files: Mapping[str, bytes],
-) -> tuple[list[dict[str, Any]], dict[str, set[str]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], dict[str, set[str]], list[dict[str, Any]], int]:
     components: list[dict[str, Any]] = []
+    components_by_ref: dict[str, dict[str, Any]] = {}
     dependency_map: dict[str, set[str]] = {}
     roots: list[dict[str, Any]] = []
+    unresolved_optional_declarations = 0
     for relative in NPM_LOCKFILES:
         try:
             lock = json.loads(source_files[relative].decode("utf-8", errors="strict"))
@@ -124,6 +126,7 @@ def _npm_components(
                 ]
                 component["properties"].append({"name": "atlas:npmIntegrity", "value": item["integrity"]})
             components.append(component)
+            components_by_ref[bom_ref] = component
             dependency_map.setdefault(bom_ref, set())
             if node_path == "":
                 roots.append({"lockfile": relative, "bom-ref": bom_ref})
@@ -132,17 +135,45 @@ def _npm_components(
             source_ref = refs.get(node_path)
             if not source_ref or not isinstance(item, dict):
                 continue
-            names: set[str] = set()
-            for field in ("dependencies", "optionalDependencies", "peerDependencies"):
+            for field in (
+                "dependencies",
+                "devDependencies",
+                "optionalDependencies",
+                "peerDependencies",
+            ):
                 value = item.get(field)
-                if isinstance(value, dict):
-                    names.update(str(name) for name in value)
-            for name in sorted(names):
-                resolved_path = _resolve_npm(packages, node_path, name)
-                target_ref = refs.get(resolved_path or "")
-                if target_ref:
-                    dependency_map[source_ref].add(target_ref)
-    return components, dependency_map, roots
+                if not isinstance(value, dict):
+                    continue
+                for name, constraint in sorted(value.items()):
+                    if not isinstance(name, str) or not isinstance(constraint, str):
+                        raise ReleaseInputError(
+                            f"malformed {field} declaration in {relative}: {node_path}"
+                        )
+                    resolved_path = _resolve_npm(packages, node_path, name)
+                    target_ref = refs.get(resolved_path) if resolved_path is not None else None
+                    if target_ref:
+                        dependency_map[source_ref].add(target_ref)
+                        continue
+                    peer_meta = item.get("peerDependenciesMeta")
+                    peer_declaration = peer_meta.get(name) if isinstance(peer_meta, dict) else None
+                    optional = field == "optionalDependencies" or (
+                        field == "peerDependencies"
+                        and isinstance(peer_declaration, dict)
+                        and peer_declaration.get("optional") is True
+                    )
+                    if not optional:
+                        raise ReleaseInputError(
+                            f"unresolved npm dependency in {relative}: "
+                            f"{node_path or '<root>'} {field} {name}@{constraint}"
+                        )
+                    components_by_ref[source_ref]["properties"].append(
+                        {
+                            "name": "atlas:unresolvedOptionalNpmDeclaration",
+                            "value": f"{field}:{name}@{constraint}",
+                        }
+                    )
+                    unresolved_optional_declarations += 1
+    return components, dependency_map, roots, unresolved_optional_declarations
 
 
 _REQUIREMENT = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[([^\]]+)\])?\s*(.*)$")
@@ -234,9 +265,22 @@ def build_cyclonedx(
     source_commit: str,
     source_tree_digest: str,
 ) -> dict[str, Any]:
-    npm_components, npm_edges, npm_roots = _npm_components(source_files)
+    npm_components, npm_edges, npm_roots, npm_unresolved_optional = _npm_components(source_files)
     python_components, python_roots = _python_components(source_files)
     components = sorted(npm_components + python_components, key=lambda item: item["bom-ref"])
+    component_ref_list = [str(component["bom-ref"]) for component in components]
+    seen_refs: set[str] = set()
+    duplicate_refs: set[str] = set()
+    for component_ref in component_ref_list:
+        if component_ref in seen_refs:
+            duplicate_refs.add(component_ref)
+        seen_refs.add(component_ref)
+    if duplicate_refs:
+        raise ReleaseInputError(
+            f"SBOM contains {len(duplicate_refs)} duplicate component refs: "
+            + ", ".join(sorted(duplicate_refs)[:5])
+        )
+    component_refs = set(component_ref_list)
     for component in components:
         properties = component.setdefault("properties", [])
         license_status = "declared" if component.get("licenses") else "unknown"
@@ -263,6 +307,30 @@ def build_cyclonedx(
         *(str(item["bom-ref"]) for item in npm_roots),
         *python_root_refs,
     }
+
+    unknown_targets = sorted(
+        {target for targets in dependency_map.values() for target in targets} - component_refs
+    )
+    if unknown_targets:
+        raise ReleaseInputError(
+            f"SBOM dependency graph contains {len(unknown_targets)} unknown component refs: "
+            + ", ".join(unknown_targets[:5])
+        )
+    reachable = {atlas_ref}
+    pending = [atlas_ref]
+    while pending:
+        source_ref = pending.pop()
+        for target_ref in sorted(dependency_map.get(source_ref, set())):
+            if target_ref not in reachable:
+                reachable.add(target_ref)
+                pending.append(target_ref)
+    disconnected = sorted(component_refs - reachable)
+    if disconnected:
+        raise ReleaseInputError(
+            f"SBOM dependency graph contains {len(disconnected)} disconnected components: "
+            + ", ".join(disconnected[:5])
+        )
+    dependency_edges = sum(len(targets) for targets in dependency_map.values())
 
     serial_seed = hashlib.sha256(f"{source_commit}\x1f{source_tree_digest}".encode()).hexdigest()
     license_declared = sum(1 for component in components if component.get("licenses"))
@@ -307,6 +375,13 @@ def build_cyclonedx(
             {"name": "atlas:npmRoots", "value": str(len(npm_roots))},
             {"name": "atlas:pythonManifestRoots", "value": str(len(python_roots))},
             {"name": "atlas:componentDenominator", "value": str(len(components))},
+            {"name": "atlas:componentGraphReachable", "value": str(len(component_refs))},
+            {"name": "atlas:componentGraphDisconnected", "value": "0"},
+            {"name": "atlas:dependencyEdges", "value": str(dependency_edges)},
+            {
+                "name": "atlas:unresolvedOptionalNpmDeclarations",
+                "value": str(npm_unresolved_optional),
+            },
             {"name": "atlas:licenseDeclared", "value": str(license_declared)},
             {"name": "atlas:licenseUnknown", "value": str(license_unknown)},
             {"name": "atlas:vulnerabilityAssessed", "value": "0"},
@@ -319,6 +394,12 @@ def build_cyclonedx(
                     f"components with unknown license={license_unknown}"
                 ),
             },
-            {"name": "atlas:coverageHonesty", "value": "npm direct/transitive locked; Python direct declarations only"},
+            {
+                "name": "atlas:coverageHonesty",
+                "value": (
+                    "npm runtime/development direct/transitive locked; unresolved optional npm "
+                    "declarations retained on their source components; Python direct declarations only"
+                ),
+            },
         ],
     }
