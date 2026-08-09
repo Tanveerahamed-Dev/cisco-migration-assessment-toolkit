@@ -35,6 +35,7 @@ from reportlab.platypus import (
     CondPageBreak,
     Flowable,
     Frame,
+    KeepTogether,
     LongTable,
     PageBreak,
     PageTemplate,
@@ -183,6 +184,13 @@ def _styles() -> dict[str, ParagraphStyle]:
             fontSize=7.3,
             leading=9.4,
             textColor=_MUTED,
+            spaceAfter=3,
+        ),
+        "bullet": ParagraphStyle(
+            "AtlasBullet",
+            parent=body,
+            leftIndent=11,
+            firstLineIndent=-7,
             spaceAfter=3,
         ),
         "micro": ParagraphStyle(
@@ -519,7 +527,7 @@ def _bullet_lines(values: Iterable[object], styles: dict[str, ParagraphStyle]) -
     for value in values:
         clean = _plain(value)
         if clean:
-            rows.append(_rich(f"<bullet>&bull;</bullet>{_markup(clean)}", styles["body"]))
+            rows.append(_paragraph(f"- {clean}", styles["bullet"]))
     if not rows:
         rows.append(_paragraph("None declared.", styles["small"]))
     return rows
@@ -753,8 +761,14 @@ def _source_and_truth(
     )
     non_goals = _items(content.core.get("non_goals"))
     if non_goals:
-        story.append(_heading("Non-goals", styles["h2"]))
-        story.extend(_bullet_lines((item.get("statement", item.get("title", item.get("id"))) for item in non_goals), styles))
+        block: list[Flowable] = [_heading("Non-goals", styles["h2"])]
+        block.extend(
+            _bullet_lines(
+                (item.get("statement", item.get("title", item.get("id"))) for item in non_goals),
+                styles,
+            )
+        )
+        story.append(KeepTogether(block))
     return story
 
 
@@ -766,7 +780,6 @@ def _completeness(bundle: CompilerBundle, styles: dict[str, ParagraphStyle]) -> 
     graph = ledger.get("graphify", {}) if isinstance(ledger.get("graphify"), dict) else {}
     privacy = ledger.get("privacy", {}) if isinstance(ledger.get("privacy"), dict) else {}
     story: list[Flowable] = [
-        PageBreak(),
         _heading("2. Whole-repository completeness ledger", styles["h1"]),
         _callout(
             "Honest verdict",
@@ -990,30 +1003,43 @@ def _governance(content: ContentBundle, styles: dict[str, ParagraphStyle]) -> li
         _heading("Complete gap register", styles["h2"]),
     ]
     for gap in gaps:
-        story.append(CondPageBreak(52 * mm))
-        story.append(_heading(f"{gap.get('id', 'gap.unknown')} - {gap.get('title', 'Untitled gap')}", styles["h3"]))
-        story.append(_rich(
-            f"<b>Priority:</b> {_markup(gap.get('priority', 'unprioritized'))} &nbsp; "
-            f"<b>Disposition:</b> {_markup(gap.get('disposition', 'unknown'))} &nbsp; "
-            f"<b>Owner:</b> {_markup(gap.get('owner_role', 'unassigned'))}",
-            styles["small"],
-        ))
-        story.append(_paragraph(gap.get("problem", "No problem statement."), styles["body"]))
-        story.append(_rich("<b>Smallest next actions</b>", styles["body"]))
-        story.extend(_bullet_lines(_strings(gap.get("next_actions")), styles))
-        story.append(_rich("<b>Acceptance evidence</b>", styles["body"]))
-        story.extend(_bullet_lines(_strings(gap.get("acceptance_evidence")), styles))
-    story.extend([PageBreak(), _heading("Human decision queue", styles["h2"])])
+        block = [
+            _heading(f"{gap.get('id', 'gap.unknown')} - {gap.get('title', 'Untitled gap')}", styles["h3"]),
+            _rich(
+                f"<b>Priority:</b> {_markup(gap.get('priority', 'unprioritized'))} &nbsp; "
+                f"<b>Disposition:</b> {_markup(gap.get('disposition', 'unknown'))} &nbsp; "
+                f"<b>Owner:</b> {_markup(gap.get('owner_role', 'unassigned'))}",
+                styles["small"],
+            ),
+            _paragraph(gap.get("problem", "No problem statement."), styles["body"]),
+            _rich("<b>Smallest next actions</b>", styles["body"]),
+        ]
+        block.extend(_bullet_lines(_strings(gap.get("next_actions")), styles))
+        block.append(_rich("<b>Acceptance evidence</b>", styles["body"]))
+        block.extend(_bullet_lines(_strings(gap.get("acceptance_evidence")), styles))
+        story.append(KeepTogether(block))
+    story.append(_heading("Human decision queue", styles["h2"]))
     for decision in decisions:
-        story.append(CondPageBreak(44 * mm))
-        story.append(_heading(f"{decision.get('id', 'decision.unknown')} - {decision.get('title', 'Untitled decision')}", styles["h3"]))
+        block = [
+            _heading(
+                f"{decision.get('id', 'decision.unknown')} - {decision.get('title', 'Untitled decision')}",
+                styles["h3"],
+            )
+        ]
         for key in ("status", "authority", "current_recommendation"):
-            story.append(_rich(f"<b>{_markup(key.replace('_', ' ').title())}:</b> {_markup(decision.get(key, 'unknown'))}", styles["body"]))
-        story.append(_rich("<b>Options</b>", styles["body"]))
-        story.extend(_bullet_lines(_strings(decision.get("options")), styles))
-        story.append(_rich("<b>Evidence needed</b>", styles["body"]))
-        story.extend(_bullet_lines(_strings(decision.get("evidence_needed")), styles))
-    story.extend([PageBreak(), _heading("Opportunity portfolio", styles["h2"])])
+            block.append(
+                _rich(
+                    f"<b>{_markup(key.replace('_', ' ').title())}:</b> "
+                    f"{_markup(decision.get(key, 'unknown'))}",
+                    styles["body"],
+                )
+            )
+        block.append(_rich("<b>Options</b>", styles["body"]))
+        block.extend(_bullet_lines(_strings(decision.get("options")), styles))
+        block.append(_rich("<b>Evidence needed</b>", styles["body"]))
+        block.extend(_bullet_lines(_strings(decision.get("evidence_needed")), styles))
+        story.append(KeepTogether(block))
+    story.append(_heading("Opportunity portfolio", styles["h2"]))
     if isinstance(portfolio, dict) and portfolio.get("ranking_rule"):
         story.append(_callout("Ranking rule", _plain(portfolio["ranking_rule"]), styles))
     for opportunity in opportunities:
@@ -1092,14 +1118,19 @@ def _architecture_and_invariants(
     story.append(_heading("Invariant catalog", styles["h2"]))
     if invariants:
         for invariant in invariants:
-            story.append(CondPageBreak(25 * mm))
-            story.append(_heading(f"{invariant.get('id', 'invariant.unknown')}", styles["h3"]))
+            block = [_heading(f"{invariant.get('id', 'invariant.unknown')}", styles["h3"])]
             for key in ("statement", "intent", "scope", "formal_rule", "residual_risk"):
                 if invariant.get(key) is not None:
-                    story.append(_rich(f"<b>{_markup(key.replace('_', ' ').title())}:</b> {_markup(invariant[key])}", styles["body"]))
+                    block.append(
+                        _rich(
+                            f"<b>{_markup(key.replace('_', ' ').title())}:</b> {_markup(invariant[key])}",
+                            styles["body"],
+                        )
+                    )
             owners = _strings(invariant.get("owner_refs"))
             if owners:
-                story.append(_paragraph(f"Owners: {', '.join(owners)}", styles["small"]))
+                block.append(_paragraph(f"Owners: {', '.join(owners)}", styles["small"]))
+            story.append(KeepTogether(block))
     else:
         story.append(_paragraph("No curated invariants were emitted.", styles["body"]))
     return story
@@ -1116,7 +1147,6 @@ def _source_explorer(bundle: CompilerBundle, styles: dict[str, ParagraphStyle]) 
         ("/workflow/[id]", "Trigger, permissions, steps, artifacts, secrets boundary, and failure effects"),
     ]
     return [
-        PageBreak(),
         _heading("7. Whole-repository Source Explorer", styles["h1"]),
         _callout(
             "Why source text is not printed here",

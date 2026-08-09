@@ -14,7 +14,7 @@ if str(MASTER_REFERENCE) not in sys.path:
     sys.path.insert(0, str(MASTER_REFERENCE))
 
 from release.compiler_bundle import CompilerBundle  # noqa: E402
-from release.content_bundle import ContentBundle  # noqa: E402
+from release.content_bundle import ContentBundle, load_content_bundle  # noqa: E402
 from release.pdf_report import (  # noqa: E402
     _load_architecture,
     build_master_reference_pdf,
@@ -373,12 +373,41 @@ def test_pdf_is_deterministic_source_bound_polished_and_never_embeds_source(tmp_
     assert "/source/[path]" in extracted
     assert "CLIENT-DATA INGESTION PROHIBITED" in extracted
     assert "NO CLIENT DATA" not in extracted
+    assert "\x7f" not in extracted
+    assert "\ufffd" not in extracted
     assert RAW_SOURCE_SENTINEL not in extracted
 
     inspected = inspect_pdf_report(first, expected_commit=COMMIT, expected_tree_digest=TREE)
     assert inspected.page_count == result_a.page_count
     assert inspected.source_commit_present is True
     assert inspected.source_tree_digest_present is True
+
+
+def test_curated_pdf_keeps_complete_records_together_and_extracts_clean_ascii(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    content = load_content_bundle(MASTER_REFERENCE / "content")
+    pdf = tmp_path / "atlas-curated.pdf"
+
+    build_master_reference_pdf(
+        bundle,
+        content,
+        pdf,
+        architecture_path=MASTER_REFERENCE / "governance" / "architecture.json",
+    )
+
+    pages = [" ".join((page.extract_text() or "").split()) for page in PdfReader(str(pdf)).pages]
+    anchors = (
+        (
+            "Non-goals",
+            "A lab, protocol primer, vendor page, or external link never establishes current product support",
+        ),
+        ("gap.white-label", "Contrast and localization checks"),
+        ("decision.outcome-measurement", "uncertainty reporting"),
+        ("invariant.horizon-separate", "A manual summary can overstate a watched technology"),
+    )
+    for start, end in anchors:
+        assert any(start in page and end in page for page in pages), f"record split across pages: {start}"
+    assert all("\x7f" not in page and "\ufffd" not in page for page in pages)
 
 
 def test_pdf_refuses_overwrite_and_rejects_nonclean_or_unbound_compiler(tmp_path: Path) -> None:
