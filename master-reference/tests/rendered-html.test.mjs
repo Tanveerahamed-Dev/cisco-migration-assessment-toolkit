@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { gunzipSync, gzipSync } from "node:zlib";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { Miniflare } from "miniflare";
 
 const root = new URL("../", import.meta.url);
 const workerUrl = new URL("../dist/server/index.js", import.meta.url);
@@ -56,6 +58,8 @@ test("hardens every HTML response at the Worker boundary", async () => {
     { ASSETS: { fetch: async () => new Response("missing", { status: 404 }) } },
     { waitUntil() {}, passThroughOnException() {} },
   );
+  assert.equal(projectionResponse.status, 404);
+  assert.match(projectionResponse.headers.get("content-type") ?? "", /^text\/plain\b/i);
   assert.match(projectionResponse.headers.get("cache-control") ?? "", /no-store/);
 });
 
@@ -68,6 +72,93 @@ test("renders normal routes when the local production adapter omits Worker bindi
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
   assert.match(await response.text(), /Master Reference/);
+});
+
+test("fails closed for unavailable or invalid projection module assets", async (context) => {
+  const workerContext = { waitUntil() {}, passThroughOnException() {} };
+  const cases = [
+    {
+      name: "missing binding",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: undefined,
+      status: 503,
+    },
+    {
+      name: "unsupported method",
+      request: new Request("http://localhost/atlas-projection/identity.mjs", { method: "POST" }),
+      env: { ASSETS: { fetch: async () => new Response(null, { status: 204 }) } },
+      status: 405,
+    },
+    {
+      name: "missing member",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: { ASSETS: { fetch: async () => new Response("missing", { status: 404 }) } },
+      status: 404,
+    },
+    {
+      name: "upstream failure",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: { ASSETS: { fetch: async () => new Response("failed", { status: 500 }) } },
+      status: 502,
+    },
+    {
+      name: "empty success",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: { ASSETS: { fetch: async () => new Response(null, { status: 204 }) } },
+      status: 502,
+    },
+    {
+      name: "lookup exception",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: { ASSETS: { fetch: async () => { throw new Error("asset binding failed"); } } },
+      status: 502,
+    },
+    {
+      name: "upstream HTML fallback",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: {
+        ASSETS: {
+          fetch: async () => new Response("<html></html>", { headers: { "content-type": "text/html" } }),
+        },
+      },
+      status: 502,
+    },
+    {
+      name: "misleading gzip MIME suffix",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: {
+        ASSETS: {
+          fetch: async () => new Response("not gzip", {
+            headers: { "content-type": "application/gzip+json" },
+          }),
+        },
+      },
+      status: 502,
+    },
+    {
+      name: "unexpected upstream encoding",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: {
+        ASSETS: {
+          fetch: async () => new Response("encoded", {
+            headers: { "content-encoding": "gzip", "content-type": "application/gzip" },
+          }),
+        },
+      },
+      status: 502,
+    },
+  ];
+
+  for (const fixture of cases) {
+    await context.test(fixture.name, async () => {
+      const response = await worker.fetch(fixture.request, fixture.env, workerContext);
+      assert.equal(response.status, fixture.status);
+      assert.match(response.headers.get("content-type") ?? "", /^text\/plain\b/i);
+      assert.match(response.headers.get("cache-control") ?? "", /no-store/);
+      assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+      if (fixture.status === 405) assert.equal(response.headers.get("allow"), "GET, HEAD");
+    });
+  }
 });
 
 test("serves every virtual projection module from its exact gzip asset", async () => {
@@ -96,8 +187,100 @@ test("serves every virtual projection module from its exact gzip asset", async (
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("content-encoding"), "gzip");
   assert.match(response.headers.get("content-type") ?? "", /^text\/javascript\b/i);
+  assert.equal(response.headers.get("vary"), "Accept-Encoding");
   assert.match(response.headers.get("cache-control") ?? "", /no-store/);
   assert.deepEqual(gunzipSync(Buffer.from(await response.arrayBuffer())), source);
+});
+
+test("preserves fail-closed HEAD semantics for projection modules", async () => {
+  let upstreamMethod = "";
+  const success = await worker.fetch(
+    new Request("http://localhost/atlas-projection/identity.mjs", { method: "HEAD" }),
+    {
+      ASSETS: {
+        fetch: async (request) => {
+          upstreamMethod = request.method;
+          return new Response(null, {
+            headers: { "content-length": "47", "content-type": "application/gzip" },
+          });
+        },
+      },
+    },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+  assert.equal(upstreamMethod, "HEAD");
+  assert.equal(success.status, 200);
+  assert.equal(success.headers.get("content-encoding"), "gzip");
+  assert.match(success.headers.get("content-type") ?? "", /^text\/javascript\b/i);
+  assert.equal(success.headers.get("vary"), "Accept-Encoding");
+  assert.match(success.headers.get("cache-control") ?? "", /no-store/);
+  assert.equal(success.headers.get("x-content-type-options"), "nosniff");
+  assert.equal((await success.arrayBuffer()).byteLength, 0);
+
+  const unavailable = await worker.fetch(
+    new Request("http://localhost/atlas-projection/identity.mjs", { method: "HEAD" }),
+    undefined,
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+  assert.equal(unavailable.status, 503);
+  assert.equal((await unavailable.arrayBuffer()).byteLength, 0);
+  assert.match(unavailable.headers.get("cache-control") ?? "", /no-store/);
+});
+
+test("serves projection gzip as browser-decodable JavaScript through Workerd", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "atlas-worker-compression-"));
+  let miniflare;
+  try {
+    const projection = join(scratch, "atlas-projection");
+    await mkdir(projection, { recursive: true });
+    const source = await readFile(new URL("../public/atlas-projection/identity.mjs", import.meta.url));
+    await writeFile(join(projection, "identity.mjs.gz"), gzipSync(source, { level: 9 }));
+
+    const serverRoot = fileURLToPath(new URL("../dist/server/", import.meta.url));
+    const entry = join(serverRoot, "index.js");
+    const serverModules = (await sourceFiles(serverRoot))
+      .filter((path) => path.endsWith(".js"))
+      .sort();
+    miniflare = new Miniflare({
+      modulesRoot: serverRoot,
+      modules: [entry, ...serverModules.filter((path) => path !== entry)].map((path) => ({
+        type: "ESModule",
+        path,
+      })),
+      unsafeDevRegistry: false,
+      compatibilityDate: "2026-08-01",
+      compatibilityFlags: ["nodejs_compat"],
+      assets: {
+        directory: scratch,
+        binding: "ASSETS",
+        routerConfig: {
+          invoke_user_worker_ahead_of_assets: true,
+          has_user_worker: true,
+        },
+      },
+    });
+
+    const response = await miniflare.dispatchFetch(
+      "http://localhost/atlas-projection/identity.mjs",
+      { headers: { "Accept-Encoding": "gzip" } },
+    );
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type") ?? "", /^text\/javascript\b/i);
+    assert.equal(
+      response.headers.get("content-encoding") ?? response.headers.get("mf-content-encoding"),
+      "gzip",
+    );
+    assert.equal(response.headers.get("vary"), "Accept-Encoding");
+    assert.match(response.headers.get("cache-control") ?? "", /no-store/);
+    const decoded = Buffer.from(await response.arrayBuffer());
+    assert.deepEqual(decoded, source);
+    const loaded = await import(`data:text/javascript;base64,${decoded.toString("base64")}`);
+    assert.equal(loaded.identity.status, "complete");
+    assert.equal(loaded.identity.releaseClass, "exact_commit");
+  } finally {
+    if (miniflare) await miniflare.dispose();
+    await rm(scratch, { recursive: true, force: true });
+  }
 });
 
 test("keeps the complete compressed projection inside the Sites expanded limit", async () => {

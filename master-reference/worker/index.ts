@@ -3,6 +3,13 @@ import handler from "vinext/server/app-router-entry";
 
 type WorkerEnv = NonNullable<Parameters<typeof handler.fetch>[1]>;
 type WorkerContext = NonNullable<Parameters<typeof handler.fetch>[2]>;
+type CloudflareResponseInit = ResponseInit & {
+  encodeBody?: "automatic" | "manual";
+};
+type ProjectionResponse = {
+  precompressed: boolean;
+  response: Response;
+};
 
 const SECURITY_HEADERS = {
   "Content-Security-Policy": [
@@ -28,8 +35,18 @@ const SECURITY_HEADERS = {
   "X-Frame-Options": "DENY",
 } as const;
 
-function harden(request: Request, response: Response): Response {
-  const hardened = new Response(response.body, response);
+function harden(
+  request: Request,
+  response: Response,
+  encodeBody: "automatic" | "manual" = "automatic",
+): Response {
+  const init: CloudflareResponseInit = {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+    encodeBody,
+  };
+  const hardened = new Response(response.body, init);
   for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
     hardened.headers.set(name, value);
   }
@@ -50,33 +67,60 @@ function harden(request: Request, response: Response): Response {
 async function compressedProjectionModule(
   request: Request,
   env: WorkerEnv | undefined,
-): Promise<Response | null> {
+): Promise<ProjectionResponse | null> {
   const url = new URL(request.url);
-  if (
-    !env?.ASSETS ||
-    !["GET", "HEAD"].includes(request.method) ||
-    !url.pathname.startsWith("/atlas-projection/") ||
-    !url.pathname.endsWith(".mjs")
-  ) {
-    return null;
+  const projectionModule =
+    url.pathname.startsWith("/atlas-projection/") && url.pathname.endsWith(".mjs");
+  if (!projectionModule) return null;
+
+  const error = (status: number, message: string): ProjectionResponse => ({
+    precompressed: false,
+    response: new Response(request.method === "HEAD" ? null : `${message}\n`, {
+      status,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    }),
+  });
+  if (!["GET", "HEAD"].includes(request.method)) {
+    const methodError = error(405, "Projection modules support only GET and HEAD");
+    methodError.response.headers.set("Allow", "GET, HEAD");
+    return methodError;
   }
+  if (!env?.ASSETS) return error(503, "Projection asset binding is unavailable");
 
   const compressedUrl = new URL(url);
   compressedUrl.pathname = `${url.pathname}.gz`;
-  const compressed = await env.ASSETS.fetch(
-    new Request(compressedUrl, { method: request.method }),
-  );
-  if (!compressed.ok) return null;
+  let compressed: Response;
+  try {
+    compressed = await env.ASSETS.fetch(
+      new Request(compressedUrl, { method: request.method }),
+    );
+  } catch {
+    return error(502, "Projection asset lookup failed");
+  }
+  if (compressed.status === 404) return error(404, "Projection module not found");
+  if (compressed.status !== 200) return error(502, "Projection asset lookup failed");
+
+  const upstreamEncoding = compressed.headers.get("content-encoding");
+  const upstreamType = compressed.headers.get("content-type") ?? "";
+  if (
+    upstreamEncoding ||
+    !/^application\/(?:gzip|x-gzip|octet-stream)(?:\s*;|$)/i.test(upstreamType)
+  ) {
+    return error(502, "Projection asset response was not an encoded module");
+  }
 
   const headers = new Headers(compressed.headers);
   headers.set("Content-Encoding", "gzip");
   headers.set("Content-Type", "text/javascript; charset=utf-8");
   headers.set("Vary", "Accept-Encoding");
-  return new Response(compressed.body, {
-    status: compressed.status,
-    statusText: compressed.statusText,
-    headers,
-  });
+  return {
+    precompressed: true,
+    response: new Response(compressed.body, {
+      status: compressed.status,
+      statusText: compressed.statusText,
+      headers,
+    }),
+  };
 }
 
 const worker = {
@@ -85,8 +129,15 @@ const worker = {
     env: WorkerEnv,
     ctx: WorkerContext,
   ): Promise<Response> {
-    const compressed = await compressedProjectionModule(request, env);
-    return harden(request, compressed ?? (await handler.fetch(request, env, ctx)));
+    const projection = await compressedProjectionModule(request, env);
+    if (projection) {
+      return harden(
+        request,
+        projection.response,
+        projection.precompressed ? "manual" : "automatic",
+      );
+    }
+    return harden(request, await handler.fetch(request, env, ctx));
   },
 };
 
