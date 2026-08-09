@@ -79,6 +79,43 @@ PLANNED_ALWAYS_MEMBERS = frozenset(
     }
 )
 
+_IMAGE_SIZE_HIGH_ADVISORIES = (
+    "GHSA-5p2g-fcmc-qvqq",
+    "GHSA-w3rx-r6r6-pgpr",
+)
+
+
+def _dependency_vulnerability_assessment(sbom: dict[str, Any]) -> tuple[str, list[str]]:
+    """Describe the tracked dependency state without pretending an SBOM is a VEX."""
+
+    components = sbom.get("components", [])
+    affected_image_size = any(
+        isinstance(component, dict)
+        and component.get("name") == "image-size"
+        and component.get("version") == "2.0.2"
+        for component in components
+    )
+    if affected_image_size:
+        advisories = ", ".join(_IMAGE_SIZE_HIGH_ADVISORIES)
+        return (
+            "blocked_image_size_2_0_2_unpatched_build_time_high_advisories",
+            [
+                "image-size@2.0.2 is affected by high-severity advisories "
+                f"{advisories}; no patched npm version was available at this source state. "
+                "The package is currently pulled through the Vinext build tool rather than the "
+                "deployed runtime, but that reachability boundary is not a vulnerability waiver. "
+                "Public release remains blocked pending a patched upstream or independently "
+                "verified replacement and a fresh applicability review."
+            ],
+        )
+    return (
+        "blocked_external_current_advisory_applicability_review_required",
+        [
+            "SBOM inventory does not assert vulnerability absence; a current source-authenticated "
+            "advisory and applicability/VEX review is not embedded in this release."
+        ],
+    )
+
 
 def _artifact(root: Path, relative: str, value: bytes, role: str) -> dict[str, Any]:
     suffix = PurePosixPath(relative).suffix
@@ -564,6 +601,9 @@ def build_release(
             if pdf_status == "externally_supplied_visual_review_pending"
             else "passed_text_outputs_binary_containers_not_content_scanned"
         )
+        dependency_vulnerability_gate, dependency_vulnerability_limits = (
+            _dependency_vulnerability_assessment(sbom)
+        )
         manifest = {
             "schema_version": "1.0.0",
             "id": stable_id("release-manifest", bundle.source_commit, bundle.source_tree_digest),
@@ -606,7 +646,7 @@ def build_release(
                 "preservation_recovery": "blocked_missing_external_materials_and_exercises",
                 "python_transitive_dependency_lock": "blocked_declarations_only",
                 "dependency_license_completeness": "blocked_unknown_licenses_present",
-                "dependency_vulnerability_assessment": "blocked_not_assessed",
+                "dependency_vulnerability_assessment": dependency_vulnerability_gate,
                 "pdf": pdf_status,
                 "independent_visual_review": "pending",
                 "ed25519_signature": "pending_external_owner_key",
@@ -624,7 +664,7 @@ def build_release(
             "honest_limits": [
                 "Unsigned previews are not verified releases.",
                 "PDF remains incomplete or independently unreviewed according to pdf-gate.json.",
-                "SBOM inventory does not assert vulnerability absence.",
+                *dependency_vulnerability_limits,
                 "Python dependency declarations are not a transitive resolution lock.",
                 "Static and Graphify edges are not runtime truth.",
                 "Structural line mapping is not behavioral or Level 4 understanding; failed semantic acceptance gates remain explicit.",

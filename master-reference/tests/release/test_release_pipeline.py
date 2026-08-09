@@ -473,6 +473,9 @@ def test_release_family_is_deterministic_and_explicitly_unsigned(tmp_path: Path)
     assert manifest_a["compiler"]["all_semantic_acceptance_gates_passed"] is False
     assert manifest_a["independent_verification_verdict"] == "BLOCK"
     assert manifest_a["gates"]["ed25519_signature"] == "pending_external_owner_key"
+    assert manifest_a["gates"]["dependency_vulnerability_assessment"] == (
+        "blocked_external_current_advisory_applicability_review_required"
+    )
     assert _all_files(first) == _all_files(second)
     engineering = (first / "engineering-dossier.md").read_text(encoding="utf-8")
     engineering_text = " ".join(engineering.split())
@@ -490,6 +493,18 @@ def test_release_family_is_deterministic_and_explicitly_unsigned(tmp_path: Path)
     assert subjects["owner-handbook.md"] == hashlib.sha256((first / "owner-handbook.md").read_bytes()).hexdigest()
     assert all(value != compiler_manifest["source_tree_digest"] for value in subjects.values())
     assert provenance["predicate"]["runDetails"]["metadata"]["reproducible"] is False
+
+
+def test_dependency_assessment_names_unpatched_image_size_advisories() -> None:
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(
+        {"components": [{"name": "image-size", "version": "2.0.2"}]}
+    )
+
+    assert gate == "blocked_image_size_2_0_2_unpatched_build_time_high_advisories"
+    assert len(limits) == 1
+    assert "GHSA-5p2g-fcmc-qvqq" in limits[0]
+    assert "GHSA-w3rx-r6r6-pgpr" in limits[0]
+    assert "not a vulnerability waiver" in limits[0]
 
 
 def test_release_inputs_and_preservation_use_git_blobs_across_checkout_eol(tmp_path: Path) -> None:
