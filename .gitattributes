@@ -60,6 +60,10 @@ webapp/frontend/dist/** -text -whitespace
 # ubuntu's pure-LF checkout. Minified code is EOL-insensitive; a verbatim template passthrough is not.
 webapp/frontend/index.html text eol=lf
 
+# Cloudflare parses this tracked deployment contract byte-for-byte. Pin LF so
+# Windows and Linux builds feed the same header rules into the Sites archive.
+master-reference/public/_headers text eol=lf
+
 # Local source archives are allowlisted for product source, not engagement or
 # operator-state material. This does not rewrite Git history; it prevents
 # accidental inclusion by `git archive` while the tracked corpus is sanitized.

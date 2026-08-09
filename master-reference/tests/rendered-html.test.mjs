@@ -76,36 +76,43 @@ test("renders normal routes when the local production adapter omits Worker bindi
 
 test("fails closed for unavailable or invalid projection module assets", async (context) => {
   const workerContext = { waitUntil() {}, passThroughOnException() {} };
+  const diagnostics = [];
+  context.mock.method(console, "error", (message) => diagnostics.push(String(message)));
   const cases = [
     {
       name: "missing binding",
       request: new Request("http://localhost/atlas-projection/identity.mjs"),
       env: undefined,
       status: 503,
+      code: "binding_unavailable",
     },
     {
       name: "unsupported method",
       request: new Request("http://localhost/atlas-projection/identity.mjs", { method: "POST" }),
       env: { ASSETS: { fetch: async () => new Response(null, { status: 204 }) } },
       status: 405,
+      code: "method_not_allowed",
     },
     {
       name: "missing member",
       request: new Request("http://localhost/atlas-projection/identity.mjs"),
       env: { ASSETS: { fetch: async () => new Response("missing", { status: 404 }) } },
       status: 404,
+      code: "asset_not_found",
     },
     {
       name: "upstream failure",
       request: new Request("http://localhost/atlas-projection/identity.mjs"),
       env: { ASSETS: { fetch: async () => new Response("failed", { status: 500 }) } },
       status: 502,
+      code: "asset_status_invalid",
     },
     {
       name: "empty success",
       request: new Request("http://localhost/atlas-projection/identity.mjs"),
       env: { ASSETS: { fetch: async () => new Response(null, { status: 204 }) } },
       status: 502,
+      code: "asset_status_invalid",
     },
     {
       name: "bodyless 200",
@@ -121,12 +128,16 @@ test("fails closed for unavailable or invalid projection module assets", async (
         },
       },
       status: 502,
+      code: "asset_body_missing",
     },
     {
       name: "lookup exception",
-      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      request: new Request(
+        "http://localhost/atlas-projection/identity.mjs?diagnostic=private-query-value",
+      ),
       env: { ASSETS: { fetch: async () => { throw new Error("asset binding failed"); } } },
       status: 502,
+      code: "asset_lookup_exception",
     },
     {
       name: "upstream HTML fallback",
@@ -137,6 +148,7 @@ test("fails closed for unavailable or invalid projection module assets", async (
         },
       },
       status: 502,
+      code: "asset_metadata_invalid",
     },
     {
       name: "misleading gzip MIME suffix",
@@ -152,6 +164,7 @@ test("fails closed for unavailable or invalid projection module assets", async (
         },
       },
       status: 502,
+      code: "asset_metadata_invalid",
     },
     {
       name: "unexpected upstream encoding",
@@ -164,6 +177,7 @@ test("fails closed for unavailable or invalid projection module assets", async (
         },
       },
       status: 502,
+      code: "asset_metadata_invalid",
     },
     {
       name: "multiple upstream encodings",
@@ -179,6 +193,7 @@ test("fails closed for unavailable or invalid projection module assets", async (
         },
       },
       status: 502,
+      code: "asset_metadata_invalid",
     },
     {
       name: "gzip-encoded HTML fallback",
@@ -191,6 +206,7 @@ test("fails closed for unavailable or invalid projection module assets", async (
         },
       },
       status: 502,
+      code: "asset_metadata_invalid",
     },
     {
       name: "JavaScript MIME without gzip encoding",
@@ -203,6 +219,7 @@ test("fails closed for unavailable or invalid projection module assets", async (
         },
       },
       status: 502,
+      code: "asset_metadata_invalid",
     },
   ];
 
@@ -213,8 +230,30 @@ test("fails closed for unavailable or invalid projection module assets", async (
       assert.match(response.headers.get("content-type") ?? "", /^text\/plain\b/i);
       assert.match(response.headers.get("cache-control") ?? "", /no-store/);
       assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+      assert.equal(response.headers.get("x-atlas-projection-error"), fixture.code);
       if (fixture.status === 405) assert.equal(response.headers.get("allow"), "GET, HEAD");
     });
+  }
+  const expectedDiagnostics = cases.filter((fixture) => fixture.status === 502);
+  assert.equal(diagnostics.length, expectedDiagnostics.length);
+  for (const fixture of expectedDiagnostics) {
+    assert.ok(
+      diagnostics.some((message) =>
+        message.startsWith("atlas_projection_rejected ") &&
+        message.includes(`"code":"${fixture.code}"`)),
+      `missing safe diagnostic for ${fixture.name}`,
+    );
+  }
+  const joinedDiagnostics = diagnostics.join("\n");
+  for (const forbidden of [
+    "asset binding failed",
+    "private-query-value",
+    "http://localhost",
+    "application/gzip+json",
+    "gzip, br",
+    "encoded HTML",
+  ]) {
+    assert.ok(!joinedDiagnostics.includes(forbidden), `diagnostic leaked ${forbidden}`);
   }
 });
 
@@ -330,11 +369,29 @@ test("serves projection gzip as browser-decodable JavaScript through Workerd", a
     const projection = join(scratch, "atlas-projection");
     await mkdir(projection, { recursive: true });
     const source = await readFile(new URL("../public/atlas-projection/identity.mjs", import.meta.url));
-    await writeFile(join(projection, "identity.mjs.gz"), gzipSync(source, { level: 9 }));
-    await writeFile(
-      join(scratch, "_headers"),
-      "/atlas-projection/*.mjs.gz\n  Content-Encoding: gzip\n  Content-Type: text/javascript; charset=utf-8\n",
+    const encoded = gzipSync(source, { level: 9 });
+    await writeFile(join(projection, "identity.mjs.gz"), encoded);
+    const deployableHeaders = await readFile(new URL("../dist/client/_headers", import.meta.url));
+    const trackedHeaders = await readFile(new URL("../public/_headers", import.meta.url));
+    assert.equal(
+      trackedHeaders.toString("utf8"),
+      [
+        "# Cache content-hashed application assets immutably.",
+        "/assets/*",
+        "  Cache-Control: public, max-age=31536000, immutable",
+        "",
+        "# Preserve the exact precompressed projection representation through ASSETS.",
+        "/atlas-projection/*.mjs.gz",
+        "  ! Content-Encoding",
+        "  Cache-Control: private, no-cache, no-store, must-revalidate",
+        "  Content-Type: application/gzip",
+        "  Cross-Origin-Resource-Policy: same-origin",
+        "  X-Content-Type-Options: nosniff",
+        "",
+      ].join("\n"),
     );
+    assert.deepEqual(deployableHeaders, trackedHeaders);
+    await writeFile(join(scratch, "_headers"), deployableHeaders);
 
     const serverRoot = fileURLToPath(new URL("../dist/server/", import.meta.url));
     const entry = join(serverRoot, "index.js");
@@ -354,11 +411,24 @@ test("serves projection gzip as browser-decodable JavaScript through Workerd", a
         directory: scratch,
         binding: "ASSETS",
         routerConfig: {
-          invoke_user_worker_ahead_of_assets: true,
+          invoke_user_worker_ahead_of_assets: false,
           has_user_worker: true,
         },
       },
     });
+
+    const physical = await miniflare.dispatchFetch(
+      "http://localhost/atlas-projection/identity.mjs.gz",
+      { headers: { "Accept-Encoding": "gzip" } },
+    );
+    assert.equal(physical.status, 200);
+    assert.match(physical.headers.get("content-type") ?? "", /^application\/gzip\b/i);
+    assert.equal(physical.headers.get("content-encoding"), null);
+    assert.equal(physical.headers.get("mf-content-encoding"), null);
+    assert.match(physical.headers.get("cache-control") ?? "", /no-store/);
+    assert.equal(physical.headers.get("cross-origin-resource-policy"), "same-origin");
+    assert.equal(physical.headers.get("x-content-type-options"), "nosniff");
+    assert.deepEqual(Buffer.from(await physical.arrayBuffer()), encoded);
 
     const response = await miniflare.dispatchFetch(
       "http://localhost/atlas-projection/identity.mjs",
@@ -542,7 +612,10 @@ test("keeps runtime local, read-only, private, and dependency-light", async () =
   assert.ok(names.includes("favicon.svg"));
   assert.ok(names.includes("og.png"));
   assert.ok(names.includes("atlas-social-card.png"));
-  assert.ok(names.every((name) => ["atlas-projection", "atlas-social-card.png", "favicon.svg", "og.png"].includes(name)));
+  assert.ok(
+    names.every((name) =>
+      ["_headers", "atlas-projection", "atlas-social-card.png", "favicon.svg", "og.png"].includes(name)),
+  );
   assert.equal(socialCard.subarray(1, 4).toString("ascii"), "PNG");
   const width = socialCard.readUInt32BE(16);
   const height = socialCard.readUInt32BE(20);

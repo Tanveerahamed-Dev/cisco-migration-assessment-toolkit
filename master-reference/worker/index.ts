@@ -10,6 +10,14 @@ type ProjectionResponse = {
   precompressed: boolean;
   response: Response;
 };
+type ProjectionErrorCode =
+  | "asset_body_missing"
+  | "asset_lookup_exception"
+  | "asset_metadata_invalid"
+  | "asset_not_found"
+  | "asset_status_invalid"
+  | "binding_unavailable"
+  | "method_not_allowed";
 
 const SECURITY_HEADERS = {
   "Content-Security-Policy": [
@@ -73,19 +81,71 @@ async function compressedProjectionModule(
     url.pathname.startsWith("/atlas-projection/") && url.pathname.endsWith(".mjs");
   if (!projectionModule) return null;
 
-  const error = (status: number, message: string): ProjectionResponse => ({
-    precompressed: false,
-    response: new Response(request.method === "HEAD" ? null : `${message}\n`, {
-      status,
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
-    }),
-  });
+  const error = (
+    status: number,
+    message: string,
+    code: ProjectionErrorCode,
+    upstream?: Response,
+  ): ProjectionResponse => {
+    if (status === 502) {
+      const encodingCategory = (value: string | null): string => {
+        const normalized = value?.trim().toLowerCase() ?? "";
+        if (!normalized) return "missing";
+        if (normalized === "gzip") return "gzip";
+        if (normalized === "br") return "br";
+        if (normalized === "identity") return "identity";
+        if (normalized.includes(",")) return "multiple";
+        return "other";
+      };
+      const typeCategory = (value: string | null): string => {
+        const normalized = value?.trim().toLowerCase() ?? "";
+        if (!normalized) return "missing";
+        if (/^application\/(?:gzip|x-gzip|octet-stream)(?:\s*;|$)/.test(normalized)) {
+          return "encoded_asset";
+        }
+        if (/^(?:text|application)\/javascript(?:\s*;|$)/.test(normalized)) {
+          return "javascript";
+        }
+        if (/^text\/html(?:\s*;|$)/.test(normalized)) return "html";
+        if (/^text\/plain(?:\s*;|$)/.test(normalized)) return "text_plain";
+        if (/^application\/json(?:\s*;|$)/.test(normalized)) return "json";
+        if (/^application\/null(?:\s*;|$)/.test(normalized)) return "application_null";
+        return "other";
+      };
+      console.error(`atlas_projection_rejected ${JSON.stringify({
+        code,
+        contentEncoding: encodingCategory(
+          upstream?.headers.get("content-encoding") ?? null,
+        ),
+        contentType: typeCategory(upstream?.headers.get("content-type") ?? null),
+        hasBody: upstream ? upstream.body !== null : null,
+        method: request.method,
+        upstreamStatus: upstream?.status ?? null,
+      })}`);
+    }
+    return {
+      precompressed: false,
+      response: new Response(request.method === "HEAD" ? null : `${message}\n`, {
+        status,
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "X-Atlas-Projection-Error": code,
+        },
+      }),
+    };
+  };
   if (!["GET", "HEAD"].includes(request.method)) {
-    const methodError = error(405, "Projection modules support only GET and HEAD");
+    const methodError = error(
+      405,
+      "Projection modules support only GET and HEAD",
+      "method_not_allowed",
+    );
     methodError.response.headers.set("Allow", "GET, HEAD");
     return methodError;
   }
-  if (!env?.ASSETS) return error(503, "Projection asset binding is unavailable");
+  if (!env?.ASSETS) {
+    return error(503, "Projection asset binding is unavailable", "binding_unavailable");
+  }
 
   const compressedUrl = new URL(url);
   compressedUrl.pathname = `${url.pathname}.gz`;
@@ -95,12 +155,21 @@ async function compressedProjectionModule(
       new Request(compressedUrl, { method: request.method }),
     );
   } catch {
-    return error(502, "Projection asset lookup failed");
+    return error(502, "Projection asset lookup failed", "asset_lookup_exception");
   }
-  if (compressed.status === 404) return error(404, "Projection module not found");
-  if (compressed.status !== 200) return error(502, "Projection asset lookup failed");
+  if (compressed.status === 404) {
+    return error(404, "Projection module not found", "asset_not_found", compressed);
+  }
+  if (compressed.status !== 200) {
+    return error(502, "Projection asset lookup failed", "asset_status_invalid", compressed);
+  }
   if (request.method === "GET" && compressed.body === null) {
-    return error(502, "Projection asset response was not an encoded module");
+    return error(
+      502,
+      "Projection asset response was not an encoded module",
+      "asset_body_missing",
+      compressed,
+    );
   }
 
   const upstreamEncoding = (
@@ -115,7 +184,12 @@ async function compressedProjectionModule(
     !["", "gzip"].includes(upstreamEncoding) ||
     (!encodedAssetType && !(upstreamEncoding === "gzip" && preencodedJavaScriptType))
   ) {
-    return error(502, "Projection asset response was not an encoded module");
+    return error(
+      502,
+      "Projection asset response was not an encoded module",
+      "asset_metadata_invalid",
+      compressed,
+    );
   }
 
   const headers = new Headers(compressed.headers);
