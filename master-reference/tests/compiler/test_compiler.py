@@ -18,6 +18,7 @@ from compiler import CompilationError, compile_repository  # noqa: E402
 from compiler import compiler as compiler_module  # noqa: E402
 from compiler import graphify as graphify_module  # noqa: E402
 from compiler.graphify import GraphifyFailure, project_graphify  # noqa: E402
+from compiler.policy import classify_file  # noqa: E402
 from compiler.schema_validation import SchemaValidationError, validate_compiler_output  # noqa: E402
 
 
@@ -1350,6 +1351,60 @@ class CompilerTests(unittest.TestCase):
             self.assertEqual(ledger["census"]["tracked_files"], 1)
             self.assertEqual(ledger["census"]["classified_files"], 0)
             self.assertTrue(any("extension" in error or "unclassified" in error for error in ledger["fatal_errors"]))
+
+    def test_cloudflare_headers_contract_has_an_explicit_safe_text_classification(self) -> None:
+        classification = classify_file("master-reference/public/_headers", "100644")
+        self.assertEqual(classification["classification_errors"], [])
+        self.assertEqual(classification["privacy_exposure"], "full")
+        self.assertEqual(classification["language"], "config")
+        self.assertEqual(classification["media_type"], "text/plain")
+        self.assertEqual(classification["roles"], ["structured_data"])
+
+        unexpected = classify_file("docs/_headers", "100644")
+        self.assertEqual(
+            unexpected["classification_errors"], ["extension_not_allowlisted:<none>"]
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            repository = base / "repo"
+            initialize_repository(
+                repository,
+                {
+                    "master-reference/public/_headers": (
+                        "/atlas-projection/*.mjs.gz\n"
+                        "  ! Content-Encoding\n"
+                        "  Content-Type: application/gzip\n"
+                    )
+                },
+            )
+            output = base / "output"
+            compile_repository(repository, output)
+
+            file_record = group_records(output, "files")[0]
+            self.assertEqual(file_record["path"], "master-reference/public/_headers")
+            self.assertEqual(file_record["privacy_exposure"], "full")
+            self.assertEqual(file_record["language"], "config")
+            self.assertEqual(file_record["media_type"], "text/plain")
+            self.assertEqual(file_record["roles"], ["structured_data"])
+
+            structural_root = group_records(output, "structural_entities")[0]
+            self.assertEqual(structural_root["path"], file_record["path"])
+            self.assertEqual(structural_root["kind"], "configuration_document")
+            line_records = group_records(output, "lines")
+            self.assertEqual(len(line_records), 3)
+            self.assertTrue(all(row["syntax_kind"] == "config_directive" for row in line_records))
+            self.assertTrue(
+                all(row["semantic_entity"] == structural_root["id"] for row in line_records)
+            )
+            directives = group_records(output, "structured")
+            self.assertEqual(len(directives), 3)
+            self.assertTrue(
+                all(row["value_type"] == "configuration_directive" for row in directives)
+            )
+            ledger = json.loads((output / "completeness.json").read_text(encoding="utf-8"))
+            self.assertEqual(ledger["parsing"]["expected_nonblank_lines"], 3)
+            self.assertEqual(ledger["parsing"]["line_records"], 3)
 
 
 if __name__ == "__main__":

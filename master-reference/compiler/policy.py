@@ -84,6 +84,15 @@ ROOT_TEXT_NAMES = frozenset(
     }
 )
 
+SPECIAL_CONFIG_NAMES = frozenset(
+    {
+        ".gitattributes",
+        ".gitignore",
+        ".graphifyignore",
+    }
+)
+SPECIAL_CONFIG_PATHS = frozenset({"master-reference/public/_headers"})
+
 TEXT_EXTENSIONS = frozenset(
     {
         ".css",
@@ -254,7 +263,7 @@ def validate_path_allowlist(path: str) -> list[str]:
     name = p.name.lower()
     if ext in TEXT_EXTENSIONS or ext in BINARY_EXTENSIONS:
         return []
-    if name in {"license", ".gitignore", ".gitattributes", ".graphifyignore"}:
+    if name == "license" or name in SPECIAL_CONFIG_NAMES or path in SPECIAL_CONFIG_PATHS:
         return []
     return [f"extension_not_allowlisted:{ext or '<none>'}"]
 
@@ -265,7 +274,7 @@ def classify_file(path: str, git_mode: str) -> dict[str, Any]:
     ext = _extension(path)
     name = PurePosixPath(path).name.lower()
     language = LANGUAGE_BY_EXTENSION.get(ext, "binary" if ext in BINARY_EXTENSIONS else "text")
-    if name in {".gitignore", ".gitattributes", ".graphifyignore"}:
+    if name in SPECIAL_CONFIG_NAMES or path in SPECIAL_CONFIG_PATHS:
         language = "config"
     elif name == "license":
         language = "text"
@@ -298,7 +307,11 @@ def classify_file(path: str, git_mode: str) -> dict[str, Any]:
         "privacy_exposure": exposure,
         "privacy_reasons": privacy_reasons,
         "classification_errors": errors,
-        "media_type": mimetypes.guess_type(path)[0] or "application/octet-stream",
+        "media_type": (
+            "text/plain"
+            if path in SPECIAL_CONFIG_PATHS
+            else mimetypes.guess_type(path)[0] or "application/octet-stream"
+        ),
     }
 
 
