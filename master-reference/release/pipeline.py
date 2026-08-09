@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
@@ -83,31 +84,89 @@ _IMAGE_SIZE_HIGH_ADVISORIES = (
     "GHSA-5p2g-fcmc-qvqq",
     "GHSA-w3rx-r6r6-pgpr",
 )
+_NANOID_HIGH_ADVISORY = "GHSA-2v37-7h3g-55p8"
+_SEMVER_RE = re.compile(
+    r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+    r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+    r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
+)
+
+
+def _semver_compare_to_stable(value: object, stable: tuple[int, int, int]) -> int | None:
+    """Compare a SemVer value with a stable boundary; invalid input fails closed upstream."""
+
+    match = _SEMVER_RE.fullmatch(str(value))
+    if match is None:
+        return None
+    version = tuple(int(match.group(index)) for index in range(1, 4))
+    if version < stable:
+        return -1
+    if version > stable:
+        return 1
+    return -1 if match.group(4) is not None else 0
+
+
+def _is_affected_nanoid(value: object) -> bool:
+    before_3_3_17 = _semver_compare_to_stable(value, (3, 3, 17))
+    from_4_0_0 = _semver_compare_to_stable(value, (4, 0, 0))
+    before_5_1_6 = _semver_compare_to_stable(value, (5, 1, 6))
+    if None in (before_3_3_17, from_4_0_0, before_5_1_6):
+        return True
+    return before_3_3_17 < 0 or (from_4_0_0 >= 0 and before_5_1_6 < 0)
 
 
 def _dependency_vulnerability_assessment(sbom: dict[str, Any]) -> tuple[str, list[str]]:
     """Describe the tracked dependency state without pretending an SBOM is a VEX."""
 
     components = sbom.get("components", [])
-    affected_image_size = any(
-        isinstance(component, dict)
-        and component.get("name") == "image-size"
-        and component.get("version") == "2.0.2"
-        for component in components
+    affected_image_size_versions = sorted(
+        {
+            str(component.get("version"))
+            for component in components
+            if isinstance(component, dict)
+            and component.get("name") == "image-size"
+            and (
+                (comparison := _semver_compare_to_stable(component.get("version"), (2, 0, 2)))
+                is None
+                or comparison <= 0
+            )
+        }
     )
-    if affected_image_size:
+    affected_nanoid_versions = sorted(
+        {
+            str(component.get("version"))
+            for component in components
+            if isinstance(component, dict)
+            and component.get("name") == "nanoid"
+            and _is_affected_nanoid(component.get("version"))
+        }
+    )
+    limits: list[str] = []
+    if affected_image_size_versions:
         advisories = ", ".join(_IMAGE_SIZE_HIGH_ADVISORIES)
-        return (
-            "blocked_image_size_2_0_2_unpatched_build_time_high_advisories",
-            [
-                "image-size@2.0.2 is affected by high-severity advisories "
-                f"{advisories}; no patched npm version was available at this source state. "
-                "The package is currently pulled through the Vinext build tool rather than the "
-                "deployed runtime, but that reachability boundary is not a vulnerability waiver. "
-                "Public release remains blocked pending a patched upstream or independently "
-                "verified replacement and a fresh applicability review."
-            ],
+        limits.append(
+            "The whole-repository SBOM contains image-size version(s) "
+            f"{', '.join(affected_image_size_versions)} within the affected <=2.0.2 range for "
+            f"high-severity advisories {advisories}; no patched npm version was available at "
+            "this source state. "
+            "The package is currently pulled through the Vinext build tool rather than the "
+            "deployed runtime, but that reachability boundary is not a vulnerability waiver. "
+            "Public release remains blocked pending a patched upstream or independently "
+            "verified replacement and a fresh applicability review."
         )
+    if affected_nanoid_versions:
+        limits.append(
+            "The whole-repository SBOM contains vulnerable Nano ID version(s) "
+            f"{', '.join(affected_nanoid_versions)} affected by {_NANOID_HIGH_ADVISORY}. "
+            "Build-time-only reachability does not waive the finding; update every owning lockfile "
+            "to a patched version before treating the dependency assessment as current."
+        )
+    if affected_image_size_versions and affected_nanoid_versions:
+        return "blocked_multiple_unremediated_high_dependency_advisories", limits
+    if affected_image_size_versions:
+        return "blocked_image_size_unpatched_build_time_high_advisories", limits
+    if affected_nanoid_versions:
+        return "blocked_nanoid_unremediated_high_advisory", limits
     return (
         "blocked_external_current_advisory_applicability_review_required",
         [

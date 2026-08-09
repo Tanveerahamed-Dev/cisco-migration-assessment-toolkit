@@ -497,14 +497,80 @@ def test_release_family_is_deterministic_and_explicitly_unsigned(tmp_path: Path)
 
 def test_dependency_assessment_names_unpatched_image_size_advisories() -> None:
     gate, limits = release_pipeline._dependency_vulnerability_assessment(
-        {"components": [{"name": "image-size", "version": "2.0.2"}]}
+        {
+            "components": [
+                {"name": "image-size", "version": "1.0.0"},
+                {"name": "image-size", "version": "2.0.1"},
+                {"name": "image-size", "version": "2.0.2"},
+                {"name": "image-size", "version": "2.0.3"},
+            ]
+        }
     )
 
-    assert gate == "blocked_image_size_2_0_2_unpatched_build_time_high_advisories"
+    assert gate == "blocked_image_size_unpatched_build_time_high_advisories"
     assert len(limits) == 1
     assert "GHSA-5p2g-fcmc-qvqq" in limits[0]
     assert "GHSA-w3rx-r6r6-pgpr" in limits[0]
+    assert all(version in limits[0] for version in ("1.0.0", "2.0.1", "2.0.2"))
+    assert "2.0.3" not in limits[0]
     assert "not a vulnerability waiver" in limits[0]
+
+
+def test_dependency_assessment_cannot_hide_vulnerable_nanoid_behind_another_finding() -> None:
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(
+        {
+            "components": [
+                {"name": "image-size", "version": "2.0.2"},
+                {"name": "nanoid", "version": "3.3.16"},
+                {"name": "nanoid", "version": "3.3.18"},
+            ]
+        }
+    )
+
+    assert gate == "blocked_multiple_unremediated_high_dependency_advisories"
+    assert len(limits) == 2
+    assert any("GHSA-2v37-7h3g-55p8" in limit and "3.3.16" in limit for limit in limits)
+
+
+def test_dependency_assessment_models_nanoid_semver_boundaries_fail_closed() -> None:
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(
+        {
+            "components": [
+                {"name": "nanoid", "version": "3.3.16+build.1"},
+                {"name": "nanoid", "version": "3.3.17-beta.1"},
+                {"name": "nanoid", "version": "3.3.17"},
+                {"name": "nanoid", "version": "3.3.18"},
+                {"name": "nanoid", "version": "4.0.0"},
+                {"name": "nanoid", "version": "5.1.6-beta.1"},
+                {"name": "nanoid", "version": "5.1.6"},
+                {"name": "nanoid", "version": "unparseable"},
+            ]
+        }
+    )
+
+    assert gate == "blocked_nanoid_unremediated_high_advisory"
+    assert len(limits) == 1
+    assert "GHSA-2v37-7h3g-55p8" in limits[0]
+    for affected in ("3.3.16+build.1", "3.3.17-beta.1", "4.0.0", "5.1.6-beta.1", "unparseable"):
+        assert affected in limits[0]
+    for patched in ("3.3.17,", "3.3.18", "5.1.6,"):
+        assert patched not in limits[0]
+
+
+def test_dependency_assessment_does_not_flag_patched_nanoid_only() -> None:
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(
+        {
+            "components": [
+                {"name": "nanoid", "version": "3.3.17"},
+                {"name": "nanoid", "version": "3.3.18"},
+                {"name": "nanoid", "version": "5.1.6"},
+            ]
+        }
+    )
+
+    assert gate == "blocked_external_current_advisory_applicability_review_required"
+    assert len(limits) == 1
+    assert "GHSA-2v37-7h3g-55p8" not in limits[0]
 
 
 def test_release_inputs_and_preservation_use_git_blobs_across_checkout_eol(tmp_path: Path) -> None:

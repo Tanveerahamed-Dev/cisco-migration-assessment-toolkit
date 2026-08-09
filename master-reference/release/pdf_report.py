@@ -1018,8 +1018,7 @@ def _governance(content: ContentBundle, styles: dict[str, ParagraphStyle]) -> li
         block.append(_rich("<b>Acceptance evidence</b>", styles["body"]))
         block.extend(_bullet_lines(_strings(gap.get("acceptance_evidence")), styles))
         story.append(KeepTogether(block))
-    story.append(_heading("Human decision queue", styles["h2"]))
-    for decision in decisions:
+    for index, decision in enumerate(decisions):
         block = [
             _heading(
                 f"{decision.get('id', 'decision.unknown')} - {decision.get('title', 'Untitled decision')}",
@@ -1038,7 +1037,11 @@ def _governance(content: ContentBundle, styles: dict[str, ParagraphStyle]) -> li
         block.extend(_bullet_lines(_strings(decision.get("options")), styles))
         block.append(_rich("<b>Evidence needed</b>", styles["body"]))
         block.extend(_bullet_lines(_strings(decision.get("evidence_needed")), styles))
+        if index == 0:
+            block.insert(0, _heading("Human decision queue", styles["h2"]))
         story.append(KeepTogether(block))
+    if not decisions:
+        story.append(_heading("Human decision queue", styles["h2"]))
     story.append(_heading("Opportunity portfolio", styles["h2"]))
     if isinstance(portfolio, dict) and portfolio.get("ranking_rule"):
         story.append(_callout("Ranking rule", _plain(portfolio["ranking_rule"]), styles))

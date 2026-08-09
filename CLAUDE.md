@@ -86,7 +86,8 @@ its continuity CLI may collect client evidence, write devices or the Vault, call
 grant publication authority.
 
 The 2026-08-09 dependency audit is also an explicit release boundary, not a silent waiver. Nano ID is
-locked to the patched 3.3.18 line through the Master Reference npm override. `image-size@2.0.2`, pulled
+locked to the patched 3.3.18 line through both the Master Reference and AssessHub npm overrides.
+`image-size@2.0.2`, pulled
 only through the Vinext build tool in the current tree, remains affected by `GHSA-5p2g-fcmc-qvqq` and
 `GHSA-w3rx-r6r6-pgpr`; the current npm registry and advisory records expose no patched release. The
 owner-only private preview may be rebuilt from trusted exact-tree inputs while this is visible, but public

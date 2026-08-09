@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import shutil
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -402,12 +403,29 @@ def test_curated_pdf_keeps_complete_records_together_and_extracts_clean_ascii(tm
             "A lab, protocol primer, vendor page, or external link never establishes current product support",
         ),
         ("gap.white-label", "Contrast and localization checks"),
+        ("Human decision queue", "decision.product-boundary"),
         ("decision.outcome-measurement", "uncertainty reporting"),
         ("invariant.horizon-separate", "A manual summary can overstate a watched technology"),
     )
     for start, end in anchors:
         assert any(start in page and end in page for page in pages), f"record split across pages: {start}"
     assert all("\x7f" not in page and "\ufffd" not in page for page in pages)
+
+
+def test_pdf_preserves_decision_section_when_queue_is_empty(tmp_path: Path) -> None:
+    content = load_content_bundle(MASTER_REFERENCE / "content")
+    content = replace(content, governance={**content.governance, "decision_queue": []})
+    pdf = tmp_path / "atlas-empty-decision-queue.pdf"
+
+    build_master_reference_pdf(
+        _bundle(tmp_path),
+        content,
+        pdf,
+        architecture_path=MASTER_REFERENCE / "governance" / "architecture.json",
+    )
+
+    pages = [" ".join((page.extract_text() or "").split()) for page in PdfReader(str(pdf)).pages]
+    assert any("Human decision queue" in page and "Opportunity portfolio" in page for page in pages)
 
 
 def test_pdf_refuses_overwrite_and_rejects_nonclean_or_unbound_compiler(tmp_path: Path) -> None:
