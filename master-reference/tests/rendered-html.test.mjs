@@ -924,7 +924,7 @@ test("renders deterministic catalogs and never promotes advisory content", async
   const horizon = JSON.parse(horizonText);
   const capabilities = catalog.domains.flatMap((domain) => domain.entries);
 
-  assert.equal(capabilities.length, 210);
+  assert.equal(capabilities.length, 211);
   assert.equal(governance.gaps.length, 41);
   assert.equal(governance.decision_queue.length, 10);
   assert.equal(governance.labs.length, 14);
