@@ -79,6 +79,7 @@
         "cisco_toolkit/feature_compliance.py",
         "cisco_toolkit/fib.py",
         "cisco_toolkit/memory_guard.py",
+        "cisco_toolkit/traffic_assurance.py",
         "cisco_toolkit/upgrade_targets.py",
         "cisco_toolkit/whatif.py"
       ]
@@ -131,7 +132,8 @@
         "cisco_toolkit/precert.py",
         "cisco_toolkit/runbook.py",
         "cisco_toolkit/scorecard.py",
-        "cisco_toolkit/self_healing.py"
+        "cisco_toolkit/self_healing.py",
+        "cisco_toolkit/unknown_evidence.py"
       ]
     },
     {
@@ -275,6 +277,7 @@
     ["governance", "brand_profile"],
     ["governance", "design_intelligence"],
     ["governance", "deliverables"],
+    ["governance", "evidence_access"],
     ["governance", "evidence_intake"],
     ["governance", "release_distribution"],
     ["deliverables", "parse_model"],
@@ -303,6 +306,7 @@
     ["assesshub_frontend", "design_sync"],
     ["atlas_portable", "assesshub_backend"],
     ["atlas_portable", "brand_profile"],
+    ["atlas_portable", "deliverables"],
     ["atlas_portable", "release_distribution"],
     ["design_sync", "assesshub_frontend"],
     ["release_distribution", "repo_source"],

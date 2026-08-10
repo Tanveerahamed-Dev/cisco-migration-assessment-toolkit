@@ -13,6 +13,7 @@ sys.path.insert(0, str(SITE_ROOT))
 from governance.policy import BASE_VERIFICATION_RECEIPTS, evaluate_transition, validate_claims  # noqa: E402
 from governance.architecture import (  # noqa: E402
     build_architecture_conformance,
+    component_for_path,
     load_contract,
     validate_path_dispositions,
     validate_runtime_trace,
@@ -283,6 +284,15 @@ def test_real_contract_disposes_every_tracked_path_exactly_once() -> None:
     errors, rows = validate_path_dispositions(paths, load_contract())
     assert errors == ()
     assert len(rows) == len(paths)
+
+
+def test_assurance_and_unknown_intake_owners_match_their_static_dependencies() -> None:
+    contract = load_contract()
+    assert component_for_path("cisco_toolkit/traffic_assurance.py", contract) == "analysis"
+    assert component_for_path("cisco_toolkit/unknown_evidence.py", contract) == "governance"
+    allowed = {tuple(edge) for edge in contract["allowed_edges"]}
+    assert ("governance", "evidence_access") in allowed
+    assert ("atlas_portable", "deliverables") in allowed
 
 
 def test_resolved_forbidden_import_blocks_architecture_receipt() -> None:
