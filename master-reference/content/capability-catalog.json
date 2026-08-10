@@ -138,8 +138,9 @@
         {
           "id": "cap.architecture.unknown-signal-intake",
           "title": "Cross-domain unknown-signal queue",
-          "state": "missing",
-          "current_scope": "Some parsers expose diagnostics and yield, but there is no one catalog-linked queue for unmapped protocols, platforms, shapes, and not-assessable axes.",
+          "state": "partial",
+          "current_scope": "The always-present unknown_evidence/1 projection aggregates parser exceptions, suspicious zero-yield, unregistered parser and coverage axes, and unsupported shapes from the bounded parse-yield, coverage-matrix, and architecture-coverage inputs into aggregate-only needs-triage events mapped to capability and gap IDs with a fixed coverage-governance owner role. It does not provide universal platform, protocol, not-assessable, feature-request, or incident intake, nor a durable human disposition, SLA, per-item owner assignment, expiry, promotion, or dashboard workflow.",
+          "owner_refs": ["owner.engine.entry", "owner.ssot.registry"],
           "gap_refs": ["gap.unknown-intake"]
         }
       ]
@@ -887,7 +888,7 @@
           "id": "cap.ops.collection-completeness",
           "title": "Collection completeness and parse yield",
           "state": "partial",
-          "current_scope": "Coverage, completeness, integrity, and parse-yield signals exist for supported evidence; cross-domain unknown aggregation and continuous freshness are incomplete.",
+          "current_scope": "Coverage, completeness, integrity, parse-yield signals, and a bounded aggregate-only unknown-evidence projection exist for supported evidence; universal cross-domain intake, durable human disposition and expiry, and continuous freshness remain incomplete.",
           "owner_refs": ["owner.engine.entry", "owner.analysis", "owner.ssot.engine"],
           "gap_refs": ["gap.unknown-intake"]
         },

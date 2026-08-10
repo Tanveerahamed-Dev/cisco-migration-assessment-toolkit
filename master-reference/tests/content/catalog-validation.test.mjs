@@ -546,6 +546,134 @@ test("documents current-run custody and post-redaction lookup-only Traffic Assur
   assert.doesNotMatch(mcpBlock, /traffic_assurance\.assess_flow\s*\(/);
 });
 
+test("reconciles bounded unknown-evidence intake without claiming durable universal governance", async () => {
+  const [unknownSource, ssot] = await Promise.all([
+    readFile(new URL("cisco_toolkit/unknown_evidence.py", repositoryRoot), "utf8"),
+    readFile(new URL("docs/ssot.md", repositoryRoot), "utf8"),
+  ]);
+
+  const capability = capabilities.find(
+    (record) => record.id === "cap.architecture.unknown-signal-intake",
+  );
+  assert.equal(capability.state, "partial");
+  assert.ok(capability.owner_refs.includes("owner.engine.entry"));
+  assert.ok(capability.owner_refs.includes("owner.ssot.registry"));
+  assert.ok(capability.gap_refs.includes("gap.unknown-intake"));
+  for (const delivered of [
+    "unknown_evidence/1",
+    "parse-yield",
+    "coverage-matrix",
+    "architecture-coverage",
+    "aggregate-only",
+    "needs-triage",
+    "capability and gap IDs",
+    "fixed coverage-governance owner role",
+  ]) {
+    assert.match(capability.current_scope, new RegExp(delivered, "i"));
+  }
+  for (const residual of [
+    "universal platform",
+    "protocol",
+    "not-assessable",
+    "feature-request",
+    "incident intake",
+    "durable human disposition",
+    "per-item owner assignment",
+    "expiry",
+    "promotion",
+  ]) {
+    assert.match(capability.current_scope, new RegExp(residual, "i"));
+  }
+  assert.doesNotMatch(capability.current_scope, /no one catalog-linked queue|queue is missing/i);
+
+  const collection = capabilities.find(
+    (record) => record.id === "cap.ops.collection-completeness",
+  );
+  assert.equal(collection.state, "partial");
+  assert.match(collection.current_scope, /bounded aggregate-only unknown-evidence projection/i);
+  assert.match(collection.current_scope, /universal cross-domain intake/i);
+  assert.match(collection.current_scope, /durable human disposition and expiry/i);
+
+  const gap = governance.gaps.find((record) => record.id === "gap.unknown-intake");
+  assert.match(gap.title, /bounded unknown-signal intake/i);
+  assert.match(gap.problem, /unknown_evidence\/1/i);
+  assert.match(gap.problem, /every event remains needs-triage inside one snapshot/i);
+  assert.match(gap.problem, /fixed coverage-governance owner role/i);
+  for (const residual of ["Universal platform", "protocol", "feature-request", "incident intake", "durable human disposition", "SLA", "accountable per-item owner assignment", "expiry", "promotion", "dashboard"]) {
+    assert.match(gap.problem, new RegExp(residual, "i"));
+  }
+  assert.equal(
+    gap.next_actions.some((action) => /emit sanitized aggregate unknown events/i.test(action)),
+    false,
+    "the residual gap must not present the shipped aggregate projection as future work",
+  );
+  assert.equal(
+    gap.next_actions.some((action) => /deduplicate and map them to catalog IDs/i.test(action)),
+    false,
+    "the residual gap must not present shipped catalog mapping as future work",
+  );
+  for (const residualAction of ["platform", "protocol", "accountable per-item owner assignment", "append-only history", "expiry", "dashboard"]) {
+    assert.ok(
+      gap.next_actions.some((action) => new RegExp(residualAction, "i").test(action)),
+      `gap.unknown-intake lost residual action ${residualAction}`,
+    );
+  }
+  assert.ok(
+    gap.acceptance_evidence.some((evidence) =>
+      /accountable per-item owner and rationale/i.test(evidence)
+    ),
+    "gap.unknown-intake lost durable per-item accountability evidence",
+  );
+
+  const scenario = governance.quality_scenarios.find(
+    (record) => record.id === "scenario.unknown-new-platform",
+  );
+  assert.equal(scenario.state, "partial");
+  assert.ok(scenario.owner_refs.includes("owner.engine.entry"));
+  assert.ok(scenario.gap_refs.includes("gap.unknown-intake"));
+  assert.match(scenario.response, /bounded parser-yield and coverage inputs/i);
+  assert.match(scenario.response, /universal intake and durable disposition remain missing/i);
+  assert.match(scenario.measure, /platform, protocol, incident, and durable-disposition fixtures remain required/i);
+
+  const unknownHorizon = horizon.signals.find((record) => record.id === "horizon.unknown");
+  assert.equal(unknownHorizon.last_reviewed, "2026-08-10");
+  assert.match(unknownHorizon.current_coverage, /unknown_evidence\/1/i);
+  assert.match(unknownHorizon.current_coverage, /bounded aggregate-only intake/i);
+  assert.match(unknownHorizon.current_coverage, /candidate events remain needs-triage/i);
+  assert.match(unknownHorizon.current_coverage, /durable human disposition, expiry, promotion/i);
+  assert.doesNotMatch(unknownHorizon.current_coverage, /queue is missing/i);
+  assert.match(unknownHorizon.next_review_rule, /bounded per-snapshot aggregate/i);
+  assert.match(unknownHorizon.next_review_rule, /no automatic promotion/i);
+
+  for (const runtimeContract of [
+    'SCHEMA = "unknown_evidence/1"',
+    'EVENT_SCHEMA = "unknown_evidence_event/1"',
+    '"cap.architecture.unknown-signal-intake"',
+    '"gap.unknown-intake"',
+    '"parse_yield", "coverage_matrix", "architecture_coverage"',
+    '"mode": "aggregate_only"',
+    '"disposition": "needs_triage"',
+    '"claim_scope": "bounded_observed_sources_only"',
+  ]) {
+    assert.ok(unknownSource.includes(runtimeContract), `runtime owner lost ${runtimeContract}`);
+  }
+  const registryRow = ssot.split(/\r?\n/).find((line) =>
+    line.includes("**Governed unknown evidence**")
+  );
+  assert.ok(registryRow, "docs/ssot.md lost the governed unknown-evidence owner row");
+  for (const contract of [
+    "aggregate parser exceptions",
+    "suspicious zero-yield",
+    "unregistered parser/coverage axes",
+    "unsupported diagnostic shapes",
+    "candidate-classified",
+    "needs_triage",
+    "capability/gap IDs",
+  ]) {
+    assert.match(registryRow, new RegExp(contract, "i"));
+  }
+});
+
 test("grounds current and partial claims in live owner paths", async () => {
   const ownerIds = new Set(core.owners.map((owner) => owner.id));
   assert.equal(ownerIds.size, core.owners.length);
