@@ -244,6 +244,7 @@
         "pytest.ini",
         "questionnaire.json",
         "ruff.toml",
+        "traffic-intents.example.json",
         "webapp/.gitignore",
         "webapp/README.md",
         "webapp/requirements.txt"
