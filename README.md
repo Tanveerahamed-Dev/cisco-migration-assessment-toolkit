@@ -155,6 +155,12 @@ python COLLECT_PARSE_V3_23_0.py --compare old_snapshot.json new_snapshot.json
 # Trend a SERIES of snapshots across the migration into a campaign workbook (oldest first)
 python COLLECT_PARSE_V3_23_0.py --trend wave0.snapshot.json wave1.snapshot.json wave2.snapshot.json
 
+# Evaluate a finite synthetic traffic catalog during the same evidence-producing run
+python COLLECT_PARSE_V3_23_0.py \
+    --devices-file devices.json \
+    --template Migration_Assessment_Template_Updated.xlsx \
+    --traffic-intents traffic-intents.example.json
+
 # See every option
 python COLLECT_PARSE_V3_23_0.py --help
 
@@ -172,11 +178,29 @@ Useful flags: `--workers N` (parallel SSH workers, default 5; `1` = sequential),
 `--output FILE` (override the workbook name), `--golden-config FILE` (a config
 baseline for the **Golden-Config Drift** sheet — omit to auto-derive it from the
 fleet majority), `--flow-src IP` / `--flow-dst IP` (add an optional flow-trace
-sheet between two endpoints), and `--redact` (pseudonymize IPs / MACs / serials across the
+sheet between two endpoints), `--traffic-intents FILE` (evaluate the bounded catalog in
+[`traffic-intents.example.json`](traffic-intents.example.json) and add the canonical
+**Traffic Assurance** snapshot/workbook result), and `--redact` (pseudonymize IPs / MACs / serials across the
 **whole output bundle** — the snapshot JSON, the HTML explorer, **and** the always-produced
 `.xlsx` workbook — consistent and subnet-preserving, hostnames kept — so every deliverable can
 be shared without leaking real addressing). See
 [`COLLECT_PARSE_V3_23_0.md`](COLLECT_PARSE_V3_23_0.md) for the full feature set.
+
+Traffic Assurance accepts a finite list of exact IPv4 TCP/UDP five-tuples, requested
+forward/return directions, an optional observed MTU requirement, and at most one synthetic
+node/site/link failure per row. It is available only on a full assessment run; combining
+`--traffic-intents` with `--compare` or `--trend` is refused because those modes do not publish
+the result. A hard verdict requires same-run capture/parser custody, exact scoped-route and
+configuration bindings, all applicable modeled forwarding gates accounted for, and no
+categorical-unmodeled gate or modeled-projection gap.
+Incomplete, stale, or malformed custody, configured NAT, and an applicable stateful or
+categorically unmodeled forwarding gate produce an explicit indeterminate/not-observed result
+rather than a guessed permit or deny. Even when that bounded control-plane projection is proven,
+it does not claim tunnel state or underlay delivery, endpoint attachment or L2 delivery, live
+sessions, application success, or field behavior; those remain not assessed. The always-present
+`unknown_evidence` snapshot block separately aggregates parser exceptions, suspicious zero-yield,
+and unsupported diagnostic shapes without copying raw evidence or identifiers; it is a triage
+queue, not proof that every vendor syntax is modeled.
 
 ### Devices file
 

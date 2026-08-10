@@ -136,9 +136,11 @@ source_tree="$(git rev-parse 'HEAD^{tree}')"
 python -m pip install "build==1.5.0" "twine==6.2.0"
 python -m build --sdist --wheel --outdir dist
 python -m twine check dist/*
+python tools/audit_wheel.py dist
 python -m cisco_toolkit.distribution_verify dist \
   --source-commit "$source_commit" \
   --source-tree "$source_tree" \
+  --require-source-binding \
   --json-out dist-verification.json
 ```
 

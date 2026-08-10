@@ -6,6 +6,7 @@ later summary reached fourteen while the detailed section remained at eleven —
 adoption-facing text drifting from shipped reality. Counts and mode names are DERIVED
 from the explorer's MODES registry, so a future mode addition fails this test until every
 product-facing roster catches up."""
+import json
 import pathlib
 import re
 
@@ -91,3 +92,22 @@ def test_product_files_exist():
         f"pyproject version {version} has no entry in CHANGELOG.md — the changelog is stale "
         f"against the shipped release (this is what the old hardcoded-version assertion could "
         f"never detect)")
+
+
+def test_traffic_assurance_is_operable_and_release_documented():
+    example_path = ROOT / "traffic-intents.example.json"
+    catalog = json.loads(example_path.read_text(encoding="utf-8"))
+    assert isinstance(catalog.get("intents"), list) and catalog["intents"]
+    assert all(
+        {"id", "src", "dst", "protocol", "src_port", "dst_port", "expected"} <= set(row)
+        for row in catalog["intents"]
+    )
+    assert "--traffic-intents traffic-intents.example.json" in README
+    assert "same-run capture/parser custody" in README
+    assert "unknown_evidence" in README
+
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    unreleased = changelog.split("## [Unreleased]", 1)[1].split("\n## [", 1)[0]
+    assert "Traffic Assurance" in unreleased and "Unknown Evidence" in unreleased
+    ledger = (ROOT / "COLLECT_PARSE_V3_23_0.md").read_text(encoding="utf-8")
+    assert "2026-08-10" in ledger and "traffic_assurance_set/1" in ledger

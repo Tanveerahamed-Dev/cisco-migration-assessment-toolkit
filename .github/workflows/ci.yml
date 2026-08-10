@@ -245,6 +245,7 @@ jobs:
           python -m cisco_toolkit.distribution_verify dist
           --source-commit "${{ steps.source.outputs.commit }}"
           --source-tree "${{ steps.source.outputs.tree }}"
+          --require-source-binding
           --json-out dist/dist-verification.json
       - name: Prove distribution verification did not change the source
         run: >-
@@ -318,6 +319,7 @@ jobs:
           python -m cisco_toolkit.distribution_verify dist
           --source-commit "${{ steps.source.outputs.commit }}"
           --source-tree "${{ steps.source.outputs.tree }}"
+          --require-source-binding
           --expected-json dist/dist-verification.json
       - name: Preserve the verified distributions
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -2,6 +2,7 @@
 import hashlib
 import json
 import logging
+from pathlib import Path
 import sys
 from types import SimpleNamespace
 
@@ -9,7 +10,17 @@ import pytest
 from openpyxl import Workbook
 
 import COLLECT_PARSE_V3_23_0 as cp
-from cisco_toolkit import assertions, cmdio, gate_state, input_custody, manifest
+from cisco_toolkit import (
+    assertions,
+    cmdio,
+    gate_state,
+    input_custody,
+    manifest,
+    traffic_assurance,
+)
+
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def _args(**changes):
@@ -301,6 +312,25 @@ def test_traffic_intents_preflight_preserves_bound_rows_and_rejects_identity_amb
         path.write_text(json.dumps({"intents": rows}), encoding="utf-8")
         with pytest.raises(ValueError, match=error):
             cp._preflight_optional_inputs(_args(traffic_intents=str(path)))
+
+
+def test_tracked_traffic_intents_example_is_bound_and_semantically_valid():
+    path = ROOT / "traffic-intents.example.json"
+
+    loaded = cp._preflight_optional_inputs(_args(traffic_intents=str(path)))
+    result = traffic_assurance.assess_flows({}, loaded["traffic_intents"])
+
+    assert loaded["records"][0]["role"] == "traffic_intents"
+    assert loaded["bindings"][0]["role"] == "traffic_intents"
+    assert result["summary"]["n"] == len(loaded["traffic_intents"])
+    assert result["summary"]["invalid"] == 0
+    assert all(row["valid"] for row in result["results"])
+    assert all(row["supported"] for row in result["results"])
+    assert all(row["verdict"] == "indeterminate" for row in result["results"])
+    failure = result["results"][1]["failure"]
+    assert failure["requested"] is True
+    assert failure["action"] == "fail_node"
+    assert failure["mutation"]["valid"] is True
 
 
 def test_devices_are_parsed_from_the_same_bytes_recorded_for_custody(tmp_path):
