@@ -41,8 +41,17 @@ projection manifest remains unchanged, while every generated `.mjs` payload in
 Worker serves that member at the original virtual module URL with explicit gzip
 and JavaScript response headers. Build tests require exact module-census and
 SHA-256 agreement, gunzip equivalence, no uncompressed deployment duplicate,
-and a complete expanded `dist` below the Sites limit. The authored `public`
-projection and offline reference corpus remain uncompressed and source-bound.
+and a complete expanded `dist` below the Sites limit. For body-bearing GETs
+whose asset binding omits encoding metadata—including when it infers
+JavaScript from the compound suffix—the Worker accepts the response only after
+replay-safe validation against the
+[`CANONICAL_GZIP_HEADER_BYTES`](build/gzip-contract.js) owner registered in
+[`docs/ssot.md`](../docs/ssot.md); ambiguous plaintext remains a categorical
+failure. Metadata-only HEAD accepts an encoded-asset MIME but refuses the
+ambiguous JavaScript/no-encoding tuple. Full-member hash and gunzip proof
+remains a build/deployment receipt rather than a runtime-prefix claim. The
+authored `public` projection and offline reference corpus remain uncompressed
+and source-bound.
 
 The Python side is independently gated:
 

@@ -48,6 +48,11 @@ falsifiable fact and cite where it is checkable (a file, a test, or a commit).
 - Release provenance, privacy, correctness, and reproducibility are separate proof axes. The old release
   gate proved origin exhaustively but never ran the tagged code's suite, so v3.32.0 shipped from a red
   commit; the current gate tests the tag's own content. Evidence: `.github/workflows/release-selfhosted.yml`.
+- A Sites asset binding can return a stored `.mjs.gz` body with JavaScript MIME and no
+  `Content-Encoding`; MIME and compound suffix alone therefore cannot prove whether the body is encoded.
+  Validate the registered canonical gzip prefix before replaying a missing-encoding GET, and exercise the
+  exact tuple across the Workerd HTTP boundary. Evidence: `master-reference/worker/index.ts` +
+  `master-reference/tests/rendered-html.test.mjs` (`serves the exact live Sites-inferred metadata tuple`).
 - Memory consolidation deletes "superseded" facts on a schedule, so a rarely-referenced safety
   constraint survives only via the protected tier marker `protected: true`. Evidence:
   `cisco_toolkit/memory_guard.py` (D12) + the out-of-repo `anthropic-skills:consolidate-memory` skill.

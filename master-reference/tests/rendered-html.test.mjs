@@ -7,10 +7,33 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Miniflare } from "miniflare";
 
+import { CANONICAL_GZIP_HEADER_BYTES } from "../build/gzip-contract.js";
+
 const root = new URL("../", import.meta.url);
 const workerUrl = new URL("../dist/server/index.js", import.meta.url);
 workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
 const { default: worker } = await import(workerUrl.href);
+
+function canonicalGzip(source) {
+  const encoded = gzipSync(source, { level: 9 });
+  Buffer.from(CANONICAL_GZIP_HEADER_BYTES).copy(encoded, 0);
+  return encoded;
+}
+
+function noncanonicalGzip(source) {
+  const encoded = canonicalGzip(source);
+  encoded[CANONICAL_GZIP_HEADER_BYTES.length - 1] = 0x00;
+  return encoded;
+}
+
+function byteStream(chunks) {
+  return new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
+}
 
 async function render(path = "/") {
   return worker.fetch(
@@ -36,6 +59,32 @@ async function sourceFiles(directory) {
     else files.push(path);
   }
   return files;
+}
+
+async function miniflareWithAssets(directory) {
+  const serverRoot = fileURLToPath(new URL("../dist/server/", import.meta.url));
+  const entry = join(serverRoot, "index.js");
+  const serverModules = (await sourceFiles(serverRoot))
+    .filter((path) => path.endsWith(".js"))
+    .sort();
+  return new Miniflare({
+    modulesRoot: serverRoot,
+    modules: [entry, ...serverModules.filter((path) => path !== entry)].map((path) => ({
+      type: "ESModule",
+      path,
+    })),
+    unsafeDevRegistry: false,
+    compatibilityDate: "2026-08-01",
+    compatibilityFlags: ["nodejs_compat"],
+    assets: {
+      directory,
+      binding: "ASSETS",
+      routerConfig: {
+        invoke_user_worker_ahead_of_assets: false,
+        has_user_worker: true,
+      },
+    },
+  });
 }
 
 test("hardens every HTML response at the Worker boundary", async () => {
@@ -219,7 +268,78 @@ test("fails closed for unavailable or invalid projection module assets", async (
         },
       },
       status: 502,
-      code: "asset_metadata_invalid",
+      code: "asset_representation_invalid",
+    },
+    {
+      name: "encoded MIME with a noncanonical gzip header",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: {
+        ASSETS: {
+          fetch: async () => new Response(noncanonicalGzip(Buffer.from("not canonical")), {
+            headers: { "content-type": "application/gzip" },
+          }),
+        },
+      },
+      status: 502,
+      code: "asset_representation_invalid",
+    },
+    {
+      name: "encoded MIME with plaintext body",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: {
+        ASSETS: {
+          fetch: async () => new Response("not gzip", {
+            headers: { "content-type": "application/gzip" },
+          }),
+        },
+      },
+      status: 502,
+      code: "asset_representation_invalid",
+    },
+    {
+      name: "short gzip representation",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: {
+        ASSETS: {
+          fetch: async () => new Response(Uint8Array.from([0x1f, 0x8b, 0x08]), {
+            headers: { "content-type": "application/gzip" },
+          }),
+        },
+      },
+      status: 502,
+      code: "asset_representation_invalid",
+    },
+    {
+      name: "projection body read failure",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: {
+        ASSETS: {
+          fetch: async () => new Response(new ReadableStream({
+            pull() {
+              throw new Error("private stream failure");
+            },
+          }), { headers: { "content-type": "application/gzip" } }),
+        },
+      },
+      status: 502,
+      code: "asset_representation_invalid",
+    },
+    {
+      name: "locked projection body",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: {
+        ASSETS: {
+          fetch: async () => {
+            const upstream = new Response(canonicalGzip(Buffer.from("locked")), {
+              headers: { "content-type": "application/gzip" },
+            });
+            upstream.body.getReader();
+            return upstream;
+          },
+        },
+      },
+      status: 502,
+      code: "asset_representation_invalid",
     },
   ];
 
@@ -252,6 +372,9 @@ test("fails closed for unavailable or invalid projection module assets", async (
     "application/gzip+json",
     "gzip, br",
     "encoded HTML",
+    "not gzip",
+    "private stream failure",
+    "ReadableStream is locked",
   ]) {
     assert.ok(!joinedDiagnostics.includes(forbidden), `diagnostic leaked ${forbidden}`);
   }
@@ -259,7 +382,7 @@ test("fails closed for unavailable or invalid projection module assets", async (
 
 test("serves every virtual projection module from its exact gzip asset", async () => {
   const source = Buffer.from("export const exact = 'source-bound';\n", "utf8");
-  const encoded = gzipSync(source, { level: 9 });
+  const encoded = canonicalGzip(source);
   let requestedPath = "";
   const response = await worker.fetch(
     new Request("http://localhost/atlas-projection/identity.mjs"),
@@ -286,6 +409,94 @@ test("serves every virtual projection module from its exact gzip asset", async (
   assert.equal(response.headers.get("vary"), "Accept-Encoding");
   assert.match(response.headers.get("cache-control") ?? "", /no-store/);
   assert.deepEqual(gunzipSync(Buffer.from(await response.arrayBuffer())), source);
+});
+
+test("accepts Sites-inferred JavaScript MIME only for canonical gzip bytes", async () => {
+  const source = Buffer.from("export const exact = 'sites-inferred-source-bound';\n", "utf8");
+  const encoded = canonicalGzip(source);
+  const response = await worker.fetch(
+    new Request("http://localhost/atlas-projection/identity.mjs"),
+    {
+      ASSETS: {
+        fetch: async () => new Response(
+          byteStream([...encoded].map((value) => Uint8Array.of(value))),
+          {
+            headers: {
+              "content-length": String(encoded.byteLength),
+              "content-type": "text/javascript; charset=utf-8",
+            },
+          },
+        ),
+      },
+    },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-encoding"), "gzip");
+  assert.match(response.headers.get("content-type") ?? "", /^text\/javascript\b/i);
+  assert.equal(response.headers.get("vary"), "Accept-Encoding");
+  assert.match(response.headers.get("cache-control") ?? "", /no-store/);
+  const replayed = Buffer.from(await response.arrayBuffer());
+  assert.deepEqual(replayed, encoded);
+  assert.deepEqual(gunzipSync(replayed), source);
+});
+
+test("sanitizes stream failures and cancellation after canonical-prefix acceptance", async () => {
+  let deliveredPrefix = false;
+  const failingResponse = await worker.fetch(
+    new Request("http://localhost/atlas-projection/identity.mjs"),
+    {
+      ASSETS: {
+        fetch: async () => new Response(new ReadableStream({
+          pull(controller) {
+            if (!deliveredPrefix) {
+              deliveredPrefix = true;
+              controller.enqueue(Uint8Array.from(CANONICAL_GZIP_HEADER_BYTES));
+              return;
+            }
+            throw new Error("private downstream failure");
+          },
+        }), { headers: { "content-type": "application/gzip" } }),
+      },
+    },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+  assert.equal(failingResponse.status, 200);
+  await assert.rejects(
+    failingResponse.arrayBuffer(),
+    (error) => {
+      assert.equal(error.message, "Atlas projection stream failed");
+      assert.ok(!String(error).includes("private downstream failure"));
+      return true;
+    },
+  );
+
+  let upstreamCancelReason = "not-called";
+  let deliveredCancellationPrefix = false;
+  const cancellableResponse = await worker.fetch(
+    new Request("http://localhost/atlas-projection/identity.mjs"),
+    {
+      ASSETS: {
+        fetch: async () => new Response(new ReadableStream({
+          pull(controller) {
+            if (!deliveredCancellationPrefix) {
+              deliveredCancellationPrefix = true;
+              controller.enqueue(Uint8Array.from(CANONICAL_GZIP_HEADER_BYTES));
+            }
+          },
+          cancel(reason) {
+            upstreamCancelReason = reason;
+            throw new Error("private cancellation failure");
+          },
+        }), { headers: { "content-type": "application/gzip" } }),
+      },
+    },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+  assert.equal(cancellableResponse.status, 200);
+  await cancellableResponse.body.cancel("private downstream reason");
+  assert.equal(upstreamCancelReason, undefined);
 });
 
 test("accepts Sites metadata for already gzip-encoded projection assets", async () => {
@@ -323,7 +534,9 @@ test("accepts Sites metadata for already gzip-encoded projection assets", async 
   }
 });
 
-test("preserves fail-closed HEAD semantics for projection modules", async () => {
+test("preserves fail-closed HEAD semantics for projection modules", async (context) => {
+  const diagnostics = [];
+  context.mock.method(console, "error", (message) => diagnostics.push(String(message)));
   let upstreamMethod = "";
   const success = await worker.fetch(
     new Request("http://localhost/atlas-projection/identity.mjs", { method: "HEAD" }),
@@ -352,6 +565,49 @@ test("preserves fail-closed HEAD semantics for projection modules", async () => 
   assert.equal(success.headers.get("x-content-type-options"), "nosniff");
   assert.equal((await success.arrayBuffer()).byteLength, 0);
 
+  const encodedMimeWithoutEncoding = await worker.fetch(
+    new Request("http://localhost/atlas-projection/identity.mjs", { method: "HEAD" }),
+    {
+      ASSETS: {
+        fetch: async () => new Response(null, {
+          headers: {
+            "content-length": "47",
+            "content-type": "application/gzip",
+          },
+        }),
+      },
+    },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+  assert.equal(encodedMimeWithoutEncoding.status, 200);
+  assert.equal(encodedMimeWithoutEncoding.headers.get("content-encoding"), "gzip");
+  assert.equal((await encodedMimeWithoutEncoding.arrayBuffer()).byteLength, 0);
+
+  const ambiguousJavaScript = await worker.fetch(
+    new Request("http://localhost/atlas-projection/identity.mjs", { method: "HEAD" }),
+    {
+      ASSETS: {
+        fetch: async () => new Response(null, {
+          headers: {
+            "content-length": "47",
+            "content-type": "text/javascript; charset=utf-8",
+          },
+        }),
+      },
+    },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+  assert.equal(ambiguousJavaScript.status, 502);
+  assert.equal(
+    ambiguousJavaScript.headers.get("x-atlas-projection-error"),
+    "asset_metadata_invalid",
+  );
+  assert.equal((await ambiguousJavaScript.arrayBuffer()).byteLength, 0);
+  assert.equal(diagnostics.length, 1);
+  assert.match(diagnostics[0], /"code":"asset_metadata_invalid"/);
+  assert.match(diagnostics[0], /"contentEncoding":"missing"/);
+  assert.match(diagnostics[0], /"contentType":"javascript"/);
+
   const unavailable = await worker.fetch(
     new Request("http://localhost/atlas-projection/identity.mjs", { method: "HEAD" }),
     undefined,
@@ -369,7 +625,7 @@ test("serves projection gzip as browser-decodable JavaScript through Workerd", a
     const projection = join(scratch, "atlas-projection");
     await mkdir(projection, { recursive: true });
     const source = await readFile(new URL("../public/atlas-projection/identity.mjs", import.meta.url));
-    const encoded = gzipSync(source, { level: 9 });
+    const encoded = canonicalGzip(source);
     await writeFile(join(projection, "identity.mjs.gz"), encoded);
     const deployableHeaders = await readFile(new URL("../dist/client/_headers", import.meta.url));
     const trackedHeaders = await readFile(new URL("../public/_headers", import.meta.url));
@@ -393,29 +649,7 @@ test("serves projection gzip as browser-decodable JavaScript through Workerd", a
     assert.deepEqual(deployableHeaders, trackedHeaders);
     await writeFile(join(scratch, "_headers"), deployableHeaders);
 
-    const serverRoot = fileURLToPath(new URL("../dist/server/", import.meta.url));
-    const entry = join(serverRoot, "index.js");
-    const serverModules = (await sourceFiles(serverRoot))
-      .filter((path) => path.endsWith(".js"))
-      .sort();
-    miniflare = new Miniflare({
-      modulesRoot: serverRoot,
-      modules: [entry, ...serverModules.filter((path) => path !== entry)].map((path) => ({
-        type: "ESModule",
-        path,
-      })),
-      unsafeDevRegistry: false,
-      compatibilityDate: "2026-08-01",
-      compatibilityFlags: ["nodejs_compat"],
-      assets: {
-        directory: scratch,
-        binding: "ASSETS",
-        routerConfig: {
-          invoke_user_worker_ahead_of_assets: false,
-          has_user_worker: true,
-        },
-      },
-    });
+    miniflare = await miniflareWithAssets(scratch);
 
     const physical = await miniflare.dispatchFetch(
       "http://localhost/atlas-projection/identity.mjs.gz",
@@ -428,6 +662,62 @@ test("serves projection gzip as browser-decodable JavaScript through Workerd", a
     assert.match(physical.headers.get("cache-control") ?? "", /no-store/);
     assert.equal(physical.headers.get("cross-origin-resource-policy"), "same-origin");
     assert.equal(physical.headers.get("x-content-type-options"), "nosniff");
+    assert.deepEqual(Buffer.from(await physical.arrayBuffer()), encoded);
+
+    const response = await miniflare.dispatchFetch(
+      "http://localhost/atlas-projection/identity.mjs",
+      { headers: { "Accept-Encoding": "gzip" } },
+    );
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type") ?? "", /^text\/javascript\b/i);
+    assert.equal(
+      response.headers.get("content-encoding") ?? response.headers.get("mf-content-encoding"),
+      "gzip",
+    );
+    assert.equal(response.headers.get("vary"), "Accept-Encoding");
+    assert.match(response.headers.get("cache-control") ?? "", /no-store/);
+    const decoded = Buffer.from(await response.arrayBuffer());
+    assert.deepEqual(decoded, source);
+    const loaded = await import(`data:text/javascript;base64,${decoded.toString("base64")}`);
+    assert.equal(loaded.identity.status, "complete");
+    assert.equal(loaded.identity.releaseClass, "exact_commit");
+  } finally {
+    if (miniflare) await miniflare.dispose();
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("serves the exact live Sites-inferred metadata tuple through Workerd", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "atlas-worker-sites-metadata-"));
+  let miniflare;
+  try {
+    const projection = join(scratch, "atlas-projection");
+    await mkdir(projection, { recursive: true });
+    const source = await readFile(new URL("../public/atlas-projection/identity.mjs", import.meta.url));
+    const encoded = canonicalGzip(source);
+    await writeFile(join(projection, "identity.mjs.gz"), encoded);
+    await writeFile(
+      join(scratch, "_headers"),
+      [
+        "/atlas-projection/*.mjs.gz",
+        "  ! Content-Encoding",
+        "  Cache-Control: private, no-cache, no-store, must-revalidate",
+        "  Content-Type: text/javascript; charset=utf-8",
+        "  Cross-Origin-Resource-Policy: same-origin",
+        "  X-Content-Type-Options: nosniff",
+        "",
+      ].join("\n"),
+    );
+    miniflare = await miniflareWithAssets(scratch);
+
+    const physical = await miniflare.dispatchFetch(
+      "http://localhost/atlas-projection/identity.mjs.gz",
+      { headers: { "Accept-Encoding": "gzip" } },
+    );
+    assert.equal(physical.status, 200);
+    assert.match(physical.headers.get("content-type") ?? "", /^text\/javascript\b/i);
+    assert.equal(physical.headers.get("content-encoding"), null);
+    assert.equal(physical.headers.get("mf-content-encoding"), "gzip");
     assert.deepEqual(Buffer.from(await physical.arrayBuffer()), encoded);
 
     const response = await miniflare.dispatchFetch(

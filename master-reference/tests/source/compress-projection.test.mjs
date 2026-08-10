@@ -3,9 +3,11 @@ import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { dirname, join } from "node:path";
-import test from "node:test";
-import { gunzip } from "node:zlib";
 import { promisify } from "node:util";
+import { gunzip } from "node:zlib";
+import test from "node:test";
+
+import { CANONICAL_GZIP_HEADER_BYTES } from "../../build/gzip-contract.js";
 import { compressProjection } from "../../build/compress-projection.mjs";
 
 const gunzipAsync = promisify(gunzip);
@@ -72,6 +74,18 @@ async function listCompressed(root) {
 }
 
 test("projection compression is deterministic, lossless, and preserves the projection manifest", async () => {
+  assert.deepEqual(CANONICAL_GZIP_HEADER_BYTES, [
+    0x1f,
+    0x8b,
+    0x08,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x02,
+    0xff,
+  ]);
   const scratch = await mkdtemp(join(os.tmpdir(), "atlas-compression-determinism-"));
   try {
     const first = await writeFixture(join(scratch, "first"));
@@ -91,6 +105,10 @@ test("projection compression is deterministic, lossless, and preserves the proje
       const firstGzip = await readFile(join(first.projection, ...`${path}.gz`.split("/")));
       const secondGzip = await readFile(join(second.projection, ...`${path}.gz`.split("/")));
       assert.deepEqual(firstGzip, secondGzip);
+      assert.deepEqual(
+        [...firstGzip.subarray(0, CANONICAL_GZIP_HEADER_BYTES.length)],
+        CANONICAL_GZIP_HEADER_BYTES,
+      );
       assert.deepEqual(await gunzipAsync(firstGzip), first.values.get(path));
     }
     const receipt = JSON.parse(await readFile(join(first.projection, "compression-manifest.json"), "utf8"));

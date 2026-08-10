@@ -20,6 +20,8 @@ import { promisify } from "node:util";
 import { constants, crc32, deflateRaw, gunzip } from "node:zlib";
 import { pathToFileURL } from "node:url";
 
+import { CANONICAL_GZIP_HEADER_BYTES } from "./gzip-contract.js";
+
 const RECEIPT_NAME = "compression-manifest.json";
 const PROJECTION_MANIFEST_NAME = "projection-manifest.json";
 const CONCURRENCY = 4;
@@ -158,7 +160,7 @@ async function deterministicGzip(original) {
   const deflated = await deflateRawAsync(original, { level: constants.Z_BEST_COMPRESSION });
   // RFC 1952 header: no optional fields, zero mtime, best-compression XFL,
   // and OS=unknown. This prevents host metadata from entering the artifact.
-  const header = Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0, 0, 0, 0, 0x02, 0xff]);
+  const header = Buffer.from(CANONICAL_GZIP_HEADER_BYTES);
   const trailer = Buffer.alloc(8);
   trailer.writeUInt32LE(crc32(original) >>> 0, 0);
   trailer.writeUInt32LE(original.byteLength >>> 0, 4);
