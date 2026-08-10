@@ -28,6 +28,7 @@ _REQUIRED_RUNTIME_MEMBERS = frozenset(
         "cisco_toolkit/data/oui_registry.tsv.gz",
         "cisco_toolkit/data/port_registry.tsv.gz",
         "cisco_toolkit/data/registry_manifest.json",
+        "cisco_toolkit/data/traffic-intents.example.json",
     }
 )
 _REQUIRED_SDIST_MEMBERS = _REQUIRED_RUNTIME_MEMBERS | {"pyproject.toml"}

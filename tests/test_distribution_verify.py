@@ -7,13 +7,20 @@ import io
 import json
 import os
 import re
+import runpy
 import shutil
 import subprocess
 import tarfile
+import tomllib
 import zipfile
 from pathlib import Path, PurePosixPath
 
 import pytest
+
+from tools.audit_wheel import (
+    _REQUIRED_RUNTIME_MEMBERS,
+    _REQUIRED_SDIST_MEMBERS,
+)
 
 from cisco_toolkit import distribution_verify
 from cisco_toolkit.distribution_verify import (
@@ -79,6 +86,55 @@ def test_build_backend_uses_exact_nonvulnerable_tool_versions():
     assert "setuptools==80.9.0" not in pyproject
     assert "wheel==0.45.1" not in pyproject
     assert "wheel==0.46.2" not in pyproject
+
+
+def test_traffic_intents_example_has_one_reconciled_distribution_owner():
+    relative = "cisco_toolkit/data/traffic-intents.example.json"
+    matches = sorted(
+        path.relative_to(ROOT).as_posix()
+        for path in ROOT.rglob("traffic-intents.example.json")
+        if not any(part in {".git", "build", "dist"} for part in path.parts)
+    )
+    assert matches == [relative]
+
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    package_data = project["tool"]["setuptools"]["package-data"]["cisco_toolkit"]
+    assert "data/traffic-intents.example.json" in package_data
+
+    manifest_lines = (
+        (ROOT / "MANIFEST.in").read_text(encoding="utf-8").splitlines()
+    )
+    assert any(
+        fields[:2] == ["recursive-include", "cisco_toolkit"]
+        and "*.json" in fields[2:]
+        for fields in (line.split() for line in manifest_lines)
+    )
+
+    assert _expected_runtime_inventory(ROOT)[relative] == _PROVENANCE_REQUIRED
+    assert relative in _REQUIRED_RUNTIME_MEMBERS
+    assert relative in _REQUIRED_SDIST_MEMBERS
+
+
+def test_setup_guard_behaviorally_rejects_missing_traffic_intents_example(
+    monkeypatch,
+):
+    relative = "cisco_toolkit/data/traffic-intents.example.json"
+    catalog = (ROOT / relative).resolve()
+    original_is_file = Path.is_file
+
+    def is_file_except_catalog(path: Path) -> bool:
+        if path.resolve() == catalog:
+            return False
+        return original_is_file(path)
+
+    monkeypatch.setattr(Path, "is_file", is_file_except_catalog)
+
+    import setuptools
+
+    monkeypatch.setattr(setuptools, "setup", lambda **_kwargs: None)
+    native_relative = str(Path("cisco_toolkit") / "data" / "traffic-intents.example.json")
+    with pytest.raises(RuntimeError, match=re.escape(native_relative)):
+        runpy.run_path(str(ROOT / "setup.py"), run_name="__main__")
 
 
 def test_privacy_boundary_rejects_tests_office_files_and_non_sample_snapshots():
@@ -465,6 +521,7 @@ def _lay_out_probe_project(project: Path) -> None:
         "cisco_toolkit/data/oui_registry.tsv.gz",
         "cisco_toolkit/data/port_registry.tsv.gz",
         "cisco_toolkit/data/registry_manifest.json",
+        "cisco_toolkit/data/traffic-intents.example.json",
         "cisco_toolkit/blast_radius_explorer.html",
         "webapp/__init__.py",
         "webapp/backend/app.py",

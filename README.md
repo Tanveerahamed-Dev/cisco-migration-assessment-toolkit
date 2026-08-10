@@ -159,7 +159,7 @@ python COLLECT_PARSE_V3_23_0.py --trend wave0.snapshot.json wave1.snapshot.json 
 python COLLECT_PARSE_V3_23_0.py \
     --devices-file devices.json \
     --template Migration_Assessment_Template_Updated.xlsx \
-    --traffic-intents traffic-intents.example.json
+    --traffic-intents cisco_toolkit/data/traffic-intents.example.json
 
 # See every option
 python COLLECT_PARSE_V3_23_0.py --help
@@ -179,7 +179,8 @@ Useful flags: `--workers N` (parallel SSH workers, default 5; `1` = sequential),
 baseline for the **Golden-Config Drift** sheet — omit to auto-derive it from the
 fleet majority), `--flow-src IP` / `--flow-dst IP` (add an optional flow-trace
 sheet between two endpoints), `--traffic-intents FILE` (evaluate the bounded catalog in
-[`traffic-intents.example.json`](traffic-intents.example.json) and add the canonical
+[`cisco_toolkit/data/traffic-intents.example.json`](cisco_toolkit/data/traffic-intents.example.json)
+and add the canonical
 **Traffic Assurance** snapshot/workbook result), and `--redact` (pseudonymize IPs / MACs / serials across the
 **whole output bundle** — the snapshot JSON, the HTML explorer, **and** the always-produced
 `.xlsx` workbook — consistent and subnet-preserving, hostnames kept — so every deliverable can
@@ -201,6 +202,11 @@ sessions, application success, or field behavior; those remain not assessed. The
 `unknown_evidence` snapshot block separately aggregates parser exceptions, suspicious zero-yield,
 and unsupported diagnostic shapes without copying raw evidence or identifiers; it is a triage
 queue, not proof that every vendor syntax is modeled.
+
+The example is package data in both the wheel and source distribution. From an installed toolkit,
+print its absolute path with `python -c "from importlib.resources import files;
+print(files('cisco_toolkit').joinpath('data/traffic-intents.example.json'))"`, then pass that path to
+`cisco-assess --traffic-intents`.
 
 ### Devices file
 

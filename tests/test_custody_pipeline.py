@@ -1,8 +1,8 @@
 """Focused regressions for exact current-run custody and fail-closed pipeline inputs."""
 import hashlib
+from importlib.resources import as_file, files
 import json
 import logging
-from pathlib import Path
 import sys
 from types import SimpleNamespace
 
@@ -18,10 +18,6 @@ from cisco_toolkit import (
     manifest,
     traffic_assurance,
 )
-
-
-ROOT = Path(__file__).resolve().parent.parent
-
 
 def _args(**changes):
     base = {
@@ -315,9 +311,9 @@ def test_traffic_intents_preflight_preserves_bound_rows_and_rejects_identity_amb
 
 
 def test_tracked_traffic_intents_example_is_bound_and_semantically_valid():
-    path = ROOT / "traffic-intents.example.json"
-
-    loaded = cp._preflight_optional_inputs(_args(traffic_intents=str(path)))
+    resource = files("cisco_toolkit").joinpath("data/traffic-intents.example.json")
+    with as_file(resource) as path:
+        loaded = cp._preflight_optional_inputs(_args(traffic_intents=str(path)))
     result = traffic_assurance.assess_flows({}, loaded["traffic_intents"])
 
     assert loaded["records"][0]["role"] == "traffic_intents"

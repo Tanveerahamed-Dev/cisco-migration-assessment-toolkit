@@ -140,6 +140,7 @@ cisco_toolkit = [
     "data/*.tsv.gz",
     "data/registry_manifest.json",
     "data/eol-bulletins.json",
+    "data/traffic-intents.example.json",
     "blast_radius_explorer.html",
 ]
 webapp = ["frontend/dist/index.html", "frontend/dist/assets/*", "sample_data/*.json"]

@@ -19,6 +19,7 @@ _REQUIRED = {
     "cisco_toolkit/data/oui_registry.tsv.gz": b"synthetic-oui-pack",
     "cisco_toolkit/data/port_registry.tsv.gz": b"synthetic-port-pack",
     "cisco_toolkit/data/registry_manifest.json": b"{}\n",
+    "cisco_toolkit/data/traffic-intents.example.json": b'{"intents": []}\n',
     "tests/fixtures/show_version.txt": b"synthetic fixture only\n",
     "tests/fixtures/device_info.json": b'{"synthetic": true}\n',
 }
@@ -84,6 +85,7 @@ def test_client_or_generated_source_members_are_rejected(tmp_path: Path, member:
         "pyproject.toml",
         "cisco_toolkit/data/eol-bulletins.json",
         "cisco_toolkit/data/registry_manifest.json",
+        "cisco_toolkit/data/traffic-intents.example.json",
     ),
 )
 def test_required_source_inputs_cannot_silently_disappear(

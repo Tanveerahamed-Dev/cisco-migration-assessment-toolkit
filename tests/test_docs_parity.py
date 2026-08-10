@@ -95,14 +95,15 @@ def test_product_files_exist():
 
 
 def test_traffic_assurance_is_operable_and_release_documented():
-    example_path = ROOT / "traffic-intents.example.json"
+    example_path = ROOT / "cisco_toolkit" / "data" / "traffic-intents.example.json"
     catalog = json.loads(example_path.read_text(encoding="utf-8"))
     assert isinstance(catalog.get("intents"), list) and catalog["intents"]
     assert all(
         {"id", "src", "dst", "protocol", "src_port", "dst_port", "expected"} <= set(row)
         for row in catalog["intents"]
     )
-    assert "--traffic-intents traffic-intents.example.json" in README
+    assert "--traffic-intents cisco_toolkit/data/traffic-intents.example.json" in README
+    assert "from importlib.resources import files" in README
     assert "same-run capture/parser custody" in README
     assert "unknown_evidence" in README
 

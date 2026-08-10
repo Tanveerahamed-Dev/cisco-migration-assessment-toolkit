@@ -1194,6 +1194,7 @@ def _expected_runtime_inventory(root: Path) -> dict[str, str]:
         "cisco_toolkit/data/oui_registry.tsv.gz",
         "cisco_toolkit/data/port_registry.tsv.gz",
         "cisco_toolkit/data/registry_manifest.json",
+        "cisco_toolkit/data/traffic-intents.example.json",
         "cisco_toolkit/blast_radius_explorer.html",
         "webapp/frontend/dist/index.html",
         "webapp/sample_data/sample_fleet.snapshot.json",

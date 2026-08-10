@@ -15,8 +15,8 @@ per change, with verification evidence) lives in
   prevent missing or unmodeled evidence from becoming a hard verdict. Delivery surfaces project
   the one producer result after global redaction; loaded JSON cannot self-certify recomputation.
   The new always-present `unknown_evidence` aggregate exposes parser/coverage blind spots as
-  bounded, identifier-free triage records. A safe operable catalog ships as
-  `traffic-intents.example.json`.
+  bounded, identifier-free triage records. A safe operable catalog ships in both distributions as
+  `cisco_toolkit/data/traffic-intents.example.json`.
 - **`docs/prototypes/fabric/` — a coverage-honest topology engine prototype.** One
   self-contained WebGL2 file that re-solves the fabric *without* a selected device to show what
   its failure strands, instead of only what it can reach (one BFS, ~0.3 ms at 5,000 devices).

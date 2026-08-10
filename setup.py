@@ -14,6 +14,7 @@ _REQUIRED_RUNTIME_ASSETS = (
     _ROOT / "cisco_toolkit" / "data" / "oui_registry.tsv.gz",
     _ROOT / "cisco_toolkit" / "data" / "port_registry.tsv.gz",
     _ROOT / "cisco_toolkit" / "data" / "eol-bulletins.json",
+    _ROOT / "cisco_toolkit" / "data" / "traffic-intents.example.json",
     _ROOT / "reference-data" / "official-sources" / "cisco" / "eol-bulletins.json",
 )
 _missing = [str(path.relative_to(_ROOT)) for path in _REQUIRED_RUNTIME_ASSETS if not path.is_file()]
