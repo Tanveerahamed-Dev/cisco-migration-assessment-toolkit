@@ -10,11 +10,15 @@ from cisco_toolkit import path_assertions as pa
 
 SNAP = {"routes": {
     "A": [{"prefix": "10.0.1.0/24", "source": "connected"},
+          {"prefix": "10.0.12.0/24", "source": "connected"},
           {"prefix": "10.0.2.0/24", "source": "static", "next_hop": "10.0.12.2"}],
     "X": [{"prefix": "10.0.12.0/24", "source": "connected"},
           {"prefix": "10.0.2.0/24", "source": "connected"}],
     "R": [{"prefix": "10.0.3.0/24", "source": "connected"},
           {"prefix": "10.0.4.0/24", "source": "static", "next_hop": "10.0.3.254"}],  # a static route -> R is an L3 router with NO route to 10.0.9.0/24
+}, "interfaces": {
+    "A": {"Gi0/1": {"svi_ip": "10.0.12.1/24"}},
+    "X": {"Gi0/1": {"svi_ip": "10.0.12.2/24"}},
 }}
 
 

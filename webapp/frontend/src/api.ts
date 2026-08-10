@@ -116,6 +116,16 @@ export interface Deliverable {
   label: string;
   ext: string;
   available: boolean;
+  producer?: "engine-cli" | "assesshub-snapshot";
+  engine_cli_member?: boolean;
+  stage?: "pre-cutover";
+}
+
+export interface ArtifactFamilyMeta {
+  pre_cutover: number;
+  engine_cli: number;
+  assesshub_only_pre_cutover: number;
+  conditional_post_execution: number;
 }
 
 // ADR-0004 D1: served from the brand SSOT (cisco_toolkit/brand_tokens.py) — the SPA renders these,
@@ -133,6 +143,7 @@ export interface Meta {
   bands: string[];
   section_labels: Array<{ key: string; label: string }>;
   deliverables: Deliverable[];
+  artifact_family?: ArtifactFamilyMeta;
   app: AppIdentity;
 }
 

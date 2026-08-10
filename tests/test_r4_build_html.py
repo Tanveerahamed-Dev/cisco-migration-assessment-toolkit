@@ -144,6 +144,183 @@ def test_no_global_bpduguard_line_still_leaves_the_field_unasserted(tmp_path):
     assert all((ifaces[p].stp_bpduguard or "") == "" for p in access)
 
 
+def test_global_vlan_filter_merges_only_onto_scoped_interface_observations(tmp_path):
+    """A split run-config capture keeps the global VACL attachment without widening provenance.
+
+    Real collectors commonly store interface sections separately from the full configuration.
+    The former proves which interface blocks were observed; only the latter can carry the global
+    ``vlan filter`` line.  Merging the whole full-config parse would invent interface coverage and
+    could also lend an interface ACL provenance it does not have in the scoped capture.
+    """
+    scoped = """\
+interface Vlan10
+ ip address 10.0.10.2 255.255.255.0
+interface Vlan20
+ ip address 10.0.20.2 255.255.255.0
+"""
+    full = """\
+ip access-list extended FULL_ONLY
+ deny ip any any
+vlan access-map BLOCK_HTTPS 10
+ match ip address FULL_ONLY
+ action drop
+vlan access-map BLOCK_HTTPS 20
+ action forward
+vlan filter BLOCK_HTTPS vlan-list 10,777
+interface Vlan10
+ ip access-group FULL_ONLY in
+interface Vlan20
+ ip access-group FULL_ONLY in
+interface Vlan777
+ ip access-group FULL_ONLY in
+"""
+    c2f = _write_device(
+        tmp_path,
+        "core1",
+        overrides={
+            "show running-config | section ^interface": scoped,
+            "show running-config": full,
+        },
+    )
+
+    ifaces = build.build_interfaces("core1", "ios", c2f)
+
+    assert ifaces["Vlan10"].run_config_observed is True
+    assert ifaces["Vlan10"].vacl_policy == "BLOCK_HTTPS"
+    assert ifaces["Vlan20"].run_config_observed is True
+    assert ifaces["Vlan20"].vacl_policy == ""
+    assert ifaces["Vlan10"].acl_in == ""
+    assert ifaces["Vlan20"].acl_in == ""
+    assert "Vlan777" not in ifaces
+    assert all(not data.vacl_policy for port, data in ifaces.items() if port != "Vlan10")
+
+
+def test_asa_nameif_acl_and_service_policy_bind_to_scoped_physical_interfaces(tmp_path):
+    scoped = """\
+interface GigabitEthernet0/0
+ ip address 192.0.2.1 255.255.255.0
+interface GigabitEthernet0/1
+ ip address 10.0.0.1 255.255.255.0
+"""
+    full = """\
+interface GigabitEthernet0/0
+ nameif outside
+ security-level 0
+ ip address 192.0.2.1 255.255.255.0
+interface GigabitEthernet0/1
+ nameif inside
+ security-level 100
+ ip address 10.0.0.1 255.255.255.0
+interface GigabitEthernet0/9
+ nameif full-only
+ security-level 50
+access-list BLOCK extended deny tcp any any eq 443
+access-group BLOCK in interface outside
+service-policy INSPECT interface inside
+"""
+    c2f = _write_device(
+        tmp_path,
+        "core1",
+        overrides={
+            "show running-config | section ^interface": scoped,
+            "show running-config": full,
+        },
+    )
+
+    ifaces = build.build_interfaces("core1", "asa", c2f)
+
+    assert ifaces["Gi0/0"].global_acl_in == "BLOCK"
+    assert "asa_stateful_firewall" in ifaces["Gi0/0"].global_policy_gates
+    assert "asa_interface_service_policy" in ifaces["Gi0/1"].global_policy_gates
+    assert "asa_stateful_firewall" in ifaces["Gi0/1"].global_policy_gates
+    assert "outside" not in ifaces and "inside" not in ifaces
+    assert "Gi0/9" not in ifaces
+
+
+def test_forwarding_gate_registry_evidence_survives_scoped_and_global_build_merge(tmp_path):
+    scoped = """\
+interface Vlan10
+ ip address 10.0.10.2 255.255.255.0
+ cts role-based enforcement
+ ip wccp 61 redirect in
+ mpls ip
+ mpls mtu 1600
+ ip ips SENSOR in
+ ip admission NAC
+interface GigabitEthernet0/1
+ ip address 10.0.12.1 255.255.255.252
+"""
+    full = """\
+cts role-based enforcement vlan-list 10
+ip tcp intercept list TCP-INTERCEPT
+ip tcp intercept mode intercept
+router bgp 65000
+ address-family ipv4 flowspec
+  local-install interface-all
+interface Vlan10
+ ip address 10.0.10.2 255.255.255.0
+interface GigabitEthernet0/1
+ ip address 10.0.12.1 255.255.255.252
+interface Vlan777
+ cts role-based enforcement
+"""
+    c2f = _write_device(
+        tmp_path,
+        "core1",
+        overrides={
+            "show running-config | section ^interface": scoped,
+            "show running-config": full,
+        },
+    )
+
+    ifaces = build.build_interfaces("core1", "ios", c2f)
+
+    assert set(ifaces["Vlan10"].trustsec_sgacl.split(",")) == {
+        "interface_enforcement", "vlan_enforcement",
+    }
+    assert ifaces["Vlan10"].wccp_redirection_in == "configured"
+    assert ifaces["Vlan10"].mpls_forwarding == "configured"
+    assert ifaces["Vlan10"].mpls_mtu == "1600"
+    assert ifaces["Vlan10"].ips_policy_in == "configured"
+    assert ifaces["Vlan10"].admission_policy == "configured"
+    for interface in ("Vlan10", "Gi0/1"):
+        record = ifaces[interface]
+        assert set(record.tcp_intercept.split(",")) == {"acl_bound", "intercept_mode"}
+        assert set(record.flowspec_policy.split(",")) == {"address_family", "local_install"}
+    assert "Vlan777" not in ifaces
+
+
+def test_full_config_interface_candidate_missing_from_scoped_capture_becomes_fixed_gap(tmp_path):
+    scoped = """\
+interface Vlan10
+ ip address 10.0.10.2 255.255.255.0
+ ip wccp 62 redirect out
+"""
+    full = """\
+interface Vlan10
+ ip address 10.0.10.2 255.255.255.0
+ ip wccp PRIVATE_SERVICE redirect in
+"""
+    c2f = _write_device(
+        tmp_path,
+        "core1",
+        overrides={
+            "show running-config | section ^interface": scoped,
+            "show running-config": full,
+        },
+    )
+
+    record = build.build_interfaces("core1", "ios", c2f)["Vlan10"]
+
+    assert record.wccp_redirection_in == ""
+    assert record.wccp_redirection_out == "configured"
+    assert {"wccp_redirection_in", "wccp_redirection_out"} <= set(
+        record.forwarding_gate_candidates.split(",")
+    )
+    assert record.forwarding_gate_unmodeled == "candidate_projection_incomplete"
+    assert "PRIVATE_SERVICE" not in json.dumps(record.__dict__)
+
+
 # ======================================================================================
 # BH-3  build.py :: build_interfaces -- 'Neighbor Switch VTP Domain' was THIS switch's own
 #       domain, so the mismatch check it exists for could only ever read 'they match'.

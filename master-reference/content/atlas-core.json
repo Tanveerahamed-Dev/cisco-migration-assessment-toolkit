@@ -115,9 +115,9 @@
     {
       "id": "owner.rest.collection",
       "path": "cisco_toolkit/rest_collect.py",
-      "symbol": "collect_apic / collect_vmanage",
+      "symbol": "CONTROLLER_COLLECTORS / collect_apic / collect_vmanage / collect_ise / collect_fmc",
       "kind": "code-owner",
-      "claim_scope": "Opt-in, HTTPS, GET-after-login APIC and vManage collection."
+      "claim_scope": "Opt-in HTTPS evidence collection for APIC, vManage, ISE, and FMC; dedicated read-only RBAC is the hard control and the only non-GET requests are authentication logins."
     },
     {
       "id": "owner.explorer",
@@ -127,11 +127,18 @@
       "claim_scope": "Fourteen interactive Explorer modes and digital design-token owner."
     },
     {
+      "id": "owner.traffic.assurance",
+      "path": "cisco_toolkit/traffic_assurance.py",
+      "symbol": "assess_flow / assess_flows / build_traffic_evidence_custody",
+      "kind": "code-owner",
+      "claim_scope": "Bounded offline synthetic IPv4 TCP/UDP assurance over scoped RIB, stateless interface ACL, per-hop MTU, ECMP, current-run evidence custody with scoped-route projection receipts, and an optional single node/site/link failure; no stateful session, NAT, live-traffic, application-success, or field-validation claim."
+    },
+    {
       "id": "owner.deliverable.family",
       "path": "cisco_toolkit/docmeta.py",
-      "symbol": "FAMILY / CLI_ARTIFACT_SUFFIX / WEB_ONLY_KINDS",
+      "symbol": "ARTIFACT_SPECS / artifact_family_metadata",
       "kind": "code-owner",
-      "claim_scope": "Twelve-member deliverable family, ten CLI artifacts, and two web-only artifacts."
+      "claim_scope": "Thirteen-record artifact lifecycle: twelve pre-cutover artifacts (ten engine CLI and two AssessHub-only) plus the conditional post-execution PIR."
     },
     {
       "id": "owner.manifest",
@@ -206,6 +213,13 @@
       "claim_scope": "Static, local, repository-owned, non-operational master-reference boundary."
     },
     {
+      "id": "owner.reference.capability-ui",
+      "path": "master-reference/app/atlas/CapabilityExplorer.tsx",
+      "symbol": "CapabilityExplorer",
+      "kind": "surface-owner",
+      "claim_scope": "Static capability search, domain/state filtering, owner and gap provenance, accessible table output, and URL-bound filter state."
+    },
+    {
       "id": "owner.learnings",
       "path": "docs/quality/learnings.md",
       "kind": "knowledge-owner",
@@ -249,11 +263,13 @@
     },
     {
       "id": "baseline.deliverables",
-      "statement": "The deliverable family has twelve members: ten produced by a complete engine CLI run and two rendered only by AssessHub.",
+      "statement": "The artifact lifecycle has thirteen records: twelve pre-cutover artifacts, comprising ten from a complete engine CLI run and two AssessHub-only snapshot downloads, plus the conditional post-execution PIR.",
       "value": {
-        "family": 12,
-        "cli": 10,
-        "web_only": 2
+        "lifecycle": 13,
+        "pre_cutover": 12,
+        "engine_cli": 10,
+        "assesshub_only_pre_cutover": 2,
+        "conditional_post_execution": 1
       },
       "owner_refs": ["owner.deliverable.family", "owner.ssot.registry"]
     },
@@ -378,7 +394,7 @@
       "dimension": "delivery-and-governance",
       "level": 4,
       "state": "current",
-      "basis": "The governed workflow and twelve-member deliverable family have explicit owners and verification boundaries.",
+      "basis": "The governed workflow and thirteen-record artifact lifecycle—twelve pre-cutover artifacts plus conditional post-execution PIR—have explicit owners and verification boundaries.",
       "owner_refs": ["owner.operating.doctrine", "owner.deliverable.family", "owner.manifest"]
     },
     {
@@ -601,9 +617,9 @@
         "title": "Stateless policy and reachability permission",
         "questions": ["Does the modeled source, destination, protocol, and port tuple match a stateless permit or deny rule?", "Which ACL or security rule and provenance produced the bounded decision?"],
         "state": "partial",
-        "current_scope": "Explorer provides bounded ACL-oriented L4 simulation and selected configuration checks. It does not imply session establishment, NAT correctness, return-path viability, or runtime rule hits.",
-        "owner_refs": ["owner.explorer", "owner.architecture.coverage"],
-        "gap_refs": ["gap.protocol-depth", "gap.flow-actual-telemetry"]
+        "current_scope": "Traffic Assurance composes one exact declared IPv4 TCP/UDP tuple across requested forward and return directions using a current-run scoped RIB, stateless interface ACLs, observed per-hop MTU, ECMP consistency, and optionally one synthetic node/site/link failure. Positive claims require current-run marked command/parser custody and a matching scoped-route projection receipt; incomplete, ambiguous, PBR/uRPF-affected, VRF-scoped, or unsupported evidence abstains. Explorer retains its bounded ACL lens. Neither surface proves stateful sessions, NAT/PAT, runtime rule hits, observed traffic, application success, or field validation.",
+        "owner_refs": ["owner.traffic.assurance", "owner.explorer", "owner.analysis"],
+        "gap_refs": ["gap.protocol-depth", "gap.flow-stateful", "gap.flow-actual-telemetry", "gap.vendor-lab-evidence"]
       },
       {
         "id": "traffic.stateful-policy",
@@ -611,8 +627,9 @@
         "title": "Stateful policy, NAT, and return path",
         "questions": ["Do forward and return sessions survive firewall state, NAT, identity, proxy, and service-chain behavior?", "Which runtime policy decision and translation provenance allowed, denied, or invalidated the session?"],
         "state": "missing",
-        "current_scope": "Selected firewall and identity detectors exist, but Atlas has no authoritative stateful session, NAT translation, rule-hit, or asymmetric return-path engine.",
-        "gap_refs": ["gap.flow-stateful"]
+        "current_scope": "Selected firewall and identity detectors exist, and the bounded Traffic Assurance engine can evaluate requested forward and reverse synthetic RIB, stateless-ACL, MTU, and ECMP dimensions, but it does not model firewall session state, NAT/PAT translations, zones, identity, time policy, load balancers, proxies, service chains, runtime rule hits, or observed live traffic. Atlas therefore has no authoritative stateful session/NAT engine or field-validated application outcome.",
+        "owner_refs": ["owner.traffic.assurance", "owner.architecture.coverage"],
+        "gap_refs": ["gap.flow-stateful", "gap.flow-actual-telemetry", "gap.vendor-lab-evidence"]
       },
       {
         "id": "traffic.application-service",

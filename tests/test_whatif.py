@@ -10,11 +10,15 @@ from cisco_toolkit import whatif
 
 SNAP = {"routes": {
     "A": [{"prefix": "10.0.1.0/24", "source": "connected", "out_intf": "Vlan1"},
+          {"prefix": "10.0.12.0/24", "source": "connected", "out_intf": "Gi0/1"},
           {"prefix": "10.0.9.0/24", "source": "static", "next_hop": "10.0.12.2"}],
     "X": [{"prefix": "10.0.12.0/24", "source": "connected", "out_intf": "Gi0/0"},
           {"prefix": "10.0.9.0/24", "source": "connected", "out_intf": "Gi0/1"}],
     "C": [{"prefix": "10.0.5.0/24", "source": "connected", "out_intf": "Vlan5"},
           {"prefix": "10.0.6.0/24", "source": "connected", "out_intf": "Vlan6"}],
+}, "interfaces": {
+    "A": {"Gi0/1": {"svi_ip": "10.0.12.1/24"}},
+    "X": {"Gi0/1": {"svi_ip": "10.0.12.2/24"}},
 }}
 PAIRS = [("10.0.1.1", "10.0.9.5"), ("10.0.5.1", "10.0.6.5")]
 

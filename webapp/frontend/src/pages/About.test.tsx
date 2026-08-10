@@ -13,9 +13,15 @@ const META: Meta = {
   bands: [],
   section_labels: [],
   deliverables: [
-    { key: "runbook", label: "Runbook", ext: "docx", available: true },
-    { key: "deck", label: "Executive deck", ext: "pptx", available: true },
+    { key: "runbook", label: "Runbook", ext: "docx", available: true, producer: "engine-cli" },
+    { key: "deck", label: "Executive deck", ext: "pptx", available: true, producer: "engine-cli" },
   ],
+  artifact_family: {
+    pre_cutover: 12,
+    engine_cli: 10,
+    assesshub_only_pre_cutover: 2,
+    conditional_post_execution: 1,
+  },
   app: { name: "Atlas", byline: "by Tanveer Ahamed", title: "Atlas — by Tanveer Ahamed", release: "3.31.0 (checkout)" },
 };
 
@@ -32,7 +38,7 @@ describe("AboutPage", () => {
     expect(await screen.findByText("Atlas — by Tanveer Ahamed")).toBeInTheDocument();
     expect(screen.getByText(/3\.31\.0 \(checkout\)/)).toBeInTheDocument();
     expect(screen.getByText(/3\.23\.0/)).toBeInTheDocument(); // engine schema
-    expect(screen.getByText(/2 documents/)).toBeInTheDocument(); // from meta.deliverables, not a literal
+    expect(screen.getByText(/12 pre-cutover \+ 1 conditional post-execution/)).toBeInTheDocument();
     expect(screen.getByText(/OUI\/port\/EoL knowledge packs/)).toBeInTheDocument();
   });
 

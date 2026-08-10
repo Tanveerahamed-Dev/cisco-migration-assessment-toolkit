@@ -75,6 +75,9 @@ def test_missing_file_is_skipped_not_claimed(tmp_path):
     paths = {"SW1": {"show version": str(tmp_path / "SW1" / "nope.txt")}}
     out = compute_capture_integrity_from_paths(paths)
     assert out["findings"] == [] and out["summary"]["n_findings"] == 0
+    assert out["inspections"] == [{
+        "host": "SW1", "command": "show version", "status": "not_observed",
+    }]
 
 
 def test_existing_but_unreadable_capture_is_a_finding_not_a_silent_skip(tmp_path):

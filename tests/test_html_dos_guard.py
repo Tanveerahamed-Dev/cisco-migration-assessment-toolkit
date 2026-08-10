@@ -114,6 +114,24 @@ def test_slim_for_embed_well_formed_output_unchanged():
     assert out["physical_health"] == [{"severity": "High", "msg": "y"}]
 
 
+def test_slim_for_embed_withholds_unrendered_traffic_sections_without_mutating_snapshot():
+    assurance = {"schema": "traffic_assurance_set/1", "results": [{"verdict": "proven"}]}
+    custody = {"schema": "traffic_evidence_custody/1", "projection_state": "current_run_verified"}
+    snap = {
+        "devices": {"sw1": {}},
+        "interfaces": {},
+        "traffic_assurance": assurance,
+        "traffic_evidence_custody": custody,
+    }
+
+    out = _slim_for_embed(snap)
+
+    assert "traffic_assurance" not in out
+    assert "traffic_evidence_custody" not in out
+    assert snap["traffic_assurance"] is assurance
+    assert snap["traffic_evidence_custody"] is custody
+
+
 def test_write_html_explorer_survives_poisoned_interfaces(tmp_path):
     """End of the explorer chain: the file is still written (a 500 here is the /explorer route's 500)."""
     out = tmp_path / "explorer.html"

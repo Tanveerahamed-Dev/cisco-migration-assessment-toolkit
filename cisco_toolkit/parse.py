@@ -1,9 +1,12 @@
 """Pure show-command parsers + column primitives. Depends only on `re`, stdlib
 typing, and cisco_toolkit.textutils (the leaf layer). Extracted verbatim from
 COLLECT_PARSE_V3_23_0.py in PHASE 2.7 step 2 (behaviour byte-identical)."""
+import ipaddress
 import json
 import logging
 import re
+from dataclasses import dataclass
+from hashlib import sha256
 from typing import Dict, List, Optional, Tuple
 
 from cisco_toolkit.textutils import (
@@ -112,7 +115,7 @@ def _nxos_route_source(token: str) -> str:
     t = str(token or "").strip().lower()
     if t.startswith("direct") or t == "attached":
         return "connected"
-    for name in ("local", "static", "ospf", "bgp", "eigrp", "isis", "rip"):
+    for name in ("local", "static", "ospf", "bgp", "eigrp", "isis", "rip", "lisp", "nhrp"):
         if t.startswith(name):
             return name
     return t
@@ -131,35 +134,246 @@ _ROUTE_SUBCODES = ("IA", "EX", "N1", "N2", "E1", "E2", "L1", "L2", "ia", "su")
 # Of those, only these carry the SOURCE distinction (the IS-IS L1/L2/ia/su are levels, not sources -- an
 # 'i L1' route's source is plain 'isis', and mapping 'su' through code_map would mis-read it as 'static').
 _ROUTE_SOURCE_SUBCODES = ("IA", "EX", "N1", "N2", "E1", "E2")
+_ROUTE_IPV4_PATTERN = r"\d{1,3}(?:\.\d{1,3}){3}"
+# Route annotations are independent of the protocol code.  IOS/IOS-XE can put one before the code (`% S`) or
+# after the primary/sub-code (`C +`, `O IA p`, `L &`); only the candidate-default `*` is commonly attached (`S*`).
+# Capturing those separately is important: treating `S*`/`C+` as the primary code turns a static/connected route
+# into an unknown source and can let a less-specific discard route win downstream.
+_ROUTE_MARKER_PATTERN = r"[*+%p&]"
 _ROUTE_CODE_RE = re.compile(
-    r"^([A-Za-z][A-Za-z0-9\*]*)(?:\s+(" + "|".join(_ROUTE_SUBCODES) + r"))?\s+"
-    r"(\d+\.\d+\.\d+\.\d+/\d+|\d+\.\d+\.\d+\.\d+\s*/\s*\d+)")
+    r"^(?:(?P<leading_marker>" + _ROUTE_MARKER_PATTERN + r")\s+)?"
+    r"(?P<primary>[A-Za-z][A-Za-z0-9]*)"
+    r"(?:(?P<attached_marker>\*)(?P<attached_subcode>" + "|".join(_ROUTE_SUBCODES) + r")?"
+    r"|(?:\s+(?P<subcode>" + "|".join(_ROUTE_SUBCODES) + r")))?"
+    r"(?:\s+(?P<trailing_marker>" + _ROUTE_MARKER_PATTERN + r"))?\s+"
+    r"(?P<address>" + _ROUTE_IPV4_PATTERN + r")"
+    r"(?:(?:\s*/\s*(?P<prefixlen>\d+))|(?:\s+(?P<netmask>" + _ROUTE_IPV4_PATTERN + r")))?"
+    r"(?=\s|$)")
+_ROUTE_SUBNET_HEADER_RE = re.compile(
+    r"^(?P<address>" + _ROUTE_IPV4_PATTERN + r")"
+    r"(?:(?:\s*/\s*(?P<prefixlen>\d+))|(?:\s+(?P<netmask>" + _ROUTE_IPV4_PATTERN + r")))?"
+    r"\s+is\s+(?P<variable>variably\s+)?subnetted,\s*(?P<count>\d+)\s+subnets?\b",
+    re.IGNORECASE,
+)
+_ROUTE_AD_METRIC_RE = re.compile(r"\[\s*([0-9]+)\s*/\s*([0-9]+)\s*\]")
+_ROUTE_NXOS_HEADER_RE = re.compile(
+    r"^(?P<address>" + _ROUTE_IPV4_PATTERN + r")\s*/\s*(?P<prefixlen>\d+)"
+    r",\s*ubest/mbest:\s*(?P<ubest>\d+)\s*/\s*(?P<mbest>\d+)\b",
+    re.IGNORECASE,
+)
+_ROUTE_NXOS_HEADER_CANDIDATE_RE = re.compile(
+    r"^" + _ROUTE_IPV4_PATTERN + r"(?:\s*/\s*\S+)?\s*,\s*ubest/mbest\b",
+    re.IGNORECASE,
+)
+_ROUTE_NXOS_VIA_CANDIDATE_RE = re.compile(r"^\*?\s*via\b", re.IGNORECASE)
+_ROUTE_CANDIDATE_ADDRESS_RE = re.compile(
+    r"(?<![\d.])" + _ROUTE_IPV4_PATTERN + r"(?:\s*/\s*\S+|\s+" + _ROUTE_IPV4_PATTERN + r")?"
+    r"(?=\s|$)"
+)
+
+
+class ParsedRouteTable(dict):
+    """One current-run route parse plus its non-serialized row-completeness receipt.
+
+    ``json.dumps`` treats this as an ordinary mapping and therefore drops ``parse_receipt``.  A loaded snapshot
+    cannot recreate the in-memory proof that every plausible row in the captured table was accounted for.
+    """
+
+    parse_receipt: Dict[str, object]
+
+
+def _plausible_ios_route_candidate(line: str) -> bool:
+    """Conservatively identify an unsupported IOS-style route row without counting legends or headers."""
+    match = _ROUTE_CANDIDATE_ADDRESS_RE.search(line)
+    if match is None:
+        return False
+    leading = line[:match.start()].strip()
+    if not leading:
+        return False  # subnetted and NX-OS prefix headers begin with the destination, not a route code
+    tokens = leading.split()
+    if not 1 <= len(tokens) <= 4:
+        return False
+    if not any(any(ch.isalpha() for ch in token) for token in tokens):
+        return False
+    return all(re.fullmatch(r"[A-Za-z0-9*+%p&_.-]+", token) is not None for token in tokens)
+
+
+def _route_prefix(address: str, prefixlen: str = "", netmask: str = "",
+                  inherited_prefixlen: Optional[int] = None) -> Optional[str]:
+    """Validate one IOS IPv4 route destination and return canonical ``address/prefixlen``.
+
+    IOS can omit the mask beneath a non-variable ``X/Y is subnetted`` header, or render an explicit dotted
+    netmask.  A dotted wildcard/non-contiguous mask is not a route netmask and is rejected rather than silently
+    widened.  The address is intentionally not network-normalized here; the downstream FIB already applies
+    ``strict=False`` and preserving the observed address keeps parser output stable.
+    """
+    try:
+        ip = ipaddress.IPv4Address(address)
+    except (ipaddress.AddressValueError, ValueError):
+        return None
+
+    if prefixlen:
+        try:
+            length = int(prefixlen)
+        except (TypeError, ValueError):
+            return None
+        if not 0 <= length <= 32:
+            return None
+    elif netmask:
+        try:
+            mask_value = int(ipaddress.IPv4Address(netmask))
+        except (ipaddress.AddressValueError, ValueError):
+            return None
+        inverse = mask_value ^ 0xFFFFFFFF
+        if inverse & (inverse + 1):
+            return None
+        length = mask_value.bit_count()
+    elif inherited_prefixlen is not None and 0 <= inherited_prefixlen <= 32:
+        length = inherited_prefixlen
+    else:
+        return None
+    return f"{ip}/{length}"
+
+
+def _route_admin_distance(line: str) -> Optional[int]:
+    """Return the observed AD from one valid Cisco ``[AD/metric]`` token, else ``None``."""
+    match = _ROUTE_AD_METRIC_RE.search(line)
+    if match is None or len(match.group(1)) > 32:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
 
 
 def parse_ip_routes(output: str) -> Dict[str, Dict[str, object]]:
-    routes: Dict[str, Dict[str, object]] = {}
-    if not output:
-        return routes
+    routes = ParsedRouteTable()
+    counts = {
+        "candidate_rows": 0,
+        "parsed_rows": 0,
+        "malformed_candidate_rows": 0,
+        "unexplained_candidate_rows": 0,
+        "ios_candidate_rows": 0,
+        "ios_parsed_rows": 0,
+        "nxos_prefix_blocks": 0,
+        "nxos_expected_ubest_rows": 0,
+        "nxos_via_candidate_rows": 0,
+        "nxos_parsed_via_rows": 0,
+        "nxos_denominator_mismatch_blocks": 0,
+        "nxos_malformed_prefix_blocks": 0,
+        "ios_malformed_subnet_headers": 0,
+    }
+
+    def _count_candidate(family: str) -> None:
+        counts["candidate_rows"] += 1
+        counts[f"{family}_candidate_rows"] += 1
+
+    def _count_parsed(family: str) -> None:
+        counts["parsed_rows"] += 1
+        key = "nxos_parsed_via_rows" if family == "nxos_via" else f"{family}_parsed_rows"
+        counts[key] += 1
+
+    def _count_unparsed(kind: str) -> None:
+        counts[f"{kind}_candidate_rows"] += 1
+
     code_map = {
         'C':'connected','L':'local','S':'static','R':'rip','M':'mobile','B':'bgp','D':'eigrp','EX':'eigrp-external',
         'O':'ospf','IA':'ospf-interarea','N1':'ospf-nssa1','N2':'ospf-nssa2','E1':'ospf-ext1','E2':'ospf-ext2',
-        'i':'isis','su':'static','*':'candidate-default','H':'hsrp'
+        'i':'isis','l':'lisp','su':'static','*':'candidate-default','H':'nhrp'
     }
     current = None
     current_entry = None        # the code-line entry that following indented 'via' continuation line(s) belong to
     current_nxos = False        # inside an NX-OS '<prefix>, ubest/mbest:' block (source/next-hop on the *via lines)
-    for raw in output.splitlines():
+    inherited_prefixlen: Optional[int] = None  # non-variable IOS ``X/Y is subnetted`` header scope
+    inherited_routes_remaining = 0
+    inherited_prefixes = set()
+    current_nxos_expected: Optional[int] = None
+    current_nxos_via_candidates = 0
+
+    def _close_nxos_block() -> None:
+        nonlocal current_nxos, current_nxos_expected, current_nxos_via_candidates
+        if current_nxos_expected is not None \
+                and current_nxos_expected != current_nxos_via_candidates:
+            counts["nxos_denominator_mismatch_blocks"] += 1
+        current_nxos = False
+        current_nxos_expected = None
+        current_nxos_via_candidates = 0
+
+    for raw in (output or "").splitlines():
         line = raw.rstrip()
         s = line.strip()
-        if not s or s.lower().startswith(('gateway of last resort','codes:','route source','is variably subnetted','is subnetted')):
+        if not s:
+            _close_nxos_block()
+            current = current_entry = None
+            inherited_prefixlen = None
+            inherited_routes_remaining = 0
+            inherited_prefixes.clear()
+            continue
+
+        subnet_header = _ROUTE_SUBNET_HEADER_RE.match(s)
+        if subnet_header:
+            # A new header is a hard route-group boundary.  Only the non-variable form promises one mask for its
+            # following unmasked rows; ``is variably subnetted`` explicitly does not.
+            _close_nxos_block()
+            current = current_entry = None
+            inherited_prefixlen = None
+            inherited_routes_remaining = 0
+            inherited_prefixes.clear()
+            header_prefix = _route_prefix(
+                subnet_header.group("address"),
+                subnet_header.group("prefixlen") or "",
+                subnet_header.group("netmask") or "",
+            )
+            if header_prefix is None:
+                counts["ios_malformed_subnet_headers"] += 1
+                continue
+            if not subnet_header.group("variable"):
+                header_count = int(subnet_header.group("count"))
+                if header_count > 0:
+                    inherited_prefixlen = int(header_prefix.rsplit("/", 1)[1])
+                    inherited_routes_remaining = header_count
+            continue
+
+        if s.lower().startswith(('gateway of last resort', 'codes:', 'route source')):
+            _close_nxos_block()
+            current = current_entry = None
+            inherited_prefixlen = None
+            inherited_routes_remaining = 0
+            inherited_prefixes.clear()
             continue
         m = _ROUTE_CODE_RE.match(s)
         if m:
-            sub = m.group(2) or ''
-            code = (m.group(1) + ' ' + sub).strip()        # keep the raw two-token code ('O IA', 'D EX')
+            _close_nxos_block()
+            _count_candidate("ios")
+            sub = m.group("subcode") or m.group("attached_subcode") or ''
+            primary = m.group("primary")
+            attached_code = primary + (m.group("attached_marker") or "") + (
+                m.group("attached_subcode") or ""
+            )
+            code = " ".join(part for part in (
+                m.group("leading_marker"),
+                attached_code,
+                m.group("subcode"),
+                m.group("trailing_marker"),
+            ) if part)
             src = (code_map[sub] if sub in _ROUTE_SOURCE_SUBCODES
-                   else code_map.get(m.group(1), m.group(1).lower()))
-            prefix = m.group(3).replace(' ', '')
+                   else code_map.get(primary, primary.lower()))
+            prefix = _route_prefix(
+                m.group("address"),
+                m.group("prefixlen") or "",
+                m.group("netmask") or "",
+                inherited_prefixlen,
+            )
+            if prefix is None:
+                # A route-looking row with an invalid/absent mask cannot borrow the PREVIOUS prefix.  Keep the
+                # table fail-closed by also severing continuation state, so its following ``via`` line is dropped
+                # rather than grafted onto an unrelated valid route.
+                _count_unparsed("malformed")
+                current = current_entry = None
+                inherited_prefixlen = None
+                inherited_routes_remaining = 0
+                inherited_prefixes.clear()
+                continue
             nh = ''
             out_intf = ''
             mvia = re.search(r"via\s+(\d+\.\d+\.\d+\.\d+)", s, re.IGNORECASE)
@@ -170,27 +384,69 @@ def parse_ip_routes(output: str) -> Dict[str, Dict[str, object]]:
                 out_intf = normalize_ifname(mint.group(1))
             routes.setdefault(prefix, {'entries': []})
             entry = {'prefix': prefix, 'code': code, 'source': src, 'next_hop': nh, 'out_intf': out_intf, 'raw': s}
+            observed_ad = _route_admin_distance(s)
+            if observed_ad is not None:
+                entry['admin_distance'] = observed_ad
             routes[prefix]['entries'].append(entry)
+            _count_parsed("ios")
             current = prefix
             current_entry = entry
-            current_nxos = False
+            if inherited_prefixlen is not None:
+                if prefix not in inherited_prefixes:
+                    inherited_prefixes.add(prefix)
+                    inherited_routes_remaining -= 1
+                if inherited_routes_remaining <= 0:
+                    inherited_prefixlen = None
+                    inherited_routes_remaining = 0
+                    inherited_prefixes.clear()
             continue
         # NX-OS 'show ip route' prefix line: "<prefix>, ubest/mbest: U/M[, attached]" -- the prefix begins with a
         # DIGIT (no protocol code); source/next-hop are on the following indented '*via ...' line(s). Without this
         # the IOS-only code-letter regex above matched NOTHING and an entire real Nexus RIB parsed to zero routes.
-        mnx = re.match(r"^(\d+\.\d+\.\d+\.\d+/\d+),\s*ubest/mbest\b", s, re.IGNORECASE)
+        mnx = _ROUTE_NXOS_HEADER_RE.match(s)
         if mnx:
-            prefix = mnx.group(1)
+            _close_nxos_block()
+            prefix = _route_prefix(mnx.group("address"), mnx.group("prefixlen"))
+            ubest_token = mnx.group("ubest")
+            if prefix is None or len(ubest_token) > 9:
+                counts["nxos_malformed_prefix_blocks"] += 1
+                current = current_entry = None
+                continue
+            expected = int(ubest_token)
             routes.setdefault(prefix, {'entries': []})
             current, current_entry, current_nxos = prefix, None, True
+            current_nxos_expected = expected
+            current_nxos_via_candidates = 0
+            counts["nxos_prefix_blocks"] += 1
+            counts["nxos_expected_ubest_rows"] += expected
+            inherited_prefixlen = None
+            inherited_routes_remaining = 0
+            inherited_prefixes.clear()
+            continue
+        if _ROUTE_NXOS_HEADER_CANDIDATE_RE.match(s):
+            _close_nxos_block()
+            counts["nxos_malformed_prefix_blocks"] += 1
+            current = current_entry = None
+            inherited_prefixlen = None
+            inherited_routes_remaining = 0
+            inherited_prefixes.clear()
             continue
         if current and current_nxos:
             # '*via 10.0.10.3, Vlan10, [AD/metric], age, <source>': next-hop after via, the interface is the text
             # field before [AD/metric], the source is the LAST comma-field. One entry per via line (ECMP).
-            mvia = re.match(r"\*?via\s+(\d+\.\d+\.\d+\.\d+)", s, re.IGNORECASE)
-            if mvia:
+            # Nexus also emits interface-only installed routes (`*via Null0, [1/0], ..., static`).  Requiring
+            # an IPv4 next hop silently erased a more-specific discard prefix and let a covering live route win.
+            if _ROUTE_NXOS_VIA_CANDIDATE_RE.match(s):
+                _count_candidate("nxos_via")
+                current_nxos_via_candidates += 1
+                mvia = re.match(r"^\*?\s*via\s+([^,\s]+)", s, re.IGNORECASE)
+                if mvia is None:
+                    _count_unparsed("malformed")
+                    continue
                 parts = [p.strip() for p in s.split(',')]
-                out_intf = ''
+                via_token = mvia.group(1)
+                next_hop = via_token if _IPV4_RE.match(via_token) else ''
+                out_intf = '' if next_hop else normalize_ifname(via_token)
                 for p in parts[1:-1]:
                     if re.match(r"^[A-Za-z]", p) and not p.startswith('['):
                         out_intf = normalize_ifname(p)
@@ -207,14 +463,23 @@ def parse_ip_routes(output: str) -> Dict[str, Dict[str, object]]:
                         continue
                     src_tok = p
                     break
-                routes[current]['entries'].append({
+                entry = {
                     'prefix': current, 'code': '', 'source': _nxos_route_source(src_tok),
-                    'next_hop': mvia.group(1), 'out_intf': out_intf, 'raw': s})
-            continue
-        if current:
+                    'next_hop': next_hop, 'out_intf': out_intf, 'raw': s}
+                observed_ad = _route_admin_distance(s)
+                if observed_ad is not None:
+                    entry['admin_distance'] = observed_ad
+                routes[current]['entries'].append(entry)
+                _count_parsed("nxos_via")
+                continue
+            _close_nxos_block()
+            current = current_entry = None
+        if current and raw[:1].isspace() and re.search(r"\bvia\b", s, re.IGNORECASE):
+            _count_candidate("ios")
             m2 = re.search(r"via\s+(\d+\.\d+\.\d+\.\d+)", s, re.IGNORECASE)
             if m2:
                 nh = m2.group(1)
+                observed_ad = _route_admin_distance(s)
                 mint = re.search(r",\s*([A-Za-z]+[A-Za-z0-9/\.:-]+)\s*$", s)
                 out_intf = ''
                 if mint and not re.match(r"^\d+\.\d+\.\d+\.\d+$", mint.group(1)):
@@ -229,12 +494,84 @@ def parse_ip_routes(output: str) -> Dict[str, Dict[str, object]]:
                     current_entry['next_hop'] = nh
                     if out_intf:
                         current_entry['out_intf'] = out_intf
+                    if observed_ad is not None:
+                        current_entry['admin_distance'] = observed_ad
                     current_entry['raw'] = (str(current_entry.get('raw', '')) + ' ' + s).strip()
                 else:
                     inh_code = current_entry['code'] if current_entry is not None else ''
                     inh_source = current_entry['source'] if current_entry is not None else ''
-                    routes[current]['entries'].append({'prefix': current, 'code': inh_code, 'source': inh_source,
-                                                       'next_hop': nh, 'out_intf': out_intf, 'raw': s})
+                    sibling = {'prefix': current, 'code': inh_code, 'source': inh_source,
+                               'next_hop': nh, 'out_intf': out_intf, 'raw': s}
+                    inherited_ad = observed_ad
+                    if inherited_ad is None and current_entry is not None:
+                        inherited_ad = current_entry.get('admin_distance')
+                    if isinstance(inherited_ad, int) and not isinstance(inherited_ad, bool):
+                        sibling['admin_distance'] = inherited_ad
+                    routes[current]['entries'].append(sibling)
+                _count_parsed("ios")
+                continue
+            _count_unparsed("malformed")
+            current = current_entry = None
+            inherited_prefixlen = None
+            inherited_routes_remaining = 0
+            inherited_prefixes.clear()
+            continue
+
+        if _ROUTE_NXOS_VIA_CANDIDATE_RE.match(s) or _plausible_ios_route_candidate(s):
+            _count_candidate("ios")
+            _count_unparsed("unexplained")
+
+        # Any other nonblank record is a boundary for continuation inheritance.  This prevents a later indented
+        # ``via`` from attaching to a stale route when an intervening route form was unsupported or malformed.
+        current = current_entry = None
+        current_nxos = False
+        if not raw[:1].isspace():
+            inherited_prefixlen = None
+            inherited_routes_remaining = 0
+            inherited_prefixes.clear()
+    _close_nxos_block()
+
+    unparsed_rows = counts["candidate_rows"] - counts["parsed_rows"]
+    ios_unparsed_rows = counts["ios_candidate_rows"] - counts["ios_parsed_rows"]
+    nxos_unparsed_via_rows = counts["nxos_via_candidate_rows"] - counts["nxos_parsed_via_rows"]
+    incomplete_reasons = []
+    if unparsed_rows:
+        incomplete_reasons.append("candidate_rows_unparsed")
+    if counts["malformed_candidate_rows"]:
+        incomplete_reasons.append("malformed_candidate_rows")
+    if counts["unexplained_candidate_rows"]:
+        incomplete_reasons.append("unexplained_candidate_rows")
+    if counts["nxos_denominator_mismatch_blocks"]:
+        incomplete_reasons.append("nxos_ubest_via_denominator_mismatch")
+    if counts["nxos_malformed_prefix_blocks"]:
+        incomplete_reasons.append("nxos_malformed_prefix_block")
+    if counts["ios_malformed_subnet_headers"]:
+        incomplete_reasons.append("ios_malformed_subnet_header")
+    complete = (
+        unparsed_rows == 0
+        and counts["nxos_expected_ubest_rows"] == counts["nxos_via_candidate_rows"]
+        and counts["nxos_via_candidate_rows"] == counts["nxos_parsed_via_rows"]
+        and counts["nxos_denominator_mismatch_blocks"] == 0
+        and counts["nxos_malformed_prefix_blocks"] == 0
+        and counts["ios_malformed_subnet_headers"] == 0
+    )
+    encoded = json.dumps(
+        dict(routes), ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    routes.parse_receipt = {
+        "schema": "route_parse_receipt/1",
+        "complete": complete,
+        **counts,
+        "unparsed_candidate_rows": unparsed_rows,
+        "ios_unparsed_rows": ios_unparsed_rows,
+        "nxos_unparsed_via_rows": nxos_unparsed_via_rows,
+        "route_prefix_count": len(routes),
+        "route_entry_count": sum(
+            len(info.get("entries", [])) for info in routes.values() if isinstance(info, dict)
+        ),
+        "routes_sha256": sha256(encoded).hexdigest(),
+        "incomplete_reasons": incomplete_reasons,
+    }
     return routes
 
 def parse_copp_drops(output: str) -> list:
@@ -2793,43 +3130,524 @@ def infer_endpoint_type(platform: str, device_id: str, description: str = "") ->
     return ""
 
 
+@dataclass(frozen=True)
+class ForwardingGateSyntax:
+    """One bounded forwarding-affecting syntax family owned by the interface parser.
+
+    ``candidate_pattern`` is intentionally broader than ``modeled_patterns``.  A line inside this declared
+    denominator that matches the former but none of the latter is retained only as a fixed family token; raw
+    configuration never crosses the parser boundary.  This is not an open-ended full-config completeness claim.
+    """
+
+    family: str
+    scope: str
+    fields: Tuple[str, ...]
+    candidate_pattern: str
+    modeled_patterns: Tuple[str, ...]
+
+
+FORWARDING_GATE_SYNTAX_REGISTRY: Tuple[ForwardingGateSyntax, ...] = (
+    ForwardingGateSyntax(
+        "interface_acl", "interface",
+        ("acl_in", "acl_out", "acl_in_unmodeled", "acl_out_unmodeled"),
+        r"(?:ip|ipv4)\s+access-group(?:\s|$).*",
+        (r"(?:ip|ipv4)\s+access-group\s+.+?\s+(?:in|out|ingress|egress)(?:\s+.*)?",),
+    ),
+    ForwardingGateSyntax(
+        "policy_based_routing", "interface", ("pbr_policy",),
+        r"(?:ip\s+policy(?:\s|$).*|service-policy\s+type\s+pbr(?:\s|$).*)",
+        (r"ip\s+policy\s+route-map\s+\S+", r"service-policy\s+type\s+pbr\s+(?:input|ingress)\s+\S+"),
+    ),
+    ForwardingGateSyntax(
+        "unicast_rpf", "interface", ("urpf_mode",),
+        r"(?:ip|ipv4)\s+verify\s+unicast(?:\s|$).*",
+        (r"(?:ip|ipv4)\s+verify\s+unicast\s+.+",),
+    ),
+    ForwardingGateSyntax(
+        "security_zone", "interface", ("security_zone",),
+        r"zone-member(?:\s|$).*", (r"zone-member\s+security\s+\S+",),
+    ),
+    ForwardingGateSyntax(
+        "service_policy", "interface", ("service_policy_in", "service_policy_out"),
+        r"service-policy\s+(?!type\s+pbr(?:\s|$)).*",
+        (r"service-policy\s+(?:type\s+\S+\s+)?(?:input|output|ingress|egress)\s+\S+",),
+    ),
+    ForwardingGateSyntax(
+        "inspection_policy", "interface", ("inspection_policy_in", "inspection_policy_out"),
+        r"ip\s+inspect(?:\s|$).*", (r"ip\s+inspect\s+\S+\s+(?:in|out)(?:\s+.*)?",),
+    ),
+    ForwardingGateSyntax(
+        "crypto_map", "interface", ("crypto_map",),
+        r"crypto\s+map(?:\s|$).*", (r"crypto\s+map\s+\S+",),
+    ),
+    ForwardingGateSyntax(
+        "tunnel_protection", "interface", ("tunnel_protection",),
+        r"tunnel\s+protection(?:\s|$).*", (r"tunnel\s+protection\s+ipsec\s+profile\s+\S+",),
+    ),
+    ForwardingGateSyntax(
+        "intrusion_prevention", "interface", ("ips_policy_in", "ips_policy_out"),
+        r"ip\s+ips(?:\s|$).*", (r"ip\s+ips\s+\S+\s+(?:in|out)",),
+    ),
+    ForwardingGateSyntax(
+        "network_admission", "interface", ("admission_policy",),
+        r"ip\s+(?:admission|auth-proxy)(?:\s|$).*",
+        (r"ip\s+admission\s+\S+", r"ip\s+auth-proxy\s+\S+(?:\s+(?:http|https))?"),
+    ),
+    ForwardingGateSyntax(
+        "trustsec_sgacl", "interface", ("trustsec_sgacl",),
+        r"cts\s+role-based\s+enforcement(?:\s|$).*", (r"cts\s+role-based\s+enforcement",),
+    ),
+    ForwardingGateSyntax(
+        "wccp_redirection", "interface", ("wccp_redirection_in", "wccp_redirection_out"),
+        r"ip\s+wccp(?:\s|$).*", (r"ip\s+wccp\s+\S+\s+redirect\s+(?:in|out)",),
+    ),
+    ForwardingGateSyntax(
+        "mpls_forwarding", "interface", ("mpls_forwarding", "mpls_mtu"),
+        r"mpls\s+(?:ip|mtu)(?:\s|$).*", (r"mpls\s+ip", r"mpls\s+mtu\s+\d+"),
+    ),
+    ForwardingGateSyntax(
+        "global_vlan_filter", "global", ("vacl_policy",),
+        r"vlan\s+filter(?:\s|$).*", (r"vlan\s+filter\s+\S+\s+vlan-list\s+.+",),
+    ),
+    ForwardingGateSyntax(
+        "global_asa_access_group", "global", ("global_acl_in", "global_acl_out", "global_policy_gates"),
+        r"access-group(?:\s|$).*", (r"access-group(?:\s|$).*",),
+    ),
+    ForwardingGateSyntax(
+        "global_asa_service_policy", "global", ("global_policy_gates",),
+        r"service-policy(?:\s|$).*", (r"service-policy(?:\s|$).*",),
+    ),
+    ForwardingGateSyntax(
+        "global_trustsec_sgacl", "global", ("trustsec_sgacl",),
+        r"cts\s+role-based\s+enforcement(?:\s|$).*",
+        (r"cts\s+role-based\s+enforcement", r"cts\s+role-based\s+enforcement\s+vlan-list\s+.+"),
+    ),
+    ForwardingGateSyntax(
+        "global_tcp_intercept", "global", ("tcp_intercept",),
+        r"ip\s+tcp\s+intercept(?:\s|$).*",
+        (r"ip\s+tcp\s+intercept\s+list\s+\S+", r"ip\s+tcp\s+intercept\s+mode\s+intercept"),
+    ),
+    ForwardingGateSyntax(
+        "global_bgp_flowspec", "global_nested", ("flowspec_policy",),
+        r"(?:flowspec|address-family\s+(?:ipv4\s+)?flowspec|local-install\s+interface-all)(?:\s|$).*",
+        (
+            r"flowspec", r"address-family\s+(?:ipv4\s+)?flowspec",
+            r"local-install\s+interface-all",
+        ),
+    ),
+)
+
+FORWARDING_GATE_FIELDS = frozenset(
+    field for syntax in FORWARDING_GATE_SYNTAX_REGISTRY for field in syntax.fields
+)
+FORWARDING_GATE_FAMILY_FIELDS = {
+    syntax.family: syntax.fields for syntax in FORWARDING_GATE_SYNTAX_REGISTRY
+}
+FORWARDING_GATE_FAMILY_SCOPES = {
+    syntax.family: syntax.scope for syntax in FORWARDING_GATE_SYNTAX_REGISTRY
+}
+FORWARDING_GATE_DIRECTIONAL_CANDIDATE_FIELDS = {
+    "interface_acl_in": ("acl_in", "acl_in_unmodeled"),
+    "interface_acl_out": ("acl_out", "acl_out_unmodeled"),
+    "service_policy_in": ("service_policy_in",),
+    "service_policy_out": ("service_policy_out",),
+    "inspection_policy_in": ("inspection_policy_in",),
+    "inspection_policy_out": ("inspection_policy_out",),
+    "intrusion_prevention_in": ("ips_policy_in",),
+    "intrusion_prevention_out": ("ips_policy_out",),
+    "wccp_redirection_in": ("wccp_redirection_in",),
+    "wccp_redirection_out": ("wccp_redirection_out",),
+}
+FORWARDING_GATE_DIRECTIONAL_FAMILIES = frozenset(
+    token.rsplit("_", 1)[0] for token in FORWARDING_GATE_DIRECTIONAL_CANDIDATE_FIELDS
+)
+GLOBAL_FORWARDING_GATE_FAMILIES = frozenset(
+    syntax.family for syntax in FORWARDING_GATE_SYNTAX_REGISTRY if syntax.scope != "interface"
+)
+
+
+def forwarding_gate_candidate_projection_incomplete(record) -> bool:
+    """Return whether an interface candidate lost its modeled field projection.
+
+    Candidate tokens are a bounded receipt owned by ``FORWARDING_GATE_SYNTAX_REGISTRY``. A positive interface
+    candidate must therefore have either one of that family's modeled scalar fields or a categorical unmodeled
+    marker. Global candidates can be interface-selective (for example a VLAN filter), so their applicability is
+    reconciled by their dedicated global projection rather than by this per-interface check.
+    """
+    def value(field: str):
+        return record.get(field) if isinstance(record, dict) else getattr(record, field, None)
+
+    raw_candidates = value("forwarding_gate_candidates")
+    if raw_candidates is None or raw_candidates == "":
+        return False
+    if not isinstance(raw_candidates, str):
+        return True
+    try:
+        raw_candidates.encode("utf-8")
+    except UnicodeEncodeError:
+        return True
+    candidates = raw_candidates.split(",")
+    if any(not token or token != token.strip() for token in candidates):
+        return True
+
+    # Any categorical parser gap already forces abstention; a second projection marker adds no safety.
+    unmodeled = value("forwarding_gate_unmodeled")
+    if unmodeled is not None and unmodeled != "":
+        return False
+
+    for family in candidates:
+        directional_fields = FORWARDING_GATE_DIRECTIONAL_CANDIDATE_FIELDS.get(family)
+        if directional_fields is not None:
+            if not any(value(field) not in (None, "") for field in directional_fields):
+                return True
+            continue
+        fields = FORWARDING_GATE_FAMILY_FIELDS.get(family)
+        if fields is None:
+            return True
+        if family in FORWARDING_GATE_DIRECTIONAL_FAMILIES:
+            # Older/generic receipts do not establish which direction was observed. A field from the opposite
+            # direction must never discharge that ambiguity.
+            return True
+        if FORWARDING_GATE_FAMILY_SCOPES[family] != "interface":
+            continue
+        modeled = False
+        for field in fields:
+            field_value = value(field)
+            if field_value is None or field_value == "":
+                continue
+            if not isinstance(field_value, str):
+                return True
+            try:
+                field_value.encode("utf-8")
+            except UnicodeEncodeError:
+                return True
+            modeled = True
+            break
+        if not modeled:
+            return True
+    return False
+
+
+def _directional_forwarding_gate_candidate_tokens(line: str, candidates: set[str]) -> set[str]:
+    """Replace modeled directional family receipts with direction-bearing fixed tokens."""
+    result = set(candidates)
+    patterns = (
+        (
+            "interface_acl",
+            r"(?:ip|ipv4)\s+access-group\s+.+?\s+(in|out|ingress|egress)(?:\s+.*)?",
+        ),
+        (
+            "service_policy",
+            r"service-policy\s+(?:type\s+\S+\s+)?(input|output|ingress|egress)\s+\S+",
+        ),
+        ("inspection_policy", r"ip\s+inspect\s+\S+\s+(in|out)(?:\s+.*)?"),
+        ("intrusion_prevention", r"ip\s+ips\s+\S+\s+(in|out)"),
+        ("wccp_redirection", r"ip\s+wccp\s+\S+\s+redirect\s+(in|out)"),
+    )
+    for family, pattern in patterns:
+        if family not in result:
+            continue
+        match = re.fullmatch(pattern, line, re.IGNORECASE)
+        if match is None:
+            continue
+        direction = "in" if match.group(1).lower() in ("in", "input", "ingress") else "out"
+        result.remove(family)
+        result.add(f"{family}_{direction}")
+    return result
+
+
+def _forwarding_gate_candidate_census(line: str, scope: str) -> Tuple[set[str], set[str]]:
+    """Return fixed candidate and matched-but-unmodeled family tokens for one active config line."""
+    if line.startswith("no "):
+        return set(), set()
+    candidates: set[str] = set()
+    unmodeled: set[str] = set()
+    for syntax in FORWARDING_GATE_SYNTAX_REGISTRY:
+        if syntax.scope != scope or not re.fullmatch(syntax.candidate_pattern, line, re.IGNORECASE):
+            continue
+        candidates.add(syntax.family)
+        if not any(re.fullmatch(pattern, line, re.IGNORECASE) for pattern in syntax.modeled_patterns):
+            unmodeled.add(syntax.family)
+    return candidates, unmodeled
+
+
+def _add_categorical_tokens(record: dict, field: str, tokens) -> None:
+    existing = set(filter(None, str(record.get(field) or "").split(",")))
+    existing.update(str(token) for token in tokens if token)
+    record[field] = ",".join(sorted(existing, key=lambda token: (token.casefold(), token)))
+
+
+def _vlan_selector(selector: str) -> Tuple[set[int], bool]:
+    """Parse a bounded IOS VLAN selector; malformed/``all`` remains explicitly unresolved."""
+    vlan_ids: set[int] = set()
+    selector = selector.strip().lower()
+    unresolved = selector == "all"
+    if unresolved:
+        return vlan_ids, True
+    for token in selector.replace(" ", "").split(","):
+        if token.isdigit():
+            vlan = int(token)
+            if 1 <= vlan <= 4094:
+                vlan_ids.add(vlan)
+            else:
+                unresolved = True
+            continue
+        interval = re.fullmatch(r"(\d+)-(\d+)", token)
+        if not interval:
+            unresolved = True
+            continue
+        start, end = int(interval.group(1)), int(interval.group(2))
+        if not (1 <= start <= end <= 4094):
+            unresolved = True
+            continue
+        vlan_ids.update(range(start, end + 1))
+    return vlan_ids, unresolved
+
+
+def _vlan_filter_bindings(output: str) -> Tuple[Dict[int, set[str]], set[str]]:
+    """Return explicit VLAN-to-VACL bindings and filters whose VLAN scope is unresolved.
+
+    ``vlan access-map`` policy semantics remain outside the interface parser.  This helper preserves the
+    consequential positive attachment from ``vlan filter`` so Traffic Assurance can abstain instead of treating
+    a globally filtered SVI as an unprotected routed interface.  Any malformed or non-finite VLAN selector is
+    deliberately widened to every observed SVI rather than silently discarded.
+    """
+    bindings: Dict[int, set[str]] = {}
+    unresolved: set[str] = set()
+    for line in output.splitlines():
+        match = re.match(
+            r"^\s*vlan\s+filter\s+(\S+)\s+vlan-list\s+(.+?)\s*$",
+            line,
+            re.IGNORECASE,
+        )
+        if not match:
+            continue
+        policy = match.group(1)
+        vlan_ids, selector_unresolved = _vlan_selector(match.group(2))
+        if selector_unresolved:
+            # The policy name is not needed when its VLAN applicability cannot be modeled. Preserve only a fixed
+            # gate category so malformed configuration cannot cross this parser boundary as a raw secret.
+            unresolved.add("vlan_scope_unresolved")
+        for vlan in vlan_ids:
+            bindings.setdefault(vlan, set()).add(policy)
+    return bindings, unresolved
+
+
+def _interface_config_record() -> dict:
+    """One complete interface-config parse record, including full-config-only forwarding attachments."""
+    return {
+        "bpduguard": "", "rootguard": "", "pc_mode": "", "pc_id": "", "vrf": "",
+        "desc": "", "portfast": "", "ip_addr": "", "ip_addresses": [],
+        "acl_in": "", "acl_out": "", "acl_in_unmodeled": "", "acl_out_unmodeled": "",
+        "global_acl_in": "", "global_acl_out": "", "global_policy_gates": "",
+        "asa_nameif": "",
+        "mtu": "", "link_mtu": "", "ip_mtu": "", "mtu_semantics": "",
+        "pbr_policy": "", "urpf_mode": "",
+        "security_zone": "", "service_policy_in": "", "service_policy_out": "",
+        "inspection_policy_in": "", "inspection_policy_out": "", "crypto_map": "",
+        "tunnel_protection": "", "trustsec_sgacl": "", "wccp_redirection_in": "",
+        "wccp_redirection_out": "", "tcp_intercept": "", "mpls_forwarding": "",
+        "mpls_mtu": "", "flowspec_policy": "", "ips_policy_in": "", "ips_policy_out": "",
+        "admission_policy": "", "forwarding_gate_candidates": "", "forwarding_gate_unmodeled": "",
+        "vacl_policy": "", "helpers": "",
+    }
+
+
+def _asa_global_forwarding_bindings(output: str) -> Tuple[Dict[str, dict], set[str]]:
+    """Preserve ASA/FTD ACL/service-policy attachments that live outside interface blocks.
+
+    The returned gate tokens are categorical; policy names from unmodeled service-policy forms and raw
+    configuration are never retained.  Exact per-interface access-group names remain available for ordered ACL
+    evaluation, while multiple/conflicting attachments fail closed through ``global_policy_gates``.
+    """
+    per_interface: Dict[str, dict] = {}
+    global_gates: set[str] = set()
+    for raw in output.splitlines():
+        if not raw or raw[:1].isspace():
+            continue
+        line = raw.strip()
+        access = re.fullmatch(
+            r"access-group\s+(\S+)\s+(in|out)\s+interface\s+(\S+)", line, re.IGNORECASE,
+        )
+        if access:
+            interface = normalize_ifname(access.group(3))
+            field = "global_acl_in" if access.group(2).lower() == "in" else "global_acl_out"
+            per_interface.setdefault(interface, {}).setdefault(field, set()).add(access.group(1))
+            continue
+        if re.fullmatch(r"access-group\s+\S+\s+global", line, re.IGNORECASE):
+            global_gates.add("asa_global_access_group")
+            continue
+        service = re.fullmatch(
+            r"service-policy\s+\S+\s+interface\s+(\S+)", line, re.IGNORECASE,
+        )
+        if service:
+            interface = normalize_ifname(service.group(1))
+            per_interface.setdefault(interface, {}).setdefault("gates", set()).add(
+                "asa_interface_service_policy"
+            )
+            continue
+        if re.fullmatch(r"service-policy\s+\S+\s+global", line, re.IGNORECASE):
+            global_gates.add("asa_global_service_policy")
+            continue
+        if re.match(r"^(?:access-group|service-policy)\b", line, re.IGNORECASE):
+            global_gates.add("asa_global_attachment_unmodeled")
+    return per_interface, global_gates
+
+
+def _global_forwarding_gate_evidence(output: str) -> dict:
+    """Return bounded, categorical host/VLAN forwarding-gate evidence from top-level config lines."""
+    candidates: set[str] = set()
+    unmodeled: set[str] = set()
+    trustsec_all = False
+    trustsec_vlans: set[int] = set()
+    trustsec_vlan_scope_unresolved = False
+    tcp_intercept: set[str] = set()
+    flowspec_policy: set[str] = set()
+    for raw in output.splitlines():
+        if not raw:
+            continue
+        line = raw.strip().lower()
+        nested_candidates, nested_unmodeled = _forwarding_gate_candidate_census(
+            line, "global_nested",
+        )
+        candidates.update(nested_candidates)
+        unmodeled.update(nested_unmodeled)
+        if line == "flowspec":
+            flowspec_policy.add("configured")
+        elif re.fullmatch(r"address-family\s+(?:ipv4\s+)?flowspec", line):
+            flowspec_policy.add("address_family")
+        elif line == "local-install interface-all":
+            flowspec_policy.add("local_install")
+        if raw[:1].isspace():
+            continue
+        line_candidates, line_unmodeled = _forwarding_gate_candidate_census(line, "global")
+        candidates.update(line_candidates)
+        unmodeled.update(line_unmodeled)
+        if line.startswith("no "):
+            continue
+        if re.fullmatch(r"cts\s+role-based\s+enforcement", line):
+            trustsec_all = True
+            continue
+        trustsec_vlan = re.fullmatch(
+            r"cts\s+role-based\s+enforcement\s+vlan-list\s+(.+)", line,
+        )
+        if trustsec_vlan:
+            vlans, unresolved = _vlan_selector(trustsec_vlan.group(1))
+            trustsec_vlans.update(vlans)
+            trustsec_vlan_scope_unresolved = trustsec_vlan_scope_unresolved or unresolved
+            continue
+        if re.fullmatch(r"ip\s+tcp\s+intercept\s+list\s+\S+", line):
+            tcp_intercept.add("acl_bound")
+            continue
+        if re.fullmatch(r"ip\s+tcp\s+intercept\s+mode\s+intercept", line):
+            tcp_intercept.add("intercept_mode")
+    return {
+        "candidates": candidates,
+        "unmodeled": unmodeled,
+        "trustsec_all": trustsec_all,
+        "trustsec_vlans": trustsec_vlans,
+        "trustsec_vlan_scope_unresolved": trustsec_vlan_scope_unresolved,
+        "tcp_intercept": tcp_intercept,
+        "flowspec_policy": flowspec_policy,
+    }
+
+
 def parse_run_config_interfaces(output: str) -> Dict[str, Dict[str, str]]:
     res: Dict[str, Dict[str, str]] = {}
     current = None
     global_bpduguard = False
+    asa_stateful_firewall_seen = False
+    vacl_bindings, unresolved_vacl_bindings = _vlan_filter_bindings(output)
+    asa_bindings, asa_global_gates = _asa_global_forwarding_bindings(output)
+    global_gate_evidence = _global_forwarding_gate_evidence(output)
     for line in output.splitlines():
         if re.search(r"spanning-tree portfast bpduguard default", line, re.IGNORECASE):
-            global_bpduguard = True; continue
-        m = re.match(r"^\s*interface\s+(\S+)", line, re.IGNORECASE)
+            global_bpduguard = True
+            current = None
+            continue
+        # Interface ownership is structural: only a top-level header opens a stanza and only its indented child
+        # lines belong to it. A later policy-map/zone-pair/router/crypto stanza must never inherit ``current`` and
+        # be misreported as an attachment on the preceding interface.
+        m = re.match(r"^interface\s+(\S+)", line, re.IGNORECASE)
         if m:
             current = normalize_ifname(m.group(1))
-            res.setdefault(current, {"bpduguard":"","rootguard":"","pc_mode":"","pc_id":"","vrf":"","desc":"","portfast":"","ip_addr":"","acl_in":"","acl_out":"","mtu":"","helpers":""})
+            res.setdefault(current, _interface_config_record())
             if global_bpduguard:
                 res[current]["bpduguard"] = "Enable"
             continue
-        if not current: continue
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.lower() in ("!", "end", "exit") or not line[:1].isspace():
+            current = None
+            continue
+        if not current:
+            continue
         low = line.strip().lower()
+        # Candidate accounting is deliberately bounded by the tracked registry. Only indented interface-block
+        # lines enter this scope; top-level forwarding syntax is scanned independently below and projected with
+        # its own custody. A matched-but-unmodeled family is retained categorically, never as raw configuration.
+        candidates, unmodeled = _forwarding_gate_candidate_census(low, "interface")
+        candidates = _directional_forwarding_gate_candidate_tokens(low, candidates)
+        _add_categorical_tokens(res[current], "forwarding_gate_candidates", candidates)
+        _add_categorical_tokens(res[current], "forwarding_gate_unmodeled", unmodeled)
         if low.startswith("description "):
             res[current]["desc"] = line.strip()[len("description "):].strip()
+        if low.startswith("nameif "):
+            nameif = line.strip().split(maxsplit=1)
+            if len(nameif) == 2 and nameif[1].strip():
+                res[current]["asa_nameif"] = nameif[1].strip()
+                asa_stateful_firewall_seen = True
+        if re.fullmatch(r"security-level\s+\d+", low):
+            asa_stateful_firewall_seen = True
         # SVI / L3 interface IP. IOS: 'ip address 10.10.10.1 255.255.255.0'
         # NX-OS: 'ip address 10.10.10.1/24'. Skip secondary/dhcp/negotiated.
-        if low.startswith("ip address ") and "secondary" not in low and "dhcp" not in low and "negotiated" not in low:
-            mip = re.search(r"ip address\s+(\d+\.\d+\.\d+\.\d+)(?:\s+(\d+\.\d+\.\d+\.\d+)|/(\d+))",
+        if low.startswith(("ip address ", "ipv4 address ")) and "dhcp" not in low and "negotiated" not in low:
+            mip = re.search(r"(?:ip|ipv4) address\s+(\d+\.\d+\.\d+\.\d+)(?:\s+(\d+\.\d+\.\d+\.\d+)|/(\d+))",
                             line.strip(), re.IGNORECASE)
-            if mip and not res[current].get("ip_addr"):
+            if mip:
                 ip = mip.group(1)
                 if mip.group(3):                       # NX-OS prefix form
-                    res[current]["ip_addr"] = f"{ip}/{mip.group(3)}"
+                    address = f"{ip}/{mip.group(3)}"
                 elif mip.group(2):                     # IOS dotted-mask form
-                    res[current]["ip_addr"] = f"{ip} {mip.group(2)}"
+                    address = f"{ip} {mip.group(2)}"
                 else:
-                    res[current]["ip_addr"] = ip
+                    address = ip
+                if address not in res[current]["ip_addresses"]:
+                    res[current]["ip_addresses"].append(address)
+                if "secondary" not in low and not res[current].get("ip_addr"):
+                    res[current]["ip_addr"] = address
         # L4/ACL flagging: SVI / L3 'ip access-group <name> {in|out}' (NOT L2 'ip port access-group')
         if low.startswith("ip access-group ") or low.startswith("ipv4 access-group "):
-            ma = re.search(r"(?:ipv4|ip)\s+access-group\s+(\S+)\s+(in|out)\b", line.strip(), re.IGNORECASE)
+            ma = re.search(
+                r"(?:ipv4|ip)\s+access-group\s+(.+?)\s+(in|out|ingress|egress)(?:\s+(.*))?\s*$",
+                line.strip(), re.IGNORECASE,
+            )
             if ma:
-                if ma.group(2).lower() == "in":  res[current]["acl_in"]  = ma.group(1)
-                else:                            res[current]["acl_out"] = ma.group(1)
+                acl_tokens = ma.group(1).split()
+                incoming = ma.group(2).lower() in ("in", "ingress")
+                suffix = (ma.group(3) or "").lower().split()
+                suffix_neutral = True
+                suffix_index = 0
+                while suffix_index < len(suffix):
+                    if suffix[suffix_index] in ("interface-statistics", "hardware-count"):
+                        suffix_index += 1
+                    elif (suffix[suffix_index:suffix_index + 2] == ["compress", "level"]
+                          and suffix_index + 2 < len(suffix) and suffix[suffix_index + 2].isdigit()):
+                        suffix_index += 3
+                    else:
+                        suffix_neutral = False
+                        break
+                if len(acl_tokens) == 1:
+                    res[current]["acl_in" if incoming else "acl_out"] = acl_tokens[0]
+                    if not suffix_neutral:
+                        res[current]["acl_in_unmodeled" if incoming else "acl_out_unmodeled"] = (
+                            "attachment_options_unmodeled"
+                        )
+                else:
+                    res[current]["acl_in_unmodeled" if incoming else "acl_out_unmodeled"] = (
+                        "multiple_or_common_acl_chain"
+                    )
         # A NEGATED line is the deliberate opt-out an operator writes to switch the protection OFF (most
         # often to override a global 'spanning-tree portfast bpduguard default'). Without the `no `-prefix
         # guard, 'no spanning-tree bpduguard enable' matched the "enable" substring and an unprotected
@@ -2852,13 +3670,83 @@ def parse_run_config_interfaces(output: str) -> Dict[str, Dict[str, str]]:
         if low.startswith("vrf forwarding "): res[current]["vrf"] = line.strip().split()[-1]   # IOS-XE
         if low.startswith("ip vrf forwarding "): res[current]["vrf"] = line.strip().split()[-1]   # legacy IOS
         # NEW-V3.23.49 (path-MTU mismatch): interface MTU (jumbo-frame detection). Prefer the L2/system
-        # 'mtu N'; fall back to 'ip mtu N' only when no plain mtu is set. Default (1500, unset) stays blank.
+        # Keep link and IPv4 MTU distinct. An explicit `ip mtu` governs IPv4 forwarding even when the L2/link
+        # MTU is larger; collapsing them can falsely certify a packet the device must fragment/drop.
         if low.startswith("mtu "):
             mm = re.match(r"mtu\s+(\d+)", low)
-            if mm: res[current]["mtu"] = mm.group(1)
-        elif low.startswith("ip mtu ") and not res[current].get("mtu"):
-            mm = re.match(r"ip mtu\s+(\d+)", low)
-            if mm: res[current]["mtu"] = mm.group(1)
+            if mm:
+                res[current]["link_mtu"] = mm.group(1)
+                if not res[current].get("ip_mtu"):
+                    res[current]["mtu"] = mm.group(1)
+                    # Bare ``mtu`` is an L2-frame value on IOS XR but an effective routed-MTU input on other
+                    # families. The parser has no platform argument, so retain the number while explicitly
+                    # withholding IP-MTU assurance until a platform owner or an ip/ipv4-mtu line resolves it.
+                    res[current]["mtu_semantics"] = "interface_mtu_layer_ambiguous"
+        elif low.startswith(("ip mtu ", "ipv4 mtu ")):
+            mm = re.match(r"(?:ip|ipv4) mtu\s+(\d+)", low)
+            if mm:
+                res[current]["ip_mtu"] = mm.group(1)
+                res[current]["mtu"] = mm.group(1)
+                res[current]["mtu_semantics"] = "explicit_ipv4_mtu"
+        mpbr = re.match(r"ip policy route-map\s+(\S+)", low)
+        if mpbr:
+            res[current]["pbr_policy"] = mpbr.group(1)
+        mxrpbr = re.match(r"service-policy\s+type\s+pbr\s+(?:input|ingress)\s+(\S+)", low)
+        if mxrpbr:
+            res[current]["pbr_policy"] = mxrpbr.group(1)
+        murpf = re.match(r"(?:ip|ipv4) verify unicast source reachable-via\s+(rx|any)\b", low)
+        if murpf:
+            res[current]["urpf_mode"] = murpf.group(1)
+        elif low.startswith(("ip verify unicast ", "ipv4 verify unicast ")):
+            res[current]["urpf_mode"] = (
+                "reverse-path" if "verify unicast reverse-path" in low else "configured_unknown"
+            )
+        mzone = re.match(r"zone-member\s+security\s+(\S+)", low)
+        if mzone:
+            res[current]["security_zone"] = mzone.group(1)
+        # Preserve generic and typed MQC attachments as configured packet gates. PBR is owned separately above;
+        # all other service-policy semantics remain intentionally unevaluated by Traffic Assurance v1.
+        mservice = re.match(r"service-policy\s+(?:type\s+(\S+)\s+)?(input|output|ingress|egress)\s+(\S+)", low)
+        if mservice and (mservice.group(1) or "").lower() != "pbr":
+            field = "service_policy_in" if mservice.group(2).lower() in ("input", "ingress") else "service_policy_out"
+            policy_type = (mservice.group(1) or "generic").lower()
+            res[current][field] = f"{policy_type}:{mservice.group(3)}"
+        minspect = re.match(r"ip inspect\s+(\S+)\s+(in|out)\b", low)
+        if minspect:
+            field = "inspection_policy_in" if minspect.group(2) == "in" else "inspection_policy_out"
+            res[current][field] = minspect.group(1)
+        mcrypto = re.match(r"crypto map\s+(\S+)", low)
+        if mcrypto:
+            res[current]["crypto_map"] = mcrypto.group(1)
+        mtunnel = re.match(r"tunnel protection ipsec profile\s+(\S+)", low)
+        if mtunnel:
+            res[current]["tunnel_protection"] = mtunnel.group(1)
+        if re.fullmatch(r"cts\s+role-based\s+enforcement", low):
+            res[current]["trustsec_sgacl"] = "interface_enforcement"
+        mips = re.fullmatch(r"ip\s+ips\s+\S+\s+(in|out)", low)
+        if mips:
+            res[current]["ips_policy_in" if mips.group(1) == "in" else "ips_policy_out"] = (
+                "configured"
+            )
+        if (re.fullmatch(r"ip\s+admission\s+\S+", low)
+                or re.fullmatch(r"ip\s+auth-proxy\s+\S+(?:\s+(?:http|https))?", low)):
+            res[current]["admission_policy"] = "configured"
+        mwccp = re.fullmatch(r"ip\s+wccp\s+\S+\s+redirect\s+(in|out)", low)
+        if mwccp:
+            res[current][
+                "wccp_redirection_in" if mwccp.group(1) == "in" else "wccp_redirection_out"
+            ] = "configured"
+        if re.fullmatch(r"mpls\s+ip", low):
+            res[current]["mpls_forwarding"] = "configured"
+        mmpls_mtu = re.fullmatch(r"mpls\s+mtu\s+(\d+)", low)
+        if mmpls_mtu:
+            value = int(mmpls_mtu.group(1))
+            if 68 <= value <= 65535:
+                res[current]["mpls_mtu"] = str(value)
+            else:
+                _add_categorical_tokens(
+                    res[current], "forwarding_gate_unmodeled", {"mpls_forwarding"},
+                )
         # DHCP relay: 'ip helper-address [vrf NAME|global] X' (IOS/IOS-XE) or 'ip dhcp relay address X'
         # (NX-OS). Multiple servers are allowed per interface, so accumulate them (de-duped, order-kept).
         mh = (re.match(r"ip helper-address\s+(?:vrf\s+\S+\s+|global\s+)?(\d+\.\d+\.\d+\.\d+)", low)
@@ -2867,6 +3755,80 @@ def parse_run_config_interfaces(output: str) -> Dict[str, Dict[str, str]]:
             cur = [h for h in res[current].get("helpers","").split(",") if h]
             if mh.group(1) not in cur: cur.append(mh.group(1))
             res[current]["helpers"] = ",".join(cur)
+    for interface, record in res.items():
+        _add_categorical_tokens(
+            record, "forwarding_gate_candidates", global_gate_evidence["candidates"],
+        )
+        _add_categorical_tokens(
+            record, "forwarding_gate_unmodeled", global_gate_evidence["unmodeled"],
+        )
+        if global_gate_evidence["trustsec_all"]:
+            _add_categorical_tokens(record, "trustsec_sgacl", {"global_enforcement"})
+        if global_gate_evidence["trustsec_vlan_scope_unresolved"]:
+            _add_categorical_tokens(record, "trustsec_sgacl", {"vlan_scope_unresolved"})
+        if global_gate_evidence["tcp_intercept"]:
+            _add_categorical_tokens(
+                record, "tcp_intercept", global_gate_evidence["tcp_intercept"],
+            )
+        if global_gate_evidence["flowspec_policy"]:
+            _add_categorical_tokens(
+                record, "flowspec_policy", global_gate_evidence["flowspec_policy"],
+            )
+        vlan_match = re.fullmatch(r"Vlan(\d+)", normalize_ifname(interface), re.IGNORECASE)
+        if not vlan_match:
+            continue
+        if int(vlan_match.group(1)) in global_gate_evidence["trustsec_vlans"]:
+            _add_categorical_tokens(record, "trustsec_sgacl", {"vlan_enforcement"})
+        policies = set(unresolved_vacl_bindings)
+        policies.update(vacl_bindings.get(int(vlan_match.group(1)), set()))
+        if policies:
+            record["vacl_policy"] = ",".join(
+                sorted(policies, key=lambda token: (token.casefold(), token))
+            )
+    # ASA/FTD ``access-group ... interface TOKEN`` addresses the ``nameif`` alias, not normally the physical
+    # interface key. Resolve that alias only when it is unique and positively observed. Unknown or ambiguous
+    # targets become a host-wide fixed gate; never create a synthetic interface record from an unresolved token.
+    alias_targets: Dict[str, List[str]] = {}
+    for interface, record in res.items():
+        alias = record.get("asa_nameif")
+        if isinstance(alias, str) and alias.strip():
+            alias_targets.setdefault(alias.strip().casefold(), []).append(interface)
+    for attachment_target, binding in asa_bindings.items():
+        targets = [attachment_target] if attachment_target in res else alias_targets.get(
+            attachment_target.casefold(), []
+        )
+        if len(targets) != 1:
+            asa_global_gates.add("asa_attachment_target_unresolved")
+            continue
+        record = res[targets[0]]
+        gates = set(filter(None, record.get("global_policy_gates", "").split(",")))
+        gates.update(binding.get("gates", set()))
+        for field in ("global_acl_in", "global_acl_out"):
+            names = sorted(
+                binding.get(field, set()), key=lambda token: (token.casefold(), token)
+            )
+            if len(names) == 1:
+                record[field] = names[0]
+            elif names:
+                gates.add("asa_multiple_access_groups")
+        record["global_policy_gates"] = ",".join(
+            sorted(gates, key=lambda token: (token.casefold(), token))
+        )
+    if asa_stateful_firewall_seen or asa_bindings or asa_global_gates:
+        # ASA/FTD new-flow/default security-level and connection-state semantics apply even without an explicit
+        # access-group. Traffic Assurance v1 is stateless, so retain a categorical host-wide gate rather than
+        # misrepresenting a lone interface ACL as the complete forwarding policy.
+        asa_global_gates.add("asa_stateful_firewall")
+    if asa_global_gates:
+        token = ",".join(
+            sorted(asa_global_gates, key=lambda value: (value.casefold(), value))
+        )
+        for record in res.values():
+            existing = set(filter(None, record.get("global_policy_gates", "").split(",")))
+            existing.update(token.split(","))
+            record["global_policy_gates"] = ",".join(
+                sorted(existing, key=lambda value: (value.casefold(), value))
+            )
     return res
 
 # ----------------------------------------------------------------------------- #
@@ -2935,7 +3897,7 @@ def _acl_rule(action: str, rest: str, extended: bool) -> dict:
     rule: dict = {"action": action, "raw": (action + " " + rest).strip()}
     uneval = False
     if not extended:                                                  # standard: src only, proto=ip, dst=any
-        src, _, u = _acl_addr(toks, 0)
+        src, i, u = _acl_addr(toks, 0)
         rule.update(proto="ip", src=src or dict(_ANY_ADDR), dst=dict(_ANY_ADDR), sport=None, dport=None)
         uneval = u or src is None
     elif not toks:
@@ -2949,29 +3911,84 @@ def _acl_rule(action: str, rest: str, extended: bool) -> dict:
         dport, i = _acl_port(toks, i)
         rule.update(src=src or dict(_ANY_ADDR), dst=dst or dict(_ANY_ADDR), sport=sport, dport=dport)
         uneval = u1 or u2 or src is None or dst is None
-        if rule["proto"] == "icmp" and i < len(toks):                 # J: trailing icmp type/message token (echo, echo-reply, numeric, ...)
-            rule["icmp_type"] = toks[i].lower()
+    residual = toks[i:]
+    unmodeled: List[str] = []
+    if rule.get("proto") == "icmp" and residual:                     # retained, but ACL algebra has no ICMP-type dim
+        rule["icmp_type"] = residual[0].lower()
+        unmodeled.append("icmp_type")
+        residual = residual[1:]
     for p in (rule.get("sport"), rule.get("dport")):                  # unknown port name -> can't evaluate
         if p is not None and (p.get("val") is None or (p.get("op") == "range" and p.get("val2") is None)):
             uneval = True
     # NEW-V3.23.52 (stateful-ACL): trailing keywords. 'established' = TCP return-only (won't match a
     # NEW/forward connection); reflexive 'reflect' permits forward + auto-permits the return; a
     # 'time-range' makes the rule time-conditional (its match is indeterminate offline).
-    low = rest.lower()
-    if re.search(r"\bestablished\b", low): rule["established"] = True
-    if re.search(r"\breflect\b", low):     rule["reflexive"] = True
-    mt = re.search(r"\btime-range\s+(\S+)", rest, re.IGNORECASE)
-    if mt: rule["time_range"] = mt.group(1)
+    # Consume only suffixes whose semantics are explicitly owned. Unknown match-affecting tokens must survive as
+    # categorical abstentions; silently dropping them widens/narrows the ACE and can invert first-match policy.
+    j = 0
+    match_qualifiers = {
+        "dscp", "precedence", "tos", "fragments", "ttl", "option", "packet-length",
+        "flow-label", "routing", "hop-limit",
+    }
+    while j < len(residual):
+        token = residual[j].lower()
+        if token == "established":
+            rule["established"] = True
+            j += 1
+        elif token == "reflect":
+            rule["reflexive"] = True
+            j += 2 if j + 1 < len(residual) else 1
+        elif token == "time-range":
+            if j + 1 < len(residual):
+                rule["time_range"] = residual[j + 1]
+                j += 2
+            else:
+                unmodeled.append("time_range_missing_name")
+                j += 1
+        elif token in ("log", "log-input"):
+            j += 1                                                        # match-neutral reporting suffix
+        elif token == "counter":
+            j += 2 if j + 1 < len(residual) else 1                       # NX-OS match-neutral counter name
+        elif token in ("object-group", "portgroup", "port-group"):
+            unmodeled.append("service_object_group")
+            j += 2 if j + 1 < len(residual) else 1
+        elif token in {"nexthop", "nexthop1", "nexthop2", "nexthop3"} or (
+                token == "default" and j + 1 < len(residual) and residual[j + 1].lower() == "nexthop"):
+            unmodeled.append("acl_based_forwarding")
+            j = len(residual)
+        elif token in match_qualifiers:
+            unmodeled.append(token)
+            j += 2 if token not in {"fragments", "routing"} and j + 1 < len(residual) else 1
+        else:
+            unmodeled.append("unrecognized_trailing_match_tokens")
+            j += 1
+    if unmodeled:
+        rule["unmodeled_qualifiers"] = sorted(set(unmodeled))
     if uneval: rule["unevaluable"] = True
     return rule
+
+
+def _unparsed_acl_rule(raw: str, reason: str) -> dict:
+    """Ordered placeholder for a nonblank ACE form whose match semantics are not modeled."""
+    return {
+        "action": "unknown",
+        "raw": raw.strip(),
+        "proto": "ip",
+        "src": dict(_ANY_ADDR),
+        "dst": dict(_ANY_ADDR),
+        "sport": None,
+        "dport": None,
+        "unevaluable": True,
+        "unmodeled_qualifiers": [reason],
+    }
 
 def parse_acls(output: str) -> Dict[str, List[dict]]:
     """Parse ACL definitions from 'show running-config' -> {acl_name: [rule,...]}.
 
     Handles IOS numbered standard/extended one-liners, IOS named
     'ip access-list {standard|extended} NAME' blocks, and NX-OS
-    'ip access-list NAME' blocks. Tolerant: unrecognized lines are skipped,
-    never raises. The 'ip access-group' APPLICATION lines are NOT touched here
+    'ip access-list NAME' blocks. Unrecognized nonblank child/numbered forms become ordered unevaluable
+    placeholders rather than disappearing from first-match semantics. The 'ip access-group' APPLICATION lines are NOT touched here
     (parse_run_config_interfaces handles those)."""
     acls: Dict[str, List[dict]] = {}
     if not output: return acls
@@ -2979,26 +3996,68 @@ def parse_acls(output: str) -> Dict[str, List[dict]]:
     cur_ext = True
     STD_EXT_RE = re.compile(r"^\s*ip\s+access-list\s+(standard|extended)\s+(\S+)", re.IGNORECASE)
     NXOS_RE    = re.compile(r"^\s*ip\s+access-list\s+(\S+)\s*$", re.IGNORECASE)
+    XR_RE      = re.compile(r"^\s*ipv4\s+access-list\s+(\S+)\s*$", re.IGNORECASE)
+    ASA_RE     = re.compile(
+        r"^\s*access-list\s+(\S+)\s+(?:line\s+\d+\s+)?(standard|extended)\s+"
+        r"(permit|deny)\s+(.*)$", re.IGNORECASE,
+    )
+    ASA_ANY_RE = re.compile(
+        r"^\s*access-list\s+(\S+)\s+(?:line\s+\d+\s+)?(standard|extended)\s+(.+)$",
+        re.IGNORECASE,
+    )
     NUM_RE     = re.compile(r"^\s*access-list\s+(\d+)\s+(permit|deny)\s+(.*)$", re.IGNORECASE)
+    NUM_ANY_RE = re.compile(r"^\s*access-list\s+(\d+)\s+(.+)$", re.IGNORECASE)
     CHILD_RE   = re.compile(r"^\s*(?:\d+\s+)?(permit|deny)\s+(.*)$", re.IGNORECASE)
     for raw in output.splitlines():
         line = raw.rstrip()
         if not line.strip(): continue
+        masa = ASA_RE.match(line)                                    # ASA/FTD named one-line ACL
+        if masa:
+            name, family, action, rest = masa.groups()
+            acls.setdefault(name, []).append(
+                _acl_rule(action.lower(), rest, family.lower() == "extended")
+            )
+            cur = None
+            continue
+        masa_any = ASA_ANY_RE.match(line)
+        if masa_any:
+            acls.setdefault(masa_any.group(1), []).append(
+                _unparsed_acl_rule(line, "unparsed_asa_acl_line")
+            )
+            cur = None
+            continue
+        if re.match(r"^\s*access-list\s+\S+\s+remark\b", line, re.IGNORECASE):
+            cur = None
+            continue
         mnum = NUM_RE.match(line)                                     # numbered one-liner (col 0)
         if mnum:
             num, action, rest = mnum.group(1), mnum.group(2).lower(), mnum.group(3)
             n = int(num); ext = (100 <= n <= 199) or (2000 <= n <= 2699)
             acls.setdefault(num, []).append(_acl_rule(action, rest, ext)); cur = None; continue
+        mnum_any = NUM_ANY_RE.match(line)
+        if mnum_any:
+            acls.setdefault(mnum_any.group(1), []).append(
+                _unparsed_acl_rule(line, "unparsed_numbered_acl_line")
+            )
+            cur = None
+            continue
         msx = STD_EXT_RE.match(line)                                  # IOS named header
         if msx:
             cur_ext = msx.group(1).lower() == "extended"; cur = msx.group(2); acls.setdefault(cur, []); continue
         mnx = NXOS_RE.match(line)                                     # NX-OS header (no standard/extended kw)
         if mnx:
             cur = mnx.group(1); cur_ext = True; acls.setdefault(cur, []); continue
+        mxr = XR_RE.match(line)                                       # IOS XR IPv4 named ACL
+        if mxr:
+            cur = mxr.group(1); cur_ext = True; acls.setdefault(cur, []); continue
         if cur is not None and raw[:1].isspace():                     # indented child rule
             mc = CHILD_RE.match(line)
             if mc: acls[cur].append(_acl_rule(mc.group(1).lower(), mc.group(2), cur_ext)); continue
-            continue                                                  # remark / other indented line -> skip
+            child = re.sub(r"^\s*\d+\s+", "", line).strip()
+            if re.match(r"^(?:remark|description)\b", child, re.IGNORECASE):
+                continue
+            acls[cur].append(_unparsed_acl_rule(line, "unparsed_acl_child"))
+            continue
         cur = None                                                    # any col-0 non-ACL line ends the block
     return acls
 
@@ -3018,6 +4077,13 @@ def _objgrp_net_member(toks: List[str]):
     """One 'object-group network' member -> {ip,wild} | {rangeStart,rangeEnd} | {group} | None."""
     t0 = toks[0].lower()
     if t0 == "host" and len(toks) >= 2 and _IPV4_RE.match(toks[1]): return {"ip": toks[1], "wild": "0.0.0.0"}
+    if t0 == "network-object" and len(toks) >= 3:
+        if toks[1].lower() == "host" and _IPV4_RE.match(toks[2]):
+            return {"ip": toks[2], "wild": "0.0.0.0"}
+        if toks[1].lower() == "object":
+            return {"group": toks[2]}
+        if _IPV4_RE.match(toks[1]) and _IPV4_RE.match(toks[2]):
+            return {"ip": toks[1], "wild": _mask_to_wild(toks[2])}
     if t0 == "group-object" and len(toks) >= 2: return {"group": toks[1]}
     if t0 == "range" and len(toks) >= 3 and _IPV4_RE.match(toks[1]) and _IPV4_RE.match(toks[2]):
         return {"rangeStart": toks[1], "rangeEnd": toks[2]}
@@ -3061,21 +4127,32 @@ def parse_object_groups(output: str) -> Dict[str, dict]:
         if toks[0].isdigit() and len(toks) > 1: toks = toks[1:]         # strip NX-OS sequence number
         if toks[0].lower() in ("description", "remark"): continue
         mem = _objgrp_net_member(toks) if kind == "network" else _objgrp_svc_member(toks)
-        if mem: groups[cur]["members"].append(mem)
+        if mem:
+            groups[cur]["members"].append(mem)
+        else:
+            groups[cur]["members"].append({
+                "unevaluable": True,
+                "reason": "unparsed_object_group_member",
+            })
     return groups
 
 # ----------------------------------------------------------------------------- #
 # NAT inventory (NEW-V3.23.50) - parse IOS NAT configuration from the already-collected
 # 'show running-config'. A migration must recreate every NAT rule on the new platform, so
 # this is an inventory first; the explorer's flow-flagging consumes it next. Tolerant: any
-# unrecognized line is skipped, never raises. Handles per-interface 'ip nat inside|outside',
+# unrecognized NAT candidate becomes a fixed non-echoing marker, never raises. Handles per-interface 'ip nat inside|outside',
 # static 1:1 + static PAT (port forward), dynamic NAT/PAT (list -> pool|interface [overload]),
 # and 'ip nat pool' definitions. Inside-source statics map LOCAL->GLOBAL; outside-source swap.
 # ----------------------------------------------------------------------------- #
 def parse_nat(output: str) -> dict:
     """Parse NAT config -> {static:[{direction,proto,local,global[,local_port,global_port]}],
-    dynamic:[{acl,kind,via,overload}], pools:{name:{start,end}}, inside:[iface], outside:[iface]};
-    {} when no NAT is configured. Tolerant; never raises."""
+    dynamic:[{acl,kind,via,overload}], pools:{name:{start,end}}, inside:[iface], outside:[iface],
+    unmodeled:{fixed_category:count}}; {} when no NAT is configured. Tolerant; never raises.
+
+    Every active IOS ``ip nat ...`` or ASA/FTD ``nat (...)`` candidate is accounted for.  Syntax outside the
+    finite inventory grammar is represented only by a fixed categorical count; raw configuration is never copied
+    into that marker.  This keeps configured-but-unparsed NAT visible to conservative downstream consumers.
+    """
     if not output:
         return {}
     static: List[dict] = []
@@ -3083,33 +4160,116 @@ def parse_nat(output: str) -> dict:
     pools: Dict[str, dict] = {}
     inside: List[str] = []
     outside: List[str] = []
+    unmodeled: Dict[str, int] = {}
     cur: Optional[str] = None
+    asa_object_network = False
+    ipv4 = r"\d{1,3}(?:\.\d{1,3}){3}"
+
+    def mark_unmodeled(category: str) -> None:
+        unmodeled[category] = unmodeled.get(category, 0) + 1
+
+    STATIC_NETWORK = re.compile(
+        rf"^ip\s+nat\s+(inside|outside)\s+source\s+static\s+network\s+"
+        rf"({ipv4})\s+({ipv4})\s+(?:(?:netmask\s+)?({ipv4})|/(\d{{1,2}}))(?:\s+(.+))?$",
+        re.IGNORECASE,
+    )
+    STATIC_INTERFACE_PAT = re.compile(
+        rf"^ip\s+nat\s+(inside|outside)\s+source\s+static\s+(tcp|udp)\s+"
+        rf"({ipv4})\s+(\d+)\s+interface\s+(\S+)\s+(\d+)(?:\s+(.+))?$",
+        re.IGNORECASE,
+    )
     STATIC = re.compile(
         r"^\s*ip\s+nat\s+(inside|outside)\s+source\s+static\s+(?:(tcp|udp)\s+)?"
-        r"(\d{1,3}(?:\.\d{1,3}){3})(?:\s+(\d+))?\s+(\d{1,3}(?:\.\d{1,3}){3})(?:\s+(\d+))?", re.IGNORECASE)
+        r"(\d{1,3}(?:\.\d{1,3}){3})(?:\s+(\d+))?\s+"
+        r"(\d{1,3}(?:\.\d{1,3}){3})(?:\s+(\d+))?(?:\s+(.+))?$", re.IGNORECASE)
     DYN = re.compile(
-        r"^\s*ip\s+nat\s+inside\s+source\s+list\s+(\S+)\s+(?:pool\s+(\S+)|interface\s+(\S+))(\s+overload)?",
+        r"^ip\s+nat\s+inside\s+source\s+list\s+(\S+)\s+"
+        r"(?:pool\s+(\S+)|interface\s+(\S+))(\s+overload)?(?:\s+(.+))?$",
         re.IGNORECASE)
+    ROUTE_MAP_DYN = re.compile(
+        r"^ip\s+nat\s+inside\s+source\s+route-map\s+(\S+)\s+interface\s+(\S+)"
+        r"(\s+overload)?(?:\s+(.+))?$",
+        re.IGNORECASE,
+    )
     POOL = re.compile(
-        r"^\s*ip\s+nat\s+pool\s+(\S+)\s+(\d{1,3}(?:\.\d{1,3}){3})\s+(\d{1,3}(?:\.\d{1,3}){3})", re.IGNORECASE)
+        rf"^ip\s+nat\s+pool\s+(\S+)\s+({ipv4})\s+({ipv4})(?:\s+(.+))?$",
+        re.IGNORECASE,
+    )
+    POOL_TAIL = re.compile(
+        rf"^(?:netmask\s+{ipv4}|prefix-length\s+\d{{1,2}})(?:\s+type\s+(?:rotary|match-host))?$",
+        re.IGNORECASE,
+    )
     for raw in output.splitlines():
         line = raw.rstrip()
         if not line.strip():
             continue
         indented = raw[:1].isspace()
-        mi = re.match(r"^\s*interface\s+(\S+)", line, re.IGNORECASE)
+        candidate = line.strip()
+        mi = re.match(r"^interface\s+(\S+)", candidate, re.IGNORECASE)
         if mi and not indented:
-            cur = normalize_ifname(mi.group(1)); continue
-        if indented:
-            if cur is not None:
-                low = line.strip().lower()
-                if low == "ip nat inside":  inside.append(cur)
-                elif low == "ip nat outside": outside.append(cur)
-            continue                                                    # indented line stays within the interface block
-        cur = None                                                      # any col-0 line ends the interface block
-        ms = STATIC.match(line)
+            cur = normalize_ifname(mi.group(1))
+            asa_object_network = False
+            continue
+        if not indented and re.match(r"^object\s+network\s+\S+", candidate, re.IGNORECASE):
+            cur = None
+            asa_object_network = True
+            continue
+        if re.match(r"^nat\s*\(", candidate, re.IGNORECASE):
+            mark_unmodeled(
+                "asa_object_nat_not_modeled"
+                if indented and asa_object_network else "asa_manual_nat_not_modeled"
+            )
+            continue
+        if not indented:
+            cur = None
+            asa_object_network = False
+        role_match = re.fullmatch(r"ip\s+nat\s+(inside|outside)", candidate, re.IGNORECASE)
+        if cur is not None and indented and role_match:
+            if role_match.group(1).lower() == "inside":
+                inside.append(cur)
+            else:
+                outside.append(cur)
+            continue
+        if not re.match(r"^ip\s+nat(?:\s+|$)", candidate, re.IGNORECASE):
+            continue
+
+        msn = STATIC_NETWORK.fullmatch(candidate)
+        if msn:
+            direction, a, b, netmask, prefix_length, tail = msn.groups()
+            rule = {
+                "direction": direction.lower(), "proto": "", "kind": "network",
+                "network_mask": netmask or f"/{prefix_length}",
+            }
+            if direction.lower() == "inside":
+                rule["local"], rule["global"] = a, b
+            else:
+                rule["global"], rule["local"] = a, b
+            static.append(rule)
+            if tail:
+                mark_unmodeled("ios_nat_qualifier_not_modeled")
+            continue
+
+        msi = STATIC_INTERFACE_PAT.fullmatch(candidate)
+        if msi:
+            direction, proto, address, local_port, interface, global_port, tail = msi.groups()
+            rule = {
+                "direction": direction.lower(), "proto": proto.lower(),
+                "global_interface": normalize_ifname(interface),
+            }
+            if direction.lower() == "inside":
+                rule.update({"local": address, "global": "", "local_port": local_port,
+                             "global_port": global_port})
+            else:
+                rule.update({"global": address, "local": "", "global_port": local_port,
+                             "local_port": global_port})
+            static.append(rule)
+            if tail:
+                mark_unmodeled("ios_nat_qualifier_not_modeled")
+            continue
+
+        ms = STATIC.fullmatch(candidate)
         if ms:
-            direction, proto, a, ap, b, bp = ms.groups()
+            direction, proto, a, ap, b, bp, tail = ms.groups()
             rule: dict = {"direction": direction.lower(), "proto": (proto or "").lower()}
             # inside-source: LOCAL GLOBAL ; outside-source: GLOBAL LOCAL (swap)
             if direction.lower() == "inside":
@@ -3118,20 +4278,44 @@ def parse_nat(output: str) -> dict:
             else:
                 rule["global"], rule["local"] = a, b
                 if proto: rule["global_port"], rule["local_port"] = (ap or ""), (bp or "")
-            static.append(rule); continue
-        md = DYN.match(line)
+            static.append(rule)
+            if tail:
+                mark_unmodeled("ios_nat_qualifier_not_modeled")
+            continue
+
+        md = DYN.fullmatch(candidate)
         if md:
             dynamic.append({"acl": md.group(1),
                             "kind": "pool" if md.group(2) else "interface",
                             "via": md.group(2) or normalize_ifname(md.group(3) or ""),
-                            "overload": bool(md.group(4))}); continue
-        mp = POOL.match(line)
+                            "overload": bool(md.group(4))})
+            if md.group(5):
+                mark_unmodeled("ios_nat_qualifier_not_modeled")
+            continue
+
+        mr = ROUTE_MAP_DYN.fullmatch(candidate)
+        if mr:
+            dynamic.append({"acl": "", "route_map": mr.group(1), "kind": "interface",
+                            "via": normalize_ifname(mr.group(2)), "overload": bool(mr.group(3))})
+            if mr.group(4):
+                mark_unmodeled("ios_nat_qualifier_not_modeled")
+            continue
+
+        mp = POOL.fullmatch(candidate)
         if mp:
-            pools[mp.group(1)] = {"start": mp.group(2), "end": mp.group(3)}; continue
-    if not (static or dynamic or pools or inside or outside):
+            pools[mp.group(1)] = {"start": mp.group(2), "end": mp.group(3)}
+            if mp.group(4) and not POOL_TAIL.fullmatch(mp.group(4)):
+                mark_unmodeled("ios_nat_qualifier_not_modeled")
+            continue
+
+        mark_unmodeled("ios_nat_syntax_not_modeled")
+    if not (static or dynamic or pools or inside or outside or unmodeled):
         return {}
-    return {"static": static, "dynamic": dynamic, "pools": pools,
-            "inside": sorted(set(inside)), "outside": sorted(set(outside))}
+    result = {"static": static, "dynamic": dynamic, "pools": pools,
+              "inside": sorted(set(inside)), "outside": sorted(set(outside))}
+    if unmodeled:
+        result["unmodeled"] = dict(sorted(unmodeled.items()))
+    return result
 
 
 # ----------------------------------------------------------------------------- #

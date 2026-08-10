@@ -1273,8 +1273,9 @@ def snapshot_state(all_interfaces: Dict[str, Dict[str, InterfaceData]],
 
 def sparsify_interfaces(snap: dict) -> dict:
     """Return a SHALLOW copy of `snap` whose `interfaces` subtree drops every field equal to its
-    empty-string default (Tier-3 #14 Phase-2). Every InterfaceData field defaults to '', so
-    dropping '' values is lossless -- InterfaceData.from_sparse restores the omitted fields on read
+    empty default (Tier-3 #14 Phase-2). InterfaceData fields default to '' except the positive
+    ``run_config_observed`` boolean, so dropping '' and that field's False value is lossless --
+    InterfaceData.from_sparse restores omitted defaults on read
     (~70% of the interface field-cells are '' on a real fleet). Confined to `interfaces`: `devices`
     (DevicePhysical) has non-'' defaults and stays dense. Applied ONLY to the on-disk snapshot; the
     in-memory snap_dict every in-process consumer reads is left untouched, so this changes nothing
@@ -1282,7 +1283,8 @@ def sparsify_interfaces(snap: dict) -> dict:
     ifaces = snap.get("interfaces")
     if not isinstance(ifaces, dict):
         return snap
-    sparse = {host: {port: {k: v for k, v in rec.items() if v != ""}
+    sparse = {host: {port: {k: v for k, v in rec.items()
+                            if v != "" and not (k == "run_config_observed" and v is False)}
                      for port, rec in ports.items() if isinstance(rec, dict)}
               for host, ports in ifaces.items() if isinstance(ports, dict)}
     return {**snap, "interfaces": sparse}
@@ -1351,10 +1353,15 @@ def _script_safe_json(value) -> str:
 
 
 def _slim_for_embed(snap_dict: dict) -> dict:
-    """Return a display-neutral, size-reduced copy of the snapshot for embedding in the
+    """Return a renderer-scoped, size-reduced copy of the snapshot for embedding in the
     explorer HTML. Pure (input not mutated); see the block comment above for why each
     transform is safe. Defensive: tolerates missing/oddly-typed sections."""
     out = dict(snap_dict)
+    # Traffic Assurance has no dedicated explorer renderer.  Embedding either its governed results or the
+    # supporting custody receipt would create a silent, unused projection with no UI contract; withhold both
+    # until that renderer exists and can preserve the snapshot's exact verdict/custody semantics.
+    out.pop("traffic_assurance", None)
+    out.pop("traffic_evidence_custody", None)
     intf = snap_dict.get("interfaces")
     if isinstance(intf, dict):
         out["interfaces"] = {host: _slim_ports(ports) for host, ports in intf.items()}

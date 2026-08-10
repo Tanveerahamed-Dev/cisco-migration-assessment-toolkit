@@ -539,9 +539,15 @@ def test_cutover_robust_to_malformed_snapshot():
 
 def test_deliverables(client):
     snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
-    cat = client.get("/api/meta").json()["deliverables"]
+    meta = client.get("/api/meta").json()
+    cat = meta["deliverables"]
     assert {d["key"] for d in cat} == {"engagement", "crd", "runbook", "design", "archreview",
                                        "mop", "cutover", "nrfu", "opshandbook", "deck"}
+    from cisco_toolkit.docmeta import artifact_family_metadata
+    assert meta["artifact_family"] == artifact_family_metadata()
+    assert {d["key"] for d in cat if d["producer"] == "assesshub-snapshot"} == {"cutover", "nrfu"}
+    assert all(d["engine_cli_member"] is (d["producer"] == "engine-cli") for d in cat)
+    assert "pir" not in {d["key"] for d in cat}, "conditional PIR is not a snapshot download"
     for d in cat:
         r = client.get(f"/api/snapshots/{snap_id}/deliverable/{d['key']}")
         if d["available"]:
@@ -1422,7 +1428,10 @@ def test_execution_pir_report(client):
         pytest.skip("python-docx not installed on this runner")
     assert r.status_code == 200, r.text
     assert r.content[:2] == b"PK"
-    assert "pir" in r.headers.get("content-disposition", "")
+    from cisco_toolkit.docmeta import artifact_spec
+    pir = artifact_spec("pir")
+    assert pir.download_suffix in r.headers.get("content-disposition", "")
+    assert r.headers["content-type"].startswith(pir.media)
 
     import io
 

@@ -48,6 +48,7 @@ _OPT_IN_SECTIONS = {"state_assertions", "path_intents", "external_reconcile", "w
 # opposed to computed aggregates / raw inventory). If any is renamed or removed in the
 # registry, the webapp's hardcoded name goes stale -- caught by the registry test below.
 _WEBAPP_AXIS_SECTIONS = {"security", "config_hygiene", "stp_roots", "routing_neighbors"}
+_TRAFFIC_ASSURANCE_SECTIONS = {"traffic_assurance", "traffic_evidence_custody"}
 
 
 def _rich_keys():
@@ -106,3 +107,11 @@ def test_section_labels_hygiene():
     not_fetchable = sorted(set(keys) - _ALLOWED_SECTIONS)
     assert not not_fetchable, (
         f"SECTION_LABELS advertises tab(s) the section endpoint would reject: {not_fetchable}")
+
+
+def test_generic_web_section_allowlists_exclude_unrendered_traffic_assurance():
+    """Traffic Assurance is a governed exact projection, not a generic snapshot detail section.
+    Keep both its verdict set and custody receipt unreachable until the webapp has a dedicated renderer."""
+    labelled = {key for key, _label in summary.SECTION_LABELS}
+    assert _TRAFFIC_ASSURANCE_SECTIONS.isdisjoint(_ALLOWED_SECTIONS)
+    assert _TRAFFIC_ASSURANCE_SECTIONS.isdisjoint(labelled)

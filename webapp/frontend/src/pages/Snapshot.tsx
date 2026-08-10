@@ -608,11 +608,17 @@ function DeliverablesPanel({ snapId }: { snapId: number }) {
           d.available ? (
             <a key={d.key} className="btn" href={api.deliverableUrl(snapId, d.key)} download>
               ↓ {d.label} <span className="chip mono" style={{ fontSize: 9, padding: "1px 6px" }}>{d.ext.toUpperCase()}</span>
+              {d.producer === "assesshub-snapshot" && (
+                <span className="chip mono" style={{ fontSize: 9, padding: "1px 6px" }}>ASSESSHUB</span>
+              )}
             </a>
           ) : (
             <span key={d.key} className="btn" style={{ opacity: 0.45, cursor: "not-allowed" }}
               title="Unavailable — the server is missing the optional library for this format">
               {d.label} <span className="chip mono" style={{ fontSize: 9, padding: "1px 6px" }}>{d.ext.toUpperCase()}</span>
+              {d.producer === "assesshub-snapshot" && (
+                <span className="chip mono" style={{ fontSize: 9, padding: "1px 6px" }}>ASSESSHUB</span>
+              )}
             </span>
           ),
         )}
@@ -621,7 +627,8 @@ function DeliverablesPanel({ snapId }: { snapId: number }) {
         </a>
       </div>
       <div className="faint" style={{ fontSize: 11, marginTop: 10 }}>
-        Each is produced by the engine's own writer from this exact snapshot — identical to the CLI output.
+        Every download is generated from this exact stored snapshot. Engine-backed artifacts reuse
+        the CLI writer; items marked ASSESSHUB are application-owned synthesis.
       </div>
     </div>
   );

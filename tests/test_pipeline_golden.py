@@ -344,17 +344,29 @@ def test_import_inventory_reconcile(tmp_path):
 
 
 def test_default_run_optin_engines_absent_but_capture_integrity_present(golden_run):
-    """Opt-in engines (reconcile / what-if / path-intents / assert-pack) add nothing on a default run, so the
-    golden stays untouched; the always-on capture-integrity key + sheet ARE present."""
+    """Opt-in engines add no result on a default run; always-on evidence/sheet surfaces stay explicit."""
     snap, xlsx = golden_run
-    for key in ("external_reconcile", "whatif", "path_intents", "state_assertions"):
+    for key in (
+        "external_reconcile",
+        "whatif",
+        "path_intents",
+        "state_assertions",
+        "traffic_assurance",
+    ):
         assert key not in snap, f"{key} must be opt-in / absent by default"
     assert "capture_integrity" in snap            # always-on
+    custody = snap.get("traffic_evidence_custody")
+    assert isinstance(custody, dict)
+    assert custody.get("schema") == "traffic_evidence_custody/1"
     wb = load_workbook(xlsx, read_only=True)
     try:
         for sheet in ("SoT Reconcile", "Failure What-If", "Path Assertions"):
             assert sheet not in wb.sheetnames
         assert "Capture Integrity" in wb.sheetnames   # always-on
+        assert "Traffic Assurance" in wb.sheetnames   # explicit not-supplied projection
+        ws = wb["Traffic Assurance"]
+        columns = {cell.value: cell.column for cell in ws[1]}
+        assert ws.cell(2, columns["Projection State"]).value == "not_supplied"
     finally:
         wb.close()
 

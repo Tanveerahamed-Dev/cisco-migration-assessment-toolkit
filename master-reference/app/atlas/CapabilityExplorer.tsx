@@ -2,17 +2,14 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { CapabilityCatalog, CapabilityState, Gap } from "./types";
+import {
+  CAPABILITY_STATES,
+  capabilitySelectionUrl,
+  filterCapabilityEntries,
+  flattenCapabilityEntries,
+} from "./CapabilitySelection.mjs";
+import type { CapabilityCatalog, Gap } from "./types";
 import { OwnerLinks, StateMark } from "./Shell";
-
-const STATES: CapabilityState[] = [
-  "current",
-  "partial",
-  "missing",
-  "gated",
-  "excluded",
-  "unknown",
-];
 
 type CapabilityExplorerProps = {
   catalog: CapabilityCatalog;
@@ -24,12 +21,11 @@ type CapabilityExplorerProps = {
 };
 
 function updateUrl(domain: string, state: string, query: string) {
-  const params = new URLSearchParams();
-  if (domain !== "all") params.set("domain", domain);
-  if (state !== "all") params.set("state", state);
-  if (query.trim()) params.set("q", query.trim());
-  const suffix = params.size ? `?${params}` : "";
-  window.history.replaceState(null, "", `/capabilities${suffix}`);
+  window.history.replaceState(
+    null,
+    "",
+    capabilitySelectionUrl({ domain, state, query }),
+  );
 }
 
 export function CapabilityExplorer({
@@ -46,25 +42,14 @@ export function CapabilityExplorer({
   const gapMap = useMemo(() => new Map(gaps.map((gap) => [gap.id, gap])), [gaps]);
 
   const entries = useMemo(
-    () =>
-      catalog.domains.flatMap((item) =>
-        item.entries.map((entry) => ({ ...entry, domain: item.id })),
-      ),
+    () => flattenCapabilityEntries(catalog),
     [catalog],
   );
 
-  const filtered = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return entries.filter((entry) => {
-      if (domain !== "all" && entry.domain !== domain) return false;
-      if (state !== "all" && entry.state !== state) return false;
-      if (!needle) return true;
-      return [entry.id, entry.title, entry.current_scope, entry.domain]
-        .join(" ")
-        .toLowerCase()
-        .includes(needle);
-    });
-  }, [domain, entries, query, state]);
+  const filtered = useMemo(
+    () => filterCapabilityEntries(entries, { domain, state, query }),
+    [domain, entries, query, state],
+  );
 
   function selectDomain(value: string) {
     setDomain(value);
@@ -99,7 +84,7 @@ export function CapabilityExplorer({
           <span>State</span>
           <select value={state} onChange={(event) => selectState(event.target.value)}>
             <option value="all">All states</option>
-            {STATES.map((item) => (
+            {CAPABILITY_STATES.map((item) => (
               <option value={item} key={item}>
                 {item}
               </option>

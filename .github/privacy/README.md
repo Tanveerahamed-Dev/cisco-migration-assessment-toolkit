@@ -51,7 +51,10 @@ default check; `--write --reviewed` is an explicit human-review acknowledgement,
 never an automatic CI step. While a baseline migration is incomplete, the
 existing code-pinned mapping remains the only exception and the helper fails
 closed instead of blessing a partial new set.
-No other image or generic binary path is allowed.
+The Master Reference public social images (`og.png` and
+`atlas-social-card.png`) are separate, path-exact project assets pinned in the
+same verifier by media type, byte length, SHA-256, complete PNG structure,
+width, and height. No other image or generic binary path is allowed.
 The four retained IEEE/IANA CSV corpora are a separate, path-exact public-data
 exception: their URL, schema, row count, byte length, and SHA-256 must match
 `reference-data/official-sources/manifest.json`; they remain strict UTF-8

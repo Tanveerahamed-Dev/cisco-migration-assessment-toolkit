@@ -4,6 +4,12 @@ import { access, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
+import {
+  CAPABILITY_STATES,
+  capabilitySelectionUrl,
+  filterCapabilityEntries,
+  flattenCapabilityEntries,
+} from "../../app/atlas/CapabilitySelection.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -80,6 +86,37 @@ function assertIncompleteDisposition(records, stateKey = "state") {
   }
 }
 
+function artifactRegistryRecords(source) {
+  const normalized = source.replace(/\r\n?/g, "\n");
+  const assignment = "ARTIFACT_SPECS = (";
+  const registryStart = normalized.indexOf(assignment);
+  const validatorStart = normalized.indexOf("\ndef validate_artifact_registry", registryStart);
+  assert.ok(registryStart >= 0 && validatorStart > registryStart);
+  const prefix = normalized.slice(registryStart, validatorStart);
+  const registryEnd = prefix.lastIndexOf("\n)");
+  assert.ok(registryEnd > assignment.length);
+  const block = prefix.slice(assignment.length, registryEnd);
+  const starts = [...block.matchAll(/^ {4}ArtifactSpec\(/gm)].map((match) => match.index);
+  const records = starts.map((start, index) => block.slice(start, starts[index + 1] ?? block.length));
+  assert.ok(records.length > 0, "ARTIFACT_SPECS unexpectedly contains no ArtifactSpec records");
+  return records;
+}
+
+function artifactRegistryFacts(source) {
+  const records = artifactRegistryRecords(source);
+  return {
+    lifecycle: records.length,
+    pre_cutover: records.filter((record) => !/\bstage=POST_EXECUTION\b/.test(record)).length,
+    engine_cli: records.filter((record) => /\bcli_suffix=/.test(record)).length,
+    assesshub_only_pre_cutover: records.filter((record) =>
+      /\bASSESSHUB_SNAPSHOT_PRODUCER\b/.test(record)
+    ).length,
+    conditional_post_execution: records.filter((record) =>
+      /\bstage=POST_EXECUTION\b/.test(record) && /\bconditional=True\b/.test(record)
+    ).length,
+  };
+}
+
 test("uses one schema/catalog version and globally unique stable IDs", () => {
   for (const document of documents) {
     assert.match(document.schema_version, /^\d+\.\d+\.\d+$/);
@@ -131,7 +168,7 @@ test("contains all requested domains, six architecture planes, eight traffic pla
     "domain.observability-operations": 18,
     "domain.vendors-channels": 18,
     "domain.gui-white-label": 12,
-    "domain.artifacts-deliverables": 17,
+    "domain.artifacts-deliverables": 18,
     "domain.code-tests-release-knowledge": 15,
     "domain.product-business": 12,
   };
@@ -300,17 +337,72 @@ test("declares the complete typed digital thread with deterministic abstention",
 });
 
 test("uses the catalog domain id in Atlas filtering and search context", async () => {
-  const [typesSource, dataSource, explorerSource] = await Promise.all([
+  const [typesSource, dataSource, explorerSource, selectionSource] = await Promise.all([
     readFile(new URL("master-reference/app/atlas/types.ts", repositoryRoot), "utf8"),
     readFile(new URL("master-reference/app/atlas/data.ts", repositoryRoot), "utf8"),
     readFile(new URL("master-reference/app/atlas/CapabilityExplorer.tsx", repositoryRoot), "utf8"),
+    readFile(new URL("master-reference/app/atlas/CapabilitySelection.mjs", repositoryRoot), "utf8"),
   ]);
   assert.match(typesSource, /type CapabilityDomain = \{\s*id: string;/);
   assert.doesNotMatch(typesSource, /type CapabilityDomain = \{\s*domain_ref:/);
   assert.match(dataSource, /domain_id: domain\.id/);
   assert.doesNotMatch(dataSource, /domain_id: domain\.domain_ref/);
-  assert.match(explorerSource, /domain: item\.id/);
+  assert.match(explorerSource, /flattenCapabilityEntries\(catalog\)/);
+  assert.match(selectionSource, /domain: item\.id/);
   assert.doesNotMatch(explorerSource, /item\.domain_ref/);
+  assert.doesNotMatch(selectionSource, /item\.domain_ref/);
+});
+
+test("executes the shipped capability-matrix contract against the canonical catalog", async () => {
+  const explorerSource = await readFile(
+    new URL("master-reference/app/atlas/CapabilityExplorer.tsx", repositoryRoot),
+    "utf8",
+  );
+  for (const imported of [
+    "CAPABILITY_STATES",
+    "capabilitySelectionUrl",
+    "filterCapabilityEntries",
+    "flattenCapabilityEntries",
+  ]) {
+    assert.match(explorerSource, new RegExp(`\\b${imported}\\b`));
+  }
+
+  const rows = flattenCapabilityEntries(catalog);
+  assert.equal(rows.length, capabilities.length);
+  assert.deepEqual(new Set(CAPABILITY_STATES), supportStates);
+
+  for (const domain of catalog.domains) {
+    const selected = filterCapabilityEntries(rows, { domain: domain.id });
+    assert.equal(selected.length, domain.entries.length, domain.id);
+    assert.ok(selected.every((entry) => entry.domain === domain.id), domain.id);
+  }
+  for (const state of CAPABILITY_STATES) {
+    const selected = filterCapabilityEntries(rows, { state });
+    assert.ok(selected.length > 0, `${state} is not executable from the UI denominator`);
+    assert.ok(selected.every((entry) => entry.state === state), state);
+  }
+
+  const target = capabilities.find((entry) => entry.id === "cap.vendor.cisco-ise");
+  const searched = filterCapabilityEntries(rows, { query: target.id });
+  assert.deepEqual(searched.map((entry) => entry.id), [target.id]);
+  assert.equal(
+    capabilitySelectionUrl({
+      domain: target.domain_ref,
+      state: target.state,
+      query: "  Cisco ISE  ",
+    }),
+    `/capabilities?domain=${encodeURIComponent(target.domain_ref)}&state=${target.state}&q=Cisco+ISE`,
+  );
+  assert.equal(capabilitySelectionUrl(), "/capabilities");
+
+  const masterReference = capabilities.find((entry) => entry.id === "cap.gui.master-reference");
+  assert.equal(masterReference.state, "current");
+  assert.ok(masterReference.owner_refs.includes("owner.reference.capability-ui"));
+  const residual = governance.gaps.find((gap) => gap.id === "gap.catalog-ui");
+  for (const shipped of ["static loading", "domain/state filters", "search", "owner provenance", "gap navigation", "accessible table", "URL-bound filters"]) {
+    assert.match(residual.problem, new RegExp(shipped, "i"));
+  }
+  assert.match(residual.problem, /does not yet give every capability ID a stable dossier/i);
 });
 
 test("uses only controlled support states and demonstrates every state", () => {
@@ -332,6 +424,126 @@ test("uses only controlled support states and demonstrates every state", () => {
 
   const catalogStates = new Set(capabilities.map((entry) => entry.state));
   assert.deepEqual(catalogStates, supportStates);
+});
+
+test("reports bounded Traffic Assurance without erasing stateful, live, or field gaps", () => {
+  const owner = core.owners.find((record) => record.id === "owner.traffic.assurance");
+  assert.equal(owner.path, "cisco_toolkit/traffic_assurance.py");
+  for (const symbol of ["assess_flow", "assess_flows", "build_traffic_evidence_custody"]) {
+    assert.match(owner.symbol, new RegExp(`\\b${symbol}\\b`));
+  }
+  for (const boundary of ["IPv4 TCP/UDP", "scoped RIB", "stateless interface ACL", "MTU", "ECMP", "current-run", "synthetic"]) {
+    assert.match(owner.claim_scope, new RegExp(boundary, "i"));
+  }
+  for (const excluded of ["stateful session", "NAT", "live-traffic", "field-validation"]) {
+    assert.match(owner.claim_scope, new RegExp(excluded, "i"));
+  }
+
+  const stateless = core.traffic_model.planes.find(
+    (plane) => plane.id === "traffic.stateless-policy",
+  );
+  assert.equal(stateless.state, "partial");
+  assert.ok(stateless.owner_refs.includes(owner.id));
+  for (const supported of [
+    "IPv4 TCP/UDP",
+    "forward and return",
+    "scoped RIB",
+    "stateless interface ACL",
+    "per-hop MTU",
+    "ECMP",
+    "scoped-route projection receipt",
+  ]) {
+    assert.match(stateless.current_scope, new RegExp(supported, "i"));
+  }
+  for (const gap of ["gap.flow-stateful", "gap.flow-actual-telemetry", "gap.vendor-lab-evidence"]) {
+    assert.ok(stateless.gap_refs.includes(gap));
+  }
+
+  const stateful = core.traffic_model.planes.find(
+    (plane) => plane.id === "traffic.stateful-policy",
+  );
+  assert.equal(stateful.state, "missing");
+  for (const unsupported of ["firewall session state", "NAT/PAT", "runtime rule hits", "observed live traffic", "field-validated"]) {
+    assert.match(stateful.current_scope, new RegExp(unsupported, "i"));
+  }
+
+  const capability = capabilities.find(
+    (record) => record.id === "cap.traffic.acl-l4-simulation",
+  );
+  assert.equal(capability.state, "partial");
+  assert.ok(capability.owner_refs.includes(owner.id));
+  assert.match(capability.current_scope, /one canonical verdict/i);
+  assert.match(capability.current_scope, /not stateful firewall\/session or NAT\/PAT/i);
+  assert.match(capability.current_scope, /not .*observed live traffic.*field validation/i);
+
+  const observedTraffic = capabilities.find(
+    (record) => record.id === "cap.traffic.actual-flow-telemetry",
+  );
+  assert.equal(observedTraffic.state, "missing");
+  assert.match(observedTraffic.current_scope, /Synthetic Traffic Assurance verdicts are not observed traffic/i);
+
+  const statefulGap = governance.gaps.find((gap) => gap.id === "gap.flow-stateful");
+  assert.match(statefulGap.problem, /requested forward and reverse scoped-RIB paths/i);
+  for (const missing of ["firewall session state", "NAT/PAT", "observed packets/flows", "field behavior"]) {
+    assert.match(statefulGap.problem, new RegExp(missing, "i"));
+  }
+
+  const lab = governance.labs.find((record) => record.id === "lab.04-traffic-flow-engines");
+  assert.ok(lab.owner_refs.includes(owner.id));
+  assert.match(lab.deterministic_definition.source_binding, /executable Traffic Assurance owner/i);
+  assert.doesNotMatch(lab.deterministic_definition.source_binding, /no unified flow-engine executable/i);
+  assert.match(lab.does_not_prove, /stateful session/i);
+  assert.match(lab.does_not_prove, /field-validation/i);
+});
+
+test("documents current-run custody and post-redaction lookup-only Traffic Assurance", async () => {
+  const [doctrine, ssot, mcpSource] = await Promise.all([
+    readFile(new URL("CLAUDE.md", repositoryRoot), "utf8"),
+    readFile(new URL("docs/ssot.md", repositoryRoot), "utf8"),
+    readFile(new URL("cisco_toolkit/mcp_server.py", repositoryRoot), "utf8"),
+  ]);
+  const entrypoint = doctrine.split(/\r?\n/).find((line) =>
+    line.includes("**Traffic Assurance (opt-in):**")
+  );
+  assert.ok(entrypoint, "CLAUDE.md lost the Traffic Assurance entrypoint");
+  for (const contract of [
+    "--traffic-intents",
+    "traffic_assurance_set/1",
+    "one global redaction transform",
+    "MCP performs exact lookup only",
+    "current-run marked custody",
+    "scoped_route_projection/1",
+    "JSON-loaded custody block is audit evidence only",
+    "not observed traffic",
+    "field validation",
+  ]) {
+    assert.match(entrypoint, new RegExp(contract, "i"));
+  }
+
+  const registryRow = ssot.split(/\r?\n/).find((line) =>
+    line.includes("**Traffic Assurance result and evidence custody**")
+  );
+  assert.ok(registryRow, "docs/ssot.md lost the Traffic Assurance owner row");
+  for (const contract of [
+    "current-run custody marker",
+    "scoped_route_projection/1",
+    "Persisted custody and projection fields are audit evidence only",
+    "JSON serialization intentionally destroys the trust marker",
+    "one global redaction transform",
+    "MCP performs an exact lookup",
+    "No delivery surface recalculates assurance",
+  ]) {
+    assert.match(registryRow, new RegExp(contract, "i"));
+  }
+
+  const normalizedMcp = mcpSource.replace(/\r\n?/g, "\n");
+  const mcpStart = normalizedMcp.indexOf("def assess_traffic(");
+  const mcpEnd = normalizedMcp.indexOf("\n\n# name -> pure function", mcpStart);
+  assert.ok(mcpStart >= 0 && mcpEnd > mcpStart);
+  const mcpBlock = normalizedMcp.slice(mcpStart, mcpEnd);
+  assert.match(mcpBlock, /precomputed Traffic Assurance result/i);
+  assert.match(mcpBlock, /exact lookup/i);
+  assert.doesNotMatch(mcpBlock, /traffic_assurance\.assess_flow\s*\(/);
 });
 
 test("grounds current and partial claims in live owner paths", async () => {
@@ -461,24 +673,40 @@ test("reconciles cached live counts to their code owners", async () => {
     new URL("cisco_toolkit/docmeta.py", repositoryRoot),
     "utf8",
   );
-  const familyStart = docmetaSource.indexOf("FAMILY = (");
-  const familyEnd = docmetaSource.indexOf("\n)\r\n", familyStart);
-  assert.ok(familyStart >= 0 && familyEnd > familyStart);
-  const familyKeys = [
-    ...docmetaSource.slice(familyStart, familyEnd).matchAll(/^\s*\("([^"]+)"/gm),
-  ].map((match) => match[1]);
-  const cliStart = docmetaSource.indexOf("CLI_ARTIFACT_SUFFIX = {");
-  const cliEnd = docmetaSource.indexOf("\n}\r\n", cliStart);
-  assert.ok(cliStart >= 0 && cliEnd > cliStart);
-  const cliKeys = [
-    ...docmetaSource.slice(cliStart, cliEnd).matchAll(/^\s*"([^"]+)":/gm),
-  ].map((match) => match[1]);
+  const artifactFacts = artifactRegistryFacts(docmetaSource);
+  const crlfArtifactFacts = artifactRegistryFacts(
+    docmetaSource.replace(/\r\n?|\n/g, "\r\n"),
+  );
+  assert.deepEqual(crlfArtifactFacts, artifactFacts, "ARTIFACT_SPECS derivation changed under CRLF");
+  const lifecycleKeys = artifactRegistryRecords(docmetaSource).map((record) => {
+    const match = record.match(/^ {4}ArtifactSpec\(\s*"([^"]+)"/s);
+    assert.ok(match, "ARTIFACT_SPECS record lost its literal stable key");
+    return match[1];
+  });
+  assert.equal(new Set(lifecycleKeys).size, lifecycleKeys.length);
+  for (const key of lifecycleKeys) {
+    const capability = capabilities.find((record) => record.id === `cap.artifact.${key}`);
+    assert.ok(capability, `artifact lifecycle record ${key} has no catalog capability`);
+    assert.equal(capability.state, "current");
+    assert.ok(capability.owner_refs.includes("owner.deliverable.family"));
+  }
+  const pirCapability = capabilities.find((record) => record.id === "cap.artifact.pir");
+  assert.match(pirCapability.current_scope, /conditional post-execution/i);
+  assert.match(pirCapability.current_scope, /outside .*pre-cutover family.*engine CLI denominator/i);
   const deliverableBaseline = core.current_baseline.find(
     (fact) => fact.id === "baseline.deliverables",
   );
-  assert.equal(familyKeys.length, deliverableBaseline.value.family);
-  assert.equal(cliKeys.length, deliverableBaseline.value.cli);
-  assert.equal(familyKeys.length - cliKeys.length, deliverableBaseline.value.web_only);
+  assert.deepEqual(deliverableBaseline.value, artifactFacts);
+  assert.equal(artifactFacts.lifecycle, artifactFacts.pre_cutover + artifactFacts.conditional_post_execution);
+  assert.equal(
+    artifactFacts.pre_cutover,
+    artifactFacts.engine_cli + artifactFacts.assesshub_only_pre_cutover,
+  );
+  const deliverableOwner = core.owners.find((owner) => owner.id === "owner.deliverable.family");
+  assert.match(deliverableOwner.symbol, /\bARTIFACT_SPECS\b/);
+  assert.match(deliverableOwner.claim_scope, /thirteen-record artifact lifecycle/i);
+  assert.match(deliverableOwner.claim_scope, /twelve pre-cutover/i);
+  assert.match(deliverableOwner.claim_scope, /conditional post-execution PIR/i);
 });
 
 test("keeps opportunity prioritization transparent and unblended", () => {

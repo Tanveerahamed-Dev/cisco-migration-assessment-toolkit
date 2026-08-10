@@ -42,6 +42,8 @@ def test_registry_owner_files_all_exist():
         "cisco_toolkit/ssot.py",
         "docs/ssot-contract.md",
         "cisco_toolkit/manifest.py",
+        "cisco_toolkit/unknown_evidence.py",
+        "cisco_toolkit/traffic_assurance.py",
         "CHANGELOG.md",
         "pyproject.toml",
         "cisco_toolkit/__init__.py",
@@ -53,6 +55,10 @@ def test_registry_owner_files_all_exist():
         # deliverable-set completeness: the row's enforcement IS this reconciler, so the row and
         # the guard have to fall together or not at all (2026-07-22)
         "tests/test_docmeta_cli_artifacts.py",
+        # governed aggregate-only unknown-evidence owner + its privacy/totality reconciler
+        "tests/test_unknown_evidence.py",
+        "tests/test_traffic_assurance.py",
+        "tests/test_traffic_assurance_excel.py",
     ]
     cited_by_name = [p for p in must_exist if not p.endswith("__init__.py")]
     txt = _registry_text()
@@ -65,7 +71,7 @@ def test_registry_owner_files_all_exist():
 def test_registry_owner_symbols_are_real():
     """The symbols the registry leans on (the assessment-facts contract, the version, the ledger)
     must exist in the code it points at -- import them / read them, don't trust the prose."""
-    from cisco_toolkit import ssot, manifest, detector_schema
+    from cisco_toolkit import detector_schema, manifest, parse, ssot, traffic_assurance, unknown_evidence
     import cisco_toolkit
 
     assert hasattr(ssot, "CANONICAL_FACTS") and isinstance(ssot.CANONICAL_FACTS, dict)
@@ -76,6 +82,17 @@ def test_registry_owner_symbols_are_real():
     assert hasattr(ssot, "compute_schema_census") and callable(ssot.compute_schema_census)
     assert hasattr(ssot, "compute_fact_lineage") and callable(ssot.compute_fact_lineage)
     assert hasattr(detector_schema, "compute_detector_schema") and callable(detector_schema.compute_detector_schema)
+    assert hasattr(unknown_evidence, "compute_unknown_evidence") and callable(unknown_evidence.compute_unknown_evidence)
+    assert unknown_evidence.SCHEMA == "unknown_evidence/1"
+    assert unknown_evidence.EVENT_SCHEMA == "unknown_evidence_event/1"
+    assert callable(traffic_assurance.assess_flow) and callable(traffic_assurance.assess_flows)
+    assert callable(traffic_assurance.build_traffic_evidence_custody)
+    assert traffic_assurance.TRAFFIC_ASSURANCE_SET_SCHEMA == "traffic_assurance_set/1"
+    assert traffic_assurance.TRAFFIC_EVIDENCE_CUSTODY_SCHEMA == "traffic_evidence_custody/1"
+    assert parse.FORWARDING_GATE_SYNTAX_REGISTRY
+    assert len({row.family for row in parse.FORWARDING_GATE_SYNTAX_REGISTRY}) == len(
+        parse.FORWARDING_GATE_SYNTAX_REGISTRY
+    )
     assert isinstance(getattr(cisco_toolkit, "__version__", None), str), "schema __version__ owner is gone"
     # manifest.py is the hash-chained chain-of-custody ledger the registry cites for run provenance.
     assert hasattr(manifest, "GENESIS"), "manifest.py no longer exposes the hash-chain GENESIS"
@@ -89,8 +106,9 @@ def test_registry_cited_snapshot_keys_are_published_by_the_engine():
     engine = (ROOT / "COLLECT_PARSE_V3_23_0.py").read_text(encoding="utf-8", errors="ignore")
     analyze = (ROOT / "cisco_toolkit" / "analyze.py").read_text(encoding="utf-8", errors="ignore")
     src = engine + "\n" + analyze
-    for key in ("architecture_coverage", "cable_map", "coverage_matrix", "design_blueprint",
-                "schema_census", "fact_lineage", "detector_schema"):
+    for key in ("architecture_coverage", "cable_map", "coverage_matrix", "unknown_evidence", "design_blueprint",
+                "traffic_assurance", "traffic_evidence_custody", "schema_census", "fact_lineage",
+                "detector_schema"):
         assert key in txt, f"registry stopped citing the {key!r} owner path"
         assigned = re.search(rf'["\']{re.escape(key)}["\']\]\s*=', src)
         assert assigned, f"registry cites snap[{key!r}] but the engine source never assigns it"

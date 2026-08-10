@@ -140,6 +140,8 @@ This command produces ten items: the workbook, the explorer, seven Word
 documents and the deck. The Cutover Plan and the NRFU / Acceptance Test
 Plan are NOT among them - those two are generated in AssessHub, not by
 this command, so a set with no warning is complete WITHOUT them.
+A Post-Implementation Review (PIR) is conditional post-execution: it is
+generated only from an AssessHub execution run and is not a CLI artifact.
 
 --out must be OUTSIDE the Atlas\ folder (an update replaces everything
 there except data\), and it will not write into the collection folder

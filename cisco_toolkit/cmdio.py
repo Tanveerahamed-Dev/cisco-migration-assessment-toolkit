@@ -6,7 +6,7 @@ byte-identical). This is the helper nearly every build_* / compute_* / write_*
 leans on to read collected output, so it's homed before the I/O-fed analyze
 functions move.
 
-Zero-parse yield telemetry (Plan A / Tier-1 #3) also lives here, at the one
+Parse-yield telemetry and compact positive parse receipts (Plan A / Tier-1 #3) also live here, at the one
 chokepoint every builder already goes through. The #1 recurring bug class: an
 unseen platform variant parses to []/{} — byte-identical to "feature absent"
 everywhere downstream (a real NX-OS ubest/mbest RIB once zeroed this way and
@@ -68,6 +68,7 @@ MAY_BE_EMPTY_PARSERS = frozenset({
 _YIELD_LOCK = threading.Lock()
 _PER_PARSER: Dict[str, Dict[str, int]] = {}
 _EVENTS: List[dict] = []
+_RECEIPTS: Dict[tuple, Dict[str, int]] = {}
 _EVENTS_TRUNCATED = False
 _TL = threading.local()    # .last_load = (cmd, path, chars, lines) — load→parse pairing
 
@@ -264,6 +265,7 @@ def reset_parse_ledger() -> None:
     with _YIELD_LOCK:
         _PER_PARSER.clear()
         _EVENTS.clear()
+        _RECEIPTS.clear()
         _EVENTS_TRUNCATED = False
     if hasattr(_TL, "last_load"):
         del _TL.last_load
@@ -278,6 +280,10 @@ def parse_yield_report() -> dict:
             for name, counts in sorted(_PER_PARSER.items())
         }
         events = sorted(_EVENTS, key=lambda e: (e["parser"], e["device"], e["cmd"], e["file"]))
+        receipts = [
+            {"parser": parser, "device": device, "cmd": cmd, **counts}
+            for (parser, device, cmd), counts in sorted(_RECEIPTS.items())
+        ]
         suspect = sum(c["zero_yield"] for n, c in _PER_PARSER.items()
                       if n not in MAY_BE_EMPTY_PARSERS)
         expected = sum(c["zero_yield"] for n, c in _PER_PARSER.items()
@@ -298,6 +304,10 @@ def parse_yield_report() -> dict:
             "per_parser": per_parser,
             "events": events,
             "events_truncated": _EVENTS_TRUNCATED,
+            # One aggregate per exact parser/device/command representation.  Unlike ``events`` this includes
+            # successful non-empty parses and is not capped, so custody consumers cannot be masked by a
+            # different host's successful call.  Paths and bodies are never published.
+            "receipts": receipts,
         }
 
 
@@ -312,6 +322,13 @@ def _record_yield(fn, args, result, error: bool) -> None:
         with_content = text is not None and bool(text.strip()) and (
             lines >= MIN_CONTENT_LINES or chars >= MIN_CONTENT_CHARS)
         entities = len(result) if isinstance(result, (dict, list, tuple, set)) else None
+        last = getattr(_TL, "last_load", None)
+        if last is not None and last[2] == chars:   # len-verified: same text this thread loaded
+            cmd, path = last[0], last[1]
+            device = os.path.basename(os.path.dirname(path)) or _UNATTRIBUTED
+            fname = os.path.basename(path)
+        else:
+            cmd, device, fname = _UNATTRIBUTED, _UNATTRIBUTED, ""
         with _YIELD_LOCK:
             pp = _PER_PARSER.setdefault(
                 name, {"calls": 0, "with_content": 0, "zero_yield": 0, "errors": 0})
@@ -319,19 +336,18 @@ def _record_yield(fn, args, result, error: bool) -> None:
             if not with_content:
                 return                      # absent/trivial input: Collection Completeness's domain
             pp["with_content"] += 1
+            receipt = _RECEIPTS.setdefault(
+                (name, device, cmd), {"calls": 0, "with_entities": 0, "zero_yield": 0, "errors": 0})
+            receipt["calls"] += 1
             if error:
                 pp["errors"] += 1
+                receipt["errors"] += 1
             elif entities == 0:
                 pp["zero_yield"] += 1
+                receipt["zero_yield"] += 1
             else:
+                receipt["with_entities"] += 1
                 return                      # entities came out (or an unsized result): no event
-            last = getattr(_TL, "last_load", None)
-            if last is not None and last[2] == chars:   # len-verified: same text this thread loaded
-                cmd, path = last[0], last[1]
-                device = os.path.basename(os.path.dirname(path)) or _UNATTRIBUTED
-                fname = os.path.basename(path)
-            else:
-                cmd, device, fname = _UNATTRIBUTED, _UNATTRIBUTED, ""
             if len(_EVENTS) >= _YIELD_EVENT_CAP:
                 _EVENTS_TRUNCATED = True
                 return

@@ -38,7 +38,7 @@ import os
 import sys
 from typing import Any, Dict, List, Optional
 
-from . import failover, whatif
+from . import failover, traffic_assurance, whatif
 from .attestation import loopback_only
 
 # The socket transports serve the ENTIRE snapshot unauthenticated, so the bind address is
@@ -54,7 +54,7 @@ TOOL_NAMES = [
     "overview", "list_devices", "device_detail", "top_findings",
     "failure_impact", "chokepoints", "architecture_coverage",
     "get_finding", "search_devices", "get_move_groups", "whatif_node", "get_health",
-    "failover_twin", "failover_readiness",
+    "failover_twin", "failover_readiness", "assess_traffic",
 ]
 
 
@@ -444,6 +444,92 @@ def failover_readiness(snap: Dict[str, Any]) -> Dict[str, Any]:
     return {"available": True, "result": failover.compute_failover_readiness(snap), "sources": sources}
 
 
+def assess_traffic(snap: Dict[str, Any], src: str, dst: str, protocol: str,
+                   src_port: int, dst_port: int, expected: str = "permit",
+                   return_required: bool = True, required_mtu: Optional[int] = None,
+                   flow_id: str = "",
+                   failure: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Project one precomputed Traffic Assurance result from the persisted snapshot.
+
+    A persisted JSON snapshot cannot retain the in-memory current-run custody marker used by the producer.
+    Re-running the engine here would therefore either trust self-certified JSON or necessarily abstain.  The MCP
+    boundary instead performs an exact lookup and returns the producer-owned result verbatim.  A miss tells the
+    caller to rerun ``cisco-assess --traffic-intents`` against the original evidence.
+    """
+    query = {
+        "src": src,
+        "dst": dst,
+        "protocol": protocol,
+        "src_port": src_port,
+        "dst_port": dst_port,
+        "expected": expected,
+        "return_required": return_required,
+        "required_mtu": required_mtu,
+    }
+    section = snap.get("traffic_assurance") if isinstance(snap, dict) else None
+    if not isinstance(section, dict) or section.get("schema") != traffic_assurance.TRAFFIC_ASSURANCE_SET_SCHEMA:
+        return {
+            "available": False,
+            "sources": ["traffic_assurance"],
+            "reason": "snapshot has no canonical precomputed Traffic Assurance result set; rerun "
+                      "cisco-assess --traffic-intents against the original evidence",
+        }
+
+    def _strict_equal(left: Any, right: Any) -> bool:
+        return type(left) is type(right) and left == right
+
+    def _failure_matches(result: dict) -> bool:
+        stored = result.get("failure")
+        if not isinstance(stored, dict):
+            return False
+        if failure is None:
+            return stored.get("requested") is False
+        if not isinstance(failure, dict) or stored.get("requested") is not True:
+            return False
+        mutation = stored.get("mutation")
+        params = mutation.get("params") if isinstance(mutation, dict) else None
+        if not isinstance(params, dict):
+            return False
+        expected_failure = {"action": stored.get("action"), **params}
+        return set(failure) == set(expected_failure) and all(
+            _strict_equal(failure.get(key), value) for key, value in expected_failure.items()
+        )
+
+    matches = []
+    for result in section.get("results") if isinstance(section.get("results"), list) else []:
+        if not isinstance(result, dict) or result.get("schema") != traffic_assurance.TRAFFIC_ASSURANCE_SCHEMA:
+            continue
+        intent = result.get("intent")
+        if not isinstance(intent, dict):
+            continue
+        if flow_id and not _strict_equal(intent.get("id"), flow_id):
+            continue
+        if not all(_strict_equal(intent.get(key), value) for key, value in query.items()):
+            continue
+        if _failure_matches(result):
+            matches.append(result)
+
+    if len(matches) != 1:
+        return {
+            "available": False,
+            "ambiguous": len(matches) > 1,
+            "candidate_count": len(matches),
+            "sources": ["traffic_assurance"],
+            "reason": (
+                "multiple precomputed Traffic Assurance results match; supply the exact flow_id"
+                if len(matches) > 1 else
+                "no exact precomputed Traffic Assurance result matches; rerun cisco-assess --traffic-intents "
+                "against the original evidence"
+            ),
+        }
+    return {
+        "available": True,
+        "matched_by": "flow_id_and_exact_intent" if flow_id else "exact_intent",
+        "result": matches[0],
+        "sources": ["traffic_assurance"],
+    }
+
+
 # name -> pure function, captured so build_server's same-named tool wrappers don't shadow it
 _PURE = {
     "overview": overview, "list_devices": list_devices, "device_detail": device_detail,
@@ -452,6 +538,7 @@ _PURE = {
     "get_finding": get_finding, "search_devices": search_devices,
     "get_move_groups": get_move_groups, "whatif_node": whatif_node, "get_health": get_health,
     "failover_twin": failover_twin, "failover_readiness": failover_readiness,
+    "assess_traffic": assess_traffic,
 }
 
 
@@ -544,6 +631,19 @@ def build_server(snap: Dict[str, Any], name: str = "cisco-assessment",
         """L2 resilience rollup: for every observed STP root and FHRP active, is there a provable backup
         on a single failure (proven vs default-election smell vs indeterminate blind spot)."""
         return P["failover_readiness"](snap)
+
+    @server.tool()
+    def assess_traffic(src: str, dst: str, protocol: str, src_port: int, dst_port: int,
+                       expected: str = "permit", return_required: bool = True,
+                       required_mtu: Optional[int] = None,
+                       flow_id: str = "",
+                       failure: Optional[Dict[str, Any]] = None) -> dict:  # noqa: F811
+        """Look up a precomputed offline five-tuple assurance result. This never contacts a device or
+        recalculates from persisted/self-certified custody; rerun cisco-assess when no exact result exists."""
+        return P["assess_traffic"](
+            snap, src, dst, protocol, src_port, dst_port, expected, return_required,
+            required_mtu, flow_id, failure,
+        )
 
     return server
 

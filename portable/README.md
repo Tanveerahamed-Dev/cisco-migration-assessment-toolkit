@@ -1,7 +1,8 @@
 # Atlas portable build (ADR-0004 P2)
 
-One-folder Windows bundle of the whole platform — engine + AssessHub + the 12-document deliverable
-family — that runs from a USB stick with **no Python on the host**. `Atlas.exe` is the one door:
+One-folder Windows bundle of the whole platform — engine + AssessHub + the registry-owned
+pre-cutover artifact family and conditional post-execution PIR — that runs with **no Python
+on the host**. `Atlas.exe` is the one door:
 it boots the server, opens the browser, and re-invokes itself as the engine CLI for ingest runs
 (the `--run-engine` sentinel; see `webapp/backend/serve.py`).
 
@@ -47,8 +48,9 @@ E:\Atlas\            ← portable/dist/Atlas/, copied wholesale
 Atlas.exe --redact-folder <collection folder> --out <dir>   [--redact-collection]
 ```
 
-Renders the **full deliverable family, pseudonymized**, from a local collection folder — with
-nothing extra on the stick. The engine hard-requires a `--template` workbook and a
+Renders the **complete engine CLI artifact set, pseudonymized**, from a local collection folder.
+AssessHub-only pre-cutover artifacts and the conditional PIR are produced by their owning UI
+workflows, not by this command. The engine hard-requires a `--template` workbook and a
 `--devices-file` that the bundle does not carry, so both are synthesized into a private workdir
 exactly as the AssessHub ingest channel already does (`webapp/backend/ingest.py`).
 

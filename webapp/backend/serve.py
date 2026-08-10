@@ -39,6 +39,7 @@ from importlib.metadata import PackageNotFoundError, version as _dist_version
 from pathlib import Path
 
 from cisco_toolkit.brand_tokens import APP_TITLE
+from cisco_toolkit.docmeta import artifact_family_metadata
 
 # The frozen exe re-invokes ITSELF with this first argument to become the engine CLI child
 # (see backend/ingest.py:_engine_argv, the only producer).
@@ -353,9 +354,11 @@ def run_selftest(dist_dir=None, db_path=None) -> int:
 
     import importlib.util as _ilu
 
+    family = artifact_family_metadata()
     check("python-docx", None if _ilu.find_spec("docx")
-          else "python-docx not importable — the DOCX document family is dead (ADR-0004 D2 "
-               "ships the full 12-document family)")
+          else "python-docx not importable — registry-declared DOCX artifacts are dead "
+               f"({family['pre_cutover']} pre-cutover artifacts plus "
+               f"{family['conditional_post_execution']} conditional post-execution artifact)")
     check("python-pptx", None if _ilu.find_spec("pptx")
           else "python-pptx not importable — the executive deck is dead (ADR-0004 D2)")
 

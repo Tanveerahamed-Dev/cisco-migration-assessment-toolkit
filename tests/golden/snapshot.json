@@ -79,7 +79,8 @@
     "port_channel": "Po1",
     "port_channel_protocol": "Active",
     "current_switch_serial": "FCW1234A001",
-    "current_switch_ip": "10.0.99.1"
+    "current_switch_ip": "10.0.99.1",
+    "run_config_observed": true
    },
    "Gi1/0/2": {
     "port": "Gi1/0/2",
@@ -92,7 +93,8 @@
     "port_channel": "Po1",
     "port_channel_protocol": "Active",
     "current_switch_serial": "FCW1234A001",
-    "current_switch_ip": "10.0.99.1"
+    "current_switch_ip": "10.0.99.1",
+    "run_config_observed": true
    },
    "Gi1/0/24": {
     "port": "Gi1/0/24",
@@ -116,7 +118,8 @@
     "neighbor_switch_ip": "10.0.99.3",
     "stp_fwd_vlans": "10,30",
     "neighbor_port": "Gi0/1",
-    "neighbor_platform": "cisco WS-C2960X-48"
+    "neighbor_platform": "cisco WS-C2960X-48",
+    "run_config_observed": true
    },
    "Gi1/0/5": {
     "port": "Gi1/0/5",
@@ -134,7 +137,10 @@
     "endpoint_type": "Server",
     "dual_connection": "Yes",
     "current_switch_serial": "FCW1234A001",
-    "current_switch_ip": "10.0.99.1"
+    "current_switch_ip": "10.0.99.1",
+    "run_config_observed": true,
+    "forwarding_gate_candidates": "interface_acl_in,interface_acl_out",
+    "forwarding_gate_unmodeled": "candidate_projection_incomplete"
    },
    "Gi1/0/9": {
     "port": "Gi1/0/9",
@@ -149,7 +155,8 @@
     "description": "quarantine",
     "stp_rootguard": "Disable",
     "current_switch_serial": "FCW1234A001",
-    "current_switch_ip": "10.0.99.1"
+    "current_switch_ip": "10.0.99.1",
+    "run_config_observed": true
    },
    "Po1": {
     "port": "Po1",
@@ -174,7 +181,10 @@
     "stp_fwd_vlans": "10,30",
     "neighbor_port": "Po1",
     "neighbor_platform": "cisco N9K-C93180YC-EX",
-    "mtu": "9216"
+    "run_config_observed": true,
+    "mtu": "9216",
+    "link_mtu": "9216",
+    "mtu_semantics": "interface_mtu_layer_ambiguous"
    },
    "Vlan10": {
     "port": "Vlan10",
@@ -188,6 +198,8 @@
     "routing_source": "connected",
     "hsrp_behavior": "HSRP grp 10 Active VIP 10.0.10.1",
     "svi_ip": "10.0.10.2 255.255.255.0",
+    "svi_ips": "10.0.10.2 255.255.255.0",
+    "run_config_observed": true,
     "dhcp_helpers": "10.0.40.10,10.0.40.11"
    },
    "Vlan20": {
@@ -202,7 +214,10 @@
     "routing_source": "connected",
     "hsrp_behavior": "HSRP grp 20 Standby VIP 10.0.20.1",
     "svi_ip": "10.0.20.2 255.255.255.0",
-    "acl_in": "VOICE_FILTER"
+    "svi_ips": "10.0.20.2 255.255.255.0",
+    "acl_in": "VOICE_FILTER",
+    "run_config_observed": true,
+    "forwarding_gate_candidates": "interface_acl_in"
    },
    "Vlan30": {
     "port": "Vlan30",
@@ -216,7 +231,10 @@
     "route_next_hop": "Vlan30",
     "routing_source": "connected",
     "svi_ip": "10.0.30.1 255.255.255.0",
-    "acl_out": "PROTECT_SERVERS"
+    "svi_ips": "10.0.30.1 255.255.255.0",
+    "acl_out": "PROTECT_SERVERS",
+    "run_config_observed": true,
+    "forwarding_gate_candidates": "interface_acl_out"
    }
   },
   "core2": {
@@ -233,7 +251,8 @@
     "port_channel_protocol": "Active",
     "dual_connection": "Yes",
     "current_switch_serial": "FDO12345ABC",
-    "current_switch_ip": "10.0.99.2"
+    "current_switch_ip": "10.0.99.2",
+    "run_config_observed": true
    },
    "Eth1/2": {
     "port": "Eth1/2",
@@ -248,7 +267,8 @@
     "port_channel_protocol": "Active",
     "dual_connection": "Yes",
     "current_switch_serial": "FDO12345ABC",
-    "current_switch_ip": "10.0.99.2"
+    "current_switch_ip": "10.0.99.2",
+    "run_config_observed": true
    },
    "Po1": {
     "port": "Po1",
@@ -275,7 +295,8 @@
     "neighbor_switch_ip": "10.0.99.1",
     "stp_fwd_vlans": "10,20",
     "neighbor_port": "Po1",
-    "neighbor_platform": "cisco WS-C3850-24T"
+    "neighbor_platform": "cisco WS-C3850-24T",
+    "run_config_observed": true
    },
    "Vlan10": {
     "port": "Vlan10",
@@ -288,7 +309,9 @@
     "route_next_hop": "Vlan10",
     "routing_source": "connected",
     "hsrp_behavior": "HSRP grp 10 Standby VIP 10.0.10.1",
-    "svi_ip": "10.0.10.3/24"
+    "svi_ip": "10.0.10.3/24",
+    "svi_ips": "10.0.10.3/24",
+    "run_config_observed": true
    },
    "Vlan20": {
     "port": "Vlan20",
@@ -301,7 +324,9 @@
     "route_next_hop": "Vlan20",
     "routing_source": "connected",
     "hsrp_behavior": "HSRP grp 20 Active VIP 10.0.20.1",
-    "svi_ip": "10.0.20.3/24"
+    "svi_ip": "10.0.20.3/24",
+    "svi_ips": "10.0.20.3/24",
+    "run_config_observed": true
    },
    "Eth1/47": {
     "port": "Eth1/47",
@@ -362,7 +387,8 @@
     "neighbor_switch_ip": "10.0.99.1",
     "stp_fwd_vlans": "10,30",
     "neighbor_port": "Gi1/0/24",
-    "neighbor_platform": "cisco WS-C3850-24T"
+    "neighbor_platform": "cisco WS-C3850-24T",
+    "run_config_observed": true
    },
    "Gi0/2": {
     "port": "Gi0/2",
@@ -385,7 +411,8 @@
     "current_switch_ip": "10.0.99.3",
     "neighbor_switch_ip": "10.0.10.50",
     "neighbor_port": "Gi0",
-    "neighbor_platform": "cisco AIR-AP2802I"
+    "neighbor_platform": "cisco AIR-AP2802I",
+    "run_config_observed": true
    },
    "Gi0/3": {
     "port": "Gi0/3",
@@ -402,7 +429,8 @@
     "stp_rootguard": "Disable",
     "endpoint_type": "IP Phone",
     "current_switch_serial": "FOC2233B002",
-    "current_switch_ip": "10.0.99.3"
+    "current_switch_ip": "10.0.99.3",
+    "run_config_observed": true
    },
    "Gi0/10": {
     "port": "Gi0/10",
@@ -419,7 +447,8 @@
     "stp_rootguard": "Disable",
     "endpoint_type": "Server",
     "current_switch_serial": "FOC2233B002",
-    "current_switch_ip": "10.0.99.3"
+    "current_switch_ip": "10.0.99.3",
+    "run_config_observed": true
    }
   }
  },
@@ -6320,7 +6349,10 @@
      },
      "sport": null,
      "dport": null,
-     "icmp_type": "echo-reply"
+     "icmp_type": "echo-reply",
+     "unmodeled_qualifiers": [
+      "icmp_type"
+     ]
     },
     {
      "action": "deny",
@@ -6457,6 +6489,34 @@
  "acl_line_reachability": {
   "findings": [
    {
+    "line_index": 2,
+    "action": "permit",
+    "raw": "permit icmp any 10.0.30.0 0.0.0.255 echo-reply",
+    "reason": "INDETERMINATE",
+    "verdict": "indeterminate",
+    "blocking_lines": [],
+    "different_action": false,
+    "detail": "cannot model ACL match qualifier(s): icmp_type",
+    "host": "core1",
+    "acl": "PROTECT_SERVERS",
+    "source_command": "show running-config",
+    "citation": "acls.core1.PROTECT_SERVERS[2]"
+   },
+   {
+    "line_index": 3,
+    "action": "deny",
+    "raw": "deny ip any any",
+    "reason": "INDETERMINATE",
+    "verdict": "indeterminate",
+    "blocking_lines": [],
+    "different_action": false,
+    "detail": "an earlier unevaluable line may overlap \u2014 cannot prove reachable or dead",
+    "host": "core1",
+    "acl": "PROTECT_SERVERS",
+    "source_command": "show running-config",
+    "citation": "acls.core1.PROTECT_SERVERS[3]"
+   },
+   {
     "line_index": 0,
     "action": "permit",
     "raw": "permit tcp any any established",
@@ -6500,11 +6560,11 @@
    }
   ],
   "summary": {
-   "n_findings": 3,
+   "n_findings": 5,
    "n_shadowed": 0,
    "n_different_action": 0,
    "n_unmatchable": 0,
-   "n_indeterminate": 3,
+   "n_indeterminate": 5,
    "n_bad_reference": 0
   }
  },
@@ -6527,6 +6587,488 @@
     "citation": "core1::show running-config"
    }
   ],
+  "inspections": [
+   {
+    "host": "access1",
+    "command": "show bgp ipv6 unicast summary",
+    "status": "ok"
+   },
+   {
+    "host": "access1",
+    "command": "show cdp neighbors detail",
+    "status": "ok"
+   },
+   {
+    "host": "access1",
+    "command": "show interface status",
+    "status": "ok"
+   },
+   {
+    "host": "access1",
+    "command": "show interfaces",
+    "status": "ok"
+   },
+   {
+    "host": "access1",
+    "command": "show interfaces switchport",
+    "status": "ok"
+   },
+   {
+    "host": "access1",
+    "command": "show interfaces trunk",
+    "status": "ok"
+   },
+   {
+    "host": "access1",
+    "command": "show ip interface brief",
+    "status": "ok"
+   },
+   {
+    "host": "access1",
+    "command": "show ipv6 dhcp guard policy",
+    "status": "ok"
+   },
+   {
+    "host": "access1",
+    "command": "show ipv6 nd raguard policy",
+    "status": "ok"
+   },
+   {
+    "host": "access1",
+    "command": "show ipv6 route summary",
+    "status": "ok"
+   },
+   {
+    "host": "access1",
+    "command": "show logging",
+    "status": "ok"
+   },
+   {
+    "host": "access1",
+    "command": "show mac address-table",
+    "status": "ok"
+   },
+   {
+    "host": "access1",
+    "command": "show ntp status",
+    "status": "ok"
+   },
+   {
+    "host": "access1",
+    "command": "show ospfv3 neighbor",
+    "status": "ok"
+   },
+   {
+    "host": "access1",
+    "command": "show port-security interface",
+    "status": "ok"
+   },
+   {
+    "host": "access1",
+    "command": "show running-config",
+    "status": "incomplete"
+   },
+   {
+    "host": "access1",
+    "command": "show running-config | section ^interface",
+    "status": "ok"
+   },
+   {
+    "host": "access1",
+    "command": "show spanning-tree",
+    "status": "ok"
+   },
+   {
+    "host": "access1",
+    "command": "show storm-control",
+    "status": "ok"
+   },
+   {
+    "host": "access1",
+    "command": "show version",
+    "status": "ok"
+   },
+   {
+    "host": "access1",
+    "command": "show vlan brief",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "api/fmc_config/v1/deployment/deployabledevices",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "api/fmc_config/v1/devicehapairs/ftddevicehapairs",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "api/fmc_config/v1/devices/devicerecords",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "api/fmc_config/v1/integration/fmchastatuses",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "api/fmc_platform/v1/info/serverversion",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "api/v1/deployment/node",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "aws ec2 describe-security-groups",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "dataservice/device",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "dataservice/device/control/connections",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "dataservice/device/counters",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show bfd neighbors",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show bgp vpnv4 unicast summary",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show cdp neighbors detail",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show crypto session",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show cts environment-data",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show dmvpn",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show etherchannel summary",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show failover",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show interface status",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show interfaces",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show interfaces switchport",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show interfaces trunk",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show ip interface brief",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show ip ospf neighbor",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show ip pim neighbor",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show ip pim rp mapping",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show ip route",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show ipv6 interface",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show lisp session",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show logging",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show mac address-table",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show mpls l2transport vc",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show mpls ldp neighbor",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show ntp status",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show policy-map interface",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show processes cpu",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show processes memory",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show resource usage",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show running-config",
+    "status": "incomplete"
+   },
+   {
+    "host": "core1",
+    "command": "show running-config | section ^interface",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show spanning-tree",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show standby all",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show standby brief",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show version",
+    "status": "ok"
+   },
+   {
+    "host": "core1",
+    "command": "show vlan brief",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "get system ha status",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "moquery -c fabricHealthTotal",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "moquery -c fabricNode",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "moquery -c faultInst",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "moquery -c fvAEPg",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "moquery -c fvBD",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "moquery -c fvCtx",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "moquery -c fvTenant",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "show bgp l2vpn evpn summary",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "show cdp neighbors detail",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "show chassis cluster status",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "show hsrp brief",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "show interface",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "show interface status",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "show interface switchport",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "show interface trunk",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "show ip interface brief",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "show ip route",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "show mac address-table",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "show mlag",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "show ntp peer-status",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "show nve peers",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "show nve vni",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "show policy-map interface control-plane",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "show port-channel summary",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "show running-config interface",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "show spanning-tree",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "show system resources",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "show version",
+    "status": "ok"
+   },
+   {
+    "host": "core2",
+    "command": "show vlan brief",
+    "status": "ok"
+   }
+  ],
   "summary": {
    "n_findings": 2,
    "n_incomplete": 2,
@@ -6534,7 +7076,10 @@
    "n_empty": 0,
    "n_unverified_prompt": 0,
    "n_unreadable": 0,
-   "n_hosts_affected": 2
+   "n_hosts_affected": 2,
+   "n_inspections": 96,
+   "n_ok": 94,
+   "n_not_observed": 0
   }
  },
  "attestation": {
@@ -6550,7 +7095,7 @@
     "id": "no_egress_import_graph",
     "method": "RECURSIVE AST import-walk (every subpackage, any nesting depth, lazy imports included) over the analysis package for network libraries; charter exclusion(s): rest_collect.py (the opt-in REST collector is covered by its own GET-only claim); documented exception(s), subtracted AFTER the scan and named in the result: none \u2014 the package is clean without subtracting anything",
     "result": "HOLDS",
-    "detail": "0 unexplained network-library imports across 72 analysis modules (recursive walk; excluded by charter: rest_collect.py; no documented exception was needed)"
+    "detail": "0 unexplained network-library imports across 74 analysis modules (recursive walk; excluded by charter: rest_collect.py; no documented exception was needed)"
    },
    {
     "id": "rest_collect_get_only",
@@ -6562,7 +7107,7 @@
     "id": "no_llm_runtime",
     "method": "AST import-walk over the analysis package (rest_collect.py included) + the collector entry module for LLM/GenAI SDK imports \u2014 the pipeline is deterministic and air-gapped, no model call at runtime",
     "result": "HOLDS",
-    "detail": "0 LLM/GenAI SDK imports across 74 modules (analysis package + collector entry)"
+    "detail": "0 LLM/GenAI SDK imports across 76 modules (analysis package + collector entry)"
    }
   ]
  },
@@ -7052,8 +7597,8 @@
     "may_be_empty": true
    },
    "parse_run_config_interfaces": {
-    "calls": 3,
-    "with_content": 3,
+    "calls": 5,
+    "with_content": 5,
     "zero_yield": 0,
     "errors": 0,
     "may_be_empty": false
@@ -7234,25 +7779,1174 @@
     "error": false
    }
   ],
-  "events_truncated": false
+  "events_truncated": false,
+  "receipts": [
+   {
+    "parser": "parse_aci_bds",
+    "device": "core2",
+    "cmd": "moquery -c fvBD",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_aci_epgs",
+    "device": "core2",
+    "cmd": "moquery -c fvAEPg",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_aci_fabric_nodes",
+    "device": "core2",
+    "cmd": "moquery -c fabricNode",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_aci_faults",
+    "device": "core2",
+    "cmd": "moquery -c faultInst",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_aci_health",
+    "device": "core2",
+    "cmd": "moquery -c fabricHealthTotal",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_aci_tenants",
+    "device": "core2",
+    "cmd": "moquery -c fvTenant",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_aci_vrfs",
+    "device": "core2",
+    "cmd": "moquery -c fvCtx",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_acls",
+    "device": "access1",
+    "cmd": "show running-config",
+    "calls": 1,
+    "with_entities": 0,
+    "zero_yield": 1,
+    "errors": 0
+   },
+   {
+    "parser": "parse_acls",
+    "device": "core1",
+    "cmd": "show running-config",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_arista_mlag",
+    "device": "core2",
+    "cmd": "show mlag",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_asa_failover",
+    "device": "core1",
+    "cmd": "show failover",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_asa_resource_usage",
+    "device": "core1",
+    "cmd": "show resource usage",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_aws_security_groups",
+    "device": "core1",
+    "cmd": "aws ec2 describe-security-groups",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_bfd_neighbors",
+    "device": "core1",
+    "cmd": "show bfd neighbors",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_bgp_ipv6_summary",
+    "device": "access1",
+    "cmd": "show bgp ipv6 unicast summary",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_bgp_vpnv4_summary",
+    "device": "core1",
+    "cmd": "show bgp vpnv4 unicast summary",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_config_hygiene",
+    "device": "access1",
+    "cmd": "show running-config",
+    "calls": 1,
+    "with_entities": 0,
+    "zero_yield": 1,
+    "errors": 0
+   },
+   {
+    "parser": "parse_config_hygiene",
+    "device": "core1",
+    "cmd": "show running-config",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_copp_drops",
+    "device": "core2",
+    "cmd": "show policy-map interface control-plane",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_cpu_utilization",
+    "device": "core1",
+    "cmd": "show processes cpu",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_crypto_sessions",
+    "device": "core1",
+    "cmd": "show crypto session",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_cts_environment_data",
+    "device": "core1",
+    "cmd": "show cts environment-data",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_dmvpn_peers",
+    "device": "core1",
+    "cmd": "show dmvpn",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_etherchannel_summary_members",
+    "device": "core1",
+    "cmd": "show etherchannel summary",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_etherchannel_summary_members",
+    "device": "core2",
+    "cmd": "show port-channel summary",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_evpn_summary",
+    "device": "core2",
+    "cmd": "show bgp l2vpn evpn summary",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_fmc_deployable",
+    "device": "core1",
+    "cmd": "api/fmc_config/v1/deployment/deployabledevices",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_fmc_devices",
+    "device": "core1",
+    "cmd": "api/fmc_config/v1/devices/devicerecords",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_fmc_ha_pairs",
+    "device": "core1",
+    "cmd": "api/fmc_config/v1/devicehapairs/ftddevicehapairs",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_fmc_ha_status",
+    "device": "core1",
+    "cmd": "api/fmc_config/v1/integration/fmchastatuses",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_fortigate_ha_status",
+    "device": "core2",
+    "cmd": "get system ha status",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_hsrp_detail",
+    "device": "core1",
+    "cmd": "show standby all",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_hsrp_summary",
+    "device": "core1",
+    "cmd": "show standby brief",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_hsrp_summary",
+    "device": "core2",
+    "cmd": "show hsrp brief",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_ip_routes",
+    "device": "core1",
+    "cmd": "show ip route",
+    "calls": 2,
+    "with_entities": 2,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_ip_routes",
+    "device": "core2",
+    "cmd": "show ip route",
+    "calls": 2,
+    "with_entities": 2,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_ipv6_dhcp_guard_policy",
+    "device": "access1",
+    "cmd": "show ipv6 dhcp guard policy",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_ipv6_interface_addrs",
+    "device": "core1",
+    "cmd": "show ipv6 interface",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_ipv6_raguard_policy",
+    "device": "access1",
+    "cmd": "show ipv6 nd raguard policy",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_ipv6_route_summary",
+    "device": "access1",
+    "cmd": "show ipv6 route summary",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_ise_nodes",
+    "device": "core1",
+    "cmd": "api/v1/deployment/node",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_junos_chassis_cluster",
+    "device": "core2",
+    "cmd": "show chassis cluster status",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_lisp_sessions",
+    "device": "core1",
+    "cmd": "show lisp session",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_memory_stats",
+    "device": "core1",
+    "cmd": "show processes memory",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_mpls_l2vpn_vc",
+    "device": "core1",
+    "cmd": "show mpls l2transport vc",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_mpls_ldp_neighbors",
+    "device": "core1",
+    "cmd": "show mpls ldp neighbor",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_nat",
+    "device": "access1",
+    "cmd": "show running-config",
+    "calls": 1,
+    "with_entities": 0,
+    "zero_yield": 1,
+    "errors": 0
+   },
+   {
+    "parser": "parse_nat",
+    "device": "core1",
+    "cmd": "show running-config",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_neighbors_cdp",
+    "device": "access1",
+    "cmd": "show cdp neighbors detail",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_neighbors_cdp",
+    "device": "core1",
+    "cmd": "show cdp neighbors detail",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_neighbors_cdp",
+    "device": "core2",
+    "cmd": "show cdp neighbors detail",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_neighbors_detail",
+    "device": "access1",
+    "cmd": "show cdp neighbors detail",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_neighbors_detail",
+    "device": "core1",
+    "cmd": "show cdp neighbors detail",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_neighbors_detail",
+    "device": "core2",
+    "cmd": "show cdp neighbors detail",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_ntp_status",
+    "device": "access1",
+    "cmd": "show ntp status",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_ntp_status",
+    "device": "core1",
+    "cmd": "show ntp status",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_ntp_status",
+    "device": "core2",
+    "cmd": "show ntp peer-status",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_nve_peers",
+    "device": "core2",
+    "cmd": "show nve peers",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_nve_vni",
+    "device": "core2",
+    "cmd": "show nve vni",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_object_groups",
+    "device": "access1",
+    "cmd": "show running-config",
+    "calls": 1,
+    "with_entities": 0,
+    "zero_yield": 1,
+    "errors": 0
+   },
+   {
+    "parser": "parse_object_groups",
+    "device": "core1",
+    "cmd": "show running-config",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_ospf_neighbors",
+    "device": "core1",
+    "cmd": "show ip ospf neighbor",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_ospfv3_neighbors",
+    "device": "access1",
+    "cmd": "show ospfv3 neighbor",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_pim_neighbors",
+    "device": "core1",
+    "cmd": "show ip pim neighbor",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_pim_rp_mapping",
+    "device": "core1",
+    "cmd": "show ip pim rp mapping",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_policymap_drops",
+    "device": "core1",
+    "cmd": "show policy-map interface",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_port_security_detail",
+    "device": "access1",
+    "cmd": "show port-security interface",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_portchannel_protocol_from_summary",
+    "device": "core1",
+    "cmd": "show etherchannel summary",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_portchannel_protocol_from_summary",
+    "device": "core2",
+    "cmd": "show port-channel summary",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_redistribution",
+    "device": "access1",
+    "cmd": "show running-config",
+    "calls": 1,
+    "with_entities": 0,
+    "zero_yield": 1,
+    "errors": 0
+   },
+   {
+    "parser": "parse_redistribution",
+    "device": "core1",
+    "cmd": "show running-config",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_run_config_interfaces",
+    "device": "access1",
+    "cmd": "show running-config",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_run_config_interfaces",
+    "device": "access1",
+    "cmd": "show running-config | section ^interface",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_run_config_interfaces",
+    "device": "core1",
+    "cmd": "show running-config",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_run_config_interfaces",
+    "device": "core1",
+    "cmd": "show running-config | section ^interface",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_run_config_interfaces",
+    "device": "core2",
+    "cmd": "show running-config interface",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_sdwan_control_connections",
+    "device": "core1",
+    "cmd": "dataservice/device/control/connections",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_sdwan_devices",
+    "device": "core1",
+    "cmd": "dataservice/device",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_sdwan_omp_counters",
+    "device": "core1",
+    "cmd": "dataservice/device/counters",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_security",
+    "device": "access1",
+    "cmd": "show running-config",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_security",
+    "device": "core1",
+    "cmd": "show running-config",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_show_interface_status",
+    "device": "access1",
+    "cmd": "show interface status",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_show_interface_status",
+    "device": "core1",
+    "cmd": "show interface status",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_show_interface_status",
+    "device": "core2",
+    "cmd": "show interface status",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_show_interface_switchport",
+    "device": "access1",
+    "cmd": "show interfaces switchport",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_show_interface_switchport",
+    "device": "core1",
+    "cmd": "show interfaces switchport",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_show_interface_switchport",
+    "device": "core2",
+    "cmd": "show interface switchport",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_show_interface_trunk_table",
+    "device": "access1",
+    "cmd": "show interfaces trunk",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_show_interface_trunk_table",
+    "device": "core1",
+    "cmd": "show interfaces trunk",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_show_interface_trunk_table",
+    "device": "core2",
+    "cmd": "show interface trunk",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_show_mac_address_table",
+    "device": "access1",
+    "cmd": "show mac address-table",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_show_mac_address_table",
+    "device": "core1",
+    "cmd": "show mac address-table",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_show_mac_address_table",
+    "device": "core2",
+    "cmd": "show mac address-table",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_spanning_tree_detail",
+    "device": "access1",
+    "cmd": "show spanning-tree",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_spanning_tree_detail",
+    "device": "core1",
+    "cmd": "show spanning-tree",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_spanning_tree_detail",
+    "device": "core2",
+    "cmd": "show spanning-tree",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_spanning_tree_root",
+    "device": "access1",
+    "cmd": "show spanning-tree",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_spanning_tree_root",
+    "device": "core1",
+    "cmd": "show spanning-tree",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_spanning_tree_root",
+    "device": "core2",
+    "cmd": "show spanning-tree",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_spanning_tree_states",
+    "device": "access1",
+    "cmd": "show spanning-tree",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_spanning_tree_states",
+    "device": "core1",
+    "cmd": "show spanning-tree",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_spanning_tree_states",
+    "device": "core2",
+    "cmd": "show spanning-tree",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_storm_control",
+    "device": "access1",
+    "cmd": "show storm-control",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_system_resources",
+    "device": "core2",
+    "cmd": "show system resources",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_vlan_brief",
+    "device": "access1",
+    "cmd": "show vlan brief",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_vlan_brief",
+    "device": "core1",
+    "cmd": "show vlan brief",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   },
+   {
+    "parser": "parse_vlan_brief",
+    "device": "core2",
+    "cmd": "show vlan brief",
+    "calls": 1,
+    "with_entities": 1,
+    "zero_yield": 0,
+    "errors": 0
+   }
+  ]
+ },
+ "traffic_evidence_custody": {
+  "schema": "traffic_evidence_custody/1",
+  "owner": "cisco_toolkit.traffic_assurance.build_traffic_evidence_custody",
+  "content_binding": "sha256-canonical-json-v1",
+  "content_binding_scope": "producer_input_before_optional_global_redaction",
+  "hosts": {
+   "access1": {
+    "acl_definitions": {
+     "status": "incomplete",
+     "complete": false,
+     "source_command": "show running-config",
+     "content_sha256": null
+    },
+    "global_forwarding_config": {
+     "status": "incomplete",
+     "complete": false,
+     "source_command": "show running-config",
+     "content_sha256": null
+    },
+    "interface_attachments": {
+     "status": "ok",
+     "complete": true,
+     "source_command": "show running-config | section ^interface",
+     "content_sha256": "c0a7e22094dece0d1a9467570176cc39cf491ae797d3bd86336373aa4a1d10a4"
+    },
+    "routing_table": {
+     "status": "not_collected",
+     "complete": false,
+     "source_command": "show ip route",
+     "projection": {
+      "status": "projection_not_current_run_verified",
+      "complete": false,
+      "scope_networks": []
+     }
+    }
+   },
+   "core1": {
+    "acl_definitions": {
+     "status": "incomplete",
+     "complete": false,
+     "source_command": "show running-config",
+     "content_sha256": "08faa4bc64c23ca4b03c23295bbebfaf8a7a8e7a158111eaf409636783819fbf"
+    },
+    "global_forwarding_config": {
+     "status": "incomplete",
+     "complete": false,
+     "source_command": "show running-config",
+     "content_sha256": "c0a07709b7501117a28a769d5510ebefec6c14d698ce02050c1b470854c65459"
+    },
+    "interface_attachments": {
+     "status": "ok",
+     "complete": true,
+     "source_command": "show running-config | section ^interface",
+     "content_sha256": "ac217795776ea192c0fdd76e2e731ef1248d5cfe0d1d48ec321063397f22ef67"
+    },
+    "routing_table": {
+     "status": "ok",
+     "complete": true,
+     "source_command": "show ip route",
+     "projection": {
+      "status": "ok",
+      "complete": true,
+      "scope_networks": [
+       "10.0.10.0/24",
+       "10.0.20.0/24",
+       "10.0.30.0/24"
+      ],
+      "source_prefix_count": 9,
+      "source_entry_count": 9,
+      "scoped_row_count": 8,
+      "scoped_rows_sha256": "6a956c1e34ea6657ca785383db412a9517f72346f4f9aaa3326178030f0c0037",
+      "source_routes_sha256": "9c607cf332e134d2f41988b58ad24359d786b772699a87cac2df2b804fc6b87f",
+      "parse_receipt": {
+       "schema": "route_parse_receipt/1",
+       "complete": true,
+       "candidate_rows": 9,
+       "parsed_rows": 9,
+       "unparsed_candidate_rows": 0,
+       "malformed_candidate_rows": 0,
+       "unexplained_candidate_rows": 0,
+       "ios_candidate_rows": 9,
+       "ios_parsed_rows": 9,
+       "ios_unparsed_rows": 0,
+       "nxos_prefix_blocks": 0,
+       "nxos_expected_ubest_rows": 0,
+       "nxos_via_candidate_rows": 0,
+       "nxos_parsed_via_rows": 0,
+       "nxos_unparsed_via_rows": 0,
+       "nxos_denominator_mismatch_blocks": 0,
+       "nxos_malformed_prefix_blocks": 0,
+       "ios_malformed_subnet_headers": 0,
+       "route_prefix_count": 9,
+       "route_entry_count": 9,
+       "routes_sha256": "9c607cf332e134d2f41988b58ad24359d786b772699a87cac2df2b804fc6b87f",
+       "incomplete_reasons": []
+      }
+     }
+    }
+   },
+   "core2": {
+    "acl_definitions": {
+     "status": "not_collected",
+     "complete": false,
+     "source_command": "show running-config",
+     "content_sha256": null
+    },
+    "global_forwarding_config": {
+     "status": "not_collected",
+     "complete": false,
+     "source_command": "show running-config",
+     "content_sha256": null
+    },
+    "interface_attachments": {
+     "status": "ok",
+     "complete": true,
+     "source_command": "show running-config interface",
+     "content_sha256": "b9c360d1b7eaf1a822423e3056fb87dd55e8efb0b543c792dc1d4ccbab20a000"
+    },
+    "routing_table": {
+     "status": "ok",
+     "complete": true,
+     "source_command": "show ip route",
+     "projection": {
+      "status": "ok",
+      "complete": true,
+      "scope_networks": [
+       "10.0.10.0/24",
+       "10.0.20.0/24",
+       "10.0.30.0/24"
+      ],
+      "source_prefix_count": 4,
+      "source_entry_count": 4,
+      "scoped_row_count": 4,
+      "scoped_rows_sha256": "345aaa59a0f0e9bbdf7f84fca1357b2bf4c990912c0564f461cdfc29fe143234",
+      "source_routes_sha256": "e7d4e732cc60a6d58ccb2af94cf385a264a4469745c7b6d82f84323881818e98",
+      "parse_receipt": {
+       "schema": "route_parse_receipt/1",
+       "complete": true,
+       "candidate_rows": 4,
+       "parsed_rows": 4,
+       "unparsed_candidate_rows": 0,
+       "malformed_candidate_rows": 0,
+       "unexplained_candidate_rows": 0,
+       "ios_candidate_rows": 4,
+       "ios_parsed_rows": 4,
+       "ios_unparsed_rows": 0,
+       "nxos_prefix_blocks": 0,
+       "nxos_expected_ubest_rows": 0,
+       "nxos_via_candidate_rows": 0,
+       "nxos_parsed_via_rows": 0,
+       "nxos_unparsed_via_rows": 0,
+       "nxos_denominator_mismatch_blocks": 0,
+       "nxos_malformed_prefix_blocks": 0,
+       "ios_malformed_subnet_headers": 0,
+       "route_prefix_count": 4,
+       "route_entry_count": 4,
+       "routes_sha256": "e7d4e732cc60a6d58ccb2af94cf385a264a4469745c7b6d82f84323881818e98",
+       "incomplete_reasons": []
+      }
+     }
+    }
+   }
+  },
+  "summary": {
+   "n_hosts": 3,
+   "n_cells": 12,
+   "n_complete": 5,
+   "n_unproven": 7
+  },
+  "limitations": [
+   "command presence, capture-integrity and exact host/command/parser receipts; no raw path or command body is published",
+   "configuration/interface content hashes bind the exact in-process structures used by the producer; persisted hashes are audit-only after redaction or JSON load",
+   "global forwarding-gate custody covers only parse.FORWARDING_GATE_SYNTAX_REGISTRY plus the current ACL/ABF, object-group and NAT projections; it is not an open-ended proof that every vendor syntax is modeled",
+   "ok proves the captured representation passed current integrity checks, not device truth or freshness"
+  ]
  },
  "routes": {
   "core1": [
    {
     "prefix": "0.0.0.0/0",
-    "source": "s*",
+    "source": "static",
     "next_hop": "10.0.10.254",
-    "out_intf": ""
+    "out_intf": "",
+    "admin_distance": 1
    },
    {
     "prefix": "10.0.0.0/16",
     "source": "static",
     "next_hop": "10.0.30.254",
-    "out_intf": ""
+    "out_intf": "",
+    "admin_distance": 1
    },
    {
     "prefix": "10.0.10.0/24",
     "source": "connected",
+    "next_hop": "",
+    "out_intf": "Vlan10"
+   },
+   {
+    "prefix": "10.0.10.2/32",
+    "source": "local",
     "next_hop": "",
     "out_intf": "Vlan10"
    },
@@ -7263,8 +8957,20 @@
     "out_intf": "Vlan20"
    },
    {
+    "prefix": "10.0.20.2/32",
+    "source": "local",
+    "next_hop": "",
+    "out_intf": "Vlan20"
+   },
+   {
     "prefix": "10.0.30.0/24",
     "source": "connected",
+    "next_hop": "",
+    "out_intf": "Vlan30"
+   },
+   {
+    "prefix": "10.0.30.1/32",
+    "source": "local",
     "next_hop": "",
     "out_intf": "Vlan30"
    }
@@ -7277,8 +8983,20 @@
     "out_intf": "Vlan10"
    },
    {
+    "prefix": "10.0.10.3/32",
+    "source": "local",
+    "next_hop": "",
+    "out_intf": "Vlan10"
+   },
+   {
     "prefix": "10.0.20.0/24",
     "source": "connected",
+    "next_hop": "",
+    "out_intf": "Vlan20"
+   },
+   {
+    "prefix": "10.0.20.3/32",
+    "source": "local",
     "next_hop": "",
     "out_intf": "Vlan20"
    }
@@ -8656,6 +10374,54 @@
    "statement": "Architecture conformance grade C (70%) \u2014 Material deviations. 8 of 22 assessable checks conform to leading practice; 2 critical and 3 material deviation(s) require remediation, concentrated in: Resiliency & availability, Layer-2 design, Security & segmentation, Lifecycle & software. 3 check(s) were not assessable from this snapshot and are listed in the review scope."
   }
  },
+ "unknown_evidence": {
+  "schema": "unknown_evidence/1",
+  "event_schema": "unknown_evidence_event/1",
+  "sources": [
+   {
+    "section": "parse_yield",
+    "state": "observed",
+    "records_examined": 88,
+    "detail_complete": true,
+    "note": "Aggregate parser counters were examined; retained row detail is lower-bound only when capped.",
+    "events_truncated": false
+   },
+   {
+    "section": "coverage_matrix",
+    "state": "observed",
+    "records_examined": 40,
+    "detail_complete": true,
+    "note": "Coverage rows were checked only for registered dimensions, axes, and verdict states; device values were discarded.",
+    "dimensions_expected": 4,
+    "dimensions_observed": 4,
+    "dimensions_missing": 0
+   },
+   {
+    "section": "architecture_coverage",
+    "state": "observed",
+    "records_examined": 27,
+    "detail_complete": true,
+    "note": "Class keys were reconciled to the live architecture-coverage registry; unknown keys remain opaque.",
+    "registered_expected": 27,
+    "registered_observed": 27,
+    "registered_missing": 0
+   }
+  ],
+  "events": [],
+  "summary": {
+   "state": "observed_no_unknowns",
+   "n_events": 0,
+   "n_occurrences": 0,
+   "n_unresolved": 0,
+   "event_records_by_kind": {},
+   "occurrences_by_kind": {},
+   "event_records_by_classification": {},
+   "source_coverage_complete": true,
+   "raw_identifiers_included": false,
+   "claim_scope": "bounded_observed_sources_only",
+   "note": "This aggregate includes only registered parser-yield, coverage-matrix, and architecture-coverage inputs. 'observed_no_unknowns' means none were observed in that bounded complete input; it is never a claim of universal protocol, platform, estate, or industry completeness. Events may share a causal incident and remain candidate classifications until human triage."
+  }
+ },
  "schema_census": {
   "schema": "schema_census/1",
   "sections": [
@@ -9145,7 +10911,7 @@
    {
     "key": "capture_integrity",
     "state": "published",
-    "count": 2,
+    "count": 3,
     "kind": "dict",
     "note": "seen \u2014 collected and non-empty"
    },
@@ -9159,7 +10925,14 @@
    {
     "key": "parse_yield",
     "state": "published",
-    "count": 4,
+    "count": 5,
+    "kind": "dict",
+    "note": "seen \u2014 collected and non-empty"
+   },
+   {
+    "key": "traffic_evidence_custody",
+    "state": "published",
+    "count": 7,
     "kind": "dict",
     "note": "seen \u2014 collected and non-empty"
    },
@@ -9360,6 +11133,13 @@
     "note": "seen \u2014 collected and non-empty"
    },
    {
+    "key": "unknown_evidence",
+    "state": "published",
+    "count": 5,
+    "kind": "dict",
+    "note": "seen \u2014 collected and non-empty"
+   },
+   {
     "key": "schema_census",
     "state": "published",
     "count": 3,
@@ -9375,10 +11155,10 @@
    }
   ],
   "summary": {
-   "n_published": 94,
+   "n_published": 96,
    "n_collected_but_empty": 8,
    "n_not_collected": 0,
-   "n_sections": 102
+   "n_sections": 104
   }
  }
 }

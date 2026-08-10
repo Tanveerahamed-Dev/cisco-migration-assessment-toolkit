@@ -350,6 +350,13 @@ _SYNTHETIC_VISUAL_BASELINES = {
 }
 # END GENERATED SYNTHETIC VISUAL BASELINE PINS
 _PROJECT_BINARY_ASSETS = {
+    "master-reference/public/atlas-social-card.png": {
+        "bytes": 1_766_077,
+        "height": 909,
+        "media_type": "image/png",
+        "sha256": "15854acd763600b578913cc263b3b48e56474b042f5713185e121f6f90545828",
+        "width": 1731,
+    },
     "master-reference/public/og.png": {
         "bytes": 2_338_417,
         "height": 909,

@@ -3,7 +3,10 @@
 Inputs are small, format-correct snippets (IOS + NX-OS). These lock in current
 parser behavior so later robustness work can't silently regress it.
 """
+import json
 import textwrap
+
+import pytest
 
 from cisco_toolkit import parse   # ospf/bgp parsers no longer re-exported by the monolith (step 24)
 
@@ -67,6 +70,36 @@ def test_parse_run_config_interface_acl(cp):
     assert res["Vlan30"]["acl_out"] == "PROTECT_SERVERS" and res["Vlan30"]["acl_in"] == ""
     # SVI without an access-group keeps empty strings (additive, never absent)
     assert res["Vlan10"]["acl_in"] == "" and res["Vlan10"]["acl_out"] == ""
+
+
+def test_parse_ios_xr_acl_attachment_definition_and_ipv4_wildcard(cp):
+    out = textwrap.dedent("""\
+        interface Vlan10
+         ipv4 access-group BLOCK ingress
+        interface Vlan20
+         ipv4 access-group RETURN egress
+        ipv4 access-list BLOCK
+         10 deny tcp any any eq 443
+         20 permit ipv4 any any
+    """)
+    interfaces = parse.parse_run_config_interfaces(out)
+    assert interfaces["Vlan10"]["acl_in"] == "BLOCK"
+    assert interfaces["Vlan20"]["acl_out"] == "RETURN"
+    rules = parse.parse_acls(out)["BLOCK"]
+    assert [row["action"] for row in rules] == ["deny", "permit"]
+    assert rules[1]["proto"] == "ipv4"
+
+
+def test_parse_run_config_preserves_primary_and_secondary_interface_addresses(cp):
+    row = parse.parse_run_config_interfaces(textwrap.dedent("""\
+        interface Vlan10
+         ip address 10.1.1.1 255.255.255.0
+         ip address 10.1.1.2 255.255.255.0 secondary
+    """))["Vlan10"]
+    assert row["ip_addr"] == "10.1.1.1 255.255.255.0"
+    assert row["ip_addresses"] == [
+        "10.1.1.1 255.255.255.0", "10.1.1.2 255.255.255.0",
+    ]
 
 
 def test_parse_run_config_interface_vrf(cp):
@@ -159,10 +192,95 @@ def test_parse_nat(cp):
     so = [s for s in nat["static"] if s["direction"] == "outside"][0]
     assert so["global"] == "198.51.100.5" and so["local"] == "10.0.50.5"         # outside-source swaps local/global
     assert nat["dynamic"][0] == {"acl": "7", "kind": "pool", "via": "MIGRATE", "overload": True}
+    assert "unmodeled" not in nat
 
 
 def test_parse_nat_absent(cp):
     assert parse.parse_nat("hostname r1\n!\n") == {}
+
+
+def test_parse_nat_extended_ios_candidates_are_inventory_not_silent_absence(cp):
+    from cisco_toolkit import traffic_assurance
+
+    route_map = parse.parse_nat(
+        "ip nat inside source route-map INTERNET-PAT "
+        "interface GigabitEthernet0/0 overload\n"
+    )
+    assert route_map["dynamic"] == [{
+        "acl": "", "route_map": "INTERNET-PAT", "kind": "interface",
+        "via": "Gi0/0", "overload": True,
+    }]
+
+    interface_pat = parse.parse_nat(
+        "ip nat inside source static tcp 10.0.30.9 443 "
+        "interface GigabitEthernet0/0 8443\n"
+    )
+    assert interface_pat["static"] == [{
+        "direction": "inside", "proto": "tcp", "global_interface": "Gi0/0",
+        "local": "10.0.30.9", "global": "", "local_port": "443", "global_port": "8443",
+    }]
+
+    static_network = parse.parse_nat(
+        "ip nat inside source static network 10.30.0.0 203.0.113.0 /24\n"
+    )
+    assert static_network["static"] == [{
+        "direction": "inside", "proto": "", "kind": "network", "network_mask": "/24",
+        "local": "10.30.0.0", "global": "203.0.113.0",
+    }]
+
+    for inventory in (route_map, interface_pat, static_network):
+        assert "unmodeled" not in inventory
+        assert traffic_assurance._has_configured_nat(inventory) is True
+        errors, unsupported = traffic_assurance._snapshot_intent_constraints(
+            {"nat": {"R1": inventory}}, {"src": "10.1.1.10", "dst": "10.2.2.20"}
+        )
+        assert errors == []
+        assert "network_address_translation_not_modeled" in unsupported
+
+
+def test_parse_nat_asa_and_unknown_ios_candidates_emit_only_fixed_counts(cp):
+    from cisco_toolkit import traffic_assurance
+
+    asa = parse.parse_nat(textwrap.dedent("""\
+        object network PRIVATE-APP-SERVER
+         host 10.30.0.9
+         nat (inside,outside) static 203.0.113.9
+        nat (inside,outside) after-auto source dynamic any interface
+    """))
+    assert asa["unmodeled"] == {
+        "asa_manual_nat_not_modeled": 1,
+        "asa_object_nat_not_modeled": 1,
+    }
+    asa_encoded = json.dumps(asa, sort_keys=True)
+    for raw_fragment in ("PRIVATE-APP-SERVER", "10.30.0.9", "203.0.113.9", "after-auto"):
+        assert raw_fragment not in asa_encoded
+    assert traffic_assurance._has_configured_nat(asa) is True
+    assert "network_address_translation_not_modeled" in traffic_assurance._snapshot_intent_constraints(
+        {"nat": {"R1": asa}}, {"src": "10.1.1.10", "dst": "10.2.2.20"}
+    )[1]
+
+    ios_unknown = parse.parse_nat(textwrap.dedent("""\
+        interface Vlan10
+         ip nat enable
+        ip nat inside source route-map PRIVATE-ROUTE-MAP pool PRIVATE-POOL reversible
+        ip nat inside source static 10.30.0.9 203.0.113.9 PRIVATE-QUALIFIER
+    """))
+    assert ios_unknown["unmodeled"] == {
+        "ios_nat_qualifier_not_modeled": 1,
+        "ios_nat_syntax_not_modeled": 2,
+    }
+    ios_encoded = json.dumps(ios_unknown, sort_keys=True)
+    for raw_fragment in ("PRIVATE-ROUTE-MAP", "PRIVATE-POOL", "PRIVATE-QUALIFIER"):
+        assert raw_fragment not in ios_encoded
+    assert traffic_assurance._has_configured_nat(ios_unknown) is True
+    assert "network_address_translation_not_modeled" in traffic_assurance._snapshot_intent_constraints(
+        {"nat": {"R1": ios_unknown}}, {"src": "10.1.1.10", "dst": "10.2.2.20"}
+    )[1]
+
+    assert parse.parse_nat(
+        "no ip nat inside source static 10.0.0.1 203.0.113.1\n"
+        "no nat (inside,outside) source static any any\n"
+    ) == {}
 
 
 def test_parse_security(cp):
@@ -354,6 +472,259 @@ def test_parse_acl_stateful(cp):
     assert not rules[2].get("established") and not rules[2].get("time_range")   # plain deny: neither
 
 
+def test_parse_interface_keeps_ipv4_mtu_and_unmodeled_ingress_gates(cp):
+    out = textwrap.dedent("""\
+        interface Gi0/1
+         mtu 9216
+         ip mtu 1500
+         ip policy route-map BLACKHOLE
+         ip verify unicast source reachable-via rx allow-default
+    """)
+    row = parse.parse_run_config_interfaces(out)["Gi0/1"]
+    assert row["link_mtu"] == "9216"
+    assert row["ip_mtu"] == "1500"
+    assert row["mtu"] == "1500"
+    assert row["mtu_semantics"] == "explicit_ipv4_mtu"
+    assert row["pbr_policy"] == "blackhole"
+    assert row["urpf_mode"] == "rx"
+
+    legacy = parse.parse_run_config_interfaces(
+        "interface Vlan20\n ip verify unicast reverse-path\n"
+    )["Vlan20"]
+    assert legacy["urpf_mode"] == "reverse-path"
+
+    xr = parse.parse_run_config_interfaces(
+        "interface HundredGigE0/0/0/0\n mtu 1514\n ipv4 mtu 1500\n"
+    )["Hu0/0/0/0"]
+    assert xr["link_mtu"] == "1514"
+    assert xr["ip_mtu"] == xr["mtu"] == "1500"
+    assert xr["mtu_semantics"] == "explicit_ipv4_mtu"
+
+    ambiguous = parse.parse_run_config_interfaces(
+        "interface HundredGigE0/0/0/0\n mtu 1514\n"
+    )["Hu0/0/0/0"]
+    assert ambiguous["mtu"] == "1514"
+    assert ambiguous["mtu_semantics"] == "interface_mtu_layer_ambiguous"
+
+
+def test_parse_ios_xr_interface_addresses_and_unmodeled_packet_gates(cp):
+    out = textwrap.dedent("""\
+        interface Vlan10
+         ipv4 address 10.1.1.1/24
+         ipv4 address 10.1.1.2 255.255.255.0 secondary
+         ipv4 verify unicast source reachable-via rx allow-default
+         service-policy type pbr input DIVERT
+         zone-member security INSIDE
+         service-policy type access-control output DROP-HTTPS
+    """)
+    row = parse.parse_run_config_interfaces(out)["Vlan10"]
+    assert row["ip_addr"] == "10.1.1.1/24"
+    assert row["ip_addresses"] == ["10.1.1.1/24", "10.1.1.2 255.255.255.0"]
+    assert row["urpf_mode"] == "rx"
+    assert row["pbr_policy"] == "divert"
+    assert row["security_zone"] == "inside"
+    assert row["service_policy_out"] == "access-control:drop-https"
+
+
+def test_parse_ios_xr_common_acl_chain_is_explicitly_unmodeled(cp):
+    row = parse.parse_run_config_interfaces(
+        "interface Vlan10\n ipv4 access-group common COMMON IFACE ingress\n"
+    )["Vlan10"]
+    assert row["acl_in"] == ""
+    assert row["acl_in_unmodeled"] == "multiple_or_common_acl_chain"
+
+
+def test_parse_ios_xr_acl_attachment_match_neutral_suffixes(cp):
+    rows = parse.parse_run_config_interfaces(
+        "interface Vlan10\n"
+        " ipv4 access-group BLOCK ingress interface-statistics hardware-count compress level 1\n"
+        "interface Vlan20\n"
+        " ipv4 access-group ALLOW egress hardware-count\n"
+    )
+    assert rows["Vlan10"]["acl_in"] == "BLOCK"
+    assert rows["Vlan10"]["acl_in_unmodeled"] == ""
+    assert rows["Vlan20"]["acl_out"] == "ALLOW"
+    assert rows["Vlan20"]["acl_out_unmodeled"] == ""
+
+
+def test_parse_interface_stateful_inspection_and_crypto_gates(cp):
+    row = parse.parse_run_config_interfaces(
+        "interface Tunnel10\n"
+        " ip inspect FIREWALL in\n"
+        " ip inspect EGRESS out\n"
+        " crypto map WAN-MAP\n"
+        " tunnel protection ipsec profile TUNNEL-PROFILE\n"
+    )["Tu10"]
+    assert row["inspection_policy_in"] == "firewall"
+    assert row["inspection_policy_out"] == "egress"
+    assert row["crypto_map"] == "wan-map"
+    assert row["tunnel_protection"] == "tunnel-profile"
+
+
+def test_interface_gate_ownership_ends_at_the_next_top_level_stanza(cp):
+    rows = parse.parse_run_config_interfaces(
+        "interface GigabitEthernet0/1\n"
+        " ip address 10.0.0.1 255.255.255.0\n"
+        "policy-map TOP_LEVEL_POLICY\n"
+        " service-policy type service-chain input DYNAMIC_CHAIN\n"
+        "zone-pair security INSIDE-OUTSIDE source INSIDE destination OUTSIDE\n"
+        " service-policy type inspect TOP_LEVEL_INSPECT\n"
+        "crypto map TOP_LEVEL_MAP 10 ipsec-isakmp\n"
+        " match address TOP_LEVEL_ACL\n"
+        "interface GigabitEthernet0/2\n"
+        " crypto map INTERFACE_MAP\n"
+    )
+
+    first = rows["Gi0/1"]
+    assert first["service_policy_in"] == ""
+    assert first["inspection_policy_in"] == ""
+    assert first["crypto_map"] == ""
+    assert first["forwarding_gate_candidates"] == ""
+    assert rows["Gi0/2"]["crypto_map"] == "interface_map"
+    assert rows["Gi0/2"]["forwarding_gate_candidates"] == "crypto_map"
+
+
+def test_parse_vlan_filter_projects_the_global_vacl_onto_covered_svis(cp):
+    rows = parse.parse_run_config_interfaces(
+        "interface Vlan10\n"
+        " ip address 10.1.1.1 255.255.255.0\n"
+        "interface Vlan20\n"
+        " ip address 10.2.2.1 255.255.255.0\n"
+        "interface GigabitEthernet0/1\n"
+        " switchport access vlan 10\n"
+        "vlan access-map BLOCK_HTTPS 10\n"
+        " match ip address WEB\n"
+        " action drop\n"
+        "vlan filter BLOCK_HTTPS vlan-list 10\n"
+    )
+
+    assert rows["Vlan10"]["vacl_policy"] == "BLOCK_HTTPS"
+    assert rows["Vlan20"]["vacl_policy"] == ""
+    assert rows["Gi0/1"]["vacl_policy"] == ""
+
+
+def test_forwarding_gate_registry_owns_the_bounded_candidate_denominator():
+    from dataclasses import fields
+
+    from cisco_toolkit.model import InterfaceData
+    from cisco_toolkit.traffic_assurance import FORWARDING_GATE_SCALAR_FIELDS
+
+    registry = parse.FORWARDING_GATE_SYNTAX_REGISTRY
+    assert len({row.family for row in registry}) == len(registry)
+    assert {row.scope for row in registry} == {"interface", "global", "global_nested"}
+    assert {row.family for row in registry} == {
+        "interface_acl", "policy_based_routing", "unicast_rpf", "security_zone",
+        "service_policy", "inspection_policy", "crypto_map", "tunnel_protection",
+        "intrusion_prevention", "network_admission", "trustsec_sgacl", "wccp_redirection",
+        "mpls_forwarding", "global_vlan_filter", "global_asa_access_group",
+        "global_asa_service_policy", "global_trustsec_sgacl", "global_tcp_intercept",
+        "global_bgp_flowspec",
+    }
+    model_fields = {field.name for field in fields(InterfaceData)}
+    assert parse.FORWARDING_GATE_FIELDS <= model_fields
+    assert parse.FORWARDING_GATE_FIELDS <= FORWARDING_GATE_SCALAR_FIELDS
+    assert parse.GLOBAL_FORWARDING_GATE_FAMILIES == {
+        row.family for row in registry if row.scope != "interface"
+    }
+
+
+def test_parse_registry_preserves_trustsec_wccp_tcp_intercept_mpls_flowspec_and_ips_without_raw_names():
+    config = """\
+cts role-based enforcement vlan-list 10-20
+ip tcp intercept list PRIVATE_TCP_ACL
+ip tcp intercept mode intercept
+router bgp 65000
+ address-family ipv4 flowspec
+  local-install interface-all
+interface Vlan10
+ cts role-based enforcement
+ ip wccp PRIVATE_SERVICE redirect in
+ mpls ip
+ mpls mtu 1600
+ ip ips PRIVATE_IPS in
+ ip admission PRIVATE_ADMISSION
+ ip auth-proxy PRIVATE_AUTH http
+interface GigabitEthernet0/1
+ ip wccp 62 redirect out
+"""
+    rows = parse.parse_run_config_interfaces(config)
+    vlan = rows["Vlan10"]
+    uplink = rows["Gi0/1"]
+
+    assert set(vlan["trustsec_sgacl"].split(",")) == {
+        "interface_enforcement", "vlan_enforcement",
+    }
+    assert vlan["wccp_redirection_in"] == "configured"
+    assert vlan["mpls_forwarding"] == "configured"
+    assert vlan["mpls_mtu"] == "1600"
+    assert vlan["ips_policy_in"] == "configured"
+    assert vlan["admission_policy"] == "configured"
+    assert uplink["wccp_redirection_out"] == "configured"
+    for row in rows.values():
+        assert set(row["tcp_intercept"].split(",")) == {"acl_bound", "intercept_mode"}
+        assert set(row["flowspec_policy"].split(",")) == {"address_family", "local_install"}
+        serialized = json.dumps({
+            field: row[field]
+            for field in (
+                "trustsec_sgacl", "wccp_redirection_in", "wccp_redirection_out",
+                "tcp_intercept", "flowspec_policy", "ips_policy_in", "admission_policy",
+                "forwarding_gate_candidates", "forwarding_gate_unmodeled",
+            )
+        })
+        assert "PRIVATE" not in serialized
+    assert {
+        "global_bgp_flowspec", "global_tcp_intercept", "global_trustsec_sgacl",
+        "intrusion_prevention_in", "network_admission", "trustsec_sgacl",
+        "wccp_redirection_in",
+        "mpls_forwarding",
+    } <= set(vlan["forwarding_gate_candidates"].split(","))
+
+
+def test_forwarding_gate_candidates_that_miss_bounded_grammar_become_fixed_non_echoing_gaps():
+    config = """\
+vlan filter PRIVATE_FILTER malformed-selector-form
+ip tcp intercept unsupported PRIVATE_VALUE
+flowspec unsupported PRIVATE_VALUE
+interface Vlan10
+ cts role-based enforcement PRIVATE_VALUE
+ ip wccp PRIVATE_SERVICE redirect sideways
+ mpls mtu 70000
+ ip ips PRIVATE_IPS sideways
+ ip admission
+"""
+    row = parse.parse_run_config_interfaces(config)["Vlan10"]
+    assert set(row["forwarding_gate_unmodeled"].split(",")) == {
+        "global_bgp_flowspec", "global_tcp_intercept", "global_vlan_filter",
+        "intrusion_prevention", "network_admission", "trustsec_sgacl", "wccp_redirection",
+        "mpls_forwarding",
+    }
+    assert "PRIVATE" not in row["forwarding_gate_unmodeled"]
+
+
+def test_unresolved_vacl_scope_is_fixed_non_echoing_and_case_collision_order_is_total():
+    malformed = parse.parse_run_config_interfaces(
+        "vlan filter CLIENT_SECRET_FILTER vlan-list malformed\n"
+        "interface Vlan10\n"
+        " ip address 10.0.10.1 255.255.255.0\n"
+    )["Vlan10"]
+    assert malformed["vacl_policy"] == "vlan_scope_unresolved"
+    assert "CLIENT_SECRET_FILTER" not in json.dumps(malformed)
+
+    first = parse.parse_run_config_interfaces(
+        "vlan filter Foo vlan-list 10\n"
+        "vlan filter foo vlan-list 10\n"
+        "interface Vlan10\n"
+        " ip address 10.0.10.1 255.255.255.0\n"
+    )["Vlan10"]["vacl_policy"]
+    reversed_order = parse.parse_run_config_interfaces(
+        "vlan filter foo vlan-list 10\n"
+        "vlan filter Foo vlan-list 10\n"
+        "interface Vlan10\n"
+        " ip address 10.0.10.1 255.255.255.0\n"
+    )["Vlan10"]["vacl_policy"]
+    assert first == reversed_order == "Foo,foo"
+
+
 # ---- ACL definitions (L4 allow/deny sim) ----------------------------------- #
 def test_parse_acls_forms(cp):
     out = textwrap.dedent("""\
@@ -403,11 +774,14 @@ def test_parse_object_groups_forms(cp):
         object-group service WEB_SVC
          tcp eq 443
          tcp range 8080 8090
+        object-group network IOS_NET_OBJECTS
+         network-object host 10.0.70.1
+         network-object 10.0.71.0 255.255.255.0
         interface Vlan10
          ip access-group X in
     """)
     g = parse.parse_object_groups(out)
-    assert set(g) == {"MGMT_NETS", "NX_NETS", "WEB_SVC"}
+    assert set(g) == {"MGMT_NETS", "NX_NETS", "WEB_SVC", "IOS_NET_OBJECTS"}
     mn = g["MGMT_NETS"]
     assert mn["kind"] == "network"
     assert mn["members"][0] == {"ip": "10.0.99.10", "wild": "0.0.0.0"}            # host
@@ -420,6 +794,11 @@ def test_parse_object_groups_forms(cp):
     assert ws["kind"] == "service"
     assert ws["members"][0] == {"proto": "tcp", "op": "eq", "val": 443}
     assert ws["members"][1] == {"proto": "tcp", "op": "range", "val": 8080, "val2": 8090}
+    ios = g["IOS_NET_OBJECTS"]["members"]
+    assert ios == [
+        {"ip": "10.0.70.1", "wild": "0.0.0.0"},
+        {"ip": "10.0.71.0", "wild": "0.0.0.255"},
+    ]
 
 
 # ---- ICMP-type awareness (L4 depth) ---------------------------------------- #
@@ -578,6 +957,7 @@ def test_parse_ip_routes_wrapped_continuation_merges_into_one_entry(cp):
     entries = parse.parse_ip_routes(out)["10.0.50.0/24"]["entries"]
     assert len(entries) == 1
     assert entries[0]["source"] == "ospf"
+    assert entries[0]["admin_distance"] == 110
     assert entries[0]["next_hop"] == "10.0.0.2"
     assert entries[0]["out_intf"] == "Gi0/0"
 
@@ -594,6 +974,7 @@ def test_parse_ip_routes_wrapped_ecmp_inherits_source_per_next_hop(cp):
     entries = parse.parse_ip_routes(out)["10.0.50.0/24"]["entries"]
     assert len(entries) == 2
     assert all(e["source"] == "ospf" for e in entries)
+    assert {e["admin_distance"] for e in entries} == {110}
     assert {e["next_hop"] for e in entries} == {"10.0.0.2", "10.0.0.3"}
     assert {e["out_intf"] for e in entries} == {"Gi0/0", "Gi0/1"}
 
@@ -620,9 +1001,114 @@ def test_parse_ip_routes_nxos_ubest_mbest_format(cp):
     assert set(routes) == {"10.0.10.0/24", "10.0.10.3/32", "10.20.30.0/24", "0.0.0.0/0"}
     conn = routes["10.0.10.0/24"]["entries"][0]
     assert conn["source"] == "connected" and conn["next_hop"] == "10.0.10.3" and conn["out_intf"] == "Vlan10"
+    assert conn["admin_distance"] == 0
     ospf = routes["10.20.30.0/24"]["entries"][0]
     assert ospf["source"] == "ospf" and ospf["next_hop"] == "10.0.0.2"
+    assert ospf["admin_distance"] == 110
     assert routes["0.0.0.0/0"]["entries"][0]["source"] == "static"
+    assert routes["0.0.0.0/0"]["entries"][0]["admin_distance"] == 1
+
+
+def test_parse_ip_routes_nxos_interface_only_discard_is_not_erased(cp):
+    out = textwrap.dedent("""\
+        10.2.2.0/25, ubest/mbest: 1/0
+            *via Null0, [1/0], 00:00:01, static
+    """)
+    entry = parse.parse_ip_routes(out)["10.2.2.0/25"]["entries"][0]
+    assert entry["source"] == "static"
+    assert entry["next_hop"] == ""
+    assert entry["out_intf"] == "Null0"
+
+
+@pytest.mark.parametrize(
+    ("line", "source"),
+    [
+        ("l 10.2.2.0/24 [115/10] via 192.0.2.2, Gi0/1", "lisp"),
+        ("H 10.2.2.0/24 [250/0] via 192.0.2.2, Tunnel0", "nhrp"),
+    ],
+)
+def test_parse_lisp_and_nhrp_routes_are_not_local_connected(line, source, cp):
+    entry = parse.parse_ip_routes(line)["10.2.2.0/24"]["entries"][0]
+    assert entry["source"] == source
+    assert entry["next_hop"] == "192.0.2.2"
+
+
+def test_parse_ip_routes_retains_observed_ios_admin_distance_per_competing_route(cp):
+    entries = parse.parse_ip_routes(textwrap.dedent("""\
+        B 10.99.0.0/24 [200/0] via 192.0.2.2, GigabitEthernet0/1
+        O 10.99.0.0/24 [110/20] via 192.0.2.3, GigabitEthernet0/2
+    """))["10.99.0.0/24"]["entries"]
+    observed = {entry["source"]: entry["admin_distance"] for entry in entries}
+    assert observed == {"bgp": 200, "ospf": 110}
+
+
+@pytest.mark.parametrize(
+    ("line", "prefix", "source", "code"),
+    [
+        ("% S 10.10.0.0/16 [1/0] via 192.0.2.1, Gi0/1", "10.10.0.0/16", "static", "% S"),
+        ("C + 10.20.0.0/24 is directly connected, Vlan20", "10.20.0.0/24", "connected", "C +"),
+        ("L & 10.20.0.1/32 is directly connected, Vlan20", "10.20.0.1/32", "local", "L &"),
+        ("O IA % 10.30.0.0/24 [110/2] via 192.0.2.2, Gi0/2", "10.30.0.0/24", "ospf-interarea", "O IA %"),
+        ("D EX p 10.40.0.0/24 [170/2] via 192.0.2.3, Gi0/3", "10.40.0.0/24", "eigrp-external", "D EX p"),
+        ("S* 0.0.0.0/0 [1/0] via 192.0.2.254, Gi0/4", "0.0.0.0/0", "static", "S*"),
+        ("O*E2 10.41.0.0/24 [110/2] via 192.0.2.4, Gi0/4", "10.41.0.0/24", "ospf-ext2", "O*E2"),
+    ],
+)
+def test_parse_ip_routes_keeps_independent_markers_out_of_source(line, prefix, source, code, cp):
+    entry = parse.parse_ip_routes(line)[prefix]["entries"][0]
+    assert entry["source"] == source
+    assert entry["code"] == code
+
+
+def test_parse_ip_routes_marked_prefix_keeps_wrapped_continuation(cp):
+    routes = parse.parse_ip_routes(textwrap.dedent("""\
+        % S 10.50.0.0/24
+                  [1/0] via 192.0.2.5, 00:00:03, GigabitEthernet0/5
+    """))
+    entries = routes["10.50.0.0/24"]["entries"]
+    assert len(entries) == 1
+    assert entries[0]["source"] == "static"
+    assert entries[0]["next_hop"] == "192.0.2.5"
+    assert entries[0]["out_intf"] == "Gi0/5"
+
+
+def test_parse_ip_routes_inherits_nonvariable_subnetted_header_mask(cp):
+    routes = parse.parse_ip_routes(textwrap.dedent("""\
+              10.2.0.0/24 is subnetted, 2 subnets
+        C        10.2.1.0 is directly connected, Vlan21
+        O        10.2.2.0
+                   [110/2] via 192.0.2.2, 00:00:03, GigabitEthernet0/2
+    """))
+    assert set(routes) == {"10.2.1.0/24", "10.2.2.0/24"}
+    assert routes["10.2.1.0/24"]["entries"][0]["source"] == "connected"
+    inherited = routes["10.2.2.0/24"]["entries"][0]
+    assert inherited["source"] == "ospf"
+    assert inherited["next_hop"] == "192.0.2.2"
+
+
+def test_parse_ip_routes_accepts_only_contiguous_explicit_dotted_masks(cp):
+    routes = parse.parse_ip_routes(textwrap.dedent("""\
+        S 10.60.0.0 255.255.0.0 [1/0] via 192.0.2.6, GigabitEthernet0/6
+        S 10.61.0.0 255.0.255.0
+                 [1/0] via 192.0.2.61, GigabitEthernet0/7
+        S 10.62.0.0 255.255.255.256 [1/0] via 192.0.2.62, GigabitEthernet0/8
+    """))
+    assert set(routes) == {"10.60.0.0/16"}
+    assert routes["10.60.0.0/16"]["entries"][0]["next_hop"] == "192.0.2.6"
+    # The continuation after the rejected non-contiguous route must not become phantom ECMP on the valid route.
+    assert len(routes["10.60.0.0/16"]["entries"]) == 1
+
+
+def test_parse_ip_routes_subnetted_mask_scope_resets_at_table_boundaries(cp):
+    routes = parse.parse_ip_routes(textwrap.dedent("""\
+              10.70.0.0/24 is subnetted, 1 subnets
+        C        10.70.1.0 is directly connected, Vlan70
+        C        10.71.1.0 is directly connected, Vlan71
+              10.72.0.0/16 is variably subnetted, 1 subnets, 1 masks
+        C        10.72.1.0 is directly connected, Vlan72
+        C        10.73.0.0/16 is directly connected, Vlan73
+    """))
+    assert set(routes) == {"10.70.1.0/24", "10.73.0.0/16"}
 
 
 def test_parse_ip_routes_nxos_ecmp_two_via_lines(cp):
@@ -651,6 +1137,62 @@ def test_parse_ip_routes_inline_via_plus_continuation_ecmp(cp):
     assert len(entries) == 2
     assert all(e["source"] == "bgp" for e in entries)
     assert {e["next_hop"] for e in entries} == {"10.0.0.2", "10.0.0.6"}
+
+
+def test_parse_ip_routes_receipt_accounts_for_complete_ios_rows_and_is_not_serialized(cp):
+    routes = parse.parse_ip_routes(textwrap.dedent("""\
+              10.2.0.0/24 is subnetted, 2 subnets
+        C        10.2.1.0 is directly connected, Vlan21
+        O        10.2.2.0
+                   [110/2] via 192.0.2.2, 00:00:03, GigabitEthernet0/2
+    """))
+
+    receipt = routes.parse_receipt
+    assert receipt["schema"] == "route_parse_receipt/1"
+    assert receipt["complete"] is True
+    assert receipt["candidate_rows"] == receipt["parsed_rows"] == 3
+    assert receipt["ios_candidate_rows"] == receipt["ios_parsed_rows"] == 3
+    assert receipt["nxos_prefix_blocks"] == 0
+    assert not hasattr(json.loads(json.dumps(routes)), "parse_receipt")
+
+
+def test_parse_ip_routes_receipt_uses_each_nxos_ubest_via_denominator(cp):
+    routes = parse.parse_ip_routes(textwrap.dedent("""\
+        10.50.0.0/16, ubest/mbest: 2/0
+            *via 10.0.0.2, Eth1/1, [110/20], 1w2d, ospf-1
+            *via 10.0.0.6, Eth1/2, [110/20], 1w2d, ospf-1
+        10.60.0.0/16, ubest/mbest: 1/0
+            *via Null0, [1/0], 00:00:01, static
+    """))
+
+    receipt = routes.parse_receipt
+    assert receipt["complete"] is True
+    assert receipt["nxos_prefix_blocks"] == 2
+    assert receipt["nxos_expected_ubest_rows"] == 3
+    assert receipt["nxos_via_candidate_rows"] == receipt["nxos_parsed_via_rows"] == 3
+    assert receipt["nxos_denominator_mismatch_blocks"] == 0
+
+
+def test_parse_ip_routes_receipt_discloses_unknown_and_noncontiguous_candidates(cp):
+    routes = parse.parse_ip_routes(textwrap.dedent("""\
+        S 10.2.2.0/24 is directly connected, Null0
+        O E3 10.2.2.0/25 [110/20] via 192.0.2.2, GigabitEthernet0/2
+        S 10.3.0.0 255.0.255.0 [1/0] via 192.0.2.3, GigabitEthernet0/3
+    """))
+
+    assert set(routes) == {"10.2.2.0/24"}
+    receipt = routes.parse_receipt
+    assert receipt["complete"] is False
+    assert receipt["candidate_rows"] == 3
+    assert receipt["parsed_rows"] == 1
+    assert receipt["unparsed_candidate_rows"] == 2
+    assert receipt["unexplained_candidate_rows"] == 1
+    assert receipt["malformed_candidate_rows"] == 1
+    assert receipt["incomplete_reasons"] == [
+        "candidate_rows_unparsed",
+        "malformed_candidate_rows",
+        "unexplained_candidate_rows",
+    ]
 
 
 # ---- interface counters (errors) ------------------------------------------- #

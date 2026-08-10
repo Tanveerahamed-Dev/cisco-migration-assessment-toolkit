@@ -36,7 +36,7 @@ REAL_SVI_IPS = ("10.0.10.1", "10.0.20.1", "10.0.30.1")
 
 
 def _run_workbook_cells(base, redact):
-    """Run the offline pipeline into `base` and return every workbook cell joined into one string."""
+    """Run the offline pipeline and return workbook text plus its canonical Traffic Assurance join."""
     os.makedirs(base, exist_ok=True)
     collection = fx.write_collection(os.path.join(base, "collection"))
     devices = os.path.join(base, "devices.json")
@@ -46,8 +46,22 @@ def _run_workbook_cells(base, redact):
     wb = Workbook(); ws = wb.active; ws.title = "Interface Data"
     ws.append(["Hostname", "Port", "Status"]); wb.save(template)
     out_xlsx = os.path.join(base, "out.xlsx")
+    traffic_intents = os.path.join(base, "traffic-intents.json")
+    with open(traffic_intents, "w", encoding="utf-8") as f:
+        json.dump([{
+            "id": "redaction.flow",
+            "src": "10.0.10.50",
+            "dst": "10.0.20.50",
+            "protocol": "tcp",
+            "src_port": 49152,
+            "dst_port": 443,
+            "expected": "permit",
+            "return_required": False,
+            "required_mtu": None,
+        }], f)
     cmd = [sys.executable, SCRIPT, "--no-collect", "--collection-dir", collection,
            "--devices-file", devices, "--template", template, "--output", out_xlsx,
+           "--traffic-intents", traffic_intents,
            "--no-docx", "--no-pptx", "--no-design", "--no-mop", "--no-crd",
            "--no-engagement", "--no-opshandbook", "--no-archreview", "--workers", "1"]
     if redact:
@@ -70,21 +84,37 @@ def _run_workbook_cells(base, redact):
         assert {d.name for d in diagrams} <= set(proof), (
             "a registered run artifact was dropped from the proof instead of being verified or "
             f"refused: {sorted(set(d.name for d in diagrams) - set(proof))}")
+    snapshot_path = Path(base, "out.snapshot.json")
+    snapshot_payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    canonical = snapshot_payload["traffic_assurance"]["results"][0]
     wb = load_workbook(out_xlsx, read_only=True, data_only=True)
-    return "\n".join(str(c) for s in wb.sheetnames
-                     for row in wb[s].iter_rows(values_only=True) for c in row if c is not None)
+    traffic_sheet = wb["Traffic Assurance"]
+    headers = {cell.value: cell.column for cell in traffic_sheet[1]}
+    traffic_row = {
+        name: traffic_sheet.cell(2, headers[name]).value
+        for name in ("Flow ID", "Source", "Destination", "Overall Verdict", "Custody Trust")
+    }
+    return {
+        "cells": "\n".join(str(c) for s in wb.sheetnames
+                            for row in wb[s].iter_rows(values_only=True) for c in row if c is not None),
+        "snapshot": snapshot_payload,
+        "canonical": canonical,
+        "traffic_row": traffic_row,
+    }
 
 
 def test_redact_workbook_does_not_leak_real_inventory(tmp_path):
     # 1) WITHOUT --redact the workbook genuinely CONTAINS the real inventory -> these are real leak vectors, so the
     #    --redact assertions below are non-vacuous.
-    plain = _run_workbook_cells(str(tmp_path / "plain"), redact=False)
+    plain_run = _run_workbook_cells(str(tmp_path / "plain"), redact=False)
+    plain = plain_run["cells"]
     assert REAL_SERIALS[0] in plain, "fixture serial should reach the unredacted workbook (test would be vacuous otherwise)"
     assert REAL_MAC_DOTTED in plain, "fixture endpoint MAC should reach the unredacted workbook"
 
     # 2) WITH --redact, NONE of the real serials / MACs / SVI IPs survive in ANY cell of ANY sheet, and the
     #    pseudonyms ARE present (proving redaction ran, not that the data merely vanished).
-    redacted = _run_workbook_cells(str(tmp_path / "redact"), redact=True)
+    redacted_run = _run_workbook_cells(str(tmp_path / "redact"), redact=True)
+    redacted = redacted_run["cells"]
     for s in REAL_SERIALS:
         assert s not in redacted, f"real serial {s} leaked into the --redact workbook"
     assert REAL_MAC_DOTTED not in redacted and REAL_MAC_COLON not in redacted, \
@@ -92,6 +122,25 @@ def test_redact_workbook_does_not_leak_real_inventory(tmp_path):
     for ip in REAL_SVI_IPS:
         assert ip not in redacted, f"real SVI host IP {ip} leaked into the --redact workbook"
     assert "serial-000001.assesshub-redacted.invalid" in redacted
+
+    # The exact flow was assessed once against current-run evidence before pseudonymization, then the single global
+    # redaction transform produced the one canonical copy consumed by JSON and the workbook. Evaluating after
+    # redaction would invalidate the endpoint syntax and lose the non-serializable custody marker.
+    canonical = redacted_run["canonical"]
+    row = redacted_run["traffic_row"]
+    assert canonical["valid"] is True
+    assert canonical["custody_trust"] == "current_run_verified"
+    assert canonical["intent"]["src"] != "10.0.10.50"
+    assert canonical["intent"]["dst"] != "10.0.20.50"
+    assert "10.0.10.50" not in json.dumps(redacted_run["snapshot"])
+    assert "10.0.20.50" not in json.dumps(redacted_run["snapshot"])
+    assert row == {
+        "Flow ID": canonical["intent"]["id"],
+        "Source": canonical["intent"]["src"],
+        "Destination": canonical["intent"]["dst"],
+        "Overall Verdict": canonical["verdict"],
+        "Custody Trust": canonical["custody_trust"],
+    }
 
 
 def test_make_redactor_ip_map_never_reproduces_a_real_address():

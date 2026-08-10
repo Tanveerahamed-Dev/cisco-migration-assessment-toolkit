@@ -5,13 +5,16 @@ textutils - a layer above those, independent of analyze/excel. Extracted verbati
 COLLECT_PARSE_V3_23_0.py across PHASE 2.7 steps 27-28 (behaviour byte-identical):
 step 27 = the switch-level builders + ARP enrichment, step 28 = build_interfaces."""
 import ipaddress
+import json
 import logging
 import re
+from hashlib import sha256
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from cisco_toolkit.cmdio import TRUNK_TABLE_CMD_VARIANTS, _load_cmd_output, _safe_parse
 from cisco_toolkit.model import DevicePhysical, InterfaceData
 from cisco_toolkit.parse import (
+    ParsedRouteTable,
     _compress_vlans, infer_endpoint_type, parse_etherchannel_protocol_ios,
     parse_etherchannel_summary_members, parse_glbp_summary, parse_hsrp_detail, parse_hsrp_summary,
     parse_ip_routes, parse_multicast_info, parse_neighbors_cdp, parse_neighbors_lldp,
@@ -47,6 +50,7 @@ from cisco_toolkit.parse import (
     parse_acls, parse_object_groups, parse_nat, parse_security, parse_config_hygiene,
     parse_cpu_utilization, parse_memory_stats, parse_system_resources,   # NEW-V3.23.167 (platform health)
     parse_ospf_neighbors, parse_eigrp_neighbors, parse_bgp_summary,   # protocol-to-protocol analysis
+    forwarding_gate_candidate_projection_incomplete,
     parse_redistribution,                                            # protocol-to-protocol analysis (slice 2)
     parse_bgp_table,                                                 # NEW-V3.23.97 (BGP received prefixes)
     parse_igmp_groups, parse_igmp_snooping_querier, parse_ptp_clock, parse_acl_hitcounts,  # NEW-V3.23.102
@@ -54,6 +58,32 @@ from cisco_toolkit.parse import (
 from cisco_toolkit.textutils import PHYSICAL_IFACE_RE, detect_link_type, is_live_trunk_status, normalize_ifname
 
 logger = logging.getLogger(__name__)
+
+
+class ScopedRouteProjection(list):
+    """Current-run marker for the exact route rows retained from one parsed RIB.
+
+    The marker and its receipt attributes are deliberately lost by JSON serialization.  Consumers can therefore
+    distinguish a projection produced from the live parsed denominator from an arbitrary embedded route list.
+    """
+
+    def __init__(self, rows: List[dict], *, scope_networks: List[str], source_prefix_count: int,
+                 source_entry_count: int, source_parse_receipt: Optional[dict],
+                 source_parse_receipt_verified: bool) -> None:
+        super().__init__(rows)
+        encoded = json.dumps(rows, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        self.projection_receipt = {
+            "schema": "scoped_route_projection/1",
+            "algorithm": "overlap_and_next_hop_closure_v1",
+            "complete": True,
+            "scope_networks": list(scope_networks),
+            "source_prefix_count": source_prefix_count,
+            "source_entry_count": source_entry_count,
+            "source_parse_receipt": source_parse_receipt,
+            "source_parse_receipt_verified": source_parse_receipt_verified,
+            "scoped_row_count": len(rows),
+            "scoped_rows_sha256": sha256(encoded).hexdigest(),
+        }
 
 
 def read_run_config(cmd_to_file: Dict[str, str]) -> str:
@@ -762,7 +792,10 @@ def build_routes(cmd_to_file: Dict[str, str]) -> Dict[str, dict]:
     -> {prefix: {entries:[...]}}; {} when none. Fail-soft via _safe_parse. (Scoped down for
     the snapshot by scope_routes; the full parse stays transient.)"""
     out = _load_cmd_output(cmd_to_file, "show ip route", "show ip route vrf all")
-    return _safe_parse(parse_ip_routes, out) or {}
+    parsed = _safe_parse(parse_ip_routes, out)
+    # ``ParsedRouteTable`` is deliberately falsy for a valid zero-row parse.  Do not let ``or {}`` erase its
+    # current-run completeness receipt; parse-yield custody independently decides whether zero yield is usable.
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def build_bgp_received(cmd_to_file: Dict[str, str]) -> list:
@@ -850,39 +883,140 @@ def inscope_subnets(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> Set[
 
 
 def scope_routes(route_db: Dict[str, dict], inscope: Set[str]) -> List[dict]:
-    """Flatten a parsed route table to the compact rows the explorer needs, keeping ONLY routes
-    that could carry traffic toward an in-scope subnet (the route's prefix covers one) plus the
-    default route. Drops host (/32 local) routes and out-of-scope prefixes, so the embedded
-    snapshot stays small. Each row: {prefix, source, next_hop, out_intf}; deduped, order preserved."""
+    """Return an exact current-run projection for an in-scope route/next-hop closure.
+
+    A destination inside an in-scope network can match a covering route *or* a more-specific route inside that
+    network. Retaining only covering routes destroys longest-prefix-match truth and can invert a reachability
+    verdict, so both directions of containment (all overlap) are required. All connected/local routes are retained
+    to preserve next-hop ownership, and matching routes for recursive next hops are closed transitively. The default
+    route is always relevant. The returned list subclass carries a non-serializable receipt used by Traffic
+    Assurance; ordinary JSON lists cannot self-certify that they came from this full parsed-RIB projection.
+    """
+    raw_parse_receipt = getattr(route_db, "parse_receipt", None)
+    parse_receipt_fields = (
+        "schema", "complete", "candidate_rows", "parsed_rows", "unparsed_candidate_rows",
+        "malformed_candidate_rows", "unexplained_candidate_rows", "ios_candidate_rows",
+        "ios_parsed_rows", "ios_unparsed_rows", "nxos_prefix_blocks", "nxos_expected_ubest_rows",
+        "nxos_via_candidate_rows", "nxos_parsed_via_rows", "nxos_unparsed_via_rows",
+        "nxos_denominator_mismatch_blocks", "nxos_malformed_prefix_blocks",
+        "ios_malformed_subnet_headers", "route_prefix_count", "route_entry_count", "routes_sha256",
+        "incomplete_reasons",
+    )
+    source_parse_receipt = (
+        {field: raw_parse_receipt.get(field) for field in parse_receipt_fields}
+        if isinstance(raw_parse_receipt, dict) else None
+    )
+    source_entry_denominator = sum(
+        len(info.get("entries", []))
+        for info in route_db.values()
+        if isinstance(info, dict) and isinstance(info.get("entries", []), list)
+    )
+    try:
+        source_routes_digest = sha256(json.dumps(
+            dict(route_db), ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")).hexdigest()
+    except (TypeError, ValueError, UnicodeEncodeError):
+        source_routes_digest = ""
+    receipt_reasons = (source_parse_receipt or {}).get("incomplete_reasons")
+    receipt_reasons_safe = (
+        isinstance(receipt_reasons, list)
+        and len(receipt_reasons) <= 16
+        and all(isinstance(reason, str) and len(reason) <= 96 and reason.isascii()
+                for reason in receipt_reasons)
+    )
+    source_parse_receipt_verified = (
+        isinstance(route_db, ParsedRouteTable)
+        and source_parse_receipt is not None
+        and source_parse_receipt.get("schema") == "route_parse_receipt/1"
+        and source_parse_receipt.get("route_prefix_count") == len(route_db)
+        and source_parse_receipt.get("route_entry_count") == source_entry_denominator
+        and bool(source_routes_digest)
+        and source_parse_receipt.get("routes_sha256") == source_routes_digest
+        and receipt_reasons_safe
+    )
     nets: List[Any] = []   # IPv4Network | IPv6Network; Any keeps mypy at the package baseline
     for s in inscope:
         try:
             nets.append(ipaddress.ip_network(s, strict=False))
         except ValueError:
             pass
-    out: List[dict] = []
-    seen: Set[tuple] = set()
+    scope_networks = sorted(str(net) for net in nets)
+    source_prefix_count = 0
+    source_entry_count = 0
+    parsed: List[Tuple[Any, List[dict]]] = []
+    keep_indexes: Set[int] = set()
+    connected_sources = {"c", "l", "local", "connected", "direct", "attached", "directlyconnected"}
     for prefix, info in route_db.items():
         try:
             rnet = ipaddress.ip_network(prefix, strict=False)
         except ValueError:
             continue
-        keep = rnet.prefixlen == 0   # default route is always relevant
-        if not keep:
-            for s in nets:
-                if s.version == rnet.version and s.subnet_of(rnet):
-                    keep = True
-                    break
-        if not keep:
+        source_prefix_count += 1
+        raw_entries = info.get("entries", []) if isinstance(info, dict) else []
+        if not isinstance(raw_entries, list):
+            raw_entries = []
+        source_entry_count += len(raw_entries)
+        entries = [entry for entry in raw_entries if isinstance(entry, dict)]
+        index = len(parsed)
+        parsed.append((rnet, entries))
+        overlaps_scope = any(s.version == rnet.version and s.overlaps(rnet) for s in nets)
+        locally_owned = any(
+            str(entry.get("source") or "").strip().lower().replace(" ", "") in connected_sources
+            for entry in entries
+        )
+        if rnet.prefixlen == 0 or overlaps_scope or locally_owned:
+            keep_indexes.add(index)
+
+    # Recursive routes can resolve a next hop through another non-connected route. Retain every matching prefix
+    # (not just one representative) so longest-prefix and equal-cost choice remain available to the FIB owner.
+    while True:
+        next_hops = []
+        for index in keep_indexes:
+            for entry in parsed[index][1]:
+                token = str(entry.get("next_hop") or "").split("%", 1)[0].strip()
+                try:
+                    next_hops.append(ipaddress.ip_address(token))
+                except ValueError:
+                    continue
+        additions = {
+            index for index, (network, _entries) in enumerate(parsed)
+            if index not in keep_indexes
+            and any(address.version == network.version and address in network for address in next_hops)
+        }
+        if not additions:
+            break
+        keep_indexes.update(additions)
+
+    out: List[dict] = []
+    seen: Set[tuple] = set()
+    for index, (rnet, entries) in enumerate(parsed):
+        if index not in keep_indexes:
             continue
-        for e in info.get("entries", []):
-            row = {"prefix": e.get("prefix", prefix), "source": e.get("source", "") or "",
+        for e in entries:
+            row = {"prefix": e.get("prefix", str(rnet)), "source": e.get("source", "") or "",
                    "next_hop": e.get("next_hop", "") or "", "out_intf": e.get("out_intf", "") or ""}
-            key = (row["prefix"], row["source"], row["next_hop"], row["out_intf"])
+            if "admin_distance" in e:
+                # Route selection must survive the scoped snapshot projection.  Presence is significant: an
+                # absent AD permits fib's source-family fallback, while a malformed observed AD is retained so
+                # fib can reject it rather than silently reclassifying bare BGP as eBGP AD 20.
+                row["admin_distance"] = e.get("admin_distance")
+            observed_ad = row.get("admin_distance")
+            ad_key = ((type(observed_ad).__name__, observed_ad)
+                      if isinstance(observed_ad, (str, int, float, bool, type(None)))
+                      else (type(observed_ad).__name__,))
+            key = (row["prefix"], row["source"], row["next_hop"], row["out_intf"],
+                   "admin_distance" in row, ad_key)
             if key not in seen:
                 seen.add(key)
                 out.append(row)
-    return out
+    return ScopedRouteProjection(
+        out,
+        scope_networks=scope_networks,
+        source_prefix_count=source_prefix_count,
+        source_entry_count=source_entry_count,
+        source_parse_receipt=source_parse_receipt,
+        source_parse_receipt_verified=source_parse_receipt_verified,
+    )
 
 
 def build_device_physical(hostname: str, platform: str,
@@ -1140,6 +1274,41 @@ def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
                                "show running-config | section ^interface")
     run_iface  = _safe_parse(parse_run_config_interfaces, run_out)
     global_run = _load_cmd_output(cmd_to_file, "show running-config")
+    # A scoped ``show running-config ... interface`` capture cannot carry the global
+    # ``vlan filter`` attachment that binds a VACL to an SVI.  Parse the full capture
+    # independently, but project only parser-owned positive global forwarding evidence onto interfaces already
+    # observed in the scoped capture. In particular, do not let the broader command create interface rows or
+    # lend absence provenance to per-interface ACL fields.
+    global_iface = (
+        _safe_parse(parse_run_config_interfaces, global_run) if global_run else {}
+    )
+    global_vacl_by_iface = {
+        p: row["vacl_policy"]
+        for p, row in global_iface.items()
+        if p in run_iface
+        and isinstance(row, dict)
+        and isinstance(row.get("vacl_policy"), str)
+        and row["vacl_policy"]
+    }
+    global_forwarding_by_iface = {
+        p: {
+            field: row[field]
+            for field in (
+                "global_acl_in", "global_acl_out", "global_policy_gates", "trustsec_sgacl",
+                "tcp_intercept", "flowspec_policy", "forwarding_gate_candidates",
+                "forwarding_gate_unmodeled",
+            )
+            if isinstance(row.get(field), str) and row[field]
+        }
+        for p, row in global_iface.items()
+        if p in run_iface and isinstance(row, dict)
+        and any(isinstance(row.get(field), str) and row[field]
+                for field in (
+                    "global_acl_in", "global_acl_out", "global_policy_gates", "trustsec_sgacl",
+                    "tcp_intercept", "flowspec_policy", "forwarding_gate_candidates",
+                    "forwarding_gate_unmodeled",
+                ))
+    }
     # IOS-XE 16.x+ renamed the PortFast keyword: the global default is `spanning-tree portfast EDGE
     # bpduguard default` there, and the classic form on older IOS/IOS-XE. Matching only the classic
     # spelling read the newer platforms as "no global BPDU-Guard default" while the evidence was in
@@ -1155,6 +1324,7 @@ def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
         logger.info(f"  [STP] Global portfast bpduguard default enabled on {hostname}")
     for p, v in run_iface.items():
         interfaces.setdefault(p, InterfaceData(port=p))
+        interfaces[p].run_config_observed = True
         if v.get("desc") and not interfaces[p].description:
             interfaces[p].description = v["desc"]
         if v.get("bpduguard"):
@@ -1164,9 +1334,56 @@ def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
         if v.get("rootguard"): interfaces[p].stp_rootguard = v["rootguard"]
         if v.get("vrf"):       interfaces[p].vrf            = v["vrf"]
         if v.get("ip_addr"):   interfaces[p].svi_ip         = v["ip_addr"]  # NEW-V14.3
+        if isinstance(v.get("ip_addresses"), list):
+            interfaces[p].svi_ips = ";".join(str(item) for item in v["ip_addresses"] if str(item).strip())
         if v.get("acl_in"):    interfaces[p].acl_in         = v["acl_in"]
         if v.get("acl_out"):   interfaces[p].acl_out        = v["acl_out"]
+        if v.get("acl_in_unmodeled"): interfaces[p].acl_in_unmodeled = v["acl_in_unmodeled"]
+        if v.get("acl_out_unmodeled"): interfaces[p].acl_out_unmodeled = v["acl_out_unmodeled"]
+        global_forwarding = global_forwarding_by_iface.get(p, {})
+        if global_forwarding.get("global_acl_in"):
+            interfaces[p].global_acl_in = global_forwarding["global_acl_in"]
+        if global_forwarding.get("global_acl_out"):
+            interfaces[p].global_acl_out = global_forwarding["global_acl_out"]
+        if global_forwarding.get("global_policy_gates"):
+            interfaces[p].global_policy_gates = global_forwarding["global_policy_gates"]
         if v.get("mtu"):       interfaces[p].mtu            = v["mtu"]   # NEW-V3.23.49 (path-MTU)
+        if v.get("link_mtu"):  interfaces[p].link_mtu       = v["link_mtu"]
+        if v.get("ip_mtu"):    interfaces[p].ip_mtu         = v["ip_mtu"]
+        if v.get("mtu_semantics"): interfaces[p].mtu_semantics = v["mtu_semantics"]
+        if v.get("pbr_policy"): interfaces[p].pbr_policy     = v["pbr_policy"]
+        if v.get("urpf_mode"): interfaces[p].urpf_mode       = v["urpf_mode"]
+        if v.get("security_zone"): interfaces[p].security_zone = v["security_zone"]
+        if v.get("service_policy_in"): interfaces[p].service_policy_in = v["service_policy_in"]
+        if v.get("service_policy_out"): interfaces[p].service_policy_out = v["service_policy_out"]
+        if v.get("inspection_policy_in"): interfaces[p].inspection_policy_in = v["inspection_policy_in"]
+        if v.get("inspection_policy_out"): interfaces[p].inspection_policy_out = v["inspection_policy_out"]
+        if v.get("crypto_map"): interfaces[p].crypto_map = v["crypto_map"]
+        if v.get("tunnel_protection"): interfaces[p].tunnel_protection = v["tunnel_protection"]
+        for field in (
+                "trustsec_sgacl", "wccp_redirection_in", "wccp_redirection_out",
+                "tcp_intercept", "mpls_forwarding", "mpls_mtu", "flowspec_policy",
+                "ips_policy_in", "ips_policy_out", "admission_policy",
+                "forwarding_gate_candidates", "forwarding_gate_unmodeled"):
+            scoped_value = v.get(field)
+            global_value = global_forwarding.get(field)
+            tokens = set()
+            for value in (scoped_value, global_value):
+                if isinstance(value, str):
+                    tokens.update(token for token in value.split(",") if token)
+            if tokens:
+                setattr(
+                    interfaces[p], field,
+                    ",".join(sorted(tokens, key=lambda token: (token.casefold(), token))),
+                )
+        if forwarding_gate_candidate_projection_incomplete(interfaces[p]):
+            tokens = set(filter(None, interfaces[p].forwarding_gate_unmodeled.split(",")))
+            tokens.add("candidate_projection_incomplete")
+            interfaces[p].forwarding_gate_unmodeled = ",".join(
+                sorted(tokens, key=lambda token: (token.casefold(), token))
+            )
+        vacl_policy = v.get("vacl_policy") or global_vacl_by_iface.get(p, "")
+        if vacl_policy: interfaces[p].vacl_policy = vacl_policy
         if v.get("helpers"):   interfaces[p].dhcp_helpers   = v["helpers"]   # DHCP-relay reachability
         if v.get("pc_id") and not interfaces[p].port_channel:
             interfaces[p].port_channel = v["pc_id"]

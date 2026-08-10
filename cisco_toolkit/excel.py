@@ -32,6 +32,7 @@ from cisco_toolkit.parse import (
 from cisco_toolkit.textutils import (
     PHYSICAL_IFACE_RE, _TRUNK_STATUS_WORDS, _split_macs, normalize_ifname, normalize_speed, xml_safe,
 )
+from cisco_toolkit.traffic_assurance import TRAFFIC_ASSURANCE_SET_SCHEMA
 
 logger = logging.getLogger(__name__)
 
@@ -2747,6 +2748,207 @@ def write_path_intents_sheet(wb, pa: dict) -> None:
     for i, w in enumerate([20, 18, 18, 12, 14, 28], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     logger.info(f"  [OK] '{PATH_INTENTS_SHEET_NAME}' sheet: {len(rows)} intent(s)")
+
+
+TRAFFIC_ASSURANCE_SHEET_NAME = "Traffic Assurance"
+_TRAFFIC_ASSURANCE_COLUMNS = [
+    "Projection State", "Coverage Disclosure", "Canonical Summary", "Set Schema", "Set Owner", "Record #",
+    "Flow ID", "Source", "Destination", "Protocol", "Source Port", "Destination Port",
+    "Expected", "Return Required", "Required MTU", "VRF", "Valid", "Validation Errors", "Supported",
+    "Custody Trust",
+    "Overall Verdict", "Verdict Reasons", "Unsupported Semantics",
+    "Path Forward", "Path Return", "RPF Verdict", "Symmetric",
+    "Policy Forward", "Policy Return", "MTU Forward", "MTU Return",
+    "ECMP Forward", "ECMP Return", "Failure Requested", "Failure Action", "Failure Status", "Failure Verdict",
+    "Claims", "NRFU Test IDs", "Sources", "Limitations", "Result Schema", "Result Owner",
+]
+_TRAFFIC_ASSURANCE_DISCLOSURES = {
+    "ready": "Canonical projection only; path, policy, MTU, and ECMP are not recalculated in the workbook.",
+    "empty": "[EMPTY] The canonical set contains zero result records; no traffic assurance is implied.",
+    "loading": "[LOADING] Canonical traffic-assurance results are not available; no assurance is implied.",
+    "error": "[ERROR] The canonical traffic-assurance set is unavailable or malformed; no assurance is implied.",
+    "not_supplied": "[NOT ASSESSED] A canonical traffic-assurance set was not supplied; no assurance is implied.",
+}
+_TRAFFIC_ASSURANCE_FILL = {
+    "proven": "C6EFCE",
+    "refuted": "FFC7CE",
+    "not_observed": "D9D9D9",
+    "indeterminate": "FFEB9C",
+    "not_requested": "EFEFEF",
+    "ready": "C6EFCE",
+    "empty": "D9D9D9",
+    "loading": "DDEBF7",
+    "error": "FFC7CE",
+    "not_supplied": "D9D9D9",
+}
+
+
+def _traffic_assurance_scalar(value, *, absent="[NOT OBSERVED]"):
+    """Return only workbook-safe scalar data; never stringify a nested/raw evidence object."""
+    if value is None:
+        return absent
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (str, int, float)):
+        return value
+    return "[MALFORMED SCALAR]"
+
+
+def _traffic_assurance_list(value, *, absent="[NOT OBSERVED]") -> str:
+    """Render an ordered canonical string list without exposing arbitrary nested payloads."""
+    if value is None:
+        return absent
+    if not isinstance(value, list):
+        return "[MALFORMED LIST]"
+    if not value:
+        return "[none]"
+    return "; ".join(str(_traffic_assurance_scalar(item, absent="[missing item]")) for item in value)
+
+
+def _traffic_assurance_nested(row: dict, *path):
+    current = row
+    for key in path:
+        if not isinstance(current, dict) or key not in current:
+            return None
+        current = current[key]
+    return current
+
+
+def _traffic_assurance_summary(payload: dict) -> str:
+    """Project the producer's summary verbatim; deliberately do not recount result rows here."""
+    summary = payload.get("summary")
+    if not isinstance(summary, dict):
+        return "[NOT OBSERVED] Canonical summary is absent or malformed"
+    keys = ("n", "proven", "refuted", "not_observed", "indeterminate", "invalid")
+    return "; ".join(
+        f"{key}={_traffic_assurance_scalar(summary.get(key))}"
+        for key in keys
+    )
+
+
+def _traffic_assurance_claims(value) -> str:
+    """Project typed-claim identity and verdict fields without serializing unknown claim extensions."""
+    if value is None:
+        return "[NOT OBSERVED]"
+    if not isinstance(value, list):
+        return "[MALFORMED LIST]"
+    if not value:
+        return "[none]"
+    rendered = []
+    for claim in value:
+        if not isinstance(claim, dict):
+            rendered.append("[MALFORMED CLAIM]")
+            continue
+        scalar = _traffic_assurance_scalar
+        rendered.append(
+            f"{scalar(claim.get('id'))}: {scalar(claim.get('predicate'))}="
+            f"{scalar(claim.get('verdict'))} [{scalar(claim.get('applicability'), absent='applicable')}]"
+        )
+    return "; ".join(rendered)
+
+
+def _traffic_assurance_projection_state(payload) -> tuple:
+    if payload is None:
+        return "not_supplied", None
+    if not isinstance(payload, dict):
+        return "error", None
+    declared_state = str(payload.get("state") or payload.get("status") or "").strip().lower()
+    if declared_state == "loading":
+        return "loading", payload
+    if declared_state == "error":
+        return "error", payload
+    if payload.get("schema") != TRAFFIC_ASSURANCE_SET_SCHEMA:
+        return "error", payload
+    if not isinstance(payload.get("results"), list):
+        return "error", payload
+    return ("ready" if payload["results"] else "empty"), payload
+
+
+def _traffic_assurance_result_values(payload: dict, row, index: int) -> list:
+    summary = _traffic_assurance_summary(payload)
+    if not isinstance(row, dict):
+        return [
+            "error", "[ERROR] Canonical result record is malformed; it was not silently dropped.",
+            summary, _traffic_assurance_scalar(payload.get("schema")),
+            _traffic_assurance_scalar(payload.get("owner")), index, "[MALFORMED RESULT]",
+        ] + ["[NOT OBSERVED]"] * (len(_TRAFFIC_ASSURANCE_COLUMNS) - 7)
+
+    intent = row.get("intent") if isinstance(row.get("intent"), dict) else {}
+    failure = row.get("failure") if isinstance(row.get("failure"), dict) else {}
+    scalar = _traffic_assurance_scalar
+    nested = _traffic_assurance_nested
+    return [
+        "ready", _TRAFFIC_ASSURANCE_DISCLOSURES["ready"], summary,
+        scalar(payload.get("schema")), scalar(payload.get("owner")), index,
+        scalar(intent.get("id")), scalar(intent.get("src")), scalar(intent.get("dst")),
+        scalar(intent.get("protocol")), scalar(intent.get("src_port")), scalar(intent.get("dst_port")),
+        scalar(intent.get("expected")), scalar(intent.get("return_required")),
+        scalar(intent.get("required_mtu"), absent="not requested"),
+        scalar(intent.get("vrf"), absent="default / not declared"),
+        scalar(row.get("valid")), _traffic_assurance_list(row.get("validation_errors")),
+        scalar(row.get("supported")), scalar(row.get("custody_trust")), scalar(row.get("verdict")),
+        _traffic_assurance_list(row.get("verdict_reasons")),
+        _traffic_assurance_list(row.get("unsupported_semantics")),
+        scalar(nested(row, "dimensions", "path", "forward", "verdict")),
+        scalar(nested(row, "dimensions", "path", "reverse", "verdict")),
+        scalar(nested(row, "dimensions", "path", "rpf_verdict")),
+        scalar(nested(row, "dimensions", "path", "symmetric")),
+        scalar(nested(row, "dimensions", "policy", "forward", "verdict")),
+        scalar(nested(row, "dimensions", "policy", "reverse", "verdict")),
+        scalar(nested(row, "dimensions", "mtu", "forward", "verdict")),
+        scalar(nested(row, "dimensions", "mtu", "reverse", "verdict")),
+        scalar(nested(row, "dimensions", "ecmp", "forward", "verdict")),
+        scalar(nested(row, "dimensions", "ecmp", "reverse", "verdict")),
+        scalar(failure.get("requested")), scalar(failure.get("action"), absent="not requested"),
+        scalar(failure.get("status")), scalar(failure.get("verdict")), _traffic_assurance_claims(row.get("claims")),
+        _traffic_assurance_list(row.get("nrfu_test_ids")), _traffic_assurance_list(row.get("sources")),
+        _traffic_assurance_list(row.get("limitations")),
+        scalar(row.get("schema")), scalar(row.get("owner")),
+    ]
+
+
+def write_traffic_assurance_sheet(wb, traffic_assurance_set) -> None:
+    """Render a canonical ``traffic_assurance_set/1`` without performing assurance calculations.
+
+    The result sequence and producer-owned summary are preserved as supplied. Only an allowlisted scalar
+    projection is written: raw hops, ACL stages, capture bodies, cutover evidence, and unknown extension fields
+    never enter the workbook. Loading, empty, malformed/error, and absent inputs each produce an explicit row;
+    none can look like a successful zero-result assessment.
+    """
+    state, payload = _traffic_assurance_projection_state(traffic_assurance_set)
+    ws = _new_sheet(wb, TRAFFIC_ASSURANCE_SHEET_NAME)
+    _census_header(ws, _TRAFFIC_ASSURANCE_COLUMNS)
+    rows = payload.get("results") if state == "ready" else []
+    if state == "ready":
+        rendered = [_traffic_assurance_result_values(payload, row, index)
+                    for index, row in enumerate(rows, 1)]
+    else:
+        summary = _traffic_assurance_summary(payload) if isinstance(payload, dict) else "[NOT OBSERVED]"
+        set_schema = _traffic_assurance_scalar(payload.get("schema")) if isinstance(payload, dict) else "[NOT OBSERVED]"
+        set_owner = _traffic_assurance_scalar(payload.get("owner")) if isinstance(payload, dict) else "[NOT OBSERVED]"
+        rendered = [[state, _TRAFFIC_ASSURANCE_DISCLOSURES[state], summary, set_schema, set_owner]
+                    + [""] * (len(_TRAFFIC_ASSURANCE_COLUMNS) - 5)]
+
+    verdict_headers = {
+        "Overall Verdict", "Path Forward", "Path Return", "Policy Forward", "Policy Return",
+        "MTU Forward", "MTU Return", "ECMP Forward", "ECMP Return", "Failure Verdict",
+    }
+    for row_number, values in enumerate(rendered, 2):
+        ws.append(values)
+        for column, header in enumerate(_TRAFFIC_ASSURANCE_COLUMNS, 1):
+            cell = ws.cell(row_number, column)
+            cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+            key = str(cell.value or "").strip().lower()
+            if header == "Projection State" or header in verdict_headers:
+                fill = _TRAFFIC_ASSURANCE_FILL.get(key)
+                if fill:
+                    cell.fill = PatternFill("solid", fgColor=fill)
+            if header in verdict_headers:
+                cell.font = Font(name="Calibri", size=10, bold=True)
+
+    _census_autofit(ws, len(_TRAFFIC_ASSURANCE_COLUMNS), len(rendered) + 1)
+    logger.info("  [OK] '%s' sheet: state %s, %d canonical result record(s)",
+                TRAFFIC_ASSURANCE_SHEET_NAME, state, len(rows))
 
 
 # Shared severity palette for the V3.23.164-.167 axis sheets (V3.23.171). The four writers each

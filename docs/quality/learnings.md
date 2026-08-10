@@ -19,6 +19,9 @@ falsifiable fact and cite where it is checkable (a file, a test, or a commit).
   Evidence: `cisco_toolkit/analyze.py:1573`.
 - Older-but-good snapshots predate `attestation`/`schema_census`; a coverage-honest check treats an
   absent signal as UNVERIFIED, never a fail. Evidence: `cisco_toolkit/eval_harness.py::_check_provenance`.
+- An evidence-content digest must distinguish malformed structure from absence: coercing an unexpected
+  dict/list to `""` or `{}` creates a same-hash mutation seam that can restore a hard verdict. Evidence:
+  `cisco_toolkit/traffic_assurance.py::_content_binding_payload` + `tests/test_traffic_assurance.py`.
 
 ## Fixtures / goldens
 

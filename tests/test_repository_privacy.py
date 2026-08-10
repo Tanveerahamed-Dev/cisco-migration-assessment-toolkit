@@ -376,9 +376,17 @@ def test_guard_rejects_unapproved_binary_and_manifest_tampering(tmp_path):
     )
 
 
-def test_guard_allows_only_the_exact_manifest_bound_social_asset(tmp_path):
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "master-reference/public/atlas-social-card.png",
+        "master-reference/public/og.png",
+    ],
+)
+def test_guard_allows_only_the_exact_manifest_bound_social_assets(
+    tmp_path, relative
+):
     module = _privacy_module()
-    relative = "master-reference/public/og.png"
     payload = (ROOT / relative).read_bytes()
 
     module._validate_project_binary_asset(relative, payload)
@@ -388,13 +396,7 @@ def test_guard_allows_only_the_exact_manifest_bound_social_asset(tmp_path):
     root = _repo(tmp_path)
     impostor = root / relative
     impostor.parent.mkdir(parents=True, exist_ok=True)
-    impostor.write_bytes(
-        b"\x89PNG\r\n\x1a\n"
-        + (13).to_bytes(4, "big")
-        + b"IHDR"
-        + (1730).to_bytes(4, "big")
-        + (909).to_bytes(4, "big")
-    )
+    impostor.write_bytes(payload[:-1])
     violations = module.inspect_tracked_tree(root, include_index=False)
     assert any(
         relative in item and "exact manifest integrity" in item

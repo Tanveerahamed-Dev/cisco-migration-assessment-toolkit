@@ -8,6 +8,8 @@ here. COVERAGE-HONEST by construction: a resolved lookup is computed from the co
 with NO matching route returns None ('no route observed' -- a lower bound, never a fabricated 'reachable').
 """
 import ipaddress
+import math
+import re
 from typing import List, Optional, Tuple
 
 
@@ -18,10 +20,29 @@ def _ip(s) -> Optional["ipaddress._BaseAddress"]:
     slash-free one ('%Vlan10','%Port-channel1') parses. So the zone is stripped UNCONDITIONALLY (the engine has no
     per-zone interface-IP data to use it anyway) -- otherwise a routed-over-link-local v6 fabric (the OSPFv3 /
     IS-IS / BGP-over-LLA norm) would silently lose reachability recall, intermittently by interface type."""
-    try:
-        return ipaddress.ip_address(str(s).split("%", 1)[0].strip())
-    except ValueError:
+    if not isinstance(s, str):
         return None
+    try:
+        s.encode("utf-8")
+        return ipaddress.ip_address(s.split("%", 1)[0].strip())
+    except (ValueError, UnicodeEncodeError):
+        return None
+
+
+def _safe_token(value, *, max_length: int = 256) -> Tuple[str, bool]:
+    """Return a bounded Unicode-scalar string without invoking arbitrary ``__str__`` implementations."""
+    if value is None:
+        return "", True
+    if not isinstance(value, str):
+        return "", False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return "", False
+    stripped = value.strip()
+    if len(stripped) > max_length or any(ord(char) < 32 for char in stripped):
+        return "", False
+    return stripped, True
 
 
 def _admin_distance(source: str) -> int:
@@ -30,13 +51,21 @@ def _admin_distance(source: str) -> int:
     names parse_ip_routes emits ('connected','static','ospf') AND the raw route-codes that survive on some entries
     ('s*' static+candidate-default, 'o*ia' ospf-inter-area, 'c','l','b','d','i','r') -- the '*' candidate-default
     marker and spaces are stripped first. Unknown / blank sources sort last (255). [verified vs real Meridian sources]"""
-    s = str(source or "").strip().lower().replace("*", "").replace(" ", "")
+    source_token, valid = _safe_token(source)
+    if not valid:
+        return 255
+    raw_source = source_token.replace("*", "").replace(" ", "")
+    if raw_source == "L":
+        return 0
+    if raw_source == "l":
+        return 115
+    s = raw_source.lower()
     if not s:
         return 255
     # Connected / directly-attached: EXACT codes + the 'directly connected' / NX-OS 'direct' / 'attached' forms.
     # NOT a bare 'connect' substring -- that misread 'redistribute connected' / 'disconnected' / 'interconnect'
     # as directly-attached, fabricating a reached destination (adversarial-wave #4).
-    if s in ("c", "l", "local", "connected", "direct", "attached") or s.startswith(("connected", "directlyconnected", "direct", "local")):
+    if s in ("c", "local", "connected", "direct", "attached") or s.startswith(("connected", "directlyconnected", "direct", "local")):
         return 0
     # FHRP virtual IP: installed as a self-referential local host route 'X/32 via X, VlanN, [0/0], vrrp_engine|
     # hsrp|glbp' -- locally TERMINATED on the master (the packet is delivered, [0/0] + self-via prove it), so it
@@ -46,7 +75,7 @@ def _admin_distance(source: str) -> int:
     if "static" in s or s in ("s", "su"):
         return 1
     if "bgp" in s or s == "b":
-        return 20            # eBGP default (iBGP 200 is indistinguishable from the parsed code, so use the lower)
+        return 20            # source-only fallback; an observed route AD distinguishes eBGP 20 from iBGP 200
     if "eigrp" in s or s == "d" or s.startswith("dex"):
         return 170 if "ex" in s else 90       # 'D EX' -> 'dex' (EIGRP external) = 170, internal 'D'/'eigrp' = 90
     if s == "odr":
@@ -56,9 +85,36 @@ def _admin_distance(source: str) -> int:
         return 110
     if "isis" in s or s == "i":
         return 115
+    if "lisp" in s:
+        return 115
     if "rip" in s or s == "r":
         return 120
+    if "nhrp" in s:
+        return 250
     return 255
+
+
+def _observed_admin_distance(value) -> Optional[int]:
+    """Strictly decode an observed non-negative administrative distance.
+
+    Booleans, negative/fractional/non-finite numbers, containers, and malformed text are not observations.
+    Integral floats and bounded ASCII integer strings are accepted for compatibility with persisted JSON.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer() or value < 0:
+            return None
+        return int(value)
+    token, valid = _safe_token(value, max_length=32)
+    if not valid or not re.fullmatch(r"\+?[0-9]+", token):
+        return None
+    try:
+        return int(token)
+    except ValueError:
+        return None
 
 
 def _is_connected(source: str) -> bool:
@@ -70,32 +126,61 @@ def _is_discard(out_intf) -> bool:
     """A discard / blackhole egress -- a route to Null0 (also abbreviated Nu0) or an explicit 'discard'. Such a
     route is a FULLY-COLLECTED definitive drop (the router silently discards the packet), NOT a missing next hop:
     a cutover that leaves a drop route or summary-blackholes a more-specific must read as computed:unreachable,
-    never as a coverage-honest lower bound. No real forwarding interface name begins 'nu'."""
-    s = str(out_intf or "").strip().lower().replace(" ", "")
-    return s.startswith("nu") or s == "discard"
+    never as a coverage-honest lower bound. Match the actual Null/Nu token rather than every interface that
+    happens to begin with those letters."""
+    token, valid = _safe_token(out_intf)
+    if not valid:
+        return False
+    s = token.lower().replace(" ", "")
+    return bool(re.fullmatch(r"(?:null|nu)\d+(?:\.\d+)?", s)) or s == "discard"
 
 
 # A FIB is a list of (network, admin_distance, route_dict), sorted longest-prefix-first then lowest-AD.
 Fib = List[Tuple["ipaddress._BaseNetwork", int, dict]]
 
 
+class _FibTable(list):
+    """List-compatible FIB plus fixed, non-echoing route-selection gaps."""
+
+    def __init__(self):
+        super().__init__()
+        self.malformed_admin_distance_networks = []
+        self.unknown_source_networks = []
+
+
 def compute_fib(routes) -> Fib:
     """Build a longest-prefix-match FIB from a host's parsed route list. Tolerant: a non-dict / blank-prefix /
-    unparseable-prefix entry is skipped (never raises); None / a non-list scalar -> []. Consumed by fib_lookup()."""
-    entries: Fib = []
+    unparseable-prefix or malformed observed-AD entry is skipped (never raises); None / a non-list scalar -> [].
+    A valid observed ``admin_distance`` wins over the source-family default; source fallback is used only when
+    that field is absent. Consumed by fib_lookup()."""
+    entries = _FibTable()
     if not isinstance(routes, (list, tuple)):
         return entries                       # total: a host mapped to a scalar/None yields an empty FIB, not a raise
     for r in routes:
         if not isinstance(r, dict):
             continue
-        prefix = str(r.get("prefix", "")).strip()
-        if not prefix:
+        prefix, prefix_valid = _safe_token(r.get("prefix"))
+        if not prefix_valid or not prefix:
             continue
         try:
             net = ipaddress.ip_network(prefix, strict=False)
         except ValueError:
             continue
-        entries.append((net, _admin_distance(r.get("source")), dict(r)))
+        if "admin_distance" in r:
+            admin_distance = _observed_admin_distance(r.get("admin_distance"))
+            if admin_distance is None:
+                # The prefix itself is valid and retained by the scoped projection, but its observed preference is
+                # malformed. Silently deleting it can invert LPM in either direction, so preserve a destination-
+                # match taint rather than selecting a sibling/covering route as if this row did not exist.
+                entries.malformed_admin_distance_networks.append(net)
+                continue
+        else:
+            source, source_valid = _safe_token(r.get("source"))
+            admin_distance = _admin_distance(source)
+            if not source_valid or not source or admin_distance == 255:
+                entries.unknown_source_networks.append(net)
+                continue
+        entries.append((net, admin_distance, dict(r)))
     # longest prefix first; on an equal-length prefix, the lower administrative distance wins
     entries.sort(key=lambda e: (-e[0].prefixlen, e[1]))
     return entries
@@ -110,6 +195,23 @@ def fib_lookup_all(fib: Fib, dst_ip: str) -> List[dict]:
     ip = _ip(dst_ip)
     if ip is None:
         return []
+    selection_gaps = [
+        (network, reason)
+        for networks, reason in (
+            (getattr(fib, "malformed_admin_distance_networks", []), "malformed_admin_distance"),
+            (getattr(fib, "unknown_source_networks", []), "unknown_route_source"),
+        )
+        for network in networks
+        if ip.version == network.version and ip in network
+    ]
+    if selection_gaps:
+        network, reason = sorted(
+            selection_gaps, key=lambda item: (-item[0].prefixlen, item[1]),
+        )[0]
+        return [{
+            "prefix": str(network), "match": str(network), "computed": False,
+            "selection_error": reason, "next_hop": "", "out_intf": "", "source": "",
+        }]
     key = None
     out: List[dict] = []
     for net, ad, r in (fib or []):          # fib is sorted (-prefixlen, ad): the first match is longest + lowest-AD
@@ -132,23 +234,76 @@ def fib_lookup(fib: Fib, dst_ip: str) -> Optional[dict]:
     return matches[0] if matches else None
 
 
-def _connected_index(routes_by_host) -> dict:
+class _ConnectedIndex(dict):
+    """Connected-prefix membership plus positively observed exact interface/local addresses."""
+
+    def __init__(self, *args, exact_by_host=None, invalid_host_key_count=0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.exact_by_host = exact_by_host or {}
+        self.invalid_host_key_count = invalid_host_key_count
+
+
+def _connected_index(routes_by_host, interfaces=None) -> dict:
     """{host: [connected networks]} -- which subnets each host is directly attached to (its connected/local
     routes), used to find which collected host a next-hop IP lives behind."""
     idx: dict = {}
+    exact: dict = {}
     for host, routes in (routes_by_host or {}).items():
         nets = []
+        owned = set()
         for r in (routes if isinstance(routes, (list, tuple)) else []):
             if isinstance(r, dict) and _is_connected(r.get("source")):
                 try:
-                    nets.append(ipaddress.ip_network(str(r.get("prefix", "")).strip(), strict=False))
+                    prefix, prefix_valid = _safe_token(r.get("prefix"))
+                    if not prefix_valid:
+                        continue
+                    network = ipaddress.ip_network(prefix, strict=False)
+                    nets.append(network)
+                    # A local/FHRP host route is positive ownership evidence. A connected subnet alone is not:
+                    # every router on a shared segment contains the next-hop address, but only one owns it.
+                    source, source_valid = _safe_token(r.get("source"))
+                    if not source_valid:
+                        continue
+                    source = source.lower().replace("*", "")
+                    local_source = source in {"l", "local"} or source.startswith("local")
+                    fhrp_source = any(token in source for token in ("hsrp", "vrrp", "glbp"))
+                    route_ip = network.network_address
+                    next_hop = _ip(r.get("next_hop"))
+                    if network.prefixlen == network.max_prefixlen and (
+                            local_source or (fhrp_source and next_hop == route_ip)):
+                        owned.add(network.network_address)
                 except ValueError:
                     pass
         idx[host] = nets
-    return idx
+        exact[host] = owned
+    if isinstance(interfaces, dict):
+        for host, ports in interfaces.items():
+            if not isinstance(ports, dict):
+                continue
+            owned = exact.setdefault(host, set())
+            for record in ports.values():
+                values = [_iface_field(record, "svi_ip")]
+                all_values = _iface_field(record, "svi_ips")
+                if isinstance(all_values, str):
+                    values.extend(all_values.split(";"))
+                elif isinstance(all_values, (list, tuple)):
+                    values.extend(all_values)
+                for raw in values:
+                    raw_token, raw_valid = _safe_token(raw)
+                    if not raw_valid:
+                        continue
+                    parts = raw_token.split()
+                    if not parts:
+                        continue
+                    token = parts[0].split("/", 1)[0]
+                    parsed = _ip(token)
+                    if parsed is not None:
+                        owned.add(parsed)
+    return _ConnectedIndex(idx, exact_by_host=exact)
 
 
-def _hosts_owning_ip(connected_idx: dict, ip_str: str, exclude: str = None) -> list:
+def _hosts_owning_ip(connected_idx: dict, ip_str: str, exclude: str = None,
+                     exact: bool = False) -> list:
     """EVERY collected host whose connected subnets contain `ip_str` (sorted, optionally excluding one host).
     Returns ALL distinct owners regardless of mask -- usually one, but a transit subnet is connected on BOTH ends
     and a multi-access (or mask-mismatched) segment on several. The caller MUST treat >1 as genuinely ambiguous
@@ -159,6 +314,12 @@ def _hosts_owning_ip(connected_idx: dict, ip_str: str, exclude: str = None) -> l
     if ip is None:
         return []
     hosts = set()
+    if exact:
+        exact_by_host = getattr(connected_idx, "exact_by_host", {})
+        for host, addresses in exact_by_host.items():
+            if host != exclude and ip in addresses:
+                hosts.add(host)
+        return sorted(hosts)
     for host, nets in (connected_idx or {}).items():
         if host == exclude:
             continue
@@ -181,21 +342,20 @@ def _parse_mtu(raw):
     """Coerce a collected MTU value to a positive int, or None when it is BLANK / unparseable. Blank is
     ABSTENTION -- 'not collected' -- never a fabricated default. build.py leaves mtu '' when the device did not
     report a non-default value, and that '' must stay a blind spot, not silently become 1500."""
-    s = str(raw if raw is not None else "").strip()
-    if not s:
+    if isinstance(raw, bool) or raw is None:
         return None
-    # tolerate a trailing 'bytes' or stray non-digits Cisco sometimes prints ('9216 bytes')
-    digits = ""
-    for ch in s:
-        if ch.isdigit():
-            digits += ch
-        elif digits:
-            break
-    if not digits:
-        return None
-    try:
-        val = int(digits)
-    except ValueError:
+    if isinstance(raw, int):
+        val = raw
+    elif isinstance(raw, float):
+        if not raw.is_integer():
+            return None
+        val = int(raw)
+    elif isinstance(raw, str):
+        match = re.fullmatch(r"(\d+)(?:\s+bytes?)?", raw.strip(), flags=re.IGNORECASE)
+        if not match:
+            return None
+        val = int(match.group(1))
+    else:
         return None
     return val if val > 0 else None
 
@@ -218,10 +378,18 @@ def _hop_mtu(interfaces: dict, host: str, out_intf: str):
         if normalize_ifname is not None:
             want = normalize_ifname(out_intf)
             for p, r in ports.items():
-                if normalize_ifname(p) == want:
+                if isinstance(p, str) and normalize_ifname(p) == want:
                     rec = r
                     break
     if rec is None:
+        return None
+    ip_mtu_value = _iface_field(rec, "ip_mtu")
+    if ip_mtu_value not in (None, ""):
+        # A dedicated IPv4 MTU field is the strongest available layer binding, including older snapshots that
+        # predate ``mtu_semantics``. It must outrank a stale/contradictory generic copy.
+        return _parse_mtu(ip_mtu_value)
+    semantics, semantics_valid = _safe_token(_iface_field(rec, "mtu_semantics"))
+    if not semantics_valid or semantics != "effective_ipv4_mtu":
         return None
     return _parse_mtu(_iface_field(rec, "mtu"))
 
@@ -243,13 +411,24 @@ def _annotate_mtu(res: dict, snap, required_mtu=None) -> dict:
     unobserved = []         # [{host, out_intf}]
     jumbo = []
     for hop in hops:
-        host = hop.get("host", "")
-        out_intf = str(hop.get("out_intf", "") or "")
+        if not isinstance(hop, dict):
+            unobserved.append({"host": "", "out_intf": "", "reason": "malformed_hop_evidence"})
+            continue
+        host, host_valid = _safe_token(hop.get("host"))
+        out_intf, out_intf_valid = _safe_token(hop.get("out_intf"))
+        if not host_valid or not out_intf_valid:
+            unobserved.append({"host": host, "out_intf": out_intf,
+                               "reason": "malformed_hop_evidence"})
+            continue
+        if not out_intf and not _is_discard(hop.get("out_intf")):
+            # A reached L3 hop necessarily egresses somewhere. A blank route-interface field is therefore an
+            # explicit MTU denominator gap, not evidence that this hop has no MTU to assess.
+            unobserved.append({"host": host, "out_intf": "",
+                               "reason": "egress_interface_not_observed"})
+            continue
         mtu = _hop_mtu(interfaces, host, out_intf)
         if mtu is None:
-            # only count a hop as an MTU blind spot if it actually has an egress interface to have measured
-            if out_intf:
-                unobserved.append({"host": host, "out_intf": out_intf})
+            unobserved.append({"host": host, "out_intf": out_intf})
             continue
         observed.append((host, out_intf, mtu))
         if req is not None and mtu < req:
@@ -347,7 +526,7 @@ def trace_fib_path(snap, src_ip: str, dst_ip: str, max_hops: int = 32, required_
     Returns {src, dst, hops:[{host, match, next_hop, out_intf, source}], status, computed, reached,
     mtu_min, mtu_bottleneck_hop, mtu_verdict, mtu_unobserved_hops, jumbo_blackhole}."""
     fibs, connected, l3_hosts = _build(snap)
-    res = _trace(fibs, connected, l3_hosts, src_ip, dst_ip, disclose=disclose)
+    res = _trace(fibs, connected, l3_hosts, src_ip, dst_ip, disclose=disclose, max_hops=max_hops)
     return _annotate_mtu(res, snap, required_mtu)
 
 
@@ -390,9 +569,18 @@ def _build(snap):
     hosts that make their own L3 forwarding decisions (audit-5 #0). Built ONCE so a reachability matrix over many
     pairs (reachability_diff/reachability_delta) doesn't recompute them per trace."""
     snap = snap if isinstance(snap, dict) else {}
-    routes_by_host = snap.get("routes") if isinstance(snap.get("routes"), dict) else {}
+    raw_routes = snap.get("routes") if isinstance(snap.get("routes"), dict) else {}
+    raw_interfaces = snap.get("interfaces") if isinstance(snap.get("interfaces"), dict) else {}
+
+    def valid_host(host):
+        return isinstance(host, str) and bool(_safe_token(host)[0])
+
+    invalid_hosts = sum(1 for host in set(raw_routes) | set(raw_interfaces) if not valid_host(host))
+    routes_by_host = {host: rows for host, rows in raw_routes.items() if valid_host(host)}
+    interfaces = {host: rows for host, rows in raw_interfaces.items() if valid_host(host)}
     fibs = {h: compute_fib(r) for h, r in routes_by_host.items()}
-    connected = _connected_index(routes_by_host)
+    connected = _connected_index(routes_by_host, interfaces)
+    connected.invalid_host_key_count = invalid_hosts
     l3_hosts = {h for h in routes_by_host if _is_l3_router(h, snap, routes_by_host.get(h))}
     return fibs, connected, l3_hosts
 
@@ -415,55 +603,117 @@ def _resolver(fibs, connected, l3_hosts, dst_ip):
         certifies 'reached'; it must be disclosed rather than swallowed by the existential.
 
     Shared by _trace (whole path) and ecmp_consistency (per leg) so the two surfaces cannot drift apart."""
-    memo, computing = {}, set()                             # per-resolver; the verdict-from-a-host is intrinsic
+    memo, computing = {}, set()
 
     def _rank(status):                                      # reach > any lower bound > a definitive drop
         return 2 if status.startswith("computed:reached") else (1 if status.startswith("lower_bound") else 0)
 
-    def _cache(host, res):
+    def _cache(key, res):
         if not (res[0].endswith(":loop") or res[0].endswith(":max_hops")):
-            memo[host] = res                                # cache only path-INDEPENDENT verdicts (not loop/cutoff)
+            memo[key] = res                                 # cache only path-INDEPENDENT verdicts (not loop/cutoff)
         return res
 
-    def explore_set(hosts, amb_status):
+    def explore_set(hosts, amb_status, remaining=None):
         """Resolve forwarding from a SET of candidate hosts for ONE unknown-but-fixed hop -- a next-hop IP or the
         source IP shared by >1 collected host (a transit/multi-access subnet, where the exact owner can't be pinned
         without interface-IP data). Definitive ONLY when every candidate agrees: all reach -> reached; all
         definitively drop -> unreachable; any disagreement or lower bound -> the ambiguous lower bound. This keeps
         recall (the common case: every possible forwarder routes the dst alike) without guessing which is real."""
         if len(hosts) == 1:
-            return explore(hosts[0])
-        results = [explore(h) for h in hosts]
+            return explore(hosts[0], remaining)
+        results = [explore(h, remaining) for h in hosts]
         if all(r[1] for r in results):
-            return ("computed:reached", True, results[0][2], results[0][3])   # every possible forwarder reaches
+            evidence = dict(results[0][3])
+            candidate_sets = []
+            for result in results:
+                candidate_sets.extend(list(result[3].get("ambiguous_candidate_sets") or []))
+            candidate_sets.append({"kind": amb_status.split(":")[-1], "candidate_hosts": sorted(hosts)})
+            evidence["ambiguous_candidate_sets"] = sorted(
+                {(
+                    str(row.get("kind") or "ambiguous"),
+                    tuple(sorted(str(host) for host in (row.get("candidate_hosts") or []))),
+                ) for row in candidate_sets},
+                key=lambda item: (item[0], item[1]),
+            )
+            evidence["ambiguous_candidate_sets"] = [
+                {"kind": kind, "candidate_hosts": list(candidates)} for kind, candidates
+                in evidence["ambiguous_candidate_sets"]
+            ]
+            return ("computed:reached", True, results[0][2], evidence)   # every possible forwarder reaches
         if all(r[0] == "computed:unreachable" for r in results):
-            return ("computed:unreachable", False, results[0][2], results[0][3])   # all definitively drop
+            # All candidates fail, but the evidence is only as strong as the weakest candidate. A scoped
+            # no-route absence at ANY possible owner prevents the ambiguous set from being presented as a
+            # positively observed discard merely because the first candidate happened to own a Null0 route.
+            kinds = {r[3].get("drop_evidence", "") for r in results}
+            evidence = {
+                "drop_evidence": "no_route_observed" if "no_route_observed" in kinds
+                else ("observed_discard" if kinds == {"observed_discard"} else "")
+            }
+            return ("computed:unreachable", False, results[0][2], evidence)
         return (amb_status, False, [], {})                            # disagreement / a lower bound -> ambiguous
 
-    def leg_outcome(host, m):
+    def leg_outcome(host, m, remaining=None):
         """ONE installed (equal-cost) leg from `host` -> (hop_record, outcome_4tuple): what a flow that hashes
         onto THIS leg does. A connected match is delivery; a Null0/discard egress is an observed drop; anything
         else defers to the next-hop owner(s)."""
-        hop = {"host": host, "match": m.get("match", ""), "next_hop": str(m.get("next_hop", "") or ""),
-               "out_intf": str(m.get("out_intf", "") or ""), "source": str(m.get("source", "") or "")}
+        selection_error = m.get("selection_error")
+        if selection_error in {"malformed_admin_distance", "unknown_route_source"}:
+            match, _match_valid = _safe_token(m.get("match"))
+            invalid_field = "admin_distance" if selection_error == "malformed_admin_distance" else "source"
+            hop = {"host": host, "match": match, "next_hop": "", "out_intf": "", "source": "",
+                   "invalid_route_fields": [invalid_field]}
+            return hop, ("lower_bound:malformed_route_evidence", False, [hop], {})
+        next_hop, next_hop_valid = _safe_token(m.get("next_hop"))
+        out_intf, out_intf_valid = _safe_token(m.get("out_intf"))
+        source, source_valid = _safe_token(m.get("source"))
+        hop = {"host": host, "match": m.get("match", ""), "next_hop": next_hop,
+               "out_intf": out_intf, "source": source}
+        invalid_fields = [name for name, valid in (
+            ("next_hop", next_hop_valid), ("out_intf", out_intf_valid), ("source", source_valid),
+        ) if not valid]
+        if invalid_fields:
+            hop["invalid_route_fields"] = invalid_fields
+            return hop, ("lower_bound:malformed_route_evidence", False, [hop], {})
         if _is_connected(m.get("source")):
             return hop, ("computed:reached", True, [hop], {})         # dst is directly attached on this leg
         if _is_discard(m.get("out_intf")):                            # Null0/discard egress -> definitive drop
             return hop, ("computed:unreachable", False, [hop], {"drop_evidence": "observed_discard"})
-        nh = str(m.get("next_hop", "")).strip()
-        nxts = _hosts_owning_ip(connected, nh, exclude=host) if nh else []
+        nh = next_hop
+        nh_ip = _ip(nh)
+        directly_attached = bool(nh_ip is not None and any(
+            nh_ip.version == network.version and nh_ip in network
+            for network in connected.get(host, [])
+        ))
+        if nh and not directly_attached:
+            # Recursive resolution must walk the current router's FIB to an immediate adjacency before another
+            # host can be selected. Jumping directly to a loopback owner's box skips transit forwarding and ACLs.
+            return hop, ("lower_bound:recursive_next_hop_not_modeled", False, [hop], {})
+        inferred_nxts = _hosts_owning_ip(connected, nh, exclude=host) if nh else []
+        nxts = _hosts_owning_ip(connected, nh, exclude=host, exact=True) if nh else []
         if not nxts:
-            return hop, ("lower_bound:next_hop_not_collected", False, [hop], {})
-        sub = explore_set(nxts, "lower_bound:ambiguous_next_hop")
+            status = ("lower_bound:next_hop_owner_not_observed" if inferred_nxts
+                      else "lower_bound:next_hop_not_collected")
+            return hop, (status, False, [hop], {
+                "inferred_next_hop_candidates": inferred_nxts,
+            } if inferred_nxts else {})
+        if remaining is not None and remaining <= 1:
+            return hop, ("lower_bound:max_hops", False, [hop], {})
+        sub = explore_set(
+            nxts, "lower_bound:ambiguous_next_hop",
+            None if remaining is None else remaining - 1,
+        )
         return hop, (sub[0], sub[1], [hop] + sub[2], dict(sub[3]))
 
-    def explore(host):
+    def explore(host, remaining=None):
         """(status, reached, hops_from_host, evidence) for the dst from `host`, exploring every equal-cost (ECMP)
         leg -- a router load-balances so the flow can take any leg: reach if ANY leg reaches. MEMOIZED per host
         (the verdict is intrinsic to the host, not to how it was reached), so a shared-subnet fan-out is linear,
         not exponential; an in-progress host is a forwarding loop (returned but never cached)."""
-        if host in memo:
-            return memo[host]
+        if remaining is not None and remaining <= 0:
+            return ("lower_bound:max_hops", False, [], {})
+        key = (host, remaining)
+        if key in memo:
+            return memo[key]
         if host in computing:
             return ("lower_bound:loop", False, [], {})     # cycle back-edge -- path-dependent, do not cache
         legs = fib_lookup_all(fibs.get(host, []), dst_ip)
@@ -471,14 +721,14 @@ def _resolver(fibs, connected, l3_hosts, dst_ip):
             if host in l3_hosts:                                       # a router: no match + no default -> drop
                 # DEFINITIVE per the routes we hold -- but derived from ABSENCE, and snap['routes'] is a SCOPED
                 # subset of the RIB (see this function's docstring), so the evidence kind is disclosed.
-                return _cache(host, ("computed:unreachable", False, [], {"drop_evidence": "no_route_observed"}))
+                return _cache(key, ("computed:unreachable", False, [], {"drop_evidence": "no_route_observed"}))
             # an L2 access switch / device with no L3 evidence forwards to an (uncollected) upstream default-gateway
             # -> its empty match is indeterminate, not a fabricated drop (audit-5 #0).
-            return _cache(host, ("lower_bound:no_l3_routing", False, [], {}))
+            return _cache(key, ("lower_bound:no_l3_routing", False, [], {}))
         computing.add(host)
         best, outcomes = None, []
         for m in legs:
-            hop, cand = leg_outcome(host, m)
+            hop, cand = leg_outcome(host, m, remaining)
             outcomes.append((hop, cand))
             if best is None:
                 best = cand
@@ -494,7 +744,8 @@ def _resolver(fibs, connected, l3_hosts, dst_ip):
         if drops and len(drops) < len(outcomes):            # legs DISAGREE: some proven to drop, some not
             ev["ecmp_dropping_legs"] = [
                 {"host": host, "match": h["match"], "next_hop": h["next_hop"], "out_intf": h["out_intf"],
-                 "leg_status": c[0], "drop_evidence": c[3].get("drop_evidence", "")} for h, c in drops
+                 "leg_status": c[0], "drop_evidence": c[3].get("drop_evidence", ""),
+                 "resolved_hops": list(c[2])} for h, c in drops
             ] + list(ev.get("ecmp_dropping_legs") or [])
         elif drops and best[0] == "computed:unreachable":
             # EVERY leg drops: the host-level verdict is only as positively-evidenced as its weakest leg --
@@ -503,44 +754,55 @@ def _resolver(fibs, connected, l3_hosts, dst_ip):
             ev["drop_evidence"] = ("no_route_observed" if "no_route_observed" in kinds
                                    else ("observed_discard" if "observed_discard" in kinds
                                          else ev.get("drop_evidence", "")))
-        return _cache(host, (best[0], best[1], best[2], ev))
+        return _cache(key, (best[0], best[1], best[2], ev))
 
     return explore, explore_set, leg_outcome
 
 
-def _trace(fibs, connected, l3_hosts, src_ip, dst_ip, disclose=False):
+def _trace(fibs, connected, l3_hosts, src_ip, dst_ip, disclose=False, max_hops=32):
     """Core trace over PREBUILT (fibs, connected, l3_hosts); coverage-honest semantics per trace_fib_path().
 
-    `disclose` adds the two evidence keys (`drop_evidence`, `ecmp_dropping_legs`, see _resolver) to the
+    `disclose` adds evidence keys (`drop_evidence`, `ecmp_dropping_legs`, `ambiguous_candidate_sets`; see
+    _resolver) to the
     result. It is OFF by default because trace_fib_path's result dict is compared KEY-FOR-KEY against the
     explorer's embedded JS port by the EXECUTED parity gate (tests/test_explorer_js_parity.py), which
     projects out only the named MTU-enrichment keys -- an unconditional new key there would report the two
     surfaces as diverged. reachability_diff, the cutover surface these disclosures exist for, always asks
     for them."""
 
+    safe_src, src_valid = _safe_token(src_ip)
+    safe_dst, dst_valid = _safe_token(dst_ip)
+
     def _result(hops, status, reached, ev=None):
-        r = {"src": src_ip, "dst": dst_ip, "hops": hops, "status": status,
+        r = {"src": safe_src, "dst": safe_dst, "hops": hops, "status": status,
              "computed": status.startswith("computed"), "reached": reached}
         if disclose:
             ev = ev or {}
             r["ecmp_dropping_legs"] = list(ev.get("ecmp_dropping_legs") or [])
+            r["ambiguous_candidate_sets"] = list(ev.get("ambiguous_candidate_sets") or [])
             r["drop_evidence"] = (str(ev.get("drop_evidence") or "")
                                   if status == "computed:unreachable" else "")
         return r
 
-    sip, dip = _ip(src_ip), _ip(dst_ip)
-    if sip is None or dip is None:
+    sip, dip = _ip(safe_src), _ip(safe_dst)
+    if not src_valid or not dst_valid or sip is None or dip is None:
         return _result([], "lower_bound:bad_address", False)
     if sip.version != dip.version:                          # a v4<->v6 flow is impossible -- never certify reached
         return _result([], "lower_bound:cross_family", False)
+    if getattr(connected, "invalid_host_key_count", 0):
+        return _result([], "lower_bound:malformed_host_identity", False)
+    if not isinstance(max_hops, int) or isinstance(max_hops, bool) or max_hops < 0:
+        return _result([], "lower_bound:max_hops", False)
 
-    src_hosts = _hosts_owning_ip(connected, src_ip)
+    src_hosts = _hosts_owning_ip(connected, safe_src)
     if not src_hosts:
         return _result([], "lower_bound:src_host_not_found", False)
 
     _explore, _explore_set, _leg = _resolver(fibs, connected, l3_hosts, dst_ip)
     try:
-        status, reached, hops, ev = _explore_set(src_hosts, "lower_bound:ambiguous_src")
+        status, reached, hops, ev = _explore_set(
+            src_hosts, "lower_bound:ambiguous_src", max_hops,
+        )
     except RecursionError:                                  # pathological deep chain -- stay total
         return _result([], "lower_bound:max_hops", False)
     return _result(hops, status, reached, ev)
@@ -601,7 +863,7 @@ def reachability_diff(old_snap, new_snap, pairs) -> dict:
             v = "inconclusive"
         else:
             v = "both_unreachable"
-        rows.append({"src": src, "dst": dst, "old_status": o["status"], "new_status": n["status"], "verdict": v,
+        rows.append({"src": o["src"], "dst": o["dst"], "old_status": o["status"], "new_status": n["status"], "verdict": v,
                      "old_drop_evidence": o["drop_evidence"], "new_drop_evidence": n["drop_evidence"],
                      "ecmp_dropping_legs": n["ecmp_dropping_legs"]})
         summary[v] = summary.get(v, 0) + 1
@@ -615,27 +877,38 @@ def _l3_hops(trace: dict) -> list:
     return [h.get("host", "") for h in (trace.get("hops") or [])]
 
 
-def trace_bidirectional(snap, a_ip: str, b_ip: str, max_hops: int = 32, required_mtu=None) -> dict:
+def trace_bidirectional(snap, a_ip: str, b_ip: str, max_hops: int = 32, required_mtu=None,
+                        disclose: bool = False) -> dict:
     """Return-path / RPF asymmetry (§3.4; orchestration :232 -- 'works one way, drops the other'). Pure
     COMPOSITION over two trace_fib_path calls -- forward a->b and reverse b->a -- plus a comparison; NO device
     contact. A one-directional trace cannot see the classic asymmetric-routing black hole where the forward flow
     is delivered but the return is dropped or takes a divergent path that a strict uRPF check would discard.
 
-    COVERAGE-HONEST rpf_verdict:
-      * 'symmetric'     -- BOTH directions reach AND traverse the SAME set of collected L3 forwarding hosts
-                           (the shared-segment hop-sets align) -> no return-path asymmetry observed.
-      * 'asymmetric'    -- forward reaches but the reverse is a DEFINITIVE drop (computed:unreachable), OR both
-                           reach yet the traversed host-sets DIVERGE (a path split that a strict uRPF would fail).
-                           The divergence is NAMED in `asymmetry`.
-      * 'INDETERMINATE' -- either direction is inconclusive / a lower bound (computed=False). Asymmetry cannot be
-                           PROVEN from an unprovable trace, so abstain -- never a fabricated 'asymmetric'.
+    Backward-compatible default mode retains the historical host-set path-symmetry heuristic. Assurance callers
+    use ``disclose=True``: that mode names the observed ``path_relation`` but keeps ``rpf_verdict``
+    INDETERMINATE. A host set cannot prove strict-uRPF behavior because that requires per-hop packet-ingress and
+    reverse-route interface correlation, which this snapshot does not currently own. In particular, equal host
+    sets over different parallel links are not a symmetric-uRPF proof.
 
-    Returns {forward, reverse, symmetric:bool, asymmetry:[...], rpf_verdict}. `symmetric` is True ONLY for the
-    proven-symmetric case (an INDETERMINATE or asymmetric result is False). Total on bad input."""
-    fwd = trace_fib_path(snap, a_ip, b_ip, max_hops=max_hops, required_mtu=required_mtu)
-    rev = trace_fib_path(snap, b_ip, a_ip, max_hops=max_hops, required_mtu=required_mtu)
+    Returns {forward, reverse, symmetric:bool, asymmetry:[...], rpf_verdict}. In disclosure mode ``symmetric``
+    remains False until strict-uRPF evidence exists, and the additive ``path_relation``/``rpf_scope`` fields carry
+    the bounded observation. ``disclose=True`` also passes through the underlying trace's evidence-kind fields
+    (observed discard vs scoped no-route absence, and ECMP dropping legs). The default remains False so existing
+    result-shape contracts stay byte-identical. Total on bad input."""
+    fwd = trace_fib_path(snap, a_ip, b_ip, max_hops=max_hops, required_mtu=required_mtu,
+                         disclose=disclose)
+    rev = trace_fib_path(snap, b_ip, a_ip, max_hops=max_hops, required_mtu=required_mtu,
+                         disclose=disclose)
 
     asymmetry: List[str] = []
+
+    def result(symmetric: bool, verdict: str, relation: str = "indeterminate") -> dict:
+        out = {"forward": fwd, "reverse": rev, "symmetric": symmetric,
+               "asymmetry": asymmetry, "rpf_verdict": verdict}
+        if disclose:
+            out["path_relation"] = relation
+            out["rpf_scope"] = "strict_u_rpf_not_assessed"
+        return out
 
     # If either direction could not be computed end-to-end, we cannot assert (or refute) asymmetry -> abstain.
     if not (fwd.get("computed") and rev.get("computed")):
@@ -645,8 +918,28 @@ def trace_bidirectional(snap, a_ip: str, b_ip: str, max_hops: int = 32, required
         if not rev.get("computed"):
             undone.append("reverse {}".format(rev.get("status")))
         asymmetry.append("indeterminate: " + "; ".join(undone))
-        return {"forward": fwd, "reverse": rev, "symmetric": False,
-                "asymmetry": asymmetry, "rpf_verdict": "INDETERMINATE"}
+        return result(False, "INDETERMINATE", "incomplete")
+
+    # In disclosure mode, a computed-unreachable derived only from a missing match in the scoped route
+    # projection is not positive evidence of a device drop.  Do not let that absence become a definitive
+    # RPF/asymmetry statement.  The default mode retains its historical shape and interpretation.
+    if disclose:
+        ambiguous_directions = [name for name, trace in (("forward", fwd), ("reverse", rev))
+                                if trace.get("ambiguous_candidate_sets")]
+        if ambiguous_directions:
+            asymmetry.append(
+                "indeterminate: representative paths cannot decide symmetry across ambiguous forwarding "
+                "owners in " + ", ".join(ambiguous_directions)
+            )
+            return result(False, "INDETERMINATE", "ambiguous_forwarding_owners")
+        absence_directions = [name for name, trace in (("forward", fwd), ("reverse", rev))
+                              if not trace.get("reached") and trace.get("drop_evidence") != "observed_discard"]
+        if absence_directions:
+            asymmetry.append(
+                "indeterminate: scoped no-route absence is not positive drop evidence in "
+                + ", ".join(absence_directions)
+            )
+            return result(False, "INDETERMINATE", "scoped_absence")
 
     fwd_reached, rev_reached = bool(fwd.get("reached")), bool(rev.get("reached"))
 
@@ -656,13 +949,19 @@ def trace_bidirectional(snap, a_ip: str, b_ip: str, max_hops: int = 32, required
         loser = "reverse" if fwd_reached else "forward"
         loser_status = rev.get("status") if fwd_reached else fwd.get("status")
         asymmetry.append("{} reaches but {} is a definitive drop ({})".format(winner, loser, loser_status))
-        return {"forward": fwd, "reverse": rev, "symmetric": False,
-                "asymmetry": asymmetry, "rpf_verdict": "asymmetric"}
+        if disclose:
+            asymmetry.append(
+                "strict uRPF is not assessed without packet-ingress and reverse-interface evidence"
+            )
+            return result(False, "INDETERMINATE", "one_way_observed")
+        return result(False, "asymmetric")
 
     # Both DEFINITIVELY unreachable in each direction -> no asymmetry (both blocked alike), not an RPF issue.
     if not fwd_reached:
-        return {"forward": fwd, "reverse": rev, "symmetric": True,
-                "asymmetry": [], "rpf_verdict": "symmetric"}
+        if disclose:
+            asymmetry.append("indeterminate: neither direction delivered a path to compare")
+            return result(False, "INDETERMINATE", "both_blocked")
+        return result(True, "symmetric")
 
     # Both reach: compare the traversed L3 host-sets. A strict uRPF fails when the return path does not retrace the
     # forward one, so a divergence in the shared forwarding hosts is the asymmetry to flag.
@@ -674,11 +973,19 @@ def trace_bidirectional(snap, a_ip: str, b_ip: str, max_hops: int = 32, required
             asymmetry.append("forward-only L3 hop(s): " + ", ".join(only_fwd))
         if only_rev:
             asymmetry.append("reverse-only L3 hop(s): " + ", ".join(only_rev))
-        return {"forward": fwd, "reverse": rev, "symmetric": False,
-                "asymmetry": asymmetry, "rpf_verdict": "asymmetric"}
+        if disclose:
+            asymmetry.append(
+                "host-set divergence is a path observation, not strict-uRPF interface proof"
+            )
+            return result(False, "INDETERMINATE", "host_set_divergent")
+        return result(False, "asymmetric")
 
-    return {"forward": fwd, "reverse": rev, "symmetric": True,
-            "asymmetry": [], "rpf_verdict": "symmetric"}
+    if disclose:
+        asymmetry.append(
+            "aligned forwarding-host sets do not prove reverse-interface symmetry on parallel links"
+        )
+        return result(False, "INDETERMINATE", "host_set_aligned")
+    return result(True, "symmetric")
 
 
 def _iface_acl(interfaces: dict, host: str, out_intf: str):
@@ -698,13 +1005,15 @@ def _iface_acl(interfaces: dict, host: str, out_intf: str):
         if normalize_ifname is not None:
             want = normalize_ifname(out_intf)
             for p, r in ports.items():
-                if normalize_ifname(p) == want:
+                if isinstance(p, str) and normalize_ifname(p) == want:
                     rec = r
                     break
     if rec is None:
         return (None, None)
     ai, ao = _iface_field(rec, "acl_in"), _iface_field(rec, "acl_out")
-    return (str(ai).strip() if ai is not None else "", str(ao).strip() if ao is not None else "")
+    if (ai is not None and not isinstance(ai, str)) or (ao is not None and not isinstance(ao, str)):
+        return (None, None)
+    return (ai.strip() if isinstance(ai, str) else "", ao.strip() if isinstance(ao, str) else "")
 
 
 def ecmp_consistency(snap, src_ip: str, dst_ip: str) -> dict:
@@ -730,9 +1039,15 @@ def ecmp_consistency(snap, src_ip: str, dst_ip: str) -> dict:
     snap = snap if isinstance(snap, dict) else {}
     interfaces = snap.get("interfaces") if isinstance(snap.get("interfaces"), dict) else {}
     fibs, connected, l3_hosts = _build(snap)
-    base = {"host": None, "dst": dst_ip, "leg_count": 0, "mtu_divergence": [],
-            "acl_divergence": [], "forwarding_divergence": [], "unobserved_legs": [],
+    safe_dst, _dst_valid = _safe_token(dst_ip)
+    base = {"host": None, "dst": safe_dst, "leg_count": 0, "mtu_divergence": [],
+            "acl_divergence": [], "forwarding_divergence": [], "forwarding_reached_legs": [],
+            "unobserved_legs": [],
             "mtu_unobserved_legs": [], "forwarding_unresolved_legs": [], "verdict": "not_ecmp"}
+
+    if getattr(connected, "invalid_host_key_count", 0):
+        base["verdict"] = "INDETERMINATE"
+        return base
 
     src_hosts = _hosts_owning_ip(connected, src_ip)
     if len(src_hosts) != 1:                   # no owner, or an ambiguous transit/multi-access src -> can't localize
@@ -742,6 +1057,13 @@ def ecmp_consistency(snap, src_ip: str, dst_ip: str) -> dict:
     base["host"] = host
     legs = fib_lookup_all(fibs.get(host, []), dst_ip)
     base["leg_count"] = len(legs)
+    if legs and legs[0].get("selection_error") in {"malformed_admin_distance", "unknown_route_source"}:
+        base["forwarding_unresolved_legs"] = [{
+            "out_intf": "", "next_hop": "", "leg_status": "lower_bound:malformed_route_evidence",
+            "resolved_hops": [],
+        }]
+        base["verdict"] = "INDETERMINATE"
+        return base
     if len(legs) < 2:
         base["verdict"] = "not_ecmp"          # a single installed path -> multipath consistency is not applicable
         return base
@@ -752,8 +1074,9 @@ def ecmp_consistency(snap, src_ip: str, dst_ip: str) -> dict:
     fwd_drop, fwd_ok, fwd_blind = [], [], []
     for leg in legs:
         _hop, (st, reached, _hops, ev) = _leg_outcome(host, leg)
-        row = {"out_intf": str(leg.get("out_intf", "") or ""), "next_hop": str(leg.get("next_hop", "") or ""),
-               "leg_status": st}
+        row = {"out_intf": _safe_token(leg.get("out_intf"))[0],
+               "next_hop": _safe_token(leg.get("next_hop"))[0],
+               "leg_status": st, "resolved_hops": list(_hops)}
         if st == "computed:unreachable":
             row["drop_evidence"] = ev.get("drop_evidence", "")
             fwd_drop.append(row)                 # PROVEN not to deliver the flow
@@ -762,14 +1085,19 @@ def ecmp_consistency(snap, src_ip: str, dst_ip: str) -> dict:
         else:
             fwd_blind.append(row)                # trail lost -> proves nothing either way
     base["forwarding_unresolved_legs"] = fwd_blind
+    base["forwarding_reached_legs"] = fwd_ok
     if fwd_drop and len(fwd_drop) < len(legs):
         # at least one leg definitively blackholes while a sibling does not -> the legs are NOT alike.
         base["forwarding_divergence"] = fwd_drop
 
+    resolved_by_leg = {
+        (row.get("out_intf", ""), row.get("next_hop", "")): list(row.get("resolved_hops") or [])
+        for row in fwd_drop + fwd_ok + fwd_blind
+    }
     mtus, acls, iface_blind, mtu_blind = [], [], [], []
     for leg in legs:
-        oi = str(leg.get("out_intf", "") or "")
-        nh = str(leg.get("next_hop", "") or "")
+        oi = _safe_token(leg.get("out_intf"))[0]
+        nh = _safe_token(leg.get("next_hop"))[0]
         if not oi:
             iface_blind.append({"out_intf": oi, "next_hop": nh})
             continue
@@ -786,16 +1114,20 @@ def ecmp_consistency(snap, src_ip: str, dst_ip: str) -> dict:
         if mtu is None:
             mtu_blind.append({"out_intf": oi, "next_hop": nh})
         else:
-            mtus.append((oi, mtu))
+            mtus.append((oi, nh, mtu))
         acls.append((oi, ai or "", ao or ""))
 
     base["unobserved_legs"] = iface_blind
     base["mtu_unobserved_legs"] = mtu_blind      # additive: legs whose record exists but MTU was not collected
 
     # MTU divergence: distinct OBSERVED MTUs across legs (a proven divergence — the narrow leg blackholes).
-    obs_mtus = {m for _oi, m in mtus}
+    obs_mtus = {m for _oi, _nh, m in mtus}
     if len(obs_mtus) > 1:
-        base["mtu_divergence"] = sorted([{"out_intf": oi, "mtu": m} for oi, m in mtus], key=lambda d: d["mtu"])
+        base["mtu_divergence"] = sorted([
+            {"out_intf": oi, "next_hop": nh, "mtu": m,
+             "resolved_hops": resolved_by_leg.get((oi, nh), [])}
+            for oi, nh, m in mtus
+        ], key=lambda d: d["mtu"])
     # ACL divergence: distinct (acl_in, acl_out) tuples across legs whose interface WAS collected.
     obs_acls = {(ai, ao) for _oi, ai, ao in acls}
     if len(obs_acls) > 1:

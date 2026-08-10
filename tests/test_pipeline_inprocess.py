@@ -46,6 +46,24 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     template = tmp_path / "template.xlsx"
     _make_template(str(template))
     out_xlsx = tmp_path / "out.xlsx"
+    traffic_intents = tmp_path / "traffic-intents.json"
+    traffic_intents.write_text(json.dumps({"intents": [{
+        "id": "users-to-voice-api",
+        "src": "10.0.10.50", "dst": "10.0.20.50",
+        "protocol": "tcp", "src_port": 49152, "dst_port": 443,
+        "expected": "permit", "return_required": False,
+    }]}), encoding="utf-8")
+
+    # The producer is invoked once. Excel/JSON/HTML surfaces must project the returned canonical set,
+    # never recompute path, policy, ECMP, MTU or failure verdicts independently.
+    assurance_calls = []
+    _assess_flows = cp.assess_flows
+
+    def _counted_assess_flows(snapshot, intents):
+        assurance_calls.append((snapshot, intents))
+        return _assess_flows(snapshot, intents)
+
+    monkeypatch.setattr(cp, "assess_flows", _counted_assess_flows)
 
     # Run from a clean working directory (main() writes its log file into cwd) with argv set as if
     # invoked from the command line. HTML is intentionally LEFT ON so write_html_explorer is exercised.
@@ -55,6 +73,7 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
         "--no-collect", "--collection-dir", collection,
         "--devices-file", str(devices), "--template", str(template),
         "--output", str(out_xlsx), "--workers", "1",
+        "--traffic-intents", str(traffic_intents),
     ])
 
     cp.main()   # the actual console entry point — exercises build/excel/html/runbook in-process
@@ -65,6 +84,7 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     sheets = wb.sheetnames
     wb.close()
     assert "Executive Summary" in sheets, f"Executive Summary sheet missing; got {sheets[:5]}…"
+    assert "Traffic Assurance" in sheets, "canonical traffic assurance projection sheet missing"
     assert len(sheets) >= 20, f"expected the full multi-sheet workbook, got only {len(sheets)} sheets"
 
     # ---- snapshot (the data contract) ----
@@ -72,8 +92,23 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     assert os.path.isfile(snap_path), "snapshot.json was not written"
     snap = json.loads(open(snap_path, encoding="utf-8").read())
     for key in ("devices", "interfaces", "health_scores", "punchlist", "causality", "executive_brief",
-                "parse_yield"):   # Plan A / Tier-1 #3: the zero-parse ledger ships in every snapshot
+                "parse_yield", "unknown_evidence"):   # parser detail + governed aggregate ship together
         assert key in snap, f"snapshot missing computed key {key!r}"
+    assurance = snap.get("traffic_assurance")
+    assert assurance and assurance["schema"] == "traffic_assurance_set/1"
+    assert assurance["owner"] == "cisco_toolkit.traffic_assurance.assess_flow"
+    assert assurance["summary"]["n"] == 1 and len(assurance["results"]) == 1
+    assert assurance["results"][0]["intent"]["id"] == "users-to-voice-api"
+    assert len(assurance_calls) == 1, "traffic assurance must be evaluated exactly once per pipeline run"
+    _ta_wb = load_workbook(str(out_xlsx), read_only=True)
+    _ta_ws = _ta_wb["Traffic Assurance"]
+    _ta_headers = {cell.value: index for index, cell in enumerate(next(_ta_ws.iter_rows()), 1)}
+    _ta_row = next(_ta_ws.iter_rows(min_row=2, values_only=True))
+    _ta_wb.close()
+    _canonical = assurance["results"][0]
+    assert _ta_row[_ta_headers["Flow ID"] - 1] == _canonical["intent"]["id"]
+    assert _ta_row[_ta_headers["Overall Verdict"] - 1] == _canonical["verdict"]
+    assert _ta_row[_ta_headers["Set Schema"] - 1] == assurance["schema"]
     # the ledger must be a REAL run's ledger (parsers were called), with its coverage-honest note
     assert snap["parse_yield"]["summary"]["parsers_called"] > 0
     assert "never a device" in snap["parse_yield"]["summary"]["note"]
@@ -398,6 +433,12 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     assert "coverage_matrix" in snap, "snapshot must publish the coverage_matrix SSOT"
     _cm = snap["coverage_matrix"]
     assert _cm == compute_coverage_matrix(snap), "published coverage_matrix must equal the canonical recompute"
+    from cisco_toolkit.unknown_evidence import compute_unknown_evidence
+    _ue = snap["unknown_evidence"]
+    assert _ue == compute_unknown_evidence(snap), \
+        "published unknown_evidence must equal the canonical aggregate-only recompute"
+    assert _ue["summary"]["raw_identifiers_included"] is False
+    assert _ue["summary"]["claim_scope"] == "bounded_observed_sources_only"
     assert _cm["summary"]["n_abstained"] == sum(1 for _r in _cm["rows"] if _r["is_abstention"])
     _cc_blind = {d.get("host") for d in (snap.get("collection_completeness") or {}).get("devices", [])
                  if isinstance(d, dict) and "complete" not in str(d.get("status", "")).lower()}

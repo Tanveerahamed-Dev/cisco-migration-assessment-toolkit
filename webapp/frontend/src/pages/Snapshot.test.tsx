@@ -320,6 +320,25 @@ describe("Snapshot cockpit · coverage honesty", () => {
     expect(screen.queryByText(/No deliverables are available from this server build/)).toBeNull();
   });
 
+  it("labels AssessHub synthesis without claiming every download is identical to CLI output", async () => {
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(richMeta as any);
+    vi.spyOn(api, "section").mockRejectedValue(new Error("not relevant"));
+    vi.spyOn(api, "meta").mockResolvedValue({
+      deliverables: [
+        { key: "runbook", label: "Runbook", ext: "docx", available: true,
+          producer: "engine-cli", engine_cli_member: true, stage: "pre-cutover" },
+        { key: "cutover", label: "Cutover Plan", ext: "docx", available: true,
+          producer: "assesshub-snapshot", engine_cli_member: false, stage: "pre-cutover" },
+      ],
+    } as any);
+    renderSnap();
+    await screen.findByRole("heading", { name: "Demo Fleet" });
+
+    expect(await screen.findByText("ASSESSHUB")).toBeInTheDocument();
+    expect(screen.getByText(/Engine-backed artifacts reuse the CLI writer/)).toBeInTheDocument();
+    expect(screen.queryByText(/identical to the CLI output/i)).toBeNull();
+  });
+
   // FE-12: summarize() seeds readiness as {READY:0, CAUTION:0, "NOT READY":0} and only ever
   // INCREMENTS it from snap["migration_readiness"] (webapp/backend/summary.py). A snapshot that
   // carries no migration_readiness section therefore yields all-zeros — indistinguishable, in the

@@ -279,7 +279,7 @@ Optional:
   --collection-dir DIR  --workers N  --debug-arp
 """
 
-import hashlib, io, os, sys, json, re, logging, warnings, argparse, time  # io: immutable input-byte bindings
+import hashlib, io, ipaddress, os, sys, json, re, logging, warnings, argparse, time  # io: immutable input-byte bindings
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -411,6 +411,7 @@ from cisco_toolkit.excel import (
     write_attestation_sheet,                                   # roadmap D3 (re-derived zero-egress attestation panel)
     write_whatif_sheet,                                        # roadmap G4 (single-snapshot failure-injection)
     write_path_intents_sheet,                                  # roadmap G3 (named segmentation/path intents)
+    write_traffic_assurance_sheet,                             # bounded five-tuple path/policy/failure assurance
     write_syslog_intelligence_sheet,                             # NEW-V3.23.164 (NOS-style operational log analysis)
     write_qos_audit_sheet,                                       # NEW-V3.23.165 (configured QoS posture + doctrine findings)
     write_software_risk_sheet,                                   # NEW-V3.23.166 (advisory-surface screening + train lifecycle)
@@ -435,6 +436,10 @@ from cisco_toolkit.external_import import (normalize_rows, read_inventory_csv,
 # the in-memory dict API (compute_capture_integrity) remains the module's direct-use surface.
 from cisco_toolkit.capture_integrity import (compute_capture_integrity_from_paths,
                                              load_capture_meta, CAPTURE_META_FILENAME)
+from cisco_toolkit.traffic_assurance import (
+    TRAFFIC_ASSURANCE_OWNER, TRAFFIC_ASSURANCE_SET_SCHEMA,
+    TRAFFIC_EVIDENCE_CUSTODY_SCHEMA, assess_flows, build_traffic_evidence_custody,
+)
 from cisco_toolkit.whatif import run_scenarios                          # roadmap G4 (failure-injection what-if)
 from cisco_toolkit.path_assertions import evaluate_path_assertions      # roadmap G3 (named path/segmentation intents)
 from cisco_toolkit.precert import compute_precert, schema_compat_status  # roadmap C1 (Pre-Change Cert); P3-E2 schema gate
@@ -478,6 +483,8 @@ from cisco_toolkit.docmeta import (artifact_candidate_paths, artifact_kind,
                                    validate_artifact)
 from cisco_toolkit.coverage_matrix import compute_coverage_matrix   # Plan A #5 (coverage-as-a-first-class-row SSOT)
 from cisco_toolkit.detector_schema import compute_detector_schema   # J1 (per-detector descriptors; not-observed != healthy)
+from cisco_toolkit.unknown_evidence import (                        # governed, aggregate-only parser/coverage unknown queue
+    compute_unknown_evidence, unavailable_unknown_evidence)
 from cisco_toolkit.runbook import write_runbook_docx                 # NEW-V3.23.93 (DOCX runbook deliverable)
 from cisco_toolkit.deck import write_executive_deck_pptx             # NEW-V3.23.144 (executive PPTX deck deliverable)
 from cisco_toolkit.design import write_design_doc_docx               # NEW-V3.23.148 (As-Built HLD/LLD design document)
@@ -2374,6 +2381,32 @@ def _preflight_optional_inputs(args) -> dict:
             raise ValueError("--path-intents IDs must be unique")
         loaded["path_intents"] = rows
 
+    traffic_intents_path = getattr(args, "traffic_intents", None)
+    if traffic_intents_path:
+        rows = _catalog(_json("traffic_intents", traffic_intents_path),
+                        ("intents", "flows"), "--traffic-intents")
+        ids = []
+        for i, row in enumerate(rows):
+            flow_id = row.get("id")
+            if not isinstance(flow_id, str) or not flow_id.strip():
+                raise ValueError(
+                    f"--traffic-intents entry {i} requires an explicit non-empty string id")
+            try:
+                flow_id.encode("utf-8")
+                if isinstance(row.get("title"), str):
+                    row["title"].encode("utf-8")
+            except UnicodeEncodeError as exc:
+                raise ValueError(
+                    f"--traffic-intents entry {i} id/title must contain only Unicode scalar values") from exc
+            if "failure" in row and row.get("failure") is not None and not isinstance(
+                    row.get("failure"), dict):
+                raise ValueError(
+                    f"--traffic-intents entry {i} failure must be a JSON object when declared")
+            ids.append(flow_id.strip())
+        if len(set(ids)) != len(ids):
+            raise ValueError("--traffic-intents IDs must be unique")
+        loaded["traffic_intents"] = rows
+
     if args.assert_pack:
         raw = _json("assert_pack", args.assert_pack)
         if isinstance(raw, list):
@@ -2691,6 +2724,10 @@ def main():
                     help="roadmap G3: a JSON catalog of named path/segmentation intents (a list of {id, src, dst, expect: "
                          "REACHES|ISOLATED}) evaluated over the computed FIB -> a 'Path Assertions' sheet + snapshot key. "
                          "With --compare, the catalog is re-validated across the pair into the Pre-Change Certificate. Opt-in.")
+    ap.add_argument("--traffic-intents", default=None, metavar="FILE",
+                    help="an exact, finite JSON catalog of named IPv4 TCP/UDP five-tuples for offline path, "
+                         "stateless-policy, MTU, ECMP and optional synthetic-failure assurance -> one canonical "
+                         "snapshot block and 'Traffic Assurance' sheet. Read-only; unsupported evidence abstains.")
     ap.add_argument("--assert-pack",     default=None, metavar="FILE",
                     help="roadmap A1/H2: a JSON state-assertion check-pack ({assertions:[...]}) evaluated over the "
                          "snapshot -> a 'state_assertions' snapshot key. Opt-in; coverage-honest ([NOT OBSERVED] abstention).")
@@ -2723,6 +2760,12 @@ def main():
                          "nothing is deleted. Idempotent. Rewritten captures will no longer match "
                          "archive hashes recorded at collection time (deliberate). Default off.")
     args = ap.parse_args()
+
+    if args.traffic_intents and (args.compare or args.trend):
+        ap.error(
+            "--traffic-intents is supported only for a full offline assessment run; "
+            "--compare/--trend do not evaluate or publish Traffic Assurance"
+        )
 
     # This run's gate ledger starts empty. Matters for hosts that call main() twice in one process --
     # in-repo that is tests/test_pipeline_inprocess.py and tests/test_pipeline_failopen.py (the webapp
@@ -2759,6 +2802,14 @@ def main():
             ap.error(f"--compare: snapshot file not found: {e.filename}")
         except (OSError, RuntimeError, json.JSONDecodeError, UnicodeDecodeError) as e:
             ap.error(f"--compare: could not parse snapshot JSON ({e})")
+        if any(isinstance(snap, dict) and "traffic_assurance" in snap
+               for snap in (old_snap, new_snap)):
+            ap.error(
+                "--compare: an input snapshot contains traffic_assurance, but --compare does not "
+                "evaluate or publish Traffic Assurance; rerun generic snapshots from the original "
+                "evidence without --traffic-intents, and run Traffic Assurance only through separate "
+                "full offline assessments"
+            )
         # P3-E2: refuse to diff across a schema/script_version change unless explicitly allowed -- a
         # cross-schema diff can misreport a schema difference as a real change (never emit it silently).
         _sc_status, _sc_msg = schema_compat_status([old_snap, new_snap], labels=[old_p, new_p])
@@ -2818,6 +2869,13 @@ def main():
             ap.error(f"--trend: snapshot file not found: {e.filename}")
         except (OSError, RuntimeError, json.JSONDecodeError, UnicodeDecodeError) as e:
             ap.error(f"--trend: could not parse snapshot JSON ({e})")
+        if any(isinstance(snap, dict) and "traffic_assurance" in snap for snap in snaps):
+            ap.error(
+                "--trend: an input snapshot contains traffic_assurance, but --trend does not "
+                "evaluate or publish Traffic Assurance; rerun generic snapshots from the original "
+                "evidence without --traffic-intents, and run Traffic Assurance only through separate "
+                "full offline assessments"
+            )
         # P3-E2: same schema/script_version gate for the campaign series (an engine upgrade mid-campaign
         # would otherwise trend across incompatible schemas silently).
         _sc_status, _sc_msg = schema_compat_status(snaps, labels=list(args.trend))
@@ -3157,6 +3215,20 @@ def main():
     all_ptp: Dict[str, dict] = {}                                   # {host: ptp clock health}
     all_acl_hits: Dict[str, int] = {}                              # {"port:proto": total matches}
     _inscope = inscope_subnets(all_interfaces)
+    # Traffic Assurance endpoints extend the exact projection denominator. A /32 or /128 anchor retains every
+    # covering and more-specific route for that endpoint; scope_routes then closes recursive next-hop ownership.
+    # Invalid/unsupported endpoint tokens remain for assess_flow's own fail-closed validation and add no scope.
+    for _flow in (_validated_inputs.get("traffic_intents") or []):
+        if not isinstance(_flow, dict):
+            continue
+        for _field in ("src", "dst"):
+            try:
+                _endpoint = ipaddress.ip_address(str(_flow.get(_field) or "").strip())
+            except ValueError:
+                continue
+            _inscope.add(str(ipaddress.ip_network(
+                f"{_endpoint}/{_endpoint.max_prefixlen}", strict=False
+            )))
     for hostname, platform, cmd_to_file in all_devices_meta:
         rdb = build_routes(cmd_to_file)
         if rdb:
@@ -3566,6 +3638,17 @@ def main():
     capture_integrity = _run_phase("Capture integrity", compute_capture_integrity_from_paths,
                                    all_cmd_to_files, _ci_meta, _default={})
     _run_phase("Capture Integrity sheet", write_capture_integrity_sheet, wb, capture_integrity)
+    # Compact positive custody for the route/config evidence Traffic Assurance consumes. The owner combines
+    # actual command presence, capture integrity and parser-yield telemetry; raw paths/bodies never enter it.
+    parse_yield = parse_yield_report()
+    traffic_evidence_custody = _run_phase(
+        "Traffic evidence custody", build_traffic_evidence_custody,
+        all_cmd_to_files, capture_integrity, parse_yield, all_routes,
+        {"interfaces": all_interfaces, "acls": all_acls,
+         "object_groups": all_object_groups, "nat": all_nat},
+        _default={"schema": TRAFFIC_EVIDENCE_CUSTODY_SCHEMA, "hosts": {},
+                  "summary": {"n_hosts": 0, "n_cells": 0, "n_complete": 0, "n_unproven": 0}},
+    )
     # roadmap G4: opt-in failure-injection what-if (--scenario FILE). Golden-safe (off by default).
     whatif_result = None
     if args.scenario:
@@ -3809,7 +3892,8 @@ def main():
         snap_dict["external_reconcile"] = external_reconcile         # declared source-of-truth vs collected evidence
     snap_dict["capture_integrity"] = capture_integrity              # roadmap K1 (per-capture truncation/pager/error guard)
     snap_dict["attestation"] = attestation                          # roadmap D3 (re-derived trust claims; 'Trust & Sovereignty' sheet twin — computed at the workbook stage above)
-    snap_dict["parse_yield"] = parse_yield_report()                 # Plan A / Tier-1 #3: content-in/0-entities-out ledger (collected-but-unparsed ≠ feature-absent; K1's sibling)
+    snap_dict["parse_yield"] = parse_yield                          # Plan A / Tier-1 #3: content-in/0-entities-out ledger (collected-but-unparsed ≠ feature-absent; K1's sibling)
+    snap_dict["traffic_evidence_custody"] = traffic_evidence_custody  # affirmative route/config custody; no raw paths/bodies
     if whatif_result is not None:                                   # roadmap G4 (opt-in: only when --scenario supplied)
         snap_dict["whatif"] = whatif_result                         # failure-injection what-if results
     if path_intents is not None:                                    # roadmap G3 (opt-in: only when --path-intents supplied)
@@ -3946,10 +4030,32 @@ def main():
     snap_dict["architecture_review"] = architecture_review
     if flow_trace is not None:                                       # NEW-V3.19
         snap_dict["flow_trace"] = flow_trace
+    # One producer boundary for the bounded five-tuple assurance product.  The engine evaluates the
+    # exact, custody-bound snapshot once; snapshot/Excel/Explorer consumers project this returned object
+    # and must never rerun FIB, ACL, ECMP, MTU or failure logic independently.
+    if args.traffic_intents:
+        snap_dict["traffic_assurance"] = _run_phase(
+            "Traffic assurance", assess_flows, snap_dict,
+            _validated_inputs["traffic_intents"],
+            _default={
+                "schema": TRAFFIC_ASSURANCE_SET_SCHEMA,
+                "owner": TRAFFIC_ASSURANCE_OWNER,
+                "state": "error",
+                "results": [],
+                "summary": {
+                    "n": 0, "proven": 0, "refuted": 0,
+                    "not_observed": 0, "indeterminate": 0, "invalid": 0,
+                },
+            },
+        )
     if args.redact:                                                  # NEW-V3.23.41
         snap_dict = redact_snapshot(snap_dict)
         _ACTIVE_INTEGRITY_SNAPSHOT = snap_dict
         logger.info("  [redact] snapshot IPs / MACs / serials pseudonymized (--redact)")
+    _run_phase(
+        "Traffic Assurance sheet", write_traffic_assurance_sheet, wb,
+        snap_dict.get("traffic_assurance"),
+    )
     # NEW: the canonical CCDE-grounded target-state DESIGN BLUEPRINT (the senior-network-design-engineer
     # layer). Computed LAST, from the fully-assembled (and, under --redact, already-redacted) snap_dict, so
     # the design DOCX / explorer / webapp all read ONE blueprint instead of re-deriving design intent. It
@@ -3979,6 +4085,17 @@ def main():
     except Exception as e:                                            # fail-soft: never break the snapshot write
         logger.warning(f"  design_blueprint compute failed (non-fatal): {e}")
         _record_phase_failure("Design blueprint", f"{type(e).__name__}: {e}")
+    # Governed unknown-evidence queue: aggregate only the parser/coverage/architecture diagnostics
+    # already published above. The owner discards raw device names, paths, command payloads and unknown
+    # tokens; events remain candidate classifications / needs-triage, never support verdicts. Keep this
+    # in its own fail-soft boundary so a design-coverage failure still yields an honest partial queue,
+    # and an aggregate failure still publishes the canonical unavailable shape rather than disappearing.
+    try:
+        snap_dict["unknown_evidence"] = compute_unknown_evidence(snap_dict)
+    except Exception as e:
+        logger.warning(f"  unknown-evidence aggregation failed (non-fatal): {e}")
+        snap_dict["unknown_evidence"] = unavailable_unknown_evidence()
+        _record_phase_failure("Unknown evidence", f"{type(e).__name__}: {e}")
     # SSOT self-check (the field-data safety net): the suite only proves SSOT-consistency on its own
     # fixtures, never on a real customer snapshot. Reconcile the published canonical facts against
     # their raw-evidence derivation NOW, on the fully-assembled snap_dict, and ONLY on drift disclose

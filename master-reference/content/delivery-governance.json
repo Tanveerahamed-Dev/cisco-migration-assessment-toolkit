@@ -46,12 +46,12 @@
     },
     {
       "id": "gap.catalog-ui",
-      "title": "The comprehensive catalog is not yet fully navigable in the master-reference UI",
+      "title": "Capability records lack stable dossiers and a relationship-map alternative",
       "disposition": "build",
-      "priority": "P0",
-      "problem": "The repository now has machine-readable content, but the user still needs search, filters, relationship views, provenance drilldown, gap navigation, and printable deep links.",
-      "next_actions": ["Load content statically at build time", "Add domain/state/plane filters and search", "Add capability-to-gap-to-opportunity-to-decision links", "Provide table and graph alternatives", "Preserve URL-addressable selections"],
-      "acceptance_evidence": ["Rendered contract tests", "Keyboard-operable filter journeys", "Every catalog ID has a reachable detail view", "No runtime fetch or duplicated truth"],
+      "priority": "P1",
+      "problem": "The shipped matrix already provides static loading, domain/state filters, search, owner provenance, gap navigation, an accessible table, and URL-bound filters. It does not yet give every capability ID a stable dossier/deep link or a bidirectional relationship map across gaps, opportunities, decisions, horizons, and source owners.",
+      "next_actions": ["Add one stable dossier URL for every capability ID", "Build bidirectional capability-to-gap-to-opportunity-to-decision-to-horizon traversal from canonical IDs", "Provide a relationship-map view with a complete non-graph alternative", "Preserve selected capability and relationship filters across reload and print"],
+      "acceptance_evidence": ["Every catalog ID resolves to its own server-rendered dossier", "Rendered tests traverse every declared relationship in both directions", "Keyboard and screen-reader journeys cover dossier and relationship views", "No runtime fetch or duplicated truth"],
       "owner_role": "master-reference maintainer"
     },
     {
@@ -66,11 +66,11 @@
     },
     {
       "id": "gap.controller-channels",
-      "title": "Controller collection is live only for APIC and vManage",
+      "title": "Cloud, WLAN, and remaining controller channels lack bounded live collection",
       "disposition": "evidence-first",
       "priority": "P1",
-      "problem": "ISE, FMC, cloud, WLAN, and other controller detectors lack equivalent bounded, authenticated, read-only live collection channels.",
-      "next_actions": ["Reuse HTTPS, redirect, TLS, secret, and GET-after-login controls", "Keep collection quarantined from pure parsers", "Capture versioned offline fixtures before live support", "Model pagination, rate limits, partial permission, and schema drift"],
+      "problem": "APIC, vManage, ISE, and FMC have opt-in HTTPS evidence collectors; cloud, WLAN, Catalyst Center, and other controller families still lack equivalent bounded, authenticated, read-only live channels.",
+      "next_actions": ["Select the next channel from demonstrated estate demand rather than vendor count", "Capture versioned offline fixtures before adding live support", "Reuse HTTPS, redirect, TLS, secret, pagination, and read-only controls", "Keep collection quarantined from pure parsers and model rate limits, partial permission, and schema drift"],
       "acceptance_evidence": ["Fixture-first parser tests", "Credential and redirect negative tests", "Read-only RBAC operator guide", "Lab-backed version matrix"],
       "owner_role": "controller integration lead"
     },
@@ -99,7 +99,7 @@
       "title": "Actual sessions, flows, and packets are absent",
       "disposition": "evidence-first",
       "priority": "P1",
-      "problem": "Topology-derived paths cannot prove traffic actually traversed the path or met loss, latency, jitter, retransmission, and application expectations.",
+      "problem": "The bounded synthetic Traffic Assurance result cannot prove that traffic actually traversed a path, established a session, or met loss, latency, jitter, retransmission, and application expectations; no modeled verdict is promoted into live-flow evidence.",
       "next_actions": ["Choose bounded NetFlow/IPFIX/sFlow and packet metadata schemas", "Define capture authorization and payload-minimization rules", "Align clocks and sampling metadata", "Correlate observed flows to modeled paths without treating absence as denial"],
       "acceptance_evidence": ["Sanitized flow fixtures", "Clock/sampling/retention contract", "Modeled-versus-observed path comparison", "Privacy and performance tests"],
       "owner_role": "traffic analysis lead"
@@ -126,12 +126,12 @@
     },
     {
       "id": "gap.flow-stateful",
-      "title": "L4 simulation is not an authoritative stateful policy engine",
+      "title": "Bounded synthetic Traffic Assurance is not an authoritative stateful or live-flow engine",
       "disposition": "build",
       "priority": "P0",
-      "problem": "Forward and return routing, firewall sessions, NAT, identity, time, zones, service objects, load balancers, proxies, asymmetric paths, and service chains are not evaluated together.",
-      "next_actions": ["Define a vendor-neutral flow tuple and state-transition model", "Model forward and return paths separately", "Add rule provenance, NAT stages, zones, identities, time, and service chains", "Prove ordered policy semantics with adversarial fixtures", "Label simulated versus observed outcomes"],
-      "acceptance_evidence": ["Golden stateful-flow fixtures", "Asymmetry and NAT negative tests", "Rule-hit provenance", "Unknown/unsupported verdicts", "Independent comparison with lab outcomes"],
+      "problem": "Traffic Assurance now composes an exact IPv4 TCP/UDP tuple across requested forward and reverse scoped-RIB paths, stateless interface ACLs, observed per-hop MTU, ECMP consistency, and an optional single synthetic failure. It does not evaluate firewall session state, NAT/PAT translations, zones, identities, time policy, runtime rule hits, load balancers, proxies, service chains, observed packets/flows, application success, or field behavior.",
+      "next_actions": ["Version the current tuple contract before adding state transitions", "Model firewall session, NAT/PAT, zone, identity, time, and service-chain stages without weakening current abstention", "Bind observed rule-hit, session, and translation provenance separately from synthetic results", "Prove ordered stateful and asymmetric semantics with adversarial fixtures", "Validate supported vendor/release slices independently in authorized labs"],
+      "acceptance_evidence": ["Golden stateful-flow and NAT fixtures", "Asymmetry and state-transition negative tests", "Observed rule-hit/session/translation provenance", "Unknown and unsupported verdicts", "Release-scoped independent lab comparison with field-validation status kept explicit"],
       "owner_role": "security and reachability leads"
     },
     {
@@ -427,13 +427,13 @@
   "opportunity_portfolio": {
     "ranking_rule": "No hidden or aggregate score is computed. Axis values are discussion inputs; dependencies, safety gates, and human priorities decide sequencing.",
     "items": [
-      {"id": "opp.catalog-navigation", "title": "Make the catalog the interactive map of the product", "gap_refs": ["gap.catalog-ui"], "horizon": "now", "axes": {"user_value": 5, "risk_reduction": 4, "evidence_readiness": 5, "strategic_reach": 5, "implementation_effort": 2, "operational_change_risk": 1, "uncertainty": 1}, "axis_notes": "The content and owners already exist; the main risk is UI scale and accessibility."},
+      {"id": "opp.catalog-navigation", "title": "Complete capability dossiers and relationship traversal", "gap_refs": ["gap.catalog-ui"], "horizon": "next", "axes": {"user_value": 3, "risk_reduction": 2, "evidence_readiness": 5, "strategic_reach": 3, "implementation_effort": 3, "operational_change_risk": 1, "uncertainty": 1}, "axis_notes": "Search, filters, provenance, gap links, table output, and URL-bound filter state already ship; the remaining value is stable per-ID dossiers and bidirectional relationship navigation."},
       {"id": "opp.unknown-queue", "title": "Turn unknown parser and coverage signals into roadmap evidence", "gap_refs": ["gap.unknown-intake"], "horizon": "now", "axes": {"user_value": 4, "risk_reduction": 5, "evidence_readiness": 4, "strategic_reach": 5, "implementation_effort": 2, "operational_change_risk": 1, "uncertainty": 2}, "axis_notes": "It strengthens honesty across every domain without expanding device access."},
       {"id": "opp.protocol-stage-matrix", "title": "Deepen protocol support through a stage matrix", "gap_refs": ["gap.protocol-depth"], "horizon": "now", "axes": {"user_value": 5, "risk_reduction": 4, "evidence_readiness": 4, "strategic_reach": 4, "implementation_effort": 3, "operational_change_risk": 1, "uncertainty": 2}, "axis_notes": "The current seven-family health model provides a concrete starting denominator."},
       {"id": "opp.stateful-flow", "title": "Build an authoritative stateful flow and policy engine", "gap_refs": ["gap.flow-stateful"], "horizon": "next", "axes": {"user_value": 5, "risk_reduction": 5, "evidence_readiness": 3, "strategic_reach": 5, "implementation_effort": 5, "operational_change_risk": 2, "uncertainty": 3}, "axis_notes": "High value and reach, but vendor semantics and return-path/NAT proof make it a major program."},
       {"id": "opp.observability", "title": "Add a bounded multi-signal observability spine", "gap_refs": ["gap.observability-signals", "gap.flow-actual-telemetry"], "horizon": "next", "axes": {"user_value": 5, "risk_reduction": 4, "evidence_readiness": 2, "strategic_reach": 5, "implementation_effort": 5, "operational_change_risk": 4, "uncertainty": 3}, "axis_notes": "Continuous collection changes storage, privacy, performance, and operational boundaries."},
       {"id": "opp.cloud-native", "title": "Create a vendor-neutral cloud and Kubernetes profile", "gap_refs": ["gap.cloud-native", "gap.security-cloud-native"], "horizon": "next", "axes": {"user_value": 4, "risk_reduction": 4, "evidence_readiness": 2, "strategic_reach": 5, "implementation_effort": 5, "operational_change_risk": 3, "uncertainty": 3}, "axis_notes": "Strategic breadth is large, so profile scope must be tightly staged."},
-      {"id": "opp.controller-parity", "title": "Extend fixture-first read-only controller channels", "gap_refs": ["gap.controller-channels", "gap.vendor-lab-evidence"], "horizon": "next", "axes": {"user_value": 4, "risk_reduction": 3, "evidence_readiness": 2, "strategic_reach": 4, "implementation_effort": 4, "operational_change_risk": 4, "uncertainty": 3}, "axis_notes": "Live credentials and API drift require lab evidence and strict collection quarantine."},
+      {"id": "opp.controller-parity", "title": "Extend fixture-first read-only collection beyond APIC, vManage, ISE, and FMC", "gap_refs": ["gap.controller-channels", "gap.vendor-lab-evidence"], "horizon": "next", "axes": {"user_value": 4, "risk_reduction": 3, "evidence_readiness": 2, "strategic_reach": 4, "implementation_effort": 4, "operational_change_risk": 4, "uncertainty": 3}, "axis_notes": "The four shipped controller collectors provide reusable safety patterns; every additional live credential and API-drift surface still requires demand evidence, quarantined collection, fixtures, and lab validation."},
       {"id": "opp.security-authority", "title": "Bind advisories, SBOM, applicability, and provenance", "gap_refs": ["gap.security-advisory-authority"], "horizon": "next", "axes": {"user_value": 4, "risk_reduction": 5, "evidence_readiness": 3, "strategic_reach": 4, "implementation_effort": 4, "operational_change_risk": 2, "uncertainty": 3}, "axis_notes": "Exact applicability is more valuable than broad unauthenticated matching."},
       {"id": "opp.white-label-pack", "title": "Promote tokens into a complete white-label pack", "gap_refs": ["gap.white-label", "gap.accessibility-performance"], "horizon": "now", "axes": {"user_value": 4, "risk_reduction": 3, "evidence_readiness": 5, "strategic_reach": 4, "implementation_effort": 3, "operational_change_risk": 1, "uncertainty": 2}, "axis_notes": "Existing owners reduce implementation uncertainty; localization broadens the later scope."},
       {"id": "opp.business-service", "title": "Connect findings to services, SLOs, and value ranges", "gap_refs": ["gap.business-traceability", "gap.observability-slo-closed-loop"], "horizon": "next", "axes": {"user_value": 5, "risk_reduction": 3, "evidence_readiness": 2, "strategic_reach": 5, "implementation_effort": 4, "operational_change_risk": 2, "uncertainty": 4}, "axis_notes": "The model is valuable only when customer-owned service and financial assumptions are available."},
@@ -817,7 +817,7 @@
     {"id": "scenario.upload-self-trust", "quality": "trust", "stimulus": "Uploaded JSON asserts verified provenance or completion.", "environment": "AssessHub", "response": "Strip or ignore client-owned trust fields and stamp server-owned status only after verification.", "measure": "Client input cannot produce a trusted label.", "state": "current", "owner_refs": ["owner.web.trust", "owner.web.summary"]},
     {"id": "scenario.partial-artifact", "quality": "delivery", "stimulus": "A writer returns, but one artifact is missing, empty, corrupt, or stale.", "environment": "Generation and delivery", "response": "Mark the set short/failed and prevent complete status.", "measure": "Produced-versus-expected and structural validation identify the exact problem.", "state": "current", "owner_refs": ["owner.deliverable.family", "owner.manifest"]},
     {"id": "scenario.archive-drift", "quality": "supply-chain", "stimulus": "The built wheel or source archive contains unexpected, missing, altered, or sensitive bytes.", "environment": "Release verification", "response": "Fail release proof.", "measure": "Exact inventory and digest comparison rejects the archive.", "state": "current", "owner_refs": ["owner.distribution", "owner.repository.privacy"]},
-    {"id": "scenario.stateful-asymmetry", "quality": "correctness", "stimulus": "Forward traffic is permitted, but return routing, NAT, or session policy fails.", "environment": "Proposed stateful-flow engine", "response": "Return a bounded failure/unknown with rule and path provenance; never reuse L2 reachability as success.", "measure": "Golden asymmetric fixtures distinguish forward and return outcomes.", "state": "missing", "gap_refs": ["gap.flow-stateful"]},
+    {"id": "scenario.stateful-asymmetry", "quality": "correctness", "stimulus": "The bounded synthetic forward and reverse path/ACL/MTU/ECMP dimensions pass, but NAT translation or firewall session policy fails.", "environment": "Future stateful extension beyond traffic_assurance/1", "response": "Return a bounded failure/unknown with state, rule, translation, and path provenance; never promote the current synthetic verdict or L2 reachability into session success.", "measure": "Golden stateful and NAT fixtures plus independent lab evidence distinguish synthetic path assurance from session outcome.", "state": "missing", "gap_refs": ["gap.flow-stateful", "gap.vendor-lab-evidence"]},
     {"id": "scenario.telemetry-clock-skew", "quality": "observability", "stimulus": "Signals use different clocks, sampling rates, and retention windows.", "environment": "Proposed multi-signal analysis", "response": "Expose time-quality uncertainty and decline causal ordering that exceeds it.", "measure": "Known skew and missing metadata prevent overconfident correlation.", "state": "missing", "gap_refs": ["gap.observability-signals"]},
     {"id": "scenario.large-estate", "quality": "performance", "stimulus": "The largest declared catalog and representative large fleet are opened on a constrained field host.", "environment": "Master reference and Explorer", "response": "Progressive disclosure, search, tables, and graph simplification remain responsive.", "measure": "Declared load, interaction, memory, and render budgets pass.", "state": "partial", "owner_refs": ["owner.explorer", "owner.reference.contract"], "gap_refs": ["gap.accessibility-performance"]},
     {"id": "scenario.keyboard-only", "quality": "accessibility", "stimulus": "A user operates every major journey without a pointer and with reduced motion.", "environment": "All interactive reference modes", "response": "Focus order, labels, state, alternatives, and no-motion feedback remain understandable.", "measure": "All catalog, graph, lab, and decision journeys complete from keyboard.", "state": "partial", "owner_refs": ["owner.reference.contract", "owner.explorer"], "gap_refs": ["gap.accessibility-performance"]},
@@ -902,18 +902,18 @@
       "mutates_assessment_truth": false,
       "underlying_support_state": "partial",
       "objective": "Keep physical, L2, L3/FIB, overlay/VRF, stateless policy, stateful policy/NAT, application identity, and measured traffic conclusions separate.",
-      "interaction": "Toggle one plane at a time and compare modeled topology, ACL simulation, absent session state, and absent measured-flow evidence.",
+      "interaction": "Toggle one plane at a time and compare the shipped bounded synthetic IPv4 TCP/UDP RIB/ACL/MTU/ECMP assurance slice with absent stateful session/NAT and measured-flow evidence.",
       "data_policy": "Synthetic plane states only; no packet payload, flow export, active probe, or client topology.",
-      "proves": "The eight-plane distinction and why one engine's favorable result cannot certify another plane.",
-      "does_not_prove": "An authoritative stateful session, NAT, return-path, application, packet, flow, or performance outcome.",
-      "owner_refs": ["owner.analysis", "owner.explorer", "owner.architecture.coverage"],
-      "gap_refs": ["gap.training-labs", "gap.flow-stateful", "gap.flow-actual-telemetry", "gap.flow-application"],
+      "proves": "The declared eight-plane distinction, the exact bounded scope of traffic_assurance/1, and why its favorable synthetic result cannot certify another plane.",
+      "does_not_prove": "An authoritative stateful session, NAT/PAT translation, runtime rule hit, application, packet, live-flow, performance, field-validation, or production outcome.",
+      "owner_refs": ["owner.traffic.assurance", "owner.analysis", "owner.explorer", "owner.architecture.coverage"],
+      "gap_refs": ["gap.training-labs", "gap.flow-stateful", "gap.flow-actual-telemetry", "gap.flow-application", "gap.vendor-lab-evidence"],
       "deterministic_definition": {
         "execution_state": "definition_only",
-        "deterministic_inputs": ["one declared state per traffic plane", "explicit modeled-versus-measured evidence class"],
-        "expected_observations": ["stateless permit does not prove a stateful session", "modeled reachability does not prove measured performance"],
+        "deterministic_inputs": ["one declared state per traffic plane", "the bounded traffic_assurance/1 support contract", "explicit synthetic-versus-observed evidence class"],
+        "expected_observations": ["requested forward/return synthetic assurance does not prove a stateful session or NAT", "modeled reachability does not prove measured performance or field behavior"],
         "reset_rule": "Reset all eight planes to unknown; never carry a verdict between engines.",
-        "source_binding": "Traffic-plane records and engine owners are tracked; no unified flow-engine executable is claimed."
+        "source_binding": "Traffic-plane records and the executable Traffic Assurance owner are tracked; this advisory definition does not execute the engine, ingest field evidence, or expand traffic_assurance/1."
       }
     },
     {

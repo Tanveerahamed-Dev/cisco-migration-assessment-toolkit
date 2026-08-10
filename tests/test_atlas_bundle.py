@@ -52,6 +52,8 @@ def test_root_files_ship_the_field_guide_beside_the_exe():
 
 
 def test_hidden_imports_cover_the_dynamic_seams():
+    from cisco_toolkit.docmeta import artifact_dependency_modules, artifact_writer_modules
+
     hidden = set(atlas_bundle.hidden_imports())
     # the frozen engine-child dispatch — missing this re-creates the respawn-the-app trap
     assert "COLLECT_PARSE_V3_23_0" in hidden
@@ -60,10 +62,23 @@ def test_hidden_imports_cover_the_dynamic_seams():
     # --verify-manifest's module is imported inside a function body too, and README-FIELD teaches
     # that command to an engineer with no Python and no second machine
     assert "cisco_toolkit.manifest" in hidden
-    # ADR-0004 D2: the full document family ships — docx/pptx are lazy optional-deps
-    assert {"docx", "pptx"} <= hidden
+    # ADR-0004 D2: every registry-owned lazy renderer must ship.
+    dependencies = set(artifact_dependency_modules())
+    assert dependencies and dependencies <= hidden
+    writers = set(artifact_writer_modules())
+    assert writers and writers <= hidden
     # uvicorn's runtime "auto" selection
     assert {"uvicorn.loops.auto", "uvicorn.protocols.http.auto", "uvicorn.lifespan.on"} <= hidden
+
+
+def test_renderer_hidden_imports_are_derived_not_a_second_static_list(monkeypatch):
+    """Mutate the owner seam: the bundle manifest must immediately follow it."""
+    monkeypatch.setattr(atlas_bundle, "artifact_dependency_modules",
+                        lambda: ("registry_probe_renderer",))
+    monkeypatch.setattr(atlas_bundle, "artifact_writer_modules",
+                        lambda: ("registry_probe_writer",))
+    hidden = atlas_bundle.hidden_imports()
+    assert "registry_probe_renderer" in hidden and "registry_probe_writer" in hidden
 
 
 def test_dist_dest_matches_the_entry_modules_frozen_probe(monkeypatch, tmp_path):

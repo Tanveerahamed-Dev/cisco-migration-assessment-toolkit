@@ -169,6 +169,30 @@ def test_every_flag_the_guide_names_exists_in_a_shipped_argparse():
     assert not unknown, f"field guide names flags no shipped surface has: {sorted(unknown)}"
 
 
+def test_field_guide_artifact_denominators_match_the_canonical_registry():
+    """The static field guide must not become a second, drifting artifact catalogue."""
+    from cisco_toolkit.docmeta import ARTIFACT_SPECS, CLI_ARTIFACT_SUFFIX, WEB_ONLY_KINDS, artifact_spec
+
+    number_words = {
+        0: "zero", 1: "one", 2: "two", 3: "three", 4: "four", 5: "five",
+        6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten",
+    }
+    cli_specs = [spec for spec in ARTIFACT_SPECS if spec.key in CLI_ARTIFACT_SUFFIX]
+    cli_docx = [spec for spec in cli_specs if spec.ext == "docx"]
+    guide = " ".join(GUIDE.read_text(encoding="ascii").lower().split())
+
+    assert cli_specs and len(cli_specs) in number_words
+    assert f"this command produces {number_words[len(cli_specs)]} items" in guide
+    assert f"{number_words[len(cli_docx)]} word documents" in guide
+    assert WEB_ONLY_KINDS == {"cutover", "nrfu"}
+    assert "cutover plan" in guide and "nrfu / acceptance test plan" in guide
+
+    pir = artifact_spec("pir")
+    assert pir.conditional and pir.cli_suffix is None
+    assert "post-implementation review (pir) is conditional post-execution" in guide
+    assert "not a cli artifact" in guide
+
+
 # ── the field guide's claim about the DRAFT stamp must stay TRUE ────────────────
 
 #: Writers whose output opens with a Document Control table (docmeta.add_document_control), and

@@ -2,15 +2,17 @@
 
 Atlas's `--redact-folder` diffs produced-against-expected to tell the field engineer when the
 share-safe set is SHORT (every engine writer is fail-soft: it logs a warning and continues, so a
-run that rendered 13 of 15 files still exits 0). That check is only as honest as this map, and the
-map is exactly the kind of hand-maintained list that rots as deliverables accrete — the engine's
-own `--no-*` flag list had already gone stale that way (V3.23.170).
+short run can still exit 0). That check is only as honest as the canonical registry's CLI
+projection; the engine's writer calls remain an independent implementation that can drift (its own
+`--no-*` flag list had already gone stale that way in V3.23.170).
 
-So the map is reconciled against the ENGINE SOURCE here: a renamed suffix or a newly added writer
-fails the suite instead of quietly widening the blind spot it was written to close. No python-docx
-dependency — this is a source-level contract and must run everywhere.
+So the registry projection is reconciled against the ENGINE SOURCE here: a renamed suffix or a newly
+added writer fails the suite instead of quietly widening the blind spot it was written to close. No
+python-docx dependency — this is a source-level contract and must run everywhere.
 """
 import ast
+from dataclasses import replace
+import importlib
 import re
 import sys
 import zipfile
@@ -18,7 +20,21 @@ from pathlib import Path
 
 import pytest
 
-from cisco_toolkit.docmeta import CLI_ARTIFACT_SUFFIX, FAMILY, WEB_ONLY_KINDS, cli_artifacts
+from cisco_toolkit.docmeta import (
+    ARTIFACT_SPECS,
+    ASSESSHUB_DOWNLOAD_SPECS,
+    CLI_ARTIFACT_SUFFIX,
+    CONDITIONAL_ARTIFACT_SPECS,
+    EXECUTION_REPORT,
+    FAMILY,
+    POST_EXECUTION,
+    PRE_CUTOVER_SPECS,
+    WEB_ONLY_KINDS,
+    artifact_family_metadata,
+    artifact_spec,
+    cli_artifacts,
+    validate_artifact_registry,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 ENGINE = ROOT / "COLLECT_PARSE_V3_23_0.py"
@@ -34,6 +50,63 @@ ENGINE = ROOT / "COLLECT_PARSE_V3_23_0.py"
 # NOT widened further: a shape tolerating a leading `{}`/`%s` was measured at 23 matches, sweeping
 # in the sidecars, `command_index.json` and 7 `show_*.txt` collection filenames.
 _SUFFIX_SHAPE = re.compile(r"^_[A-Za-z0-9_-]+\.[A-Za-z0-9]{2,8}$")
+
+
+def test_canonical_registry_accounts_for_each_artifact_lifecycle_without_conflating_pir():
+    """The acceptance denominator: 10 CLI outputs + 2 web-only pre-cutover + conditional PIR."""
+    meta = artifact_family_metadata()
+    assert meta == {
+        "pre_cutover": 12,
+        "engine_cli": 10,
+        "assesshub_only_pre_cutover": 2,
+        "conditional_post_execution": 1,
+    }
+    assert len(ARTIFACT_SPECS) == 13
+    assert len(PRE_CUTOVER_SPECS) == 12
+    assert len(CLI_ARTIFACT_SUFFIX) == 10
+    assert WEB_ONLY_KINDS == {"cutover", "nrfu"}
+
+    pir = artifact_spec("pir")
+    assert CONDITIONAL_ARTIFACT_SPECS == (pir,)
+    assert pir.stage == POST_EXECUTION and pir.assesshub_surface == EXECUTION_REPORT
+    assert pir.conditional is True and pir.cli_suffix is None
+    assert "pir" not in {key for key, _name, _role in FAMILY}
+    assert "pir" not in CLI_ARTIFACT_SUFFIX and "pir" not in WEB_ONLY_KINDS
+
+
+def test_registry_validator_is_non_vacuous_and_rejects_orphaned_producers():
+    """Exercise the real validator on chosen counterexamples, not its source text."""
+    with pytest.raises(ValueError, match="empty"):
+        validate_artifact_registry(())
+    with pytest.raises(ValueError, match="duplicate"):
+        validate_artifact_registry((ARTIFACT_SPECS[0], ARTIFACT_SPECS[0]))
+
+    download = ASSESSHUB_DOWNLOAD_SPECS[0]
+    with pytest.raises(ValueError, match="orphaned AssessHub producer"):
+        validate_artifact_registry((replace(download, writer_module=None),))
+
+
+def test_every_assesshub_download_resolves_its_registry_owned_writer():
+    """A catalogue row whose module/symbol cannot resolve is an orphan, even if metadata is complete."""
+    assert ASSESSHUB_DOWNLOAD_SPECS, "no AssessHub writers were checked"
+    for spec in ASSESSHUB_DOWNLOAD_SPECS:
+        module = importlib.import_module(spec.writer_module or "")
+        writer = getattr(module, spec.writer_name or "", None)
+        assert callable(writer), f"{spec.key}: {spec.writer_module}:{spec.writer_name} is not callable"
+
+
+def test_web_catalogue_is_a_direct_view_of_the_canonical_registry():
+    from webapp.backend import deliverables
+
+    assert tuple(deliverables.SPECS.values()) == ASSESSHUB_DOWNLOAD_SPECS
+    assert all(deliverables.SPECS[spec.key] is spec for spec in ASSESSHUB_DOWNLOAD_SPECS)
+    rows = deliverables.catalogue()
+    assert rows, "catalogue reconciliation went vacuous"
+    assert [row["key"] for row in rows] == [spec.key for spec in ASSESSHUB_DOWNLOAD_SPECS]
+    for row, spec in zip(rows, ASSESSHUB_DOWNLOAD_SPECS):
+        assert row["producer"] == spec.producer
+        assert row["engine_cli_member"] is spec.cli_produced
+        assert row["stage"] == spec.stage
 
 
 def _engine_suffixes() -> set:
@@ -100,8 +173,8 @@ def test_every_family_kind_is_classified():
     keys = {key for key, _name, _role in FAMILY}
     mapped = set(CLI_ARTIFACT_SUFFIX)
     assert mapped | set(WEB_ONLY_KINDS) == keys, (
-        f"unclassified family kind(s): {sorted(keys - mapped - set(WEB_ONLY_KINDS))}; add a suffix "
-        f"to CLI_ARTIFACT_SUFFIX or declare it in WEB_ONLY_KINDS")
+        f"unclassified family kind(s): {sorted(keys - mapped - set(WEB_ONLY_KINDS))}; classify the "
+        f"ARTIFACT_SPECS record with a CLI suffix or an AssessHub producing surface")
     assert not (mapped & set(WEB_ONLY_KINDS)), "a kind cannot be both engine-produced and web-only"
 
 
@@ -121,12 +194,12 @@ def test_suffixes_match_what_the_engine_actually_writes():
     assert mapped == in_engine, (
         f"docmeta.CLI_ARTIFACT_SUFFIX and the engine source disagree.\n"
         f"  mapped, but NOT FOUND as a literal in the engine: {sorted(mapped - in_engine)}\n"
-        f"    -> either the writer was removed (drop the map entry), OR it names its output in a\n"
+        f"    -> either the writer was removed (drop the registry entry), OR it names its output in a\n"
         f"       way this reconciler cannot see. Check _suffixes_in's KNOWN GAPS first; if the\n"
-        f"       engine really does write it, DO NOT delete the map entry to go green — widen the\n"
+        f"       engine really does write it, DO NOT delete the registry entry to go green — widen the\n"
         f"       detector or add the file to the scanned set.\n"
         f"  found in the engine but unmapped: {sorted(in_engine - mapped)}\n"
-        f"    -> a new deliverable: add it to CLI_ARTIFACT_SUFFIX (and FAMILY).")
+        f"    -> a new deliverable: add one canonical ARTIFACT_SPECS record with its CLI suffix.")
     assert CLI_ARTIFACT_SUFFIX["workbook"] == ".xlsx"
 
 
@@ -243,7 +316,7 @@ def test_the_failure_message_never_claims_the_engine_does_not_write_it(monkeypat
     assert "not written by the engine" not in msg, \
         f"the reconciler asserts something it cannot know:\n{msg}"
     assert "NOT FOUND as a literal" in msg, "say what was actually observed"
-    assert "DO NOT delete the map entry" in msg, \
+    assert "DO NOT delete the registry entry" in msg, \
         "the message must steer away from the destructive fix"
 
 

@@ -7,10 +7,11 @@ the SAME inputs as cisco_toolkit.fib.trace_fib_path and asserts result equality.
 
 The old "622-pair harness" the fib docstring cites was never git-tracked; this file
 replaces it with a DETERMINISTIC, generated-in-test corpus: a synthetic multi-router
-model whose enumerated (src, dst) grid (~250 pairs) is constructed to exercise every
+model whose enumerated (src, dst) grid plus dedicated edge cases is constructed to exercise every
 coverage-honest status class — reach (direct/multi-hop/ECMP), definitive drop,
-next_hop_not_collected, ambiguous_next_hop, ambiguous_src, loop, cross_family,
-src_host_not_found, bad_address — and a coverage assertion keeps the corpus honest
+next-hop collection/ownership/recursion gaps, malformed host/route evidence,
+ambiguous_next_hop, ambiguous_src, loop, max_hops, no_l3_routing, cross_family,
+src_host_not_found, and bad_address — and a coverage assertion keeps the corpus honest
 (the gate fails if the vocabulary it exercises ever hollows out).
 
 Skips cleanly when node is absent (the always-on regex sentinels still run there);
@@ -37,12 +38,14 @@ def _routes():
     snap['routes'] (connected subnets included), exactly like the real snapshot."""
     return {
         # R1: LAN 10.0.1.0/24, p2p to R2, static to R2's LAN, default via an
-        # UNCOLLECTED upstream (10.0.99.9 owned by nobody) -> next_hop_not_collected.
+        # directly attached but UNCOLLECTED upstream -> next_hop_not_collected;
+        # a non-direct next hop for 203.0.113.0/24 -> recursive_next_hop_not_modeled.
         "R1": [
             {"prefix": "10.0.1.0/24", "source": "connected", "next_hop": "", "out_intf": "Vlan10"},
             {"prefix": "10.0.12.0/30", "source": "connected", "next_hop": "", "out_intf": "Gi0/1"},
             {"prefix": "10.0.2.0/24", "source": "static", "next_hop": "10.0.12.2", "out_intf": ""},
-            {"prefix": "0.0.0.0/0", "source": "static", "next_hop": "10.0.99.9", "out_intf": ""},
+            {"prefix": "203.0.113.0/24", "source": "static", "next_hop": "10.0.99.9", "out_intf": ""},
+            {"prefix": "0.0.0.0/0", "source": "static", "next_hop": "10.0.1.254", "out_intf": ""},
         ],
         # R2: LAN 10.0.2.0/24, p2p back to R1, NO default -> unknown dst = definitive drop.
         "R2": [
@@ -78,6 +81,7 @@ def _routes():
         "R5": [
             {"prefix": "10.0.5.0/24", "source": "connected", "next_hop": "", "out_intf": "Vlan50"},
             {"prefix": "10.0.55.0/30", "source": "connected", "next_hop": "", "out_intf": "Gi0/5"},
+            {"prefix": "10.0.77.0/24", "source": "connected", "next_hop": "", "out_intf": "Gi0/7"},
             {"prefix": "10.0.88.0/24", "source": "static", "next_hop": "10.0.77.7", "out_intf": ""},
             {"prefix": "10.0.90.0/24", "source": "static", "next_hop": "10.0.77.7", "out_intf": ""},
         ],
@@ -97,23 +101,89 @@ def _snap():
     # R1 also owns R6's uplink /30 so the good ECMP leg terminates on a collected router.
     routes["R1"] = routes["R1"] + [
         {"prefix": "10.0.16.0/30", "source": "connected", "next_hop": "", "out_intf": "Gi0/2"}]
-    return {"routes": routes, "routing_neighbors": {}, "l3_forwarding": {}}
+    # Positive interface-address observations bind each recursive adjacency to its
+    # actual next-hop owner. Connected-prefix membership alone is only an inferred
+    # candidate under fib.py's current coverage-honest semantics.
+    interfaces = {
+        "R1": {"Gi0/1": {"svi_ip": "10.0.12.1/30"}, "Gi0/2": {"svi_ip": "10.0.16.1/30"}},
+        "R2": {"Gi0/1": {"svi_ip": "10.0.12.2/30"}},
+        "R3": {"Gi0/3": {"svi_ip": "10.0.34.1/30"}},
+        "R4": {"Gi0/3": {"svi_ip": "10.0.34.2/30"}},
+        "AMB1": {"Vlan77": {"svi_ip": "10.0.77.7/24"}},
+        "AMB2": {"Vlan77": {"svi_ip": "10.0.77.7/24"}},
+    }
+    return {"routes": routes, "interfaces": interfaces, "routing_neighbors": {}, "l3_forwarding": {}}
+
+
+def _deep_chain_snap():
+    """A 33-router exact-owner chain that exhausts trace_fib_path's default 32-hop budget."""
+    routes = {f"D{i}": [] for i in range(33)}
+    interfaces = {f"D{i}": {} for i in range(33)}
+    routes["D0"].append(
+        {"prefix": "10.250.0.0/24", "source": "connected", "next_hop": "", "out_intf": "Vlan250"})
+    for i in range(32):
+        prefix = f"10.200.{i}.0/30"
+        next_hop = f"10.200.{i}.2"
+        routes[f"D{i}"].extend([
+            {"prefix": prefix, "source": "connected", "next_hop": "", "out_intf": f"Gi{i}"},
+            {"prefix": "192.0.2.0/24", "source": "static", "next_hop": next_hop, "out_intf": f"Gi{i}"},
+        ])
+        routes[f"D{i + 1}"].append(
+            {"prefix": prefix, "source": "connected", "next_hop": "", "out_intf": f"Gi{i}"})
+        interfaces[f"D{i + 1}"][f"Gi{i}"] = {"svi_ip": f"{next_hop}/30"}
+    routes["D32"].append(
+        {"prefix": "192.0.2.0/24", "source": "connected", "next_hop": "", "out_intf": "Vlan192"})
+    return {"routes": routes, "interfaces": interfaces}
 
 
 def _cases():
     """The enumerated (src, dst) grid — deterministic, no RNG."""
-    srcs = ["10.0.1.5", "10.0.2.5", "10.0.3.5", "10.0.5.5", "10.0.6.5",
+    srcs = ["10.0.1.5", "10.0.2.5", "10.0.3.5", "10.0.5.5", "10.0.6.5", "10.0.90.5",
             "10.0.77.5",          # shared subnet -> ambiguous_src
             "172.31.9.9"]         # nobody owns -> src_host_not_found
     dsts = ["10.0.1.9", "10.0.2.9", "10.0.3.9", "10.0.5.9", "10.0.6.9", "10.0.7.9",
             "10.0.12.1", "10.0.12.2", "10.0.34.1", "10.0.50.9", "10.0.77.9", "10.0.88.9",
-            "10.0.90.9",
+            "10.0.90.9", "203.0.113.9",
             "8.8.8.8",            # default at R1 (uncollected upstream) / hard drop at R2
             "fd00::1",            # cross_family
             "not-an-ip",          # bad_address
             ""]
     snap = _snap()
-    return [{"snap": snap, "src": s, "dst": d} for s in srcs for d in dsts]
+    cases = [{"snap": snap, "src": s, "dst": d} for s in srcs for d in dsts]
+    cases.extend([
+        {
+            "snap": {"routes": {
+                "BAD-ROUTE": [
+                    {"prefix": "10.210.0.0/24", "source": "connected", "next_hop": "", "out_intf": "Vlan210"},
+                    {"prefix": "198.51.100.0/24", "source": "static", "admin_distance": [],
+                     "next_hop": "10.210.0.2", "out_intf": "Vlan210"},
+                ]}},
+            "src": "10.210.0.1", "dst": "198.51.100.9",
+            "expect_status": "lower_bound:malformed_route_evidence",
+        },
+        {
+            "snap": {"routes": {
+                "": [],
+                "GOOD": [
+                    {"prefix": "10.211.0.0/24", "source": "connected", "next_hop": "", "out_intf": "Vlan211"},
+                ],
+            }},
+            "src": "10.211.0.1", "dst": "10.211.0.2",
+            "expect_status": "lower_bound:malformed_host_identity",
+        },
+        {
+            "snap": {"routes": {"L2": [
+                {"prefix": "10.212.0.0/24", "source": "connected", "next_hop": "", "out_intf": "Vlan212"},
+            ]}},
+            "src": "10.212.0.1", "dst": "8.8.4.4",
+            "expect_status": "lower_bound:no_l3_routing",
+        },
+        {
+            "snap": _deep_chain_snap(), "src": "10.250.0.1", "dst": "192.0.2.9",
+            "expect_status": "lower_bound:max_hops",
+        },
+    ])
+    return cases
 
 
 # ---------------------------------------------------------------- the executed gate
@@ -140,11 +210,16 @@ def test_embedded_fib_port_is_behaviorally_identical_to_python(tmp_path):
     # corpus honesty: the grid must keep exercising the breadth of the vocabulary
     statuses = {r["status"] for r in py_results}
     for must in ("computed:reached", "computed:unreachable",
-                 "lower_bound:next_hop_not_collected", "lower_bound:ambiguous_next_hop",
-                 "lower_bound:ambiguous_src", "lower_bound:loop",
-                 "lower_bound:cross_family", "lower_bound:src_host_not_found",
-                 "lower_bound:bad_address"):
+                 "lower_bound:next_hop_not_collected", "lower_bound:next_hop_owner_not_observed",
+                 "lower_bound:recursive_next_hop_not_modeled", "lower_bound:ambiguous_next_hop",
+                 "lower_bound:ambiguous_src", "lower_bound:loop", "lower_bound:max_hops",
+                 "lower_bound:malformed_host_identity", "lower_bound:malformed_route_evidence",
+                 "lower_bound:no_l3_routing", "lower_bound:cross_family",
+                 "lower_bound:src_host_not_found", "lower_bound:bad_address"):
         assert must in statuses, f"parity corpus no longer exercises {must}: {sorted(statuses)}"
+    for case, result in zip(cases, py_results):
+        if "expect_status" in case:
+            assert result["status"] == case["expect_status"]
 
     # node side — the REAL embedded JS, executed
     driver = tmp_path / "driver.js"

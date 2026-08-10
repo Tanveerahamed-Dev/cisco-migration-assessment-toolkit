@@ -40,7 +40,7 @@
           "id": "cap.outcomes.cross-artifact-consistency",
           "title": "Cross-artifact consistency",
           "state": "current",
-          "current_scope": "The owned deliverable family derives from the same snapshot and uses explicit completeness and manifest controls.",
+          "current_scope": "The twelve-artifact pre-cutover family derives from the same snapshot and uses explicit completeness and manifest controls; the thirteenth lifecycle record is the conditional post-execution PIR and requires an AssessHub execution run.",
           "owner_refs": ["owner.deliverable.family", "owner.manifest", "owner.ssot.engine"]
         },
         {
@@ -485,9 +485,9 @@
           "id": "cap.traffic.l3-gateway-path",
           "title": "Gateway and bounded L3 dependency path",
           "state": "partial",
-          "current_scope": "Gateway, FHRP, routing adjacency, and selected path dependencies are modeled; complete RIB/FIB recursion, ECMP, VRF leaking, and policy routing are incomplete.",
-          "owner_refs": ["owner.analysis", "owner.explorer"],
-          "gap_refs": ["gap.protocol-depth"],
+          "current_scope": "Gateway, FHRP, routing adjacency, and selected path dependencies are modeled. Traffic Assurance adds exact-destination lookup and recursive next-hop closure over a current-run scoped IPv4 RIB plus bounded ECMP consistency, but it is not a device FIB, is not VRF-aware, and abstains for policy-based routing or configured uRPF; complete RIB/FIB, route leaking, and policy-routing behavior remain incomplete.",
+          "owner_refs": ["owner.analysis", "owner.explorer", "owner.traffic.assurance"],
+          "gap_refs": ["gap.protocol-depth", "gap.flow-stateful"],
           "traffic_plane_refs": ["traffic.l3-underlay"]
         },
         {
@@ -501,18 +501,18 @@
         },
         {
           "id": "cap.traffic.acl-l4-simulation",
-          "title": "ACL-oriented L4 simulation",
+          "title": "Bounded synthetic L4 Traffic Assurance",
           "state": "partial",
-          "current_scope": "Explorer can reason about a bounded ACL-oriented L4 lens; it is not an authoritative stateful firewall, NAT, return-path, or session simulator.",
-          "owner_refs": ["owner.explorer"],
-          "gap_refs": ["gap.flow-stateful"],
-          "traffic_plane_refs": ["traffic.stateless-policy"]
+          "current_scope": "For an exact declared IPv4 TCP/UDP tuple, Traffic Assurance composes requested forward and return scoped-RIB paths, stateless interface ACLs, observed per-hop MTU, ECMP consistency, current-run evidence custody, and optionally one synthetic node/site/link failure into one canonical verdict. Unsupported or incomplete semantics abstain. Explorer retains its bounded ACL lens. This is not stateful firewall/session or NAT/PAT reasoning, observed live traffic, application proof, runtime rule-hit evidence, or field validation.",
+          "owner_refs": ["owner.traffic.assurance", "owner.explorer", "owner.analysis"],
+          "gap_refs": ["gap.flow-stateful", "gap.flow-actual-telemetry", "gap.vendor-lab-evidence"],
+          "traffic_plane_refs": ["traffic.l3-underlay", "traffic.stateless-policy"]
         },
         {
           "id": "cap.traffic.actual-flow-telemetry",
           "title": "Actual flow and packet evidence",
           "state": "missing",
-          "current_scope": "No NetFlow/IPFIX/sFlow, packet-capture, session-table, or streaming flow datastore is claimed.",
+          "current_scope": "Synthetic Traffic Assurance verdicts are not observed traffic. No NetFlow/IPFIX/sFlow, packet capture, session-table, active application probe, or streaming flow datastore is claimed.",
           "gap_refs": ["gap.flow-actual-telemetry"],
           "traffic_plane_refs": ["traffic.stateful-policy", "traffic.application-service", "traffic.measured-performance"]
         },
@@ -787,9 +787,9 @@
           "id": "cap.security.identity-ise",
           "title": "Identity, NAC, and Cisco ISE",
           "state": "partial",
-          "current_scope": "ISE node reachability and deployment redundancy detectors exist; authentication journeys, policy sets, posture, guest/BYOD, pxGrid, and authorization outcomes are incomplete.",
-          "owner_refs": ["owner.architecture.coverage"],
-          "gap_refs": ["gap.security-depth", "gap.controller-channels"]
+          "current_scope": "Opt-in read-only ISE Open API and ERS collection feeds node reachability and deployment-redundancy detectors; authentication journeys, policy sets, posture, guest/BYOD, pxGrid, and authorization outcomes are incomplete.",
+          "owner_refs": ["owner.rest.collection", "owner.architecture.coverage"],
+          "gap_refs": ["gap.security-depth", "gap.vendor-lab-evidence"]
         },
         {
           "id": "cap.security.lifecycle-authority",
@@ -1036,7 +1036,7 @@
           "state": "partial",
           "current_scope": "Opt-in authenticated HTTPS collection writes selected APIC class JSON for offline parsing and bounded fabric/fault/enforcement detectors.",
           "owner_refs": ["owner.rest.collection", "owner.architecture.coverage"],
-          "gap_refs": ["gap.controller-channels", "gap.vendor-lab-evidence"]
+          "gap_refs": ["gap.enterprise-breadth", "gap.vendor-lab-evidence"]
         },
         {
           "id": "cap.vendor.cisco-vmanage",
@@ -1044,23 +1044,23 @@
           "state": "partial",
           "current_scope": "Opt-in authenticated HTTPS collection writes selected device/control/counter JSON for offline parsing and bounded SD-WAN detectors.",
           "owner_refs": ["owner.rest.collection", "owner.architecture.coverage"],
-          "gap_refs": ["gap.controller-channels", "gap.vendor-lab-evidence"]
+          "gap_refs": ["gap.enterprise-breadth", "gap.vendor-lab-evidence"]
         },
         {
           "id": "cap.vendor.cisco-ise",
           "title": "Cisco ISE",
           "state": "partial",
-          "current_scope": "The architecture registry includes selected JSON-based deployment reachability and redundancy detectors; no live collector or policy-transaction coverage is claimed here.",
-          "owner_refs": ["owner.architecture.coverage"],
-          "gap_refs": ["gap.controller-channels", "gap.vendor-lab-evidence"]
+          "current_scope": "An opt-in HTTPS collector reads ISE Open API and ERS deployment-node evidence for selected reachability and redundancy detectors; policy-transaction coverage and release-tagged lab validation remain incomplete.",
+          "owner_refs": ["owner.rest.collection", "owner.architecture.coverage"],
+          "gap_refs": ["gap.security-depth", "gap.vendor-lab-evidence"]
         },
         {
           "id": "cap.vendor.cisco-fmc",
           "title": "Cisco FMC-managed Secure Firewall",
           "state": "partial",
-          "current_scope": "The architecture registry includes selected JSON-based HA, connection, deployment, manager, and version detectors; full policy and live collection are incomplete.",
-          "owner_refs": ["owner.architecture.coverage"],
-          "gap_refs": ["gap.controller-channels", "gap.flow-stateful"]
+          "current_scope": "An opt-in HTTPS collector reads FMC-managed device, HA, deployable-state, manager-HA, and version evidence for selected detectors; full policy, NAT, session, and stateful-flow reasoning remain incomplete.",
+          "owner_refs": ["owner.rest.collection", "owner.architecture.coverage"],
+          "gap_refs": ["gap.flow-stateful", "gap.vendor-lab-evidence"]
         },
         {
           "id": "cap.vendor.cisco-catalyst-center",
@@ -1182,7 +1182,7 @@
           "id": "cap.channel.controller-rest",
           "title": "Controller REST collection",
           "state": "partial",
-          "current_scope": "APIC and vManage have opt-in HTTPS collectors with same-host/no-downgrade redirect controls; ISE, FMC, cloud, and other controllers lack equivalent live channels.",
+          "current_scope": "APIC, vManage, ISE, and FMC have opt-in HTTPS evidence collectors with bounded authentication, credential, pagination, and same-origin/no-downgrade controls appropriate to each API; cloud, WLAN, and other controllers lack equivalent live channels.",
           "owner_refs": ["owner.rest.collection", "owner.architecture.coverage"],
           "gap_refs": ["gap.controller-channels"]
         },
@@ -1251,10 +1251,9 @@
         {
           "id": "cap.gui.master-reference",
           "title": "Static interactive master reference",
-          "state": "partial",
-          "current_scope": "The static surface and its no-runtime-data contract exist; the comprehensive catalog, horizon, labs, gap, and opportunity navigation are being integrated from this content layer.",
-          "owner_refs": ["owner.reference.contract"],
-          "gap_refs": ["gap.catalog-ui"]
+          "state": "current",
+          "current_scope": "The static, no-runtime-data surface ships owner, system, trace, graph, capability, gap, horizon, lab, progress, source, and export workspaces from the repository-owned content layer.",
+          "owner_refs": ["owner.reference.contract", "owner.reference.capability-ui"]
         },
         {
           "id": "cap.gui.evidence-drilldown",
@@ -1276,7 +1275,7 @@
           "id": "cap.gui.performance",
           "title": "Large-estate UI performance and progressive disclosure",
           "state": "partial",
-          "current_scope": "Explorer includes decluttering and multiple views, but the master reference lacks a declared performance budget and large-catalog benchmark.",
+          "current_scope": "Explorer includes decluttering and multiple views; the master reference enforces landing HTML, initial JavaScript, and CSS budgets and lazy-loads dense source and graph projections, but p95 interaction benchmarks across representative large estates remain incomplete.",
           "owner_refs": ["owner.explorer", "owner.reference.contract"],
           "gap_refs": ["gap.accessibility-performance"]
         },
@@ -1327,6 +1326,7 @@
         {"id": "cap.artifact.nrfu", "title": "NRFU / Acceptance Test Plan", "state": "current", "current_scope": "AssessHub-rendered DOCX family member; intentionally not part of a complete offline CLI set.", "owner_refs": ["owner.deliverable.family", "owner.web.trust"]},
         {"id": "cap.artifact.opshandbook", "title": "Operations Handbook", "state": "current", "current_scope": "CLI-produced DOCX family member.", "owner_refs": ["owner.deliverable.family"]},
         {"id": "cap.artifact.deck", "title": "Executive Presentation Deck", "state": "current", "current_scope": "CLI-produced PPTX family member.", "owner_refs": ["owner.deliverable.family"]},
+        {"id": "cap.artifact.pir", "title": "Conditional Post-Implementation Review", "state": "current", "current_scope": "AssessHub execution-produced DOCX lifecycle record generated only when an execution run exists; it is conditional post-execution and intentionally outside both the twelve-artifact pre-cutover family and the complete engine CLI denominator.", "owner_refs": ["owner.deliverable.family", "owner.web.trust"]},
         {
           "id": "cap.artifact.snapshot",
           "title": "Canonical snapshot JSON",
@@ -1352,7 +1352,7 @@
           "id": "cap.artifact.channel-parity",
           "title": "CLI, web, portable, and reference-channel parity",
           "state": "partial",
-          "current_scope": "The family explicitly identifies CLI and web-only producers; capability and evidence parity across every surface is not complete.",
+          "current_scope": "The artifact lifecycle explicitly identifies engine CLI, AssessHub snapshot, and conditional AssessHub execution producers; capability and evidence parity across every surface is not complete.",
           "owner_refs": ["owner.deliverable.family", "owner.operating.doctrine"],
           "gap_refs": ["gap.artifact-channel-parity"]
         },
@@ -1387,7 +1387,7 @@
           "id": "cap.engine.deterministic-artifacts",
           "title": "Deterministic artifact generation",
           "state": "current",
-          "current_scope": "Artifact family, metadata, manifests, structural validation, and reproducible release controls have named owners.",
+          "current_scope": "Artifact lifecycle, metadata, manifests, structural validation, and reproducible release controls have named owners.",
           "owner_refs": ["owner.deliverable.family", "owner.manifest", "owner.distribution"]
         },
         {
