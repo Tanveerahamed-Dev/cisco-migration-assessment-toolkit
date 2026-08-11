@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import copy
-import json
+import binascii
+import gzip
 import hashlib
+import json
 import os
+import struct
 import subprocess
 import sys
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 from unittest import mock
 
@@ -16,9 +20,18 @@ if str(MASTER_REFERENCE) not in sys.path:
     sys.path.insert(0, str(MASTER_REFERENCE))
 
 from compiler import CompilationError, compile_repository  # noqa: E402
+from compiler import binary_review as binary_review_module  # noqa: E402
 from compiler import compiler as compiler_module  # noqa: E402
 from compiler import graphify as graphify_module  # noqa: E402
 from compiler.graphify import GraphifyFailure, project_graphify  # noqa: E402
+from compiler.binary_review import (  # noqa: E402
+    BinaryReviewFailure,
+    binary_set_digest,
+    evaluate_tracked_binary_review,
+    inspect_gzip_tsv,
+    inspect_png,
+    parse_tracked_binary_review,
+)
 from compiler.model import canonical_json, stable_id  # noqa: E402
 from compiler.policy import classify_file  # noqa: E402
 from compiler.schema_validation import SchemaValidationError, validate_compiler_output  # noqa: E402
@@ -102,6 +115,102 @@ def output_bytes(output: Path) -> dict[str, bytes]:
     return {
         path.relative_to(output).as_posix(): path.read_bytes() for path in sorted(output.rglob("*")) if path.is_file()
     }
+
+
+def png_chunk(kind: bytes, payload: bytes) -> bytes:
+    return (
+        struct.pack(">I", len(payload))
+        + kind
+        + payload
+        + struct.pack(">I", binascii.crc32(kind + payload) & 0xFFFFFFFF)
+    )
+
+
+def one_pixel_png(*, text_payload: bytes | None = None, idat_suffix: bytes = b"") -> bytes:
+    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0)
+    scanline = b"\x00\x00\x00\x00\xff"
+    chunks = [png_chunk(b"IHDR", ihdr)]
+    if text_payload is not None:
+        chunks.append(png_chunk(b"tEXt", b"Comment\0" + text_payload))
+    chunks.extend(
+        [
+            png_chunk(b"IDAT", zlib.compress(scanline) + idat_suffix),
+            png_chunk(b"IEND", b""),
+        ]
+    )
+    return b"\x89PNG\r\n\x1a\n" + b"".join(chunks)
+
+
+def tracked_binary_receipt(
+    root: Path,
+    review_basis_commit: str,
+    payloads: dict[str, bytes],
+) -> dict[str, object]:
+    records: list[dict[str, object]] = []
+    for path, raw in sorted(payloads.items()):
+        binary_format = "png" if path.endswith(".png") else "gzip_tsv"
+        evidence = inspect_png(raw) if binary_format == "png" else inspect_gzip_tsv(path, raw)
+        digest = hashlib.sha256(raw).hexdigest()
+        references = (
+            [
+                f"decoded-rgba-sha256:{hashlib.sha256(bytes((0, 0, 0, 255))).hexdigest()}",
+                "privacy-scan:forbidden-local-generic-identities",
+                "visual-review:exact-rendered-pixels",
+            ]
+            if binary_format == "png"
+            else [
+                f"decoded-tsv-sha256:{evidence['uncompressed_sha256']}",
+                "privacy-scan:forbidden-local-generic-identities",
+                "registry-validation:retained-source-and-runtime-loader",
+            ]
+        )
+        records.append(
+            {
+                "path": path,
+                "git_blob_oid": git(root, "rev-parse", f"{review_basis_commit}:{path}"),
+                "raw_sha256": digest,
+                "raw_bytes": len(raw),
+                "media_type": "image/png" if binary_format == "png" else "application/gzip",
+                "format": binary_format,
+                "automated_format_evidence": evidence,
+                "independent_review": {
+                    "reviewer_kind": "independent_agent",
+                    "reviewer_role": "binary_privacy_verifier",
+                    "independent_from_proposer": True,
+                    "review_scope": (
+                        "rendered_pixels_and_context" if binary_format == "png" else "decoded_tsv_rows_and_context"
+                    ),
+                    "evidence_references": sorted(references),
+                    "verdict": "pass",
+                },
+            }
+        )
+    return {
+        "schema_version": "tracked-binary-review/1",
+        "receipt_kind": "tracked_repository_binary_privacy_review",
+        "review_basis_commit": review_basis_commit,
+        "binary_set_digest": binary_set_digest(records),
+        "records": records,
+    }
+
+
+def commit_binary_receipt(
+    root: Path,
+    review_basis_commit: str,
+    payloads: dict[str, bytes],
+    mutate=None,
+) -> dict[str, object]:
+    receipt = tracked_binary_receipt(root, review_basis_commit, payloads)
+    if mutate is not None:
+        mutate(receipt)
+    write(
+        root,
+        "master-reference/governance/tracked-binary-review.json",
+        json.dumps(receipt, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+    )
+    git(root, "add", "master-reference/governance/tracked-binary-review.json")
+    git(root, "commit", "-qm", "binary review receipt")
+    return receipt
 
 
 class CompilerTests(unittest.TestCase):
@@ -1827,6 +1936,347 @@ class CompilerTests(unittest.TestCase):
                 if item["name"] == "every_binary_has_format_aware_privacy_review"
             )
             self.assertFalse(gate["passed"])
+
+    def test_exact_tracked_binary_review_stays_pending_authentication_and_keeps_payload_withheld(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            repository = base / "repo"
+            payload = one_pixel_png()
+            basis = initialize_repository(repository, {"docs/card.png": payload})
+            commit_binary_receipt(repository, basis, {"docs/card.png": payload})
+            output = base / "output"
+
+            compile_repository(repository, output)
+            validate_compiler_output(output)
+
+            file_record = next(row for row in group_records(output, "files") if row["path"] == "docs/card.png")
+            binary = group_records(output, "binaries")[0]
+            ledger = json.loads((output / "completeness.json").read_text(encoding="utf-8"))
+            scan = ledger["privacy"]["binary_payload_scan"]
+            gate = next(
+                item
+                for item in ledger["acceptance_gates"]
+                if item["name"] == "every_binary_has_format_aware_privacy_review"
+            )
+
+            self.assertEqual(scan["status"], "incomplete")
+            self.assertEqual(scan["expected_files"], 1)
+            self.assertEqual(scan["receipt_records"], 1)
+            self.assertEqual(scan["identity_matched_files"], 1)
+            self.assertEqual(scan["automated_format_passed_files"], 1)
+            self.assertEqual(scan["automated_format_pending_files"], 0)
+            self.assertEqual(scan["claimed_independent_contextual_passed_files"], 1)
+            self.assertEqual(scan["independent_contextual_passed_files"], 0)
+            self.assertEqual(scan["accepted_files"], 0)
+            self.assertEqual(scan["format_counts"], {"gzip_tsv": 0, "png": 1, "unsupported": 0})
+            self.assertEqual(scan["error_codes"], ["binary_review_reviewer_authentication_pending"])
+            self.assertTrue(scan["review_basis_is_ancestor"])
+            self.assertEqual(
+                scan["reviewer_custody"],
+                {
+                    "status": "pending_trusted_external_attestation",
+                    "required_mechanism": "detached_signature_with_trusted_public_key",
+                    "trusted_public_key_configured": False,
+                    "detached_signature_present": False,
+                    "detached_signature_verified": False,
+                    "authenticated_reviewer_kind": None,
+                    "authenticated_files": 0,
+                    "receipt_claims_trusted": False,
+                },
+            )
+            self.assertFalse(gate["passed"])
+            self.assertEqual(gate["expected"], 1)
+            self.assertEqual(gate["actual"], 0)
+            self.assertEqual(file_record["privacy_exposure"], "metadata_only")
+            self.assertIsNone(file_record["content_digest"])
+            self.assertIsNone(binary["content_digest"])
+            self.assertEqual(binary["inspection_mode"], "git_object_digest_and_metadata_only")
+            self.assertFalse(any(row["path"] == "docs/card.png" for row in group_records(output, "source_text")))
+            self.assertNotIn(payload, b"".join(output_bytes(output).values()))
+
+            other_gates = [item for item in ledger["acceptance_gates"] if item["name"] != gate["name"]]
+            self.assertTrue(any(item["passed"] is False for item in other_gates))
+
+    def test_tracked_binary_review_owner_is_exact_current_46_member_denominator(self) -> None:
+        repository = MASTER_REFERENCE.parent
+        receipt_path = repository / binary_review_module.RECEIPT_PATH
+        receipt_raw = receipt_path.read_bytes()
+        receipt = parse_tracked_binary_review(receipt_raw)
+        tracked_paths = [
+            value.decode("utf-8", errors="strict")
+            for value in git_bytes(repository, "ls-tree", "-r", "--name-only", "-z", "HEAD").split(b"\0")
+            if value
+        ]
+        binary_paths = sorted(path for path in tracked_paths if path.lower().endswith((".png", ".tsv.gz")))
+        descriptors = []
+        for path in binary_paths:
+            descriptors.append(
+                {
+                    "path": path,
+                    "git_blob_oid": git(repository, "rev-parse", f"HEAD:{path}"),
+                    "media_type": "image/png" if path.lower().endswith(".png") else "application/gzip",
+                    "raw": git_bytes(repository, "cat-file", "blob", f"HEAD:{path}"),
+                }
+            )
+
+        summary = evaluate_tracked_binary_review(
+            receipt_raw,
+            descriptors,
+            receipt_git_blob_oid="0" * 40,
+            review_basis_is_ancestor=lambda basis: git(repository, "merge-base", "--is-ancestor", basis, "HEAD") == "",
+        )
+
+        self.assertEqual([row["path"] for row in receipt["records"]], binary_paths)
+        self.assertEqual(len(binary_paths), 46)
+        self.assertEqual(summary["format_counts"], {"gzip_tsv": 2, "png": 44, "unsupported": 0})
+        self.assertEqual(summary["status"], "incomplete")
+        self.assertEqual(summary["identity_matched_files"], 46)
+        self.assertEqual(summary["automated_format_passed_files"], 44)
+        self.assertEqual(summary["automated_format_pending_files"], 2)
+        self.assertEqual(summary["claimed_independent_contextual_passed_files"], 46)
+        self.assertEqual(summary["independent_contextual_passed_files"], 0)
+        self.assertEqual(summary["accepted_files"], 0)
+        self.assertEqual(
+            summary["error_codes"],
+            [
+                "binary_review_automated_format_pending_unsupported_png_ancillary",
+                "binary_review_reviewer_authentication_pending",
+            ],
+        )
+
+    def test_binary_review_join_rejects_missing_orphan_duplicate_wrong_stale_and_malformed_rows(self) -> None:
+        payload = one_pixel_png()
+        digest = hashlib.sha256(payload).hexdigest()
+        base_record = {
+            "path": "docs/card.png",
+            "git_blob_oid": "1" * 40,
+            "raw_sha256": digest,
+            "raw_bytes": len(payload),
+            "media_type": "image/png",
+            "format": "png",
+            "automated_format_evidence": inspect_png(payload),
+            "independent_review": {
+                "reviewer_kind": "independent_agent",
+                "reviewer_role": "binary_privacy_verifier",
+                "independent_from_proposer": True,
+                "review_scope": "rendered_pixels_and_context",
+                "evidence_references": [
+                    f"decoded-rgba-sha256:{hashlib.sha256(bytes((0, 0, 0, 255))).hexdigest()}",
+                    "privacy-scan:forbidden-local-generic-identities",
+                    "visual-review:exact-rendered-pixels",
+                ],
+                "verdict": "pass",
+            },
+        }
+        descriptors = [
+            {
+                "path": base_record["path"],
+                "git_blob_oid": base_record["git_blob_oid"],
+                "media_type": base_record["media_type"],
+                "raw": payload,
+            }
+        ]
+
+        def receipt(records: list[dict[str, object]], *, basis: str = "2" * 40) -> dict[str, object]:
+            return {
+                "schema_version": "tracked-binary-review/1",
+                "receipt_kind": "tracked_repository_binary_privacy_review",
+                "review_basis_commit": basis,
+                "binary_set_digest": binary_set_digest(records) if records else "0" * 64,
+                "records": records,
+            }
+
+        orphan = copy.deepcopy(base_record)
+        orphan["path"] = "docs/orphan.png"
+        orphan["git_blob_oid"] = "3" * 40
+        cases: list[tuple[str, dict[str, object], bool, str]] = [
+            (
+                "missing",
+                receipt([]),
+                True,
+                "binary_review_receipt_malformed",
+            ),
+            (
+                "orphan",
+                receipt(sorted([copy.deepcopy(base_record), orphan], key=lambda row: str(row["path"]))),
+                True,
+                "binary_review_receipt_membership_mismatch",
+            ),
+            (
+                "duplicate",
+                receipt([copy.deepcopy(base_record), copy.deepcopy(base_record)]),
+                True,
+                "binary_review_receipt_malformed",
+            ),
+            (
+                "wrong_blob",
+                receipt([{**copy.deepcopy(base_record), "git_blob_oid": "4" * 40}]),
+                True,
+                "binary_review_receipt_identity_mismatch",
+            ),
+            (
+                "stale_basis",
+                receipt([copy.deepcopy(base_record)]),
+                False,
+                "binary_review_receipt_review_basis_not_ancestor",
+            ),
+            (
+                "wrong_evidence",
+                receipt(
+                    [
+                        {
+                            **copy.deepcopy(base_record),
+                            "automated_format_evidence": {
+                                **copy.deepcopy(base_record["automated_format_evidence"]),
+                                "width": 2,
+                            },
+                        }
+                    ]
+                ),
+                True,
+                "binary_review_receipt_format_evidence_mismatch",
+            ),
+            (
+                "context_block",
+                receipt(
+                    [
+                        {
+                            **copy.deepcopy(base_record),
+                            "independent_review": {
+                                **copy.deepcopy(base_record["independent_review"]),
+                                "verdict": "block",
+                            },
+                        }
+                    ]
+                ),
+                True,
+                "binary_review_receipt_independent_verdict_not_passed",
+            ),
+        ]
+        for name, candidate, ancestor, expected_code in cases:
+            with self.subTest(name=name):
+                raw = canonical_json(candidate)
+                summary = evaluate_tracked_binary_review(
+                    raw,
+                    descriptors,
+                    receipt_git_blob_oid="5" * 40,
+                    review_basis_is_ancestor=lambda _basis, answer=ancestor: answer,
+                )
+                self.assertNotEqual(summary["status"], "passed")
+                self.assertIn(expected_code, summary["error_codes"])
+                self.assertEqual(summary["accepted_files"], 0)
+
+        for invented_reference in (
+            "attestation:invented",
+            "attestation:c:/users/foreign-owner/private",
+            "decoded-tsv-sha256:" + ("0" * 64),
+        ):
+            invented_claim = copy.deepcopy(base_record)
+            invented_claim["independent_review"]["evidence_references"] = [invented_reference]
+            invented_raw = canonical_json(receipt([invented_claim]))
+            with self.subTest(reference=invented_reference), self.assertRaises(BinaryReviewFailure) as caught:
+                parse_tracked_binary_review(invented_raw)
+            self.assertEqual(str(caught.exception), "binary_review_receipt_malformed")
+            self.assertNotIn(invented_reference, str(caught.exception))
+
+        marker = "C:/Users/ConfidentialOwner/Desktop/private"
+        malformed = canonical_json({**receipt([copy.deepcopy(base_record)]), marker: marker})
+        with self.assertRaises(BinaryReviewFailure) as caught:
+            parse_tracked_binary_review(malformed)
+        self.assertEqual(str(caught.exception), "binary_review_receipt_malformed")
+        self.assertNotIn(marker, str(caught.exception))
+
+    def test_png_format_review_rejects_crc_order_framing_trailing_and_secret_metadata(self) -> None:
+        valid = one_pixel_png()
+        self.assertEqual(inspect_png(valid)["decoded_scanline_bytes"], 5)
+
+        def ancillary_png(kind: bytes, data: bytes) -> bytes:
+            ihdr = png_chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
+            idat = png_chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\x00\xff"))
+            return b"\x89PNG\r\n\x1a\n" + ihdr + png_chunk(kind, data) + idat + png_chunk(b"IEND", b"")
+
+        bad_crc = bytearray(valid)
+        bad_crc[-1] ^= 1
+        bad_order = (
+            b"\x89PNG\r\n\x1a\n"
+            + png_chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+            + png_chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\x00"))
+            + png_chunk(b"PLTE", b"\x00\x00\x00")
+            + png_chunk(b"IEND", b"")
+        )
+        secret = ("-----BEGIN " + "PRIVATE KEY-----").encode()
+        invalid = {
+            "crc": bytes(bad_crc),
+            "order": bad_order,
+            "idat_multi_stream": one_pixel_png(idat_suffix=zlib.compress(b"extra")),
+            "trailing": valid + b"trailing",
+        }
+        for name, candidate in invalid.items():
+            with self.subTest(name=name), self.assertRaises(BinaryReviewFailure) as caught:
+                inspect_png(candidate)
+            self.assertEqual(str(caught.exception), "binary_format_invalid")
+            self.assertNotIn(secret.decode(), str(caught.exception))
+
+        unsupported_channels = {
+            "text": one_pixel_png(text_payload=secret),
+            "compressed_iccp": ancillary_png(b"iCCP", b"profile\0\0" + zlib.compress(secret)),
+            "exif": ancillary_png(b"eXIf", b"II*\x00" + secret),
+            "private_unknown_vpag": ancillary_png(b"vpAg", secret),
+        }
+        for name, candidate in unsupported_channels.items():
+            with self.subTest(name=name), self.assertRaises(BinaryReviewFailure) as caught:
+                inspect_png(candidate)
+            self.assertEqual(
+                str(caught.exception),
+                "binary_review_automated_format_pending_unsupported_png_ancillary",
+            )
+            self.assertNotIn(secret.decode(), str(caught.exception))
+
+    def test_gzip_tsv_review_rejects_multiple_members_trailing_crc_bomb_schema_utf8_and_secret(self) -> None:
+        payload = b"00000C\t24\tExample Vendor\n"
+        valid = gzip.compress(payload, mtime=0)
+        evidence = inspect_gzip_tsv("cisco_toolkit/data/oui_registry.tsv.gz", valid)
+        self.assertEqual(evidence["row_count"], 1)
+        self.assertEqual(evidence["tsv_header"], list(binary_review_module.OUI_TSV_HEADER))
+
+        wrong_crc = bytearray(valid)
+        wrong_crc[-8] ^= 1
+        secret = ("-----BEGIN " + "PRIVATE KEY-----").encode()
+        optional_header = bytearray(valid[:10])
+        optional_header[3] = 0x1E
+        optional_fields = struct.pack("<H", len(secret)) + secret + secret + b"\0" + secret + b"\0"
+        optional_prefix = bytes(optional_header) + optional_fields
+        combined_optional_metadata = (
+            optional_prefix + struct.pack("<H", binascii.crc32(optional_prefix) & 0xFFFF) + valid[10:]
+        )
+        local_identity = b"C:\\Users\\foreign-owner\\private"
+        invalid = {
+            "multiple_members": valid + valid,
+            "trailing": valid + b"x",
+            "crc": bytes(wrong_crc),
+            "schema": gzip.compress(b"not\ta\tvalid\textra\n", mtime=0),
+            "overlay_schema": gzip.compress(b"80\ttcp\thttp\t[]\t\t0\t\tiana\tiana\t\tunowned\tnone\n", mtime=0),
+            "utf8": gzip.compress(b"00000C\t24\t\xff\n", mtime=0),
+            "secret": gzip.compress(b"00000C\t24\t" + secret + b"\n", mtime=0),
+            "combined_optional_metadata": combined_optional_metadata,
+            "generic_local_identity": gzip.compress(b"00000C\t24\t" + local_identity + b"\n", mtime=0),
+        }
+        for name, candidate in invalid.items():
+            with self.subTest(name=name), self.assertRaises(BinaryReviewFailure) as caught:
+                inspect_gzip_tsv("cisco_toolkit/data/oui_registry.tsv.gz", candidate)
+            self.assertEqual(str(caught.exception), "binary_format_invalid")
+            self.assertNotIn(secret.decode(), str(caught.exception))
+            self.assertNotIn(local_identity.decode(), str(caught.exception))
+
+        with (
+            mock.patch.object(binary_review_module, "MAX_GZIP_DECOMPRESSED_BYTES", 16),
+            self.assertRaises(BinaryReviewFailure) as caught,
+        ):
+            inspect_gzip_tsv(
+                "cisco_toolkit/data/oui_registry.tsv.gz",
+                gzip.compress(b"00000C\t24\t" + (b"A" * 64) + b"\n", mtime=0),
+            )
+        self.assertEqual(str(caught.exception), "binary_format_invalid")
 
     def test_high_confidence_secret_material_fails_without_retaining_value(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

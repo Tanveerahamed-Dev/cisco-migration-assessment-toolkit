@@ -7,6 +7,7 @@ never retained in a ledger, exception, or generated artifact.
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any
 
 
@@ -18,6 +19,36 @@ FORBIDDEN_CONTENT_RULES = (
     ("slack_access_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{20,}\b")),
     ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
 )
+
+_GENERIC_WINDOWS_USER_HOME = re.compile(
+    r"(?:^|[^a-z0-9])(?:[a-z]:|[\\/]{2,}[^\\/\r\n]+)[\\/]+users[\\/]+[^\\/\x00-\x1f<>:\"|?*']{1,128}(?=[\\/]|$|[\"'])"
+)
+_GENERIC_POSIX_USER_HOME = re.compile(r"(?:^|[^a-z0-9])/(?:home|users)/[^/\x00-\x1f\"']{1,128}(?=/|$|[\"'])")
+_GENERIC_COLLAPSED_USER_HOME = re.compile(
+    r"(?:^|_)(?:[a-z]_users|home|users)_[a-z0-9][a-z0-9_]{0,127}_"
+    r"(?:appdata|build|cache|checkout|checkouts|code|config|desktop|documents|downloads|git|onedrive|project|projects|repo|repos|source|src|work|workspace)(?:_|$)"
+)
+
+
+def collapsed_ascii_identity(value: str) -> str:
+    """Normalize a potential local identity without retaining it in findings."""
+
+    folded = unicodedata.normalize("NFKC", value).casefold()
+    return re.sub(r"[^a-z0-9]+", "_", folded).strip("_")
+
+
+def generic_local_identity_rule(value: str) -> str | None:
+    """Return a categorical generic home-path rule without echoing the value."""
+
+    folded = unicodedata.normalize("NFKC", value).casefold()
+    collapsed = collapsed_ascii_identity(folded)
+    if _GENERIC_WINDOWS_USER_HOME.search(folded):
+        return "generic_windows_user_home_path"
+    if _GENERIC_POSIX_USER_HOME.search(folded):
+        return "generic_posix_user_home_path"
+    if _GENERIC_COLLAPSED_USER_HOME.search(collapsed):
+        return "generic_collapsed_user_home_path"
+    return None
 
 
 def forbidden_content_findings(path: str, text: str) -> list[dict[str, Any]]:

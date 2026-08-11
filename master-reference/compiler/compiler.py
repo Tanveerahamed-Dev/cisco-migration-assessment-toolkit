@@ -27,6 +27,11 @@ from atlas_privacy import FORBIDDEN_CONTENT_RULES, forbidden_content_findings
 from governance.architecture import build_architecture_conformance, load_contract
 from governance.policy import validate_claims
 
+from .binary_review import (
+    RECEIPT_PATH as BINARY_REVIEW_RECEIPT_PATH,
+    evaluate_tracked_binary_review,
+    unavailable_summary as unavailable_binary_review_summary,
+)
 from .graphify import (
     GRAPHIFY_DIRTY_PREVIEW_REASON,
     GraphifyFailure,
@@ -164,6 +169,29 @@ def _git(root: Path, *arguments: str) -> bytes:
         message = process.stderr.decode("utf-8", errors="replace").strip().replace("\r", " ").replace("\n", " ")
         raise CompilationError([f"git {' '.join(arguments)} failed ({process.returncode}): {message[:500]}"])
     return process.stdout
+
+
+def _git_is_ancestor(root: Path, ancestor: str, descendant: str) -> bool:
+    """Check receipt ancestry without copying Git diagnostics into output."""
+
+    environment = os.environ.copy()
+    environment["GIT_OPTIONAL_LOCKS"] = "0"
+    try:
+        process = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+            cwd=root,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError):
+        raise RuntimeError("binary review ancestry check failed") from None
+    if process.returncode not in {0, 1}:
+        raise RuntimeError("binary review ancestry check failed")
+    return process.returncode == 0
 
 
 def _decode_git_path(value: bytes) -> str:
@@ -1569,6 +1597,7 @@ def _ledger(
     fatal_errors: list[str],
     graphify: dict[str, Any],
     architecture_conformance: dict[str, Any],
+    binary_review: dict[str, Any],
     forbidden_content_findings: list[dict[str, Any]],
 ) -> dict[str, Any]:
     parse_status = Counter(str(row.get("parse_status")) for row in file_records)
@@ -1985,11 +2014,14 @@ def _ledger(
                 "matched_values_retained": False,
             },
             "binary_payload_scan": {
-                "status": "not_performed_inventory_and_digest_only",
+                **binary_review,
                 "inventory_only_files": binary_inventory_only,
-                "payload_bytes_embedded_in_projection": False,
-                "format_aware_or_manual_review_receipt": "absent",
-                "claim": "Binary artifacts are inventoried by type, size, and digest; this compiler does not claim decoded-content privacy review.",
+                "format_aware_or_manual_review_receipt": binary_review["status"],
+                "claim": (
+                    "Tracked binary payload bytes remain withheld from the projection. Identity, automated-format, "
+                    "and claimed contextual evidence are reported separately; reviewer claims cannot close the "
+                    "semantic gate without a verified detached attestation under a trusted external public key."
+                ),
             },
         },
         "invariants": invariants,
@@ -2039,9 +2071,26 @@ def _ledger(
             },
             {
                 "name": "every_binary_has_format_aware_privacy_review",
-                "passed": binary_inventory_only == 0,
+                "passed": bool(
+                    binary_inventory_only > 0
+                    and binary_review.get("status") == "passed"
+                    and binary_review.get("expected_files") == binary_inventory_only
+                    and binary_review.get("receipt_records") == binary_inventory_only
+                    and binary_review.get("identity_matched_files") == binary_inventory_only
+                    and binary_review.get("automated_format_passed_files") == binary_inventory_only
+                    and binary_review.get("independent_contextual_passed_files") == binary_inventory_only
+                    and binary_review.get("accepted_files") == binary_inventory_only
+                    and isinstance(binary_review.get("reviewer_custody"), dict)
+                    and binary_review["reviewer_custody"].get("status") == "authenticated"
+                    and binary_review["reviewer_custody"].get("trusted_public_key_configured") is True
+                    and binary_review["reviewer_custody"].get("detached_signature_verified") is True
+                    and binary_review["reviewer_custody"].get("authenticated_files") == binary_inventory_only
+                    and binary_review["reviewer_custody"].get("receipt_claims_trusted") is True
+                    and binary_review.get("payload_bytes_embedded_in_projection") is False
+                    and not binary_review.get("error_codes")
+                ),
                 "expected": binary_inventory_only,
-                "actual": 0,
+                "actual": int(binary_review.get("accepted_files") or 0),
             },
             {
                 "name": "runtime_trace_evidence_joined_to_source_records",
@@ -2225,6 +2274,7 @@ def compile_repository(
     snapshot_digests: dict[str, str] = {}
     ts_inputs: list[dict[str, str]] = []
     privacy_findings: list[dict[str, Any]] = []
+    binary_review: dict[str, Any] = unavailable_binary_review_summary([], status="absent")
 
     try:
         source_commit = _git(root, "rev-parse", "HEAD").decode("ascii", errors="strict").strip()
@@ -2274,6 +2324,53 @@ def compile_repository(
             )
         )
 
+        binary_entries = [
+            entry
+            for entry in entries
+            if classifications[entry.path]["language"] == "binary"
+            and not classifications[entry.path]["classification_errors"]
+            and entry.mode != "160000"
+        ]
+        binary_descriptors = [
+            {
+                "path": entry.path,
+                "git_blob_oid": entry.blob_oid,
+                "media_type": classifications[entry.path]["media_type"],
+            }
+            for entry in binary_entries
+        ]
+        receipt_entry = next((entry for entry in entries if entry.path == BINARY_REVIEW_RECEIPT_PATH), None)
+        if dirty:
+            binary_review = unavailable_binary_review_summary(
+                binary_descriptors,
+                status="dirty_preview_not_eligible",
+                receipt_git_blob_oid=receipt_entry.blob_oid if receipt_entry is not None else None,
+            )
+        elif receipt_entry is None:
+            binary_review = unavailable_binary_review_summary(binary_descriptors, status="absent")
+        elif BINARY_REVIEW_RECEIPT_PATH not in canonical_blobs:
+            binary_review = unavailable_binary_review_summary(
+                binary_descriptors,
+                status="invalid",
+                receipt_git_blob_oid=receipt_entry.blob_oid,
+            )
+        else:
+            binary_blob_map = _read_git_blobs(root, binary_entries)
+            reviewed_descriptors = [
+                {
+                    **descriptor,
+                    "raw": binary_blob_map[str(descriptor["path"])][0],
+                }
+                for descriptor in binary_descriptors
+            ]
+            receipt_raw = canonical_blobs[BINARY_REVIEW_RECEIPT_PATH][0]
+            binary_review = evaluate_tracked_binary_review(
+                receipt_raw,
+                reviewed_descriptors,
+                receipt_git_blob_oid=receipt_entry.blob_oid,
+                review_basis_is_ancestor=lambda basis: _git_is_ancestor(root, basis, source_commit),
+            )
+
         for entry in entries:
             classification = classifications[entry.path]
             file_id = stable_id("file", entry.path)
@@ -2319,7 +2416,14 @@ def compile_repository(
                 parser_counts["metadata_only"] += 1
                 if classification["language"] == "binary":
                     file_record["parser"] = "binary_metadata"
-                    file_record["unresolved_reasons"] = ["binary_payload_requires_format_aware_privacy_review"]
+                    review_passed = binary_review.get("status") == "passed"
+                    file_record["unresolved_reasons"] = [
+                        (
+                            "binary_payload_withheld_after_format_aware_privacy_review"
+                            if review_passed
+                            else "binary_payload_requires_format_aware_privacy_review"
+                        )
+                    ]
                     records["binaries"].append(
                         {
                             "id": stable_id("binary", entry.path),
@@ -2329,9 +2433,19 @@ def compile_repository(
                             "size_bytes": file_record["size_bytes"],
                             "content_digest": None,
                             "git_blob_oid": entry.blob_oid,
-                            "inspection_mode": "git_object_digest_and_metadata_only",
+                            "inspection_mode": (
+                                "git_object_format_reviewed_metadata_only"
+                                if review_passed
+                                else "git_object_digest_and_metadata_only"
+                            ),
                             "privacy_exposure": "metadata_only",
-                            "unresolved_reasons": ["decoded_binary_content_privacy_review_not_performed"],
+                            "unresolved_reasons": [
+                                (
+                                    "binary_payload_withheld_from_projection_after_independent_review"
+                                    if review_passed
+                                    else "decoded_binary_content_privacy_review_not_performed"
+                                )
+                            ],
                         }
                     )
                 continue
@@ -2699,6 +2813,7 @@ def compile_repository(
         fatal_errors=sanitized_errors,
         graphify=graphify_metadata,
         architecture_conformance=architecture_conformance,
+        binary_review=binary_review,
         forbidden_content_findings=privacy_findings,
     )
     if sanitized_errors or not all(item["passed"] for item in ledger["invariants"]):

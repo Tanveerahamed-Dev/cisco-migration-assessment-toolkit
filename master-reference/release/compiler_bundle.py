@@ -11,6 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
 
+from atlas_privacy import collapsed_ascii_identity, generic_local_identity_rule
 from compiler.graphify import (
     CONTROLLED_GRAPH_FILE_TYPES,
     CONTROLLED_GRAPH_KINDS,
@@ -24,6 +25,14 @@ from compiler.graphify import (
     GraphifyFailure,
     OPAQUE_IDENTIFIER_POLICY,
     validate_graphify_metadata,
+)
+from compiler.binary_review import (
+    BinaryReviewFailure,
+    RECEIPT_PATH as BINARY_REVIEW_RECEIPT_PATH,
+    RECEIPT_SCHEMA_VERSION as BINARY_REVIEW_SCHEMA_VERSION,
+    binary_set_digest as binary_review_set_digest,
+    parse_tracked_binary_review,
+    receipt_set_digest as binary_review_receipt_set_digest,
 )
 from compiler.compiler import RECORD_GROUPS
 
@@ -95,16 +104,6 @@ _MAX_JS_SAFE_INTEGER = 9_007_199_254_740_991
 _MAX_COMPILER_JSON_BYTES = 32 * 1024 * 1024
 _MAX_COMPILER_CHUNK_BYTES = 2 * 1024 * 1024 * 1024
 _GENERIC_AUTOMATION_USERS = frozenset({"actions", "agent", "build", "builder", "codex", "github", "root", "runner"})
-_GENERIC_WINDOWS_USER_HOME = re.compile(
-    r"(?:^|[^a-z0-9])(?:[a-z]:|[\\/]{2,}[^\\/\r\n]+)[\\/]+users[\\/]+[^\\/\x00-\x1f<>:\"|?*']{1,128}(?=[\\/]|$|[\"'])"
-)
-_GENERIC_POSIX_USER_HOME = re.compile(r"(?:^|[^a-z0-9])/(?:home|users)/[^/\x00-\x1f\"']{1,128}(?=/|$|[\"'])")
-_GENERIC_COLLAPSED_USER_HOME = re.compile(
-    r"(?:^|_)(?:[a-z]_users|home|users)_[a-z0-9][a-z0-9_]{0,127}_"
-    r"(?:appdata|build|cache|checkout|checkouts|code|config|desktop|documents|downloads|git|onedrive|project|projects|repo|repos|source|src|work|workspace)(?:_|$)"
-)
-
-
 REQUIRED_GROUPS = frozenset(RECORD_GROUPS)
 _MANIFEST_KEYS = frozenset(
     {
@@ -140,6 +139,62 @@ _CHUNK_ENVELOPE_KEYS = frozenset(
     }
 )
 _MAX_RECORD_ID_LENGTH = 4_096
+_BINARY_SCAN_KEYS = frozenset(
+    {
+        "schema_version",
+        "receipt_path",
+        "status",
+        "expected_files",
+        "receipt_records",
+        "identity_matched_files",
+        "automated_format_passed_files",
+        "automated_format_pending_files",
+        "claimed_independent_contextual_passed_files",
+        "independent_contextual_passed_files",
+        "accepted_files",
+        "format_counts",
+        "receipt_git_blob_oid",
+        "receipt_content_digest",
+        "receipt_set_digest",
+        "binary_set_digest",
+        "review_basis_commit",
+        "review_basis_is_ancestor",
+        "reviewer_custody",
+        "payload_bytes_embedded_in_projection",
+        "error_codes",
+        "inventory_only_files",
+        "format_aware_or_manual_review_receipt",
+        "claim",
+    }
+)
+_BINARY_ERROR_CODES = frozenset(
+    {
+        "binary_denominator_contains_unsupported_format",
+        "binary_format_invalid",
+        "binary_review_automated_format_pending_unsupported_png_ancillary",
+        "binary_review_denominator_empty",
+        "binary_review_dirty_preview_not_eligible",
+        "binary_review_receipt_absent",
+        "binary_review_receipt_binary_set_digest_mismatch",
+        "binary_review_receipt_format_evidence_mismatch",
+        "binary_review_receipt_identity_mismatch",
+        "binary_review_receipt_independent_verdict_not_passed",
+        "binary_review_receipt_malformed",
+        "binary_review_receipt_membership_mismatch",
+        "binary_review_receipt_review_basis_not_ancestor",
+        "binary_review_reviewer_authentication_pending",
+    }
+)
+_PENDING_REVIEWER_CUSTODY = {
+    "status": "pending_trusted_external_attestation",
+    "required_mechanism": "detached_signature_with_trusted_public_key",
+    "trusted_public_key_configured": False,
+    "detached_signature_present": False,
+    "detached_signature_verified": False,
+    "authenticated_reviewer_kind": None,
+    "authenticated_files": 0,
+    "receipt_claims_trusted": False,
+}
 _GRAPH_NODE_KEYS = frozenset(
     {
         "id",
@@ -255,8 +310,7 @@ def _valid_graph_location(value: object) -> bool:
 
 
 def _collapsed_ascii_identity(value: str) -> str:
-    folded = unicodedata.normalize("NFKC", value).casefold()
-    return re.sub(r"[^a-z0-9]+", "_", folded).strip("_")
+    return collapsed_ascii_identity(value)
 
 
 def _local_identity_contract(repository_root: Path) -> dict[str, tuple[str, ...]]:
@@ -319,15 +373,7 @@ def _current_local_identity_rule(value: str, contract: dict[str, tuple[str, ...]
 
 
 def _generic_home_identity_rule(value: str) -> str | None:
-    folded = unicodedata.normalize("NFKC", value).casefold()
-    collapsed = _collapsed_ascii_identity(folded)
-    if _GENERIC_WINDOWS_USER_HOME.search(folded):
-        return "generic_windows_user_home_path"
-    if _GENERIC_POSIX_USER_HOME.search(folded):
-        return "generic_posix_user_home_path"
-    if _GENERIC_COLLAPSED_USER_HOME.search(collapsed):
-        return "generic_collapsed_user_home_path"
-    return None
+    return generic_local_identity_rule(value)
 
 
 def _local_identity_rule(value: str, contract: dict[str, tuple[str, ...]]) -> str | None:
@@ -695,6 +741,249 @@ def _validate_graph_projection(
         raise ReleaseInputError("compiler Graphify projected edge-mode denominator is inconsistent")
 
 
+def _binary_format(path: str) -> str:
+    lower = path.lower()
+    if lower.endswith(".png"):
+        return "png"
+    if lower.endswith(".tsv.gz"):
+        return "gzip_tsv"
+    return "unsupported"
+
+
+def _source_text_bytes(record: object) -> bytes:
+    if not isinstance(record, dict) or not isinstance(record.get("lines"), list):
+        raise ReleaseInputError("compiler binary-review receipt source record is malformed")
+    parts: list[str] = []
+    try:
+        for number, line in enumerate(record["lines"], start=1):
+            if (
+                not isinstance(line, dict)
+                or set(line) != {"number", "text", "terminator", "text_digest", "line_digest"}
+                or line.get("number") != number
+                or not isinstance(line.get("text"), str)
+                or line.get("terminator") not in {"", "\n", "\r", "\r\n"}
+            ):
+                raise ReleaseInputError("compiler binary-review receipt source record is malformed")
+            encoded_text = line["text"].encode("utf-8", errors="strict")
+            encoded_line = (line["text"] + line["terminator"]).encode("utf-8", errors="strict")
+            if line.get("text_digest") != sha256_bytes(encoded_text) or line.get("line_digest") != sha256_bytes(
+                encoded_line
+            ):
+                raise ReleaseInputError("compiler binary-review receipt source record is malformed")
+            parts.append(line["text"] + line["terminator"])
+        raw = "".join(parts).encode("utf-8", errors="strict")
+    except (KeyError, UnicodeError):
+        raise ReleaseInputError("compiler binary-review receipt source record is malformed") from None
+    if (
+        record.get("line_count") != len(record["lines"])
+        or record.get("byte_count") != len(raw)
+        or record.get("content_digest") != sha256_bytes(raw)
+    ):
+        raise ReleaseInputError("compiler binary-review receipt source identity is inconsistent")
+    return raw
+
+
+def _validate_binary_review_projection(
+    completeness: dict[str, Any],
+    records: dict[str, list[dict[str, Any]]],
+    files_by_path: dict[str, dict[str, Any]],
+    binary_gate: dict[str, Any],
+) -> None:
+    privacy = completeness.get("privacy")
+    scan = privacy.get("binary_payload_scan") if isinstance(privacy, dict) else None
+    if not isinstance(scan, dict) or set(scan) != _BINARY_SCAN_KEYS:
+        raise ReleaseInputError("compiler binary-review summary is absent or malformed")
+    statuses = {"absent", "dirty_preview_not_eligible", "invalid", "incomplete"}
+    status = scan.get("status")
+    integer_fields = (
+        "expected_files",
+        "receipt_records",
+        "identity_matched_files",
+        "automated_format_passed_files",
+        "automated_format_pending_files",
+        "claimed_independent_contextual_passed_files",
+        "independent_contextual_passed_files",
+        "accepted_files",
+        "inventory_only_files",
+    )
+    format_counts = scan.get("format_counts")
+    error_codes = scan.get("error_codes")
+    if (
+        scan.get("schema_version") != BINARY_REVIEW_SCHEMA_VERSION
+        or scan.get("receipt_path") != BINARY_REVIEW_RECEIPT_PATH
+        or status not in statuses
+        or status == "dirty_preview_not_eligible"
+        or any(type(scan.get(field)) is not int or scan[field] < 0 for field in integer_fields)
+        or not isinstance(format_counts, dict)
+        or set(format_counts) != {"png", "gzip_tsv", "unsupported"}
+        or any(type(value) is not int or value < 0 for value in format_counts.values())
+        or not isinstance(error_codes, list)
+        or error_codes != sorted(set(error_codes))
+        or any(code not in _BINARY_ERROR_CODES for code in error_codes)
+        or scan.get("reviewer_custody") != _PENDING_REVIEWER_CUSTODY
+        or scan.get("payload_bytes_embedded_in_projection") is not False
+        or scan.get("format_aware_or_manual_review_receipt") != status
+        or not isinstance(scan.get("claim"), str)
+        or not scan["claim"]
+    ):
+        raise ReleaseInputError("compiler binary-review summary is absent or malformed")
+    for field in ("receipt_content_digest", "receipt_set_digest", "binary_set_digest"):
+        value = scan.get(field)
+        if value is not None and (not isinstance(value, str) or _GRAPH_DIGEST.fullmatch(value) is None):
+            raise ReleaseInputError("compiler binary-review summary has an invalid digest")
+    for field in ("receipt_git_blob_oid", "review_basis_commit"):
+        value = scan.get(field)
+        if value is not None and (not isinstance(value, str) or _GRAPH_GIT_OID.fullmatch(value) is None):
+            raise ReleaseInputError("compiler binary-review summary has an invalid Git identity")
+    ancestry = scan.get("review_basis_is_ancestor")
+    if ancestry is not None and not isinstance(ancestry, bool):
+        raise ReleaseInputError("compiler binary-review summary has an invalid ancestry state")
+
+    binaries = records.get("binaries", [])
+    binary_paths: list[str] = []
+    observed_formats = {"png": 0, "gzip_tsv": 0, "unsupported": 0}
+    expected_reviewed_mode = status == "passed"
+    for binary in binaries:
+        path = binary.get("path")
+        if not isinstance(path, str) or not path or path in binary_paths:
+            raise ReleaseInputError("compiler binary denominator has an invalid or duplicate path")
+        binary_paths.append(path)
+        binary_format = _binary_format(path)
+        observed_formats[binary_format] += 1
+        file_record = files_by_path.get(path)
+        expected_mode = (
+            "git_object_format_reviewed_metadata_only"
+            if expected_reviewed_mode
+            else "git_object_digest_and_metadata_only"
+        )
+        expected_binary_reason = (
+            "binary_payload_withheld_from_projection_after_independent_review"
+            if expected_reviewed_mode
+            else "decoded_binary_content_privacy_review_not_performed"
+        )
+        expected_file_reason = (
+            "binary_payload_withheld_after_format_aware_privacy_review"
+            if expected_reviewed_mode
+            else "binary_payload_requires_format_aware_privacy_review"
+        )
+        if (
+            file_record is None
+            or file_record.get("language") != "binary"
+            or file_record.get("privacy_exposure") != "metadata_only"
+            or file_record.get("content_source") != "metadata_only_git_object"
+            or file_record.get("content_digest") is not None
+            or file_record.get("git_blob_oid") != binary.get("git_blob_oid")
+            or file_record.get("size_bytes") != binary.get("size_bytes")
+            or file_record.get("media_type") != binary.get("media_type")
+            or file_record.get("unresolved_reasons") != [expected_file_reason]
+            or binary.get("privacy_exposure") != "metadata_only"
+            or binary.get("content_digest") is not None
+            or binary.get("inspection_mode") != expected_mode
+            or binary.get("unresolved_reasons") != [expected_binary_reason]
+        ):
+            raise ReleaseInputError("compiler binary record violates metadata-only review custody")
+    binary_paths.sort()
+    expected_count = len(binaries)
+    if (
+        scan.get("expected_files") != expected_count
+        or scan.get("inventory_only_files") != expected_count
+        or format_counts != observed_formats
+        or binary_gate.get("expected") != expected_count
+        or binary_gate.get("actual") != scan.get("accepted_files")
+        or binary_gate.get("passed") is not False
+    ):
+        raise ReleaseInputError("compiler binary-review denominator differs from the binary records")
+    if scan.get("independent_contextual_passed_files") != 0 or scan.get("accepted_files") != 0:
+        raise ReleaseInputError("compiler binary-review authentication failure is not fail-closed")
+    if status == "absent":
+        if (
+            scan.get("receipt_records") != 0
+            or scan.get("identity_matched_files") != 0
+            or scan.get("automated_format_passed_files") != 0
+            or scan.get("automated_format_pending_files") != 0
+            or scan.get("claimed_independent_contextual_passed_files") != 0
+            or scan.get("receipt_git_blob_oid") is not None
+            or scan.get("receipt_content_digest") is not None
+            or scan.get("receipt_set_digest") is not None
+            or scan.get("binary_set_digest") is not None
+            or scan.get("review_basis_commit") is not None
+            or scan.get("review_basis_is_ancestor") is not None
+            or error_codes != ["binary_review_receipt_absent"]
+        ):
+            raise ReleaseInputError("compiler absent binary-review receipt summary is inconsistent")
+        return
+    if status == "invalid":
+        return
+
+    incomplete_codes = {
+        "binary_review_automated_format_pending_unsupported_png_ancillary",
+        "binary_review_receipt_independent_verdict_not_passed",
+        "binary_review_reviewer_authentication_pending",
+    }
+    pending_formats = scan.get("automated_format_pending_files")
+    if (
+        scan.get("review_basis_is_ancestor") is not True
+        or scan.get("format_counts", {}).get("unsupported") != 0
+        or scan.get("receipt_records") != expected_count
+        or scan.get("identity_matched_files") != expected_count
+        or scan.get("automated_format_passed_files") + pending_formats != expected_count
+        or scan.get("claimed_independent_contextual_passed_files") > expected_count
+        or not error_codes
+        or not set(error_codes) <= incomplete_codes
+        or "binary_review_reviewer_authentication_pending" not in error_codes
+        or (
+            (pending_formats > 0) != ("binary_review_automated_format_pending_unsupported_png_ancillary" in error_codes)
+        )
+        or (
+            (scan.get("claimed_independent_contextual_passed_files") < expected_count)
+            != ("binary_review_receipt_independent_verdict_not_passed" in error_codes)
+        )
+    ):
+        raise ReleaseInputError("compiler incomplete binary-review evidence is inconsistent")
+    receipt_file = files_by_path.get(BINARY_REVIEW_RECEIPT_PATH)
+    receipt_sources = [
+        item for item in records.get("source_text", []) if item.get("path") == BINARY_REVIEW_RECEIPT_PATH
+    ]
+    if (
+        receipt_file is None
+        or receipt_file.get("privacy_exposure") != "full"
+        or receipt_file.get("content_source") != "selected_commit_git_blob"
+        or receipt_file.get("git_blob_oid") != scan.get("receipt_git_blob_oid")
+        or receipt_file.get("content_digest") != scan.get("receipt_content_digest")
+        or len(receipt_sources) != 1
+    ):
+        raise ReleaseInputError("compiler binary-review evidence lacks exact source custody")
+    receipt_raw = _source_text_bytes(receipt_sources[0])
+    if sha256_bytes(receipt_raw) != scan.get("receipt_content_digest"):
+        raise ReleaseInputError("compiler binary-review receipt content digest is inconsistent")
+    try:
+        receipt = parse_tracked_binary_review(receipt_raw)
+    except BinaryReviewFailure:
+        raise ReleaseInputError("compiler binary-review receipt source is malformed") from None
+    receipt_records = receipt["records"]
+    if (
+        receipt.get("review_basis_commit") != scan.get("review_basis_commit")
+        or receipt.get("binary_set_digest") != scan.get("binary_set_digest")
+        or binary_review_set_digest(receipt_records) != scan.get("binary_set_digest")
+        or binary_review_receipt_set_digest(receipt_records) != scan.get("receipt_set_digest")
+        or len(receipt_records) != expected_count
+        or [str(item["path"]) for item in receipt_records] != binary_paths
+    ):
+        raise ReleaseInputError("compiler binary-review receipt differs from its completeness summary")
+    binaries_by_path = {str(item["path"]): item for item in binaries}
+    for review_record in receipt_records:
+        path = str(review_record["path"])
+        binary = binaries_by_path.get(path)
+        if (
+            binary is None
+            or review_record.get("git_blob_oid") != binary.get("git_blob_oid")
+            or review_record.get("raw_bytes") != binary.get("size_bytes")
+            or review_record.get("media_type") != binary.get("media_type")
+            or review_record.get("format") != _binary_format(path)
+        ):
+            raise ReleaseInputError("compiler binary-review receipt does not join the binary denominator")
+
+
 @dataclass(frozen=True)
 class CompilerBundle:
     root: Path
@@ -945,6 +1234,8 @@ def load_compiler_bundle(
         raise ReleaseInputError("completeness ledger semantic acceptance gates are duplicated")
     if set(acceptance_names) != REQUIRED_ACCEPTANCE_GATES:
         raise ReleaseInputError("completeness ledger semantic acceptance gate registry is incomplete or stale")
+    acceptance_by_name = {str(item["name"]): item for item in acceptance_gates}
+    binary_gate = acceptance_by_name["every_binary_has_format_aware_privacy_review"]
     if architecture != completeness.get("architecture_conformance"):
         raise ReleaseInputError("architecture conformance differs from the completeness ledger")
     if architecture.get("source_commit") != commit or architecture.get("source_tree_digest") != tree:
@@ -983,6 +1274,7 @@ def load_compiler_bundle(
         "structural_entities",
         "routes",
         "components",
+        "binaries",
     }
     if not validation_groups.issubset(wanted):
         raise ReleaseInputError("retained compiler groups omit records required for structural denominator validation")
@@ -1161,6 +1453,7 @@ def load_compiler_bundle(
                 or item.get("byte_count") != file_record.get("size_bytes")
             ):
                 raise ReleaseInputError("compiler source-text custody differs from file record")
+        _validate_binary_review_projection(completeness, records, by_path, binary_gate)
     safe_parsed_files = {
         str(item["id"]): item
         for item in records["files"]

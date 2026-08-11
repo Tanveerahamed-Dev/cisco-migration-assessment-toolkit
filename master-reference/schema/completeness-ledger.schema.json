@@ -117,7 +117,13 @@
     "record_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
     "graphify": {"$ref": "#/$defs/sourceBoundCompilerReceipt"},
     "architecture_conformance": {"$ref": "#/$defs/sourceBoundCompilerReceipt"},
-    "privacy": {"type": "object"},
+    "privacy": {
+      "type": "object",
+      "required": ["binary_payload_scan"],
+      "properties": {
+        "binary_payload_scan": {"$ref": "#/$defs/binaryReviewSummary"}
+      }
+    },
     "invariants": {
       "allOf": [
         {"$ref": "#/$defs/gates"},
@@ -266,6 +272,131 @@
     }
   },
   "$defs": {
+    "gitOid": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "nullableDigest": {
+      "anyOf": [
+        {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        {"type": "null"}
+      ]
+    },
+    "nullableGitOid": {
+      "anyOf": [
+        {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+        {"type": "null"}
+      ]
+    },
+    "binaryReviewSummary": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "receipt_path",
+        "status",
+        "expected_files",
+        "receipt_records",
+        "identity_matched_files",
+        "automated_format_passed_files",
+        "automated_format_pending_files",
+        "claimed_independent_contextual_passed_files",
+        "independent_contextual_passed_files",
+        "accepted_files",
+        "format_counts",
+        "receipt_git_blob_oid",
+        "receipt_content_digest",
+        "receipt_set_digest",
+        "binary_set_digest",
+        "review_basis_commit",
+        "review_basis_is_ancestor",
+        "reviewer_custody",
+        "payload_bytes_embedded_in_projection",
+        "error_codes",
+        "inventory_only_files",
+        "format_aware_or_manual_review_receipt",
+        "claim"
+      ],
+      "properties": {
+        "schema_version": {"const": "tracked-binary-review/1"},
+        "receipt_path": {"const": "master-reference/governance/tracked-binary-review.json"},
+        "status": {"enum": ["absent", "dirty_preview_not_eligible", "invalid", "incomplete"]},
+        "expected_files": {"type": "integer", "minimum": 0},
+        "receipt_records": {"type": "integer", "minimum": 0},
+        "identity_matched_files": {"type": "integer", "minimum": 0},
+        "automated_format_passed_files": {"type": "integer", "minimum": 0},
+        "automated_format_pending_files": {"type": "integer", "minimum": 0},
+        "claimed_independent_contextual_passed_files": {"type": "integer", "minimum": 0},
+        "independent_contextual_passed_files": {"type": "integer", "minimum": 0},
+        "accepted_files": {"type": "integer", "minimum": 0},
+        "format_counts": {
+          "type": "object",
+          "required": ["png", "gzip_tsv", "unsupported"],
+          "properties": {
+            "png": {"type": "integer", "minimum": 0},
+            "gzip_tsv": {"type": "integer", "minimum": 0},
+            "unsupported": {"type": "integer", "minimum": 0}
+          },
+          "additionalProperties": false
+        },
+        "receipt_git_blob_oid": {"$ref": "#/$defs/nullableGitOid"},
+        "receipt_content_digest": {"$ref": "#/$defs/nullableDigest"},
+        "receipt_set_digest": {"$ref": "#/$defs/nullableDigest"},
+        "binary_set_digest": {"$ref": "#/$defs/nullableDigest"},
+        "review_basis_commit": {"$ref": "#/$defs/nullableGitOid"},
+        "review_basis_is_ancestor": {"type": ["boolean", "null"]},
+        "reviewer_custody": {"$ref": "#/$defs/pendingReviewerCustody"},
+        "payload_bytes_embedded_in_projection": {"const": false},
+        "error_codes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "binary_denominator_contains_unsupported_format",
+              "binary_format_invalid",
+              "binary_review_automated_format_pending_unsupported_png_ancillary",
+              "binary_review_denominator_empty",
+              "binary_review_dirty_preview_not_eligible",
+              "binary_review_receipt_absent",
+              "binary_review_receipt_binary_set_digest_mismatch",
+              "binary_review_receipt_format_evidence_mismatch",
+              "binary_review_receipt_identity_mismatch",
+              "binary_review_receipt_independent_verdict_not_passed",
+              "binary_review_receipt_malformed",
+              "binary_review_receipt_membership_mismatch",
+              "binary_review_receipt_review_basis_not_ancestor",
+              "binary_review_reviewer_authentication_pending"
+            ]
+          }
+        },
+        "inventory_only_files": {"type": "integer", "minimum": 0},
+        "format_aware_or_manual_review_receipt": {
+          "enum": ["absent", "dirty_preview_not_eligible", "invalid", "incomplete"]
+        },
+        "claim": {"type": "string", "minLength": 1, "maxLength": 1024}
+      },
+      "additionalProperties": false
+    },
+    "pendingReviewerCustody": {
+      "type": "object",
+      "required": [
+        "status",
+        "required_mechanism",
+        "trusted_public_key_configured",
+        "detached_signature_present",
+        "detached_signature_verified",
+        "authenticated_reviewer_kind",
+        "authenticated_files",
+        "receipt_claims_trusted"
+      ],
+      "properties": {
+        "status": {"const": "pending_trusted_external_attestation"},
+        "required_mechanism": {"const": "detached_signature_with_trusted_public_key"},
+        "trusted_public_key_configured": {"const": false},
+        "detached_signature_present": {"const": false},
+        "detached_signature_verified": {"const": false},
+        "authenticated_reviewer_kind": {"type": "null"},
+        "authenticated_files": {"const": 0},
+        "receipt_claims_trusted": {"const": false}
+      },
+      "additionalProperties": false
+    },
     "sourceBoundCompilerReceipt": {
       "type": "object",
       "required": ["schema_version", "source_commit", "source_tree_digest"],

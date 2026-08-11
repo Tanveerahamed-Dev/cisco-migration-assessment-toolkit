@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import binascii
 import json
 import os
 import re
 import subprocess
+import struct
 import sys
 import traceback
 import zipfile
+import zlib
 from collections.abc import Callable
 from pathlib import Path
 
@@ -19,11 +22,15 @@ if str(MASTER_REFERENCE) not in sys.path:
     sys.path.insert(0, str(MASTER_REFERENCE))
 
 from release.compiler_bundle import REQUIRED_ACCEPTANCE_GATES, REQUIRED_GROUPS  # noqa: E402
+from compiler import compile_repository  # noqa: E402
+from compiler import binary_review as binary_review_module  # noqa: E402
+from compiler.binary_review import binary_set_digest, inspect_png  # noqa: E402
 from compiler.graphify import (  # noqa: E402
     GRAPHIFY_BASE_UNRESOLVED_REASONS,
     GRAPHIFY_HYPEREDGE_REASON_ABSENT,
     OPAQUE_IDENTIFIER_POLICY,
 )
+from compiler.binary_review import unavailable_summary as unavailable_binary_review_summary  # noqa: E402
 from release.model import (  # noqa: E402
     ReleaseInputError,
     canonical_json,
@@ -50,6 +57,20 @@ def _json(path: Path, value: object) -> None:
 
 def _formatted_exception(failure: pytest.ExceptionInfo[BaseException]) -> str:
     return "".join(traceback.format_exception(failure.type, failure.value, failure.tb))
+
+
+def _one_pixel_png() -> bytes:
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(payload))
+            + kind
+            + payload
+            + struct.pack(">I", binascii.crc32(kind + payload) & 0xFFFFFFFF)
+        )
+
+    header = struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0)
+    scanline = b"\x00\x00\x00\x00\xff"
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(scanline)) + chunk(b"IEND", b"")
 
 
 def _git(repo: Path, *arguments: str, environment: dict[str, str] | None = None) -> bytes:
@@ -444,7 +465,17 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
             },
         },
         "architecture_conformance": architecture,
-        "privacy": {"vault": "not_read", "client_state": "not_read", "network": "not_used"},
+        "privacy": {
+            "vault": "not_read",
+            "client_state": "not_read",
+            "network": "not_used",
+            "binary_payload_scan": {
+                **unavailable_binary_review_summary([], status="absent"),
+                "inventory_only_files": 0,
+                "format_aware_or_manual_review_receipt": "absent",
+                "claim": "Synthetic fixture has no tracked binary review receipt.",
+            },
+        },
         "semantic_accounting": {
             "safe_parsed_sources": len(files),
             "structural_root_entities": len(records["structural_entities"]),
@@ -476,9 +507,17 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
         "acceptance_gates": [
             {
                 "name": name,
-                "passed": name != "runtime_trace_evidence_joined_to_source_records",
-                "expected": True,
-                "actual": name != "runtime_trace_evidence_joined_to_source_records",
+                "passed": name
+                not in {
+                    "every_binary_has_format_aware_privacy_review",
+                    "runtime_trace_evidence_joined_to_source_records",
+                },
+                "expected": 0 if name == "every_binary_has_format_aware_privacy_review" else True,
+                "actual": (
+                    0
+                    if name == "every_binary_has_format_aware_privacy_review"
+                    else name != "runtime_trace_evidence_joined_to_source_records"
+                ),
             }
             for name in sorted(REQUIRED_ACCEPTANCE_GATES)
         ],
@@ -926,6 +965,164 @@ def test_release_family_is_deterministic_and_explicitly_unsigned(tmp_path: Path)
     assert provenance["predicate"]["runDetails"]["metadata"]["reproducible"] is False
 
 
+def test_compiler_bundle_preserves_pending_binary_review_and_rejects_custody_or_digest_tamper(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "binary-review-repo"
+    repo.mkdir()
+    payload = _one_pixel_png()
+    _write(repo / "README.md", b"# Binary review fixture\n")
+    _write(repo / "docs" / "card.png", payload)
+    _json(
+        repo / "master-reference" / "governance" / "architecture.json",
+        {
+            "schema_version": "2.0.0",
+            "python_import_roots": [],
+            "internal_module_prefixes": [],
+            "components": [
+                {
+                    "id": "repository",
+                    "paths": ["README.md", "docs/", "master-reference/"],
+                }
+            ],
+            "exclusions": [],
+            "allowed_edges": [],
+            "forbidden_edges": [],
+            "runtime_phases": [{"id": "compile", "order": 1, "required": False}],
+            "synthetic_runtime_traces": [
+                {
+                    "id": "fixture",
+                    "events": [
+                        {
+                            "phase": "compile",
+                            "status": "passed",
+                            "receipt_id": "synthetic:fixture:compile",
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    _git(repo, "init", "-q")
+    _git(repo, "config", "core.autocrlf", "false")
+    _git(repo, "config", "user.name", "Atlas Test")
+    _git(repo, "config", "user.email", "atlas@example.invalid")
+    _git(repo, "add", "--all")
+    _git(repo, "commit", "-qm", "binary fixture")
+    review_basis_commit = _git(repo, "rev-parse", "HEAD").decode("ascii").strip()
+    git_blob_oid = _git(repo, "rev-parse", f"{review_basis_commit}:docs/card.png").decode("ascii").strip()
+    raw_digest = hashlib.sha256(payload).hexdigest()
+    record = {
+        "path": "docs/card.png",
+        "git_blob_oid": git_blob_oid,
+        "raw_sha256": raw_digest,
+        "raw_bytes": len(payload),
+        "media_type": "image/png",
+        "format": "png",
+        "automated_format_evidence": inspect_png(payload),
+        "independent_review": {
+            "reviewer_kind": "independent_agent",
+            "reviewer_role": "binary_privacy_verifier",
+            "independent_from_proposer": True,
+            "review_scope": "rendered_pixels_and_context",
+            "evidence_references": [
+                f"decoded-rgba-sha256:{hashlib.sha256(bytes((0, 0, 0, 255))).hexdigest()}",
+                "privacy-scan:forbidden-local-generic-identities",
+                "visual-review:exact-rendered-pixels",
+            ],
+            "verdict": "pass",
+        },
+    }
+    receipt = {
+        "schema_version": "tracked-binary-review/1",
+        "receipt_kind": "tracked_repository_binary_privacy_review",
+        "review_basis_commit": review_basis_commit,
+        "binary_set_digest": binary_set_digest([record]),
+        "records": [record],
+    }
+    receipt_path = repo / "master-reference" / "governance" / "tracked-binary-review.json"
+    _write(receipt_path, canonical_json(receipt))
+    _git(repo, "add", receipt_path.relative_to(repo).as_posix())
+    _git(repo, "commit", "-qm", "independent binary review receipt")
+
+    compiler_output = tmp_path / "compiler-output"
+    compile_repository(repo, compiler_output)
+    bundle = compiler_bundle.load_compiler_bundle(
+        compiler_output,
+        repository_root=repo,
+    )
+
+    scan = bundle.completeness["privacy"]["binary_payload_scan"]
+    binary_gate = next(
+        gate
+        for gate in bundle.completeness["acceptance_gates"]
+        if gate["name"] == "every_binary_has_format_aware_privacy_review"
+    )
+    assert scan["status"] == "incomplete"
+    assert scan["expected_files"] == 1
+    assert scan["automated_format_passed_files"] == 1
+    assert scan["automated_format_pending_files"] == 0
+    assert scan["claimed_independent_contextual_passed_files"] == 1
+    assert scan["independent_contextual_passed_files"] == 0
+    assert scan["accepted_files"] == 0
+    assert scan["error_codes"] == ["binary_review_reviewer_authentication_pending"]
+    assert binary_gate == {
+        "name": "every_binary_has_format_aware_privacy_review",
+        "passed": False,
+        "expected": 1,
+        "actual": 0,
+    }
+    assert bundle.records["binaries"][0]["content_digest"] is None
+    assert bundle.records["binaries"][0]["privacy_exposure"] == "metadata_only"
+    assert all(row["path"] != "docs/card.png" for row in bundle.records["source_text"])
+
+    completeness_path = compiler_output / "completeness.json"
+    manifest_path = compiler_output / "manifest.json"
+    completeness = json.loads(completeness_path.read_text(encoding="utf-8"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    def rewrite_completeness(value: dict[str, object]) -> None:
+        raw = canonical_json(value)
+        _write(completeness_path, raw)
+        manifest["completeness"]["sha256"] = sha256_bytes(raw)
+        manifest["completeness"]["bytes"] = len(raw)
+        _write(manifest_path, canonical_json(manifest))
+
+    original_completeness = json.loads(json.dumps(completeness))
+    completeness["privacy"]["binary_payload_scan"]["reviewer_custody"] = {
+        "status": "authenticated",
+        "required_mechanism": "invented-string",
+        "trusted_public_key_configured": True,
+        "detached_signature_present": True,
+        "detached_signature_verified": True,
+        "authenticated_reviewer_kind": "independent_agent",
+        "authenticated_files": 1,
+        "receipt_claims_trusted": True,
+    }
+    rewrite_completeness(completeness)
+    with pytest.raises(
+        ReleaseInputError,
+        match="compiler binary-review summary is absent or malformed",
+    ):
+        compiler_bundle.load_compiler_bundle(
+            compiler_output,
+            repository_root=repo,
+        )
+
+    completeness = original_completeness
+    completeness["privacy"]["binary_payload_scan"]["receipt_set_digest"] = "0" * 64
+    rewrite_completeness(completeness)
+
+    with pytest.raises(
+        ReleaseInputError,
+        match="compiler binary-review receipt differs from its completeness summary",
+    ):
+        compiler_bundle.load_compiler_bundle(
+            compiler_output,
+            repository_root=repo,
+        )
+
+
 def test_dependency_assessment_names_unpatched_image_size_advisories() -> None:
     gate, limits = release_pipeline._dependency_vulnerability_assessment(
         {
@@ -959,6 +1156,35 @@ def test_release_record_field_registry_matches_tracked_schema_owner() -> None:
         allowed = schema["$defs"][definition_name]["propertyNames"]["enum"]
         schema_registry[group] = frozenset(allowed)
     assert schema_registry == compiler_bundle._RECORD_KEYS_BY_GROUP
+
+
+def test_binary_review_bundle_registries_match_completeness_schema_owner() -> None:
+    schema = json.loads((MASTER_REFERENCE / "schema" / "completeness-ledger.schema.json").read_text(encoding="utf-8"))
+    summary = schema["$defs"]["binaryReviewSummary"]
+    error_codes = summary["properties"]["error_codes"]["items"]["enum"]
+    custody = schema["$defs"]["pendingReviewerCustody"]
+
+    assert frozenset(summary["required"]) == compiler_bundle._BINARY_SCAN_KEYS
+    assert frozenset(error_codes) == compiler_bundle._BINARY_ERROR_CODES
+    assert frozenset(error_codes) == binary_review_module._SUMMARY_ERROR_CODES
+    assert summary["properties"]["status"]["enum"] == [
+        "absent",
+        "dirty_preview_not_eligible",
+        "invalid",
+        "incomplete",
+    ]
+    assert frozenset(custody["required"]) == frozenset(compiler_bundle._PENDING_REVIEWER_CUSTODY)
+    assert custody["properties"]["status"]["const"] == "pending_trusted_external_attestation"
+    assert custody["properties"]["required_mechanism"]["const"] == ("detached_signature_with_trusted_public_key")
+    for field in (
+        "trusted_public_key_configured",
+        "detached_signature_present",
+        "detached_signature_verified",
+        "receipt_claims_trusted",
+    ):
+        assert custody["properties"][field]["const"] is False
+    assert custody["properties"]["authenticated_files"]["const"] == 0
+    assert custody["properties"]["authenticated_reviewer_kind"]["type"] == "null"
 
 
 def test_dependency_assessment_cannot_hide_vulnerable_nanoid_behind_another_finding() -> None:

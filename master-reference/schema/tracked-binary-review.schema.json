@@ -1,0 +1,236 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.local/schema/tracked-binary-review.schema.json",
+  "title": "Tracked repository binary privacy review evidence receipt",
+  "description": "Binds binary identities, automated evidence, and unauthenticated reviewer claims. This schema does not authenticate reviewer custody or independence.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "receipt_kind",
+    "review_basis_commit",
+    "binary_set_digest",
+    "records"
+  ],
+  "properties": {
+    "schema_version": {"const": "tracked-binary-review/1"},
+    "receipt_kind": {"const": "tracked_repository_binary_privacy_review"},
+    "review_basis_commit": {"$ref": "#/$defs/gitOid"},
+    "binary_set_digest": {"$ref": "#/$defs/digest"},
+    "records": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10000,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/reviewRecord"}
+    }
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "gitOid": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)(?!.*[\\u0000-\\u001f]).+$"
+    },
+    "evidenceReference": {
+      "type": "string",
+      "oneOf": [
+        {"pattern": "^decoded-rgba-sha256:[0-9a-f]{64}$"},
+        {"pattern": "^decoded-tsv-sha256:[0-9a-f]{64}$"},
+        {"const": "privacy-scan:forbidden-local-generic-identities"},
+        {"const": "visual-review:exact-rendered-pixels"},
+        {"const": "registry-validation:retained-source-and-runtime-loader"}
+      ]
+    },
+    "riskyMetadataChunkCounts": {
+      "type": "object",
+      "required": ["eXIf", "iCCP", "iTXt", "tEXt", "zTXt"],
+      "properties": {
+        "eXIf": {"type": "integer", "minimum": 0},
+        "iCCP": {"type": "integer", "minimum": 0},
+        "iTXt": {"type": "integer", "minimum": 0},
+        "tEXt": {"type": "integer", "minimum": 0},
+        "zTXt": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "pngEvidence": {
+      "type": "object",
+      "required": [
+        "kind",
+        "validator",
+        "format_valid",
+        "crc_valid",
+        "chunk_order_valid",
+        "idat_framing_valid",
+        "trailing_bytes",
+        "width",
+        "height",
+        "bit_depth",
+        "color_type",
+        "interlace_method",
+        "chunk_count",
+        "idat_chunk_count",
+        "idat_compressed_bytes",
+        "decoded_scanline_bytes",
+        "decoded_scanline_sha256",
+        "risky_metadata_chunk_counts",
+        "forbidden_content_findings"
+      ],
+      "properties": {
+        "kind": {"const": "png"},
+        "validator": {"const": "atlas_png_strict/1"},
+        "format_valid": {"const": true},
+        "crc_valid": {"const": true},
+        "chunk_order_valid": {"const": true},
+        "idat_framing_valid": {"const": true},
+        "trailing_bytes": {"const": 0},
+        "width": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+        "height": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+        "bit_depth": {"enum": [1, 2, 4, 8, 16]},
+        "color_type": {"enum": [0, 2, 3, 4, 6]},
+        "interlace_method": {"enum": [0, 1]},
+        "chunk_count": {"type": "integer", "minimum": 3},
+        "idat_chunk_count": {"type": "integer", "minimum": 1},
+        "idat_compressed_bytes": {"type": "integer", "minimum": 0, "maximum": 536870912},
+        "decoded_scanline_bytes": {"type": "integer", "minimum": 0, "maximum": 536870912},
+        "decoded_scanline_sha256": {"$ref": "#/$defs/digest"},
+        "risky_metadata_chunk_counts": {"$ref": "#/$defs/riskyMetadataChunkCounts"},
+        "forbidden_content_findings": {"const": 0}
+      },
+      "additionalProperties": false
+    },
+    "gzipTsvEvidence": {
+      "type": "object",
+      "required": [
+        "kind",
+        "validator",
+        "format_valid",
+        "member_count",
+        "header_flags",
+        "header_mtime",
+        "header_xfl",
+        "header_os",
+        "trailer_crc32",
+        "trailer_isize",
+        "uncompressed_bytes",
+        "uncompressed_sha256",
+        "tsv_header_mode",
+        "tsv_header",
+        "column_count",
+        "row_count",
+        "forbidden_content_findings"
+      ],
+      "properties": {
+        "kind": {"const": "gzip_tsv"},
+        "validator": {"const": "atlas_gzip_tsv_strict/1"},
+        "format_valid": {"const": true},
+        "member_count": {"const": 1},
+        "header_flags": {"type": "integer", "minimum": 0, "maximum": 31},
+        "header_mtime": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "header_xfl": {"type": "integer", "minimum": 0, "maximum": 255},
+        "header_os": {"type": "integer", "minimum": 0, "maximum": 255},
+        "trailer_crc32": {"type": "string", "pattern": "^[0-9a-f]{8}$"},
+        "trailer_isize": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "uncompressed_bytes": {"type": "integer", "minimum": 0, "maximum": 268435456},
+        "uncompressed_sha256": {"$ref": "#/$defs/digest"},
+        "tsv_header_mode": {"const": "declared_schema_no_physical_header"},
+        "tsv_header": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 64}
+        },
+        "column_count": {"type": "integer", "minimum": 1, "maximum": 64},
+        "row_count": {"type": "integer", "minimum": 1, "maximum": 1000000},
+        "forbidden_content_findings": {"const": 0}
+      },
+      "additionalProperties": false
+    },
+    "independentReview": {
+      "type": "object",
+      "description": "Structurally valid but unauthenticated reviewer claims; compiler acceptance requires separate trusted external attestation.",
+      "required": [
+        "reviewer_kind",
+        "reviewer_role",
+        "independent_from_proposer",
+        "review_scope",
+        "evidence_references",
+        "verdict"
+      ],
+      "properties": {
+        "reviewer_kind": {"const": "independent_agent"},
+        "reviewer_role": {"const": "binary_privacy_verifier"},
+        "independent_from_proposer": {"const": true},
+        "review_scope": {"enum": ["rendered_pixels_and_context", "decoded_tsv_rows_and_context"]},
+        "evidence_references": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/evidenceReference"}
+        },
+        "verdict": {"enum": ["pass", "block", "abstain"]}
+      },
+      "additionalProperties": false
+    },
+    "reviewRecord": {
+      "type": "object",
+      "required": [
+        "path",
+        "git_blob_oid",
+        "raw_sha256",
+        "raw_bytes",
+        "media_type",
+        "format",
+        "automated_format_evidence",
+        "independent_review"
+      ],
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "git_blob_oid": {"$ref": "#/$defs/gitOid"},
+        "raw_sha256": {"$ref": "#/$defs/digest"},
+        "raw_bytes": {"type": "integer", "minimum": 0, "maximum": 536870912},
+        "media_type": {"enum": ["image/png", "application/gzip"]},
+        "format": {"enum": ["png", "gzip_tsv"]},
+        "automated_format_evidence": {
+          "oneOf": [
+            {"$ref": "#/$defs/pngEvidence"},
+            {"$ref": "#/$defs/gzipTsvEvidence"}
+          ]
+        },
+        "independent_review": {"$ref": "#/$defs/independentReview"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"format": {"const": "png"}}, "required": ["format"]},
+          "then": {
+            "properties": {
+              "media_type": {"const": "image/png"},
+              "automated_format_evidence": {"$ref": "#/$defs/pngEvidence"},
+              "independent_review": {
+                "properties": {"review_scope": {"const": "rendered_pixels_and_context"}}
+              }
+            }
+          }
+        },
+        {
+          "if": {"properties": {"format": {"const": "gzip_tsv"}}, "required": ["format"]},
+          "then": {
+            "properties": {
+              "media_type": {"const": "application/gzip"},
+              "automated_format_evidence": {"$ref": "#/$defs/gzipTsvEvidence"},
+              "independent_review": {
+                "properties": {"review_scope": {"const": "decoded_tsv_rows_and_context"}}
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
