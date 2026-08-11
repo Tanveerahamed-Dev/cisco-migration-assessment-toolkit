@@ -9,7 +9,7 @@ import {
   access,
   lstat,
   mkdir,
-  readFile,
+  open,
   realpath,
   rename,
   rm,
@@ -127,6 +127,37 @@ const GRAPH_INDEX_MAX_BYTES = 512 * 1024;
 const GRAPH_SHARD_RECORDS = 400;
 const GRAPH_SAMPLE_NODES = 48;
 const GRAPH_SAMPLE_EDGES = 400;
+const COMPILER_JSON_MAX_BYTES = 32 * 1024 * 1024;
+const COMPILER_JSON_MAX_DEPTH = 128;
+const COMPILER_JSON_MAX_VALUES = 2_000_000;
+const COMPILER_JSON_MAX_STRING_BYTES = 8 * 1024 * 1024;
+const ATLAS_STABLE_ID_PATTERN = /^urn:atlas:[a-z-]+:[0-9a-f]{24}$/;
+export const COMPILER_RECORD_KEYS_BY_GROUP = Object.freeze(Object.fromEntries(
+  Object.entries({
+    binaries: "content_digest entity_type file_id git_blob_oid id inspection_mode media_type path privacy_exposure size_bytes unresolved_reasons",
+    calls: "callee containing_symbol entity_type extraction_disposition file_id id path range resolved statement_digest tests unresolved_reasons",
+    claims: "basis confidence conflicts_with current_view denominator derived_from effective_time entity_type evidence_class evidence_ids extraction_mode freshness id lineage origin owner predicate recorded_time revocation_reason revoked_by satisfies_evidence_requirement scope source_commit status subject temporal_basis transformation unit unresolved_reasons value verdict",
+    components: "attribute_names attributes_digest component_role detection entity_type exported extraction_disposition file_id framework gui_dossier handler id kind method name path range route self_closing tag_name unresolved_reasons",
+    configs: "content_digest entity_type file_id id language path roles",
+    datasets: "content_digest entity_type file_id format id path size_bytes structured_record_count",
+    dependencies: "constraint ecosystem entity_type file_id id name path resolved_version scope",
+    documents: "entity_type file_id id line_count path status status_reasons title",
+    files: "classification_errors content_digest content_source documentation_status documentation_status_reasons entity_type git_blob_oid git_mode git_stage id language line_count media_type nonblank_line_count parse_status parser parser_mode parser_version path privacy_exposure privacy_reasons roles size_bytes unresolved_reasons",
+    graph_edges: "confidence coordinate_occurrence entity_type extraction_mode id relation source source_file source_location target unresolved_reasons",
+    graph_nodes: "community coordinate_occurrence entity_type extraction_mode file_id file_type graphify_id id kind label language origin source_file source_location unresolved_reasons",
+    imports: "alias containing_symbol entity_type file_id id kind module names path range unresolved_reasons",
+    lines: "GUI_or_artifact_consumers behavior_group callers_and_dependencies claims_influenced containing_symbol current_or_historical depth entity_type explanation_depth file_id id inputs_and_outputs language line line_digest line_number owner path runtime_trace_state security_and_privacy_effect semantic_entity source_commit structural_mapping_basis syntax_depth syntax_kind test_coverage_state tests_covering_it text_bytes text_digest text_preview unresolved_reasons",
+    manifests: "content_digest dependency_count entity_type file_id id kind language path",
+    markdown: "authority_classification containing_heading documentation_status entity_type file_id heading id kind level line path target text",
+    routes: "attribute_names entity_type file_id framework gui_dossier handler id kind method name path range route unresolved_reasons",
+    source_text: "byte_count content_digest encoding entity_type file_id git_blob_oid id line_count lines path source_basis",
+    structural_entities: "content_digest entity_type explanation_depth extraction_disposition file_id generation_provenance git_blob_oid id kind language line_count name nonblank_line_count parser parser_mode parser_owned parser_version path range range_state roles root_scope source_basis uncertainty unresolved_reasons",
+    structured: "cell_count data_row_count depth entity_type extraction_disposition file_id id key name path pointer range row_accounting_state row_count_including_header row_index unresolved_reasons value_digest value_preview value_type",
+    symbols: "abstention_behavior callees caller_resolution callers claims_produced_or_consumed constant_basis constant_candidate criticality data_dependencies declaration_kind decorators depth digest documentation downstream_surfaces entity_type explanation_depth exported external_effects extraction_disposition failure_and_exception_behavior file_id framework_candidate history id kind known_impact_if_changed language limitations name parameters parameters_and_types path path_and_range performance_characteristics purpose purpose_basis qualified_name range responsibility return_annotation return_or_output review_state runtime_trace_evidence runtime_trace_state security_boundary stable_urn state_read state_written target test_linkage tests unresolved_reasons",
+    tests: "assertion_count assertion_group_id assertions entity_type extraction_disposition file_id framework id name path range unresolved_reasons",
+    workflows: "access action artifact_ids artifacts declared_path direction entity_type extraction_disposition file_id id job job_ids jobs name parser_mode path permission_ids permissions range run_declared scope source_digest step_id step_ids step_index steps triggers unresolved_reasons uses",
+  }).map(([group, keys]) => [group, new Set(keys.split(" "))]),
+));
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -145,6 +176,219 @@ function stableJson(value) {
 
 function digestObject(value) {
   return sha256(Buffer.from(`${stableJson(value)}\n`, "utf8"));
+}
+
+function compareUnicodeCodePoints(left, right) {
+  let leftIndex = 0;
+  let rightIndex = 0;
+  while (leftIndex < left.length && rightIndex < right.length) {
+    const leftPoint = left.codePointAt(leftIndex);
+    const rightPoint = right.codePointAt(rightIndex);
+    if (leftPoint !== rightPoint) return leftPoint < rightPoint ? -1 : 1;
+    leftIndex += leftPoint > 0xFFFF ? 2 : 1;
+    rightIndex += rightPoint > 0xFFFF ? 2 : 1;
+  }
+  return Math.sign((left.length - leftIndex) - (right.length - rightIndex));
+}
+
+function pythonFloatToken(value) {
+  if (!Number.isFinite(value)) return null;
+  if (Object.is(value, -0)) return "-0.0";
+  const sign = value < 0 ? "-" : "";
+  const absolute = Math.abs(value);
+  if (absolute === 0) return "0.0";
+  const javascript = absolute.toString().toLowerCase();
+  let digits;
+  let exponent;
+  if (javascript.includes("e")) {
+    const [mantissa, rawExponent] = javascript.split("e");
+    const dot = mantissa.indexOf(".");
+    const integerDigits = dot === -1 ? mantissa.length : dot;
+    digits = mantissa.replace(".", "");
+    exponent = Number(rawExponent) + integerDigits - 1;
+  } else {
+    const dot = javascript.indexOf(".");
+    const integerDigits = dot === -1 ? javascript.length : dot;
+    const unscaled = javascript.replace(".", "");
+    const firstNonzero = unscaled.search(/[1-9]/);
+    digits = unscaled.slice(firstNonzero);
+    exponent = integerDigits - firstNonzero - 1;
+  }
+  while (digits.length > 1 && digits.endsWith("0")) digits = digits.slice(0, -1);
+  if (exponent < -4 || exponent >= 16) {
+    const coefficient = digits.length === 1 ? digits : `${digits[0]}.${digits.slice(1)}`;
+    const exponentSign = exponent >= 0 ? "+" : "-";
+    return `${sign}${coefficient}e${exponentSign}${String(Math.abs(exponent)).padStart(2, "0")}`;
+  }
+  let fixed;
+  if (exponent < 0) {
+    fixed = `0.${"0".repeat(-exponent - 1)}${digits}`;
+  } else if (digits.length <= exponent + 1) {
+    fixed = `${digits}${"0".repeat(exponent + 1 - digits.length)}.0`;
+  } else {
+    fixed = `${digits.slice(0, exponent + 1)}.${digits.slice(exponent + 1)}`;
+  }
+  return `${sign}${fixed}`;
+}
+
+function parseCanonicalCompilerJson(bytes) {
+  if (!Buffer.isBuffer(bytes) || bytes.byteLength === 0 || bytes.byteLength > COMPILER_JSON_MAX_BYTES) {
+    throw new Error("compiler JSON exceeds its canonical byte contract");
+  }
+  let text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error("compiler JSON is not canonical UTF-8");
+  }
+  if (!text.endsWith("\n")) throw new Error("compiler JSON is not newline terminated");
+  const source = text.slice(0, -1);
+  let index = 0;
+  let values = 0;
+  const numberPattern = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y;
+
+  const fail = () => {
+    throw new Error("compiler JSON is not canonical");
+  };
+  const stringValue = () => {
+    const start = index;
+    index += 1;
+    let escaped = false;
+    while (index < source.length) {
+      const code = source.charCodeAt(index);
+      if (!escaped && code === 0x22) {
+        index += 1;
+        const token = source.slice(start, index);
+        if (Buffer.byteLength(token, "utf8") > COMPILER_JSON_MAX_STRING_BYTES) fail();
+        let parsed;
+        try {
+          parsed = JSON.parse(token);
+        } catch {
+          fail();
+        }
+        for (let offset = 0; offset < parsed.length; offset += 1) {
+          const unit = parsed.charCodeAt(offset);
+          if (unit >= 0xD800 && unit <= 0xDBFF) {
+            const next = parsed.charCodeAt(offset + 1);
+            if (!(next >= 0xDC00 && next <= 0xDFFF)) fail();
+            offset += 1;
+          } else if (unit >= 0xDC00 && unit <= 0xDFFF) {
+            fail();
+          }
+        }
+        if (JSON.stringify(parsed) !== token) fail();
+        return parsed;
+      }
+      if (!escaped && (code < 0x20 || code === 0x5C)) {
+        if (code < 0x20) fail();
+        escaped = true;
+        index += 1;
+        continue;
+      }
+      escaped = false;
+      index += 1;
+    }
+    fail();
+  };
+  const value = (depth) => {
+    values += 1;
+    if (depth > COMPILER_JSON_MAX_DEPTH || values > COMPILER_JSON_MAX_VALUES) fail();
+    const token = source[index];
+    if (token === "{") {
+      index += 1;
+      let previousKey = null;
+      if (source[index] === "}") {
+        index += 1;
+        return;
+      }
+      while (index < source.length) {
+        if (source[index] !== "\"") fail();
+        const key = stringValue();
+        if (previousKey !== null && compareUnicodeCodePoints(previousKey, key) >= 0) fail();
+        previousKey = key;
+        if (source[index] !== ":") fail();
+        index += 1;
+        value(depth + 1);
+        if (source[index] === "}") {
+          index += 1;
+          return;
+        }
+        if (source[index] !== ",") fail();
+        index += 1;
+      }
+      fail();
+    }
+    if (token === "[") {
+      index += 1;
+      if (source[index] === "]") {
+        index += 1;
+        return;
+      }
+      while (index < source.length) {
+        value(depth + 1);
+        if (source[index] === "]") {
+          index += 1;
+          return;
+        }
+        if (source[index] !== ",") fail();
+        index += 1;
+      }
+      fail();
+    }
+    if (token === "\"") {
+      stringValue();
+      return;
+    }
+    for (const literal of ["true", "false", "null"]) {
+      if (source.startsWith(literal, index)) {
+        index += literal.length;
+        return;
+      }
+    }
+    numberPattern.lastIndex = index;
+    const match = numberPattern.exec(source);
+    if (!match) fail();
+    const numberToken = match[0];
+    if (numberToken.length > 128) fail();
+    if (numberToken.includes(".") || /[eE]/.test(numberToken)) {
+      if (pythonFloatToken(Number(numberToken)) !== numberToken) fail();
+    } else {
+      let canonicalInteger;
+      try {
+        canonicalInteger = BigInt(numberToken).toString();
+      } catch {
+        fail();
+      }
+      if (canonicalInteger !== numberToken) fail();
+    }
+    index += numberToken.length;
+  };
+
+  value(0);
+  if (index !== source.length) fail();
+  let parsed;
+  try {
+    parsed = JSON.parse(source);
+  } catch {
+    fail();
+  }
+  return parsed;
+}
+
+function stableId(kind, ...parts) {
+  const identity = parts.map(String).join("\u001f");
+  return `urn:atlas:${kind}:${sha256(Buffer.from(identity, "utf8")).slice(0, 24)}`;
+}
+
+function graphConfidenceIdentity(value) {
+  if (value === null) return "none";
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) {
+    throw new Error("Graphify edge confidence must be null or a finite number from zero to one");
+  }
+  if (Number.isInteger(value)) return `integer:${value}`;
+  const bytes = Buffer.allocUnsafe(8);
+  bytes.writeDoubleBE(value, 0);
+  return `float64:${bytes.toString("hex")}`;
 }
 
 function compactRecord(group, record) {
@@ -252,7 +496,7 @@ function compactRecord(group, record) {
       range: record.range ?? null,
       attributeNames: record.attribute_names ?? [],
       gui_dossier: record.gui_dossier,
-      derivation: record.derivation ?? "compiler_structural",
+      derivation: "compiler_structural",
       unresolvedReasons: record.unresolved_reasons ?? [],
     };
   }
@@ -342,12 +586,46 @@ function compactRecord(group, record) {
       unresolvedReasons: record.unresolved_reasons ?? [],
     };
   }
+  if (group === "graph_nodes") {
+    return {
+      id: record.id,
+      graphify_id: record.graphify_id,
+      coordinate_occurrence: record.coordinate_occurrence,
+      file_id: record.file_id,
+      source_file: record.source_file,
+      source_location: record.source_location,
+      label: record.label,
+      file_type: record.file_type,
+      language: record.language,
+      kind: record.kind,
+      community: record.community,
+      origin: record.origin,
+      extraction_mode: record.extraction_mode,
+      entity_type: record.entity_type,
+      unresolved_reasons: record.unresolved_reasons,
+    };
+  }
+  if (group === "graph_edges") {
+    return {
+      id: record.id,
+      source: record.source,
+      target: record.target,
+      relation: record.relation,
+      coordinate_occurrence: record.coordinate_occurrence,
+      source_file: record.source_file,
+      source_location: record.source_location,
+      extraction_mode: record.extraction_mode,
+      confidence: record.confidence,
+      entity_type: record.entity_type,
+      unresolved_reasons: record.unresolved_reasons,
+    };
+  }
   const safeMetadata = Object.fromEntries(
     Object.entries(record).filter(([key]) => key !== "text_preview"),
   );
   return {
     ...safeMetadata,
-    derivation: record.derivation ?? "compiler_structural",
+    derivation: "compiler_structural",
   };
 }
 
@@ -355,15 +633,16 @@ function safeRelative(value) {
   if (
     typeof value !== "string" ||
     !value ||
+    value.length > 4096 ||
     value.includes("\\") ||
     value.startsWith("/") ||
     /^[A-Za-z]:/.test(value)
   ) {
-    throw new Error(`unsafe compiler input path: ${String(value)}`);
+    throw new Error("compiler input path is unsafe");
   }
   const parts = value.split("/");
   if (parts.some((part) => !part || part === "." || part === "..")) {
-    throw new Error(`unsafe compiler input path: ${value}`);
+    throw new Error("compiler input path is unsafe");
   }
   return parts;
 }
@@ -373,55 +652,117 @@ async function safeInputPath(input, relative) {
   let current = input;
   for (const [index, part] of parts.entries()) {
     current = join(current, part);
-    const info = await lstat(current);
-    if (info.isSymbolicLink()) throw new Error(`symlink compiler input refused: ${relative}`);
+    let info;
+    try {
+      info = await lstat(current);
+    } catch {
+      throw new Error("compiler input path metadata read failed");
+    }
+    if (info.isSymbolicLink()) throw new Error("symlink compiler input refused");
     if (index < parts.length - 1 && !info.isDirectory()) {
-      throw new Error(`compiler input parent is not a directory: ${relative}`);
+      throw new Error("compiler input path parent is not a directory");
     }
   }
   const absolute = resolve(current);
-  if (!absolute.startsWith(`${input}${sep}`) || !(await lstat(absolute)).isFile()) {
-    throw new Error(`compiler input is not a contained regular file: ${relative}`);
+  let finalInfo;
+  try {
+    finalInfo = await lstat(absolute);
+  } catch {
+    throw new Error("compiler input path metadata read failed");
+  }
+  if (!absolute.startsWith(`${input}${sep}`) || !finalInfo.isFile()) {
+    throw new Error("compiler input is not a contained regular file");
   }
   return absolute;
 }
 
-async function readCanonicalJson(input, relative) {
-  const path = await safeInputPath(input, relative);
-  const bytes = await readFile(path);
-  const parsed = JSON.parse(bytes.toString("utf8"));
-  const canonical = Buffer.from(`${stableJson(parsed)}\n`, "utf8");
-  if (!bytes.equals(canonical)) throw new Error(`compiler JSON is not canonical: ${relative}`);
-  return { bytes, parsed };
+async function readBoundedCompilerJson(path) {
+  let before;
+  let handle;
+  try {
+    before = await lstat(path);
+    if (!before.isFile() || before.size < 1 || before.size > COMPILER_JSON_MAX_BYTES) {
+      throw new Error("bounded compiler JSON metadata is invalid");
+    }
+    handle = await open(path, "r");
+    const buffer = Buffer.allocUnsafe(Math.min(before.size + 1, COMPILER_JSON_MAX_BYTES + 1));
+    let offset = 0;
+    while (offset < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    const after = await handle.stat();
+    if (
+      !after.isFile() ||
+      after.size !== before.size ||
+      after.mtimeMs !== before.mtimeMs ||
+      offset !== after.size
+    ) {
+      throw new Error("bounded compiler JSON changed during read");
+    }
+    return buffer.subarray(0, offset);
+  } catch {
+    throw new Error("bounded compiler JSON read failed");
+  } finally {
+    try {
+      await handle?.close();
+    } catch {
+      // The caller receives only the fixed bounded-read disposition.
+    }
+  }
 }
 
-async function readVerified(input, descriptor) {
+async function readCanonicalJson(input, relative) {
+  const path = await safeInputPath(input, relative);
+  let bytes;
+  try {
+    bytes = await readBoundedCompilerJson(path);
+  } catch {
+    throw new Error("compiler JSON read failed");
+  }
+  try {
+    return { bytes, parsed: parseCanonicalCompilerJson(bytes) };
+  } catch {
+    throw new Error("compiler JSON is not canonical");
+  }
+}
+
+async function readVerified(input, descriptor, expectedPath) {
   if (
     !descriptor ||
     typeof descriptor !== "object" ||
-    !/^[0-9a-f]{64}$/.test(String(descriptor.sha256 ?? "")) ||
+    descriptor.path !== expectedPath ||
+    typeof descriptor.sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/.test(descriptor.sha256) ||
     !Number.isSafeInteger(descriptor.bytes) ||
-    descriptor.bytes < 0
+    descriptor.bytes < 1 ||
+    descriptor.bytes > COMPILER_JSON_MAX_BYTES
   ) {
     throw new Error("compiler receipt is malformed");
   }
   const path = await safeInputPath(input, descriptor.path);
-  const bytes = await readFile(path);
+  let bytes;
+  try {
+    bytes = await readBoundedCompilerJson(path);
+  } catch {
+    throw new Error("compiler receipt read failed");
+  }
   const actualDigest = sha256(bytes);
   if (actualDigest !== descriptor.sha256) {
-    throw new Error(`digest mismatch for ${descriptor.path}`);
+    throw new Error("compiler receipt digest mismatch");
   }
   if (bytes.byteLength !== descriptor.bytes) {
-    throw new Error(`byte-count mismatch for ${descriptor.path}`);
+    throw new Error("compiler receipt byte-count mismatch");
   }
   let parsed;
   try {
-    parsed = JSON.parse(bytes.toString("utf8"));
-  } catch (error) {
-    throw new Error(`compiler receipt is not valid UTF-8 JSON: ${descriptor.path}`, { cause: error });
+    parsed = parseCanonicalCompilerJson(bytes);
+  } catch {
+    throw new Error("compiler receipt is not canonical JSON");
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`compiler receipt is not a JSON object: ${descriptor.path}`);
+    throw new Error("compiler receipt is not a JSON object");
   }
   return parsed;
 }
@@ -435,6 +776,13 @@ async function loadGroup(
   const descriptor = manifest.groups?.[group];
   if (!descriptor) throw new Error(`compiler manifest is missing required group: ${group}`);
   const records = [];
+  const effectiveChunkSize = group === "source_text" ? 1 : manifest.chunk_size;
+  const expectedChunkCount =
+    Number.isSafeInteger(descriptor?.record_count) &&
+    Number.isSafeInteger(effectiveChunkSize) &&
+    effectiveChunkSize > 0
+      ? Math.ceil(descriptor.record_count / effectiveChunkSize)
+      : -1;
   if (
     !Number.isSafeInteger(descriptor.record_count) ||
     descriptor.record_count < 0 ||
@@ -442,18 +790,35 @@ async function loadGroup(
     descriptor.chunk_count < 0 ||
     !Array.isArray(descriptor.chunks) ||
     descriptor.chunk_count !== descriptor.chunks?.length ||
-    !/^[0-9a-f]{64}$/.test(String(descriptor.records_digest ?? ""))
+    descriptor.chunk_count !== expectedChunkCount ||
+    typeof descriptor.records_digest !== "string" ||
+    !/^[0-9a-f]{64}$/.test(descriptor.records_digest)
   ) {
     throw new Error(`compiler group descriptor is malformed: ${group}`);
   }
   const recordIds = [];
   const groupIds = new Set();
   for (const [chunkIndex, chunk] of descriptor.chunks.entries()) {
-    if (!Number.isSafeInteger(chunk?.record_count) || chunk.record_count < 0) {
+    const expectedChunkRecords = Math.min(
+      effectiveChunkSize,
+      descriptor.record_count - chunkIndex * effectiveChunkSize,
+    );
+    if (
+      !Number.isSafeInteger(chunk?.record_count) ||
+      chunk.record_count !== expectedChunkRecords
+    ) {
       throw new Error(`compiler chunk descriptor is malformed: ${group}:${chunkIndex}`);
     }
-    const parsed = await readVerified(input, chunk);
+    const parsed = await readVerified(
+      input,
+      chunk,
+      `chunks/${group}/${String(chunkIndex).padStart(5, "0")}.json`,
+    );
     if (
+      !hasExactObjectKeys(parsed, [
+        "schema_version", "record_type", "source_commit", "source_tree_digest", "chunk_index",
+        "chunk_count", "record_count", "records_digest", "records",
+      ]) ||
       parsed.schema_version !== COMPILER_SCHEMA_VERSION ||
       parsed.record_type !== group ||
       parsed.source_commit !== manifest.source_commit ||
@@ -461,34 +826,68 @@ async function loadGroup(
       parsed.chunk_index !== chunkIndex ||
       parsed.chunk_count !== descriptor.chunk_count ||
       !Array.isArray(parsed.records) ||
-      parsed.record_count !== parsed.records.length ||
-      parsed.records_digest !== digestObject(parsed.records.map((record) => String(record?.id ?? "")))
+      parsed.record_count !== parsed.records.length
     ) {
-      throw new Error(`compiler chunk envelope mismatch for ${chunk.path}`);
+      throw new Error("compiler chunk envelope mismatch");
     }
     if (parsed.records.length !== chunk.record_count) {
-      throw new Error(`record-count mismatch for ${chunk.path}`);
+      throw new Error("compiler chunk record-count mismatch");
     }
+    const chunkRecordIds = [];
     for (const record of parsed.records) {
       if (!record || typeof record !== "object" || Array.isArray(record)) {
-        throw new Error(`compiler ${group} chunk contains a non-object record: ${chunk.path}`);
+        throw new Error("compiler chunk contains a non-object record");
+      }
+      const allowedRecordKeys = COMPILER_RECORD_KEYS_BY_GROUP[group];
+      if (
+        !(allowedRecordKeys instanceof Set) ||
+        Object.keys(record).some((key) => !allowedRecordKeys.has(key))
+      ) {
+        throw new Error("compiler record contains an undeclared field");
+      }
+      if (
+        group === "graph_nodes" &&
+        !hasExactObjectKeys(record, [
+          "id", "graphify_id", "coordinate_occurrence", "file_id", "source_file",
+          "source_location", "label", "file_type", "language", "kind", "community",
+          "origin", "extraction_mode", "entity_type", "unresolved_reasons",
+        ])
+      ) {
+        throw new Error("compiler graph node record shape is malformed");
+      }
+      if (
+        group === "graph_edges" &&
+        !hasExactObjectKeys(record, [
+          "id", "source", "target", "relation", "coordinate_occurrence", "source_file",
+          "source_location", "extraction_mode", "confidence", "entity_type",
+          "unresolved_reasons",
+        ])
+      ) {
+        throw new Error("compiler graph edge record shape is malformed");
       }
       const id = record.id;
-      if (typeof id !== "string" || !id.trim()) {
-        throw new Error(`compiler ${group} record lacks a stable ID: ${chunk.path}`);
+      if (typeof id !== "string" || id.length > 128 || !ATLAS_STABLE_ID_PATTERN.test(id)) {
+        throw new Error("compiler record lacks a stable ID");
       }
       if (groupIds.has(id)) {
-        throw new Error(`duplicate stable record ID in ${group}: ${id}`);
+        throw new Error("duplicate stable record ID in compiler group");
+      }
+      if (recordIds.length > 0 && id <= recordIds.at(-1)) {
+        throw new Error("compiler group stable IDs are not in canonical ascending order");
       }
       const previousGroup = seenIds?.get(id);
       if (previousGroup) {
-        throw new Error(`duplicate stable record ID across ${previousGroup} and ${group}: ${id}`);
+        throw new Error("duplicate stable record ID across compiler groups");
       }
       groupIds.add(id);
       seenIds?.set(id, group);
       recordIds.push(id);
+      chunkRecordIds.push(id);
       if (retain) records.push(record);
       if (onRecord) await onRecord(record);
+    }
+    if (parsed.records_digest !== digestObject(chunkRecordIds)) {
+      throw new Error("compiler chunk record identity digest mismatch");
     }
   }
   if (
@@ -521,16 +920,19 @@ function sortedUniqueStrings(value, label, { nonempty = false } = {}) {
 
 function validateCompilerContract(manifest, completeness, graphify) {
   if (manifest.schema_version !== COMPILER_SCHEMA_VERSION) {
-    throw new Error(`unsupported compiler manifest schema_version: ${String(manifest.schema_version)}`);
+    throw new Error("unsupported compiler manifest schema_version");
   }
   if (completeness.schema_version !== COMPILER_SCHEMA_VERSION) {
-    throw new Error(`unsupported compiler completeness schema_version: ${String(completeness.schema_version)}`);
+    throw new Error("unsupported compiler completeness schema_version");
   }
   if (graphify.schema_version !== COMPILER_SCHEMA_VERSION) {
-    throw new Error(`unsupported compiler Graphify schema_version: ${String(graphify.schema_version)}`);
+    throw new Error("unsupported compiler Graphify schema_version");
   }
   if (!manifest.groups || typeof manifest.groups !== "object" || Array.isArray(manifest.groups)) {
     throw new Error("compiler manifest groups are absent or malformed");
+  }
+  if (!Number.isSafeInteger(manifest.chunk_size) || manifest.chunk_size < 1 || manifest.chunk_size > 100_000) {
+    throw new Error("compiler manifest chunk_size is malformed");
   }
   const missingGroups = REQUIRED_COMPILER_GROUPS.filter((group) => !manifest.groups[group]);
   if (missingGroups.length) {
@@ -565,7 +967,7 @@ function validateCompilerContract(manifest, completeness, graphify) {
       throw new Error("compiler completeness invariant names are invalid or duplicated");
     }
     if (invariant.passed !== true) {
-      throw new Error(`compiler completeness invariant did not pass: ${name}`);
+      throw new Error("compiler completeness invariant did not pass");
     }
     invariantByName.set(name, invariant);
   }
@@ -1462,6 +1864,738 @@ async function writeSourceProjection({
   };
 }
 
+const GRAPH_IDENTIFIER_POLICY =
+  "raw_identifiers_withheld_repository_relative_retained_source_index_excluded";
+const GRAPH_FILE_TYPES = new Set(["", "code", "document", "rationale"]);
+const GRAPH_LANGUAGES = new Set([
+  "", "bash", "c", "cpp", "csharp", "css", "go", "html", "java", "javascript", "json",
+  "jsx", "markdown", "php", "python", "ruby", "rust", "shell", "sql", "text", "tsx",
+  "typescript", "yaml",
+]);
+const GRAPH_KINDS = new Set([
+  "", "bash_entrypoint", "bash_function", "class", "code", "file", "function", "method",
+  "module", "symbol",
+]);
+const GRAPH_RELATIONS = new Set([
+  "calls", "contains", "defines", "imports", "imports_from", "indirect_call", "inherits",
+  "method", "rationale_for", "related_to", "re_exports", "references", "uses",
+]);
+const GRAPH_ABSENT_METADATA_KEYS = Object.freeze([
+  "schema_version", "source_commit", "source_tree_digest", "available", "status", "source",
+  "report_available", "stale", "unresolved_reasons",
+]);
+const GRAPH_AVAILABLE_METADATA_KEYS = Object.freeze([
+  "schema_version", "available", "status", "source", "source_bytes", "source_digest",
+  "report_available", "built_at_commit", "source_commit", "source_tree_digest", "stale",
+  "total_nodes", "total_edges", "total_hyperedges", "projected_nodes", "projected_edges",
+  "excluded_nodes", "excluded_edges", "excluded_node_dispositions",
+  "excluded_edge_dispositions", "excluded_edge_endpoint_dispositions", "all_edge_modes",
+  "projected_edge_modes", "node_origins", "excluded_nodes_unsafe_source",
+  "excluded_nodes_untracked_or_private", "node_disposition_counts",
+  "identifier_projection_policy", "node_identifier_disposition_counts", "total_communities",
+  "projected_communities", "excluded_communities", "all_community_ids",
+  "projected_community_ids", "excluded_community_ids", "partial_community_ids",
+  "community_status_counts", "community_dispositions", "projection_policy",
+  "unresolved_reasons",
+]);
+const GRAPH_BASE_UNRESOLVED_REASONS = Object.freeze([
+  "graphify_is_optional_secondary_projection",
+  "graphify_incremental_rebuild_may_evict_cross_file_edges_until_full_rebuild",
+  "graphify_raw_identifiers_are_withheld_and_exclusion_dispositions_use_source_index_only",
+  "graphify_producer_labels_are_replaced_by_repository_relative_coordinate_labels_and_descriptors_use_controlled_vocabularies",
+]);
+const GRAPH_DIRTY_PREVIEW_REASON = "tracked_worktree_changes_are_newer_than_commit_bound_graph";
+const GRAPH_NODE_REASONS = new Set([
+  "graphify_node_label_derived_from_repository_relative_coordinate",
+  "graphify_node_origin_is_curated_or_undisclosed_not_ast_extraction",
+  "graphify_node_community_outside_js_safe_nonnegative_integer_domain",
+  "graphify_node_source_location_outside_bounded_coordinate_domain",
+  "graphify_node_nonvocabulary_descriptor_withheld",
+]);
+const GRAPH_EDGE_REASONS = new Set([
+  "graphify_confidence_mode_undisclosed_or_ambiguous",
+  "graphify_relation_not_in_controlled_vocabulary_shape",
+  "graphify_edge_source_location_outside_bounded_coordinate_domain",
+]);
+
+function graphSourceLocationIsValid(value) {
+  return Boolean(
+    typeof value === "string" &&
+      value.length <= 64 &&
+      /^(?:L?[1-9]\d*(?::[1-9]\d*)?(?:-L?[1-9]\d*(?::[1-9]\d*)?)?)?$/.test(value) &&
+      [...value.matchAll(/\d+/g)].every((match) => {
+        const component = Number(match[0]);
+        return Number.isSafeInteger(component) && component > 0;
+      }),
+  );
+}
+
+function hasExactObjectKeys(value, expectedKeys) {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      stableJson(Object.keys(value).sort()) === stableJson([...expectedKeys].sort()),
+  );
+}
+
+function validateGraphifyMetadataStructure(graphify) {
+  const digestPattern = /^[0-9a-f]{64}$/;
+  const commitPattern = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+  if (!graphify || typeof graphify !== "object" || Array.isArray(graphify)) {
+    throw new Error("Graphify metadata receipt is malformed");
+  }
+  if (graphify.available === false) {
+    if (
+      !hasExactObjectKeys(graphify, GRAPH_ABSENT_METADATA_KEYS) ||
+      graphify.schema_version !== COMPILER_SCHEMA_VERSION ||
+      graphify.status !== "absent" ||
+      graphify.stale !== null ||
+      graphify.source !== "graphify-out/graph.json" ||
+      typeof graphify.report_available !== "boolean" ||
+      !commitPattern.test(graphify.source_commit) ||
+      !digestPattern.test(graphify.source_tree_digest) ||
+      stableJson(graphify.unresolved_reasons) !==
+        stableJson(["optional_graphify_projection_not_present"])
+    ) {
+      throw new Error("absent Graphify metadata receipt is malformed");
+    }
+    return;
+  }
+  if (
+    graphify.available !== true ||
+    !hasExactObjectKeys(graphify, GRAPH_AVAILABLE_METADATA_KEYS) ||
+    graphify.schema_version !== COMPILER_SCHEMA_VERSION ||
+    graphify.source !== "graphify-out/graph.json" ||
+    graphify.projection_policy !== "tracked_full_exposure_files_only" ||
+    typeof graphify.report_available !== "boolean" ||
+    !commitPattern.test(graphify.source_commit) ||
+    !digestPattern.test(graphify.source_tree_digest) ||
+    !digestPattern.test(graphify.source_digest) ||
+    requireCount(graphify.source_bytes, "Graphify source byte count") === 0
+  ) {
+    throw new Error("available Graphify metadata receipt is malformed");
+  }
+  const totalHyperedges = requireCount(graphify.total_hyperedges, "Graphify hyperedge count");
+  const expectedReasons = [
+    GRAPH_BASE_UNRESOLVED_REASONS[0],
+    totalHyperedges > 0 ? "graphify_hyperedges_not_projected" : "graphify_has_no_hyperedges",
+    ...GRAPH_BASE_UNRESOLVED_REASONS.slice(1),
+    ...(graphify.built_at_commit === null
+      ? ["graphify_built_at_commit_missing_or_malformed_and_withheld"]
+      : []),
+    ...(graphify.status === "stale" && graphify.built_at_commit === graphify.source_commit
+      ? [GRAPH_DIRTY_PREVIEW_REASON]
+      : []),
+  ];
+  if (stableJson(graphify.unresolved_reasons) !== stableJson(expectedReasons)) {
+    throw new Error("Graphify unresolved reason ledger is malformed");
+  }
+
+  const validateCountMap = (value, allowedKeys, expectedTotal, label) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error(`${label} is malformed`);
+    }
+    let total = 0;
+    for (const [key, count] of Object.entries(value)) {
+      if (!allowedKeys.has(key) || !Number.isSafeInteger(count) || count <= 0) {
+        throw new Error(`${label} is malformed`);
+      }
+      total += count;
+    }
+    if (!Number.isSafeInteger(total) || total !== expectedTotal) {
+      throw new Error(`${label} does not reconcile`);
+    }
+    return value;
+  };
+  const totalEdges = requireCount(graphify.total_edges, "Graphify total edge count");
+  const projectedEdges = requireCount(graphify.projected_edges, "Graphify projected edge count");
+  const edgeModes = new Set(["extracted", "inferred", "ambiguous", "undisclosed"]);
+  const allModes = validateCountMap(graphify.all_edge_modes, edgeModes, totalEdges, "Graphify edge modes");
+  const projectedModes = validateCountMap(
+    graphify.projected_edge_modes,
+    edgeModes,
+    projectedEdges,
+    "Graphify projected edge modes",
+  );
+  if (Object.entries(projectedModes).some(([mode, count]) => count > (allModes[mode] ?? 0))) {
+    throw new Error("Graphify projected edge modes exceed the source census");
+  }
+  validateCountMap(
+    graphify.node_origins,
+    new Set(["ast", "curated", "undisclosed"]),
+    requireCount(graphify.total_nodes, "Graphify total node count"),
+    "Graphify node origins",
+  );
+  if (
+    !hasExactObjectKeys(graphify.node_disposition_counts, [
+      "retained", "excluded_unsafe_source", "excluded_untracked_or_private",
+    ]) ||
+    requireCount(
+      graphify.node_disposition_counts.retained,
+      "Graphify retained node disposition count",
+    ) !== graphify.projected_nodes ||
+    requireCount(
+      graphify.node_disposition_counts.excluded_unsafe_source,
+      "Graphify unsafe-source node disposition count",
+    ) !== graphify.excluded_nodes_unsafe_source ||
+    requireCount(
+      graphify.node_disposition_counts.excluded_untracked_or_private,
+      "Graphify private node disposition count",
+    ) !== graphify.excluded_nodes_untracked_or_private ||
+    graphify.excluded_nodes_unsafe_source + graphify.excluded_nodes_untracked_or_private !==
+      graphify.excluded_nodes ||
+    !hasExactObjectKeys(graphify.node_identifier_disposition_counts, [
+      "total", "projected_repository_relative", "excluded_opaque", "raw_published",
+    ])
+  ) {
+    throw new Error("Graphify node disposition denominator does not reconcile");
+  }
+
+  const communityIds = (value, label) => {
+    if (
+      !Array.isArray(value) ||
+      value.some((item) => !Number.isSafeInteger(item) || item < 0) ||
+      value.some((item, index) => index > 0 && value[index - 1] >= item)
+    ) {
+      throw new Error(`${label} is malformed`);
+    }
+    return value;
+  };
+  const allCommunityIds = communityIds(graphify.all_community_ids, "Graphify community census");
+  const projectedCommunityIds = communityIds(
+    graphify.projected_community_ids,
+    "Graphify projected community census",
+  );
+  const excludedCommunityIds = communityIds(
+    graphify.excluded_community_ids,
+    "Graphify excluded community census",
+  );
+  const partialCommunityIds = communityIds(
+    graphify.partial_community_ids,
+    "Graphify partial community census",
+  );
+  const allCommunitySet = new Set(allCommunityIds);
+  const projectedCommunitySet = new Set(projectedCommunityIds);
+  const excludedCommunitySet = new Set(excludedCommunityIds);
+  if (
+    requireCount(graphify.total_communities, "Graphify total community count") !==
+      allCommunityIds.length ||
+    requireCount(graphify.projected_communities, "Graphify projected community count") !==
+      projectedCommunityIds.length ||
+    requireCount(graphify.excluded_communities, "Graphify excluded community count") !==
+      excludedCommunityIds.length ||
+    projectedCommunityIds.some((id) => !allCommunitySet.has(id) || excludedCommunitySet.has(id)) ||
+    excludedCommunityIds.some((id) => !allCommunitySet.has(id)) ||
+    projectedCommunityIds.length + excludedCommunityIds.length !== allCommunityIds.length ||
+    partialCommunityIds.some((id) => !projectedCommunitySet.has(id))
+  ) {
+    throw new Error("Graphify community denominator does not reconcile");
+  }
+  const statusKeys = ["projected_complete", "projected_partial", "excluded"];
+  if (
+    !hasExactObjectKeys(graphify.community_status_counts, statusKeys) ||
+    statusKeys.some(
+      (status) =>
+        !Number.isSafeInteger(graphify.community_status_counts[status]) ||
+        graphify.community_status_counts[status] < 0,
+    ) ||
+    !Array.isArray(graphify.community_dispositions)
+  ) {
+    throw new Error("Graphify community disposition ledger is malformed");
+  }
+  const actualStatusCounts = Object.fromEntries(statusKeys.map((status) => [status, 0]));
+  const dispositionCommunityIds = [];
+  const derivedPartialIds = [];
+  for (const disposition of graphify.community_dispositions) {
+    if (
+      !hasExactObjectKeys(disposition, [
+        "community", "status", "total_nodes", "retained_nodes", "excluded_nodes",
+      ]) ||
+      !Number.isSafeInteger(disposition.community) ||
+      disposition.community < 0 ||
+      !Number.isSafeInteger(disposition.total_nodes) ||
+      disposition.total_nodes <= 0 ||
+      !Number.isSafeInteger(disposition.retained_nodes) ||
+      disposition.retained_nodes < 0 ||
+      !Number.isSafeInteger(disposition.excluded_nodes) ||
+      disposition.excluded_nodes < 0 ||
+      disposition.retained_nodes + disposition.excluded_nodes !== disposition.total_nodes
+    ) {
+      throw new Error("Graphify community disposition ledger is malformed");
+    }
+    const expectedStatus =
+      disposition.retained_nodes === 0
+        ? "excluded"
+        : disposition.retained_nodes === disposition.total_nodes
+          ? "projected_complete"
+          : "projected_partial";
+    if (disposition.status !== expectedStatus) {
+      throw new Error("Graphify community disposition status is inconsistent");
+    }
+    dispositionCommunityIds.push(disposition.community);
+    actualStatusCounts[expectedStatus] += 1;
+    if (expectedStatus === "projected_partial") derivedPartialIds.push(disposition.community);
+  }
+  if (
+    stableJson(dispositionCommunityIds) !== stableJson(allCommunityIds) ||
+    stableJson(actualStatusCounts) !== stableJson(graphify.community_status_counts) ||
+    stableJson(derivedPartialIds) !== stableJson(partialCommunityIds)
+  ) {
+    throw new Error("Graphify community disposition ledger does not reconcile");
+  }
+}
+
+function validateGraphExclusionLedger(graphify, retainedNodeIds) {
+  const nodeDispositionIdPattern = /^urn:atlas:graph-node-disposition:[0-9a-f]{24}$/;
+  const edgeDispositionIdPattern = /^urn:atlas:graph-edge-disposition:[0-9a-f]{24}$/;
+  const nodeKeys = ["id", "disposition", "raw_index", "reason"];
+  const edgeKeys = [
+    "id", "disposition", "raw_index", "reason", "source_endpoint", "target_endpoint",
+  ];
+  const endpointKeys = ["state", "record_id", "anonymous_slot"];
+  const nodeReasons = new Set(["excluded_unsafe_source", "excluded_untracked_or_private"]);
+  const endpointStates = new Set([
+    "retained", "excluded_unsafe_source", "excluded_untracked_or_private", "missing_node",
+  ]);
+  const nodeDispositionIds = new Set();
+  const nodeRawIndices = new Set();
+  const nodeDispositionsById = new Map();
+  const actualNodeReasons = {
+    excluded_unsafe_source: 0,
+    excluded_untracked_or_private: 0,
+  };
+  for (const record of graphify.excluded_node_dispositions) {
+    if (
+      !hasExactObjectKeys(record, nodeKeys) ||
+      record.disposition !== "excluded" ||
+      typeof record.id !== "string" ||
+      !nodeDispositionIdPattern.test(record.id) ||
+      nodeDispositionIds.has(record.id) ||
+      !Number.isSafeInteger(record.raw_index) ||
+      record.raw_index < 0 ||
+      record.raw_index >= graphify.total_nodes ||
+      nodeRawIndices.has(record.raw_index) ||
+      record.id !== stableId(
+        "graph-node-disposition", graphify.source_digest, record.raw_index,
+      ) ||
+      !nodeReasons.has(record.reason)
+    ) {
+      throw new Error("Graphify excluded node disposition ledger is malformed");
+    }
+    nodeDispositionIds.add(record.id);
+    nodeRawIndices.add(record.raw_index);
+    nodeDispositionsById.set(record.id, record);
+    actualNodeReasons[record.reason] += 1;
+  }
+  if (
+    actualNodeReasons.excluded_unsafe_source !==
+      graphify.node_disposition_counts.excluded_unsafe_source ||
+    actualNodeReasons.excluded_untracked_or_private !==
+      graphify.node_disposition_counts.excluded_untracked_or_private
+  ) {
+    throw new Error("Graphify excluded node disposition ledger does not reconcile");
+  }
+
+  const edgeDispositionIds = new Set();
+  const edgeRawIndices = new Set();
+  const validatedEdges = [];
+  const actualEndpointCounts = Object.create(null);
+  const seenAnonymousSlots = new Set();
+  const validateEndpoint = (endpoint) => {
+    if (
+      !hasExactObjectKeys(endpoint, endpointKeys) ||
+      !endpointStates.has(endpoint.state)
+    ) {
+      throw new Error("Graphify excluded edge endpoint ledger is malformed");
+    }
+    if (endpoint.state === "missing_node") {
+      if (
+        endpoint.record_id !== null ||
+        !Number.isSafeInteger(endpoint.anonymous_slot) ||
+        endpoint.anonymous_slot < 0
+      ) {
+        throw new Error("Graphify missing edge endpoint slot is malformed");
+      }
+      if (!seenAnonymousSlots.has(endpoint.anonymous_slot)) {
+        if (endpoint.anonymous_slot !== seenAnonymousSlots.size) {
+          throw new Error("Graphify missing edge endpoint slots are not first-seen contiguous");
+        }
+        seenAnonymousSlots.add(endpoint.anonymous_slot);
+      }
+      return;
+    }
+    if (typeof endpoint.record_id !== "string" || endpoint.anonymous_slot !== null) {
+      throw new Error("Graphify known edge endpoint lacks a record identity");
+    }
+    if (endpoint.state === "retained") {
+      if (!retainedNodeIds.has(endpoint.record_id)) {
+        throw new Error("Graphify retained edge endpoint does not resolve");
+      }
+      return;
+    }
+    const disposition = nodeDispositionsById.get(endpoint.record_id);
+    if (
+      !disposition ||
+      disposition.reason !== endpoint.state
+    ) {
+      throw new Error("Graphify excluded edge endpoint does not traverse to its node disposition");
+    }
+  };
+  for (const record of graphify.excluded_edge_dispositions) {
+    if (
+      !hasExactObjectKeys(record, edgeKeys) ||
+      record.disposition !== "excluded" ||
+      typeof record.id !== "string" ||
+      !edgeDispositionIdPattern.test(record.id) ||
+      edgeDispositionIds.has(record.id) ||
+      !Number.isSafeInteger(record.raw_index) ||
+      record.raw_index < 0 ||
+      record.raw_index >= graphify.total_edges ||
+      edgeRawIndices.has(record.raw_index) ||
+      record.id !== stableId(
+        "graph-edge-disposition", graphify.source_digest, record.raw_index,
+      ) ||
+      record.reason !== "endpoint_not_projected"
+    ) {
+      throw new Error("Graphify excluded edge disposition ledger is malformed");
+    }
+    edgeDispositionIds.add(record.id);
+    edgeRawIndices.add(record.raw_index);
+    validatedEdges.push(record);
+  }
+  validatedEdges.sort((left, right) => left.raw_index - right.raw_index);
+  for (const record of validatedEdges) {
+    validateEndpoint(record.source_endpoint);
+    validateEndpoint(record.target_endpoint);
+    const endpointDisposition =
+      `source_${record.source_endpoint.state}__target_${record.target_endpoint.state}`;
+    actualEndpointCounts[endpointDisposition] =
+      (actualEndpointCounts[endpointDisposition] ?? 0) + 1;
+  }
+  if (stableJson(actualEndpointCounts) !== stableJson(graphify.excluded_edge_endpoint_dispositions)) {
+    throw new Error("Graphify excluded edge endpoint ledger does not reconcile");
+  }
+}
+
+function validateGraphProjectionContract(manifest, graphify, nodes, edges, filesByPath) {
+  validateGraphifyMetadataStructure(graphify);
+  if (graphify.available !== true) {
+    if (nodes.length || edges.length) {
+      throw new Error("unavailable Graphify receipt cannot carry projected node or edge records");
+    }
+    return;
+  }
+  const counts = graphify.node_identifier_disposition_counts;
+  const nodeDispositionCounts = graphify.node_disposition_counts;
+  const excludedNodeDispositions = Array.isArray(graphify.excluded_node_dispositions)
+    ? graphify.excluded_node_dispositions
+    : null;
+  const excludedEdgeDispositions = Array.isArray(graphify.excluded_edge_dispositions)
+    ? graphify.excluded_edge_dispositions
+    : null;
+  const endpointDispositionCounts = graphify.excluded_edge_endpoint_dispositions;
+  const endpointDispositionValues =
+    endpointDispositionCounts &&
+    typeof endpointDispositionCounts === "object" &&
+    !Array.isArray(endpointDispositionCounts)
+      ? Object.values(endpointDispositionCounts)
+      : null;
+  const dirtyGraphReasonIsPresent =
+    Array.isArray(graphify.unresolved_reasons) &&
+    graphify.unresolved_reasons.includes(
+      "tracked_worktree_changes_are_newer_than_commit_bound_graph",
+    );
+  const graphStateIsBound =
+    graphify.built_at_commit === manifest.source_commit &&
+    ((manifest.release_class === "exact_commit" &&
+      manifest.tracked_worktree_dirty === false &&
+      graphify.status === "current" &&
+      graphify.stale === false &&
+      !dirtyGraphReasonIsPresent) ||
+      (manifest.release_class === "dirty_preview" &&
+        manifest.tracked_worktree_dirty === true &&
+        graphify.status === "stale" &&
+        graphify.stale === true &&
+        dirtyGraphReasonIsPresent));
+  if (
+    !Object.hasOwn(graphify, "built_at_commit") ||
+    (graphify.built_at_commit !== null &&
+      (typeof graphify.built_at_commit !== "string" ||
+        !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(graphify.built_at_commit))) ||
+    !graphStateIsBound ||
+    graphify.identifier_projection_policy !== GRAPH_IDENTIFIER_POLICY ||
+    !counts ||
+    typeof counts !== "object" ||
+    Array.isArray(counts) ||
+    requireCount(counts.total, "Graphify total identifier count") !==
+      requireCount(graphify.total_nodes, "Graphify total node count") ||
+    requireCount(graphify.total_nodes, "Graphify total node count") !==
+      requireCount(graphify.projected_nodes, "Graphify projected node count") +
+        requireCount(graphify.excluded_nodes, "Graphify excluded node count") ||
+    requireCount(graphify.total_edges, "Graphify total edge count") !==
+      requireCount(graphify.projected_edges, "Graphify projected edge count") +
+        requireCount(graphify.excluded_edges, "Graphify excluded edge count") ||
+    requireCount(counts.projected_repository_relative, "Graphify projected identifier count") !== nodes.length ||
+    requireCount(counts.excluded_opaque, "Graphify excluded identifier count") !==
+      requireCount(graphify.excluded_nodes, "Graphify excluded node count") ||
+    counts.raw_published !== 0 ||
+    counts.projected_repository_relative + counts.excluded_opaque !== counts.total ||
+    requireCount(graphify.projected_nodes, "Graphify projected node count") !== nodes.length ||
+    requireCount(graphify.projected_edges, "Graphify projected edge count") !== edges.length ||
+    !nodeDispositionCounts ||
+    typeof nodeDispositionCounts !== "object" ||
+    Array.isArray(nodeDispositionCounts) ||
+    requireCount(nodeDispositionCounts.retained, "Graphify retained node disposition count") !==
+      nodes.length ||
+    requireCount(
+      nodeDispositionCounts.excluded_unsafe_source,
+      "Graphify unsafe-source node disposition count",
+    ) +
+      requireCount(
+        nodeDispositionCounts.excluded_untracked_or_private,
+        "Graphify private node disposition count",
+      ) !==
+      requireCount(graphify.excluded_nodes, "Graphify excluded node count") ||
+    excludedNodeDispositions === null ||
+    excludedNodeDispositions.length !== graphify.excluded_nodes ||
+    excludedEdgeDispositions === null ||
+    excludedEdgeDispositions.length !== graphify.excluded_edges ||
+    endpointDispositionValues === null ||
+    endpointDispositionValues.some(
+      (value) => !Number.isSafeInteger(value) || value <= 0,
+    ) ||
+    endpointDispositionValues.reduce((total, value) => total + value, 0) !==
+      graphify.excluded_edges
+  ) {
+    throw new Error("Graphify identifier disposition receipt is absent or inconsistent");
+  }
+  const nodeIds = new Set();
+  const projectedIdentifiers = new Set();
+  const nodeOccurrences = new Map();
+  for (const node of nodes) {
+    const file = typeof node?.source_file === "string" ? filesByPath.get(node.source_file) : null;
+    const fileIsSafe =
+      file?.privacyExposure === "full" &&
+      Array.isArray(file.classificationErrors) &&
+      file.classificationErrors.length === 0;
+    const coordinateOccurrence = node?.coordinate_occurrence;
+    const sourceLocation = node?.source_location;
+    const expectedGraphifyId =
+      fileIsSafe &&
+      file.id === node?.file_id &&
+      graphSourceLocationIsValid(sourceLocation) &&
+      Number.isSafeInteger(coordinateOccurrence) &&
+      coordinateOccurrence >= 0
+        ? digestObject([
+            "repository-relative-graph-node",
+            node.source_file,
+            sourceLocation,
+            String(coordinateOccurrence),
+          ])
+        : null;
+    const expectedNodeId = expectedGraphifyId
+      ? stableId("graph-node", manifest.source_commit, expectedGraphifyId)
+      : null;
+    const expectedNodeLabel = expectedGraphifyId
+      ? `${node.source_file}:${sourceLocation || "source"}#${coordinateOccurrence + 1}`
+      : null;
+    const expectedExtractionMode =
+      node?.origin === "ast"
+        ? "extracted"
+        : node?.origin === "curated"
+          ? "curated"
+          : node?.origin === "undisclosed"
+            ? "undisclosed"
+            : null;
+    const expectedEntityType = GRAPH_KINDS.has(node?.kind)
+      ? `graph_node${node.kind ? `_${node.kind}` : ""}`
+      : null;
+    const nodeReasons = node?.unresolved_reasons;
+    const nodeReasonsAreControlled =
+      Array.isArray(nodeReasons) &&
+      nodeReasons.length > 0 &&
+      nodeReasons[0] === "graphify_node_label_derived_from_repository_relative_coordinate" &&
+      nodeReasons.every((reason) => GRAPH_NODE_REASONS.has(reason)) &&
+      new Set(nodeReasons).size === nodeReasons.length &&
+      stableJson(nodeReasons) ===
+        stableJson([...GRAPH_NODE_REASONS].filter((reason) => nodeReasons.includes(reason))) &&
+      nodeReasons.includes(
+        "graphify_node_origin_is_curated_or_undisclosed_not_ast_extraction",
+      ) === (node?.origin !== "ast") &&
+      (!nodeReasons.includes(
+        "graphify_node_community_outside_js_safe_nonnegative_integer_domain",
+      ) || node?.community === null) &&
+      (!nodeReasons.includes("graphify_node_nonvocabulary_descriptor_withheld") ||
+        [node?.file_type, node?.language, node?.kind].some((value) => value === "")) &&
+      (!nodeReasons.includes(
+        "graphify_node_source_location_outside_bounded_coordinate_domain",
+      ) || sourceLocation === "");
+    if (
+      !node ||
+      typeof node !== "object" ||
+      !hasExactObjectKeys(node, [
+        "id", "graphify_id", "coordinate_occurrence", "file_id", "source_file",
+        "source_location", "label", "file_type", "language", "kind", "community",
+        "origin", "extraction_mode", "entity_type", "unresolved_reasons",
+      ]) ||
+      typeof node.id !== "string" ||
+      node.id !== expectedNodeId ||
+      nodeIds.has(node.id) ||
+      typeof node.graphify_id !== "string" ||
+      node.graphify_id !== expectedGraphifyId ||
+      projectedIdentifiers.has(node.graphify_id) ||
+      !file ||
+      !fileIsSafe ||
+      node.file_id !== file.id ||
+      node.label !== expectedNodeLabel ||
+      !GRAPH_FILE_TYPES.has(node.file_type) ||
+      !GRAPH_LANGUAGES.has(node.language) ||
+      !GRAPH_KINDS.has(node.kind) ||
+      !(node.community === null ||
+        (Number.isSafeInteger(node.community) && node.community >= 0)) ||
+      !["ast", "curated", "undisclosed"].includes(node.origin) ||
+      node.extraction_mode !== expectedExtractionMode ||
+      node.entity_type !== expectedEntityType ||
+      !nodeReasonsAreControlled
+    ) {
+      throw new Error(
+        "Graphify node lacks a unique recomputable full-exposure repository-relative identity",
+      );
+    }
+    nodeIds.add(node.id);
+    projectedIdentifiers.add(node.graphify_id);
+    const coordinate = stableJson([node.source_file, sourceLocation]);
+    const occurrences = nodeOccurrences.get(coordinate) ?? [];
+    occurrences.push(coordinateOccurrence);
+    nodeOccurrences.set(coordinate, occurrences);
+  }
+  for (const occurrences of nodeOccurrences.values()) {
+    occurrences.sort((left, right) => left - right);
+    if (occurrences.some((occurrence, index) => occurrence !== index)) {
+      throw new Error("Graphify node coordinate occurrences are not contiguous and one-to-one");
+    }
+  }
+  validateGraphExclusionLedger(graphify, nodeIds);
+  const edgeIds = new Set();
+  const edgeOccurrences = new Map();
+  for (const edge of edges) {
+    const edgeSourceFile = edge?.source_file;
+    const edgeFile = typeof edgeSourceFile === "string" ? filesByPath.get(edgeSourceFile) : null;
+    const edgeFileIsSafe =
+      edgeFile?.privacyExposure === "full" &&
+      Array.isArray(edgeFile.classificationErrors) &&
+      edgeFile.classificationErrors.length === 0;
+    const edgeLocation = edge?.source_location;
+    const edgeOccurrence = edge?.coordinate_occurrence;
+    const mode = edge?.extraction_mode;
+    const relation = edge?.relation;
+    const confidenceIdentity = graphConfidenceIdentity(edge?.confidence);
+    const edgeReasons = edge?.unresolved_reasons;
+    const edgeReasonsAreControlled =
+      Array.isArray(edgeReasons) &&
+      edgeReasons.every((reason) => GRAPH_EDGE_REASONS.has(reason)) &&
+      new Set(edgeReasons).size === edgeReasons.length &&
+      stableJson(edgeReasons) ===
+        stableJson([...GRAPH_EDGE_REASONS].filter((reason) => edgeReasons.includes(reason))) &&
+      edgeReasons.includes("graphify_confidence_mode_undisclosed_or_ambiguous") ===
+        ["ambiguous", "undisclosed"].includes(mode) &&
+      (!edgeReasons.includes("graphify_relation_not_in_controlled_vocabulary_shape") ||
+        relation === "related_to") &&
+      (!edgeReasons.includes(
+        "graphify_edge_source_location_outside_bounded_coordinate_domain",
+      ) || edgeLocation === "");
+    const publicCoordinateIsValid =
+      typeof edge?.source === "string" &&
+      typeof edge?.target === "string" &&
+      nodeIds.has(edge.source) &&
+      nodeIds.has(edge.target) &&
+      typeof relation === "string" &&
+      GRAPH_RELATIONS.has(relation) &&
+      (edgeSourceFile === null ||
+        (typeof edgeSourceFile === "string" &&
+          edgeFileIsSafe)) &&
+      graphSourceLocationIsValid(edgeLocation) &&
+      ["extracted", "inferred", "ambiguous", "undisclosed"].includes(mode) &&
+      edge?.entity_type === "graph_edge" &&
+      edgeReasonsAreControlled &&
+      Number.isSafeInteger(edgeOccurrence) &&
+      edgeOccurrence >= 0;
+    const publicCoordinate = publicCoordinateIsValid
+      ? [
+          edge.source,
+          edge.target,
+          relation,
+          edgeSourceFile ?? "",
+          edgeLocation,
+          mode,
+          confidenceIdentity,
+        ]
+      : null;
+    const expectedEdgeId = publicCoordinate
+      ? stableId("graph-edge", manifest.source_commit, ...publicCoordinate, edgeOccurrence)
+      : null;
+    if (
+      !edge ||
+      typeof edge !== "object" ||
+      !hasExactObjectKeys(edge, [
+        "id", "source", "target", "relation", "coordinate_occurrence", "source_file",
+        "source_location", "extraction_mode", "confidence", "entity_type",
+        "unresolved_reasons",
+      ]) ||
+      typeof edge.id !== "string" ||
+      edge.id !== expectedEdgeId ||
+      edgeIds.has(edge.id) ||
+      !publicCoordinateIsValid
+    ) {
+      throw new Error("Graphify edge endpoint, coordinate, or stable identity is inconsistent");
+    }
+    edgeIds.add(edge.id);
+    const coordinate = stableJson(publicCoordinate);
+    const occurrences = edgeOccurrences.get(coordinate) ?? [];
+    occurrences.push(edgeOccurrence);
+    edgeOccurrences.set(coordinate, occurrences);
+  }
+  for (const occurrences of edgeOccurrences.values()) {
+    occurrences.sort((left, right) => left - right);
+    if (occurrences.some((occurrence, index) => occurrence !== index)) {
+      throw new Error("Graphify edge coordinate occurrences are not contiguous and one-to-one");
+    }
+  }
+  const projectedCommunityNodeCounts = new Map();
+  for (const node of nodes) {
+    if (node.community !== null) {
+      projectedCommunityNodeCounts.set(
+        node.community,
+        (projectedCommunityNodeCounts.get(node.community) ?? 0) + 1,
+      );
+    }
+  }
+  const projectedCommunityIds = [...projectedCommunityNodeCounts.keys()].sort(
+    (left, right) => left - right,
+  );
+  const communityDispositionsById = new Map(
+    graphify.community_dispositions.map((disposition) => [disposition.community, disposition]),
+  );
+  if (
+    stableJson(projectedCommunityIds) !== stableJson(graphify.projected_community_ids) ||
+    [...projectedCommunityNodeCounts].some(
+      ([community, count]) =>
+        communityDispositionsById.get(community)?.retained_nodes !== count,
+    )
+  ) {
+    throw new Error("Graphify projected community census differs from graph nodes");
+  }
+  const projectedEdgeModes = Object.create(null);
+  for (const edge of edges) {
+    projectedEdgeModes[edge.extraction_mode] =
+      (projectedEdgeModes[edge.extraction_mode] ?? 0) + 1;
+  }
+  if (stableJson(projectedEdgeModes) !== stableJson(graphify.projected_edge_modes)) {
+    throw new Error("Graphify projected edge mode census differs from graph edges");
+  }
+}
+
 async function writeGraphProjection(staging, nodes, edges) {
   await mkdir(join(staging, "graph", "shards"), { recursive: true });
   const nodeCommunity = new Map(nodes.map((node) => [node.id, node.community == null ? "unassigned" : String(node.community)]));
@@ -1583,8 +2717,15 @@ export async function buildProjection({ input, output, allowPreview = false }) {
   const inputRoot = await realpath(resolve(input));
   const outputRoot = assertSafeDestination(output);
   const { parsed: manifest } = await readCanonicalJson(inputRoot, "manifest.json");
-  const completeness = await readVerified(inputRoot, manifest.completeness);
-  const graphify = await readVerified(inputRoot, manifest.graphify_metadata);
+  if (manifest.architecture_conformance?.path !== "architecture-conformance.json") {
+    throw new Error("compiler architecture receipt owner path is malformed");
+  }
+  const completeness = await readVerified(inputRoot, manifest.completeness, "completeness.json");
+  const graphify = await readVerified(
+    inputRoot,
+    manifest.graphify_metadata,
+    "graphify-metadata.json",
+  );
   const invariantByName = validateCompilerContract(manifest, completeness, graphify);
   if (manifest.status !== "complete" || completeness.hard_failure) {
     throw new Error("compiler output is not complete and publishable");
@@ -1629,11 +2770,24 @@ export async function buildProjection({ input, output, allowPreview = false }) {
 
   const filesByPath = new Map();
   for (const file of groups.files) {
-    if (typeof file.path !== "string" || !file.path || filesByPath.has(file.path)) {
-      throw new Error(`duplicate or invalid tracked file path: ${String(file.path)}`);
+    let pathIsSafe = false;
+    try {
+      pathIsSafe = safeRelative(file?.path).join("/") === file.path;
+    } catch {
+      pathIsSafe = false;
+    }
+    if (!pathIsSafe || filesByPath.has(file.path)) {
+      throw new Error("duplicate or invalid tracked file path");
     }
     filesByPath.set(file.path, file);
   }
+  validateGraphProjectionContract(
+    manifest,
+    graphify,
+    groups.graph_nodes ?? [],
+    groups.graph_edges ?? [],
+    filesByPath,
+  );
   if (
     requireCount(completeness.census?.tracked_files, "completeness tracked_files") !== filesByPath.size ||
     requireCount(completeness.census?.classified_files, "completeness classified_files") !== filesByPath.size

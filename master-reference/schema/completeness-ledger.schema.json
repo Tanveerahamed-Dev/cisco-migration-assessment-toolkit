@@ -27,8 +27,8 @@
   "properties": {
     "id": {"$ref": "atlas-records.schema.json#/$defs/atlasId"},
     "schema_version": {"const": "1.1.0"},
-    "source_commit": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40,64}$"},
-    "head_tree_oid": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40,64}$"},
+    "source_commit": {"type": ["string", "null"], "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "head_tree_oid": {"type": ["string", "null"], "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
     "index_digest": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
     "source_tree_digest": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
     "tracked_status_digest": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
@@ -271,7 +271,7 @@
       "required": ["schema_version", "source_commit", "source_tree_digest"],
       "properties": {
         "schema_version": {"const": "1.1.0"},
-        "source_commit": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40,64}$"},
+        "source_commit": {"type": ["string", "null"], "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
         "source_tree_digest": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
       }
     },

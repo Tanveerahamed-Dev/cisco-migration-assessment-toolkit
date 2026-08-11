@@ -27,7 +27,13 @@ from atlas_privacy import FORBIDDEN_CONTENT_RULES, forbidden_content_findings
 from governance.architecture import build_architecture_conformance, load_contract
 from governance.policy import validate_claims
 
-from .graphify import GraphifyFailure, project_graphify, verify_graphify_snapshot
+from .graphify import (
+    GRAPHIFY_DIRTY_PREVIEW_REASON,
+    GraphifyFailure,
+    project_graphify,
+    validate_graphify_metadata,
+    verify_graphify_snapshot,
+)
 from .model import SCHEMA_VERSION, canonical_json, chunked, digest_object, sha256_bytes, stable_id
 from .parsers import ParseFailure, ParseResult, nonblank_line_records, parse_by_language, safe_decode_text
 from .policy import classify_file, documentation_status
@@ -206,11 +212,7 @@ def _git_census(root: Path) -> list[GitEntry]:
 def _git_tree_census(root: Path, source_commit: str) -> list[GitEntry]:
     """Enumerate the selected commit tree independently of the worktree index."""
 
-    rows = [
-        item
-        for item in _git(root, "ls-tree", "-r", "--full-tree", "-z", source_commit).split(b"\0")
-        if item
-    ]
+    rows = [item for item in _git(root, "ls-tree", "-r", "--full-tree", "-z", source_commit).split(b"\0") if item]
     entries: list[GitEntry] = []
     errors: list[str] = []
     folded: dict[str, str] = {}
@@ -223,9 +225,7 @@ def _git_tree_census(root: Path, source_commit: str) -> list[GitEntry]:
             raise CompilationError(["could not parse git ls-tree record"]) from exc
         expected_type = "commit" if mode == "160000" else "blob"
         if object_type != expected_type:
-            errors.append(
-                f"selected commit tree has unexpected {object_type} object for mode {mode}: {path}"
-            )
+            errors.append(f"selected commit tree has unexpected {object_type} object for mode {mode}: {path}")
         key = path.casefold()
         if key in folded and folded[key] != path:
             errors.append(f"case-fold path collision: {folded[key]} and {path}")
@@ -560,9 +560,7 @@ def _structural_root_record(
     }
     roles = sorted({str(role) for role in file_record.get("roles") or []})
     generated_declared = "generated" in roles
-    unresolved = {
-        str(reason) for reason in result.unresolved_reasons if str(reason)
-    }
+    unresolved = {str(reason) for reason in result.unresolved_reasons if str(reason)}
     unresolved.add("structural_root_does_not_establish_behavior_or_execution")
     if generated_declared:
         unresolved.add("declared_generated_source_has_no_joined_generator_record")
@@ -742,8 +740,10 @@ def _claims(
         }
 
     full_files = [row for row in files if row["privacy_exposure"] == "full"]
-    graph_freshness = "unknown" if dirty or graphify.get("stale") is None else (
-        "stale" if graphify.get("stale") is True else "current"
+    graph_freshness = (
+        "unknown"
+        if dirty or graphify.get("stale") is None
+        else ("stale" if graphify.get("stale") is True else "current")
     )
     return sorted(
         [
@@ -918,13 +918,8 @@ def _enrich_gui_dossiers(
     """
 
     files_by_path = {str(row["path"]): row for row in file_records}
-    source_lines_by_path = {
-        str(source["path"]): list(source.get("lines") or []) for source in records["source_text"]
-    }
-    line_ids = {
-        (str(line["path"]), int(line["line"])): str(line["id"])
-        for line in records["lines"]
-    }
+    source_lines_by_path = {str(source["path"]): list(source.get("lines") or []) for source in records["source_text"]}
+    line_ids = {(str(line["path"]), int(line["line"])): str(line["id"]) for line in records["lines"]}
     symbols_by_path: dict[str, list[dict[str, Any]]] = {}
     imports_by_path: dict[str, list[dict[str, Any]]] = {}
     calls_by_path: dict[str, list[dict[str, Any]]] = {}
@@ -942,9 +937,7 @@ def _enrich_gui_dossiers(
 
     config_path = ".design-sync/config.json"
     config_records = {
-        str(record.get("pointer")): record
-        for record in records["structured"]
-        if record.get("path") == config_path
+        str(record.get("pointer")): record for record in records["structured"] if record.get("path") == config_path
     }
     entry_record = config_records.get("/entry")
     entry_value = str(entry_record.get("value_preview") or "") if entry_record else ""
@@ -1046,9 +1039,7 @@ def _enrich_gui_dossiers(
                     if child is not surface and range_contains(surface, child):
                         attribute_names.update(str(name) for name in child.get("attribute_names") or [] if str(name))
             ordered_attributes = sorted(attribute_names)
-            action_attributes = sorted(
-                name for name in ordered_attributes if re.match(r"^on[A-Z]|^on[a-z]", name)
-            )
+            action_attributes = sorted(name for name in ordered_attributes if re.match(r"^on[A-Z]|^on[a-z]", name))
             accessibility_attributes = sorted(
                 name
                 for name in ordered_attributes
@@ -1083,20 +1074,15 @@ def _enrich_gui_dossiers(
                     )
                 for suffix in (".png", "-728.png"):
                     baseline_path = (
-                        "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/"
-                        f"{surface_name}{suffix}"
+                        f"webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/{surface_name}{suffix}"
                     )
                     baseline_file = files_by_path.get(baseline_path)
                     if baseline_file:
                         visual_paths.append(baseline_path)
-                        visual_citations.append(
-                            _gui_citation(baseline_file, "tracked_visual_baseline_binary")
-                        )
+                        visual_citations.append(_gui_citation(baseline_file, "tracked_visual_baseline_binary"))
 
             symbol_parameters = [
-                parameter
-                for symbol in relevant_symbols
-                for parameter in list(symbol.get("parameters") or [])
+                parameter for symbol in relevant_symbols for parameter in list(symbol.get("parameters") or [])
             ]
             dependency_citations = [
                 _gui_citation(record, "same_path_static_dependency_candidate")
@@ -1189,9 +1175,7 @@ def _enrich_gui_dossiers(
             )
             fields["accessibility"] = _gui_field(
                 "structural_only" if accessibility_attributes else "not_evidenced",
-                {"accessibility_attribute_names": accessibility_attributes}
-                if accessibility_attributes
-                else None,
+                {"accessibility_attribute_names": accessibility_attributes} if accessibility_attributes else None,
                 citations=(source_citation,) if accessibility_attributes else (),
                 unresolved_reasons=(
                     "attributes_do_not_establish_wcag_or_assistive_technology_conformance"
@@ -1202,9 +1186,7 @@ def _enrich_gui_dossiers(
             )
             fields["responsive_behavior"] = _gui_field(
                 "structural_only" if len(visual_paths) == 2 else "not_evidenced",
-                {"tracked_visual_baseline_paths": visual_paths, "narrow_width_label": 728}
-                if visual_paths
-                else None,
+                {"tracked_visual_baseline_paths": visual_paths, "narrow_width_label": 728} if visual_paths else None,
                 citations=visual_citations,
                 unresolved_reasons=(
                     "tracked_pixels_and_manifest_are_not_a_joined_execution_or_manual_review_receipt"
@@ -1213,14 +1195,8 @@ def _enrich_gui_dossiers(
                 ),
                 gap_ids=GUI_FIELD_GAPS["responsive_behavior"],
             )
-            css_imports = [
-                row
-                for row in same_path_imports
-                if str(row.get("module") or "").lower().endswith(".css")
-            ]
-            token_citations = [
-                _gui_citation(row, "same_path_stylesheet_import") for row in css_imports[:16]
-            ]
+            css_imports = [row for row in same_path_imports if str(row.get("module") or "").lower().endswith(".css")]
+            token_citations = [_gui_citation(row, "same_path_stylesheet_import") for row in css_imports[:16]]
             token_value: dict[str, Any] = {
                 "same_path_stylesheet_import_ids": [str(row["id"]) for row in css_imports[:16]]
             }
@@ -1273,9 +1249,7 @@ def _enrich_gui_dossiers(
             )
             fields["visual_baseline"] = _gui_field(
                 "structural_only" if visual_paths else "not_evidenced",
-                {"tracked_paths": visual_paths, "baseline_set": "windows-2025-x64"}
-                if visual_paths
-                else None,
+                {"tracked_paths": visual_paths, "baseline_set": "windows-2025-x64"} if visual_paths else None,
                 citations=visual_citations,
                 unresolved_reasons=(
                     "visual_files_are_inventory_evidence_not_current_test_execution_or_manual_review"
@@ -1286,9 +1260,7 @@ def _enrich_gui_dossiers(
             )
             fields["tests"] = _gui_field(
                 "structural_only" if same_path_tests else "not_evidenced",
-                {"same_path_test_ids": [str(row["id"]) for row in same_path_tests[:24]]}
-                if same_path_tests
-                else None,
+                {"same_path_test_ids": [str(row["id"]) for row in same_path_tests[:24]]} if same_path_tests else None,
                 citations=[_gui_citation(row, "same_path_test_declaration") for row in same_path_tests[:24]],
                 unresolved_reasons=(
                     "same_path_test_declarations_are_not_execution_or_surface_coverage_receipts"
@@ -1304,13 +1276,7 @@ def _enrich_gui_dossiers(
                 unresolved_reasons=("static_binding_does_not_resolve_complete_downstream_gui_or_artifact_consumers",),
                 gap_ids=GUI_FIELD_GAPS["downstream_consumers"],
             )
-            known_gap_ids = sorted(
-                {
-                    gap_id
-                    for field in fields.values()
-                    for gap_id in field["gap_ids"]
-                }
-            )
+            known_gap_ids = sorted({gap_id for field in fields.values() for gap_id in field["gap_ids"]})
             fields["known_gaps"] = _gui_field(
                 "structural_only",
                 known_gap_ids,
@@ -1319,16 +1285,9 @@ def _enrich_gui_dossiers(
                 gap_ids=known_gap_ids or GUI_FIELD_GAPS["known_gaps"],
             )
             dossier_reasons = sorted(
-                {
-                    str(reason)
-                    for field in fields.values()
-                    for reason in field["unresolved_reasons"]
-                    if str(reason)
-                }
+                {str(reason) for field in fields.values() for reason in field["unresolved_reasons"] if str(reason)}
             )
-            dossier_gap_ids = sorted(
-                {str(gap_id) for field in fields.values() for gap_id in field["gap_ids"]}
-            )
+            dossier_gap_ids = sorted({str(gap_id) for field in fields.values() for gap_id in field["gap_ids"]})
             dossier_state = (
                 "explicitly_linked"
                 if any(field["state"] == "explicitly_linked" for field in fields.values())
@@ -1370,9 +1329,7 @@ def _enrich_semantic_records(
     source_line_digests: dict[tuple[str, int], str] = {}
     for source in records["source_text"]:
         for source_line in source.get("lines") or []:
-            source_line_digests[(str(source["path"]), int(source_line["number"]))] = str(
-                source_line["line_digest"]
-            )
+            source_line_digests[(str(source["path"]), int(source_line["number"]))] = str(source_line["line_digest"])
     tests_by_path: dict[str, list[dict[str, Any]]] = {}
     for test in records["tests"]:
         tests_by_path.setdefault(str(test["path"]), []).append(test)
@@ -1381,9 +1338,7 @@ def _enrich_semantic_records(
     structural_roots_by_path: dict[str, list[dict[str, Any]]] = {}
     for structural_entity in records["structural_entities"]:
         if structural_entity.get("root_scope") == "parsed_source":
-            structural_roots_by_path.setdefault(
-                str(structural_entity["path"]), []
-            ).append(structural_entity)
+            structural_roots_by_path.setdefault(str(structural_entity["path"]), []).append(structural_entity)
     symbol_by_position: dict[tuple[str, int], str] = {}
     # Larger spans are written first and smaller/deeper spans overwrite them.
     ranged_symbols = sorted(
@@ -1583,10 +1538,7 @@ def _enrich_semantic_records(
                 },
                 "claims_influenced": [],
                 "callers_and_dependencies": sorted(
-                    set(
-                        calls_by_line.get((path, line_number), [])
-                        + imports_by_line.get((path, line_number), [])
-                    )
+                    set(calls_by_line.get((path, line_number), []) + imports_by_line.get((path, line_number), []))
                 ),
                 "tests_covering_it": sorted(set(direct_tests)),
                 "test_coverage_state": "structural_test_membership" if direct_tests else "not_executed_or_linked",
@@ -1651,8 +1603,7 @@ def _ledger(
     for source in records["source_text"]:
         path = str(source.get("path") or "")
         raw = "".join(
-            str(line.get("text") or "") + str(line.get("terminator") or "")
-            for line in source.get("lines") or []
+            str(line.get("text") or "") + str(line.get("terminator") or "") for line in source.get("lines") or []
         ).encode("utf-8")
         try:
             decoded_lines = raw.decode("utf-8-sig", errors="strict").splitlines()
@@ -1661,9 +1612,7 @@ def _ledger(
         source_line_counts[path] = len(decoded_lines)
         source_end_columns[path] = len(decoded_lines[-1]) if decoded_lines else None
         expected_line_coordinates.update(
-            (path, number)
-            for number, value in enumerate(decoded_lines, start=1)
-            if value.strip()
+            (path, number) for number, value in enumerate(decoded_lines, start=1) if value.strip()
         )
 
     line_rows_by_coordinate: dict[tuple[str, int], list[dict[str, Any]]] = {}
@@ -1673,9 +1622,7 @@ def _ledger(
         if isinstance(path, str) and isinstance(number, int):
             line_rows_by_coordinate.setdefault((path, number), []).append(row)
     exactly_accounted_lines = sum(
-        1
-        for coordinate in expected_line_coordinates
-        if len(line_rows_by_coordinate.get(coordinate, [])) == 1
+        1 for coordinate in expected_line_coordinates if len(line_rows_by_coordinate.get(coordinate, [])) == 1
     )
 
     safe_parsed_files = {
@@ -1696,12 +1643,8 @@ def _ledger(
         if not isinstance(location, dict) or line_count is None:
             return False
         if line_count == 0:
-            exact_range = (
-                root.get("range_state") == "empty_source"
-                and all(
-                    location.get(field) is None
-                    for field in ("start_line", "start_column", "end_line", "end_column")
-                )
+            exact_range = root.get("range_state") == "empty_source" and all(
+                location.get(field) is None for field in ("start_line", "start_column", "end_line", "end_column")
             )
         else:
             exact_range = (
@@ -1736,9 +1679,7 @@ def _ledger(
         if len(candidates) == 1 and valid_structural_root(candidates[0], file_record):
             valid_root_by_file[file_id] = candidates[0]
     structurally_rooted_sources = len(valid_root_by_file)
-    valid_structural_roots = {
-        str(root["id"]): root for root in valid_root_by_file.values()
-    }
+    valid_structural_roots = {str(root["id"]): root for root in valid_root_by_file.values()}
     symbols_by_id = {str(row["id"]): row for row in records["symbols"]}
 
     def valid_line_mapping(row: dict[str, Any]) -> bool:
@@ -1836,8 +1777,7 @@ def _ledger(
 
     gui_dossier_count = sum(1 for row in gui_surfaces if valid_gui_dossier(row))
     gui_dossier_states = Counter(
-        str((row.get("gui_dossier") or {}).get("evidence_state") or "missing")
-        for row in gui_surfaces
+        str((row.get("gui_dossier") or {}).get("evidence_state") or "missing") for row in gui_surfaces
     )
     gui_field_states = Counter(
         str(field.get("state") or "missing")
@@ -1862,8 +1802,7 @@ def _ledger(
         str(row["extraction_disposition"])
         for group in RECORD_GROUPS
         for row in records[group]
-        if isinstance(row.get("extraction_disposition"), str)
-        and bool(str(row["extraction_disposition"]).strip())
+        if isinstance(row.get("extraction_disposition"), str) and bool(str(row["extraction_disposition"]).strip())
     )
     documentation_records_classified = sum(
         1
@@ -1996,12 +1935,7 @@ def _ledger(
             "safe_parsed_sources": len(safe_parsed_files),
             "structural_root_entities": structurally_rooted_sources,
             "structural_root_kind_counts": dict(
-                sorted(
-                    Counter(
-                        str(row.get("kind") or "missing")
-                        for row in records["structural_entities"]
-                    ).items()
-                )
+                sorted(Counter(str(row.get("kind") or "missing") for row in records["structural_entities"]).items())
             ),
             "structurally_mapped_lines": structurally_mapped_lines,
             "line_explanation_depth_counts": {str(key): value for key, value in sorted(line_depths.items())},
@@ -2010,12 +1944,8 @@ def _ledger(
             "critical_level_four_reviews": len(level_four_symbols),
             "gui_surface_records": len(gui_surfaces),
             "gui_dossiers": gui_dossier_count,
-            "gui_dossier_evidence_state_counts": {
-                str(key): value for key, value in sorted(gui_dossier_states.items())
-            },
-            "gui_dossier_field_state_counts": {
-                str(key): value for key, value in sorted(gui_field_states.items())
-            },
+            "gui_dossier_evidence_state_counts": {str(key): value for key, value in sorted(gui_dossier_states.items())},
+            "gui_dossier_field_state_counts": {str(key): value for key, value in sorted(gui_field_states.items())},
             "runtime_trace_state": "not_collected",
             "coverage_evidence_state": "structural_links_only",
             "consequential_claim_denominator_state": "not_declared",
@@ -2027,18 +1957,9 @@ def _ledger(
         "record_counts": {
             **{group: len(records[group]) for group in RECORD_GROUPS},
             **{f"entity_type::{key}": value for key, value in sorted(entity_type_counts.items())},
-            **{
-                f"entity_disposition::{key}": value
-                for key, value in sorted(entity_disposition_counts.items())
-            },
-            **{
-                f"gui_dossier_state::{key}": value
-                for key, value in sorted(gui_dossier_states.items())
-            },
-            **{
-                f"gui_dossier_field_state::{key}": value
-                for key, value in sorted(gui_field_states.items())
-            },
+            **{f"entity_disposition::{key}": value for key, value in sorted(entity_disposition_counts.items())},
+            **{f"gui_dossier_state::{key}": value for key, value in sorted(gui_dossier_states.items())},
+            **{f"gui_dossier_field_state::{key}": value for key, value in sorted(gui_field_states.items())},
         },
         "graphify": graphify,
         "architecture_conformance": architecture_conformance,
@@ -2099,7 +2020,8 @@ def _ledger(
             },
             {
                 "name": "every_safe_line_behaviorally_explained",
-                "passed": len(records["lines"]) > 0 and all(int(row.get("explanation_depth") or 0) >= 2 for row in records["lines"]),
+                "passed": len(records["lines"]) > 0
+                and all(int(row.get("explanation_depth") or 0) >= 2 for row in records["lines"]),
                 "expected": len(records["lines"]),
                 "actual": sum(1 for row in records["lines"] if int(row.get("explanation_depth") or 0) >= 2),
             },
@@ -2126,9 +2048,7 @@ def _ledger(
                 "passed": bool(records["lines"])
                 and all(row.get("runtime_trace_state") == "runtime_observed" for row in records["lines"]),
                 "expected": len(records["lines"]),
-                "actual": sum(
-                    1 for row in records["lines"] if row.get("runtime_trace_state") == "runtime_observed"
-                ),
+                "actual": sum(1 for row in records["lines"] if row.get("runtime_trace_state") == "runtime_observed"),
             },
             {
                 "name": "consequential_claim_denominator_closed",
@@ -2317,9 +2237,7 @@ def compile_repository(
         dirty = bool(status_before)
         nonstandard_index_flags = _nonstandard_index_flags(root)
         if dirty and not allow_dirty_preview:
-            fatal_errors.append(
-                "tracked worktree is dirty; exact-commit compilation requires a clean tracked tree"
-            )
+            fatal_errors.append("tracked worktree is dirty; exact-commit compilation requires a clean tracked tree")
         if not dirty and nonstandard_index_flags:
             fatal_errors.extend(
                 f"{path}: Git index flag {tag!r} prevents an exact-clean worktree proof"
@@ -2401,9 +2319,7 @@ def compile_repository(
                 parser_counts["metadata_only"] += 1
                 if classification["language"] == "binary":
                     file_record["parser"] = "binary_metadata"
-                    file_record["unresolved_reasons"] = [
-                        "binary_payload_requires_format_aware_privacy_review"
-                    ]
+                    file_record["unresolved_reasons"] = ["binary_payload_requires_format_aware_privacy_review"]
                     records["binaries"].append(
                         {
                             "id": stable_id("binary", entry.path),
@@ -2415,9 +2331,7 @@ def compile_repository(
                             "git_blob_oid": entry.blob_oid,
                             "inspection_mode": "git_object_digest_and_metadata_only",
                             "privacy_exposure": "metadata_only",
-                            "unresolved_reasons": [
-                                "decoded_binary_content_privacy_review_not_performed"
-                            ],
+                            "unresolved_reasons": ["decoded_binary_content_privacy_review_not_performed"],
                         }
                     )
                 continue
@@ -2465,8 +2379,7 @@ def compile_repository(
                 file_record["parse_status"] = "parser_error"
                 file_record["unresolved_reasons"] = ["forbidden_content_scan_failed"]
                 fatal_errors.extend(
-                    f"{item['path']}:{item['line']}: forbidden-content rule {item['rule']}"
-                    for item in findings
+                    f"{item['path']}:{item['line']}: forbidden-content rule {item['rule']}" for item in findings
                 )
                 continue
             exact_lines = _exact_source_lines(exact_text)
@@ -2617,8 +2530,7 @@ def compile_repository(
                 source_tree_digest=source_tree_digest,
             )
             fatal_errors.extend(
-                f"architecture conformance: {error}"
-                for error in architecture_conformance.get("errors", [])
+                f"architecture conformance: {error}" for error in architecture_conformance.get("errors", [])
             )
         else:
             architecture_core = {
@@ -2641,11 +2553,7 @@ def compile_repository(
         # contract therefore advances with the manifest/chunk contract even
         # though the tracked architecture declaration has its own schema.
         architecture_core = {
-            **{
-                key: value
-                for key, value in architecture_conformance.items()
-                if key != "receipt_digest"
-            },
+            **{key: value for key, value in architecture_conformance.items() if key != "receipt_digest"},
             "schema_version": SCHEMA_VERSION,
         }
         architecture_conformance = {
@@ -2668,9 +2576,8 @@ def compile_repository(
             if dirty and graphify_metadata.get("available"):
                 graphify_metadata["stale"] = True
                 graphify_metadata["status"] = "stale"
-                graphify_metadata.setdefault("unresolved_reasons", []).append(
-                    "tracked_worktree_changes_are_newer_than_commit_bound_graph"
-                )
+                graphify_metadata.setdefault("unresolved_reasons", []).append(GRAPHIFY_DIRTY_PREVIEW_REASON)
+            validate_graphify_metadata(graphify_metadata, graph_nodes, graph_edges)
             records["graph_nodes"] = graph_nodes
             records["graph_edges"] = graph_edges
         except GraphifyFailure as exc:
@@ -2822,9 +2729,7 @@ def _accept_parse_result(
             f"{file_record['path']}: nonblank line accounting mismatch expected={expected} actual={len(lines)}"
         )
     records["lines"].extend(lines)
-    records["structural_entities"].append(
-        _structural_root_record(file_record, result, text)
-    )
+    records["structural_entities"].append(_structural_root_record(file_record, result, text))
     _merge_parse_result(records, result)
     file_record["parse_status"] = "parsed"
     file_record["parser"] = result.parser

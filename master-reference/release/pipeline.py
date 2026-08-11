@@ -126,8 +126,7 @@ def _dependency_vulnerability_assessment(sbom: dict[str, Any]) -> tuple[str, lis
             if isinstance(component, dict)
             and component.get("name") == "image-size"
             and (
-                (comparison := _semver_compare_to_stable(component.get("version"), (2, 0, 2)))
-                is None
+                (comparison := _semver_compare_to_stable(component.get("version"), (2, 0, 2))) is None
                 or comparison <= 0
             )
         }
@@ -181,9 +180,7 @@ def _artifact(root: Path, relative: str, value: bytes, role: str) -> dict[str, A
     if suffix in TEXT_SCAN_SUFFIXES:
         findings = forbidden_byte_findings(relative, value)
         if findings:
-            labels = ", ".join(
-                f"{item['path']}:{item['line']}:{item['rule']}" for item in findings
-            )
+            labels = ", ".join(f"{item['path']}:{item['line']}:{item['rule']}" for item in findings)
             raise ReleaseInputError(f"generated-output privacy scan failed: {labels}")
         privacy_scan = "high_confidence_utf8_text_scan_passed"
     else:
@@ -306,9 +303,7 @@ def _compiler_preservation_entries(bundle: CompilerBundle) -> dict[str, bytes]:
     expected: dict[str, dict[str, Any]] = {
         bundle.manifest["completeness"]["path"]: bundle.manifest["completeness"],
         bundle.manifest["graphify_metadata"]["path"]: bundle.manifest["graphify_metadata"],
-        bundle.manifest["architecture_conformance"]["path"]: bundle.manifest[
-            "architecture_conformance"
-        ],
+        bundle.manifest["architecture_conformance"]["path"]: bundle.manifest["architecture_conformance"],
     }
     for group in bundle.manifest["groups"].values():
         for chunk in group["chunks"]:
@@ -316,7 +311,10 @@ def _compiler_preservation_entries(bundle: CompilerBundle) -> dict[str, bytes]:
     if set(expected) | {"manifest.json"} != set(bundle.input_files):
         raise ReleaseInputError("compiler preservation allowlist differs from validated inputs")
     for relative, item in sorted(expected.items()):
-        value = read_bytes(bundle.root, relative)
+        try:
+            value = read_bytes(bundle.root, relative)
+        except (OSError, ReleaseInputError):
+            raise ReleaseInputError("compiler input could not be reread before preservation") from None
         if len(value) != item["bytes"] or sha256_bytes(value) != item["sha256"]:
             raise ReleaseInputError(f"compiler input changed before preservation: {relative}")
         entries[f"compiler/{relative}"] = value
@@ -329,9 +327,7 @@ def _bundle_receipt(entries: dict[str, bytes], source_commit: str, kind: str) ->
             "schema_version": "1.0.0",
             "kind": kind,
             "source_commit": source_commit,
-            "entries": [
-                {"path": name, **receipt(value)} for name, value in sorted(entries.items())
-            ],
+            "entries": [{"path": name, **receipt(value)} for name, value in sorted(entries.items())],
             "receipt_exclusion": "This receipt cannot include its own digest.",
         }
     )
@@ -440,7 +436,7 @@ def build_release(
     staged = None
     try:
         repo_root = repo_root.resolve(strict=True)
-        bundle = load_compiler_bundle(compiler_output)
+        bundle = load_compiler_bundle(compiler_output, repository_root=repo_root)
         source_before = validate_exact_source(repo_root, bundle)
         content = load_content_bundle(
             repo_root / "master-reference" / "content",
@@ -520,7 +516,9 @@ def build_release(
         primary: list[dict[str, Any]] = []
         index = source_symbol_index(bundle)
         reference = machine_reference(bundle, content, sbom, release_status)
-        primary.append(_artifact(target, "atlas-reference.json", canonical_json(reference), "machine-readable-reference"))
+        primary.append(
+            _artifact(target, "atlas-reference.json", canonical_json(reference), "machine-readable-reference")
+        )
         primary.append(
             _artifact(
                 target,
@@ -537,18 +535,39 @@ def build_release(
                 "engineering-dossier",
             )
         )
-        primary.append(_artifact(target, "source-symbol-index.json", canonical_json(index), "source-symbol-index-machine"))
-        primary.append(_artifact(target, "source-symbol-index.md", source_symbol_markdown(index).encode("utf-8"), "source-symbol-index-human"))
         primary.append(
-            _artifact(target, "capability-gap-report.md", capability_gap_report(content).encode("utf-8"), "capability-gap-report")
+            _artifact(target, "source-symbol-index.json", canonical_json(index), "source-symbol-index-machine")
         )
         primary.append(
-            _artifact(target, "decisions-opportunities.md", decisions_opportunities(content).encode("utf-8"), "decision-opportunity-report")
+            _artifact(
+                target,
+                "source-symbol-index.md",
+                source_symbol_markdown(index).encode("utf-8"),
+                "source-symbol-index-human",
+            )
+        )
+        primary.append(
+            _artifact(
+                target,
+                "capability-gap-report.md",
+                capability_gap_report(content).encode("utf-8"),
+                "capability-gap-report",
+            )
+        )
+        primary.append(
+            _artifact(
+                target,
+                "decisions-opportunities.md",
+                decisions_opportunities(content).encode("utf-8"),
+                "decision-opportunity-report",
+            )
         )
         primary.append(
             _artifact(target, "enhancement-brief-template.md", enhancement_value.encode("utf-8"), "enhancement-brief")
         )
-        primary.append(_artifact(target, "agent-pack.md", agent_pack(bundle, content).encode("utf-8"), "agent-continuity-pack"))
+        primary.append(
+            _artifact(target, "agent-pack.md", agent_pack(bundle, content).encode("utf-8"), "agent-continuity-pack")
+        )
         primary.append(_artifact(target, "bom.cdx.json", canonical_json(sbom), "cyclonedx-sbom"))
         primary.append(
             _artifact(
@@ -595,8 +614,12 @@ def build_release(
             "Verify entries with `bundle-receipt.json`. The artifact inventory, outer release manifest, and optional detached "
             "owner signature are sibling family members and are not embedded in this ZIP. No network connection is required.\n"
         ).encode("utf-8")
-        offline_entries["bundle-receipt.json"] = _bundle_receipt(offline_entries, bundle.source_commit, "offline-bundle")
-        offline = _artifact(target, "atlas-master-reference-offline.zip", deterministic_zip(offline_entries), "offline-zip")
+        offline_entries["bundle-receipt.json"] = _bundle_receipt(
+            offline_entries, bundle.source_commit, "offline-bundle"
+        )
+        offline = _artifact(
+            target, "atlas-master-reference-offline.zip", deterministic_zip(offline_entries), "offline-zip"
+        )
 
         preservation_entries = dict(core_bytes)
         preservation_entries.update(compiler_preservation)
@@ -651,7 +674,9 @@ def build_release(
             "self_exclusions": ["artifact-inventory.json", "release-manifest.json", "release-manifest.sig.json"],
         }
         validate_release_object(repo_root, "artifact-inventory", inventory)
-        inventory_receipt = _artifact(target, "artifact-inventory.json", canonical_json(inventory), "artifact-inventory")
+        inventory_receipt = _artifact(
+            target, "artifact-inventory.json", canonical_json(inventory), "artifact-inventory"
+        )
         source_after_build = validate_exact_source(repo_root, bundle)
         if source_after_build != source_before:
             raise ReleaseInputError("exact repository source state changed during release build")
@@ -660,9 +685,7 @@ def build_release(
             if pdf_status == "externally_supplied_visual_review_pending"
             else "passed_text_outputs_binary_containers_not_content_scanned"
         )
-        dependency_vulnerability_gate, dependency_vulnerability_limits = (
-            _dependency_vulnerability_assessment(sbom)
-        )
+        dependency_vulnerability_gate, dependency_vulnerability_limits = _dependency_vulnerability_assessment(sbom)
         manifest = {
             "schema_version": "1.0.0",
             "id": stable_id("release-manifest", bundle.source_commit, bundle.source_tree_digest),
@@ -737,11 +760,7 @@ def build_release(
         }
         validate_release_object(repo_root, "release-manifest", manifest)
         _artifact(target, "release-manifest.json", canonical_json(manifest), "release-manifest")
-        actual_output_members = {
-            path.relative_to(target).as_posix()
-            for path in target.rglob("*")
-            if path.is_file()
-        }
+        actual_output_members = {path.relative_to(target).as_posix() for path in target.rglob("*") if path.is_file()}
         if actual_output_members != expected_output_members:
             raise ReleaseInputError(
                 "emitted release members differ from output contract "
@@ -754,7 +773,7 @@ def build_release(
         staged.publish()
         return manifest
     except (ReleaseInputError, OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
-        raise ReleaseError(str(exc)) from exc
+        raise ReleaseError(str(exc)) from None
     finally:
         if staged is not None:
             staged.cleanup()

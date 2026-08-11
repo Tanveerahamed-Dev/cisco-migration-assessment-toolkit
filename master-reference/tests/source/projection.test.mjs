@@ -10,7 +10,10 @@ import {
   rejectCommunitySelection,
   resolveCommunitySelection,
 } from "../../app/atlas/GraphSelection.mjs";
-import { buildProjection } from "../../build/projection/build.mjs";
+import {
+  buildProjection,
+  COMPILER_RECORD_KEYS_BY_GROUP,
+} from "../../build/projection/build.mjs";
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const stableJson = (value) => {
@@ -24,6 +27,36 @@ const stableJson = (value) => {
   return JSON.stringify(value);
 };
 const digestObject = (value) => sha256(Buffer.from(`${stableJson(value)}\n`, "utf8"));
+const stableId = (kind, ...parts) =>
+  `urn:atlas:${kind}:${sha256(Buffer.from(parts.map(String).join("\u001f"), "utf8")).slice(0, 24)}`;
+const ATLAS_STABLE_ID_PATTERN = /^urn:atlas:[a-z-]+:[0-9a-f]{24}$/;
+const fixtureStableId = (value) => {
+  if (ATLAS_STABLE_ID_PATTERN.test(value)) return value;
+  const kind = /^urn:atlas:([a-z-]+):/.exec(value)?.[1] ?? "fixture";
+  return stableId(kind, value);
+};
+const normalizeFixtureUrns = (value) => {
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      value[index] = normalizeFixtureUrns(value[index]);
+    }
+    return value;
+  }
+  if (value && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) value[key] = normalizeFixtureUrns(item);
+    return value;
+  }
+  return typeof value === "string" && value.startsWith("urn:atlas:")
+    ? fixtureStableId(value)
+    : value;
+};
+const graphConfidenceIdentity = (value) => {
+  if (value === null) return "none";
+  if (Number.isInteger(value)) return `integer:${value}`;
+  const bytes = Buffer.allocUnsafe(8);
+  bytes.writeDoubleBE(value, 0);
+  return `float64:${bytes.toString("hex")}`;
+};
 
 const GUI_DOSSIER_FIELD_NAMES = [
   "persona_journey",
@@ -114,6 +147,9 @@ async function mutateCompilerGroup(input, group, mutate, { reconcileCount = true
   const chunkDescriptor = groupDescriptor.chunks[0];
   const envelope = JSON.parse(await readFile(join(input, ...chunkDescriptor.path.split("/")), "utf8"));
   await mutate(envelope);
+  if (envelope.records.every((record) => typeof record?.id === "string")) {
+    envelope.records.sort((left, right) => left.id.localeCompare(right.id));
+  }
   envelope.record_count = envelope.records.length;
   envelope.records_digest = digestObject(envelope.records.map((record) => record.id));
   manifest.groups[group] = {
@@ -134,6 +170,116 @@ async function mutateCompilerGroup(input, group, mutate, { reconcileCount = true
   }
   await writeFile(manifestPath, `${stableJson(manifest)}\n`, "utf8");
   return envelope.records;
+}
+
+async function rewriteCompilerPacking(input, chunkSize, targetGroup, mutatePartitions) {
+  const manifestPath = join(input, "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.chunk_size = chunkSize;
+  for (const [group, descriptor] of Object.entries(manifest.groups)) {
+    const records = [];
+    for (const chunk of descriptor.chunks) {
+      const envelope = JSON.parse(await readFile(join(input, ...chunk.path.split("/")), "utf8"));
+      records.push(...envelope.records);
+    }
+    const effectiveChunkSize = group === "source_text" ? 1 : chunkSize;
+    let partitions = [];
+    for (let index = 0; index < records.length; index += effectiveChunkSize) {
+      partitions.push(records.slice(index, index + effectiveChunkSize));
+    }
+    if (group === targetGroup) partitions = mutatePartitions(partitions);
+    const orderedRecords = partitions.flat();
+    const chunks = [];
+    for (const [index, partition] of partitions.entries()) {
+      const envelope = {
+        schema_version: "1.1.0",
+        record_type: group,
+        source_commit: manifest.source_commit,
+        source_tree_digest: manifest.source_tree_digest,
+        chunk_index: index,
+        chunk_count: partitions.length,
+        record_count: partition.length,
+        records_digest: digestObject(partition.map((record) => record.id)),
+        records: partition,
+      };
+      chunks.push({
+        ...await writeDescriptor(input, `chunks/${group}/${String(index).padStart(5, "0")}.json`, envelope),
+        record_count: partition.length,
+      });
+    }
+    manifest.groups[group] = {
+      record_count: orderedRecords.length,
+      chunk_count: partitions.length,
+      records_digest: digestObject(orderedRecords.map((record) => record.id)),
+      chunks,
+    };
+  }
+  await writeFile(manifestPath, `${stableJson(manifest)}\n`, "utf8");
+}
+
+async function mutateGraphifyReceipt(input, mutate) {
+  const manifestPath = join(input, "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  const graphify = JSON.parse(
+    await readFile(join(input, ...manifest.graphify_metadata.path.split("/")), "utf8"),
+  );
+  await mutate(graphify);
+  manifest.graphify_metadata = await writeVerifiedValue(
+    input,
+    manifest.graphify_metadata,
+    graphify,
+  );
+  const completeness = JSON.parse(
+    await readFile(join(input, ...manifest.completeness.path.split("/")), "utf8"),
+  );
+  completeness.graphify = graphify;
+  manifest.completeness = await writeVerifiedValue(input, manifest.completeness, completeness);
+  await writeFile(manifestPath, `${stableJson(manifest)}\n`, "utf8");
+}
+
+async function seedGraphifyExclusionLedger(input) {
+  await mutateGraphifyReceipt(input, (graphify) => {
+    graphify.total_nodes += 1;
+    graphify.excluded_nodes = 1;
+    graphify.excluded_nodes_untracked_or_private = 1;
+    graphify.node_disposition_counts.excluded_untracked_or_private = 1;
+    graphify.node_identifier_disposition_counts.total += 1;
+    graphify.node_identifier_disposition_counts.excluded_opaque = 1;
+    graphify.node_origins.undisclosed = (graphify.node_origins.undisclosed ?? 0) + 1;
+    const nodeRawIndex = graphify.total_nodes - 1;
+    const nodeDispositionId = stableId(
+      "graph-node-disposition", graphify.source_digest, nodeRawIndex,
+    );
+    graphify.excluded_node_dispositions = [{
+      id: nodeDispositionId,
+      disposition: "excluded",
+      raw_index: nodeRawIndex,
+      reason: "excluded_untracked_or_private",
+    }];
+    graphify.total_edges += 1;
+    graphify.excluded_edges = 1;
+    graphify.all_edge_modes.undisclosed = (graphify.all_edge_modes.undisclosed ?? 0) + 1;
+    graphify.excluded_edge_endpoint_dispositions = {
+      source_excluded_untracked_or_private__target_missing_node: 1,
+    };
+    const edgeRawIndex = graphify.total_edges - 1;
+    graphify.excluded_edge_dispositions = [{
+      id: stableId("graph-edge-disposition", graphify.source_digest, edgeRawIndex),
+      disposition: "excluded",
+      raw_index: edgeRawIndex,
+      reason: "endpoint_not_projected",
+      source_endpoint: {
+        state: "excluded_untracked_or_private",
+        record_id: nodeDispositionId,
+        anonymous_slot: null,
+      },
+      target_endpoint: {
+        state: "missing_node",
+        record_id: null,
+        anonymous_slot: 0,
+      },
+    }];
+  });
 }
 
 function fnv1a(value) {
@@ -158,8 +304,34 @@ async function makeCompilerFixture(root) {
     text_digest: sha256(Buffer.from(line.text, "utf8")),
     line_digest: sha256(Buffer.from(`${line.text}${line.terminator}`, "utf8")),
   }));
-  const safeId = "urn:atlas:file:safe";
-  const privateId = "urn:atlas:file:private";
+  const safeId = fixtureStableId("urn:atlas:file:safe");
+  const privateId = fixtureStableId("urn:atlas:file:private");
+  const sourceCommit = "d".repeat(40);
+  const projectedGraphId = (sourceFile, sourceLocation, occurrence) =>
+    digestObject([
+      "repository-relative-graph-node",
+      sourceFile,
+      sourceLocation,
+      String(occurrence),
+    ]);
+  const helloGraphifyId = projectedGraphId("app/example.py", "1", 0);
+  const callerGraphifyId = projectedGraphId("app/example.py", "2", 0);
+  const externalGraphifyId = projectedGraphId("app/example.py", "2", 1);
+  const helloGraphNodeId = stableId("graph-node", sourceCommit, helloGraphifyId);
+  const callerGraphNodeId = stableId("graph-node", sourceCommit, callerGraphifyId);
+  const externalGraphNodeId = stableId("graph-node", sourceCommit, externalGraphifyId);
+  const graphEdgeId = (source, target, relation, mode, confidence, occurrence) => stableId(
+    "graph-edge",
+    sourceCommit,
+    source,
+    target,
+    relation,
+    "app/example.py",
+    "2",
+    mode,
+    graphConfidenceIdentity(confidence),
+    occurrence,
+  );
   const records = {
     files: [
       {
@@ -504,13 +676,13 @@ async function makeCompilerFixture(root) {
       resolved_version: "9.1.1",
     }],
     graph_nodes: [
-      { id: "urn:atlas:graph-node:hello", graphify_id: "hello", file_id: safeId, source_file: "app/example.py", source_location: "1", label: "hello", language: "python", kind: "function", community: 1, origin: "extracted", extraction_mode: "ast", unresolved_reasons: [] },
-      { id: "urn:atlas:graph-node:caller", graphify_id: "caller", file_id: safeId, source_file: "app/example.py", source_location: "2", label: "caller", language: "python", kind: "function", community: 1, origin: "extracted", extraction_mode: "ast", unresolved_reasons: [] },
-      { id: "urn:atlas:graph-node:external", graphify_id: "external", file_id: safeId, source_file: "app/example.py", source_location: "2", label: "external", language: "python", kind: "symbol", community: null, origin: "inferred", extraction_mode: "lexical", unresolved_reasons: ["runtime_not_observed"] },
+      { id: helloGraphNodeId, graphify_id: helloGraphifyId, coordinate_occurrence: 0, file_id: safeId, source_file: "app/example.py", source_location: "1", label: "app/example.py:1#1", file_type: "code", language: "python", kind: "function", community: 1, origin: "ast", extraction_mode: "extracted", entity_type: "graph_node_function", unresolved_reasons: ["graphify_node_label_derived_from_repository_relative_coordinate"] },
+      { id: callerGraphNodeId, graphify_id: callerGraphifyId, coordinate_occurrence: 0, file_id: safeId, source_file: "app/example.py", source_location: "2", label: "app/example.py:2#1", file_type: "code", language: "python", kind: "function", community: 1, origin: "ast", extraction_mode: "extracted", entity_type: "graph_node_function", unresolved_reasons: ["graphify_node_label_derived_from_repository_relative_coordinate"] },
+      { id: externalGraphNodeId, graphify_id: externalGraphifyId, coordinate_occurrence: 1, file_id: safeId, source_file: "app/example.py", source_location: "2", label: "app/example.py:2#2", file_type: "code", language: "python", kind: "symbol", community: null, origin: "undisclosed", extraction_mode: "undisclosed", entity_type: "graph_node_symbol", unresolved_reasons: ["graphify_node_label_derived_from_repository_relative_coordinate", "graphify_node_origin_is_curated_or_undisclosed_not_ast_extraction"] },
     ],
     graph_edges: [
-      { id: "urn:atlas:graph-edge:hello-caller", source: "urn:atlas:graph-node:hello", target: "urn:atlas:graph-node:caller", relation: "calls", source_file: "app/example.py", source_location: "2", extraction_mode: "ast", confidence: 1, unresolved_reasons: [] },
-      { id: "urn:atlas:graph-edge:caller-external", source: "urn:atlas:graph-node:caller", target: "urn:atlas:graph-node:external", relation: "references", source_file: "app/example.py", source_location: "2", extraction_mode: "lexical", confidence: 0.5, unresolved_reasons: ["runtime_not_observed"] },
+      { id: graphEdgeId(helloGraphNodeId, callerGraphNodeId, "calls", "extracted", 1, 0), source: helloGraphNodeId, target: callerGraphNodeId, relation: "calls", coordinate_occurrence: 0, source_file: "app/example.py", source_location: "2", extraction_mode: "extracted", confidence: 1, entity_type: "graph_edge", unresolved_reasons: [] },
+      { id: graphEdgeId(callerGraphNodeId, externalGraphNodeId, "references", "inferred", 0.5, 0), source: callerGraphNodeId, target: externalGraphNodeId, relation: "references", coordinate_occurrence: 0, source_file: "app/example.py", source_location: "2", extraction_mode: "inferred", confidence: 0.5, entity_type: "graph_edge", unresolved_reasons: [] },
     ],
     claims: [{
       id: "urn:atlas:claim:greeting",
@@ -545,9 +717,20 @@ async function makeCompilerFixture(root) {
       unresolved_reasons: [],
     }],
   };
+  normalizeFixtureUrns(records);
 
   const groups = {};
   for (const [group, groupRecords] of Object.entries(records)) {
+    if (groupRecords.length === 0) {
+      groups[group] = {
+        record_count: 0,
+        chunk_count: 0,
+        records_digest: digestObject([]),
+        chunks: [],
+      };
+      continue;
+    }
+    const canonicalGroupRecords = [...groupRecords].sort((left, right) => left.id.localeCompare(right.id));
     const envelope = {
       schema_version: "1.1.0",
       record_type: group,
@@ -555,29 +738,79 @@ async function makeCompilerFixture(root) {
       source_tree_digest: "e".repeat(64),
       chunk_index: 0,
       chunk_count: 1,
-      record_count: groupRecords.length,
-      records_digest: digestObject(groupRecords.map((record) => record.id)),
-      records: groupRecords,
+      record_count: canonicalGroupRecords.length,
+      records_digest: digestObject(canonicalGroupRecords.map((record) => record.id)),
+      records: canonicalGroupRecords,
     };
     const descriptor = await writeDescriptor(input, `chunks/${group}/00000.json`, envelope);
     groups[group] = {
-      record_count: groupRecords.length,
+      record_count: canonicalGroupRecords.length,
       chunk_count: 1,
-      records_digest: digestObject(groupRecords.map((record) => record.id)),
-      chunks: [{ ...descriptor, record_count: groupRecords.length }],
+      records_digest: digestObject(canonicalGroupRecords.map((record) => record.id)),
+      chunks: [{ ...descriptor, record_count: canonicalGroupRecords.length }],
     };
   }
   const graphifyValue = {
     schema_version: "1.1.0",
     source_commit: "d".repeat(40),
     source_tree_digest: "e".repeat(64),
-    available: false,
-    status: "missing",
-    stale: null,
-    unresolved_reasons: ["fixture_has_no_graph"],
+    available: true,
+    status: "current",
+    source: "graphify-out/graph.json",
+    source_bytes: 4096,
+    report_available: true,
+    stale: false,
+    built_at_commit: sourceCommit,
+    source_digest: "9".repeat(64),
+    total_nodes: records.graph_nodes.length,
+    total_hyperedges: 0,
+    projected_nodes: records.graph_nodes.length,
+    excluded_nodes: 0,
+    excluded_node_dispositions: [],
+    node_disposition_counts: {
+      retained: records.graph_nodes.length,
+      excluded_unsafe_source: 0,
+      excluded_untracked_or_private: 0,
+    },
+    total_edges: records.graph_edges.length,
+    projected_edges: records.graph_edges.length,
+    excluded_edges: 0,
+    excluded_edge_dispositions: [],
+    excluded_edge_endpoint_dispositions: {},
+    all_edge_modes: { extracted: 1, inferred: 1 },
+    projected_edge_modes: { extracted: 1, inferred: 1 },
+    node_origins: { ast: 2, undisclosed: 1 },
+    excluded_nodes_unsafe_source: 0,
+    excluded_nodes_untracked_or_private: 0,
+    identifier_projection_policy: "raw_identifiers_withheld_repository_relative_retained_source_index_excluded",
+    node_identifier_disposition_counts: {
+      total: records.graph_nodes.length,
+      projected_repository_relative: records.graph_nodes.length,
+      excluded_opaque: 0,
+      raw_published: 0,
+    },
+    total_communities: 1,
+    projected_communities: 1,
+    excluded_communities: 0,
+    all_community_ids: [1],
+    projected_community_ids: [1],
+    excluded_community_ids: [],
+    partial_community_ids: [],
+    community_status_counts: { projected_complete: 1, projected_partial: 0, excluded: 0 },
+    community_dispositions: [
+      { community: 1, status: "projected_complete", total_nodes: 2, retained_nodes: 2, excluded_nodes: 0 },
+    ],
+    projection_policy: "tracked_full_exposure_files_only",
+    unresolved_reasons: [
+      "graphify_is_optional_secondary_projection",
+      "graphify_has_no_hyperedges",
+      "graphify_incremental_rebuild_may_evict_cross_file_edges_until_full_rebuild",
+      "graphify_raw_identifiers_are_withheld_and_exclusion_dispositions_use_source_index_only",
+      "graphify_producer_labels_are_replaced_by_repository_relative_coordinate_labels_and_descriptors_use_controlled_vocabularies",
+    ],
   };
   const completenessValue = {
-    id: "urn:atlas:completeness:fixture",
+    id: fixtureStableId("urn:atlas:completeness:fixture"),
     schema_version: "1.1.0",
     source_commit: "d".repeat(40),
     source_tree_digest: "e".repeat(64),
@@ -615,6 +848,11 @@ async function makeCompilerFixture(root) {
   };
   const completeness = await writeDescriptor(input, "completeness.json", completenessValue);
   const graphify = await writeDescriptor(input, "graphify-metadata.json", graphifyValue);
+  const architecture = await writeDescriptor(input, "architecture-conformance.json", {
+    schema_version: "1.1.0",
+    source_commit: "d".repeat(40),
+    source_tree_digest: "e".repeat(64),
+  });
   const manifest = {
     schema_version: "1.1.0",
     status: "complete",
@@ -624,8 +862,10 @@ async function makeCompilerFixture(root) {
     head_tree_oid: "f".repeat(40),
     index_digest: "0".repeat(64),
     tracked_worktree_dirty: false,
+    chunk_size: 2000,
     completeness,
     graphify_metadata: graphify,
+    architecture_conformance: architecture,
     groups,
   };
   await writeFile(join(input, "manifest.json"), `${stableJson(manifest)}\n`, "utf8");
@@ -709,56 +949,56 @@ test("projection is deterministic, lazy, privacy-gated, and exact-source preserv
     const chunks = await Promise.all(source.chunks.map((chunk) => loaded.loadSourceChunk(source.path, chunk.chunkIndex)));
     const segments = chunks.flatMap((chunk) => chunk.segments);
     assert.equal(segments.map((line) => `${line.text}${line.terminator}`).join(""), exact.toString("utf8"));
-    assert.equal(segments[0].containingSymbolId, "urn:atlas:symbol:hello");
+    assert.equal(segments[0].containingSymbolId, fixtureStableId("urn:atlas:symbol:hello"));
     assert.equal(segments[0].structuralMappingBasis, "symbol_range");
     assert.equal(segments[0].explanationDepth, 3);
     assert.equal(segments[0].runtimeTraceState, "synthetic_trace");
     assert.equal(segments[0].testCoverageState, "direct_line_coverage");
-    assert.deepEqual(segments[0].testsCoveringIt, ["urn:atlas:test:hello"]);
+    assert.deepEqual(segments[0].testsCoveringIt, [fixtureStableId("urn:atlas:test:hello")]);
     assert.deepEqual(segments[0].securityAndPrivacyEffect, { semantic_effect: "none", source_exposure: "full" });
     const lineWindow = await loaded.loadSourceWindow("app/example.py", 2);
     assert.ok(lineWindow.segments.some((line) => line.number === 2));
-    const symbol = await loaded.loadRecord("symbol", "urn:atlas:symbol:hello");
+    const symbol = await loaded.loadRecord("symbol", fixtureStableId("urn:atlas:symbol:hello"));
     assert.equal(symbol.purpose, "Return the Atlas greeting.");
     assert.equal(symbol.explanationDepth, 4);
-    const testCase = await loaded.loadRecord("test", "urn:atlas:test:hello");
+    const testCase = await loaded.loadRecord("test", fixtureStableId("urn:atlas:test:hello"));
     assert.equal(testCase.entityType, "test_case");
-    assert.equal(testCase.assertionGroupId, "urn:atlas:test:hello:assertions");
+    assert.equal(testCase.assertionGroupId, fixtureStableId("urn:atlas:test:hello:assertions"));
     assert.equal(testCase.assertionCount, 1);
-    const assertionGroup = await loaded.loadRecord("test", "urn:atlas:test:hello:assertions");
+    const assertionGroup = await loaded.loadRecord("test", fixtureStableId("urn:atlas:test:hello:assertions"));
     assert.equal(assertionGroup.entityType, "test_assertion_group");
     assert.equal(assertionGroup.assertions[0].kind, "assert_statement");
-    const workflow = await loaded.loadRecord("workflow", "urn:atlas:workflow:ci");
-    assert.deepEqual(workflow.jobIds, ["urn:atlas:workflow:ci:job"]);
-    assert.deepEqual(workflow.stepIds, ["urn:atlas:workflow:ci:step"]);
-    assert.deepEqual(workflow.permissionIds, ["urn:atlas:workflow:ci:permission"]);
-    assert.deepEqual(workflow.artifactIds, ["urn:atlas:workflow:ci:artifact"]);
-    const workflowJob = await loaded.loadRecord("workflow", "urn:atlas:workflow:ci:job");
-    assert.deepEqual(workflowJob.steps, ["urn:atlas:workflow:ci:step"]);
-    assert.deepEqual(workflowJob.permissions, ["urn:atlas:workflow:ci:permission"]);
-    assert.deepEqual(workflowJob.artifacts, ["urn:atlas:workflow:ci:artifact"]);
-    const workflowStep = await loaded.loadRecord("workflow", "urn:atlas:workflow:ci:step");
+    const workflow = await loaded.loadRecord("workflow", fixtureStableId("urn:atlas:workflow:ci"));
+    assert.deepEqual(workflow.jobIds, [fixtureStableId("urn:atlas:workflow:ci:job")]);
+    assert.deepEqual(workflow.stepIds, [fixtureStableId("urn:atlas:workflow:ci:step")]);
+    assert.deepEqual(workflow.permissionIds, [fixtureStableId("urn:atlas:workflow:ci:permission")]);
+    assert.deepEqual(workflow.artifactIds, [fixtureStableId("urn:atlas:workflow:ci:artifact")]);
+    const workflowJob = await loaded.loadRecord("workflow", fixtureStableId("urn:atlas:workflow:ci:job"));
+    assert.deepEqual(workflowJob.steps, [fixtureStableId("urn:atlas:workflow:ci:step")]);
+    assert.deepEqual(workflowJob.permissions, [fixtureStableId("urn:atlas:workflow:ci:permission")]);
+    assert.deepEqual(workflowJob.artifacts, [fixtureStableId("urn:atlas:workflow:ci:artifact")]);
+    const workflowStep = await loaded.loadRecord("workflow", fixtureStableId("urn:atlas:workflow:ci:step"));
     assert.equal(workflowStep.uses, "actions/upload-artifact@v4");
     assert.equal(workflowStep.runDeclared, false);
-    const workflowPermission = await loaded.loadRecord("workflow", "urn:atlas:workflow:ci:permission");
+    const workflowPermission = await loaded.loadRecord("workflow", fixtureStableId("urn:atlas:workflow:ci:permission"));
     assert.equal(workflowPermission.scope, "job:verify");
     assert.equal(workflowPermission.access, "read");
-    const workflowArtifact = await loaded.loadRecord("workflow", "urn:atlas:workflow:ci:artifact");
+    const workflowArtifact = await loaded.loadRecord("workflow", fixtureStableId("urn:atlas:workflow:ci:artifact"));
     assert.equal(workflowArtifact.direction, "produced");
     assert.equal(workflowArtifact.declaredPath, "proof.json");
-    const claim = await loaded.loadRecord("claim", "urn:atlas:claim:greeting");
+    const claim = await loaded.loadRecord("claim", fixtureStableId("urn:atlas:claim:greeting"));
     assert.equal(claim.predicate, "repository.greeting");
     assert.equal(claim.verdict, "proven");
     assert.deepEqual(claim.denominator, { basis: "compiler_source_snapshot", status: "known", unit: "git_tracked_tree", value: 1 });
-    assert.deepEqual(claim.evidenceIds, ["urn:atlas:completeness:fixture"]);
-    const component = await loaded.loadRecord("data", "urn:atlas:component:greeting");
+    assert.deepEqual(claim.evidenceIds, [fixtureStableId("urn:atlas:completeness:fixture")]);
+    const component = await loaded.loadRecord("data", fixtureStableId("urn:atlas:component:greeting"));
     assert.equal(component.entityType, "jsx_component_symbol");
     assert.deepEqual(
       component.gui_dossier,
       records.components[0].gui_dossier,
       "projection must preserve the compiler GUI dossier and every field citation verbatim",
     );
-    const route = await loaded.loadRecord("data", "urn:atlas:route:greeting");
+    const route = await loaded.loadRecord("data", fixtureStableId("urn:atlas:route:greeting"));
     assert.equal(route.route, "/greeting");
     assert.deepEqual(route.gui_dossier, records.routes[0].gui_dossier);
     assert.equal(
@@ -800,10 +1040,10 @@ test("projection is deterministic, lazy, privacy-gated, and exact-source preserv
       assert.equal(manifestA.search.indexedRecordCounts[group], records[group].length);
     }
     const lexical = await loaded.searchRecords(["repository.greeting"]);
-    assert.equal(lexical.records[0].id, "urn:atlas:claim:greeting");
-    const backlinkCapped = await loaded.searchRecords(["urn:atlas:test:hello"]);
+    assert.equal(lexical.records[0].id, fixtureStableId("urn:atlas:claim:greeting"));
+    const backlinkCapped = await loaded.searchRecords([fixtureStableId("urn:atlas:test:hello")]);
     assert.ok(backlinkCapped.truncatedTerms.length > 0, "fixture must exercise a capped posting");
-    assert.ok(backlinkCapped.records.some((record) => record.id === "urn:atlas:test:hello"), "a capped backlink posting must retain its own stable-ID record");
+    assert.ok(backlinkCapped.records.some((record) => record.id === fixtureStableId("urn:atlas:test:hello")), "a capped backlink posting must retain its own stable-ID record");
     const graphSummary = await loaded.loadGraphSummary();
     assert.equal(graphSummary.nodeCount, records.graph_nodes.length);
     assert.equal(graphSummary.edgeCount, records.graph_edges.length);
@@ -836,6 +1076,13 @@ test("dirty compiler output is preview-only and requires an explicit override", 
   const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-preview-"));
   try {
     const { input } = await makeCompilerFixture(scratch);
+    await mutateGraphifyReceipt(input, (graphify) => {
+      graphify.status = "stale";
+      graphify.stale = true;
+      graphify.unresolved_reasons.push(
+        "tracked_worktree_changes_are_newer_than_commit_bound_graph",
+      );
+    });
     const manifestPath = join(input, "manifest.json");
     const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
     manifest.release_class = "dirty_preview";
@@ -850,6 +1097,15 @@ test("dirty compiler output is preview-only and requires an explicit override", 
     assert.equal(loaded.projection.releaseClass, "dirty_preview");
     assert.equal(loaded.projection.trackedWorktreeDirty, true);
     assert.equal(loaded.projection.previewAllowed, true);
+    await mutateGraphifyReceipt(input, (graphify) => {
+      graphify.unresolved_reasons = graphify.unresolved_reasons.filter(
+        (reason) => reason !== "tracked_worktree_changes_are_newer_than_commit_bound_graph",
+      );
+    });
+    await assert.rejects(
+      buildProjection({ input, output: join(scratch, "preview-without-disposition"), allowPreview: true }),
+      /Graphify unresolved reason ledger is malformed/,
+    );
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
@@ -862,10 +1118,620 @@ test("projection fails closed when a compiler chunk digest changes", async () =>
     await writeFile(join(input, "chunks", "files", "00000.json"), '{"records":[]}\n', "utf8");
     await assert.rejects(
       buildProjection({ input, output: join(scratch, "projection") }),
-      /digest mismatch for chunks\/files\/00000\.json/,
+      /compiler receipt digest mismatch/,
     );
   } finally {
     await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("projection refuses raw Graphify identifiers and inconsistent edge endpoints before module emission", async (context) => {
+  await context.test("raw local-derived identifier", async () => {
+    const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-graph-id-"));
+    try {
+      const { input } = await makeCompilerFixture(scratch);
+      const rawIdentifier = "c_users_fixture_desktop_checkout_app_example";
+      await mutateCompilerGroup(input, "graph_nodes", (envelope) => {
+        envelope.records[0].graphify_id = rawIdentifier;
+      });
+      const output = join(scratch, "projection");
+      await assert.rejects(
+        buildProjection({ input, output }),
+        /unique recomputable full-exposure repository-relative identity/,
+      );
+      await assert.rejects(readFile(join(output, "projection-manifest.json")));
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+
+  await context.test("dangling retained edge endpoint", async () => {
+    const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-graph-edge-"));
+    try {
+      const { input } = await makeCompilerFixture(scratch);
+      await mutateCompilerGroup(input, "graph_edges", (envelope) => {
+        envelope.records[0].target = stableId("graph-node", "missing");
+      });
+      const output = join(scratch, "projection");
+      await assert.rejects(
+        buildProjection({ input, output }),
+        /edge endpoint, coordinate, or stable identity is inconsistent/,
+      );
+      await assert.rejects(readFile(join(output, "projection-manifest.json")));
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+});
+
+test("projection recomputes Graphify identities and enforces full-exposure file joins", async (context) => {
+  const rejectsGraphMutation = async (label, group, mutate, pattern) => {
+    await context.test(label, async () => {
+      const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-graph-contract-"));
+      try {
+        const { input } = await makeCompilerFixture(scratch);
+        await mutateCompilerGroup(input, group, mutate);
+        const output = join(scratch, "projection");
+        await assert.rejects(buildProjection({ input, output }), pattern);
+        await assert.rejects(readFile(join(output, "projection-manifest.json")));
+      } finally {
+        await rm(scratch, { recursive: true, force: true });
+      }
+    });
+  };
+
+  await rejectsGraphMutation(
+    "node file_id differs from its source_file",
+    "graph_nodes",
+    (envelope) => {
+      envelope.records[0].file_id = fixtureStableId("urn:atlas:file:private");
+    },
+    /unique recomputable full-exposure repository-relative identity/,
+  );
+  await rejectsGraphMutation(
+    "node joins a metadata-only file even with recomputed identities",
+    "graph_nodes",
+    (envelope) => {
+      const node = envelope.records[0];
+      node.file_id = fixtureStableId("urn:atlas:file:private");
+      node.source_file = "assets/private.bin";
+      node.source_location = "1";
+      node.coordinate_occurrence = 0;
+      node.graphify_id = digestObject([
+        "repository-relative-graph-node",
+        node.source_file,
+        node.source_location,
+        "0",
+      ]);
+      node.id = stableId("graph-node", "d".repeat(40), node.graphify_id);
+      node.label = "assets/private.bin:1#1";
+    },
+    /unique recomputable full-exposure repository-relative identity/,
+  );
+  await context.test("node rejects a full-exposure file with classification errors", async () => {
+    const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-graph-node-classification-"));
+    try {
+      const { input } = await makeCompilerFixture(scratch);
+      await mutateCompilerGroup(input, "files", (envelope) => {
+        const file = envelope.records.find((record) => record.path === "app/example.py");
+        file.classification_errors = ["unclassified_source"];
+      });
+      const output = join(scratch, "projection");
+      await assert.rejects(
+        buildProjection({ input, output }),
+        /unique recomputable full-exposure repository-relative identity/,
+      );
+      await assert.rejects(readFile(join(output, "projection-manifest.json")));
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+  await rejectsGraphMutation(
+    "node stable ID is not the canonical public ID",
+    "graph_nodes",
+    (envelope) => {
+      envelope.records[0].id = `urn:atlas:graph-node:${"f".repeat(24)}`;
+    },
+    /unique recomputable full-exposure repository-relative identity/,
+  );
+  await rejectsGraphMutation(
+    "node community exceeds the JavaScript safe-integer domain",
+    "graph_nodes",
+    (envelope) => {
+      envelope.records[0].community = Number.MAX_SAFE_INTEGER + 1;
+    },
+    /unique recomputable full-exposure repository-relative identity/,
+  );
+  await rejectsGraphMutation(
+    "node coordinate occurrences have a gap",
+    "graph_nodes",
+    (envelope) => {
+      const node = envelope.records[2];
+      node.coordinate_occurrence = 2;
+      node.graphify_id = digestObject([
+        "repository-relative-graph-node",
+        node.source_file,
+        node.source_location,
+        "2",
+      ]);
+      node.id = stableId("graph-node", "d".repeat(40), node.graphify_id);
+      node.label = "app/example.py:2#3";
+    },
+    /node coordinate occurrences are not contiguous and one-to-one/,
+  );
+  await rejectsGraphMutation(
+    "edge stable ID is not the canonical public ID",
+    "graph_edges",
+    (envelope) => {
+      envelope.records[0].id = `urn:atlas:graph-edge:${"f".repeat(24)}`;
+    },
+    /edge endpoint, coordinate, or stable identity is inconsistent/,
+  );
+  await rejectsGraphMutation(
+    "edge confidence is outside the canonical coordinate domain",
+    "graph_edges",
+    (envelope) => {
+      envelope.records[0].confidence = 2;
+    },
+    /edge confidence must be null or a finite number from zero to one/,
+  );
+  await context.test("edge rejects a full-exposure file with classification errors", async () => {
+    const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-graph-edge-classification-"));
+    try {
+      const { input } = await makeCompilerFixture(scratch);
+      await mutateCompilerGroup(input, "files", (envelope) => {
+        const file = envelope.records.find((record) => record.path === "assets/private.bin");
+        file.privacy_exposure = "full";
+        file.classification_errors = ["unclassified_source"];
+      });
+      await mutateCompilerGroup(input, "graph_edges", (envelope) => {
+        const edge = envelope.records[0];
+        edge.source_file = "assets/private.bin";
+        edge.source_location = "1";
+        edge.id = stableId(
+          "graph-edge",
+          "d".repeat(40),
+          edge.source,
+          edge.target,
+          edge.relation,
+          edge.source_file,
+          edge.source_location,
+          edge.extraction_mode,
+          graphConfidenceIdentity(edge.confidence),
+          edge.coordinate_occurrence,
+        );
+      });
+      const output = join(scratch, "projection");
+      await assert.rejects(
+        buildProjection({ input, output }),
+        /edge endpoint, coordinate, or stable identity is inconsistent/,
+      );
+      await assert.rejects(readFile(join(output, "projection-manifest.json")));
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+});
+
+test("projection withholds malformed Graphify producer commit metadata without echoing it", async () => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-graph-commit-"));
+  try {
+    const { input } = await makeCompilerFixture(scratch);
+    const localMarker = "c_users_foreign_owner_desktop_checkout";
+    await mutateGraphifyReceipt(input, (graphify) => {
+      graphify.built_at_commit = localMarker;
+    });
+    const output = join(scratch, "projection");
+    await assert.rejects(
+      buildProjection({ input, output }),
+      (error) => {
+        assert.match(error.message, /identifier disposition receipt is absent or inconsistent/);
+        assert.equal(error.message.includes(localMarker), false);
+        return true;
+      },
+    );
+    await assert.rejects(readFile(join(output, "projection-manifest.json")));
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("exact projection rejects a valid but foreign Graphify producer commit", async () => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-graph-stale-"));
+  try {
+    const { input } = await makeCompilerFixture(scratch);
+    await mutateGraphifyReceipt(input, (graphify) => {
+      graphify.built_at_commit = "a".repeat(40);
+      graphify.status = "stale";
+      graphify.stale = true;
+    });
+    const output = join(scratch, "projection");
+    await assert.rejects(
+      buildProjection({ input, output }),
+      /identifier disposition receipt is absent or inconsistent/,
+    );
+    await assert.rejects(readFile(join(output, "projection-manifest.json")));
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("projection rejects contradictory or stale Graphify freshness states", async () => {
+  for (const [status, stale, addDirtyReason = false] of [
+    ["current", true, false],
+    ["stale", false, false],
+    ["stale", true, false],
+    ["current", false, true],
+  ]) {
+    const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-graph-state-"));
+    try {
+      const { input } = await makeCompilerFixture(scratch);
+      await mutateGraphifyReceipt(input, (graphify) => {
+        graphify.status = status;
+        graphify.stale = stale;
+        if (addDirtyReason) {
+          graphify.unresolved_reasons.push(
+            "tracked_worktree_changes_are_newer_than_commit_bound_graph",
+          );
+        }
+      });
+      const output = join(scratch, "projection");
+      await assert.rejects(
+        buildProjection({ input, output }),
+        /Graphify unresolved reason ledger is malformed|Graphify identifier disposition receipt is absent or inconsistent/,
+      );
+      await assert.rejects(readFile(join(output, "projection-manifest.json")));
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  }
+});
+
+test("projection reconciles Graphify exclusion ledgers before module emission", async () => {
+  for (const mutate of [
+    (graphify) => {
+      graphify.total_edges += 1;
+    },
+    (graphify) => {
+      graphify.total_edges += 1;
+      graphify.excluded_edges = 1;
+      graphify.excluded_edge_endpoint_dispositions = {
+        source_retained__target_missing_node: 1,
+      };
+    },
+  ]) {
+    const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-graph-ledger-"));
+    try {
+      const { input } = await makeCompilerFixture(scratch);
+      await mutateGraphifyReceipt(input, mutate);
+      const output = join(scratch, "projection");
+      await assert.rejects(
+        buildProjection({ input, output }),
+        /Graphify edge modes does not reconcile|Graphify identifier disposition receipt is absent or inconsistent/,
+      );
+      await assert.rejects(readFile(join(output, "projection-manifest.json")));
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  }
+});
+
+test("projection validates every Graphify exclusion disposition and traversal field", async () => {
+  const marker = "benign-private-token-7f3a";
+  const mutations = {
+    "non-object node row": (graphify) => {
+      graphify.excluded_node_dispositions[0] = marker;
+    },
+    "undeclared node field": (graphify) => {
+      graphify.excluded_node_dispositions[0].producer_note = marker;
+    },
+    "legacy node raw commitment field": (graphify) => {
+      graphify.excluded_node_dispositions[0].raw_record_digest = "a".repeat(64);
+    },
+    "duplicate node raw index": (graphify) => {
+      graphify.total_nodes += 1;
+      graphify.excluded_nodes += 1;
+      graphify.excluded_nodes_untracked_or_private += 1;
+      graphify.node_disposition_counts.excluded_untracked_or_private += 1;
+      graphify.node_identifier_disposition_counts.total += 1;
+      graphify.node_identifier_disposition_counts.excluded_opaque += 1;
+      graphify.node_origins.undisclosed += 1;
+      graphify.excluded_node_dispositions.push({
+        ...structuredClone(graphify.excluded_node_dispositions[0]),
+        id: stableId(
+          "graph-node-disposition",
+          graphify.source_digest,
+          graphify.total_nodes - 1,
+        ),
+      });
+    },
+    "uncontrolled node reason": (graphify) => {
+      graphify.excluded_node_dispositions[0].reason = marker;
+    },
+    "non-object edge row": (graphify) => {
+      graphify.excluded_edge_dispositions[0] = marker;
+    },
+    "legacy endpoint raw commitment field": (graphify) => {
+      graphify.excluded_edge_dispositions[0].target_endpoint.opaque_identifier_hash =
+        "a".repeat(64);
+    },
+    "endpoint traversal mismatch": (graphify) => {
+      graphify.excluded_edge_dispositions[0].source_endpoint.record_id =
+        stableId("graph-node-disposition", marker);
+    },
+    "known endpoint carries anonymous slot": (graphify) => {
+      graphify.excluded_edge_dispositions[0].source_endpoint.anonymous_slot = 0;
+    },
+    "missing endpoint slot gap": (graphify) => {
+      graphify.excluded_edge_dispositions[0].target_endpoint.anonymous_slot = 1;
+    },
+    "endpoint aggregate mismatch": (graphify) => {
+      graphify.excluded_edge_endpoint_dispositions = {
+        source_missing_node__target_missing_node: 1,
+      };
+    },
+  };
+  for (const [label, mutate] of Object.entries(mutations)) {
+    const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-exclusion-row-"));
+    try {
+      const { input } = await makeCompilerFixture(scratch);
+      await seedGraphifyExclusionLedger(input);
+      await mutateGraphifyReceipt(input, mutate);
+      const output = join(scratch, "projection");
+      await assert.rejects(buildProjection({ input, output }), (error) => {
+        assert.equal(String(error.stack).includes(marker), false, label);
+        return true;
+      });
+      await assert.rejects(readFile(join(output, "projection-manifest.json")));
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  }
+});
+
+test("projection preserves repeated anonymous missing-endpoint topology", async () => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-anonymous-endpoint-"));
+  try {
+    const { input } = await makeCompilerFixture(scratch);
+    await seedGraphifyExclusionLedger(input);
+    let repeatedSlots = [];
+    await mutateGraphifyReceipt(input, (graphify) => {
+      graphify.total_edges += 1;
+      graphify.excluded_edges += 1;
+      graphify.all_edge_modes.undisclosed += 1;
+      graphify.excluded_edge_endpoint_dispositions = {
+        source_excluded_untracked_or_private__target_missing_node: 2,
+      };
+      const rawIndex = graphify.total_edges - 1;
+      graphify.excluded_edge_dispositions.push({
+        ...structuredClone(graphify.excluded_edge_dispositions[0]),
+        id: stableId("graph-edge-disposition", graphify.source_digest, rawIndex),
+        raw_index: rawIndex,
+      });
+      repeatedSlots = graphify.excluded_edge_dispositions
+        .flatMap((record) => [record.source_endpoint, record.target_endpoint])
+        .filter((endpoint) => endpoint.state === "missing_node")
+        .map((endpoint) => endpoint.anonymous_slot);
+    });
+    const output = join(scratch, "projection");
+    const manifest = await buildProjection({ input, output });
+    assert.equal(manifest.schemaVersion, "1.1.0");
+    assert.deepEqual(repeatedSlots, [0, 0]);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("projection closes Graphify metadata and retained-row string channels", async () => {
+  const marker = "benign-private-token-7f3a";
+  const metadataMutations = {
+    "top-level key": (graphify) => {
+      graphify.producer_note = marker;
+    },
+    "top-level reason": (graphify) => {
+      graphify.unresolved_reasons.push(marker);
+    },
+    "origin-map key": (graphify) => {
+      graphify.node_origins[marker] = 0;
+    },
+    "community status": (graphify) => {
+      graphify.community_dispositions[0].status = marker;
+    },
+    "scalar disposition mismatch": (graphify) => {
+      graphify.excluded_nodes_unsafe_source = 1;
+    },
+    "projected community mismatch": (graphify) => {
+      graphify.projected_community_ids = [];
+      graphify.projected_communities = 0;
+      graphify.excluded_community_ids = [1];
+      graphify.excluded_communities = 1;
+      graphify.community_dispositions[0] = {
+        community: 1,
+        status: "excluded",
+        total_nodes: 2,
+        retained_nodes: 0,
+        excluded_nodes: 2,
+      };
+      graphify.community_status_counts = {
+        projected_complete: 0,
+        projected_partial: 0,
+        excluded: 1,
+      };
+    },
+    "projected edge-mode mismatch": (graphify) => {
+      graphify.projected_edge_modes = { extracted: 2 };
+    },
+  };
+  for (const [label, mutate] of Object.entries(metadataMutations)) {
+    const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-metadata-shape-"));
+    try {
+      const { input } = await makeCompilerFixture(scratch);
+      await mutateGraphifyReceipt(input, mutate);
+      const output = join(scratch, "projection");
+      await assert.rejects(buildProjection({ input, output }), (error) => {
+        assert.equal(String(error.stack).includes(marker), false, label);
+        return true;
+      });
+      await assert.rejects(readFile(join(output, "projection-manifest.json")));
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  }
+
+  for (const group of ["graph_nodes", "graph_edges", "imports"]) {
+    for (const key of ["producer_note", "derivation"]) {
+      const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-record-shape-"));
+      try {
+        const { input } = await makeCompilerFixture(scratch);
+        await mutateCompilerGroup(input, group, (envelope) => {
+          envelope.records[0][key] = marker;
+        });
+        const output = join(scratch, "projection");
+        await assert.rejects(buildProjection({ input, output }), (error) => {
+          assert.match(error.message, /undeclared field|graph (?:node|edge) record shape/);
+          assert.equal(String(error.stack).includes(marker), false);
+          return true;
+        });
+        await assert.rejects(readFile(join(output, "projection-manifest.json")));
+      } finally {
+        await rm(scratch, { recursive: true, force: true });
+      }
+    }
+  }
+});
+
+test("projection bounds Graphify coordinates and accepts combined controlled reason order", async () => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-coordinate-bound-"));
+  try {
+    const { input } = await makeCompilerFixture(scratch);
+    const hugeLocation = "9".repeat(60);
+    await mutateCompilerGroup(input, "graph_nodes", (envelope) => {
+      const node = envelope.records[0];
+      node.source_location = hugeLocation;
+      node.graphify_id = digestObject([
+        "repository-relative-graph-node",
+        node.source_file,
+        hugeLocation,
+        "0",
+      ]);
+      node.id = stableId("graph-node", "d".repeat(40), node.graphify_id);
+      node.label = `${node.source_file}:${hugeLocation}#1`;
+    });
+    await assert.rejects(
+      buildProjection({ input, output: join(scratch, "blocked") }),
+      /unique recomputable full-exposure repository-relative identity/,
+    );
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+
+  const combined = await mkdtemp(join(os.tmpdir(), "atlas-projection-reason-order-"));
+  try {
+    const { input } = await makeCompilerFixture(combined);
+    let priorId;
+    let replacementId;
+    await mutateCompilerGroup(input, "graph_nodes", (envelope) => {
+      const node = envelope.records.find((record) => record.origin === "undisclosed");
+      priorId = node.id;
+      node.source_location = "";
+      node.coordinate_occurrence = 0;
+      node.graphify_id = digestObject([
+        "repository-relative-graph-node",
+        node.source_file,
+        "",
+        "0",
+      ]);
+      node.id = stableId("graph-node", "d".repeat(40), node.graphify_id);
+      replacementId = node.id;
+      node.label = `${node.source_file}:source#1`;
+      node.file_type = "";
+      node.language = "";
+      node.kind = "";
+      node.entity_type = "graph_node";
+      node.unresolved_reasons = [
+        "graphify_node_label_derived_from_repository_relative_coordinate",
+        "graphify_node_origin_is_curated_or_undisclosed_not_ast_extraction",
+        "graphify_node_source_location_outside_bounded_coordinate_domain",
+        "graphify_node_nonvocabulary_descriptor_withheld",
+      ];
+    });
+    await mutateCompilerGroup(input, "graph_edges", (envelope) => {
+      for (const edge of envelope.records) {
+        if (edge.source === priorId) edge.source = replacementId;
+        if (edge.target === priorId) edge.target = replacementId;
+        edge.id = stableId(
+          "graph-edge",
+          "d".repeat(40),
+          edge.source,
+          edge.target,
+          edge.relation,
+          edge.source_file,
+          edge.source_location,
+          edge.extraction_mode,
+          graphConfidenceIdentity(edge.confidence),
+          edge.coordinate_occurrence,
+        );
+      }
+      assert.notEqual(priorId, replacementId);
+    });
+    await buildProjection({ input, output: join(combined, "projection") });
+  } finally {
+    await rm(combined, { recursive: true, force: true });
+  }
+});
+
+test("projection binds receipt owners, schema errors, and record IDs without echoing input", async () => {
+  const marker = "c_users_foreign_owner_desktop_checkout";
+  const mutations = {
+    "completeness owner path": async (input) => {
+      const path = join(input, "manifest.json");
+      const manifest = JSON.parse(await readFile(path, "utf8"));
+      manifest.completeness.path = `chunks/${marker}.json`;
+      await writeFile(path, `${stableJson(manifest)}\n`, "utf8");
+    },
+    "chunk owner path": async (input) => {
+      const path = join(input, "manifest.json");
+      const manifest = JSON.parse(await readFile(path, "utf8"));
+      manifest.groups.files.chunks[0].path = `chunks/files/${marker}.json`;
+      await writeFile(path, `${stableJson(manifest)}\n`, "utf8");
+    },
+    "manifest schema version": async (input) => {
+      const path = join(input, "manifest.json");
+      const manifest = JSON.parse(await readFile(path, "utf8"));
+      manifest.schema_version = marker;
+      await writeFile(path, `${stableJson(manifest)}\n`, "utf8");
+    },
+    "failed invariant name": async (input) => {
+      const path = join(input, "manifest.json");
+      const manifest = JSON.parse(await readFile(path, "utf8"));
+      const completeness = JSON.parse(
+        await readFile(join(input, ...manifest.completeness.path.split("/")), "utf8"),
+      );
+      completeness.invariants[0].name = marker;
+      completeness.invariants[0].passed = false;
+      manifest.completeness = await writeVerifiedValue(input, manifest.completeness, completeness);
+      await writeFile(path, `${stableJson(manifest)}\n`, "utf8");
+    },
+    "container record id": async (input) => {
+      await mutateCompilerGroup(input, "imports", (envelope) => {
+        envelope.records[0].id = [[marker]];
+      });
+    },
+  };
+  for (const [label, mutate] of Object.entries(mutations)) {
+    const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-fixed-error-"));
+    try {
+      const { input } = await makeCompilerFixture(scratch);
+      await mutate(input);
+      const output = join(scratch, "projection");
+      await assert.rejects(buildProjection({ input, output }), (error) => {
+        assert.equal(String(error.stack).includes(marker), false, label);
+        return true;
+      });
+      await assert.rejects(readFile(join(output, "projection-manifest.json")));
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
   }
 });
 
@@ -882,13 +1748,13 @@ test("projection refuses compiler receipt traversal outside the input root", asy
       path: "../outside.json",
       bytes: outsideBytes.byteLength,
       sha256: sha256(outsideBytes),
-      record_count: 0,
+      record_count: manifest.groups.files.record_count,
     };
     await writeFile(manifestPath, `${stableJson(manifest)}\n`, "utf8");
 
     await assert.rejects(
       buildProjection({ input, output: join(scratch, "projection") }),
-      /unsafe compiler input path/,
+      /compiler receipt is malformed/,
     );
   } finally {
     await rm(scratch, { recursive: true, force: true });
@@ -965,8 +1831,152 @@ test("line and source groups pass through the same strict chunk-envelope validat
       });
       await assert.rejects(
         buildProjection({ input, output: join(scratch, "projection") }),
-        new RegExp(`compiler chunk envelope mismatch for chunks/${group}/00000\\.json`),
+        /compiler chunk envelope mismatch/,
       );
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  }
+});
+
+test("projection rejects declared empty chunks instead of treating them as empty groups", async () => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-empty-chunk-"));
+  try {
+    const { input } = await makeCompilerFixture(scratch);
+    await mutateCompilerGroup(input, "imports", (envelope) => {
+      envelope.records = [];
+    });
+    const output = join(scratch, "projection");
+    await assert.rejects(
+      buildProjection({ input, output }),
+      /compiler group descriptor is malformed/,
+    );
+    await assert.rejects(readFile(join(output, "projection-manifest.json")));
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("projection enforces canonical compiler chunk packing and stable-ID order", async () => {
+  for (const [label, mutatePartitions, pattern] of [
+    [
+      "noncanonical repartition",
+      (partitions) => [[partitions[0][0]], [partitions[0][1], ...partitions[1]]],
+      /compiler chunk descriptor is malformed/,
+    ],
+    [
+      "cross-chunk record reorder",
+      (partitions) => [
+        [partitions[0][1], partitions[0][0]],
+        partitions[1],
+      ],
+      /stable IDs are not in canonical ascending order/,
+    ],
+  ]) {
+    const scratch = await mkdtemp(join(os.tmpdir(), `atlas-projection-packing-${label.replaceAll(" ", "-")}-`));
+    try {
+      const { input } = await makeCompilerFixture(scratch);
+      await rewriteCompilerPacking(input, 2, "graph_nodes", mutatePartitions);
+      const output = join(scratch, "projection");
+      await assert.rejects(buildProjection({ input, output }), pattern);
+      await assert.rejects(readFile(join(output, "projection-manifest.json")));
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  }
+});
+
+test("projection rejects self-receipted noncanonical compiler JSON", async () => {
+  const marker = "c_users_foreign_owner_desktop_checkout";
+  const cases = [
+    ["whitespace", "chunk", (parsed) => `${JSON.stringify(parsed, null, 2)}\n`],
+    ["key-order", "owner", (parsed) => `${JSON.stringify(Object.fromEntries(Object.entries(parsed).reverse()))}\n`],
+    [
+      "duplicate-key",
+      "chunk",
+      (parsed) => `${stableJson(parsed).replace(
+        '"schema_version":"1.1.0"',
+        `"schema_version":"${marker}","schema_version":"1.1.0"`,
+      )}\n`,
+    ],
+    [
+      "deep-nesting",
+      "owner",
+      (parsed) => {
+        let nested = marker;
+        for (let depth = 0; depth < 140; depth += 1) nested = [nested];
+        return `${stableJson({ ...parsed, producer_note: nested })}\n`;
+      },
+    ],
+  ];
+  for (const [label, target, serialize] of cases) {
+    const scratch = await mkdtemp(join(os.tmpdir(), `atlas-projection-noncanonical-${label}-`));
+    try {
+      const { input } = await makeCompilerFixture(scratch);
+      const manifestPath = join(input, "manifest.json");
+      const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+      const descriptor = target === "chunk"
+        ? manifest.groups.imports.chunks[0]
+        : manifest.graphify_metadata;
+      const path = join(input, ...descriptor.path.split("/"));
+      const parsed = JSON.parse(await readFile(path, "utf8"));
+      const bytes = Buffer.from(serialize(parsed), "utf8");
+      await writeFile(path, bytes);
+      descriptor.bytes = bytes.byteLength;
+      descriptor.sha256 = sha256(bytes);
+      await writeFile(manifestPath, `${stableJson(manifest)}\n`, "utf8");
+      const output = join(scratch, "projection");
+      await assert.rejects(buildProjection({ input, output }), (error) => {
+        assert.match(error.message, /compiler receipt is not canonical JSON/);
+        assert.equal(error.stack.includes(marker), false);
+        return true;
+      });
+      await assert.rejects(readFile(join(output, "projection-manifest.json")));
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  }
+});
+
+test("projection accepts Python canonical float spellings in compiler chunks", async () => {
+  for (const spelling of ["integral", "exponent"]) {
+    const scratch = await mkdtemp(join(os.tmpdir(), `atlas-projection-python-float-${spelling}-`));
+    try {
+      const { input } = await makeCompilerFixture(scratch);
+      if (spelling === "exponent") {
+        await mutateCompilerGroup(input, "graph_edges", (envelope) => {
+          const edge = envelope.records[0];
+          edge.confidence = 0.00001;
+          edge.id = stableId(
+            "graph-edge",
+            "d".repeat(40),
+            edge.source,
+            edge.target,
+            edge.relation,
+            edge.source_file,
+            edge.source_location,
+            edge.extraction_mode,
+            graphConfidenceIdentity(edge.confidence),
+            edge.coordinate_occurrence,
+          );
+          envelope.records.sort((left, right) => left.id.localeCompare(right.id));
+        });
+      }
+      const manifestPath = join(input, "manifest.json");
+      const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+      const descriptor = manifest.groups.graph_edges.chunks[0];
+      const path = join(input, ...descriptor.path.split("/"));
+      const canonical = await readFile(path, "utf8");
+      const rewritten = spelling === "integral"
+        ? canonical.replace('"confidence":1,', '"confidence":1.0,')
+        : canonical.replace('"confidence":0.00001,', '"confidence":1e-05,');
+      assert.notEqual(rewritten, canonical);
+      const bytes = Buffer.from(rewritten, "utf8");
+      await writeFile(path, bytes);
+      descriptor.bytes = bytes.byteLength;
+      descriptor.sha256 = sha256(bytes);
+      await writeFile(manifestPath, `${stableJson(manifest)}\n`, "utf8");
+      await buildProjection({ input, output: join(scratch, "projection") });
     } finally {
       await rm(scratch, { recursive: true, force: true });
     }
@@ -981,12 +1991,12 @@ test("projection rejects duplicate source paths and duplicate path-line coordina
       await mutateCompilerGroup(input, "source_text", (envelope) => {
         envelope.records.push({
           ...structuredClone(envelope.records[0]),
-          id: "urn:atlas:source-text:duplicate-path",
+          id: stableId("source-text", "duplicate-path"),
         });
       });
       await assert.rejects(
         buildProjection({ input, output: join(scratch, "projection") }),
-        /duplicate or invalid source-text path: app\/example\.py/,
+        /compiler group descriptor is malformed/,
       );
     } finally {
       await rm(scratch, { recursive: true, force: true });
@@ -1016,7 +2026,8 @@ test("projection reconciles file, source, nonblank, and semantic-line denominato
   try {
     const { input } = await makeCompilerFixture(scratch);
     await mutateCompilerGroup(input, "files", (envelope) => {
-      envelope.records[0].nonblank_line_count = 1;
+      const file = envelope.records.find((record) => record.path === "app/example.py");
+      file.nonblank_line_count = 1;
     });
     await mutateCompilerGroup(input, "structural_entities", (envelope) => {
       envelope.records[0].nonblank_line_count = 1;
@@ -1037,7 +2048,7 @@ test("metadata and dossier modules split recursively, deterministically, and rem
     const targetPrefix = "a7";
     const ids = [];
     for (let candidate = 0; ids.length < 64; candidate += 1) {
-      const id = `urn:atlas:symbol:recursive-${candidate}`;
+      const id = stableId("symbol", `recursive-${candidate}`);
       if (fnv1a(id).slice(0, 2) === targetPrefix) ids.push(id);
     }
     await mutateCompilerGroup(input, "symbols", (envelope) => {
@@ -1075,8 +2086,8 @@ test("a single oversized lazy record is losslessly fragmented below the raw-byte
     await mutateCompilerGroup(input, "symbols", (envelope) => {
       envelope.records = [{
         ...structuredClone(envelope.records[0]),
-        id: "urn:atlas:symbol:oversized",
-        stable_urn: "urn:atlas:symbol:oversized",
+        id: stableId("symbol", "oversized"),
+        stable_urn: stableId("symbol", "oversized"),
         purpose: oversizedPurpose,
       }];
     });
@@ -1106,9 +2117,9 @@ test("a single oversized lazy record is losslessly fragmented below the raw-byte
     const loaded = await import(`${pathToFileURL(join(outputA, "index.mjs")).href}?oversized=1`);
     const metadata = await loaded.loadMetadata("symbols");
     assert.equal(metadata.length, 1);
-    assert.equal(metadata[0].id, "urn:atlas:symbol:oversized");
+    assert.equal(metadata[0].id, stableId("symbol", "oversized"));
     assert.equal(metadata[0].purpose, oversizedPurpose);
-    const dossier = await loaded.loadRecord("symbol", "urn:atlas:symbol:oversized");
+    const dossier = await loaded.loadRecord("symbol", stableId("symbol", "oversized"));
     assert.deepEqual(dossier, metadata[0]);
   } finally {
     await rm(scratch, { recursive: true, force: true });
@@ -1164,4 +2175,42 @@ test("browser workspaces consume bounded search, source, and graph APIs", async 
   assert.match(graphExplorer, /Community view abstained/);
   assert.doesNotMatch(graphExplorer, /loadingCommunity/);
   assert.doesNotMatch(graphExplorer, /loadMetadata\("graph_(?:nodes|edges)"\)/);
+});
+
+test("projection record-key registry is identical to the strict atlas-record schema owner", async () => {
+  const schema = JSON.parse(
+    await readFile(new URL("../../schema/atlas-records.schema.json", import.meta.url), "utf8"),
+  );
+  const fenceByGroup = {
+    files: "filesRecordKeyFence",
+    lines: "linesRecordKeyFence",
+    source_text: "sourceTextRecordKeyFence",
+    symbols: "symbolsRecordKeyFence",
+    structural_entities: "structuralEntitiesRecordKeyFence",
+    imports: "importsRecordKeyFence",
+    calls: "callsRecordKeyFence",
+    markdown: "markdownRecordKeyFence",
+    structured: "structuredRecordKeyFence",
+    documents: "documentsRecordKeyFence",
+    routes: "routesRecordKeyFence",
+    components: "componentsRecordKeyFence",
+    tests: "testsRecordKeyFence",
+    workflows: "workflowsRecordKeyFence",
+    datasets: "datasetsRecordKeyFence",
+    binaries: "binariesRecordKeyFence",
+    manifests: "manifestsRecordKeyFence",
+    configs: "configsRecordKeyFence",
+    dependencies: "dependenciesRecordKeyFence",
+    graph_nodes: "graphNodesRecordKeyFence",
+    graph_edges: "graphEdgesRecordKeyFence",
+    claims: "claimsRecordKeyFence",
+  };
+  assert.deepEqual(Object.keys(COMPILER_RECORD_KEYS_BY_GROUP).sort(), Object.keys(fenceByGroup).sort());
+  for (const [group, fenceName] of Object.entries(fenceByGroup)) {
+    assert.deepEqual(
+      [...COMPILER_RECORD_KEYS_BY_GROUP[group]].sort(),
+      [...schema.$defs[fenceName].propertyNames.enum].sort(),
+      `${group} projection keys must match the schema SSOT`,
+    );
+  }
 });

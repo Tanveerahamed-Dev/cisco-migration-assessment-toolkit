@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import hashlib
 import os
@@ -18,6 +19,7 @@ from compiler import CompilationError, compile_repository  # noqa: E402
 from compiler import compiler as compiler_module  # noqa: E402
 from compiler import graphify as graphify_module  # noqa: E402
 from compiler.graphify import GraphifyFailure, project_graphify  # noqa: E402
+from compiler.model import canonical_json, stable_id  # noqa: E402
 from compiler.policy import classify_file  # noqa: E402
 from compiler.schema_validation import SchemaValidationError, validate_compiler_output  # noqa: E402
 
@@ -263,13 +265,9 @@ class CompilerTests(unittest.TestCase):
                 "parser_context",
             )
             fallback = next(
-                row
-                for row in lines
-                if row["path"] == "sample.py" and row["syntax_kind"] == "unresolved_text"
+                row for row in lines if row["path"] == "sample.py" and row["syntax_kind"] == "unresolved_text"
             )
-            structural_roots = {
-                row["path"]: row for row in group_records(first_output, "structural_entities")
-            }
+            structural_roots = {row["path"]: row for row in group_records(first_output, "structural_entities")}
             self.assertEqual(set(structural_roots), set(source_records))
             self.assertEqual(fallback["structural_mapping_basis"], "parser_structural_root")
             self.assertEqual(fallback["semantic_entity"], structural_roots["sample.py"]["id"])
@@ -281,7 +279,9 @@ class CompilerTests(unittest.TestCase):
             )
             self.assertTrue(all(row["parser_owned"] for row in structural_roots.values()))
             self.assertTrue(all(row["explanation_depth"] == 1 for row in structural_roots.values()))
-            self.assertTrue(all(row["generation_provenance"]["state"] == "not_declared" for row in structural_roots.values()))
+            self.assertTrue(
+                all(row["generation_provenance"]["state"] == "not_declared" for row in structural_roots.values())
+            )
             self.assertIn("behavioral_semantics_not_verified", fallback["unresolved_reasons"])
 
             self.assertTrue(any(row["qualified_name"] == "helper" for row in group_records(first_output, "symbols")))
@@ -302,8 +302,7 @@ class CompilerTests(unittest.TestCase):
             self.assertTrue(all(row["gui_dossier"]["field_count"] == 15 for row in gui_surfaces))
             self.assertTrue(any(row["name"] == "dashboard" for row in group_records(first_output, "tests")))
             dependency = next(
-                row for row in group_records(first_output, "dependencies")
-                if row["name"] == "example-package"
+                row for row in group_records(first_output, "dependencies") if row["name"] == "example-package"
             )
             self.assertEqual(dependency["entity_type"], "dependency")
 
@@ -353,15 +352,50 @@ class CompilerTests(unittest.TestCase):
             self.assertFalse(graph_metadata["stale"])
             self.assertEqual(graph_metadata["projected_nodes"], 2)
             self.assertEqual(graph_metadata["projected_edge_modes"], {"inferred": 1})
+            self.assertEqual(
+                graph_metadata["identifier_projection_policy"],
+                "raw_identifiers_withheld_repository_relative_retained_source_index_excluded",
+            )
+            self.assertEqual(
+                graph_metadata["node_identifier_disposition_counts"],
+                {
+                    "total": 2,
+                    "projected_repository_relative": 2,
+                    "excluded_opaque": 0,
+                    "raw_published": 0,
+                },
+            )
+            graph_nodes = group_records(first_output, "graph_nodes")
+            graph_edges = group_records(first_output, "graph_edges")
+            self.assertEqual((len(graph_nodes), len(graph_edges)), (2, 1))
+            self.assertEqual(len({row["graphify_id"] for row in graph_nodes}), 2)
+            self.assertTrue(
+                all(
+                    len(row["graphify_id"]) == 64 and set(row["graphify_id"]) <= set("0123456789abcdef")
+                    for row in graph_nodes
+                )
+            )
+            projected_graph_bytes = (
+                b"".join(
+                    path.read_bytes()
+                    for path in sorted((first_output / "chunks").rglob("*.json"))
+                    if path.parent.name in {"graph_nodes", "graph_edges"}
+                )
+                + (first_output / "graphify-metadata.json").read_bytes()
+            )
+            self.assertNotIn(b"sample_file", projected_graph_bytes)
+            self.assertNotIn(b"sample_helper", projected_graph_bytes)
+            self.assertEqual(
+                {graph_edges[0]["source"], graph_edges[0]["target"]},
+                {row["id"] for row in graph_nodes},
+            )
             self.assertIn(
                 "graphify_incremental_rebuild_may_evict_cross_file_edges_until_full_rebuild",
                 graph_metadata["unresolved_reasons"],
             )
 
             ledger = json.loads((first_output / "completeness.json").read_text(encoding="utf-8"))
-            architecture = json.loads(
-                (first_output / "architecture-conformance.json").read_text(encoding="utf-8")
-            )
+            architecture = json.loads((first_output / "architecture-conformance.json").read_text(encoding="utf-8"))
             manifest = json.loads((first_output / "manifest.json").read_text(encoding="utf-8"))
             self.assertFalse(ledger["hard_failure"])
             self.assertTrue(all(item["passed"] for item in ledger["invariants"]))
@@ -390,18 +424,14 @@ class CompilerTests(unittest.TestCase):
                 )["passed"]
             )
             self.assertTrue(
-                next(
-                    item
-                    for item in ledger["invariants"]
-                    if item["name"] == "every_safe_line_structurally_mapped"
-                )["passed"]
+                next(item for item in ledger["invariants"] if item["name"] == "every_safe_line_structurally_mapped")[
+                    "passed"
+                ]
             )
             self.assertTrue(
-                next(
-                    item
-                    for item in ledger["acceptance_gates"]
-                    if item["name"] == "exact_clean_commit_binding"
-                )["passed"]
+                next(item for item in ledger["acceptance_gates"] if item["name"] == "exact_clean_commit_binding")[
+                    "passed"
+                ]
             )
             self.assertEqual(
                 ledger["semantic_accounting"]["consequential_claim_denominator_state"],
@@ -413,9 +443,7 @@ class CompilerTests(unittest.TestCase):
                 "bitemporal_event_ledger_populated_and_replayable",
                 "release_lifecycle_transitions_integrated_and_receipted",
             ):
-                gate = next(
-                    item for item in ledger["acceptance_gates"] if item["name"] == gate_name
-                )
+                gate = next(item for item in ledger["acceptance_gates"] if item["name"] == gate_name)
                 self.assertFalse(gate["passed"])
                 self.assertIs(gate["expected"], True)
                 self.assertIs(gate["actual"], False)
@@ -457,10 +485,7 @@ class CompilerTests(unittest.TestCase):
             self.assertEqual(output_bytes(crlf_output), output_bytes(lf_output))
             source = group_records(crlf_output, "source_text")[0]
             file_record = group_records(crlf_output, "files")[0]
-            rebuilt = "".join(
-                str(line["text"]) + str(line["terminator"])
-                for line in source["lines"]
-            ).encode("utf-8")
+            rebuilt = "".join(str(line["text"]) + str(line["terminator"]) for line in source["lines"]).encode("utf-8")
             self.assertEqual(rebuilt, blob)
             self.assertTrue(all(line["terminator"] == "\n" for line in source["lines"]))
             self.assertEqual(source["git_blob_oid"], blob_oid)
@@ -477,24 +502,14 @@ class CompilerTests(unittest.TestCase):
             output = base / "compiled"
             manifest = compile_repository(repository, output)
 
-            metadata = json.loads(
-                (output / "graphify-metadata.json").read_text(encoding="utf-8")
-            )
+            metadata = json.loads((output / "graphify-metadata.json").read_text(encoding="utf-8"))
             self.assertFalse(metadata["available"])
             self.assertEqual(metadata["status"], "absent")
             self.assertEqual(metadata["schema_version"], "1.1.0")
             self.assertEqual(metadata["source_commit"], commit)
-            self.assertEqual(
-                metadata["source_tree_digest"], manifest["source_tree_digest"]
-            )
-            ledger = json.loads(
-                (output / "completeness.json").read_text(encoding="utf-8")
-            )
-            gate = next(
-                item
-                for item in ledger["invariants"]
-                if item["name"] == "graphify_receipt_exact_source_bound"
-            )
+            self.assertEqual(metadata["source_tree_digest"], manifest["source_tree_digest"])
+            ledger = json.loads((output / "completeness.json").read_text(encoding="utf-8"))
+            gate = next(item for item in ledger["invariants"] if item["name"] == "graphify_receipt_exact_source_bound")
             self.assertTrue(gate["passed"])
             self.assertEqual((gate["expected"], gate["actual"]), (1, 1))
 
@@ -531,11 +546,23 @@ class CompilerTests(unittest.TestCase):
                 {"safe.py": "urn:atlas:file:safe"},
             )
             self.assertEqual((len(nodes), len(edges)), (2, 1))
-            self.assertEqual(metadata["node_disposition_counts"], {
-                "retained": 2,
-                "excluded_unsafe_source": 1,
-                "excluded_untracked_or_private": 2,
-            })
+            self.assertEqual(
+                metadata["node_disposition_counts"],
+                {
+                    "retained": 2,
+                    "excluded_unsafe_source": 1,
+                    "excluded_untracked_or_private": 2,
+                },
+            )
+            self.assertEqual(
+                metadata["node_identifier_disposition_counts"],
+                {
+                    "total": 5,
+                    "projected_repository_relative": 2,
+                    "excluded_opaque": 3,
+                    "raw_published": 0,
+                },
+            )
             self.assertEqual(metadata["excluded_nodes"], 3)
             self.assertEqual(metadata["excluded_edges"], 2)
             self.assertEqual(sum(metadata["excluded_edge_endpoint_dispositions"].values()), 2)
@@ -546,19 +573,27 @@ class CompilerTests(unittest.TestCase):
             self.assertEqual({item["raw_index"] for item in node_dispositions}, {1, 2, 4})
             self.assertEqual({item["raw_index"] for item in edge_dispositions}, {1, 2})
             self.assertEqual(len({item["id"] for item in node_dispositions}), 3)
-            self.assertEqual(len({item["opaque_record_hash"] for item in node_dispositions}), 3)
             self.assertEqual(len({item["id"] for item in edge_dispositions}), 2)
-            self.assertEqual(len({item["opaque_record_hash"] for item in edge_dispositions}), 2)
+            self.assertTrue(
+                all(
+                    item["id"] == stable_id("graph-node-disposition", metadata["source_digest"], item["raw_index"])
+                    for item in node_dispositions
+                )
+            )
+            self.assertTrue(
+                all(
+                    item["id"] == stable_id("graph-edge-disposition", metadata["source_digest"], item["raw_index"])
+                    for item in edge_dispositions
+                )
+            )
             private_disposition = next(item for item in node_dispositions if item["raw_index"] == 1)
             hidden_edge = next(item for item in edge_dispositions if item["raw_index"] == 1)
             self.assertEqual(hidden_edge["target_endpoint"]["record_id"], private_disposition["id"])
-            self.assertEqual(
-                hidden_edge["target_endpoint"]["opaque_identifier_hash"],
-                private_disposition["opaque_identifier_hash"],
-            )
+            self.assertIsNone(hidden_edge["target_endpoint"]["anonymous_slot"])
             missing_edge = next(item for item in edge_dispositions if item["raw_index"] == 2)
             self.assertEqual(missing_edge["target_endpoint"]["state"], "missing_node")
             self.assertIsNone(missing_edge["target_endpoint"]["record_id"])
+            self.assertEqual(missing_edge["target_endpoint"]["anonymous_slot"], 0)
             serialized_dispositions = json.dumps(
                 {"nodes": node_dispositions, "edges": edge_dispositions},
                 sort_keys=True,
@@ -569,16 +604,568 @@ class CompilerTests(unittest.TestCase):
             self.assertEqual(metadata["projected_community_ids"], [1, 4])
             self.assertEqual(metadata["excluded_community_ids"], [2, 3])
             self.assertEqual(metadata["partial_community_ids"], [4])
-            self.assertEqual(metadata["community_status_counts"], {
-                "projected_complete": 1,
-                "projected_partial": 1,
-                "excluded": 2,
-            })
-            disposition = {
-                item["community"]: item for item in metadata["community_dispositions"]
-            }
+            self.assertEqual(
+                metadata["community_status_counts"],
+                {
+                    "projected_complete": 1,
+                    "projected_partial": 1,
+                    "excluded": 2,
+                },
+            )
+            disposition = {item["community"]: item for item in metadata["community_dispositions"]}
             self.assertEqual(disposition[4]["retained_nodes"], 1)
             self.assertEqual(disposition[4]["excluded_nodes"], 1)
+
+    def test_graphify_raw_identifiers_are_withheld_and_public_topology_is_host_independent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+
+            def project(
+                raw_ids: tuple[str, str],
+                *,
+                add_excluded_prefix: bool = False,
+            ) -> tuple[dict[str, object], list[dict[str, object]], list[dict[str, object]]]:
+                nodes = [
+                    {
+                        "id": raw_ids[0],
+                        "label": f"function {raw_ids[0]}",
+                        "source_file": "safe.py",
+                        "source_location": "L7",
+                        "file_type": raw_ids[0],
+                        "metadata": {
+                            "language": raw_ids[0],
+                            "kind": f"symbol_{raw_ids[0]}",
+                        },
+                        "community": 1,
+                        "_origin": raw_ids[0],
+                    },
+                    {
+                        "id": raw_ids[1],
+                        "source_file": "safe.py",
+                        "source_location": "L7",
+                        "community": 1,
+                        "_origin": "ast",
+                    },
+                ]
+                links = [
+                    {
+                        "source": raw_ids[0],
+                        "target": raw_ids[1],
+                        "relation": f"calls_{raw_ids[0]}",
+                        "confidence": "extracted",
+                        "source_file": "safe.py",
+                        "source_location": "L7",
+                    }
+                ]
+                if add_excluded_prefix:
+                    nodes.insert(
+                        0,
+                        {
+                            "id": "private_prefix_node",
+                            "source_file": "private.py",
+                            "source_location": "L1",
+                            "_origin": "ast",
+                        },
+                    )
+                    links.insert(
+                        0,
+                        {
+                            "source": raw_ids[0],
+                            "target": "private_prefix_node",
+                            "relation": "contains",
+                        },
+                    )
+                write(
+                    repository,
+                    "graphify-out/graph.json",
+                    json.dumps(
+                        {
+                            "built_at_commit": "a" * 40,
+                            "nodes": nodes,
+                            "links": links,
+                            "hyperedges": [],
+                        },
+                        sort_keys=True,
+                    ),
+                )
+                return project_graphify(
+                    repository,
+                    "a" * 40,
+                    "b" * 64,
+                    {"safe.py": "urn:atlas:file:" + "c" * 24},
+                )
+
+            windows_and_posix_derived = (
+                "c_users_owner_desktop_checkout_safe",
+                "home_owner_checkout_safe",
+            )
+            different_host_derived = (
+                "d_build_agents_second_checkout_safe",
+                "srv_ci_second_checkout_safe",
+            )
+            first_metadata, first_nodes, first_edges = project(windows_and_posix_derived)
+            second_metadata, second_nodes, second_edges = project(different_host_derived)
+            prefixed_metadata, prefixed_nodes, prefixed_edges = project(
+                different_host_derived,
+                add_excluded_prefix=True,
+            )
+
+            self.assertEqual((len(first_nodes), len(first_edges)), (2, 1))
+            self.assertEqual(first_nodes, second_nodes)
+            self.assertEqual(first_edges, second_edges)
+            self.assertEqual(first_nodes, prefixed_nodes)
+            self.assertEqual(first_edges, prefixed_edges)
+            self.assertEqual(prefixed_metadata["excluded_nodes"], 1)
+            self.assertEqual(prefixed_metadata["excluded_edges"], 1)
+            self.assertEqual(
+                {row["label"] for row in first_nodes},
+                {"safe.py:L7#1", "safe.py:L7#2"},
+            )
+            producer_text_adversary = next(row for row in first_nodes if row["coordinate_occurrence"] == 0)
+            self.assertEqual(producer_text_adversary["origin"], "undisclosed")
+            self.assertEqual(producer_text_adversary["file_type"], "")
+            self.assertEqual(producer_text_adversary["language"], "")
+            self.assertEqual(producer_text_adversary["kind"], "")
+            self.assertEqual(first_edges[0]["relation"], "related_to")
+            self.assertIn(
+                "graphify_relation_not_in_controlled_vocabulary_shape",
+                first_edges[0]["unresolved_reasons"],
+            )
+            self.assertEqual(
+                first_metadata["node_identifier_disposition_counts"],
+                {
+                    "total": 2,
+                    "projected_repository_relative": 2,
+                    "excluded_opaque": 0,
+                    "raw_published": 0,
+                },
+            )
+            node_ids = {row["id"] for row in first_nodes}
+            self.assertEqual(
+                {first_edges[0]["source"], first_edges[0]["target"]},
+                node_ids,
+            )
+            self.assertEqual(len({row["graphify_id"] for row in first_nodes}), 2)
+            outward = json.dumps(
+                {"metadata": first_metadata, "nodes": first_nodes, "edges": first_edges},
+                sort_keys=True,
+            )
+            for raw_id in windows_and_posix_derived:
+                self.assertNotIn(raw_id, outward)
+            second_outward = json.dumps(
+                {"metadata": second_metadata, "nodes": second_nodes, "edges": second_edges},
+                sort_keys=True,
+            )
+            for raw_id in different_host_derived:
+                self.assertNotIn(raw_id, second_outward)
+
+    def test_graphify_exclusion_dispositions_are_coordinate_only_with_anonymous_missing_slots(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+
+            def project(
+                excluded_id: str,
+                first_missing_id: str,
+                second_missing_id: str,
+                private_payload: str,
+            ) -> tuple[dict[str, object], list[dict[str, object]], list[dict[str, object]], dict[str, object]]:
+                excluded_node = {
+                    "id": excluded_id,
+                    "source_file": "private.py",
+                    "producer_note": private_payload,
+                    "_origin": "ast",
+                }
+                payload = {
+                    "built_at_commit": "a" * 40,
+                    "nodes": [
+                        {"id": "safe", "source_file": "safe.py", "source_location": "L1", "_origin": "ast"},
+                        excluded_node,
+                    ],
+                    "links": [
+                        {"source": "safe", "target": excluded_id},
+                        {"source": "safe", "target": first_missing_id},
+                        {"source": first_missing_id, "target": "safe"},
+                        {"source": "safe", "target": second_missing_id},
+                        {"source": first_missing_id, "target": second_missing_id},
+                    ],
+                    "hyperedges": [],
+                }
+                write(repository, "graphify-out/graph.json", json.dumps(payload, sort_keys=True))
+                metadata, nodes, edges = project_graphify(
+                    repository,
+                    "a" * 40,
+                    "b" * 64,
+                    {"safe.py": "urn:atlas:file:" + "c" * 24},
+                )
+                return metadata, nodes, edges, excluded_node
+
+            first = project("alice", "missing_a", "missing_b", "low-entropy-private-payload")
+            second = project("bob", "unknown_x", "unknown_y", "different-private-payload")
+            first_metadata, first_nodes, first_edges, first_raw_node = first
+            second_metadata, second_nodes, second_edges, _ = second
+            self.assertEqual((len(first_nodes), len(first_edges)), (1, 0))
+            self.assertEqual((len(second_nodes), len(second_edges)), (1, 0))
+            self.assertNotEqual(first_metadata["source_digest"], second_metadata["source_digest"])
+
+            def normalized_dispositions(metadata: dict[str, object]) -> dict[str, object]:
+                value = {
+                    "nodes": copy.deepcopy(metadata["excluded_node_dispositions"]),
+                    "edges": copy.deepcopy(metadata["excluded_edge_dispositions"]),
+                }
+                for record in value["nodes"]:
+                    record["id"] = f"node-source-index-{record['raw_index']}"
+                for record in value["edges"]:
+                    record["id"] = f"edge-source-index-{record['raw_index']}"
+                    for endpoint_name in ("source_endpoint", "target_endpoint"):
+                        endpoint = record[endpoint_name]
+                        if endpoint["record_id"] is not None:
+                            endpoint["record_id"] = endpoint["state"]
+                value["nodes"].sort(key=lambda record: record["raw_index"])
+                value["edges"].sort(key=lambda record: record["raw_index"])
+                return value
+
+            self.assertEqual(
+                normalized_dispositions(first_metadata),
+                normalized_dispositions(second_metadata),
+            )
+            node_disposition = first_metadata["excluded_node_dispositions"][0]
+            self.assertEqual(set(node_disposition), {"id", "disposition", "raw_index", "reason"})
+            self.assertEqual(
+                node_disposition["id"],
+                stable_id("graph-node-disposition", first_metadata["source_digest"], 1),
+            )
+            edge_dispositions = {record["raw_index"]: record for record in first_metadata["excluded_edge_dispositions"]}
+            self.assertEqual(edge_dispositions[1]["target_endpoint"]["anonymous_slot"], 0)
+            self.assertEqual(edge_dispositions[2]["source_endpoint"]["anonymous_slot"], 0)
+            self.assertEqual(edge_dispositions[3]["target_endpoint"]["anonymous_slot"], 1)
+            self.assertEqual(edge_dispositions[4]["source_endpoint"]["anonymous_slot"], 0)
+            self.assertEqual(edge_dispositions[4]["target_endpoint"]["anonymous_slot"], 1)
+            self.assertIsNone(edge_dispositions[0]["target_endpoint"]["anonymous_slot"])
+
+            source_digest = first_metadata["source_digest"]
+            raw_record_digest = hashlib.sha256(canonical_json(first_raw_node)).hexdigest()
+            legacy_identifier_commitment = hashlib.sha256(
+                canonical_json([source_digest, "node-identifier", "alice"])
+            ).hexdigest()
+            legacy_record_commitment = hashlib.sha256(
+                canonical_json([source_digest, "excluded-node-record", "1", raw_record_digest])
+            ).hexdigest()
+            outward = json.dumps(
+                {
+                    "metadata": first_metadata,
+                    "nodes": first_nodes,
+                    "edges": first_edges,
+                },
+                sort_keys=True,
+            )
+            for forbidden in (
+                "alice",
+                "missing_a",
+                "missing_b",
+                "low-entropy-private-payload",
+                raw_record_digest,
+                legacy_identifier_commitment,
+                legacy_record_commitment,
+                "raw_record_digest",
+                "opaque_identifier_hash",
+                "opaque_record_hash",
+            ):
+                self.assertNotIn(forbidden, outward)
+
+    def test_graphify_repository_relative_identifier_collision_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            write(
+                repository,
+                "graphify-out/graph.json",
+                json.dumps(
+                    {
+                        "built_at_commit": "a" * 40,
+                        "nodes": [
+                            {"id": "one", "source_file": "safe.py", "source_location": "L1", "_origin": "ast"},
+                            {"id": "two", "source_file": "safe.py", "source_location": "L2", "_origin": "ast"},
+                        ],
+                        "links": [],
+                        "hyperedges": [],
+                    },
+                    sort_keys=True,
+                ),
+            )
+            with mock.patch.object(
+                graphify_module,
+                "_projected_identifier_hash",
+                return_value="a" * 64,
+            ):
+                with self.assertRaisesRegex(
+                    GraphifyFailure,
+                    "repository-relative node identifiers are not one-to-one",
+                ):
+                    project_graphify(
+                        repository,
+                        "a" * 40,
+                        "b" * 64,
+                        {"safe.py": "urn:atlas:file:" + "c" * 24},
+                    )
+
+    def test_graphify_malformed_built_commit_is_withheld_without_echo(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            local_marker = "c_users_foreign_owner_desktop_checkout"
+            write(
+                repository,
+                "graphify-out/graph.json",
+                json.dumps(
+                    {
+                        "built_at_commit": local_marker,
+                        "nodes": [
+                            {
+                                "id": "safe_node",
+                                "source_file": "safe.py",
+                                "source_location": "L1",
+                                "_origin": "ast",
+                            }
+                        ],
+                        "links": [],
+                        "hyperedges": [],
+                    },
+                    sort_keys=True,
+                ),
+            )
+            metadata, nodes, edges = project_graphify(
+                repository,
+                "a" * 40,
+                "b" * 64,
+                {"safe.py": "urn:atlas:file:" + "c" * 24},
+            )
+            self.assertEqual((len(nodes), len(edges)), (1, 0))
+            self.assertIsNone(metadata["built_at_commit"])
+            self.assertIn(
+                "graphify_built_at_commit_missing_or_malformed_and_withheld",
+                metadata["unresolved_reasons"],
+            )
+            self.assertNotIn(
+                local_marker,
+                json.dumps(metadata, sort_keys=True),
+            )
+            current_without_matching_commit = dict(metadata)
+            current_without_matching_commit.update({"status": "current", "stale": False})
+            with self.assertRaisesRegex(
+                GraphifyFailure,
+                "built commit and source freshness are inconsistent",
+            ):
+                graphify_module.validate_graphify_metadata(current_without_matching_commit)
+            stale_with_matching_commit = dict(metadata)
+            stale_with_matching_commit.update({"built_at_commit": "a" * 40, "status": "stale", "stale": True})
+            with self.assertRaisesRegex(
+                GraphifyFailure,
+                "unresolved reason ledger is malformed",
+            ):
+                graphify_module.validate_graphify_metadata(stale_with_matching_commit)
+            current_with_dirty_reason = dict(metadata)
+            current_with_dirty_reason.update(
+                {
+                    "built_at_commit": "a" * 40,
+                    "status": "current",
+                    "stale": False,
+                    "unresolved_reasons": [
+                        *metadata["unresolved_reasons"],
+                        "tracked_worktree_changes_are_newer_than_commit_bound_graph",
+                    ],
+                }
+            )
+            with self.assertRaisesRegex(
+                GraphifyFailure,
+                "unresolved reason ledger is malformed",
+            ):
+                graphify_module.validate_graphify_metadata(current_with_dirty_reason)
+            contradictory = dict(metadata)
+            contradictory.update({"status": "current", "stale": True})
+            with self.assertRaisesRegex(
+                GraphifyFailure,
+                "status and freshness disposition are inconsistent",
+            ):
+                graphify_module.validate_graphify_metadata(contradictory)
+
+    def test_graphify_community_is_bounded_to_js_safe_nonnegative_integers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            write(
+                repository,
+                "graphify-out/graph.json",
+                json.dumps(
+                    {
+                        "built_at_commit": "a" * 40,
+                        "nodes": [
+                            {
+                                "id": f"node_{index}",
+                                "source_file": "safe.py",
+                                "source_location": f"L{index + 1}",
+                                "community": community,
+                                "_origin": "ast",
+                            }
+                            for index, community in enumerate((9_007_199_254_740_991, 9_007_199_254_740_992, -1, True))
+                        ],
+                        "links": [],
+                        "hyperedges": [],
+                    },
+                    sort_keys=True,
+                ),
+            )
+            metadata, nodes, edges = project_graphify(
+                repository,
+                "a" * 40,
+                "b" * 64,
+                {"safe.py": "urn:atlas:file:" + "c" * 24},
+            )
+            self.assertEqual((len(nodes), len(edges)), (4, 0))
+            self.assertEqual(metadata["all_community_ids"], [9_007_199_254_740_991])
+            self.assertEqual(
+                sorted(row["community"] for row in nodes if row["community"] is not None),
+                [9_007_199_254_740_991],
+            )
+            withheld = [row for row in nodes if row["community"] is None]
+            self.assertEqual(len(withheld), 3)
+            self.assertTrue(
+                all(
+                    "graphify_node_community_outside_js_safe_nonnegative_integer_domain" in row["unresolved_reasons"]
+                    for row in withheld
+                )
+            )
+
+    def test_graphify_identical_coordinate_reordering_preserves_public_multisets(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+
+            def project(
+                *,
+                reverse_nodes: bool = False,
+                reverse_edges: bool = False,
+                include_edges: bool = True,
+                add_excluded_vocabulary_ids: bool = False,
+            ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+                nodes = [
+                    {
+                        "id": raw_id,
+                        "label": raw_id,
+                        "file_type": "code",
+                        "source_file": "safe.py",
+                        "source_location": "L9",
+                        "_origin": "ast",
+                    }
+                    for raw_id in ("duplicate_alpha", "duplicate_beta")
+                ]
+                if reverse_nodes:
+                    nodes.reverse()
+                if add_excluded_vocabulary_ids:
+                    nodes[:0] = [
+                        {
+                            "id": raw_id,
+                            "source_file": f"private-{raw_id}.py",
+                            "_origin": "ast",
+                        }
+                        for raw_id in ("calls", "python", "function", "code")
+                    ]
+                edges = (
+                    [
+                        {
+                            "source": "duplicate_alpha",
+                            "target": "duplicate_beta",
+                            "relation": "calls",
+                            "confidence": "extracted",
+                            "confidence_score": 0.5,
+                            "source_file": "safe.py",
+                            "source_location": "L9",
+                            "producer_note": producer_note,
+                        }
+                        for producer_note in ("first", "second")
+                    ]
+                    if include_edges
+                    else []
+                )
+                if reverse_edges:
+                    edges.reverse()
+                write(
+                    repository,
+                    "graphify-out/graph.json",
+                    json.dumps(
+                        {
+                            "built_at_commit": "a" * 40,
+                            "nodes": nodes,
+                            "links": edges,
+                            "hyperedges": [],
+                        },
+                        sort_keys=True,
+                    ),
+                )
+                _, projected_nodes, projected_edges = project_graphify(
+                    repository,
+                    "a" * 40,
+                    "b" * 64,
+                    {"safe.py": "urn:atlas:file:" + "c" * 24},
+                )
+                return projected_nodes, projected_edges
+
+            nodes_forward, _ = project(include_edges=False)
+            nodes_reversed, _ = project(reverse_nodes=True, include_edges=False)
+            self.assertEqual(nodes_forward, nodes_reversed)
+
+            nodes_with_edges, edges_forward = project()
+            nodes_with_reversed_edges, edges_reversed = project(reverse_edges=True)
+            nodes_with_excluded_ids, edges_with_excluded_ids = project(add_excluded_vocabulary_ids=True)
+            self.assertEqual(nodes_with_edges, nodes_with_reversed_edges)
+            self.assertEqual(edges_forward, edges_reversed)
+            self.assertEqual(nodes_with_edges, nodes_with_excluded_ids)
+            self.assertEqual(edges_forward, edges_with_excluded_ids)
+            self.assertEqual(
+                {row["coordinate_occurrence"] for row in edges_forward},
+                {0, 1},
+            )
+
+    def test_graphify_controlled_vocabulary_projection_handles_large_fixture(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            node_count = 128
+            write(
+                repository,
+                "graphify-out/graph.json",
+                json.dumps(
+                    {
+                        "built_at_commit": "a" * 40,
+                        "nodes": [
+                            {
+                                "id": f"producer_node_{index:04d}",
+                                "label": f"producer_node_{index:04d}",
+                                "file_type": "code",
+                                "source_file": "safe.py",
+                                "source_location": "L1",
+                                "_origin": "ast",
+                            }
+                            for index in range(node_count)
+                        ],
+                        "links": [
+                            {
+                                "source": "producer_node_0000",
+                                "target": f"producer_node_{index:04d}",
+                                "relation": "calls",
+                                "confidence": "extracted",
+                                "confidence_score": 1,
+                                "source_file": "safe.py",
+                                "source_location": "L1",
+                            }
+                            for index in range(1, node_count)
+                        ],
+                        "hyperedges": [],
+                    },
+                    sort_keys=True,
+                ),
+            )
+            _, nodes, edges = project_graphify(
+                repository,
+                "a" * 40,
+                "b" * 64,
+                {"safe.py": "urn:atlas:file:" + "c" * 24},
+            )
+            self.assertEqual((len(nodes), len(edges)), (node_count, node_count - 1))
 
     def test_graphify_exclusion_disposition_uniqueness_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -603,9 +1190,6 @@ class CompilerTests(unittest.TestCase):
                 "id": "urn:atlas:graph-node-disposition:" + "a" * 24,
                 "disposition": "excluded",
                 "raw_index": 0,
-                "opaque_record_hash": "b" * 64,
-                "opaque_identifier_hash": "c" * 64,
-                "raw_record_digest": "d" * 64,
                 "reason": "excluded_untracked_or_private",
             }
             with mock.patch.object(
@@ -642,16 +1226,9 @@ class CompilerTests(unittest.TestCase):
                 with self.assertRaises(CompilationError):
                     compile_repository(repository, output)
 
-            ledger = json.loads(
-                (output / "completeness.json").read_text(encoding="utf-8")
-            )
-            gate = next(
-                item
-                for item in ledger["invariants"]
-                if item["name"] == "graphify_receipt_exact_source_bound"
-            )
-            self.assertFalse(gate["passed"])
-            self.assertEqual((gate["expected"], gate["actual"]), (1, 0))
+            ledger = json.loads((output / "completeness.json").read_text(encoding="utf-8"))
+            self.assertTrue(ledger["hard_failure"])
+            self.assertTrue(ledger["fatal_errors"])
             self.assertFalse((output / "manifest.json").exists())
 
     def test_closed_entity_denominator_extracts_declared_entities_without_invented_depth(self) -> None:
@@ -697,7 +1274,7 @@ class CompilerTests(unittest.TestCase):
                     "webapp/src/icon.svg": "<svg viewBox='0 0 1 1'><path d='M0 0'/></svg>\n",
                     "tools/run.sh": "#!/bin/sh\nMODE=test\nnpm test\n",
                     "tools/run.ps1": "$Mode = 'test'\n& npm test\n",
-                    "master-reference/sample.jsonc": "{\n  // structural only\n  \"theme\": \"dark\"\n}\n",
+                    "master-reference/sample.jsonc": '{\n  // structural only\n  "theme": "dark"\n}\n',
                     "pyproject.toml": (
                         "[project]\n"
                         "name = 'fixture'\n"
@@ -739,9 +1316,11 @@ class CompilerTests(unittest.TestCase):
             self.assertIn(("atlas", "python_cli_command"), symbol_types)
             self.assertIn(("deploy", "python_cli_subcommand"), symbol_types)
             self.assertIn(("fixture-cli", "declared_cli_command"), symbol_types)
-            self.assertTrue({"LIMIT", "alpha", "beta", "Widget"}.issubset(
-                {row["name"] for row in symbols if row["entity_type"] == "typescript_constant"}
-            ))
+            self.assertTrue(
+                {"LIMIT", "alpha", "beta", "Widget"}.issubset(
+                    {row["name"] for row in symbols if row["entity_type"] == "typescript_constant"}
+                )
+            )
             css_selectors = [row for row in symbols if row["entity_type"] == "css_selector"]
             self.assertEqual(
                 {row["name"] for row in css_selectors},
@@ -783,9 +1362,7 @@ class CompilerTests(unittest.TestCase):
             self.assertEqual(ledger["record_counts"]["entity_type::csv_data_row"], 2)
             self.assertEqual(ledger["record_counts"]["entity_type::workflow_step"], 3)
             typed_gate = next(
-                item
-                for item in ledger["invariants"]
-                if item["name"] == "every_published_record_has_entity_type"
+                item for item in ledger["invariants"] if item["name"] == "every_published_record_has_entity_type"
             )
             self.assertTrue(typed_gate["passed"])
 
@@ -826,11 +1403,9 @@ class CompilerTests(unittest.TestCase):
             self.assertEqual(manifest["release_class"], "dirty_preview")
             ledger = json.loads((preview / "completeness.json").read_text(encoding="utf-8"))
             self.assertFalse(
-                next(
-                    item
-                    for item in ledger["acceptance_gates"]
-                    if item["name"] == "exact_clean_commit_binding"
-                )["passed"]
+                next(item for item in ledger["acceptance_gates"] if item["name"] == "exact_clean_commit_binding")[
+                    "passed"
+                ]
             )
 
             claims = group_records(preview, "claims")
@@ -870,11 +1445,7 @@ class CompilerTests(unittest.TestCase):
                     compile_repository(repository, output)
 
             ledger = json.loads((output / "completeness.json").read_text(encoding="utf-8"))
-            gate = next(
-                item
-                for item in ledger["invariants"]
-                if item["name"] == "every_safe_line_structurally_mapped"
-            )
+            gate = next(item for item in ledger["invariants"] if item["name"] == "every_safe_line_structurally_mapped")
             self.assertFalse(gate["passed"])
             self.assertEqual(gate["expected"], 1)
             self.assertEqual(gate["actual"], 0)
@@ -906,11 +1477,7 @@ class CompilerTests(unittest.TestCase):
                     compile_repository(repository, output)
 
             ledger = json.loads((output / "completeness.json").read_text(encoding="utf-8"))
-            gate = next(
-                item
-                for item in ledger["invariants"]
-                if item["name"] == "every_safe_line_structurally_mapped"
-            )
+            gate = next(item for item in ledger["invariants"] if item["name"] == "every_safe_line_structurally_mapped")
             self.assertFalse(gate["passed"])
             self.assertEqual(gate["expected"], 1)
             self.assertEqual(gate["actual"], 0)
@@ -945,9 +1512,7 @@ class CompilerTests(unittest.TestCase):
                 if item["name"] == "every_safe_parsed_source_has_one_structural_root"
             )
             line_gate = next(
-                item
-                for item in ledger["invariants"]
-                if item["name"] == "every_safe_line_structurally_mapped"
+                item for item in ledger["invariants"] if item["name"] == "every_safe_line_structurally_mapped"
             )
             self.assertFalse(root_gate["passed"])
             self.assertEqual((root_gate["expected"], root_gate["actual"]), (1, 0))
@@ -978,7 +1543,7 @@ class CompilerTests(unittest.TestCase):
                     "webapp/frontend/src/Card.test.tsx": (
                         'import "./theme.css";\n'
                         "export function Card({ label }: { label: string }) {\n"
-                        '  return <button aria-label={label} onClick={() => undefined}>{label}</button>;\n'
+                        "  return <button aria-label={label} onClick={() => undefined}>{label}</button>;\n"
                         "}\n"
                         "export function Screen() {\n"
                         '  return <Route path="/card" element={<Card label="Ready" />} />;\n'
@@ -1316,6 +1881,319 @@ class CompilerTests(unittest.TestCase):
             self.assertIn("retained edge carries an untracked, private", " ".join(caught.exception.errors))
             self.assertFalse((output / "manifest.json").exists())
 
+    def test_graphify_huge_confidence_fails_with_fixed_non_echoing_compiler_ledger(self) -> None:
+        for huge_score in (10**1000, -(10**1000)):
+            with self.subTest(negative=huge_score < 0), tempfile.TemporaryDirectory() as temporary:
+                base = Path(temporary)
+                repository = base / "repo"
+                commit = initialize_repository(repository, {"README.md": "# Safe\n"})
+                graph = {
+                    "built_at_commit": commit,
+                    "nodes": [
+                        {"id": "a", "source_file": "README.md", "source_location": "L1", "_origin": "ast"},
+                        {"id": "b", "source_file": "README.md", "source_location": "L2", "_origin": "ast"},
+                    ],
+                    "links": [
+                        {
+                            "source": "a",
+                            "target": "b",
+                            "relation": "calls",
+                            "confidence": "extracted",
+                            "confidence_score": huge_score,
+                            "source_file": "README.md",
+                            "source_location": "L1",
+                        }
+                    ],
+                    "hyperedges": [],
+                }
+                write(repository, "graphify-out/graph.json", json.dumps(graph, sort_keys=True))
+                output = base / "failed"
+
+                with self.assertRaises(CompilationError) as caught:
+                    compile_repository(repository, output)
+
+                fixed_reason = "edge confidence_score must be null or a finite number from zero to one"
+                self.assertIn(fixed_reason, " ".join(caught.exception.errors))
+                ledger_text = (output / "completeness.json").read_text(encoding="utf-8")
+                self.assertIn(fixed_reason, ledger_text)
+                self.assertNotIn(str(abs(huge_score))[:80], ledger_text)
+                self.assertFalse((output / "manifest.json").exists())
+
+    def test_graphify_deep_json_nesting_fails_with_fixed_non_echoing_compiler_ledger(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            repository = base / "repo"
+            initialize_repository(repository, {"README.md": "# Safe\n"})
+            marker = "c_users_foreign_owner_desktop_checkout"
+            write(repository, "graphify-out/graph.json", '{"nodes":[],"links":[]}')
+            output = base / "failed"
+
+            with mock.patch.object(
+                graphify_module.json,
+                "loads",
+                side_effect=RecursionError(marker),
+            ):
+                with self.assertRaises(CompilationError) as caught:
+                    compile_repository(repository, output)
+
+            fixed_reason = "JSON nesting exceeds the parser limit"
+            self.assertIn(fixed_reason, " ".join(caught.exception.errors))
+            ledger_text = (output / "completeness.json").read_text(encoding="utf-8")
+            self.assertIn(fixed_reason, ledger_text)
+            self.assertNotIn(marker, ledger_text)
+            self.assertFalse((output / "manifest.json").exists())
+
+    def test_graphify_scalar_channels_are_bounded_and_never_stringify_containers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            marker = "c_users_foreign_owner_desktop_checkout"
+            write(
+                repository,
+                "graphify-out/graph.json",
+                json.dumps(
+                    {
+                        "built_at_commit": "a" * 40,
+                        "nodes": [
+                            {
+                                "id": "safe",
+                                "source_file": "safe.py",
+                                "source_location": "9" * 65,
+                                "file_type": {"private": marker},
+                                "metadata": {"language": [marker], "kind": "\ud800"},
+                                "_origin": {"private": marker},
+                            },
+                            {
+                                "id": 7,
+                                "source_file": "safe.py",
+                                "source_location": 2,
+                                "_origin": "ast",
+                            },
+                        ],
+                        "links": [
+                            {
+                                "source": "safe",
+                                "target": 7,
+                                "confidence": {"private": marker},
+                                "relation": [marker],
+                                "source_file": "safe.py",
+                                "source_location": {"private": marker},
+                            }
+                        ],
+                        "hyperedges": [],
+                    },
+                    ensure_ascii=True,
+                    sort_keys=True,
+                ),
+            )
+            metadata, nodes, edges = project_graphify(
+                repository,
+                "a" * 40,
+                "b" * 64,
+                {"safe.py": "urn:atlas:file:" + "c" * 24},
+            )
+            self.assertEqual((len(nodes), len(edges)), (2, 1))
+            first = next(node for node in nodes if node["source_location"] == "")
+            self.assertEqual((first["file_type"], first["language"], first["kind"]), ("", "", ""))
+            self.assertEqual(first["origin"], "undisclosed")
+            self.assertIn(
+                "graphify_node_source_location_outside_bounded_coordinate_domain",
+                first["unresolved_reasons"],
+            )
+            self.assertEqual(edges[0]["extraction_mode"], "undisclosed")
+            self.assertEqual(edges[0]["relation"], "related_to")
+            self.assertEqual(edges[0]["source_location"], "")
+            outward = json.dumps({"metadata": metadata, "nodes": nodes, "edges": edges}, sort_keys=True)
+            self.assertNotIn(marker, outward)
+            self.assertNotIn("\\ud800", outward)
+
+            invalid_identifiers = ({"id": marker}, [marker], "\ud800", 10**1000, True, "")
+            for invalid in invalid_identifiers:
+                with self.subTest(invalid_type=type(invalid).__name__):
+                    write(
+                        repository,
+                        "graphify-out/graph.json",
+                        json.dumps(
+                            {
+                                "nodes": [{"id": invalid, "source_file": "safe.py"}],
+                                "links": [],
+                            },
+                            ensure_ascii=True,
+                        ),
+                    )
+                    with self.assertRaises(GraphifyFailure) as caught:
+                        project_graphify(repository, "a" * 40, "b" * 64, {"safe.py": "file"})
+                    self.assertIn("node id must be nonempty text or a safe integer", str(caught.exception))
+                    self.assertNotIn(marker, str(caught.exception))
+            for invalid in ({"source": marker}, [marker], "\ud800", 10**1000, True, None):
+                with self.subTest(endpoint_type=type(invalid).__name__):
+                    write(
+                        repository,
+                        "graphify-out/graph.json",
+                        json.dumps(
+                            {
+                                "nodes": [{"id": "safe", "source_file": "safe.py", "_origin": "ast"}],
+                                "links": [{"source": invalid, "target": "safe"}],
+                            },
+                            ensure_ascii=True,
+                        ),
+                    )
+                    with self.assertRaises(GraphifyFailure) as caught:
+                        project_graphify(repository, "a" * 40, "b" * 64, {"safe.py": "file"})
+                    self.assertIn(
+                        "link source id must be nonempty text or a safe integer",
+                        str(caught.exception),
+                    )
+                    self.assertNotIn(marker, str(caught.exception))
+
+    def test_graphify_excluded_record_unread_fields_are_not_receipted_or_echoed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            marker = "c_users_foreign_owner_desktop_checkout"
+            deep: object = marker
+            for _ in range(70):
+                deep = [deep]
+            adversaries = (float("nan"), "\ud800", deep)
+            for record_type, adversary in (("node", value) for value in adversaries):
+                with self.subTest(record_type=record_type, adversary=type(adversary).__name__):
+                    write(
+                        repository,
+                        "graphify-out/graph.json",
+                        json.dumps(
+                            {
+                                "nodes": [
+                                    {
+                                        "id": "private",
+                                        "source_file": "private.py",
+                                        "producer_extra": adversary,
+                                    }
+                                ],
+                                "links": [],
+                            },
+                            ensure_ascii=True,
+                        ),
+                    )
+                    metadata, nodes, edges = project_graphify(repository, "a" * 40, "b" * 64, {})
+                    self.assertEqual((len(nodes), len(edges)), (0, 0))
+                    outward = json.dumps(metadata, sort_keys=True)
+                    self.assertNotIn(marker, outward)
+                    self.assertNotIn("producer_extra", outward)
+                    self.assertNotIn("raw_record_digest", outward)
+            for adversary in adversaries:
+                with self.subTest(record_type="edge", adversary=type(adversary).__name__):
+                    write(
+                        repository,
+                        "graphify-out/graph.json",
+                        json.dumps(
+                            {
+                                "nodes": [{"id": "safe", "source_file": "safe.py", "_origin": "ast"}],
+                                "links": [
+                                    {
+                                        "source": "safe",
+                                        "target": "missing",
+                                        "producer_extra": adversary,
+                                    }
+                                ],
+                            },
+                            ensure_ascii=True,
+                        ),
+                    )
+                    metadata, nodes, edges = project_graphify(
+                        repository,
+                        "a" * 40,
+                        "b" * 64,
+                        {"safe.py": "urn:atlas:file:" + "c" * 24},
+                    )
+                    self.assertEqual((len(nodes), len(edges)), (1, 0))
+                    outward = json.dumps(metadata, sort_keys=True)
+                    self.assertNotIn(marker, outward)
+                    self.assertNotIn("producer_extra", outward)
+                    self.assertNotIn("raw_record_digest", outward)
+
+    def test_graphify_metadata_shapes_and_nested_string_channels_are_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            write(
+                repository,
+                "graphify-out/graph.json",
+                json.dumps(
+                    {
+                        "built_at_commit": "a" * 40,
+                        "nodes": [
+                            {
+                                "id": "safe",
+                                "source_file": "safe.py",
+                                "source_location": "L1",
+                                "community": 1,
+                                "_origin": "ast",
+                            }
+                        ],
+                        "links": [],
+                        "hyperedges": [],
+                    }
+                ),
+            )
+            metadata, nodes, edges = project_graphify(
+                repository,
+                "a" * 40,
+                "b" * 64,
+                {"safe.py": "urn:atlas:file:" + "c" * 24},
+            )
+            marker = "benign-private-token-7f3a"
+
+            def extra_key(value: dict[str, object]) -> None:
+                value["producer_note"] = marker
+
+            def extra_reason(value: dict[str, object]) -> None:
+                value["unresolved_reasons"].append(marker)  # type: ignore[union-attr]
+
+            def origin_key(value: dict[str, object]) -> None:
+                value["node_origins"][marker] = 0  # type: ignore[index]
+
+            def community_status(value: dict[str, object]) -> None:
+                value["community_dispositions"][0]["status"] = marker  # type: ignore[index]
+
+            def scalar_mismatch(value: dict[str, object]) -> None:
+                value["excluded_nodes_unsafe_source"] = 1
+
+            for mutate in (extra_key, extra_reason, origin_key, community_status, scalar_mismatch):
+                tampered = copy.deepcopy(metadata)
+                mutate(tampered)
+                with self.subTest(mutation=mutate.__name__):
+                    with self.assertRaises(GraphifyFailure) as caught:
+                        graphify_module.validate_graphify_metadata(tampered, nodes, edges)
+                    self.assertNotIn(marker, str(caught.exception))
+
+    def test_graphify_absent_receipt_preserves_only_orphan_report_availability(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            for report_available in (False, True):
+                report = repository / "graphify-out" / "GRAPH_REPORT.md"
+                report.parent.mkdir(parents=True, exist_ok=True)
+                if report_available:
+                    report.write_text("# Report\n", encoding="utf-8")
+                elif report.exists():
+                    report.unlink()
+                metadata, nodes, edges = project_graphify(
+                    repository,
+                    "a" * 40,
+                    "b" * 64,
+                    {},
+                )
+                self.assertEqual(set(metadata), graphify_module.GRAPHIFY_ABSENT_METADATA_KEYS)
+                self.assertIs(metadata["report_available"], report_available)
+                self.assertEqual(metadata["unresolved_reasons"], [graphify_module.GRAPHIFY_ABSENT_REASON])
+                self.assertEqual((nodes, edges), ([], []))
+
+    def test_graphify_filesystem_failures_are_fixed_and_do_not_chain_local_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            marker = "C:\\Users\\foreign-owner\\Desktop\\checkout"
+            with mock.patch.object(Path, "lstat", side_effect=OSError(marker)):
+                with self.assertRaisesRegex(GraphifyFailure, "metadata read failed") as caught:
+                    project_graphify(repository, "a" * 40, "b" * 64, {})
+            self.assertNotIn(marker, str(caught.exception))
+            self.assertIsNone(caught.exception.__cause__)
+
     def test_unknown_file_classification_fails_and_schemas_are_valid_json(self) -> None:
         for schema in sorted((MASTER_REFERENCE / "schema").glob("*.schema.json")):
             value = json.loads(schema.read_text(encoding="utf-8"))
@@ -1327,18 +2205,35 @@ class CompilerTests(unittest.TestCase):
         self.assertIn("lineRecord", records_schema["$defs"])
         self.assertIn("structuralEntityRecord", records_schema["$defs"])
         self.assertEqual(records_schema["properties"]["schema_version"]["const"], "1.1.0")
+        self.assertEqual(records_schema["properties"]["record_count"]["minimum"], 1)
+        self.assertEqual(records_schema["properties"]["records"]["minItems"], 1)
         graphify_schema = json.loads(
             (MASTER_REFERENCE / "schema" / "graphify-metadata.schema.json").read_text(encoding="utf-8")
         )
         available_contract = graphify_schema["allOf"][1]["then"]["required"]
         self.assertIn("excluded_node_dispositions", available_contract)
         self.assertIn("excluded_edge_dispositions", available_contract)
-        self.assertFalse(
-            graphify_schema["$defs"]["excludedNodeDisposition"]["additionalProperties"]
+        self.assertFalse(graphify_schema["$defs"]["excludedNodeDisposition"]["additionalProperties"])
+        self.assertFalse(graphify_schema["$defs"]["excludedEdgeDisposition"]["additionalProperties"])
+        self.assertEqual(
+            set(graphify_schema["$defs"]["excludedNodeDisposition"]["required"]),
+            {"id", "disposition", "raw_index", "reason"},
         )
-        self.assertFalse(
-            graphify_schema["$defs"]["excludedEdgeDisposition"]["additionalProperties"]
+        self.assertEqual(
+            set(graphify_schema["$defs"]["endpoint"]["required"]),
+            {"state", "record_id", "anonymous_slot"},
         )
+        for legacy_commitment in ("raw_record_digest", "opaque_record_hash", "opaque_identifier_hash"):
+            self.assertNotIn(
+                legacy_commitment,
+                json.dumps(graphify_schema["$defs"], sort_keys=True),
+            )
+        manifest_schema = json.loads((MASTER_REFERENCE / "schema" / "manifest.schema.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest_schema["$defs"]["chunkReceipt"]["properties"]["record_count"]["minimum"], 1)
+        empty_group_contract = manifest_schema["$defs"]["groupReceipt"]["allOf"][0]
+        self.assertEqual(empty_group_contract["then"]["properties"]["chunk_count"]["const"], 0)
+        self.assertEqual(empty_group_contract["then"]["properties"]["chunks"]["maxItems"], 0)
+        self.assertEqual(empty_group_contract["else"]["properties"]["chunk_count"]["minimum"], 1)
 
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
@@ -1361,9 +2256,7 @@ class CompilerTests(unittest.TestCase):
         self.assertEqual(classification["roles"], ["structured_data"])
 
         unexpected = classify_file("docs/_headers", "100644")
-        self.assertEqual(
-            unexpected["classification_errors"], ["extension_not_allowlisted:<none>"]
-        )
+        self.assertEqual(unexpected["classification_errors"], ["extension_not_allowlisted:<none>"])
 
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
@@ -1372,9 +2265,7 @@ class CompilerTests(unittest.TestCase):
                 repository,
                 {
                     "master-reference/public/_headers": (
-                        "/atlas-projection/*.mjs.gz\n"
-                        "  ! Content-Encoding\n"
-                        "  Content-Type: application/gzip\n"
+                        "/atlas-projection/*.mjs.gz\n  ! Content-Encoding\n  Content-Type: application/gzip\n"
                     )
                 },
             )
@@ -1394,14 +2285,10 @@ class CompilerTests(unittest.TestCase):
             line_records = group_records(output, "lines")
             self.assertEqual(len(line_records), 3)
             self.assertTrue(all(row["syntax_kind"] == "config_directive" for row in line_records))
-            self.assertTrue(
-                all(row["semantic_entity"] == structural_root["id"] for row in line_records)
-            )
+            self.assertTrue(all(row["semantic_entity"] == structural_root["id"] for row in line_records))
             directives = group_records(output, "structured")
             self.assertEqual(len(directives), 3)
-            self.assertTrue(
-                all(row["value_type"] == "configuration_directive" for row in directives)
-            )
+            self.assertTrue(all(row["value_type"] == "configuration_directive" for row in directives))
             ledger = json.loads((output / "completeness.json").read_text(encoding="utf-8"))
             self.assertEqual(ledger["parsing"]["expected_nonblank_lines"], 3)
             self.assertEqual(ledger["parsing"]["line_records"], 3)

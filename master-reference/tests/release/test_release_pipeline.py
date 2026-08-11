@@ -3,9 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
+import traceback
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -16,8 +19,20 @@ if str(MASTER_REFERENCE) not in sys.path:
     sys.path.insert(0, str(MASTER_REFERENCE))
 
 from release.compiler_bundle import REQUIRED_ACCEPTANCE_GATES, REQUIRED_GROUPS  # noqa: E402
-from release.model import ReleaseInputError, canonical_json, digest_object, sha256_bytes  # noqa: E402
+from compiler.graphify import (  # noqa: E402
+    GRAPHIFY_BASE_UNRESOLVED_REASONS,
+    GRAPHIFY_HYPEREDGE_REASON_ABSENT,
+    OPAQUE_IDENTIFIER_POLICY,
+)
+from release.model import (  # noqa: E402
+    ReleaseInputError,
+    canonical_json,
+    digest_object,
+    sha256_bytes,
+    stable_id,
+)
 import release.pipeline as release_pipeline  # noqa: E402
+import release.compiler_bundle as compiler_bundle  # noqa: E402
 from release.pipeline import ReleaseError, build_release  # noqa: E402
 from release.sbom import NPM_LOCKFILES, PYTHON_DECLARATIONS, build_cyclonedx  # noqa: E402
 from release.signing import sign_manifest, verify_artifact_family, verify_manifest  # noqa: E402
@@ -31,6 +46,10 @@ def _write(path: Path, value: bytes) -> None:
 
 def _json(path: Path, value: object) -> None:
     _write(path, canonical_json(value))
+
+
+def _formatted_exception(failure: pytest.ExceptionInfo[BaseException]) -> str:
+    return "".join(traceback.format_exception(failure.type, failure.value, failure.tb))
 
 
 def _git(repo: Path, *arguments: str, environment: dict[str, str] | None = None) -> bytes:
@@ -126,9 +145,7 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
         "watch_families": [{"id": "watch.one", "name": "Official source"}],
         "signals": [{"id": "signal.one", "title": "Candidate", "disposition": "watch"}],
     }
-    output_contract = json.loads(
-        (MASTER_REFERENCE / "content" / "output-contract.json").read_text(encoding="utf-8")
-    )
+    output_contract = json.loads((MASTER_REFERENCE / "content" / "output-contract.json").read_text(encoding="utf-8"))
     content_values = {
         "atlas-core.json": core,
         "capability-catalog.json": catalog,
@@ -237,7 +254,7 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
         raw = _git(repo, "cat-file", "blob", blob_oid)
         files.append(
             {
-                "id": f"file-{index}",
+                "id": f"urn:atlas:file:{index:024x}",
                 "path": relative,
                 "git_mode": mode,
                 "git_blob_oid": blob_oid,
@@ -273,7 +290,7 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
     records["files"] = files
     records["structural_entities"] = [
         {
-            "id": f"root-{file_index}",
+            "id": f"urn:atlas:structural-root:{file_index:024x}",
             "file_id": file_record["id"],
             "path": file_record["path"],
             "name": file_record["path"],
@@ -285,9 +302,7 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
                 "start_column": 0,
                 "end_line": file_record["line_count"],
                 "end_column": len(
-                    _git(repo, "cat-file", "blob", str(file_record["git_blob_oid"]))
-                    .decode("utf-8")
-                    .splitlines()[-1]
+                    _git(repo, "cat-file", "blob", str(file_record["git_blob_oid"])).decode("utf-8").splitlines()[-1]
                 ),
             },
             "range_state": "exact_source_lines",
@@ -314,29 +329,51 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
         }
         for file_index, file_record in enumerate(files)
     ]
-    roots_by_file = {
-        root["file_id"]: root for root in records["structural_entities"]
-    }
-    records["lines"] = [
-        {
-            "id": f"line-{file_index}-{line_number}",
-            "file_id": file_record["id"],
-            "path": file_record["path"],
-            "line": line_number,
-            "explanation_depth": 1,
-            "semantic_entity": roots_by_file[file_record["id"]]["id"],
-            "structural_mapping_basis": "parser_structural_root",
-        }
-        for file_index, file_record in enumerate(files)
-        for line_number, line in enumerate(
-            _git(repo, "cat-file", "blob", str(file_record["git_blob_oid"])).splitlines(),
-            start=1,
-        )
-        if line.strip()
-    ]
+    roots_by_file = {root["file_id"]: root for root in records["structural_entities"]}
+    line_records: list[dict[str, object]] = []
+    for file_index, file_record in enumerate(files):
+        source_lines = _git(repo, "cat-file", "blob", str(file_record["git_blob_oid"])).splitlines()
+        for line_number, line in enumerate(source_lines, start=1):
+            if not line.strip():
+                continue
+            line_id = hashlib.sha256(f"{file_index}:{line_number}".encode("ascii")).hexdigest()[:24]
+            line_digest = sha256_bytes(line)
+            root_id = roots_by_file[file_record["id"]]["id"]
+            line_records.append(
+                {
+                    "id": f"urn:atlas:line:{line_id}",
+                    "file_id": file_record["id"],
+                    "path": file_record["path"],
+                    "line": line_number,
+                    "language": file_record["language"],
+                    "syntax_kind": "source_line",
+                    "depth": 0,
+                    "text_digest": line_digest,
+                    "line_digest": line_digest,
+                    "text_bytes": len(line),
+                    "source_commit": commit,
+                    "line_number": line_number,
+                    "semantic_entity": root_id,
+                    "owner": root_id,
+                    "structural_mapping_basis": "parser_structural_root",
+                    "behavior_group": [],
+                    "inputs_and_outputs": {},
+                    "claims_influenced": [],
+                    "callers_and_dependencies": [],
+                    "tests_covering_it": [],
+                    "runtime_trace_state": "not_observed",
+                    "GUI_or_artifact_consumers": [],
+                    "security_and_privacy_effect": {},
+                    "current_or_historical": "current",
+                    "explanation_depth": 1,
+                    "unresolved_reasons": ["behavior_not_semantically_explained"],
+                }
+            )
+    records["lines"] = line_records
     groups: dict[str, object] = {}
     for group_name in sorted(records):
-        rows = records[group_name]
+        rows = sorted(records[group_name], key=lambda row: str(row["id"]))
+        records[group_name] = rows
         chunks = []
         if rows:
             envelope = {
@@ -379,7 +416,33 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
         "hard_failure": False,
         "fatal_errors": [],
         "parsing": {"status_counts": {"parsed": len(files)}, "lines_with_explicit_unresolved_reasons": 0},
-        "graphify": {"available": True, "status": "current", "stale": False, "projected_nodes": 0, "projected_edges": 0},
+        "graphify": {
+            "available": True,
+            "status": "current",
+            "stale": False,
+            "built_at_commit": commit,
+            "total_nodes": 0,
+            "projected_nodes": 0,
+            "excluded_nodes": 0,
+            "total_edges": 0,
+            "projected_edges": 0,
+            "excluded_edges": 0,
+            "excluded_node_dispositions": [],
+            "excluded_edge_dispositions": [],
+            "excluded_edge_endpoint_dispositions": {},
+            "node_disposition_counts": {
+                "retained": 0,
+                "excluded_unsafe_source": 0,
+                "excluded_untracked_or_private": 0,
+            },
+            "identifier_projection_policy": OPAQUE_IDENTIFIER_POLICY,
+            "node_identifier_disposition_counts": {
+                "total": 0,
+                "projected_repository_relative": 0,
+                "excluded_opaque": 0,
+                "raw_published": 0,
+            },
+        },
         "architecture_conformance": architecture,
         "privacy": {"vault": "not_read", "client_state": "not_read", "network": "not_used"},
         "semantic_accounting": {
@@ -426,9 +489,58 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
         "source_tree_digest": source_tree_digest,
         "available": True,
         "status": "current",
+        "source": "graphify-out/graph.json",
+        "source_bytes": 2,
+        "source_digest": "6" * 64,
+        "report_available": False,
         "stale": False,
+        "built_at_commit": commit,
+        "total_nodes": 0,
         "projected_nodes": 0,
+        "excluded_nodes": 0,
+        "total_edges": 0,
         "projected_edges": 0,
+        "excluded_edges": 0,
+        "total_hyperedges": 0,
+        "excluded_node_dispositions": [],
+        "excluded_edge_dispositions": [],
+        "excluded_edge_endpoint_dispositions": {},
+        "all_edge_modes": {},
+        "projected_edge_modes": {},
+        "node_origins": {},
+        "excluded_nodes_unsafe_source": 0,
+        "excluded_nodes_untracked_or_private": 0,
+        "node_disposition_counts": {
+            "retained": 0,
+            "excluded_unsafe_source": 0,
+            "excluded_untracked_or_private": 0,
+        },
+        "identifier_projection_policy": OPAQUE_IDENTIFIER_POLICY,
+        "node_identifier_disposition_counts": {
+            "total": 0,
+            "projected_repository_relative": 0,
+            "excluded_opaque": 0,
+            "raw_published": 0,
+        },
+        "total_communities": 0,
+        "projected_communities": 0,
+        "excluded_communities": 0,
+        "all_community_ids": [],
+        "projected_community_ids": [],
+        "excluded_community_ids": [],
+        "partial_community_ids": [],
+        "community_status_counts": {
+            "projected_complete": 0,
+            "projected_partial": 0,
+            "excluded": 0,
+        },
+        "community_dispositions": [],
+        "projection_policy": "tracked_full_exposure_files_only",
+        "unresolved_reasons": [
+            GRAPHIFY_BASE_UNRESOLVED_REASONS[0],
+            GRAPHIFY_HYPEREDGE_REASON_ABSENT,
+            *GRAPHIFY_BASE_UNRESOLVED_REASONS[1:],
+        ],
     }
     completeness["graphify"] = graphify
     completeness_raw = canonical_json(completeness)
@@ -448,8 +560,16 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
         "release_class": "exact_commit",
         "chunk_size": 2000,
         "groups": groups,
-        "completeness": {"path": "completeness.json", "sha256": sha256_bytes(completeness_raw), "bytes": len(completeness_raw)},
-        "graphify_metadata": {"path": "graphify-metadata.json", "sha256": sha256_bytes(graphify_raw), "bytes": len(graphify_raw)},
+        "completeness": {
+            "path": "completeness.json",
+            "sha256": sha256_bytes(completeness_raw),
+            "bytes": len(completeness_raw),
+        },
+        "graphify_metadata": {
+            "path": "graphify-metadata.json",
+            "sha256": sha256_bytes(graphify_raw),
+            "bytes": len(graphify_raw),
+        },
         "architecture_conformance": {
             "path": "architecture-conformance.json",
             "sha256": sha256_bytes(architecture_raw),
@@ -460,12 +580,313 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
     return repo, compiler
 
 
-def _all_files(root: Path) -> dict[str, bytes]:
-    return {
-        path.relative_to(root).as_posix(): path.read_bytes()
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
+def _replace_graph_fixture(
+    compiler: Path,
+    *,
+    nodes: list[dict[str, object]],
+    edges: list[dict[str, object]] | None = None,
+    graphify_extra: dict[str, object] | None = None,
+) -> None:
+    edges = [] if edges is None else edges
+    manifest = json.loads((compiler / "manifest.json").read_text(encoding="utf-8"))
+    for group_name, rows in (("graph_nodes", nodes), ("graph_edges", edges)):
+        chunks: list[dict[str, object]] = []
+        if rows:
+            envelope = {
+                "schema_version": "1.1.0",
+                "record_type": group_name,
+                "source_commit": manifest["source_commit"],
+                "source_tree_digest": manifest["source_tree_digest"],
+                "chunk_index": 0,
+                "chunk_count": 1,
+                "record_count": len(rows),
+                "records_digest": digest_object([row["id"] for row in rows]),
+                "records": rows,
+            }
+            relative = f"chunks/{group_name}/00000.json"
+            raw = canonical_json(envelope)
+            _write(compiler / relative, raw)
+            chunks.append(
+                {
+                    "path": relative,
+                    "record_count": len(rows),
+                    "sha256": sha256_bytes(raw),
+                    "bytes": len(raw),
+                }
+            )
+        manifest["groups"][group_name] = {
+            "record_count": len(rows),
+            "chunk_count": len(chunks),
+            "records_digest": digest_object([row["id"] for row in rows]),
+            "chunks": chunks,
+        }
+
+    graphify = json.loads((compiler / "graphify-metadata.json").read_text(encoding="utf-8"))
+    node_origin_counts: dict[str, int] = {}
+    projected_community_node_counts: dict[int, int] = {}
+    for node in nodes:
+        origin = node.get("origin")
+        if isinstance(origin, str):
+            node_origin_counts[origin] = node_origin_counts.get(origin, 0) + 1
+        community = node.get("community")
+        if type(community) is int:
+            projected_community_node_counts[community] = projected_community_node_counts.get(community, 0) + 1
+    projected_edge_modes: dict[str, int] = {}
+    for edge in edges:
+        mode = edge.get("extraction_mode")
+        if isinstance(mode, str):
+            projected_edge_modes[mode] = projected_edge_modes.get(mode, 0) + 1
+    projected_community_ids = sorted(projected_community_node_counts)
+    community_dispositions = [
+        {
+            "community": community,
+            "status": "projected_complete",
+            "total_nodes": retained_nodes,
+            "retained_nodes": retained_nodes,
+            "excluded_nodes": 0,
+        }
+        for community, retained_nodes in sorted(projected_community_node_counts.items())
+    ]
+    graphify.update(
+        {
+            "total_nodes": len(nodes),
+            "projected_nodes": len(nodes),
+            "excluded_nodes": 0,
+            "total_edges": len(edges),
+            "projected_edges": len(edges),
+            "excluded_edges": 0,
+            "excluded_node_dispositions": [],
+            "excluded_edge_dispositions": [],
+            "excluded_edge_endpoint_dispositions": {},
+            "all_edge_modes": dict(sorted(projected_edge_modes.items())),
+            "projected_edge_modes": dict(sorted(projected_edge_modes.items())),
+            "node_origins": dict(sorted(node_origin_counts.items())),
+            "excluded_nodes_unsafe_source": 0,
+            "excluded_nodes_untracked_or_private": 0,
+            "node_disposition_counts": {
+                "retained": len(nodes),
+                "excluded_unsafe_source": 0,
+                "excluded_untracked_or_private": 0,
+            },
+            "identifier_projection_policy": OPAQUE_IDENTIFIER_POLICY,
+            "node_identifier_disposition_counts": {
+                "total": len(nodes),
+                "projected_repository_relative": len(nodes),
+                "excluded_opaque": 0,
+                "raw_published": 0,
+            },
+            "total_communities": len(projected_community_ids),
+            "projected_communities": len(projected_community_ids),
+            "excluded_communities": 0,
+            "all_community_ids": projected_community_ids,
+            "projected_community_ids": projected_community_ids,
+            "excluded_community_ids": [],
+            "partial_community_ids": [],
+            "community_status_counts": {
+                "projected_complete": len(projected_community_ids),
+                "projected_partial": 0,
+                "excluded": 0,
+            },
+            "community_dispositions": community_dispositions,
+        }
+    )
+    if graphify_extra:
+        graphify.update(graphify_extra)
+    completeness = json.loads((compiler / "completeness.json").read_text(encoding="utf-8"))
+    completeness["graphify"] = graphify
+    graphify_raw = canonical_json(graphify)
+    completeness_raw = canonical_json(completeness)
+    _write(compiler / "graphify-metadata.json", graphify_raw)
+    _write(compiler / "completeness.json", completeness_raw)
+    manifest["graphify_metadata"] = {
+        "path": "graphify-metadata.json",
+        "sha256": sha256_bytes(graphify_raw),
+        "bytes": len(graphify_raw),
     }
+    manifest["completeness"] = {
+        "path": "completeness.json",
+        "sha256": sha256_bytes(completeness_raw),
+        "bytes": len(completeness_raw),
+    }
+    _json(compiler / "manifest.json", manifest)
+
+
+def _rewrite_chunk(
+    compiler: Path,
+    group_name: str,
+    transform: Callable[[dict[str, object]], None],
+) -> None:
+    manifest_path = compiler / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunk_receipt = manifest["groups"][group_name]["chunks"][0]
+    chunk_path = compiler / chunk_receipt["path"]
+    envelope = json.loads(chunk_path.read_text(encoding="utf-8"))
+    transform(envelope)
+    raw = canonical_json(envelope)
+    _write(chunk_path, raw)
+    chunk_receipt["sha256"] = sha256_bytes(raw)
+    chunk_receipt["bytes"] = len(raw)
+    _json(manifest_path, manifest)
+
+
+def _replace_group_fixture(
+    compiler: Path,
+    group_name: str,
+    rows: list[dict[str, object]],
+) -> None:
+    manifest_path = compiler / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunks: list[dict[str, object]] = []
+    if rows:
+        envelope = {
+            "schema_version": "1.1.0",
+            "record_type": group_name,
+            "source_commit": manifest["source_commit"],
+            "source_tree_digest": manifest["source_tree_digest"],
+            "chunk_index": 0,
+            "chunk_count": 1,
+            "record_count": len(rows),
+            "records_digest": digest_object([row["id"] for row in rows]),
+            "records": rows,
+        }
+        relative = f"chunks/{group_name}/00000.json"
+        raw = canonical_json(envelope)
+        _write(compiler / relative, raw)
+        chunks.append(
+            {
+                "path": relative,
+                "record_count": len(rows),
+                "sha256": sha256_bytes(raw),
+                "bytes": len(raw),
+            }
+        )
+    manifest["groups"][group_name] = {
+        "record_count": len(rows),
+        "chunk_count": len(chunks),
+        "records_digest": digest_object([row["id"] for row in rows]),
+        "chunks": chunks,
+    }
+    _json(manifest_path, manifest)
+
+
+def _replace_group_chunk_fixture(
+    compiler: Path,
+    group_name: str,
+    chunk_rows: list[list[dict[str, object]]],
+) -> None:
+    manifest_path = compiler / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    flattened = [row for rows in chunk_rows for row in rows]
+    chunks: list[dict[str, object]] = []
+    for index, rows in enumerate(chunk_rows):
+        envelope = {
+            "schema_version": "1.1.0",
+            "record_type": group_name,
+            "source_commit": manifest["source_commit"],
+            "source_tree_digest": manifest["source_tree_digest"],
+            "chunk_index": index,
+            "chunk_count": len(chunk_rows),
+            "record_count": len(rows),
+            "records_digest": digest_object([row["id"] for row in rows]),
+            "records": rows,
+        }
+        relative = f"chunks/{group_name}/{index:05d}.json"
+        raw = canonical_json(envelope)
+        _write(compiler / relative, raw)
+        chunks.append(
+            {
+                "path": relative,
+                "record_count": len(rows),
+                "sha256": sha256_bytes(raw),
+                "bytes": len(raw),
+            }
+        )
+    manifest["groups"][group_name] = {
+        "record_count": len(flattened),
+        "chunk_count": len(chunks),
+        "records_digest": digest_object([row["id"] for row in flattened]),
+        "chunks": chunks,
+    }
+    _json(manifest_path, manifest)
+
+
+def _graph_node(
+    compiler: Path,
+    *,
+    label: str = "derived",
+    graphify_id: str | None = None,
+) -> dict[str, object]:
+    manifest = json.loads((compiler / "manifest.json").read_text(encoding="utf-8"))
+    files_receipt = manifest["groups"]["files"]["chunks"][0]
+    files_envelope = json.loads((compiler / files_receipt["path"]).read_text(encoding="utf-8"))
+    file_record = files_envelope["records"][0]
+    if graphify_id is None:
+        graphify_id = digest_object(
+            [
+                "repository-relative-graph-node",
+                file_record["path"],
+                "L1",
+                "0",
+            ]
+        )
+    return {
+        "id": stable_id("graph-node", manifest["source_commit"], graphify_id),
+        "graphify_id": graphify_id,
+        "coordinate_occurrence": 0,
+        "file_id": file_record["id"],
+        "source_file": file_record["path"],
+        "source_location": "L1",
+        "label": label if label != "derived" else f"{file_record['path']}:L1#1",
+        "file_type": "document",
+        "language": "json",
+        "kind": "file",
+        "community": 1,
+        "origin": "ast",
+        "extraction_mode": "extracted",
+        "entity_type": "graph_node_file",
+        "unresolved_reasons": [
+            "graphify_node_label_derived_from_repository_relative_coordinate",
+        ],
+    }
+
+
+def _graph_edge(
+    compiler: Path,
+    node: dict[str, object],
+    *,
+    extraction_mode: str = "extracted",
+) -> dict[str, object]:
+    manifest = json.loads((compiler / "manifest.json").read_text(encoding="utf-8"))
+    coordinate: tuple[object, ...] = (
+        node["id"],
+        node["id"],
+        "calls",
+        "",
+        "",
+        extraction_mode,
+        "none",
+    )
+    return {
+        "id": stable_id("graph-edge", manifest["source_commit"], *coordinate, 0),
+        "source": node["id"],
+        "target": node["id"],
+        "relation": "calls",
+        "coordinate_occurrence": 0,
+        "source_file": None,
+        "source_location": "",
+        "extraction_mode": extraction_mode,
+        "confidence": None,
+        "entity_type": "graph_edge",
+        "unresolved_reasons": (
+            []
+            if extraction_mode in {"extracted", "inferred"}
+            else ["graphify_confidence_mode_undisclosed_or_ambiguous"]
+        ),
+    }
+
+
+def _all_files(root: Path) -> dict[str, bytes]:
+    return {path.relative_to(root).as_posix(): path.read_bytes() for path in sorted(root.rglob("*")) if path.is_file()}
 
 
 def test_release_family_is_deterministic_and_explicitly_unsigned(tmp_path: Path) -> None:
@@ -524,6 +945,20 @@ def test_dependency_assessment_names_unpatched_image_size_advisories() -> None:
     assert all(version in limits[0] for version in ("1.0.0", "2.0.1", "2.0.2"))
     assert "2.0.3" not in limits[0]
     assert "not a vulnerability waiver" in limits[0]
+
+
+def test_release_record_field_registry_matches_tracked_schema_owner() -> None:
+    schema = json.loads((MASTER_REFERENCE / "schema" / "atlas-records.schema.json").read_text(encoding="utf-8"))
+    schema_registry: dict[str, frozenset[str]] = {}
+    for condition in schema["allOf"]:
+        group = condition.get("if", {}).get("properties", {}).get("record_type", {}).get("const")
+        reference = condition.get("then", {}).get("properties", {}).get("records", {}).get("items", {}).get("$ref")
+        if not isinstance(group, str) or not isinstance(reference, str) or not reference.endswith("RecordKeyFence"):
+            continue
+        definition_name = reference.rsplit("/", maxsplit=1)[-1]
+        allowed = schema["$defs"][definition_name]["propertyNames"]["enum"]
+        schema_registry[group] = frozenset(allowed)
+    assert schema_registry == compiler_bundle._RECORD_KEYS_BY_GROUP
 
 
 def test_dependency_assessment_cannot_hide_vulnerable_nanoid_behind_another_finding() -> None:
@@ -682,12 +1117,16 @@ def test_sbom_has_locked_npm_transitives_and_honest_python_declarations(tmp_path
         assert root_ref not in dependency_map[devtool_ref]
         devtool = next(component for component in sbom["components"] if component["bom-ref"] == devtool_ref)
         assert {
-            item["value"]
-            for item in devtool["properties"]
-            if item["name"] == "atlas:unresolvedOptionalNpmDeclaration"
+            item["value"] for item in devtool["properties"] if item["name"] == "atlas:unresolvedOptionalNpmDeclaration"
         } == {"peerDependencies:optional-peer@^6.0.0"}
-    assert npm_refs[("master-reference/package-lock.json", "<root>")] != npm_refs[("webapp/frontend/package-lock.json", "<root>")]
-    assert npm_refs[("master-reference/package-lock.json", "node_modules/alpha")] != npm_refs[("webapp/frontend/package-lock.json", "node_modules/alpha")]
+    assert (
+        npm_refs[("master-reference/package-lock.json", "<root>")]
+        != npm_refs[("webapp/frontend/package-lock.json", "<root>")]
+    )
+    assert (
+        npm_refs[("master-reference/package-lock.json", "node_modules/alpha")]
+        != npm_refs[("webapp/frontend/package-lock.json", "node_modules/alpha")]
+    )
 
     reachable = {atlas_ref}
     pending = [atlas_ref]
@@ -702,22 +1141,15 @@ def test_sbom_has_locked_npm_transitives_and_honest_python_declarations(tmp_path
     assert int(denominators["atlas:componentGraphReachable"]) == len(component_refs)
     assert denominators["atlas:componentGraphDisconnected"] == "0"
     assert denominators["atlas:unresolvedOptionalNpmDeclarations"] == "2"
-    assert int(denominators["atlas:dependencyEdges"]) == sum(
-        len(targets) for targets in dependency_map.values()
-    )
+    assert int(denominators["atlas:dependencyEdges"]) == sum(len(targets) for targets in dependency_map.values())
     python_root = next(
-        component["bom-ref"]
-        for component in sbom["components"]
-        if component.get("name") == "fixture-python"
+        component["bom-ref"] for component in sbom["components"] if component.get("name") == "fixture-python"
     )
     assert any(ref in dependency_map[python_root] for ref in (component["bom-ref"] for component in python))
 
 
 def _sbom_source_bytes(repo: Path) -> dict[str, bytes]:
-    return {
-        relative: (repo / relative).read_bytes()
-        for relative in (*NPM_LOCKFILES, *PYTHON_DECLARATIONS)
-    }
+    return {relative: (repo / relative).read_bytes() for relative in (*NPM_LOCKFILES, *PYTHON_DECLARATIONS)}
 
 
 def test_sbom_rejects_duplicate_component_refs(tmp_path: Path) -> None:
@@ -776,6 +1208,1205 @@ def test_tampered_compiler_chunk_fails_before_output_creation(tmp_path: Path) ->
     assert not output.exists()
 
 
+def test_graph_local_identity_fails_before_family_staging_without_echoing_value(
+    tmp_path: Path,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    collapsed_repository = re.sub(
+        r"[^a-z0-9]+",
+        "_",
+        str(repo).casefold(),
+    ).strip("_")
+    _replace_graph_fixture(
+        compiler,
+        nodes=[_graph_node(compiler)],
+        graphify_extra={"generated_diagnostic": f"generated_{collapsed_repository}_symbol"},
+    )
+    output = tmp_path / "release"
+    with pytest.raises(
+        ReleaseError,
+        match="Graphify exclusion disposition ledger is inconsistent",
+    ) as failure:
+        build_release(repo, compiler, output)
+    assert collapsed_repository not in str(failure.value)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    ("producer_value", "rule"),
+    [
+        (r"D:\Users\Foreign.Person\Desktop\Atlas\graph.json", "generic_windows_user_home_path"),
+        ("/home/foreign.person/work/atlas/graph.json", "generic_posix_user_home_path"),
+        ("home_foreign_owner_checkout_atlas_graph_json", "generic_collapsed_user_home_path"),
+    ],
+)
+def test_graph_foreign_home_identity_fails_before_family_staging_without_echoing_value(
+    tmp_path: Path,
+    producer_value: str,
+    rule: str,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    _replace_graph_fixture(
+        compiler,
+        nodes=[_graph_node(compiler)],
+        graphify_extra={"generated_diagnostic": producer_value},
+    )
+    output = tmp_path / "release"
+    with pytest.raises(
+        ReleaseError,
+        match="Graphify exclusion disposition ledger is inconsistent",
+    ) as failure:
+        build_release(repo, compiler, output)
+    assert producer_value not in str(failure.value)
+    assert producer_value not in _formatted_exception(failure)
+    assert not output.exists()
+
+
+def test_family_intake_rejects_malformed_graph_built_commit_without_echoing_value(
+    tmp_path: Path,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    producer_value = "producer-controlled build identity"
+    _replace_graph_fixture(
+        compiler,
+        nodes=[_graph_node(compiler)],
+        graphify_extra={"built_at_commit": producer_value},
+    )
+    output = tmp_path / "release"
+    with pytest.raises(
+        ReleaseError,
+        match="Graphify built commit disposition is absent or inconsistent",
+    ) as failure:
+        build_release(repo, compiler, output)
+    assert producer_value not in str(failure.value)
+    assert producer_value not in _formatted_exception(failure)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("state", ["null", "foreign", "contradictory"])
+def test_family_intake_requires_exact_current_graph_built_commit(
+    tmp_path: Path,
+    state: str,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    source_commit = json.loads((compiler / "manifest.json").read_text(encoding="utf-8"))["source_commit"]
+    built_at_commit = {
+        "null": None,
+        "foreign": "a" * 40,
+        "contradictory": source_commit,
+    }[state]
+    graphify_extra = {
+        "built_at_commit": built_at_commit,
+        "status": "stale",
+        "stale": True,
+    }
+    _replace_graph_fixture(
+        compiler,
+        nodes=[_graph_node(compiler)],
+        graphify_extra=graphify_extra,
+    )
+    output = tmp_path / "release"
+    with pytest.raises(
+        ReleaseError,
+        match="Graphify built commit disposition is absent or inconsistent",
+    ) as failure:
+        build_release(repo, compiler, output)
+    if isinstance(built_at_commit, str) and built_at_commit != source_commit:
+        assert built_at_commit not in str(failure.value)
+        assert built_at_commit not in _formatted_exception(failure)
+    assert not output.exists()
+
+
+def test_family_intake_strictly_validates_absent_graph_receipt_before_return(
+    tmp_path: Path,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    producer_value = "producer_private_absent_token"
+    manifest_path = compiler / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    graphify = {
+        "schema_version": "1.1.0",
+        "source_commit": manifest["source_commit"],
+        "source_tree_digest": manifest["source_tree_digest"],
+        "available": False,
+        "status": "absent",
+        "source": "graphify-out/graph.json",
+        "report_available": False,
+        "stale": None,
+        "unresolved_reasons": ["optional_graphify_projection_not_present"],
+        "producer_note": producer_value,
+    }
+    completeness_path = compiler / "completeness.json"
+    completeness = json.loads(completeness_path.read_text(encoding="utf-8"))
+    completeness["graphify"] = graphify
+    graphify_raw = canonical_json(graphify)
+    completeness_raw = canonical_json(completeness)
+    _write(compiler / "graphify-metadata.json", graphify_raw)
+    _write(completeness_path, completeness_raw)
+    manifest["graphify_metadata"].update({"sha256": sha256_bytes(graphify_raw), "bytes": len(graphify_raw)})
+    manifest["completeness"].update({"sha256": sha256_bytes(completeness_raw), "bytes": len(completeness_raw)})
+    _json(manifest_path, manifest)
+    output = tmp_path / "release"
+    with pytest.raises(ReleaseError, match="Graphify metadata receipt is inconsistent") as failure:
+        build_release(repo, compiler, output)
+    assert producer_value not in str(failure.value)
+    assert producer_value not in _formatted_exception(failure)
+    assert not output.exists()
+
+
+def test_family_intake_rejects_silent_graph_exclusion_denominator_tamper(
+    tmp_path: Path,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    _replace_graph_fixture(
+        compiler,
+        nodes=[_graph_node(compiler)],
+        graphify_extra={
+            "total_nodes": 2,
+            "excluded_nodes": 1,
+            "node_disposition_counts": {
+                "retained": 1,
+                "excluded_unsafe_source": 1,
+                "excluded_untracked_or_private": 0,
+            },
+            "node_identifier_disposition_counts": {
+                "total": 2,
+                "projected_repository_relative": 1,
+                "excluded_opaque": 1,
+                "raw_published": 0,
+            },
+        },
+    )
+    output = tmp_path / "release"
+    with pytest.raises(
+        ReleaseError,
+        match="Graphify exclusion disposition ledger is inconsistent",
+    ):
+        build_release(repo, compiler, output)
+    assert not output.exists()
+
+
+def _coordinate_only_exclusion_ledger() -> dict[str, object]:
+    source_digest = "6" * 64
+    excluded_node_id = stable_id("graph-node-disposition", source_digest, 1)
+    return {
+        "total_nodes": 2,
+        "excluded_nodes": 1,
+        "excluded_nodes_unsafe_source": 1,
+        "node_origins": {"ast": 1, "undisclosed": 1},
+        "node_disposition_counts": {
+            "retained": 1,
+            "excluded_unsafe_source": 1,
+            "excluded_untracked_or_private": 0,
+        },
+        "node_identifier_disposition_counts": {
+            "total": 2,
+            "projected_repository_relative": 1,
+            "excluded_opaque": 1,
+            "raw_published": 0,
+        },
+        "excluded_node_dispositions": [
+            {
+                "id": excluded_node_id,
+                "disposition": "excluded",
+                "raw_index": 1,
+                "reason": "excluded_unsafe_source",
+            }
+        ],
+        "total_edges": 1,
+        "excluded_edges": 1,
+        "all_edge_modes": {"undisclosed": 1},
+        "projected_edge_modes": {},
+        "excluded_edge_dispositions": [
+            {
+                "id": stable_id("graph-edge-disposition", source_digest, 0),
+                "disposition": "excluded",
+                "raw_index": 0,
+                "reason": "endpoint_not_projected",
+                "source_endpoint": {
+                    "state": "excluded_unsafe_source",
+                    "record_id": excluded_node_id,
+                    "anonymous_slot": None,
+                },
+                "target_endpoint": {
+                    "state": "missing_node",
+                    "record_id": None,
+                    "anonymous_slot": 0,
+                },
+            }
+        ],
+        "excluded_edge_endpoint_dispositions": {
+            "source_excluded_unsafe_source__target_missing_node": 1,
+        },
+    }
+
+
+def test_family_intake_accepts_only_coordinate_ledger_without_raw_hash_commitments(
+    tmp_path: Path,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    _replace_graph_fixture(
+        compiler,
+        nodes=[_graph_node(compiler)],
+        graphify_extra=_coordinate_only_exclusion_ledger(),
+    )
+    output = tmp_path / "release"
+    build_release(repo, compiler, output)
+    with zipfile.ZipFile(output / "atlas-master-reference-preservation.zip") as archive:
+        graphify = json.loads(archive.read("compiler/graphify-metadata.json"))
+    forbidden = {
+        "opaque_identifier_hash",
+        "opaque_record_hash",
+        "raw_record_digest",
+    }
+    node_disposition = graphify["excluded_node_dispositions"][0]
+    edge_disposition = graphify["excluded_edge_dispositions"][0]
+    assert set(node_disposition) == {"id", "disposition", "raw_index", "reason"}
+    assert set(edge_disposition) == {
+        "id",
+        "disposition",
+        "raw_index",
+        "reason",
+        "source_endpoint",
+        "target_endpoint",
+    }
+    assert forbidden.isdisjoint(node_disposition)
+    assert forbidden.isdisjoint(edge_disposition)
+    assert forbidden.isdisjoint(edge_disposition["source_endpoint"])
+    assert forbidden.isdisjoint(edge_disposition["target_endpoint"])
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda graphify, value: graphify["excluded_node_dispositions"][0].__setitem__("raw_record_digest", value),
+        lambda graphify, value: graphify["excluded_edge_dispositions"][0].__setitem__("opaque_record_hash", value),
+        lambda graphify, value: graphify["excluded_edge_dispositions"][0]["source_endpoint"].__setitem__(
+            "opaque_identifier_hash", value
+        ),
+    ],
+    ids=["node-raw-record", "edge-opaque-record", "endpoint-opaque-identifier"],
+)
+def test_family_intake_rejects_raw_derived_graph_ledger_fields_without_echo(
+    tmp_path: Path,
+    mutate: Callable[[dict[str, object], str], None],
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    ledger = _coordinate_only_exclusion_ledger()
+    producer_value = "private-dictionary-oracle-sentinel"
+    mutate(ledger, producer_value)
+    _replace_graph_fixture(
+        compiler,
+        nodes=[_graph_node(compiler)],
+        graphify_extra=ledger,
+    )
+    output = tmp_path / "release"
+    with pytest.raises(
+        ReleaseError,
+        match="Graphify exclusion disposition ledger is inconsistent",
+    ) as failure:
+        build_release(repo, compiler, output)
+    assert producer_value not in str(failure.value)
+    assert producer_value not in _formatted_exception(failure)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda graphify: graphify["excluded_edge_dispositions"][0]["target_endpoint"].__setitem__(
+            "anonymous_slot", None
+        ),
+        lambda graphify: graphify["excluded_edge_dispositions"][0]["target_endpoint"].__setitem__("anonymous_slot", 1),
+        lambda graphify: graphify["excluded_edge_dispositions"][0].__setitem__(
+            "id", stable_id("graph-edge-disposition", "6" * 64, "low-entropy-raw-id")
+        ),
+    ],
+    ids=["missing-anonymous-slot", "noncontiguous-anonymous-slot", "raw-derived-id"],
+)
+def test_family_intake_rejects_noncanonical_coordinate_ledger_topology(
+    tmp_path: Path,
+    mutate: Callable[[dict[str, object]], None],
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    ledger = _coordinate_only_exclusion_ledger()
+    mutate(ledger)
+    _replace_graph_fixture(
+        compiler,
+        nodes=[_graph_node(compiler)],
+        graphify_extra=ledger,
+    )
+    output = tmp_path / "release"
+    with pytest.raises(
+        ReleaseError,
+        match="Graphify exclusion disposition ledger is inconsistent",
+    ):
+        build_release(repo, compiler, output)
+    assert not output.exists()
+
+
+def test_family_intake_reconciles_excluded_edge_retained_endpoint_traversal(
+    tmp_path: Path,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    missing_projected_node = f"urn:atlas:graph-node:{'f' * 24}"
+    _replace_graph_fixture(
+        compiler,
+        nodes=[_graph_node(compiler)],
+        graphify_extra={
+            "total_edges": 1,
+            "excluded_edges": 1,
+            "all_edge_modes": {"undisclosed": 1},
+            "projected_edge_modes": {},
+            "excluded_edge_dispositions": [
+                {
+                    "id": stable_id("graph-edge-disposition", "6" * 64, 0),
+                    "disposition": "excluded",
+                    "raw_index": 0,
+                    "reason": "endpoint_not_projected",
+                    "source_endpoint": {
+                        "state": "retained",
+                        "record_id": missing_projected_node,
+                        "anonymous_slot": None,
+                    },
+                    "target_endpoint": {
+                        "state": "missing_node",
+                        "record_id": None,
+                        "anonymous_slot": 0,
+                    },
+                }
+            ],
+            "excluded_edge_endpoint_dispositions": {
+                "source_retained__target_missing_node": 1,
+            },
+        },
+    )
+    output = tmp_path / "release"
+    with pytest.raises(
+        ReleaseError,
+        match="excluded edge retained endpoint does not traverse to a projected node",
+    ):
+        build_release(repo, compiler, output)
+    assert not output.exists()
+
+
+def test_family_intake_wraps_malformed_graph_disposition_without_echoing_value(
+    tmp_path: Path,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    producer_value = r"D:\Users\Foreign.Person\Desktop\Atlas"
+    _replace_graph_fixture(
+        compiler,
+        nodes=[_graph_node(compiler)],
+        graphify_extra={
+            "node_disposition_counts": {
+                "retained": 1,
+                "excluded_unsafe_source": producer_value,
+                "excluded_untracked_or_private": 0,
+            },
+        },
+    )
+    output = tmp_path / "release"
+    with pytest.raises(
+        ReleaseError,
+        match="Graphify exclusion disposition ledger is inconsistent",
+    ) as failure:
+        build_release(repo, compiler, output)
+    assert producer_value not in str(failure.value)
+    assert producer_value not in _formatted_exception(failure)
+    assert not output.exists()
+
+
+def test_family_intake_wraps_nonobject_graph_disposition_without_echoing_value(
+    tmp_path: Path,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    producer_value = r"D:\Users\Foreign.Person\Desktop\Atlas"
+    _replace_graph_fixture(
+        compiler,
+        nodes=[_graph_node(compiler)],
+        graphify_extra={
+            "total_nodes": 2,
+            "excluded_nodes": 1,
+            "excluded_node_dispositions": [producer_value],
+            "node_disposition_counts": {
+                "retained": 1,
+                "excluded_unsafe_source": 1,
+                "excluded_untracked_or_private": 0,
+            },
+            "node_identifier_disposition_counts": {
+                "total": 2,
+                "projected_repository_relative": 1,
+                "excluded_opaque": 1,
+                "raw_published": 0,
+            },
+        },
+    )
+    output = tmp_path / "release"
+    with pytest.raises(
+        ReleaseError,
+        match="Graphify exclusion disposition ledger is inconsistent",
+    ) as failure:
+        build_release(repo, compiler, output)
+    assert producer_value not in str(failure.value)
+    assert producer_value not in _formatted_exception(failure)
+    assert not output.exists()
+
+
+def test_family_intake_rejects_nonobject_graph_record_without_echoing_value(
+    tmp_path: Path,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    _replace_graph_fixture(compiler, nodes=[_graph_node(compiler)])
+    producer_value = r"D:\Users\Foreign.Person\Desktop\Atlas"
+    manifest_path = compiler / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunk_receipt = manifest["groups"]["graph_nodes"]["chunks"][0]
+    chunk_path = compiler / chunk_receipt["path"]
+    envelope = json.loads(chunk_path.read_text(encoding="utf-8"))
+    envelope["records"] = [producer_value]
+    chunk_raw = canonical_json(envelope)
+    _write(chunk_path, chunk_raw)
+    chunk_receipt["sha256"] = sha256_bytes(chunk_raw)
+    chunk_receipt["bytes"] = len(chunk_raw)
+    _json(manifest_path, manifest)
+    output = tmp_path / "release"
+    with pytest.raises(
+        ReleaseError,
+        match="compiler group contains a non-object record: graph_nodes",
+    ) as failure:
+        build_release(repo, compiler, output)
+    assert producer_value not in str(failure.value)
+    assert producer_value not in _formatted_exception(failure)
+    assert not output.exists()
+
+
+def test_family_intake_rejects_noncanonical_graph_chunk_path_without_echoing_value(
+    tmp_path: Path,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    _replace_graph_fixture(compiler, nodes=[_graph_node(compiler)])
+    producer_value = "home_foreign_owner_checkout_graph_nodes"
+    manifest_path = compiler / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunk_receipt = manifest["groups"]["graph_nodes"]["chunks"][0]
+    original = compiler / chunk_receipt["path"]
+    replacement_relative = f"chunks/graph_nodes/{producer_value}.json"
+    replacement = compiler / replacement_relative
+    original.replace(replacement)
+    chunk_receipt["path"] = replacement_relative
+    _json(manifest_path, manifest)
+    output = tmp_path / "release"
+    with pytest.raises(
+        ReleaseError,
+        match="compiler chunk owner path is not canonical: group=graph_nodes; index=0",
+    ) as failure:
+        build_release(repo, compiler, output)
+    assert producer_value not in _formatted_exception(failure)
+    assert not output.exists()
+
+
+def test_family_intake_rejects_noncanonical_graphify_owner_path_without_echoing_value(
+    tmp_path: Path,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    producer_value = "home_foreign_owner_checkout_graphify"
+    manifest_path = compiler / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    original = compiler / manifest["graphify_metadata"]["path"]
+    replacement_relative = f"{producer_value}.json"
+    original.replace(compiler / replacement_relative)
+    manifest["graphify_metadata"]["path"] = replacement_relative
+    _json(manifest_path, manifest)
+    output = tmp_path / "release"
+    with pytest.raises(
+        ReleaseError,
+        match="compiler Graphify metadata owner path is not canonical",
+    ) as failure:
+        build_release(repo, compiler, output)
+    assert producer_value not in _formatted_exception(failure)
+    assert not output.exists()
+
+
+def test_family_intake_rejects_nested_extra_manifest_receipt_fields_without_echoing_value(
+    tmp_path: Path,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    producer_value = r"D:\Users\Foreign.Person\Desktop\Atlas\producer-note"
+    manifest_path = compiler / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["groups"]["files"]["chunks"][0]["producer_note"] = producer_value
+    _json(manifest_path, manifest)
+    output = tmp_path / "release"
+    with pytest.raises(
+        ReleaseError,
+        match="compiler chunk owner path is not canonical: group=files; index=0",
+    ) as failure:
+        build_release(repo, compiler, output)
+    assert producer_value not in str(failure.value)
+    assert producer_value not in _formatted_exception(failure)
+    assert not output.exists()
+
+
+def test_family_intake_rejects_extra_chunk_envelope_fields_without_echoing_value(
+    tmp_path: Path,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    producer_value = r"D:\Users\Foreign.Person\Desktop\Atlas\chunk-note"
+
+    def add_extra_field(envelope: dict[str, object]) -> None:
+        envelope["producer_note"] = producer_value
+
+    _rewrite_chunk(compiler, "files", add_extra_field)
+    output = tmp_path / "release"
+    with pytest.raises(ReleaseError, match="compiler chunk envelope mismatch") as failure:
+        build_release(repo, compiler, output)
+    assert producer_value not in str(failure.value)
+    assert producer_value not in _formatted_exception(failure)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("group_name", ["files", "graph_nodes", "graph_edges"])
+def test_family_intake_rejects_extra_record_fields_in_every_chunk_class_without_echoing_value(
+    tmp_path: Path,
+    group_name: str,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    if group_name in {"graph_nodes", "graph_edges"}:
+        node = _graph_node(compiler)
+        edges = [_graph_edge(compiler, node)] if group_name == "graph_edges" else []
+        _replace_graph_fixture(compiler, nodes=[node], edges=edges)
+    producer_value = r"D:\Users\Foreign.Person\Desktop\Atlas\record-note"
+
+    def add_extra_field(envelope: dict[str, object]) -> None:
+        records = envelope["records"]
+        assert isinstance(records, list) and isinstance(records[0], dict)
+        records[0]["producer_note"] = producer_value
+
+    _rewrite_chunk(compiler, group_name, add_extra_field)
+    output = tmp_path / "release"
+    with pytest.raises(
+        ReleaseError,
+        match=rf"compiler record contains an undeclared field: group={group_name}; index=0",
+    ) as failure:
+        build_release(repo, compiler, output)
+    assert producer_value not in str(failure.value)
+    assert producer_value not in _formatted_exception(failure)
+    assert not output.exists()
+
+
+def test_family_intake_privacy_scans_schema_fallback_record_groups_without_echoing_value(
+    tmp_path: Path,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    producer_value = r"D:\Users\Foreign.Person\Desktop\Atlas\config-note"
+    _replace_group_fixture(
+        compiler,
+        "configs",
+        [
+            {
+                "id": f"urn:atlas:config:{'a' * 24}",
+                "producer_note": producer_value,
+            }
+        ],
+    )
+    output = tmp_path / "release"
+    with pytest.raises(
+        ReleaseError,
+        match="compiler record contains an undeclared field: group=configs; index=0",
+    ) as failure:
+        build_release(repo, compiler, output)
+    assert producer_value not in str(failure.value)
+    assert producer_value not in _formatted_exception(failure)
+    assert not output.exists()
+
+
+def test_family_intake_scans_declared_fields_for_current_host_identity_without_echoing_value(
+    tmp_path: Path,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    producer_value = re.sub(r"[^a-z0-9]+", "_", str(repo).casefold()).strip("_")
+    _replace_group_fixture(
+        compiler,
+        "configs",
+        [
+            {
+                "id": f"urn:atlas:config:{'b' * 24}",
+                "path": producer_value,
+            }
+        ],
+    )
+    output = tmp_path / "release"
+    with pytest.raises(
+        ReleaseError,
+        match=(
+            r"compiler chunk privacy scan failed: "
+            r"rule=local_repository_collapsed_path; group=configs; index=0$"
+        ),
+    ) as failure:
+        build_release(repo, compiler, output)
+    assert producer_value not in str(failure.value)
+    assert producer_value not in _formatted_exception(failure)
+    assert not output.exists()
+
+
+def test_family_intake_scans_chunk_bytes_for_groups_omitted_from_retention(tmp_path: Path) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    producer_value = re.sub(r"[^a-z0-9]+", "_", str(repo).casefold()).strip("_")
+    _replace_group_fixture(
+        compiler,
+        "configs",
+        [
+            {
+                "id": f"urn:atlas:config:{'c' * 24}",
+                "path": producer_value,
+            }
+        ],
+    )
+    retained_groups = set(REQUIRED_GROUPS) - {"configs"}
+    with pytest.raises(
+        ReleaseInputError,
+        match=(
+            r"compiler chunk privacy scan failed: "
+            r"rule=local_repository_collapsed_path; group=configs; index=0$"
+        ),
+    ) as failure:
+        compiler_bundle.load_compiler_bundle(
+            compiler,
+            retained_groups=retained_groups,
+            repository_root=repo,
+        )
+    assert producer_value not in str(failure.value)
+    assert producer_value not in _formatted_exception(failure)
+
+
+def test_family_intake_validates_group_metadata_for_groups_omitted_from_retention(tmp_path: Path) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    producer_value = r"D:\Users\Foreign.Person\Desktop\Atlas\group-digest"
+    manifest_path = compiler / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["groups"]["configs"]["records_digest"] = producer_value
+    _json(manifest_path, manifest)
+    retained_groups = set(REQUIRED_GROUPS) - {"configs"}
+    with pytest.raises(ReleaseInputError, match="compiler group is malformed: configs") as failure:
+        compiler_bundle.load_compiler_bundle(
+            compiler,
+            retained_groups=retained_groups,
+            repository_root=repo,
+        )
+    assert producer_value not in str(failure.value)
+    assert producer_value not in _formatted_exception(failure)
+
+
+def test_generated_identity_scanner_does_not_walk_source_derived_non_graph_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository_root = tmp_path / "repo"
+    repository_root.mkdir()
+    monkeypatch.setattr(compiler_bundle, "_LOCAL_SCAN_MAX_VALUES", 3)
+    compiler_bundle._scan_generated_local_identities(
+        {},
+        {},
+        {},
+        {
+            "lines": [{"id": "fixture", "payload": "source-derived"}] * 100_000,
+            "graph_nodes": [],
+            "graph_edges": [],
+        },
+        repository_root,
+    )
+
+
+def test_family_intake_rejects_container_record_ids_before_digest_without_echoing_value(
+    tmp_path: Path,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    producer_value = "producer_private_container_id"
+
+    def replace_identifier(envelope: dict[str, object]) -> None:
+        records = envelope["records"]
+        assert isinstance(records, list) and isinstance(records[0], dict)
+        records[0]["id"] = [producer_value]
+        legacy_digest = digest_object([str(records[0]["id"])])
+        envelope["records_digest"] = legacy_digest
+
+    _rewrite_chunk(compiler, "files", replace_identifier)
+    manifest_path = compiler / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["groups"]["files"]["records_digest"] = digest_object([str([producer_value])])
+    _json(manifest_path, manifest)
+    output = tmp_path / "release"
+    with pytest.raises(ReleaseError) as failure:
+        build_release(repo, compiler, output)
+    assert "compiler chunk" in str(failure.value)
+    assert producer_value not in str(failure.value)
+    assert producer_value not in _formatted_exception(failure)
+    assert not output.exists()
+
+
+def test_family_intake_rejects_noninteger_chunk_size_without_echoing_value(
+    tmp_path: Path,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    producer_value = r"D:\Users\Foreign.Person\Desktop\Atlas\chunk-size"
+    manifest_path = compiler / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["chunk_size"] = producer_value
+    _json(manifest_path, manifest)
+    output = tmp_path / "release"
+    with pytest.raises(
+        ReleaseError,
+        match="compiler manifest chunk-size denominator is malformed",
+    ) as failure:
+        build_release(repo, compiler, output)
+    assert producer_value not in _formatted_exception(failure)
+    assert not output.exists()
+
+
+def test_family_intake_enforces_single_record_source_text_chunks(tmp_path: Path) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    _replace_group_chunk_fixture(
+        compiler,
+        "source_text",
+        [
+            [
+                {"id": f"urn:atlas:source-text:{'1' * 24}"},
+                {"id": f"urn:atlas:source-text:{'2' * 24}"},
+            ]
+        ],
+    )
+    output = tmp_path / "release"
+    with pytest.raises(ReleaseError, match="compiler chunk packing is not canonical: source_text"):
+        build_release(repo, compiler, output)
+    assert not output.exists()
+
+
+def test_family_intake_rejects_huge_declared_chunk_count_without_allocation(tmp_path: Path) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    manifest_path = compiler / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["groups"]["source_text"] = {
+        "record_count": 1_000_000_000_000,
+        "chunk_count": 0,
+        "records_digest": digest_object([]),
+        "chunks": [],
+    }
+    _json(manifest_path, manifest)
+    output = tmp_path / "release"
+    with pytest.raises(ReleaseError, match="compiler chunk packing is not canonical: source_text"):
+        build_release(repo, compiler, output)
+    assert not output.exists()
+
+
+def test_family_intake_enforces_canonical_nonfinal_chunk_packing(tmp_path: Path) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    rows = [{"id": f"urn:atlas:config:{index:024x}"} for index in range(2_001)]
+    _replace_group_chunk_fixture(compiler, "configs", [rows[:1], rows[1:]])
+    output = tmp_path / "release"
+    with pytest.raises(ReleaseError, match="compiler chunk packing is not canonical: configs"):
+        build_release(repo, compiler, output)
+    assert not output.exists()
+
+
+def test_family_intake_enforces_strict_ascending_record_order(tmp_path: Path) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    _replace_group_fixture(
+        compiler,
+        "configs",
+        [
+            {"id": f"urn:atlas:config:{'2' * 24}"},
+            {"id": f"urn:atlas:config:{'1' * 24}"},
+        ],
+    )
+    output = tmp_path / "release"
+    with pytest.raises(ReleaseError, match="compiler record order is not canonical: configs"):
+        build_release(repo, compiler, output)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("owner", ["completeness", "architecture"])
+def test_family_intake_scans_self_receipted_generated_owner_metadata_without_echoing_value(
+    tmp_path: Path,
+    owner: str,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    producer_value = r"D:\Users\Foreign.Person\Desktop\Atlas\producer-note"
+    manifest_path = compiler / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    completeness_path = compiler / "completeness.json"
+    completeness = json.loads(completeness_path.read_text(encoding="utf-8"))
+    if owner == "completeness":
+        completeness["producer_note"] = producer_value
+    else:
+        architecture_path = compiler / "architecture-conformance.json"
+        architecture = json.loads(architecture_path.read_text(encoding="utf-8"))
+        architecture["producer_note"] = producer_value
+        completeness["architecture_conformance"] = architecture
+        architecture_raw = canonical_json(architecture)
+        _write(architecture_path, architecture_raw)
+        manifest["architecture_conformance"].update(
+            {"sha256": sha256_bytes(architecture_raw), "bytes": len(architecture_raw)}
+        )
+    completeness_raw = canonical_json(completeness)
+    _write(completeness_path, completeness_raw)
+    manifest["completeness"].update({"sha256": sha256_bytes(completeness_raw), "bytes": len(completeness_raw)})
+    _json(manifest_path, manifest)
+    output = tmp_path / "release"
+    expected_path = "completeness"
+    with pytest.raises(
+        ReleaseError,
+        match=rf"local-identity scan failed: rule=generic_windows_user_home_path; path={expected_path}$",
+    ) as failure:
+        build_release(repo, compiler, output)
+    assert producer_value not in str(failure.value)
+    assert producer_value not in _formatted_exception(failure)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    ("owner", "expected_error"),
+    [
+        ("manifest", "unsupported compiler schema"),
+        ("completeness", "unsupported compiler completeness schema"),
+        ("graphify", "unsupported compiler Graphify schema"),
+        ("architecture", "unsupported compiler architecture-conformance schema"),
+    ],
+)
+def test_family_intake_schema_errors_never_echo_producer_values(
+    tmp_path: Path,
+    owner: str,
+    expected_error: str,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    producer_value = r"D:\Users\Foreign.Person\Desktop\Atlas\schema"
+    manifest_path = compiler / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if owner == "manifest":
+        manifest["schema_version"] = producer_value
+    else:
+        completeness_path = compiler / "completeness.json"
+        completeness = json.loads(completeness_path.read_text(encoding="utf-8"))
+        if owner == "completeness":
+            completeness["schema_version"] = producer_value
+        elif owner == "graphify":
+            graphify_path = compiler / "graphify-metadata.json"
+            graphify = json.loads(graphify_path.read_text(encoding="utf-8"))
+            graphify["schema_version"] = producer_value
+            completeness["graphify"] = graphify
+            graphify_raw = canonical_json(graphify)
+            _write(graphify_path, graphify_raw)
+            manifest["graphify_metadata"].update({"sha256": sha256_bytes(graphify_raw), "bytes": len(graphify_raw)})
+        else:
+            architecture_path = compiler / "architecture-conformance.json"
+            architecture = json.loads(architecture_path.read_text(encoding="utf-8"))
+            architecture["schema_version"] = producer_value
+            completeness["architecture_conformance"] = architecture
+            architecture_raw = canonical_json(architecture)
+            _write(architecture_path, architecture_raw)
+            manifest["architecture_conformance"].update(
+                {"sha256": sha256_bytes(architecture_raw), "bytes": len(architecture_raw)}
+            )
+        completeness_raw = canonical_json(completeness)
+        _write(completeness_path, completeness_raw)
+        manifest["completeness"].update({"sha256": sha256_bytes(completeness_raw), "bytes": len(completeness_raw)})
+    _json(manifest_path, manifest)
+    output = tmp_path / "release"
+    with pytest.raises(ReleaseError, match=expected_error) as failure:
+        build_release(repo, compiler, output)
+    assert producer_value not in str(failure.value)
+    assert producer_value not in _formatted_exception(failure)
+    assert not output.exists()
+
+
+def test_family_intake_rejects_deep_manifest_json_without_echoing_value(
+    tmp_path: Path,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    producer_value = "home_foreign_owner_checkout_private"
+    deep_value = "[" * 2_000 + json.dumps(producer_value) + "]" * 2_000
+    (compiler / "manifest.json").write_text(deep_value, encoding="utf-8")
+    output = tmp_path / "release"
+    with pytest.raises(ReleaseError, match="compiler manifest shape is not canonical") as failure:
+        build_release(repo, compiler, output)
+    assert producer_value not in _formatted_exception(failure)
+    assert not output.exists()
+
+
+def test_generated_identity_scanner_rejects_invalid_unicode_without_echoing_value(
+    tmp_path: Path,
+) -> None:
+    repository_root = tmp_path / "repo"
+    repository_root.mkdir()
+    producer_value = "\ud800private"
+    with pytest.raises(
+        ReleaseInputError,
+        match="local-identity scan found an invalid string: path=completeness",
+    ) as failure:
+        compiler_bundle._scan_generated_local_identities(
+            {},
+            {"producer_note": producer_value},
+            {},
+            {"graph_nodes": [], "graph_edges": []},
+            repository_root,
+        )
+    assert producer_value not in _formatted_exception(failure)
+
+
+def test_family_intake_recomputes_graph_identifier_before_staging(tmp_path: Path) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    node = _graph_node(compiler)
+    node["graphify_id"] = "f" * 64
+    node["id"] = stable_id(
+        "graph-node",
+        json.loads((compiler / "manifest.json").read_text(encoding="utf-8"))["source_commit"],
+        node["graphify_id"],
+    )
+    _replace_graph_fixture(compiler, nodes=[node])
+    output = tmp_path / "release"
+    with pytest.raises(
+        ReleaseError,
+        match="unique privacy-safe repository-relative identity",
+    ):
+        build_release(repo, compiler, output)
+    assert not output.exists()
+
+
+def test_family_intake_rejects_graph_node_anchored_to_privacy_ineligible_file(tmp_path: Path) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    node = _graph_node(compiler)
+    _replace_graph_fixture(compiler, nodes=[node])
+
+    def mark_file_ineligible(envelope: dict[str, object]) -> None:
+        records = envelope["records"]
+        assert isinstance(records, list)
+        record = records[0]
+        assert isinstance(record, dict)
+        record["classification_errors"] = ["fixture_classification_failure"]
+
+    _rewrite_chunk(compiler, "files", mark_file_ineligible)
+    output = tmp_path / "release"
+    with pytest.raises(
+        ReleaseError,
+        match="Graphify node lacks a unique privacy-safe repository-relative identity",
+    ):
+        build_release(repo, compiler, output)
+    assert not output.exists()
+
+
+def test_family_intake_rejects_graph_edge_anchored_to_privacy_ineligible_file(tmp_path: Path) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    manifest = json.loads((compiler / "manifest.json").read_text(encoding="utf-8"))
+    files_receipt = manifest["groups"]["files"]["chunks"][0]
+    files_envelope = json.loads((compiler / files_receipt["path"]).read_text(encoding="utf-8"))
+    file_records = files_envelope["records"]
+    assert isinstance(file_records, list) and len(file_records) >= 2
+    second_file = file_records[1]
+    assert isinstance(second_file, dict)
+
+    node = _graph_node(compiler)
+    edge = _graph_edge(compiler, node)
+    edge["source_file"] = second_file["path"]
+    edge["source_location"] = "L1"
+    edge["id"] = stable_id(
+        "graph-edge",
+        manifest["source_commit"],
+        node["id"],
+        node["id"],
+        "calls",
+        second_file["path"],
+        "L1",
+        "extracted",
+        "none",
+        0,
+    )
+    _replace_graph_fixture(compiler, nodes=[node], edges=[edge])
+
+    def mark_file_ineligible(envelope: dict[str, object]) -> None:
+        records = envelope["records"]
+        assert isinstance(records, list)
+        record = records[1]
+        assert isinstance(record, dict)
+        record["classification_errors"] = ["fixture_classification_failure"]
+
+    _rewrite_chunk(compiler, "files", mark_file_ineligible)
+    output = tmp_path / "release"
+    with pytest.raises(
+        ReleaseError,
+        match="Graphify edge endpoint or stable identity is inconsistent",
+    ):
+        build_release(repo, compiler, output)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("record_type", ["node", "edge"])
+def test_family_intake_rejects_arbitrary_graph_unresolved_reason_without_echoing_value(
+    tmp_path: Path,
+    record_type: str,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    producer_value = "producer_private_reason_token"
+    node = _graph_node(compiler)
+    edges: list[dict[str, object]] = []
+    if record_type == "node":
+        node["unresolved_reasons"] = [
+            *node["unresolved_reasons"],
+            producer_value,
+        ]
+    else:
+        edge = _graph_edge(compiler, node)
+        edge["unresolved_reasons"] = [producer_value]
+        edges = [edge]
+    _replace_graph_fixture(compiler, nodes=[node], edges=edges)
+    output = tmp_path / "release"
+    with pytest.raises(ReleaseError) as failure:
+        build_release(repo, compiler, output)
+    assert "compiler chunk differs from tracked record schema" in str(failure.value)
+    assert producer_value not in str(failure.value)
+    assert producer_value not in _formatted_exception(failure)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("record_type", ["node", "edge"])
+def test_family_intake_requires_canonical_graph_unresolved_reason_order(
+    tmp_path: Path,
+    record_type: str,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    node = _graph_node(compiler)
+    edges: list[dict[str, object]] = []
+    if record_type == "node":
+        node["origin"] = "curated"
+        node["extraction_mode"] = "curated"
+        node["unresolved_reasons"] = [
+            "graphify_node_origin_is_curated_or_undisclosed_not_ast_extraction",
+            "graphify_node_label_derived_from_repository_relative_coordinate",
+        ]
+    else:
+        edge = _graph_edge(compiler, node, extraction_mode="ambiguous")
+        edge["relation"] = "related_to"
+        edge["unresolved_reasons"] = [
+            "graphify_relation_not_in_controlled_vocabulary_shape",
+            "graphify_confidence_mode_undisclosed_or_ambiguous",
+        ]
+        manifest = json.loads((compiler / "manifest.json").read_text(encoding="utf-8"))
+        edge["id"] = stable_id(
+            "graph-edge",
+            manifest["source_commit"],
+            node["id"],
+            node["id"],
+            "related_to",
+            "",
+            "",
+            "ambiguous",
+            "none",
+            0,
+        )
+        edges = [edge]
+    _replace_graph_fixture(compiler, nodes=[node], edges=edges)
+    output = tmp_path / "release"
+    with pytest.raises(ReleaseError, match="compiler Graphify"):
+        build_release(repo, compiler, output)
+    assert not output.exists()
+
+
+def test_family_intake_reconciles_projected_community_denominator_from_nodes(
+    tmp_path: Path,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    node = _graph_node(compiler)
+    _replace_graph_fixture(
+        compiler,
+        nodes=[node],
+        graphify_extra={
+            "total_communities": 0,
+            "projected_communities": 0,
+            "all_community_ids": [],
+            "projected_community_ids": [],
+            "community_status_counts": {
+                "projected_complete": 0,
+                "projected_partial": 0,
+                "excluded": 0,
+            },
+            "community_dispositions": [],
+        },
+    )
+    output = tmp_path / "release"
+    with pytest.raises(ReleaseError, match="Graphify exclusion disposition ledger is inconsistent"):
+        build_release(repo, compiler, output)
+    assert not output.exists()
+
+
+def test_family_intake_reconciles_projected_edge_modes_from_edges(tmp_path: Path) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    node = _graph_node(compiler)
+    edge = _graph_edge(compiler, node)
+    _replace_graph_fixture(
+        compiler,
+        nodes=[node],
+        edges=[edge],
+        graphify_extra={
+            "all_edge_modes": {"inferred": 1},
+            "projected_edge_modes": {"inferred": 1},
+        },
+    )
+    output = tmp_path / "release"
+    with pytest.raises(ReleaseError, match="Graphify exclusion disposition ledger is inconsistent"):
+        build_release(repo, compiler, output)
+    assert not output.exists()
+
+
+def test_family_intake_rejects_unbounded_graph_source_location_without_echoing_value(
+    tmp_path: Path,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    node = _graph_node(compiler)
+    producer_value = f"L{'9' * 80}"
+    node["source_location"] = producer_value
+    node["label"] = f"{node['source_file']}:{producer_value}#1"
+    node["graphify_id"] = digest_object(["repository-relative-graph-node", node["source_file"], producer_value, "0"])
+    manifest = json.loads((compiler / "manifest.json").read_text(encoding="utf-8"))
+    node["id"] = stable_id("graph-node", manifest["source_commit"], node["graphify_id"])
+    _replace_graph_fixture(compiler, nodes=[node])
+    output = tmp_path / "release"
+    with pytest.raises(ReleaseError, match="compiler chunk differs from tracked record schema") as failure:
+        build_release(repo, compiler, output)
+    assert producer_value not in _formatted_exception(failure)
+    assert not output.exists()
+
+
+def test_family_intake_rejects_arbitrary_graph_producer_text_before_staging(
+    tmp_path: Path,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    node = _graph_node(compiler)
+    node["label"] = "arbitrary producer label"
+    _replace_graph_fixture(compiler, nodes=[node])
+    output = tmp_path / "release"
+    with pytest.raises(
+        ReleaseError,
+        match="unique privacy-safe repository-relative identity",
+    ):
+        build_release(repo, compiler, output)
+    assert not output.exists()
+
+
+def test_family_intake_rejects_graph_community_outside_js_safe_domain(
+    tmp_path: Path,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    node = _graph_node(compiler)
+    node["community"] = 9_007_199_254_740_992
+    _replace_graph_fixture(compiler, nodes=[node])
+    output = tmp_path / "release"
+    with pytest.raises(
+        ReleaseError,
+        match="compiler chunk differs from tracked record schema: group=graph_nodes; index=0",
+    ):
+        build_release(repo, compiler, output)
+    assert not output.exists()
+
+
 def test_missing_architecture_conformance_receipt_blocks_release(tmp_path: Path) -> None:
     repo, compiler = _fixture_repo(tmp_path)
     manifest_path = compiler / "manifest.json"
@@ -783,7 +2414,7 @@ def test_missing_architecture_conformance_receipt_blocks_release(tmp_path: Path)
     del manifest["architecture_conformance"]
     _json(manifest_path, manifest)
     output = tmp_path / "release"
-    with pytest.raises(ReleaseError, match="architecture conformance"):
+    with pytest.raises(ReleaseError, match="compiler manifest shape is not canonical"):
         build_release(repo, compiler, output)
     assert not output.exists()
 
@@ -793,17 +2424,13 @@ def test_missing_structural_line_mapping_gate_blocks_release(tmp_path: Path) -> 
     completeness_path = compiler / "completeness.json"
     completeness = json.loads(completeness_path.read_text(encoding="utf-8"))
     completeness["invariants"] = [
-        item
-        for item in completeness["invariants"]
-        if item["name"] != "every_safe_line_structurally_mapped"
+        item for item in completeness["invariants"] if item["name"] != "every_safe_line_structurally_mapped"
     ]
     completeness_raw = canonical_json(completeness)
     completeness_path.write_bytes(completeness_raw)
     manifest_path = compiler / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["completeness"].update(
-        {"sha256": sha256_bytes(completeness_raw), "bytes": len(completeness_raw)}
-    )
+    manifest["completeness"].update({"sha256": sha256_bytes(completeness_raw), "bytes": len(completeness_raw)})
     manifest_path.write_bytes(canonical_json(manifest))
 
     output = tmp_path / "release"
@@ -832,16 +2459,13 @@ def test_missing_gui_dossier_invariant_blocks_release(tmp_path: Path) -> None:
     completeness["invariants"] = [
         item
         for item in completeness["invariants"]
-        if item["name"]
-        != "every_gui_surface_has_standardized_evidence_honest_dossier"
+        if item["name"] != "every_gui_surface_has_standardized_evidence_honest_dossier"
     ]
     completeness_raw = canonical_json(completeness)
     completeness_path.write_bytes(completeness_raw)
     manifest_path = compiler / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["completeness"].update(
-        {"sha256": sha256_bytes(completeness_raw), "bytes": len(completeness_raw)}
-    )
+    manifest["completeness"].update({"sha256": sha256_bytes(completeness_raw), "bytes": len(completeness_raw)})
     manifest_path.write_bytes(canonical_json(manifest))
 
     output = tmp_path / "release"
@@ -859,9 +2483,7 @@ def test_duplicate_named_compiler_invariant_blocks_release(tmp_path: Path) -> No
     completeness_path.write_bytes(completeness_raw)
     manifest_path = compiler / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["completeness"].update(
-        {"sha256": sha256_bytes(completeness_raw), "bytes": len(completeness_raw)}
-    )
+    manifest["completeness"].update({"sha256": sha256_bytes(completeness_raw), "bytes": len(completeness_raw)})
     manifest_path.write_bytes(canonical_json(manifest))
 
     output = tmp_path / "release"

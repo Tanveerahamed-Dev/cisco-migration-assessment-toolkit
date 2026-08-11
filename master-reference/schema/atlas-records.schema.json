@@ -17,14 +17,15 @@
   "properties": {
     "schema_version": {"const": "1.1.0"},
     "record_type": {"type": "string", "minLength": 1},
-    "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "source_commit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
     "source_tree_digest": {"$ref": "#/$defs/digest"},
     "chunk_index": {"type": "integer", "minimum": 0},
     "chunk_count": {"type": "integer", "minimum": 1},
-    "record_count": {"type": "integer", "minimum": 0},
+    "record_count": {"type": "integer", "minimum": 1},
     "records_digest": {"$ref": "#/$defs/digest", "description": "SHA-256 of canonical ordered record-ID array; the compiler manifest receipt binds complete chunk bytes."},
     "records": {
       "type": "array",
+      "minItems": 1,
       "items": {"$ref": "#/$defs/baseRecord"}
     }
   },
@@ -37,7 +38,30 @@
     {"if": {"properties": {"record_type": {"const": "routes"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/guiSurfaceRecord"}}}}},
     {"if": {"properties": {"record_type": {"const": "components"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/guiSurfaceRecord"}}}}},
     {"if": {"properties": {"record_type": {"const": "claims"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/claimRecord"}}}}},
-    {"if": {"properties": {"record_type": {"const": "graph_edges"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/graphEdgeRecord"}}}}}
+    {"if": {"properties": {"record_type": {"const": "graph_nodes"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/graphNodeRecord"}}}}},
+    {"if": {"properties": {"record_type": {"const": "graph_edges"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/graphEdgeRecord"}}}}},
+    {"if": {"properties": {"record_type": {"const": "files"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/filesRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "lines"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/linesRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "source_text"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/sourceTextRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "symbols"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/symbolsRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "structural_entities"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/structuralEntitiesRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "imports"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/importsRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "calls"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/callsRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "markdown"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/markdownRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "structured"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/structuredRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "documents"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/documentsRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "routes"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/routesRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "components"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/componentsRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "tests"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/testsRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "workflows"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/workflowsRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "datasets"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/datasetsRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "binaries"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/binariesRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "manifests"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/manifestsRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "configs"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/configsRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "dependencies"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/dependenciesRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "graph_nodes"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/graphNodesRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "graph_edges"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/graphEdgesRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "claims"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/claimsRecordKeyFence"}}}}}
   ],
   "$defs": {
     "atlasId": {
@@ -53,6 +77,28 @@
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     },
+    "filesRecordKeyFence": {"propertyNames": {"enum": ["classification_errors", "content_digest", "content_source", "documentation_status", "documentation_status_reasons", "entity_type", "git_blob_oid", "git_mode", "git_stage", "id", "language", "line_count", "media_type", "nonblank_line_count", "parse_status", "parser", "parser_mode", "parser_version", "path", "privacy_exposure", "privacy_reasons", "roles", "size_bytes", "unresolved_reasons"]}},
+    "linesRecordKeyFence": {"propertyNames": {"enum": ["GUI_or_artifact_consumers", "behavior_group", "callers_and_dependencies", "claims_influenced", "containing_symbol", "current_or_historical", "depth", "entity_type", "explanation_depth", "file_id", "id", "inputs_and_outputs", "language", "line", "line_digest", "line_number", "owner", "path", "runtime_trace_state", "security_and_privacy_effect", "semantic_entity", "source_commit", "structural_mapping_basis", "syntax_depth", "syntax_kind", "test_coverage_state", "tests_covering_it", "text_bytes", "text_digest", "text_preview", "unresolved_reasons"]}},
+    "sourceTextRecordKeyFence": {"propertyNames": {"enum": ["byte_count", "content_digest", "encoding", "entity_type", "file_id", "git_blob_oid", "id", "line_count", "lines", "path", "source_basis"]}},
+    "symbolsRecordKeyFence": {"propertyNames": {"enum": ["abstention_behavior", "callees", "caller_resolution", "callers", "claims_produced_or_consumed", "constant_basis", "constant_candidate", "criticality", "data_dependencies", "declaration_kind", "decorators", "depth", "digest", "documentation", "downstream_surfaces", "entity_type", "explanation_depth", "exported", "external_effects", "extraction_disposition", "failure_and_exception_behavior", "file_id", "framework_candidate", "history", "id", "kind", "known_impact_if_changed", "language", "limitations", "name", "parameters", "parameters_and_types", "path", "path_and_range", "performance_characteristics", "purpose", "purpose_basis", "qualified_name", "range", "responsibility", "return_annotation", "return_or_output", "review_state", "runtime_trace_evidence", "runtime_trace_state", "security_boundary", "stable_urn", "state_read", "state_written", "target", "test_linkage", "tests", "unresolved_reasons"]}},
+    "structuralEntitiesRecordKeyFence": {"propertyNames": {"enum": ["content_digest", "entity_type", "explanation_depth", "extraction_disposition", "file_id", "generation_provenance", "git_blob_oid", "id", "kind", "language", "line_count", "name", "nonblank_line_count", "parser", "parser_mode", "parser_owned", "parser_version", "path", "range", "range_state", "roles", "root_scope", "source_basis", "uncertainty", "unresolved_reasons"]}},
+    "importsRecordKeyFence": {"propertyNames": {"enum": ["alias", "containing_symbol", "entity_type", "file_id", "id", "kind", "module", "names", "path", "range", "unresolved_reasons"]}},
+    "callsRecordKeyFence": {"propertyNames": {"enum": ["callee", "containing_symbol", "entity_type", "extraction_disposition", "file_id", "id", "path", "range", "resolved", "statement_digest", "tests", "unresolved_reasons"]}},
+    "markdownRecordKeyFence": {"propertyNames": {"enum": ["authority_classification", "containing_heading", "documentation_status", "entity_type", "file_id", "heading", "id", "kind", "level", "line", "path", "target", "text"]}},
+    "structuredRecordKeyFence": {"propertyNames": {"enum": ["cell_count", "data_row_count", "depth", "entity_type", "extraction_disposition", "file_id", "id", "key", "name", "path", "pointer", "range", "row_accounting_state", "row_count_including_header", "row_index", "unresolved_reasons", "value_digest", "value_preview", "value_type"]}},
+    "documentsRecordKeyFence": {"propertyNames": {"enum": ["entity_type", "file_id", "id", "line_count", "path", "status", "status_reasons", "title"]}},
+    "routesRecordKeyFence": {"propertyNames": {"enum": ["attribute_names", "entity_type", "file_id", "framework", "gui_dossier", "handler", "id", "kind", "method", "name", "path", "range", "route", "unresolved_reasons"]}},
+    "componentsRecordKeyFence": {"propertyNames": {"enum": ["attribute_names", "attributes_digest", "component_role", "detection", "entity_type", "exported", "extraction_disposition", "file_id", "framework", "gui_dossier", "handler", "id", "kind", "method", "name", "path", "range", "route", "self_closing", "tag_name", "unresolved_reasons"]}},
+    "testsRecordKeyFence": {"propertyNames": {"enum": ["assertion_count", "assertion_group_id", "assertions", "entity_type", "extraction_disposition", "file_id", "framework", "id", "name", "path", "range", "unresolved_reasons"]}},
+    "workflowsRecordKeyFence": {"propertyNames": {"enum": ["access", "action", "artifact_ids", "artifacts", "declared_path", "direction", "entity_type", "extraction_disposition", "file_id", "id", "job", "job_ids", "jobs", "name", "parser_mode", "path", "permission_ids", "permissions", "range", "run_declared", "scope", "source_digest", "step_id", "step_ids", "step_index", "steps", "triggers", "unresolved_reasons", "uses"]}},
+    "datasetsRecordKeyFence": {"propertyNames": {"enum": ["content_digest", "entity_type", "file_id", "format", "id", "path", "size_bytes", "structured_record_count"]}},
+    "binariesRecordKeyFence": {"propertyNames": {"enum": ["content_digest", "entity_type", "file_id", "git_blob_oid", "id", "inspection_mode", "media_type", "path", "privacy_exposure", "size_bytes", "unresolved_reasons"]}},
+    "manifestsRecordKeyFence": {"propertyNames": {"enum": ["content_digest", "dependency_count", "entity_type", "file_id", "id", "kind", "language", "path"]}},
+    "configsRecordKeyFence": {"propertyNames": {"enum": ["content_digest", "entity_type", "file_id", "id", "language", "path", "roles"]}},
+    "dependenciesRecordKeyFence": {"propertyNames": {"enum": ["constraint", "ecosystem", "entity_type", "file_id", "id", "name", "path", "resolved_version", "scope"]}},
+    "graphNodesRecordKeyFence": {"propertyNames": {"enum": ["community", "coordinate_occurrence", "entity_type", "extraction_mode", "file_id", "file_type", "graphify_id", "id", "kind", "label", "language", "origin", "source_file", "source_location", "unresolved_reasons"]}},
+    "graphEdgesRecordKeyFence": {"propertyNames": {"enum": ["confidence", "coordinate_occurrence", "entity_type", "extraction_mode", "id", "relation", "source", "source_file", "source_location", "target", "unresolved_reasons"]}},
+    "claimsRecordKeyFence": {"propertyNames": {"enum": ["basis", "confidence", "conflicts_with", "current_view", "denominator", "derived_from", "effective_time", "entity_type", "evidence_class", "evidence_ids", "extraction_mode", "freshness", "id", "lineage", "origin", "owner", "predicate", "recorded_time", "revocation_reason", "revoked_by", "satisfies_evidence_requirement", "scope", "source_commit", "status", "subject", "temporal_basis", "transformation", "unit", "unresolved_reasons", "value", "verdict"]}},
     "range": {
       "type": "object",
       "required": ["start_line", "start_column", "end_line", "end_column"],
@@ -102,7 +148,7 @@
         "id": {"$ref": "#/$defs/atlasId"},
         "surface_id": {"$ref": "#/$defs/atlasId"},
         "surface_kind": {"enum": ["route", "component"]},
-        "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+        "source_commit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
         "source_citation": {"$ref": "#/$defs/guiCitation"},
         "evidence_state": {"enum": ["explicitly_linked", "structural_only", "not_evidenced"]},
         "derivation": {"const": "compiler_structural_evidence_only"},
@@ -169,7 +215,7 @@
           "properties": {
             "path": {"$ref": "#/$defs/repositoryPath"},
             "git_mode": {"type": "string", "pattern": "^[0-7]{6}$"},
-            "git_blob_oid": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+            "git_blob_oid": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
             "git_stage": {"const": 0},
             "content_source": {
               "enum": ["selected_commit_git_blob", "dirty_preview_worktree", "metadata_only_git_object"]
@@ -240,7 +286,7 @@
             "text_bytes": {"type": "integer", "minimum": 1},
             "text_preview": {"type": "string", "maxLength": 240},
             "line_digest": {"$ref": "#/$defs/digest"},
-            "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+            "source_commit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
             "line_number": {"type": "integer", "minimum": 1},
             "syntax_depth": {"type": "integer", "minimum": 0},
             "semantic_entity": {"$ref": "#/$defs/atlasId"},
@@ -326,7 +372,7 @@
             "language": {"type": "string", "minLength": 1},
             "roles": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
             "source_basis": {"enum": ["selected_commit_git_blob", "dirty_preview_worktree"]},
-            "git_blob_oid": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+            "git_blob_oid": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
             "content_digest": {"$ref": "#/$defs/digest"},
             "generation_provenance": {
               "type": "object",
@@ -367,7 +413,7 @@
             "path": {"$ref": "#/$defs/repositoryPath"},
             "encoding": {"const": "utf-8"},
             "source_basis": {"enum": ["selected_commit_git_blob", "dirty_preview_worktree"]},
-            "git_blob_oid": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+            "git_blob_oid": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
             "byte_count": {"type": "integer", "minimum": 0},
             "content_digest": {"$ref": "#/$defs/digest"},
             "line_count": {"type": "integer", "minimum": 0},
@@ -552,22 +598,128 @@
         }
       ]
     },
-    "graphEdgeRecord": {
-      "allOf": [
-        {"$ref": "#/$defs/baseRecord"},
-        {
-          "type": "object",
-          "required": ["source", "target", "relation", "extraction_mode", "unresolved_reasons"],
-          "properties": {
-            "source": {"$ref": "#/$defs/atlasId"},
-            "target": {"$ref": "#/$defs/atlasId"},
-            "relation": {"type": "string", "minLength": 1},
-            "extraction_mode": {"enum": ["extracted", "inferred", "ambiguous", "undisclosed"]},
-            "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
-            "unresolved_reasons": {"type": "array", "items": {"type": "string"}}
-          }
+    "graphNodeRecord": {
+      "type": "object",
+      "required": [
+        "id",
+        "graphify_id",
+        "coordinate_occurrence",
+        "file_id",
+        "source_file",
+        "source_location",
+        "label",
+        "file_type",
+        "language",
+        "kind",
+        "community",
+        "origin",
+        "extraction_mode",
+        "entity_type",
+        "unresolved_reasons"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/atlasId"},
+        "graphify_id": {"$ref": "#/$defs/digest"},
+        "coordinate_occurrence": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "file_id": {"$ref": "#/$defs/atlasId"},
+        "source_file": {"$ref": "#/$defs/repositoryPath"},
+        "source_location": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^(?:L?[1-9]\\d*(?::[1-9]\\d*)?(?:-L?[1-9]\\d*(?::[1-9]\\d*)?)?)?$"
+        },
+        "label": {"type": "string", "minLength": 1},
+        "file_type": {"enum": ["", "code", "document", "rationale"]},
+        "language": {
+          "enum": [
+            "", "bash", "c", "cpp", "csharp", "css", "go", "html", "java",
+            "javascript", "json", "jsx", "markdown", "php", "python", "ruby",
+            "rust", "shell", "sql", "text", "tsx", "typescript", "yaml"
+          ]
+        },
+        "kind": {
+          "enum": [
+            "", "bash_entrypoint", "bash_function", "class", "code", "file",
+            "function", "method", "module", "symbol"
+          ]
+        },
+        "community": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "origin": {"enum": ["ast", "curated", "undisclosed"]},
+        "extraction_mode": {"enum": ["extracted", "curated", "undisclosed"]},
+        "entity_type": {"type": "string", "pattern": "^graph_node(?:_[a-z0-9_]+)?$"},
+        "unresolved_reasons": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "graphify_node_label_derived_from_repository_relative_coordinate",
+              "graphify_node_origin_is_curated_or_undisclosed_not_ast_extraction",
+              "graphify_node_community_outside_js_safe_nonnegative_integer_domain",
+              "graphify_node_nonvocabulary_descriptor_withheld",
+              "graphify_node_source_location_outside_bounded_coordinate_domain"
+            ]
+          },
+          "uniqueItems": true
         }
-      ]
+      },
+      "additionalProperties": false
+    },
+    "graphEdgeRecord": {
+      "type": "object",
+      "required": [
+        "id",
+        "source",
+        "target",
+        "relation",
+        "coordinate_occurrence",
+        "source_file",
+        "source_location",
+        "extraction_mode",
+        "confidence",
+        "entity_type",
+        "unresolved_reasons"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/atlasId"},
+        "source": {"$ref": "#/$defs/atlasId"},
+        "target": {"$ref": "#/$defs/atlasId"},
+        "relation": {
+          "enum": [
+            "calls", "contains", "defines", "imports", "imports_from", "indirect_call",
+            "inherits", "method", "rationale_for", "related_to", "re_exports", "references", "uses"
+          ]
+        },
+        "coordinate_occurrence": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "source_file": {
+          "oneOf": [
+            {"$ref": "#/$defs/repositoryPath"},
+            {"type": "null"}
+          ]
+        },
+        "source_location": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^(?:L?[1-9]\\d*(?::[1-9]\\d*)?(?:-L?[1-9]\\d*(?::[1-9]\\d*)?)?)?$"
+        },
+        "extraction_mode": {"enum": ["extracted", "inferred", "ambiguous", "undisclosed"]},
+        "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "entity_type": {"const": "graph_edge"},
+        "unresolved_reasons": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "graphify_confidence_mode_undisclosed_or_ambiguous",
+              "graphify_relation_not_in_controlled_vocabulary_shape",
+              "graphify_edge_source_location_outside_bounded_coordinate_domain"
+            ]
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false

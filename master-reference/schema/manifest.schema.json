@@ -22,12 +22,12 @@
     "schema_version": {"const": "1.1.0"},
     "status": {"const": "complete"},
     "release_class": {"enum": ["exact_commit", "dirty_preview"]},
-    "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
-    "head_tree_oid": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "source_commit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "head_tree_oid": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
     "index_digest": {"$ref": "#/$defs/digest"},
     "source_tree_digest": {"$ref": "#/$defs/digest"},
     "tracked_worktree_dirty": {"type": "boolean"},
-    "chunk_size": {"type": "integer", "minimum": 1},
+    "chunk_size": {"type": "integer", "minimum": 1, "maximum": 100000},
     "groups": {
       "type": "object",
       "minProperties": 1,
@@ -55,11 +55,50 @@
         "graph_edges",
         "claims"
       ],
-      "additionalProperties": {"$ref": "#/$defs/groupReceipt"}
+      "properties": {
+        "files": {"$ref": "#/$defs/groupReceipt"},
+        "lines": {"$ref": "#/$defs/groupReceipt"},
+        "source_text": {"$ref": "#/$defs/groupReceipt"},
+        "symbols": {"$ref": "#/$defs/groupReceipt"},
+        "structural_entities": {"$ref": "#/$defs/groupReceipt"},
+        "imports": {"$ref": "#/$defs/groupReceipt"},
+        "calls": {"$ref": "#/$defs/groupReceipt"},
+        "markdown": {"$ref": "#/$defs/groupReceipt"},
+        "structured": {"$ref": "#/$defs/groupReceipt"},
+        "documents": {"$ref": "#/$defs/groupReceipt"},
+        "routes": {"$ref": "#/$defs/groupReceipt"},
+        "components": {"$ref": "#/$defs/groupReceipt"},
+        "tests": {"$ref": "#/$defs/groupReceipt"},
+        "workflows": {"$ref": "#/$defs/groupReceipt"},
+        "datasets": {"$ref": "#/$defs/groupReceipt"},
+        "binaries": {"$ref": "#/$defs/groupReceipt"},
+        "manifests": {"$ref": "#/$defs/groupReceipt"},
+        "configs": {"$ref": "#/$defs/groupReceipt"},
+        "dependencies": {"$ref": "#/$defs/groupReceipt"},
+        "graph_nodes": {"$ref": "#/$defs/groupReceipt"},
+        "graph_edges": {"$ref": "#/$defs/groupReceipt"},
+        "claims": {"$ref": "#/$defs/groupReceipt"}
+      },
+      "additionalProperties": false
     },
-    "completeness": {"$ref": "#/$defs/fileReceipt"},
-    "graphify_metadata": {"$ref": "#/$defs/fileReceipt"},
-    "architecture_conformance": {"$ref": "#/$defs/fileReceipt"}
+    "completeness": {
+      "allOf": [
+        {"$ref": "#/$defs/fileReceipt"},
+        {"properties": {"path": {"const": "completeness.json"}}}
+      ]
+    },
+    "graphify_metadata": {
+      "allOf": [
+        {"$ref": "#/$defs/fileReceipt"},
+        {"properties": {"path": {"const": "graphify-metadata.json"}}}
+      ]
+    },
+    "architecture_conformance": {
+      "allOf": [
+        {"$ref": "#/$defs/fileReceipt"},
+        {"properties": {"path": {"const": "architecture-conformance.json"}}}
+      ]
+    }
   },
   "allOf": [
     {
@@ -92,8 +131,11 @@
       "type": "object",
       "required": ["path", "record_count", "sha256", "bytes"],
       "properties": {
-        "path": {"$ref": "#/$defs/path"},
-        "record_count": {"type": "integer", "minimum": 0},
+        "path": {
+          "type": "string",
+          "pattern": "^chunks/(?:files|lines|source_text|symbols|structural_entities|imports|calls|markdown|structured|documents|routes|components|tests|workflows|datasets|binaries|manifests|configs|dependencies|graph_nodes|graph_edges|claims)/[0-9]{5}\\.json$"
+        },
+        "record_count": {"type": "integer", "minimum": 1},
         "sha256": {"$ref": "#/$defs/digest"},
         "bytes": {"type": "integer", "minimum": 0}
       },
@@ -108,6 +150,24 @@
         "records_digest": {"$ref": "#/$defs/digest", "description": "SHA-256 of canonical ordered record-ID array; chunk byte receipts bind complete record content."},
         "chunks": {"type": "array", "items": {"$ref": "#/$defs/chunkReceipt"}}
       },
+      "allOf": [
+        {
+          "if": {"properties": {"record_count": {"const": 0}}, "required": ["record_count"]},
+          "then": {
+            "properties": {
+              "chunk_count": {"const": 0},
+              "chunks": {"maxItems": 0}
+            }
+          },
+          "else": {
+            "properties": {
+              "record_count": {"minimum": 1},
+              "chunk_count": {"minimum": 1},
+              "chunks": {"minItems": 1}
+            }
+          }
+        }
+      ],
       "additionalProperties": false
     }
   },
