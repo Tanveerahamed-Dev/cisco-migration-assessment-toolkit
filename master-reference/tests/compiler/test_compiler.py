@@ -91,6 +91,28 @@ def git_bytes(root: Path, *arguments: str) -> bytes:
     return process.stdout
 
 
+def git_blob_oid(raw: bytes) -> str:
+    header = f"blob {len(raw)}\0".encode("ascii")
+    return hashlib.sha1(header + raw).hexdigest()
+
+
+def review_basis_blobs(
+    root: Path,
+    basis_commit: str,
+    paths: tuple[str, ...],
+) -> dict[str, tuple[str, bytes]]:
+    rows = [row for row in git_bytes(root, "ls-tree", "-r", "--full-tree", "-z", basis_commit).split(b"\0") if row]
+    entries: dict[str, str] = {}
+    for row in rows:
+        metadata, raw_path = row.split(b"\t", 1)
+        _mode, object_type, oid = metadata.decode("ascii").split(" ")
+        if object_type == "blob":
+            entries[raw_path.decode("utf-8", errors="strict")] = oid
+    return {
+        path: (entries[path], git_bytes(root, "cat-file", "blob", entries[path])) for path in paths if path in entries
+    }
+
+
 def initialize_repository(root: Path, files: dict[str, str | bytes]) -> str:
     root.mkdir(parents=True)
     git(root, "init", "-q")
@@ -126,7 +148,12 @@ def png_chunk(kind: bytes, payload: bytes) -> bytes:
     )
 
 
-def one_pixel_png(*, text_payload: bytes | None = None, idat_suffix: bytes = b"") -> bytes:
+def one_pixel_png(
+    *,
+    text_payload: bytes | None = None,
+    idat_suffix: bytes = b"",
+    compression_level: int = -1,
+) -> bytes:
     ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0)
     scanline = b"\x00\x00\x00\x00\xff"
     chunks = [png_chunk(b"IHDR", ihdr)]
@@ -134,7 +161,7 @@ def one_pixel_png(*, text_payload: bytes | None = None, idat_suffix: bytes = b""
         chunks.append(png_chunk(b"tEXt", b"Comment\0" + text_payload))
     chunks.extend(
         [
-            png_chunk(b"IDAT", zlib.compress(scanline) + idat_suffix),
+            png_chunk(b"IDAT", zlib.compress(scanline, level=compression_level) + idat_suffix),
             png_chunk(b"IEND", b""),
         ]
     )
@@ -2022,6 +2049,41 @@ class CompilerTests(unittest.TestCase):
             self.assertEqual(scan["accepted_files"], 0)
             self.assertEqual(scan["error_codes"], ["binary_review_reviewer_authentication_pending"])
 
+    def test_exact_compile_rejects_changed_or_missing_review_basis_blob(self) -> None:
+        for name, basis_files in (
+            ("changed", {"docs/card.png": one_pixel_png()}),
+            ("missing", {"README.md": "# Basis without binary\n"}),
+        ):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                base = Path(temporary)
+                repository = base / "repo"
+                basis = initialize_repository(repository, basis_files)
+                current_payload = one_pixel_png(compression_level=1)
+                write(repository, "docs/card.png", current_payload)
+                git(repository, "add", "docs/card.png")
+                git(repository, "commit", "-qm", "current binary")
+                current_commit = git(repository, "rev-parse", "HEAD")
+                receipt = tracked_binary_receipt(repository, current_commit, {"docs/card.png": current_payload})
+                receipt["review_basis_commit"] = basis
+                write(
+                    repository,
+                    binary_review_module.RECEIPT_PATH,
+                    canonical_json(receipt),
+                )
+                git(repository, "add", binary_review_module.RECEIPT_PATH)
+                git(repository, "commit", "-qm", "stale basis receipt")
+
+                output = base / "output"
+                compile_repository(repository, output)
+                validate_compiler_output(output)
+                scan = json.loads((output / "completeness.json").read_text(encoding="utf-8"))["privacy"][
+                    "binary_payload_scan"
+                ]
+                self.assertEqual(scan["status"], "invalid")
+                self.assertEqual(scan["identity_matched_files"], 0)
+                self.assertIn("binary_review_receipt_identity_mismatch", scan["error_codes"])
+                self.assertEqual(scan["accepted_files"], 0)
+
     def test_tracked_binary_review_owner_is_exact_current_46_member_denominator(self) -> None:
         repository = MASTER_REFERENCE.parent
         receipt_path = repository / binary_review_module.RECEIPT_PATH
@@ -2049,6 +2111,7 @@ class CompilerTests(unittest.TestCase):
             descriptors,
             receipt_git_blob_oid="0" * 40,
             review_basis_is_ancestor=lambda basis: git(repository, "merge-base", "--is-ancestor", basis, "HEAD") == "",
+            review_basis_blobs=lambda basis, paths: review_basis_blobs(repository, basis, paths),
         )
 
         self.assertEqual([row["path"] for row in receipt["records"]], binary_paths)
@@ -2074,7 +2137,7 @@ class CompilerTests(unittest.TestCase):
         digest = hashlib.sha256(payload).hexdigest()
         base_record = {
             "path": "docs/card.png",
-            "git_blob_oid": "1" * 40,
+            "git_blob_oid": git_blob_oid(payload),
             "raw_sha256": digest,
             "raw_bytes": len(payload),
             "media_type": "image/png",
@@ -2186,6 +2249,7 @@ class CompilerTests(unittest.TestCase):
                     descriptors,
                     receipt_git_blob_oid="5" * 40,
                     review_basis_is_ancestor=lambda _basis, answer=ancestor: answer,
+                    review_basis_blobs=lambda _basis, paths: {path: (git_blob_oid(payload), payload) for path in paths},
                 )
                 self.assertNotEqual(summary["status"], "passed")
                 self.assertIn(expected_code, summary["error_codes"])
@@ -2210,6 +2274,93 @@ class CompilerTests(unittest.TestCase):
             parse_tracked_binary_review(malformed)
         self.assertEqual(str(caught.exception), "binary_review_receipt_malformed")
         self.assertNotIn(marker, str(caught.exception))
+
+    def test_binary_review_basis_blob_join_rejects_changed_missing_and_untrusted_history(self) -> None:
+        basis_payload = one_pixel_png()
+        current_payload = one_pixel_png(compression_level=1)
+        current_oid = git_blob_oid(current_payload)
+        basis_oid = git_blob_oid(basis_payload)
+        self.assertNotEqual(basis_oid, current_oid)
+        current_evidence = inspect_png(current_payload)
+        record = {
+            "path": "docs/card.png",
+            "git_blob_oid": current_oid,
+            "raw_sha256": hashlib.sha256(current_payload).hexdigest(),
+            "raw_bytes": len(current_payload),
+            "media_type": "image/png",
+            "format": "png",
+            "automated_format_evidence": current_evidence,
+            "independent_review": {
+                "reviewer_kind": "independent_agent",
+                "reviewer_role": "binary_privacy_verifier",
+                "independent_from_proposer": True,
+                "review_scope": "rendered_pixels_and_context",
+                "evidence_references": [
+                    f"decoded-rgba-sha256:{hashlib.sha256(bytes((0, 0, 0, 255))).hexdigest()}",
+                    "privacy-scan:forbidden-local-generic-identities",
+                    "visual-review:exact-rendered-pixels",
+                ],
+                "verdict": "pass",
+            },
+        }
+        receipt = {
+            "schema_version": "tracked-binary-review/1",
+            "receipt_kind": "tracked_repository_binary_privacy_review",
+            "review_basis_commit": "2" * 40,
+            "binary_set_digest": binary_set_digest([record]),
+            "records": [record],
+        }
+        descriptors = [
+            {
+                "path": record["path"],
+                "git_blob_oid": current_oid,
+                "media_type": "image/png",
+                "raw": current_payload,
+            }
+        ]
+
+        marker = "C:/Users/Foreign.Owner/private-basis"
+        cases = {
+            "changed": lambda _basis, paths: {paths[0]: (basis_oid, basis_payload)},
+            "missing": lambda _basis, _paths: {},
+            "extra": lambda _basis, paths: {
+                paths[0]: (current_oid, current_payload),
+                marker: (current_oid, current_payload),
+            },
+            "malformed": lambda _basis, paths: {paths[0]: (marker, marker.encode("utf-8"))},
+            "exception": lambda _basis, _paths: (_ for _ in ()).throw(RuntimeError(marker)),
+        }
+        for name, resolver in cases.items():
+            with self.subTest(name=name):
+                summary = evaluate_tracked_binary_review(
+                    canonical_json(receipt),
+                    descriptors,
+                    receipt_git_blob_oid="5" * 40,
+                    review_basis_is_ancestor=lambda _basis: True,
+                    review_basis_blobs=resolver,
+                )
+                self.assertEqual(summary["status"], "invalid")
+                self.assertEqual(summary["identity_matched_files"], 0)
+                self.assertIn("binary_review_receipt_identity_mismatch", summary["error_codes"])
+                self.assertNotIn(marker, json.dumps(summary, sort_keys=True))
+
+        ancestry_error = evaluate_tracked_binary_review(
+            canonical_json(receipt),
+            descriptors,
+            receipt_git_blob_oid="5" * 40,
+            review_basis_is_ancestor=lambda _basis: (_ for _ in ()).throw(RuntimeError(marker)),
+            review_basis_blobs=lambda _basis, _paths: (_ for _ in ()).throw(AssertionError("not reached")),
+        )
+        self.assertEqual(ancestry_error["status"], "invalid")
+        self.assertIn("binary_review_receipt_review_basis_not_ancestor", ancestry_error["error_codes"])
+        self.assertNotIn(marker, json.dumps(ancestry_error, sort_keys=True))
+
+        newline_path = copy.deepcopy(record)
+        newline_path["path"] = "docs/private\ncard.png"
+        newline_receipt = {**receipt, "records": [newline_path], "binary_set_digest": binary_set_digest([newline_path])}
+        with self.assertRaises(BinaryReviewFailure) as caught:
+            parse_tracked_binary_review(canonical_json(newline_receipt))
+        self.assertEqual(str(caught.exception), "binary_review_receipt_malformed")
 
     def test_png_format_review_rejects_crc_order_framing_trailing_and_secret_metadata(self) -> None:
         valid = one_pixel_png()

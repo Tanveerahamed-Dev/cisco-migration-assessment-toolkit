@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 import struct
@@ -28,6 +29,8 @@ from compiler.graphify import (
 )
 from compiler.binary_review import (
     BinaryReviewFailure,
+    MAX_BINARY_BYTES as BINARY_REVIEW_MAX_BINARY_BYTES,
+    MAX_REVIEW_RECORDS as BINARY_REVIEW_MAX_RECORDS,
     RECEIPT_PATH as BINARY_REVIEW_RECEIPT_PATH,
     RECEIPT_SCHEMA_VERSION as BINARY_REVIEW_SCHEMA_VERSION,
     binary_set_digest as binary_review_set_digest,
@@ -750,6 +753,76 @@ def _binary_format(path: str) -> str:
     return "unsupported"
 
 
+def _validate_repository_binary_review_basis(
+    repository_root: Path,
+    source_commit: str,
+    review_basis_commit: str,
+    receipt_records: list[dict[str, Any]],
+) -> None:
+    """Independently rejoin the receipt to current and historical Git blobs."""
+
+    try:
+        # Local import avoids the compiler-bundle/source-binding type cycle.
+        from .source_binding import _git, _read_git_blobs, _tree_census
+
+        root = repository_root.resolve(strict=True)
+        _git(root, "merge-base", "--is-ancestor", review_basis_commit, source_commit)
+        paths = [str(record["path"]) for record in receipt_records]
+        if (
+            not 1 <= len(paths) <= BINARY_REVIEW_MAX_RECORDS
+            or sum(int(record["raw_bytes"]) for record in receipt_records)
+            > BINARY_REVIEW_MAX_BINARY_BYTES * BINARY_REVIEW_MAX_RECORDS
+        ):
+            raise ValueError
+        basis_by_path = {entry.path: entry for entry in _tree_census(root, review_basis_commit)}
+        current_by_path = {entry.path: entry for entry in _tree_census(root, source_commit)}
+        if any(path not in basis_by_path or path not in current_by_path for path in paths):
+            raise ValueError
+        basis_entries = [basis_by_path[path] for path in paths]
+        current_entries = [current_by_path[path] for path in paths]
+        for record, basis_entry, current_entry in zip(
+            receipt_records,
+            basis_entries,
+            current_entries,
+            strict=True,
+        ):
+            if (
+                basis_entry.mode == "160000"
+                or current_entry.mode == "160000"
+                or basis_entry.blob_oid != record["git_blob_oid"]
+                or current_entry.blob_oid != record["git_blob_oid"]
+            ):
+                raise ValueError
+        object_sizes: dict[str, int] = {}
+        for record, basis_entry in zip(receipt_records, basis_entries, strict=True):
+            if basis_entry.blob_oid not in object_sizes:
+                size_raw = _git(root, "cat-file", "-s", basis_entry.blob_oid)
+                object_sizes[basis_entry.blob_oid] = int(size_raw.decode("ascii", errors="strict").strip())
+            if (
+                object_sizes[basis_entry.blob_oid] != record["raw_bytes"]
+                or object_sizes[basis_entry.blob_oid] > BINARY_REVIEW_MAX_BINARY_BYTES
+            ):
+                raise ValueError
+        basis_raw_by_path = _read_git_blobs(root, basis_entries)
+        current_raw_by_path = _read_git_blobs(root, current_entries)
+        for record in receipt_records:
+            path = str(record["path"])
+            basis_raw = basis_raw_by_path[path]
+            current_raw = current_raw_by_path[path]
+            binary_format = _binary_format(path)
+            media_type = "image/png" if binary_format == "png" else "text/tab-separated-values"
+            if (
+                basis_raw != current_raw
+                or len(basis_raw) != record["raw_bytes"]
+                or hashlib.sha256(basis_raw).hexdigest() != record["raw_sha256"]
+                or record["format"] != binary_format
+                or record["media_type"] != media_type
+            ):
+                raise ValueError
+    except Exception:
+        raise ReleaseInputError("compiler binary-review historical basis identity is inconsistent") from None
+
+
 def _source_text_bytes(record: object) -> bytes:
     if not isinstance(record, dict) or not isinstance(record.get("lines"), list):
         raise ReleaseInputError("compiler binary-review receipt source record is malformed")
@@ -788,6 +861,9 @@ def _validate_binary_review_projection(
     records: dict[str, list[dict[str, Any]]],
     files_by_path: dict[str, dict[str, Any]],
     binary_gate: dict[str, Any],
+    *,
+    repository_root: Path | None,
+    source_commit: str,
 ) -> None:
     privacy = completeness.get("privacy")
     scan = privacy.get("binary_payload_scan") if isinstance(privacy, dict) else None
@@ -982,6 +1058,13 @@ def _validate_binary_review_projection(
             or review_record.get("format") != _binary_format(path)
         ):
             raise ReleaseInputError("compiler binary-review receipt does not join the binary denominator")
+    if repository_root is not None:
+        _validate_repository_binary_review_basis(
+            repository_root,
+            source_commit,
+            str(receipt["review_basis_commit"]),
+            receipt_records,
+        )
 
 
 @dataclass(frozen=True)
@@ -1453,7 +1536,14 @@ def load_compiler_bundle(
                 or item.get("byte_count") != file_record.get("size_bytes")
             ):
                 raise ReleaseInputError("compiler source-text custody differs from file record")
-        _validate_binary_review_projection(completeness, records, by_path, binary_gate)
+        _validate_binary_review_projection(
+            completeness,
+            records,
+            by_path,
+            binary_gate,
+            repository_root=repository_root,
+            source_commit=commit,
+        )
     safe_parsed_files = {
         str(item["id"]): item
         for item in records["files"]

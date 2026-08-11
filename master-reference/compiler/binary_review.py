@@ -214,8 +214,22 @@ def _is_git_oid(value: object) -> bool:
     return isinstance(value, str) and _GIT_OID_RE.fullmatch(value) is not None
 
 
+def _git_blob_oid(value: bytes, oid_length: int) -> str:
+    """Recompute one SHA-1/SHA-256 Git blob identity from raw bytes."""
+
+    algorithm = hashlib.sha1 if oid_length == 40 else hashlib.sha256
+    header = f"blob {len(value)}\0".encode("ascii")
+    return algorithm(header + value).hexdigest()
+
+
 def _is_safe_path(value: object) -> bool:
-    if not isinstance(value, str) or not value or "\\" in value or "\x00" in value:
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= 4_096
+        or "\\" in value
+        or re.match(r"[A-Za-z]:", value) is not None
+        or any(ord(character) < 0x20 for character in value)
+    ):
         return False
     path = PurePosixPath(value)
     return bool(
@@ -914,8 +928,9 @@ def evaluate_tracked_binary_review(
     *,
     receipt_git_blob_oid: str,
     review_basis_is_ancestor: Callable[[str], bool],
+    review_basis_blobs: Callable[[str, tuple[str, ...]], dict[str, tuple[str, bytes]]],
 ) -> dict[str, Any]:
-    """Recompute exact binary identities/evidence and join the tracked receipt."""
+    """Recompute exact current/basis identities/evidence and join the receipt."""
 
     items = sorted((dict(item) for item in descriptors), key=lambda item: str(item.get("path") or ""))
     try:
@@ -944,10 +959,40 @@ def evaluate_tracked_binary_review(
         errors.add("binary_review_receipt_membership_mismatch")
     try:
         basis_is_ancestor = bool(review_basis_is_ancestor(str(receipt["review_basis_commit"])))
-    except (OSError, RuntimeError, ValueError):
+    except Exception:
         basis_is_ancestor = False
     if not basis_is_ancestor:
         errors.add("binary_review_receipt_review_basis_not_ancestor")
+
+    basis_blobs: dict[str, tuple[str, bytes]] | None = None
+    receipt_paths = tuple(receipt_by_path)
+    if basis_is_ancestor and item_paths == list(receipt_by_path):
+        try:
+            candidate_basis_blobs = review_basis_blobs(str(receipt["review_basis_commit"]), receipt_paths)
+            if type(candidate_basis_blobs) is not dict or set(candidate_basis_blobs) != set(receipt_paths):
+                raise ValueError
+            total_basis_bytes = 0
+            for path in receipt_paths:
+                candidate = candidate_basis_blobs[path]
+                if type(candidate) is not tuple or len(candidate) != 2:
+                    raise ValueError
+                basis_oid, basis_raw = candidate
+                if (
+                    type(basis_oid) is not str
+                    or not _is_git_oid(basis_oid)
+                    or type(basis_raw) is not bytes
+                    or len(basis_raw) > MAX_BINARY_BYTES
+                    or _git_blob_oid(basis_raw, len(basis_oid)) != basis_oid
+                ):
+                    raise ValueError
+                total_basis_bytes += len(basis_raw)
+                if total_basis_bytes > MAX_BINARY_BYTES * MAX_REVIEW_RECORDS:
+                    raise ValueError
+            basis_blobs = candidate_basis_blobs
+        except Exception:
+            # The resolver is a local trust boundary. Never retain or echo its
+            # diagnostics, paths, object data, or exception text.
+            errors.add("binary_review_receipt_identity_mismatch")
     claimed_contextual_passed = sum(
         1
         for record in records
@@ -992,7 +1037,25 @@ def evaluate_tracked_binary_review(
         }
         actual_identities.append(identity)
         receipt_record = receipt_by_path.get(path)
-        identity_ok = receipt_record is not None and _identity_row(receipt_record) == identity
+        basis_blob = basis_blobs.get(path) if basis_blobs is not None else None
+        basis_identity: dict[str, Any] | None = None
+        if basis_blob is not None:
+            basis_oid, basis_raw = basis_blob
+            basis_identity = {
+                "path": path,
+                "git_blob_oid": basis_oid,
+                "raw_sha256": hashlib.sha256(basis_raw).hexdigest(),
+                "raw_bytes": len(basis_raw),
+                "media_type": media_type,
+                "format": binary_format,
+            }
+        identity_ok = bool(
+            receipt_record is not None
+            and basis_blob is not None
+            and basis_blob[1] == raw
+            and _identity_row(receipt_record) == identity
+            and basis_identity == identity
+        )
         if identity_ok:
             identity_matched += 1
         else:

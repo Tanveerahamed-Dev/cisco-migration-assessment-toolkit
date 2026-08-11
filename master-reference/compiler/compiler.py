@@ -194,6 +194,19 @@ def _git_is_ancestor(root: Path, ancestor: str, descendant: str) -> bool:
     return process.returncode == 0
 
 
+def _git_review_basis_blobs(
+    root: Path,
+    basis_commit: str,
+    paths: tuple[str, ...],
+) -> dict[str, tuple[str, bytes]]:
+    """Resolve exact historical blobs without commit:path parsing."""
+
+    entries_by_path = {entry.path: entry for entry in _git_tree_census(root, basis_commit)}
+    selected = [entries_by_path[path] for path in paths if path in entries_by_path]
+    raw_by_path = _read_git_blobs(root, selected)
+    return {entry.path: (entry.blob_oid, raw_by_path[entry.path][0]) for entry in selected}
+
+
 def _decode_git_path(value: bytes) -> str:
     try:
         path = value.decode("utf-8", errors="strict")
@@ -2369,6 +2382,7 @@ def compile_repository(
                 reviewed_descriptors,
                 receipt_git_blob_oid=receipt_entry.blob_oid,
                 review_basis_is_ancestor=lambda basis: _git_is_ancestor(root, basis, source_commit),
+                review_basis_blobs=lambda basis, paths: _git_review_basis_blobs(root, basis, paths),
             )
 
         for entry in entries:

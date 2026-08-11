@@ -59,7 +59,7 @@ def _formatted_exception(failure: pytest.ExceptionInfo[BaseException]) -> str:
     return "".join(traceback.format_exception(failure.type, failure.value, failure.tb))
 
 
-def _one_pixel_png() -> bytes:
+def _one_pixel_png(*, compression_level: int = -1) -> bytes:
     def chunk(kind: bytes, payload: bytes) -> bytes:
         return (
             struct.pack(">I", len(payload))
@@ -70,7 +70,12 @@ def _one_pixel_png() -> bytes:
 
     header = struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0)
     scanline = b"\x00\x00\x00\x00\xff"
-    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(scanline)) + chunk(b"IEND", b"")
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", zlib.compress(scanline, level=compression_level))
+        + chunk(b"IEND", b"")
+    )
 
 
 def _git(repo: Path, *arguments: str, environment: dict[str, str] | None = None) -> bytes:
@@ -1119,6 +1124,88 @@ def test_compiler_bundle_preserves_pending_binary_review_and_rejects_custody_or_
     ):
         compiler_bundle.load_compiler_bundle(
             compiler_output,
+            repository_root=repo,
+        )
+
+    current_payload = _one_pixel_png(compression_level=1)
+    _write(repo / "docs" / "card.png", current_payload)
+    _git(repo, "add", "docs/card.png")
+    _git(repo, "commit", "-qm", "changed binary")
+    current_commit = _git(repo, "rev-parse", "HEAD").decode("ascii").strip()
+    current_oid = _git(repo, "rev-parse", f"{current_commit}:docs/card.png").decode("ascii").strip()
+    current_record = {
+        **record,
+        "git_blob_oid": current_oid,
+        "raw_sha256": hashlib.sha256(current_payload).hexdigest(),
+        "raw_bytes": len(current_payload),
+        "automated_format_evidence": inspect_png(current_payload),
+    }
+    stale_receipt = {
+        **receipt,
+        "binary_set_digest": binary_set_digest([current_record]),
+        "records": [current_record],
+    }
+    _write(receipt_path, canonical_json(stale_receipt))
+    _git(repo, "add", receipt_path.relative_to(repo).as_posix())
+    _git(repo, "commit", "-qm", "self-consistent stale basis receipt")
+
+    def hostile_rechain(output: Path, *expected_errors: str) -> None:
+        completeness_path = output / "completeness.json"
+        manifest_path = output / "manifest.json"
+        candidate = json.loads(completeness_path.read_text(encoding="utf-8"))
+        scan = candidate["privacy"]["binary_payload_scan"]
+        assert scan["status"] == "invalid"
+        assert scan["identity_matched_files"] == 0
+        assert all(error in scan["error_codes"] for error in expected_errors)
+
+        # Model a hostile compiler-output producer that flips the fail-closed
+        # result and rechains the top-level manifest.
+        scan["status"] = "incomplete"
+        scan["identity_matched_files"] = 1
+        scan["review_basis_is_ancestor"] = True
+        scan["error_codes"] = ["binary_review_reviewer_authentication_pending"]
+        scan["format_aware_or_manual_review_receipt"] = "incomplete"
+        candidate_raw = canonical_json(candidate)
+        _write(completeness_path, candidate_raw)
+        candidate_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        candidate_manifest["completeness"]["sha256"] = sha256_bytes(candidate_raw)
+        candidate_manifest["completeness"]["bytes"] = len(candidate_raw)
+        _write(manifest_path, canonical_json(candidate_manifest))
+
+    stale_compiler_output = tmp_path / "stale-basis-compiler-output"
+    compile_repository(repo, stale_compiler_output)
+    hostile_rechain(stale_compiler_output, "binary_review_receipt_identity_mismatch")
+
+    with pytest.raises(
+        ReleaseInputError,
+        match="compiler binary-review historical basis identity is inconsistent",
+    ):
+        compiler_bundle.load_compiler_bundle(
+            stale_compiler_output,
+            repository_root=repo,
+        )
+
+    detached_basis = (
+        _git(repo, "commit-tree", "HEAD^{tree}", "-m", "detached exact binary basis").decode("ascii").strip()
+    )
+    detached_receipt = {**stale_receipt, "review_basis_commit": detached_basis}
+    _write(receipt_path, canonical_json(detached_receipt))
+    _git(repo, "add", receipt_path.relative_to(repo).as_posix())
+    _git(repo, "commit", "-qm", "detached non-ancestor basis receipt")
+    detached_compiler_output = tmp_path / "detached-basis-compiler-output"
+    compile_repository(repo, detached_compiler_output)
+    hostile_rechain(
+        detached_compiler_output,
+        "binary_review_receipt_identity_mismatch",
+        "binary_review_receipt_review_basis_not_ancestor",
+    )
+
+    with pytest.raises(
+        ReleaseInputError,
+        match="compiler binary-review historical basis identity is inconsistent",
+    ):
+        compiler_bundle.load_compiler_bundle(
+            detached_compiler_output,
             repository_root=repo,
         )
 
