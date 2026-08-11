@@ -193,7 +193,7 @@
         "git_blob_oid": {"$ref": "#/$defs/gitOid"},
         "raw_sha256": {"$ref": "#/$defs/digest"},
         "raw_bytes": {"type": "integer", "minimum": 0, "maximum": 536870912},
-        "media_type": {"enum": ["image/png", "application/gzip"]},
+        "media_type": {"enum": ["image/png", "text/tab-separated-values"]},
         "format": {"enum": ["png", "gzip_tsv"]},
         "automated_format_evidence": {
           "oneOf": [
@@ -220,7 +220,7 @@
           "if": {"properties": {"format": {"const": "gzip_tsv"}}, "required": ["format"]},
           "then": {
             "properties": {
-              "media_type": {"const": "application/gzip"},
+              "media_type": {"const": "text/tab-separated-values"},
               "automated_format_evidence": {"$ref": "#/$defs/gzipTsvEvidence"},
               "independent_review": {
                 "properties": {"review_scope": {"const": "decoded_tsv_rows_and_context"}}

@@ -410,9 +410,9 @@ def parse_tracked_binary_review(raw: bytes) -> dict[str, Any]:
             or not _is_git_oid(record.get("git_blob_oid"))
             or not _is_digest(record.get("raw_sha256"))
             or not _is_int(record.get("raw_bytes"), maximum=MAX_BINARY_BYTES)
-            or record.get("media_type") not in {"image/png", "application/gzip"}
+            or record.get("media_type") not in {"image/png", "text/tab-separated-values"}
             or (binary_format == "png" and record.get("media_type") != "image/png")
-            or (binary_format == "gzip_tsv" and record.get("media_type") != "application/gzip")
+            or (binary_format == "gzip_tsv" and record.get("media_type") != "text/tab-separated-values")
             or (binary_format == "png" and not _valid_png_evidence(record.get("automated_format_evidence")))
             or (binary_format == "gzip_tsv" and not _valid_gzip_evidence(record.get("automated_format_evidence")))
             or not _valid_independent_review(

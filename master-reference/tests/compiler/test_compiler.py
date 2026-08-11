@@ -170,7 +170,7 @@ def tracked_binary_receipt(
                 "git_blob_oid": git(root, "rev-parse", f"{review_basis_commit}:{path}"),
                 "raw_sha256": digest,
                 "raw_bytes": len(raw),
-                "media_type": "image/png" if binary_format == "png" else "application/gzip",
+                "media_type": "image/png" if binary_format == "png" else "text/tab-separated-values",
                 "format": binary_format,
                 "automated_format_evidence": evidence,
                 "independent_review": {
@@ -1997,6 +1997,31 @@ class CompilerTests(unittest.TestCase):
             other_gates = [item for item in ledger["acceptance_gates"] if item["name"] != gate["name"]]
             self.assertTrue(any(item["passed"] is False for item in other_gates))
 
+    def test_exact_gzip_tsv_review_uses_classifier_logical_media_type(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            repository = base / "repo"
+            path = "cisco_toolkit/data/oui_registry.tsv.gz"
+            payload = gzip.compress(b"00000C\t24\tExample Vendor\n", mtime=0)
+            basis = initialize_repository(repository, {path: payload})
+            commit_binary_receipt(repository, basis, {path: payload})
+            output = base / "output"
+
+            compile_repository(repository, output)
+            validate_compiler_output(output)
+
+            file_record = next(row for row in group_records(output, "files") if row["path"] == path)
+            binary = next(row for row in group_records(output, "binaries") if row["path"] == path)
+            ledger = json.loads((output / "completeness.json").read_text(encoding="utf-8"))
+            scan = ledger["privacy"]["binary_payload_scan"]
+            self.assertEqual(file_record["media_type"], "text/tab-separated-values")
+            self.assertEqual(binary["media_type"], "text/tab-separated-values")
+            self.assertEqual(scan["status"], "incomplete")
+            self.assertEqual(scan["identity_matched_files"], 1)
+            self.assertEqual(scan["automated_format_passed_files"], 1)
+            self.assertEqual(scan["accepted_files"], 0)
+            self.assertEqual(scan["error_codes"], ["binary_review_reviewer_authentication_pending"])
+
     def test_tracked_binary_review_owner_is_exact_current_46_member_denominator(self) -> None:
         repository = MASTER_REFERENCE.parent
         receipt_path = repository / binary_review_module.RECEIPT_PATH
@@ -2014,7 +2039,7 @@ class CompilerTests(unittest.TestCase):
                 {
                     "path": path,
                     "git_blob_oid": git(repository, "rev-parse", f"HEAD:{path}"),
-                    "media_type": "image/png" if path.lower().endswith(".png") else "application/gzip",
+                    "media_type": "image/png" if path.lower().endswith(".png") else "text/tab-separated-values",
                     "raw": git_bytes(repository, "cat-file", "blob", f"HEAD:{path}"),
                 }
             )
@@ -2231,6 +2256,50 @@ class CompilerTests(unittest.TestCase):
                 "binary_review_automated_format_pending_unsupported_png_ancillary",
             )
             self.assertNotIn(secret.decode(), str(caught.exception))
+
+    def test_gzip_tsv_receipt_uses_classifier_logical_media_type(self) -> None:
+        raw = gzip.compress(b"00000C\t24\tExample Vendor\n", mtime=0)
+        evidence = inspect_gzip_tsv("cisco_toolkit/data/oui_registry.tsv.gz", raw)
+        record = {
+            "path": "cisco_toolkit/data/oui_registry.tsv.gz",
+            "git_blob_oid": "1" * 40,
+            "raw_sha256": hashlib.sha256(raw).hexdigest(),
+            "raw_bytes": len(raw),
+            "media_type": "text/tab-separated-values",
+            "format": "gzip_tsv",
+            "automated_format_evidence": evidence,
+            "independent_review": {
+                "reviewer_kind": "independent_agent",
+                "reviewer_role": "binary_privacy_verifier",
+                "independent_from_proposer": True,
+                "review_scope": "decoded_tsv_rows_and_context",
+                "evidence_references": [
+                    f"decoded-tsv-sha256:{evidence['uncompressed_sha256']}",
+                    "privacy-scan:forbidden-local-generic-identities",
+                    "registry-validation:retained-source-and-runtime-loader",
+                ],
+                "verdict": "pass",
+            },
+        }
+
+        def encoded_receipt(candidate: dict[str, object]) -> bytes:
+            return canonical_json(
+                {
+                    "schema_version": "tracked-binary-review/1",
+                    "receipt_kind": "tracked_repository_binary_privacy_review",
+                    "review_basis_commit": "2" * 40,
+                    "binary_set_digest": binary_set_digest([candidate]),
+                    "records": [candidate],
+                }
+            )
+
+        parsed = parse_tracked_binary_review(encoded_receipt(record))
+        self.assertEqual(parsed["records"][0]["media_type"], "text/tab-separated-values")
+
+        transport_typed = {**copy.deepcopy(record), "media_type": "application/gzip"}
+        with self.assertRaises(BinaryReviewFailure) as caught:
+            parse_tracked_binary_review(encoded_receipt(transport_typed))
+        self.assertEqual(str(caught.exception), "binary_review_receipt_malformed")
 
     def test_gzip_tsv_review_rejects_multiple_members_trailing_crc_bomb_schema_utf8_and_secret(self) -> None:
         payload = b"00000C\t24\tExample Vendor\n"

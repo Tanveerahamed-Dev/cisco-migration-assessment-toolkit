@@ -2,14 +2,14 @@
   "schema_version": "tracked-binary-review/1",
   "receipt_kind": "tracked_repository_binary_privacy_review",
   "review_basis_commit": "719d91dad5d6cc6f04acf6b31c4e8d005c68f94a",
-  "binary_set_digest": "4b05d4deacf26d7710a03d5f28c17447a58fc65c43471957d7343be542ea15b6",
+  "binary_set_digest": "97cc564b8021fafdd336ed61ca5f6566ea1d4d3407cda708cd742c39856104de",
   "records": [
     {
       "path": "cisco_toolkit/data/oui_registry.tsv.gz",
       "git_blob_oid": "2419d2cc38d59904a463d2e5c14a1b469ada7a8a",
       "raw_sha256": "2120d5ca8a07cd320d480c6b5bcb5cd810c877cb70a5c949e2d635891e48a51a",
       "raw_bytes": 563919,
-      "media_type": "application/gzip",
+      "media_type": "text/tab-separated-values",
       "format": "gzip_tsv",
       "automated_format_evidence": {
         "kind": "gzip_tsv",
@@ -52,7 +52,7 @@
       "git_blob_oid": "fecefb35a29dfa18265d983afe039492c8bd2a2c",
       "raw_sha256": "3fcfa1c38e5cb7b7acf6a740f75214a3c8bfa000cb7df422593682045dea8519",
       "raw_bytes": 145622,
-      "media_type": "application/gzip",
+      "media_type": "text/tab-separated-values",
       "format": "gzip_tsv",
       "automated_format_evidence": {
         "kind": "gzip_tsv",
