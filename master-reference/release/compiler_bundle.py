@@ -38,6 +38,12 @@ from compiler.binary_review import (
     receipt_set_digest as binary_review_receipt_set_digest,
 )
 from compiler.compiler import RECORD_GROUPS
+from governance.consequential_claims import (
+    CONTENT_PATHS as CONSEQUENTIAL_CLAIM_CONTENT_PATHS,
+    CONTRACT_PATH as CONSEQUENTIAL_CLAIM_CONTRACT_PATH,
+    evaluate_bounded_curated_claims,
+    unavailable_bounded_curated_claim_summary,
+)
 
 from .model import (
     ReleaseInputError,
@@ -856,6 +862,120 @@ def _source_text_bytes(record: object) -> bytes:
     return raw
 
 
+def _json_exact_equal(left: object, right: object) -> bool:
+    """Compare JSON values without Python's bool/int equality coercion."""
+
+    try:
+        return canonical_json(left) == canonical_json(right)
+    except (OverflowError, RecursionError, TypeError, UnicodeError, ValueError):
+        return False
+
+
+def _validate_consequential_claim_projection(
+    completeness: dict[str, Any],
+    records: dict[str, list[dict[str, Any]]],
+    source_commit: str,
+    source_tree_digest: str,
+    consequential_gate: dict[str, Any],
+    *,
+    repository_root: Path | None,
+) -> None:
+    """Recompute the bounded census from exact source records.
+
+    This intentionally cannot promote the global consequential-claim gate.  It
+    only proves that the compiler's explicitly bounded curated-content census
+    is internally exact and, when a repository is available, still joins to
+    the selected Git commit.
+    """
+
+    required_paths = {CONSEQUENTIAL_CLAIM_CONTRACT_PATH, *CONSEQUENTIAL_CLAIM_CONTENT_PATHS}
+    try:
+        summary = completeness.get("consequential_claim_denominator")
+        if not isinstance(summary, dict):
+            raise ValueError
+        semantic_accounting = completeness.get("semantic_accounting")
+        if not isinstance(semantic_accounting, dict):
+            raise ValueError
+        expected_gate = {
+            "name": "consequential_claim_denominator_closed",
+            "passed": False,
+            "expected": True,
+            "actual": False,
+        }
+        if not _json_exact_equal(consequential_gate, expected_gate):
+            raise ValueError
+        if summary.get("state") == "not_declared":
+            expected_absent = unavailable_bounded_curated_claim_summary(
+                source_commit=source_commit,
+                source_tree_digest=source_tree_digest,
+                reason_code="consequential_claim_contract_absent",
+            )
+            if (
+                not _json_exact_equal(summary, expected_absent)
+                or semantic_accounting.get("consequential_claim_denominator_state") != "not_declared"
+            ):
+                raise ValueError
+            source_paths = {
+                str(record.get("path") or "") for record in records.get("source_text", []) if isinstance(record, dict)
+            }
+            file_paths = {
+                str(record.get("path") or "") for record in records.get("files", []) if isinstance(record, dict)
+            }
+            if CONSEQUENTIAL_CLAIM_CONTRACT_PATH in source_paths or CONSEQUENTIAL_CLAIM_CONTRACT_PATH in file_paths:
+                raise ValueError
+            if repository_root is not None:
+                from .source_binding import _tree_census
+
+                root = repository_root.resolve(strict=True)
+                if CONSEQUENTIAL_CLAIM_CONTRACT_PATH in {entry.path for entry in _tree_census(root, source_commit)}:
+                    raise ValueError
+            return
+
+        sources_by_path: dict[str, dict[str, Any]] = {}
+        for record in records.get("source_text", []):
+            path = record.get("path")
+            if path in required_paths:
+                if path in sources_by_path:
+                    raise ValueError
+                sources_by_path[str(path)] = record
+        if set(sources_by_path) != required_paths:
+            raise ValueError
+
+        raw_by_path = {path: _source_text_bytes(record) for path, record in sources_by_path.items()}
+        contract_record = sources_by_path[CONSEQUENTIAL_CLAIM_CONTRACT_PATH]
+        source_blobs = {
+            path: (str(sources_by_path[path].get("git_blob_oid") or ""), raw_by_path[path])
+            for path in CONSEQUENTIAL_CLAIM_CONTENT_PATHS
+        }
+        claim_predicates = [str(item.get("predicate") or "") for item in records.get("claims", [])]
+        expected = evaluate_bounded_curated_claims(
+            contract_raw=raw_by_path[CONSEQUENTIAL_CLAIM_CONTRACT_PATH],
+            contract_git_blob_oid=str(contract_record.get("git_blob_oid") or ""),
+            source_blobs=source_blobs,
+            source_commit=source_commit,
+            source_tree_digest=source_tree_digest,
+            compiler_claim_predicates=claim_predicates,
+        )
+        if not _json_exact_equal(summary, expected):
+            raise ValueError
+        if semantic_accounting.get("consequential_claim_denominator_state") != expected["state"]:
+            raise ValueError
+
+        if repository_root is not None:
+            # Local import avoids the compiler-bundle/source-binding type cycle.
+            from .source_binding import _read_git_blobs, _tree_census
+
+            root = repository_root.resolve(strict=True)
+            tree_by_path = {entry.path: entry for entry in _tree_census(root, source_commit)}
+            if any(path not in tree_by_path for path in required_paths):
+                raise ValueError
+            git_raw = _read_git_blobs(root, [tree_by_path[path] for path in sorted(required_paths)])
+            if any(git_raw[path] != raw_by_path[path] for path in required_paths):
+                raise ValueError
+    except Exception:
+        raise ReleaseInputError("compiler consequential-claim census is inconsistent") from None
+
+
 def _validate_binary_review_projection(
     completeness: dict[str, Any],
     records: dict[str, list[dict[str, Any]]],
@@ -1358,6 +1478,7 @@ def load_compiler_bundle(
         "routes",
         "components",
         "binaries",
+        "claims",
     }
     if not validation_groups.issubset(wanted):
         raise ReleaseInputError("retained compiler groups omit records required for structural denominator validation")
@@ -1543,6 +1664,14 @@ def load_compiler_bundle(
             binary_gate,
             repository_root=repository_root,
             source_commit=commit,
+        )
+        _validate_consequential_claim_projection(
+            completeness,
+            records,
+            commit,
+            tree,
+            acceptance_by_name["consequential_claim_denominator_closed"],
+            repository_root=repository_root,
         )
     safe_parsed_files = {
         str(item["id"]): item

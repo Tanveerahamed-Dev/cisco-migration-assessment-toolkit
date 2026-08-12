@@ -20,6 +20,7 @@
     "record_counts",
     "graphify",
     "architecture_conformance",
+    "consequential_claim_denominator",
     "privacy",
     "invariants",
     "acceptance_gates"
@@ -106,7 +107,7 @@
         "gui_dossier_field_state_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
         "runtime_trace_state": {"type": "string"},
         "coverage_evidence_state": {"type": "string"},
-        "consequential_claim_denominator_state": {"const": "not_declared"},
+        "consequential_claim_denominator_state": {"enum": ["not_declared", "declared_incomplete"]},
         "typed_claim_records": {"type": "integer", "minimum": 0},
         "bitemporal_event_ledger_state": {"const": "not_populated"},
         "bitemporal_event_records": {"const": 0},
@@ -117,6 +118,7 @@
     "record_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
     "graphify": {"$ref": "#/$defs/sourceBoundCompilerReceipt"},
     "architecture_conformance": {"$ref": "#/$defs/sourceBoundCompilerReceipt"},
+    "consequential_claim_denominator": {"$ref": "#/$defs/consequentialClaimDenominator"},
     "privacy": {
       "type": "object",
       "required": ["binary_payload_scan"],
@@ -283,6 +285,150 @@
       "anyOf": [
         {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
         {"type": "null"}
+      ]
+    },
+    "consequentialClaimDenominator": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "denominator_kind",
+        "state",
+        "closed",
+        "source_commit",
+        "source_tree_digest",
+        "source_basis",
+        "contract_path",
+        "contract_git_blob_oid",
+        "contract_digest",
+        "classification_digest",
+        "source_universe_expected",
+        "source_universe_registered",
+        "source_universe_unclassified",
+        "source_receipts",
+        "source_receipts_digest",
+        "expected_candidates",
+        "discovered_candidates",
+        "classified_candidates",
+        "independently_reviewed_candidates",
+        "unresolved_candidates",
+        "candidate_set_digest",
+        "compiler_integrity_claims_expected",
+        "compiler_integrity_claims_classified",
+        "compiler_integrity_claims_consequential",
+        "error_codes"
+      ],
+      "properties": {
+        "schema_version": {"const": "bounded-curated-consequential-claims/1"},
+        "denominator_kind": {"const": "bounded_curated_content_claim_denominator"},
+        "state": {"enum": ["not_declared", "declared_incomplete"]},
+        "closed": {"const": false},
+        "source_commit": {"$ref": "#/$defs/nullableGitOid"},
+        "source_tree_digest": {"$ref": "#/$defs/nullableDigest"},
+        "source_basis": {"const": "selected_commit_raw_git_blobs"},
+        "contract_path": {"const": "master-reference/governance/consequential-claim-contract.json"},
+        "contract_git_blob_oid": {"$ref": "#/$defs/nullableGitOid"},
+        "contract_digest": {"$ref": "#/$defs/nullableDigest"},
+        "classification_digest": {"$ref": "#/$defs/nullableDigest"},
+        "source_universe_expected": {"const": 5},
+        "source_universe_registered": {"type": "integer", "minimum": 0, "maximum": 5},
+        "source_universe_unclassified": {"type": "integer", "minimum": 0, "maximum": 5},
+        "source_receipts": {
+          "type": "array",
+          "maxItems": 5,
+          "items": {
+            "type": "object",
+            "required": ["path", "git_blob_oid", "sha256", "bytes", "classification"],
+            "properties": {
+              "path": {"type": "string", "minLength": 1},
+              "git_blob_oid": {"$ref": "#/$defs/gitOid"},
+              "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "bytes": {"type": "integer", "minimum": 1, "maximum": 8388608},
+              "classification": {"enum": ["candidate_census", "unclassified_source"]}
+            },
+            "additionalProperties": false
+          }
+        },
+        "source_receipts_digest": {"$ref": "#/$defs/nullableDigest"},
+        "expected_candidates": {"type": "integer", "minimum": 0, "maximum": 100000},
+        "discovered_candidates": {"type": "integer", "minimum": 0, "maximum": 100000},
+        "classified_candidates": {"type": "integer", "minimum": 0, "maximum": 100000},
+        "independently_reviewed_candidates": {"const": 0},
+        "unresolved_candidates": {"type": "integer", "minimum": 0, "maximum": 100000},
+        "candidate_set_digest": {"$ref": "#/$defs/nullableDigest"},
+        "compiler_integrity_claims_expected": {"const": 6},
+        "compiler_integrity_claims_classified": {"type": "integer", "minimum": 0, "maximum": 6},
+        "compiler_integrity_claims_consequential": {"const": 0},
+        "error_codes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "consequential_claim_contract_absent",
+              "consequential_claim_contract_invalid",
+              "consequential_claim_dirty_preview_not_eligible",
+              "consequential_claim_independent_review_pending",
+              "consequential_claim_source_universe_incomplete"
+            ]
+          }
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {"properties": {"state": {"const": "not_declared"}}},
+          "then": {
+            "properties": {
+              "closed": {"const": false},
+              "contract_git_blob_oid": {"type": "null"},
+              "contract_digest": {"type": "null"},
+              "classification_digest": {"type": "null"},
+              "source_universe_registered": {"const": 0},
+              "source_universe_unclassified": {"const": 5},
+              "source_receipts": {"const": []},
+              "source_receipts_digest": {"type": "null"},
+              "expected_candidates": {"const": 0},
+              "discovered_candidates": {"const": 0},
+              "classified_candidates": {"const": 0},
+              "independently_reviewed_candidates": {"const": 0},
+              "unresolved_candidates": {"const": 0},
+              "candidate_set_digest": {"type": "null"},
+              "compiler_integrity_claims_classified": {"const": 0},
+              "error_codes": {
+                "oneOf": [
+                  {"const": ["consequential_claim_contract_absent", "consequential_claim_source_universe_incomplete"]},
+                  {"const": ["consequential_claim_contract_invalid", "consequential_claim_source_universe_incomplete"]},
+                  {"const": ["consequential_claim_dirty_preview_not_eligible", "consequential_claim_source_universe_incomplete"]}
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {"properties": {"state": {"const": "declared_incomplete"}}},
+          "then": {
+            "properties": {
+              "source_commit": {"$ref": "#/$defs/gitOid"},
+              "source_tree_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "contract_git_blob_oid": {"$ref": "#/$defs/gitOid"},
+              "contract_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "classification_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "source_universe_registered": {"const": 1},
+              "source_universe_unclassified": {"const": 4},
+              "source_receipts": {"minItems": 5, "maxItems": 5},
+              "source_receipts_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "expected_candidates": {"type": "integer", "minimum": 1},
+              "candidate_set_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "compiler_integrity_claims_classified": {"const": 6},
+              "error_codes": {
+                "const": [
+                  "consequential_claim_independent_review_pending",
+                  "consequential_claim_source_universe_incomplete"
+                ]
+              }
+            }
+          }
+        }
       ]
     },
     "binaryReviewSummary": {

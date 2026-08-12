@@ -25,6 +25,13 @@ from typing import Any, Iterable
 
 from atlas_privacy import FORBIDDEN_CONTENT_RULES, forbidden_content_findings
 from governance.architecture import build_architecture_conformance, load_contract
+from governance.consequential_claims import (
+    CONTENT_PATHS as CONSEQUENTIAL_CLAIM_CONTENT_PATHS,
+    CONTRACT_PATH as CONSEQUENTIAL_CLAIM_CONTRACT_PATH,
+    ConsequentialClaimContractError,
+    evaluate_bounded_curated_claims,
+    unavailable_bounded_curated_claim_summary,
+)
 from governance.policy import validate_claims
 
 from .binary_review import (
@@ -1610,6 +1617,7 @@ def _ledger(
     fatal_errors: list[str],
     graphify: dict[str, Any],
     architecture_conformance: dict[str, Any],
+    consequential_claim_denominator: dict[str, Any],
     binary_review: dict[str, Any],
     forbidden_content_findings: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -1990,7 +1998,7 @@ def _ledger(
             "gui_dossier_field_state_counts": {str(key): value for key, value in sorted(gui_field_states.items())},
             "runtime_trace_state": "not_collected",
             "coverage_evidence_state": "structural_links_only",
-            "consequential_claim_denominator_state": "not_declared",
+            "consequential_claim_denominator_state": consequential_claim_denominator["state"],
             "typed_claim_records": len(records["claims"]),
             "bitemporal_event_ledger_state": "not_populated",
             "bitemporal_event_records": 0,
@@ -2005,6 +2013,7 @@ def _ledger(
         },
         "graphify": graphify,
         "architecture_conformance": architecture_conformance,
+        "consequential_claim_denominator": consequential_claim_denominator,
         "privacy": {
             "primary_corpus": "selected_commit_git_tree_raw_blobs",
             "worktree_role": "separate_cleanliness_and_changed_during_read_check_only",
@@ -2114,6 +2123,9 @@ def _ledger(
             },
             {
                 "name": "consequential_claim_denominator_closed",
+                # This summary covers only the five curated content owners.
+                # It cannot close the global consequential-claim universe,
+                # which also includes rendered/UI/PDF and other sinks.
                 "passed": False,
                 "expected": True,
                 "actual": False,
@@ -2288,6 +2300,7 @@ def compile_repository(
     ts_inputs: list[dict[str, str]] = []
     privacy_findings: list[dict[str, Any]] = []
     binary_review: dict[str, Any] = unavailable_binary_review_summary([], status="absent")
+    consequential_claim_denominator = unavailable_bounded_curated_claim_summary()
 
     try:
         source_commit = _git(root, "rev-parse", "HEAD").decode("ascii", errors="strict").strip()
@@ -2784,6 +2797,42 @@ def compile_repository(
             completeness_id,
             bool(dirty),
         )
+        consequential_claim_denominator = unavailable_bounded_curated_claim_summary(
+            source_commit=source_commit,
+            source_tree_digest=source_tree_digest,
+            reason_code=(
+                "consequential_claim_dirty_preview_not_eligible" if dirty else "consequential_claim_contract_absent"
+            ),
+        )
+        commit_entries_by_path = {entry.path: entry for entry in commit_entries}
+        if not dirty and CONSEQUENTIAL_CLAIM_CONTRACT_PATH in commit_entries_by_path:
+            try:
+                contract_raw = canonical_blobs[CONSEQUENTIAL_CLAIM_CONTRACT_PATH][0]
+                source_blobs = {
+                    path: (commit_entries_by_path[path].blob_oid, canonical_blobs[path][0])
+                    for path in CONSEQUENTIAL_CLAIM_CONTENT_PATHS
+                    if path in commit_entries_by_path and path in canonical_blobs
+                }
+                consequential_claim_denominator = evaluate_bounded_curated_claims(
+                    contract_raw=contract_raw,
+                    contract_git_blob_oid=commit_entries_by_path[CONSEQUENTIAL_CLAIM_CONTRACT_PATH].blob_oid,
+                    source_blobs=source_blobs,
+                    source_commit=source_commit,
+                    source_tree_digest=source_tree_digest,
+                    compiler_claim_predicates=[str(row.get("predicate") or "") for row in records["claims"]],
+                )
+            except (ConsequentialClaimContractError, KeyError) as exc:
+                codes = (
+                    exc.codes
+                    if isinstance(exc, ConsequentialClaimContractError)
+                    else ("consequential_claim_source_universe_membership_invalid",)
+                )
+                fatal_errors.extend(f"consequential claim census: {code}" for code in codes)
+                consequential_claim_denominator = unavailable_bounded_curated_claim_summary(
+                    source_commit=source_commit,
+                    source_tree_digest=source_tree_digest,
+                    reason_code="consequential_claim_contract_invalid",
+                )
         evidence_universe = {
             str(record["id"])
             for group in RECORD_GROUPS
@@ -2827,6 +2876,7 @@ def compile_repository(
         fatal_errors=sanitized_errors,
         graphify=graphify_metadata,
         architecture_conformance=architecture_conformance,
+        consequential_claim_denominator=consequential_claim_denominator,
         binary_review=binary_review,
         forbidden_content_findings=privacy_findings,
     )

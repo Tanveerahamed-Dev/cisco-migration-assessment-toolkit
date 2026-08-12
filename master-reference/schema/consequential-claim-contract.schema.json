@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.local/schema/consequential-claim-contract.schema.json",
+  "title": "Bounded curated-content consequential-claim census contract",
+  "type": "object",
+  "required": ["schema_version", "contract_kind", "source_universe", "compiler_integrity_claims"],
+  "properties": {
+    "schema_version": {"const": "bounded-curated-consequential-claims/1"},
+    "contract_kind": {"const": "bounded_curated_content_claim_denominator"},
+    "source_universe": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": {"$ref": "#/$defs/source"}
+    },
+    "compiler_integrity_claims": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {"$ref": "#/$defs/integrityClaim"}
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "source": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["path", "git_blob_oid", "classification", "reason_code"],
+          "properties": {
+            "path": {"type": "string", "minLength": 1},
+            "git_blob_oid": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+            "classification": {"const": "unclassified_source"},
+            "reason_code": {"const": "consequential_claim_source_not_classified"}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["path", "git_blob_oid", "classification", "semantic_collection_selector", "id_field", "owner_reference_fields", "root_fields", "domain_fields", "facets", "excluded_fields"],
+          "properties": {
+            "path": {"type": "string", "minLength": 1},
+            "git_blob_oid": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+            "classification": {"const": "candidate_census"},
+            "semantic_collection_selector": {"const": "domains[].entries[]"},
+            "id_field": {"const": "id"},
+            "owner_reference_fields": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "uniqueItems": true,
+              "items": {"enum": ["owner_refs", "gap_refs"]}
+            },
+            "root_fields": {"$ref": "#/$defs/rootFields"},
+            "domain_fields": {"$ref": "#/$defs/domainFields"},
+            "facets": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "uniqueItems": true,
+              "items": {
+                "oneOf": [
+                  {"$ref": "#/$defs/stateFacet"},
+                  {"$ref": "#/$defs/currentScopeFacet"}
+                ]
+              }
+            },
+            "excluded_fields": {"$ref": "#/$defs/excludedFields"}
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "rootFields": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "uniqueItems": true,
+      "items": {
+        "oneOf": [
+          {"$ref": "#/$defs/rootCatalogVersion"},
+          {"$ref": "#/$defs/rootDenominatorRule"},
+          {"$ref": "#/$defs/rootDomains"},
+          {"$ref": "#/$defs/rootEntryContract"},
+          {"$ref": "#/$defs/rootId"},
+          {"$ref": "#/$defs/rootKind"},
+          {"$ref": "#/$defs/rootSchemaVersion"}
+        ]
+      }
+    },
+    "domainFields": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": {
+        "oneOf": [
+          {"$ref": "#/$defs/domainEntityRole"},
+          {"$ref": "#/$defs/domainEntries"},
+          {"$ref": "#/$defs/domainId"}
+        ]
+      }
+    },
+    "excludedFields": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "uniqueItems": true,
+      "items": {
+        "oneOf": [
+          {"$ref": "#/$defs/excludedContentRole"},
+          {"$ref": "#/$defs/excludedGapRefs"},
+          {"$ref": "#/$defs/excludedId"},
+          {"$ref": "#/$defs/excludedMutatesAssessmentTruth"},
+          {"$ref": "#/$defs/excludedOwnerRefs"},
+          {"$ref": "#/$defs/excludedTitle"},
+          {"$ref": "#/$defs/excludedTrafficPlaneRefs"}
+        ]
+      }
+    },
+    "stateFacet": {"type": "object", "required": ["field", "classification", "review_state"], "properties": {"field": {"const": "state"}, "classification": {"const": "consequential_claim_candidate"}, "review_state": {"const": "pending_independent_review"}}, "additionalProperties": false},
+    "currentScopeFacet": {"type": "object", "required": ["field", "classification", "review_state"], "properties": {"field": {"const": "current_scope"}, "classification": {"const": "consequential_claim_candidate"}, "review_state": {"const": "pending_independent_review"}}, "additionalProperties": false},
+    "rootCatalogVersion": {"$ref": "#/$defs/classifiedRegistryCatalogVersion"},
+    "rootDenominatorRule": {"$ref": "#/$defs/classifiedGovernanceDenominatorRule"},
+    "rootDomains": {"$ref": "#/$defs/classifiedCollectionDomains"},
+    "rootEntryContract": {"$ref": "#/$defs/classifiedGovernanceEntryContract"},
+    "rootId": {"$ref": "#/$defs/classifiedIdentifierId"},
+    "rootKind": {"$ref": "#/$defs/classifiedRegistryKind"},
+    "rootSchemaVersion": {"$ref": "#/$defs/classifiedRegistrySchemaVersion"},
+    "domainEntityRole": {"$ref": "#/$defs/classifiedGovernanceEntityRole"},
+    "domainEntries": {"$ref": "#/$defs/classifiedCollectionEntries"},
+    "domainId": {"$ref": "#/$defs/classifiedIdentifierId"},
+    "excludedContentRole": {"$ref": "#/$defs/classifiedGovernanceContentRole"},
+    "excludedGapRefs": {"$ref": "#/$defs/classifiedRelationshipGapRefs"},
+    "excludedId": {"$ref": "#/$defs/classifiedIdentifierId"},
+    "excludedMutatesAssessmentTruth": {"$ref": "#/$defs/classifiedGovernanceMutatesAssessmentTruth"},
+    "excludedOwnerRefs": {"$ref": "#/$defs/classifiedRelationshipOwnerRefs"},
+    "excludedTitle": {"$ref": "#/$defs/classifiedLabelTitle"},
+    "excludedTrafficPlaneRefs": {"$ref": "#/$defs/classifiedRelationshipTrafficPlaneRefs"},
+    "classifiedRegistryCatalogVersion": {"type": "object", "required": ["field", "classification"], "properties": {"field": {"const": "catalog_version"}, "classification": {"const": "registry_metadata"}}, "additionalProperties": false},
+    "classifiedGovernanceDenominatorRule": {"type": "object", "required": ["field", "classification"], "properties": {"field": {"const": "denominator_rule"}, "classification": {"const": "governance_metadata"}}, "additionalProperties": false},
+    "classifiedCollectionDomains": {"type": "object", "required": ["field", "classification"], "properties": {"field": {"const": "domains"}, "classification": {"const": "collection_container"}}, "additionalProperties": false},
+    "classifiedGovernanceEntryContract": {"type": "object", "required": ["field", "classification"], "properties": {"field": {"const": "entry_contract"}, "classification": {"const": "governance_metadata"}}, "additionalProperties": false},
+    "classifiedIdentifierId": {"type": "object", "required": ["field", "classification"], "properties": {"field": {"const": "id"}, "classification": {"const": "identifier_metadata"}}, "additionalProperties": false},
+    "classifiedRegistryKind": {"type": "object", "required": ["field", "classification"], "properties": {"field": {"const": "kind"}, "classification": {"const": "registry_metadata"}}, "additionalProperties": false},
+    "classifiedRegistrySchemaVersion": {"type": "object", "required": ["field", "classification"], "properties": {"field": {"const": "schema_version"}, "classification": {"const": "registry_metadata"}}, "additionalProperties": false},
+    "classifiedGovernanceEntityRole": {"type": "object", "required": ["field", "classification"], "properties": {"field": {"const": "entity_role"}, "classification": {"const": "governance_metadata"}}, "additionalProperties": false},
+    "classifiedCollectionEntries": {"type": "object", "required": ["field", "classification"], "properties": {"field": {"const": "entries"}, "classification": {"const": "collection_container"}}, "additionalProperties": false},
+    "classifiedGovernanceContentRole": {"type": "object", "required": ["field", "classification"], "properties": {"field": {"const": "content_role"}, "classification": {"const": "governance_metadata"}}, "additionalProperties": false},
+    "classifiedRelationshipGapRefs": {"type": "object", "required": ["field", "classification"], "properties": {"field": {"const": "gap_refs"}, "classification": {"const": "relationship_metadata"}}, "additionalProperties": false},
+    "classifiedGovernanceMutatesAssessmentTruth": {"type": "object", "required": ["field", "classification"], "properties": {"field": {"const": "mutates_assessment_truth"}, "classification": {"const": "governance_metadata"}}, "additionalProperties": false},
+    "classifiedRelationshipOwnerRefs": {"type": "object", "required": ["field", "classification"], "properties": {"field": {"const": "owner_refs"}, "classification": {"const": "relationship_metadata"}}, "additionalProperties": false},
+    "classifiedLabelTitle": {"type": "object", "required": ["field", "classification"], "properties": {"field": {"const": "title"}, "classification": {"const": "label_metadata"}}, "additionalProperties": false},
+    "classifiedRelationshipTrafficPlaneRefs": {"type": "object", "required": ["field", "classification"], "properties": {"field": {"const": "traffic_plane_refs"}, "classification": {"const": "relationship_metadata"}}, "additionalProperties": false},
+    "integrityClaim": {
+      "type": "object",
+      "required": ["predicate", "classification", "consequential"],
+      "properties": {
+        "predicate": {"type": "string", "minLength": 1},
+        "classification": {"const": "integrity_metadata"},
+        "consequential": {"const": false}
+      },
+      "additionalProperties": false
+    }
+  }
+}

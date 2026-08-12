@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import {
   access,
   lstat,
+  mkdtemp,
   mkdir,
   open,
   realpath,
@@ -66,6 +67,67 @@ const REQUIRED_ACCEPTANCE_GATES = Object.freeze([
   "bitemporal_event_ledger_populated_and_replayable",
   "release_lifecycle_transitions_integrated_and_receipted",
 ]);
+const CONSEQUENTIAL_CLAIM_SCHEMA_VERSION = "bounded-curated-consequential-claims/1";
+const CONSEQUENTIAL_CLAIM_KIND = "bounded_curated_content_claim_denominator";
+const CONSEQUENTIAL_CLAIM_CONTRACT_PATH =
+  "master-reference/governance/consequential-claim-contract.json";
+const CONSEQUENTIAL_CLAIM_CONTENT_PATHS = Object.freeze([
+  "master-reference/content/atlas-core.json",
+  "master-reference/content/capability-catalog.json",
+  "master-reference/content/delivery-governance.json",
+  "master-reference/content/open-horizon-register.json",
+  "master-reference/content/output-contract.json",
+]);
+const CONSEQUENTIAL_CLAIM_PATHS = new Set([
+  CONSEQUENTIAL_CLAIM_CONTRACT_PATH,
+  ...CONSEQUENTIAL_CLAIM_CONTENT_PATHS,
+]);
+const CONSEQUENTIAL_INTEGRITY_PREDICATES = Object.freeze([
+  "repository.full_exposure_file_count",
+  "repository.graphify_status",
+  "repository.nonblank_line_record_count",
+  "repository.source_commit",
+  "repository.source_tree_digest",
+  "repository.tracked_file_count",
+]);
+const CONSEQUENTIAL_ROOT_FIELDS = Object.freeze([
+  "catalog_version",
+  "denominator_rule",
+  "domains",
+  "entry_contract",
+  "id",
+  "kind",
+  "schema_version",
+]);
+const CONSEQUENTIAL_DOMAIN_FIELDS = Object.freeze(["entity_role", "entries", "id"]);
+const CONSEQUENTIAL_ROOT_FIELD_CLASSIFICATIONS = Object.freeze({
+  catalog_version: "registry_metadata",
+  denominator_rule: "governance_metadata",
+  domains: "collection_container",
+  entry_contract: "governance_metadata",
+  id: "identifier_metadata",
+  kind: "registry_metadata",
+  schema_version: "registry_metadata",
+});
+const CONSEQUENTIAL_DOMAIN_FIELD_CLASSIFICATIONS = Object.freeze({
+  entity_role: "governance_metadata",
+  entries: "collection_container",
+  id: "identifier_metadata",
+});
+const CONSEQUENTIAL_EXCLUDED_FIELD_CLASSIFICATIONS = Object.freeze({
+  content_role: "governance_metadata",
+  gap_refs: "relationship_metadata",
+  id: "identifier_metadata",
+  mutates_assessment_truth: "governance_metadata",
+  owner_refs: "relationship_metadata",
+  title: "label_metadata",
+  traffic_plane_refs: "relationship_metadata",
+});
+const CONSEQUENTIAL_JSON_MAX_BYTES = 8 * 1024 * 1024;
+const CONSEQUENTIAL_JSON_MAX_DEPTH = 64;
+const CONSEQUENTIAL_JSON_MAX_VALUES = 1_000_000;
+const CONSEQUENTIAL_JSON_MAX_CONTAINER_ITEMS = 100_000;
+const CONSEQUENTIAL_JSON_MAX_STRING_LENGTH = 1_048_576;
 const GUI_DOSSIER_FIELDS = Object.freeze([
   "persona_journey",
   "data_snapshot_sources",
@@ -176,6 +238,595 @@ function stableJson(value) {
 
 function digestObject(value) {
   return sha256(Buffer.from(`${stableJson(value)}\n`, "utf8"));
+}
+
+function parseStrictSourceJson(bytes) {
+  if (
+    !Buffer.isBuffer(bytes) ||
+    bytes.byteLength === 0 ||
+    bytes.byteLength > CONSEQUENTIAL_JSON_MAX_BYTES
+  ) {
+    throw new Error("compiler consequential-claim source JSON is invalid");
+  }
+  let source;
+  try {
+    source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error("compiler consequential-claim source JSON is invalid");
+  }
+  let index = 0;
+  let values = 0;
+  const numberPattern = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y;
+  const fail = () => {
+    throw new Error("compiler consequential-claim source JSON is invalid");
+  };
+  const whitespace = () => {
+    while (
+      index < source.length &&
+      [0x09, 0x0A, 0x0D, 0x20].includes(source.charCodeAt(index))
+    ) {
+      index += 1;
+    }
+  };
+  const stringValue = () => {
+    const start = index;
+    index += 1;
+    let escaped = false;
+    while (index < source.length) {
+      const code = source.charCodeAt(index);
+      if (!escaped && code === 0x22) {
+        index += 1;
+        const token = source.slice(start, index);
+        let parsed;
+        try {
+          parsed = JSON.parse(token);
+        } catch {
+          fail();
+        }
+        let characters = 0;
+        for (let offset = 0; offset < parsed.length; offset += 1) {
+          const unit = parsed.charCodeAt(offset);
+          if (unit >= 0xD800 && unit <= 0xDBFF) {
+            const next = parsed.charCodeAt(offset + 1);
+            if (!(next >= 0xDC00 && next <= 0xDFFF)) fail();
+            offset += 1;
+          } else if (unit >= 0xDC00 && unit <= 0xDFFF) {
+            fail();
+          }
+          characters += 1;
+          if (characters > CONSEQUENTIAL_JSON_MAX_STRING_LENGTH) fail();
+        }
+        return parsed;
+      }
+      if (!escaped && code < 0x20) fail();
+      if (!escaped && code === 0x5c) {
+        escaped = true;
+      } else {
+        escaped = false;
+      }
+      index += 1;
+    }
+    fail();
+  };
+  const value = (depth) => {
+    values += 1;
+    if (depth > CONSEQUENTIAL_JSON_MAX_DEPTH || values > CONSEQUENTIAL_JSON_MAX_VALUES) fail();
+    whitespace();
+    const token = source[index];
+    if (token === "{") {
+      index += 1;
+      whitespace();
+      const keys = new Set();
+      if (source[index] === "}") {
+        index += 1;
+        return;
+      }
+      let items = 0;
+      while (index < source.length) {
+        if (source[index] !== '"') fail();
+        const key = stringValue();
+        if (keys.has(key)) fail();
+        keys.add(key);
+        whitespace();
+        if (source[index] !== ":") fail();
+        index += 1;
+        value(depth + 1);
+        items += 1;
+        if (items > CONSEQUENTIAL_JSON_MAX_CONTAINER_ITEMS) fail();
+        whitespace();
+        if (source[index] === "}") {
+          index += 1;
+          return;
+        }
+        if (source[index] !== ",") fail();
+        index += 1;
+        whitespace();
+      }
+      fail();
+    }
+    if (token === "[") {
+      index += 1;
+      whitespace();
+      if (source[index] === "]") {
+        index += 1;
+        return;
+      }
+      let items = 0;
+      while (index < source.length) {
+        value(depth + 1);
+        items += 1;
+        if (items > CONSEQUENTIAL_JSON_MAX_CONTAINER_ITEMS) fail();
+        whitespace();
+        if (source[index] === "]") {
+          index += 1;
+          return;
+        }
+        if (source[index] !== ",") fail();
+        index += 1;
+        whitespace();
+      }
+      fail();
+    }
+    if (token === '"') {
+      stringValue();
+      return;
+    }
+    for (const literal of ["true", "false", "null"]) {
+      if (source.startsWith(literal, index)) {
+        index += literal.length;
+        return;
+      }
+    }
+    numberPattern.lastIndex = index;
+    const match = numberPattern.exec(source);
+    if (!match || match[0].length > 128 || !Number.isFinite(Number(match[0]))) fail();
+    if (!match[0].includes(".") && !/[eE]/.test(match[0])) {
+      try {
+        if (BigInt(match[0]) > BigInt(Number.MAX_SAFE_INTEGER) || BigInt(match[0]) < BigInt(Number.MIN_SAFE_INTEGER)) {
+          fail();
+        }
+      } catch {
+        fail();
+      }
+    }
+    index += match[0].length;
+  };
+  value(1);
+  whitespace();
+  if (index !== source.length) fail();
+  try {
+    const parsed = JSON.parse(source);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) fail();
+    return parsed;
+  } catch {
+    fail();
+  }
+}
+
+function gitBlobOid(bytes, expected) {
+  if (typeof expected !== "string" || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(expected)) {
+    return null;
+  }
+  const algorithm = expected.length === 40 ? "sha1" : "sha256";
+  return createHash(algorithm)
+    .update(Buffer.from(`blob ${bytes.byteLength}\0`, "ascii"))
+    .update(bytes)
+    .digest("hex");
+}
+
+function unavailableConsequentialClaimSummary(
+  sourceCommit,
+  sourceTreeDigest,
+  reasonCode = "consequential_claim_contract_absent",
+) {
+  return {
+    schema_version: CONSEQUENTIAL_CLAIM_SCHEMA_VERSION,
+    denominator_kind: CONSEQUENTIAL_CLAIM_KIND,
+    state: "not_declared",
+    closed: false,
+    source_commit: sourceCommit,
+    source_tree_digest: sourceTreeDigest,
+    source_basis: "selected_commit_raw_git_blobs",
+    contract_path: CONSEQUENTIAL_CLAIM_CONTRACT_PATH,
+    contract_git_blob_oid: null,
+    contract_digest: null,
+    classification_digest: null,
+    source_universe_expected: 5,
+    source_universe_registered: 0,
+    source_universe_unclassified: 5,
+    source_receipts: [],
+    source_receipts_digest: null,
+    expected_candidates: 0,
+    discovered_candidates: 0,
+    classified_candidates: 0,
+    independently_reviewed_candidates: 0,
+    unresolved_candidates: 0,
+    candidate_set_digest: null,
+    compiler_integrity_claims_expected: 6,
+    compiler_integrity_claims_classified: 0,
+    compiler_integrity_claims_consequential: 0,
+    error_codes: [
+      reasonCode,
+      "consequential_claim_source_universe_incomplete",
+    ],
+  };
+}
+
+function exactStringMembership(value, expected) {
+  return (
+    Array.isArray(value) &&
+    value.every((item) => typeof item === "string") &&
+    new Set(value).size === value.length &&
+    stableJson([...value].sort(compareUnicodeCodePoints)) ===
+      stableJson([...expected].sort(compareUnicodeCodePoints))
+  );
+}
+
+function exactClassifiedFields(value, expected) {
+  if (!Array.isArray(value) || value.length !== Object.keys(expected).length) return false;
+  const actual = new Map();
+  for (const item of value) {
+    if (
+      !item ||
+      typeof item !== "object" ||
+      Array.isArray(item) ||
+      stableJson(Object.keys(item).sort()) !== stableJson(["classification", "field"]) ||
+      typeof item.field !== "string" ||
+      actual.has(item.field)
+    ) {
+      return false;
+    }
+    actual.set(item.field, item.classification);
+  }
+  return Object.entries(expected).every(([field, classification]) => actual.get(field) === classification);
+}
+
+export function isPythonStripEmpty(value) {
+  if (typeof value !== "string") return false;
+  for (const character of value) {
+    const point = character.codePointAt(0);
+    const pythonWhitespace =
+      (point >= 0x0009 && point <= 0x000D) ||
+      (point >= 0x001C && point <= 0x0020) ||
+      point === 0x0085 ||
+      point === 0x00A0 ||
+      point === 0x1680 ||
+      (point >= 0x2000 && point <= 0x200A) ||
+      point === 0x2028 ||
+      point === 0x2029 ||
+      point === 0x202F ||
+      point === 0x205F ||
+      point === 0x3000;
+    if (!pythonWhitespace) return false;
+  }
+  return true;
+}
+
+export function validateConsequentialClaimCensus({
+  completeness,
+  rawSources,
+  claimPredicates,
+  unavailableReason = "consequential_claim_contract_absent",
+}) {
+  const fail = () => {
+    throw new Error("compiler consequential-claim census is inconsistent");
+  };
+  const summary = completeness?.consequential_claim_denominator;
+  const gate = completeness?.acceptance_gates?.find(
+    (item) => item?.name === "consequential_claim_denominator_closed",
+  );
+  const expectedGate = {
+    name: "consequential_claim_denominator_closed",
+    passed: false,
+    expected: true,
+    actual: false,
+  };
+  if (
+    !summary ||
+    typeof summary !== "object" ||
+    Array.isArray(summary) ||
+    stableJson(gate) !== stableJson(expectedGate) ||
+    completeness?.semantic_accounting?.consequential_claim_denominator_state !== summary.state
+  ) {
+    fail();
+  }
+  if (!exactStringMembership(claimPredicates, CONSEQUENTIAL_INTEGRITY_PREDICATES)) {
+    fail();
+  }
+  if (summary.state === "not_declared") {
+    if (
+      stableJson(summary) !==
+        stableJson(
+          unavailableConsequentialClaimSummary(
+            completeness.source_commit,
+            completeness.source_tree_digest,
+            unavailableReason,
+          ),
+        ) ||
+      (unavailableReason === "consequential_claim_contract_absent" &&
+        rawSources.has(CONSEQUENTIAL_CLAIM_CONTRACT_PATH))
+    ) {
+      fail();
+    }
+    return;
+  }
+  if (summary.state !== "declared_incomplete" || rawSources.size !== CONSEQUENTIAL_CLAIM_PATHS.size) {
+    fail();
+  }
+
+  const parsedByPath = new Map();
+  for (const path of CONSEQUENTIAL_CLAIM_PATHS) {
+    const source = rawSources.get(path);
+    if (
+      !source ||
+      !Buffer.isBuffer(source.raw) ||
+      gitBlobOid(source.raw, source.gitBlobOid) !== source.gitBlobOid
+    ) {
+      fail();
+    }
+    parsedByPath.set(path, parseStrictSourceJson(source.raw));
+  }
+  const contractSource = rawSources.get(CONSEQUENTIAL_CLAIM_CONTRACT_PATH);
+  const contract = parsedByPath.get(CONSEQUENTIAL_CLAIM_CONTRACT_PATH);
+  if (
+    stableJson(Object.keys(contract).sort()) !==
+      stableJson(["compiler_integrity_claims", "contract_kind", "schema_version", "source_universe"]) ||
+    contract.schema_version !== CONSEQUENTIAL_CLAIM_SCHEMA_VERSION ||
+    contract.contract_kind !== CONSEQUENTIAL_CLAIM_KIND ||
+    !Array.isArray(contract.source_universe) ||
+    contract.source_universe.length !== CONSEQUENTIAL_CLAIM_CONTENT_PATHS.length ||
+    !Array.isArray(contract.compiler_integrity_claims) ||
+    contract.compiler_integrity_claims.length !== CONSEQUENTIAL_INTEGRITY_PREDICATES.length
+  ) {
+    fail();
+  }
+
+  const integrityPredicates = [];
+  for (const item of contract.compiler_integrity_claims) {
+    if (
+      !item ||
+      typeof item !== "object" ||
+      Array.isArray(item) ||
+      stableJson(Object.keys(item).sort()) !==
+        stableJson(["classification", "consequential", "predicate"]) ||
+      typeof item.predicate !== "string" ||
+      !item.predicate ||
+      integrityPredicates.includes(item.predicate) ||
+      item.classification !== "integrity_metadata" ||
+      item.consequential !== false
+    ) {
+      fail();
+    }
+    integrityPredicates.push(item.predicate);
+  }
+  if (
+    !exactStringMembership(integrityPredicates, CONSEQUENTIAL_INTEGRITY_PREDICATES)
+  ) {
+    fail();
+  }
+
+  const sourceByPath = new Map();
+  for (const row of contract.source_universe) {
+    if (
+      !row ||
+      typeof row !== "object" ||
+      Array.isArray(row) ||
+      !CONSEQUENTIAL_CLAIM_CONTENT_PATHS.includes(row.path)
+    ) {
+      fail();
+    }
+    if (sourceByPath.has(row.path)) fail();
+    sourceByPath.set(row.path, row);
+    const source = rawSources.get(row.path);
+    if (!source || row.git_blob_oid !== source.gitBlobOid) fail();
+    if (row.path === "master-reference/content/capability-catalog.json") {
+      const expectedKeys = [
+        "classification",
+        "domain_fields",
+        "excluded_fields",
+        "facets",
+        "git_blob_oid",
+        "id_field",
+        "owner_reference_fields",
+        "path",
+        "root_fields",
+        "semantic_collection_selector",
+      ];
+      if (
+        stableJson(Object.keys(row).sort()) !== stableJson(expectedKeys) ||
+        row.classification !== "candidate_census" ||
+        row.semantic_collection_selector !== "domains[].entries[]" ||
+        row.id_field !== "id" ||
+        !exactStringMembership(row.owner_reference_fields, ["owner_refs", "gap_refs"]) ||
+        !Array.isArray(row.owner_reference_fields) ||
+        row.owner_reference_fields.length > 8 ||
+        row.owner_reference_fields.some(
+          (field) => [...field].length > 128,
+        ) ||
+        !exactClassifiedFields(row.root_fields, CONSEQUENTIAL_ROOT_FIELD_CLASSIFICATIONS) ||
+        !exactClassifiedFields(row.domain_fields, CONSEQUENTIAL_DOMAIN_FIELD_CLASSIFICATIONS) ||
+        !exactClassifiedFields(row.excluded_fields, CONSEQUENTIAL_EXCLUDED_FIELD_CLASSIFICATIONS)
+      ) {
+        fail();
+      }
+      const facetFields = [];
+      if (!Array.isArray(row.facets) || row.facets.length !== 2) fail();
+      for (const facet of row.facets) {
+        if (
+          !facet ||
+          typeof facet !== "object" ||
+          Array.isArray(facet) ||
+          stableJson(Object.keys(facet).sort()) !==
+            stableJson(["classification", "field", "review_state"]) ||
+          typeof facet.field !== "string" ||
+          !facet.field ||
+          facetFields.includes(facet.field) ||
+          facet.classification !== "consequential_claim_candidate" ||
+          facet.review_state !== "pending_independent_review"
+        ) {
+          fail();
+        }
+        facetFields.push(facet.field);
+      }
+      if (!exactStringMembership(facetFields, ["state", "current_scope"])) {
+        fail();
+      }
+    } else if (
+      stableJson(Object.keys(row).sort()) !==
+        stableJson(["classification", "git_blob_oid", "path", "reason_code"]) ||
+      row.classification !== "unclassified_source" ||
+      row.reason_code !== "consequential_claim_source_not_classified"
+    ) {
+      fail();
+    }
+  }
+  if (sourceByPath.size !== CONSEQUENTIAL_CLAIM_CONTENT_PATHS.length) fail();
+
+  const catalogPath = "master-reference/content/capability-catalog.json";
+  const catalog = parsedByPath.get(catalogPath);
+  const catalogContract = sourceByPath.get(catalogPath);
+  const facets = new Map(catalogContract.facets.map((facet) => [facet.field, facet]));
+  const excludedFields = new Set(catalogContract.excluded_fields.map((item) => item.field));
+  if (
+    stableJson(Object.keys(catalog).sort()) !== stableJson([...CONSEQUENTIAL_ROOT_FIELDS]) ||
+    !Array.isArray(catalog.domains) ||
+    catalog.domains.length === 0
+  ) {
+    fail();
+  }
+  const candidates = [];
+  const domainIds = new Set();
+  const entryIds = new Set();
+  for (const [domainIndex, domain] of catalog.domains.entries()) {
+    if (
+      !domain ||
+      typeof domain !== "object" ||
+      Array.isArray(domain) ||
+      stableJson(Object.keys(domain).sort()) !== stableJson([...CONSEQUENTIAL_DOMAIN_FIELDS]) ||
+      typeof domain.id !== "string" ||
+      !domain.id ||
+      domainIds.has(domain.id) ||
+      !Array.isArray(domain.entries)
+    ) {
+      fail();
+    }
+    domainIds.add(domain.id);
+    for (const [entryIndex, entry] of domain.entries.entries()) {
+      if (
+        !entry ||
+        typeof entry !== "object" ||
+        Array.isArray(entry) ||
+        Object.keys(entry).some((field) => !facets.has(field) && !excludedFields.has(field)) ||
+        typeof entry.id !== "string" ||
+        !entry.id ||
+        entryIds.has(entry.id)
+      ) {
+        fail();
+      }
+      entryIds.add(entry.id);
+      const ownerReferences = [];
+      for (const field of catalogContract.owner_reference_fields) {
+        if (!Object.hasOwn(entry, field)) continue;
+        const references = entry[field];
+        if (
+          !Array.isArray(references) ||
+          references.length > 1000 ||
+          references.some(
+            (item) =>
+              typeof item !== "string" ||
+              isPythonStripEmpty(item) ||
+              [...item].length > 1024,
+          ) ||
+          new Set(references).size !== references.length
+        ) {
+          fail();
+        }
+        ownerReferences.push(...references.map((reference) => ({ field, reference })));
+      }
+      ownerReferences.sort((left, right) => {
+        const fieldOrder = compareUnicodeCodePoints(left.field, right.field);
+        return fieldOrder || compareUnicodeCodePoints(left.reference, right.reference);
+      });
+      if (ownerReferences.length === 0) fail();
+      for (const [field, facet] of [...facets.entries()].sort(([left], [right]) =>
+        compareUnicodeCodePoints(left, right))) {
+        const value = entry[field];
+        if (typeof value !== "string" || isPythonStripEmpty(value)) {
+          fail();
+        }
+        const facetIdentity = {
+          source_path: catalogPath,
+          source_blob_oid: catalogContract.git_blob_oid,
+          domain_id: domain.id,
+          entry_id: entry.id,
+          field,
+        };
+        candidates.push({
+          facet_id: `urn:atlas:claim-facet:${digestObject(facetIdentity).slice(0, 24)}`,
+          source_path: catalogPath,
+          source_blob_oid: catalogContract.git_blob_oid,
+          source_pointer: `/domains/${domainIndex}/entries/${entryIndex}/${field.replaceAll("~", "~0").replaceAll("/", "~1")}`,
+          domain_id: domain.id,
+          entry_id: entry.id,
+          field,
+          classification: facet.classification,
+          review_state: facet.review_state,
+          owner_reference_digest: digestObject(ownerReferences),
+          value_digest: digestObject(value),
+        });
+        if (candidates.length > 100000) fail();
+      }
+    }
+  }
+  if (candidates.length === 0) fail();
+  candidates.sort((left, right) => compareUnicodeCodePoints(left.facet_id, right.facet_id));
+  if (new Set(candidates.map((item) => item.facet_id)).size !== candidates.length) fail();
+
+  const sourceReceipts = CONSEQUENTIAL_CLAIM_CONTENT_PATHS.map((path) => {
+    const source = rawSources.get(path);
+    return {
+      path,
+      git_blob_oid: source.gitBlobOid,
+      sha256: sha256(source.raw),
+      bytes: source.raw.byteLength,
+      classification: sourceByPath.get(path).classification,
+    };
+  });
+  const expected = {
+    schema_version: CONSEQUENTIAL_CLAIM_SCHEMA_VERSION,
+    denominator_kind: CONSEQUENTIAL_CLAIM_KIND,
+    state: "declared_incomplete",
+    closed: false,
+    source_commit: completeness.source_commit,
+    source_tree_digest: completeness.source_tree_digest,
+    source_basis: "selected_commit_raw_git_blobs",
+    contract_path: CONSEQUENTIAL_CLAIM_CONTRACT_PATH,
+    contract_git_blob_oid: contractSource.gitBlobOid,
+    contract_digest: sha256(contractSource.raw),
+    classification_digest: digestObject({
+      source_universe: contract.source_universe,
+      compiler_integrity_claims: contract.compiler_integrity_claims,
+    }),
+    source_universe_expected: 5,
+    source_universe_registered: 1,
+    source_universe_unclassified: 4,
+    source_receipts: sourceReceipts,
+    source_receipts_digest: digestObject(sourceReceipts),
+    expected_candidates: candidates.length,
+    discovered_candidates: candidates.length,
+    classified_candidates: candidates.length,
+    independently_reviewed_candidates: 0,
+    unresolved_candidates: candidates.length,
+    candidate_set_digest: digestObject(candidates),
+    compiler_integrity_claims_expected: 6,
+    compiler_integrity_claims_classified: 6,
+    compiler_integrity_claims_consequential: 0,
+    error_codes: [
+      "consequential_claim_independent_review_pending",
+      "consequential_claim_source_universe_incomplete",
+    ],
+  };
+  if (stableJson(summary) !== stableJson(expected)) fail();
 }
 
 function compareUnicodeCodePoints(left, right) {
@@ -1613,6 +2264,9 @@ async function writeSourceProjection({
   symbolsByPath,
   lineMetadataByPath,
   seenIds,
+  completeness,
+  claimPredicates,
+  claimUnavailableReason,
 }) {
   await mkdir(join(staging, "source", "chunks"), { recursive: true });
   const sourceFiles = Object.create(null);
@@ -1627,6 +2281,7 @@ async function writeSourceProjection({
       .map((file) => file.path),
   );
   const loadedSourcePaths = new Set();
+  const consequentialClaimSources = new Map();
   let physicalLineCount = 0;
   let nonblankLineCount = 0;
   await loadGroup(inputRoot, manifest, "source_text", {
@@ -1674,6 +2329,12 @@ async function writeSourceProjection({
       );
       if (reconstructed.byteLength !== record.byte_count || sha256(reconstructed) !== record.content_digest) {
         throw new Error(`source text does not round-trip for ${record.path}`);
+      }
+      if (CONSEQUENTIAL_CLAIM_PATHS.has(record.path)) {
+        consequentialClaimSources.set(record.path, {
+          raw: reconstructed,
+          gitBlobOid: record.git_blob_oid,
+        });
       }
       if (
         record.content_digest !== file.contentDigest ||
@@ -1824,6 +2485,16 @@ async function writeSourceProjection({
     if (!loadedSourcePaths.has(path) && lines.size) {
       throw new Error(`line records exist without exact source text: ${path}`);
     }
+  }
+  try {
+    validateConsequentialClaimCensus({
+      completeness,
+      rawSources: consequentialClaimSources,
+      claimPredicates,
+      unavailableReason: claimUnavailableReason,
+    });
+  } catch {
+    throw new Error("compiler consequential-claim census is inconsistent");
   }
 
   const loaderLines = Object.entries(sourceFiles).map(([path, descriptor]) =>
@@ -2713,7 +3384,7 @@ function parseArgs(argv) {
   return result;
 }
 
-export async function buildProjection({ input, output, allowPreview = false }) {
+async function buildProjectionUnsafe({ input, output, allowPreview = false }, lifecycle) {
   const inputRoot = await realpath(resolve(input));
   const outputRoot = assertSafeDestination(output);
   const { parsed: manifest } = await readCanonicalJson(inputRoot, "manifest.json");
@@ -2742,12 +3413,21 @@ export async function buildProjection({ input, output, allowPreview = false }) {
   ) {
     throw new Error("compiler completeness ledger is not bound or structurally complete");
   }
+  const isExactRelease =
+    manifest.release_class === "exact_commit" && manifest.tracked_worktree_dirty === false;
+  const isDirtyPreview =
+    manifest.release_class === "dirty_preview" && manifest.tracked_worktree_dirty === true;
+  if (
+    (!isExactRelease && !isDirtyPreview) ||
+    completeness.tracked_worktree_dirty !== manifest.tracked_worktree_dirty
+  ) {
+    throw new Error("compiler release class and tracked-worktree state are inconsistent");
+  }
   if (completeness.privacy?.forbidden_content_scan?.status !== "passed") {
     throw new Error("compiler privacy scan is absent or failed");
   }
   if (
-    !allowPreview &&
-    (manifest.release_class !== "exact_commit" || manifest.tracked_worktree_dirty !== false)
+    !allowPreview && !isExactRelease
   ) {
     throw new Error(
       "publishable projection requires release_class exact_commit and a clean tracked worktree; use --allow-preview only for an explicitly labelled local preview",
@@ -2949,12 +3629,21 @@ export async function buildProjection({ input, output, allowPreview = false }) {
   }
 
   const parent = dirname(outputRoot);
-  const staging = join(parent, `.${basename(outputRoot)}.staging-${process.pid}`);
-  await rm(staging, { recursive: true, force: true });
+  const stagingPrefix = `.${basename(outputRoot)}.staging-${process.pid}-`;
+  await mkdir(parent, { recursive: true });
+  const staging = await mkdtemp(join(parent, stagingPrefix));
+  const stagingInfo = await lstat(staging);
+  lifecycle.staging = {
+    path: staging,
+    parent,
+    prefix: stagingPrefix,
+    dev: stagingInfo.dev,
+    ino: stagingInfo.ino,
+  };
+  await writeFile(join(staging, GENERATED_MARKER), "atlas-projection-v1.1\n", "utf8");
   await mkdir(join(staging, "source"), { recursive: true });
   await mkdir(join(staging, "metadata"), { recursive: true });
   await mkdir(join(staging, "records"), { recursive: true });
-  await writeFile(join(staging, GENERATED_MARKER), "atlas-projection-v1.1\n", "utf8");
 
   const sourceProjection = await writeSourceProjection({
     staging,
@@ -2964,6 +3653,12 @@ export async function buildProjection({ input, output, allowPreview = false }) {
     symbolsByPath,
     lineMetadataByPath,
     seenIds,
+    completeness,
+    claimPredicates: groups.claims.map((record) => record.predicate),
+    claimUnavailableReason:
+      manifest.release_class === "dirty_preview" && manifest.tracked_worktree_dirty === true
+        ? "consequential_claim_dirty_preview_not_eligible"
+        : "consequential_claim_contract_absent",
   });
   const expectedSourceFiles = [...filesByPath.values()].filter((file) =>
     file.privacyExposure === "full" &&
@@ -3291,7 +3986,42 @@ export async function buildProjection({ input, output, allowPreview = false }) {
     "utf8",
   );
   await replaceGeneratedDirectory(staging, outputRoot);
+  lifecycle.staging = null;
   return outputManifest;
+}
+
+async function cleanupOwnedProjectionStaging(owner) {
+  if (!owner) return;
+  const absolute = resolve(owner.path);
+  const parent = resolve(owner.parent);
+  if (dirname(absolute) !== parent || !basename(absolute).startsWith(owner.prefix)) {
+    throw new Error("projection staging cleanup ownership check failed");
+  }
+  let info;
+  try {
+    info = await lstat(absolute);
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw new Error("projection staging cleanup ownership check failed");
+  }
+  if (!info.isDirectory() || info.dev !== owner.dev || info.ino !== owner.ino) {
+    throw new Error("projection staging cleanup ownership check failed");
+  }
+  await rm(absolute, { recursive: true, force: false });
+}
+
+export async function buildProjection(options) {
+  const lifecycle = { staging: null };
+  try {
+    return await buildProjectionUnsafe(options, lifecycle);
+  } catch (error) {
+    try {
+      await cleanupOwnedProjectionStaging(lifecycle.staging);
+    } catch {
+      throw new Error("projection staging cleanup failed");
+    }
+    throw error;
+  }
 }
 
 const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : "";

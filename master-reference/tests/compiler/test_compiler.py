@@ -124,6 +124,52 @@ def initialize_repository(root: Path, files: dict[str, str | bytes]) -> str:
     return git(root, "rev-parse", "HEAD")
 
 
+def consequential_claim_fixture_files() -> dict[str, str]:
+    contract = json.loads(
+        (MASTER_REFERENCE / "governance" / "consequential-claim-contract.json").read_text(encoding="utf-8")
+    )
+    content: dict[str, dict[str, object]] = {
+        "master-reference/content/atlas-core.json": {"schema_version": "fixture/1"},
+        "master-reference/content/capability-catalog.json": {
+            "schema_version": "fixture/1",
+            "id": "fixture.capability-catalog",
+            "catalog_version": "1",
+            "kind": "capability_catalog",
+            "denominator_rule": {"basis": "fixture"},
+            "entry_contract": {"basis": "fixture"},
+            "domains": [
+                {
+                    "id": "fixture.domain",
+                    "entity_role": "fixture",
+                    "entries": [
+                        {
+                            "id": "fixture.entry",
+                            "owner_refs": ["owner.fixture"],
+                            "gap_refs": [],
+                            "state": "fixture-state",
+                            "current_scope": "fixture-scope",
+                        }
+                    ],
+                }
+            ],
+        },
+        "master-reference/content/delivery-governance.json": {"schema_version": "fixture/1"},
+        "master-reference/content/open-horizon-register.json": {"schema_version": "fixture/1"},
+        "master-reference/content/output-contract.json": {"schema_version": "fixture/1"},
+    }
+    files: dict[str, str] = {}
+    for path, value in content.items():
+        rendered = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+        files[path] = rendered
+        next(item for item in contract["source_universe"] if item["path"] == path)["git_blob_oid"] = git_blob_oid(
+            rendered.encode("utf-8")
+        )
+    files["master-reference/governance/consequential-claim-contract.json"] = (
+        json.dumps(contract, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    )
+    return files
+
+
 def group_records(output: Path, group: str) -> list[dict[str, object]]:
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     records: list[dict[str, object]] = []
@@ -241,6 +287,57 @@ def commit_binary_receipt(
 
 
 class CompilerTests(unittest.TestCase):
+    def test_bounded_curated_claim_census_is_source_bound_but_never_closes_global_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            repository = base / "repo"
+            commit = initialize_repository(repository, consequential_claim_fixture_files())
+            output = base / "compiled"
+
+            manifest = compile_repository(repository, output)
+            validate_compiler_output(output)
+
+            ledger = json.loads((output / "completeness.json").read_text(encoding="utf-8"))
+            summary = ledger["consequential_claim_denominator"]
+            self.assertEqual(summary["denominator_kind"], "bounded_curated_content_claim_denominator")
+            self.assertEqual(summary["state"], "declared_incomplete")
+            self.assertFalse(summary["closed"])
+            self.assertEqual(summary["source_commit"], commit)
+            self.assertEqual(summary["source_tree_digest"], manifest["source_tree_digest"])
+            self.assertEqual((summary["source_universe_expected"], summary["source_universe_registered"]), (5, 1))
+            self.assertEqual(summary["source_universe_unclassified"], 4)
+            self.assertEqual(summary["expected_candidates"], 2)
+            self.assertEqual(summary["discovered_candidates"], 2)
+            self.assertEqual(summary["classified_candidates"], 2)
+            self.assertEqual(summary["unresolved_candidates"], 2)
+            self.assertEqual(summary["compiler_integrity_claims_classified"], 6)
+            self.assertEqual(summary["compiler_integrity_claims_consequential"], 0)
+            self.assertEqual(
+                summary["contract_git_blob_oid"],
+                git(repository, "rev-parse", f"{commit}:master-reference/governance/consequential-claim-contract.json"),
+            )
+            self.assertEqual(
+                {row["path"]: row["git_blob_oid"] for row in summary["source_receipts"]},
+                {
+                    path: git(repository, "rev-parse", f"{commit}:{path}")
+                    for path in compiler_module.CONSEQUENTIAL_CLAIM_CONTENT_PATHS
+                },
+            )
+            self.assertEqual(
+                summary["error_codes"],
+                [
+                    "consequential_claim_independent_review_pending",
+                    "consequential_claim_source_universe_incomplete",
+                ],
+            )
+            global_gate = next(
+                item for item in ledger["acceptance_gates"] if item["name"] == "consequential_claim_denominator_closed"
+            )
+            self.assertEqual(
+                global_gate,
+                {"name": "consequential_claim_denominator_closed", "passed": False, "expected": True, "actual": False},
+            )
+
     maxDiff = None
 
     def test_exact_census_ast_indices_graphify_and_byte_determinism(self) -> None:

@@ -1,0 +1,81 @@
+{
+  "schema_version": "bounded-curated-consequential-claims/1",
+  "contract_kind": "bounded_curated_content_claim_denominator",
+  "source_universe": [
+    {
+      "path": "master-reference/content/atlas-core.json",
+      "git_blob_oid": "27b7c166a78894d957bd3f35b5f64170dd11afb4",
+      "classification": "unclassified_source",
+      "reason_code": "consequential_claim_source_not_classified"
+    },
+    {
+      "path": "master-reference/content/capability-catalog.json",
+      "git_blob_oid": "19312d959afd79e0ae91330f6b864e0bcfba0456",
+      "classification": "candidate_census",
+      "semantic_collection_selector": "domains[].entries[]",
+      "id_field": "id",
+      "owner_reference_fields": ["owner_refs", "gap_refs"],
+      "root_fields": [
+        {"field": "catalog_version", "classification": "registry_metadata"},
+        {"field": "denominator_rule", "classification": "governance_metadata"},
+        {"field": "domains", "classification": "collection_container"},
+        {"field": "entry_contract", "classification": "governance_metadata"},
+        {"field": "id", "classification": "identifier_metadata"},
+        {"field": "kind", "classification": "registry_metadata"},
+        {"field": "schema_version", "classification": "registry_metadata"}
+      ],
+      "domain_fields": [
+        {"field": "entity_role", "classification": "governance_metadata"},
+        {"field": "entries", "classification": "collection_container"},
+        {"field": "id", "classification": "identifier_metadata"}
+      ],
+      "facets": [
+        {
+          "field": "state",
+          "classification": "consequential_claim_candidate",
+          "review_state": "pending_independent_review"
+        },
+        {
+          "field": "current_scope",
+          "classification": "consequential_claim_candidate",
+          "review_state": "pending_independent_review"
+        }
+      ],
+      "excluded_fields": [
+        {"field": "content_role", "classification": "governance_metadata"},
+        {"field": "gap_refs", "classification": "relationship_metadata"},
+        {"field": "id", "classification": "identifier_metadata"},
+        {"field": "mutates_assessment_truth", "classification": "governance_metadata"},
+        {"field": "owner_refs", "classification": "relationship_metadata"},
+        {"field": "title", "classification": "label_metadata"},
+        {"field": "traffic_plane_refs", "classification": "relationship_metadata"}
+      ]
+    },
+    {
+      "path": "master-reference/content/delivery-governance.json",
+      "git_blob_oid": "4db11fe882cc5c498c85e4b71c34979ae35e1b8b",
+      "classification": "unclassified_source",
+      "reason_code": "consequential_claim_source_not_classified"
+    },
+    {
+      "path": "master-reference/content/open-horizon-register.json",
+      "git_blob_oid": "ed375f35a60b7eb4cc5719223b5c349fd2bddba2",
+      "classification": "unclassified_source",
+      "reason_code": "consequential_claim_source_not_classified"
+    },
+    {
+      "path": "master-reference/content/output-contract.json",
+      "git_blob_oid": "e791ddf8e424de69e950b706fd18538cb90b4cd8",
+      "classification": "unclassified_source",
+      "reason_code": "consequential_claim_source_not_classified"
+    }
+  ],
+  "compiler_integrity_claims": [
+    {"predicate": "repository.full_exposure_file_count", "classification": "integrity_metadata", "consequential": false},
+    {"predicate": "repository.graphify_status", "classification": "integrity_metadata", "consequential": false},
+    {"predicate": "repository.nonblank_line_record_count", "classification": "integrity_metadata", "consequential": false},
+    {"predicate": "repository.source_commit", "classification": "integrity_metadata", "consequential": false},
+    {"predicate": "repository.source_tree_digest", "classification": "integrity_metadata", "consequential": false},
+    {"predicate": "repository.tracked_file_count", "classification": "integrity_metadata", "consequential": false}
+  ]
+}

@@ -31,6 +31,7 @@ from compiler.graphify import (  # noqa: E402
     OPAQUE_IDENTIFIER_POLICY,
 )
 from compiler.binary_review import unavailable_summary as unavailable_binary_review_summary  # noqa: E402
+from governance.consequential_claims import unavailable_bounded_curated_claim_summary  # noqa: E402
 from release.model import (  # noqa: E402
     ReleaseInputError,
     canonical_json,
@@ -91,6 +92,64 @@ def _git(repo: Path, *arguments: str, environment: dict[str, str] | None = None)
     if process.returncode:
         raise RuntimeError(process.stderr.decode("utf-8", errors="replace"))
     return process.stdout
+
+
+def _declared_claim_repository(tmp_path: Path) -> Path:
+    repo = tmp_path / "declared-claim-repo"
+    repo.mkdir()
+    _write(repo / "README.md", b"# Consequential claim fixture\n")
+    for name in (
+        "atlas-core.json",
+        "capability-catalog.json",
+        "delivery-governance.json",
+        "open-horizon-register.json",
+        "output-contract.json",
+    ):
+        _write(
+            repo / "master-reference" / "content" / name,
+            (MASTER_REFERENCE / "content" / name).read_bytes(),
+        )
+    _write(
+        repo / "master-reference" / "governance" / "consequential-claim-contract.json",
+        (MASTER_REFERENCE / "governance" / "consequential-claim-contract.json").read_bytes(),
+    )
+    _json(
+        repo / "master-reference" / "governance" / "architecture.json",
+        {
+            "schema_version": "2.0.0",
+            "python_import_roots": [],
+            "internal_module_prefixes": [],
+            "components": [
+                {
+                    "id": "repository",
+                    "paths": ["README.md", "master-reference/"],
+                }
+            ],
+            "exclusions": [],
+            "allowed_edges": [],
+            "forbidden_edges": [],
+            "runtime_phases": [{"id": "compile", "order": 1, "required": False}],
+            "synthetic_runtime_traces": [
+                {
+                    "id": "fixture",
+                    "events": [
+                        {
+                            "phase": "compile",
+                            "status": "passed",
+                            "receipt_id": "synthetic:fixture:compile",
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    _git(repo, "init", "-q")
+    _git(repo, "config", "core.autocrlf", "false")
+    _git(repo, "config", "user.name", "Atlas Test")
+    _git(repo, "config", "user.email", "atlas@example.invalid")
+    _git(repo, "add", "--all")
+    _git(repo, "commit", "-qm", "declared claim fixture")
+    return repo
 
 
 def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
@@ -487,7 +546,12 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
             "structurally_mapped_lines": len(records["lines"]),
             "gui_surface_records": 0,
             "gui_dossiers": 0,
+            "consequential_claim_denominator_state": "not_declared",
         },
+        "consequential_claim_denominator": unavailable_bounded_curated_claim_summary(
+            source_commit=commit,
+            source_tree_digest=source_tree_digest,
+        ),
         "invariants": [
             {"name": "fixture-complete", "passed": True, "expected": 1, "actual": 1},
             {
@@ -516,12 +580,17 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
                 not in {
                     "every_binary_has_format_aware_privacy_review",
                     "runtime_trace_evidence_joined_to_source_records",
+                    "consequential_claim_denominator_closed",
                 },
                 "expected": 0 if name == "every_binary_has_format_aware_privacy_review" else True,
                 "actual": (
                     0
                     if name == "every_binary_has_format_aware_privacy_review"
-                    else name != "runtime_trace_evidence_joined_to_source_records"
+                    else name
+                    not in {
+                        "runtime_trace_evidence_joined_to_source_records",
+                        "consequential_claim_denominator_closed",
+                    }
                 ),
             }
             for name in sorted(REQUIRED_ACCEPTANCE_GATES)
@@ -1208,6 +1277,63 @@ def test_compiler_bundle_preserves_pending_binary_review_and_rejects_custody_or_
             detached_compiler_output,
             repository_root=repo,
         )
+
+
+def test_compiler_bundle_recomputes_declared_claim_census_and_rejects_downgrade_or_json_type_confusion(
+    tmp_path: Path,
+) -> None:
+    repo = _declared_claim_repository(tmp_path)
+    compiler_output = tmp_path / "declared-claim-compiler"
+    compile_repository(repo, compiler_output)
+
+    bundle = compiler_bundle.load_compiler_bundle(compiler_output, repository_root=repo)
+    assert bundle.completeness["consequential_claim_denominator"]["state"] == "declared_incomplete"
+
+    completeness_path = compiler_output / "completeness.json"
+    manifest_path = compiler_output / "manifest.json"
+    original_completeness = json.loads(completeness_path.read_text(encoding="utf-8"))
+    original_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    def rechain(candidate: dict[str, object]) -> None:
+        candidate_raw = canonical_json(candidate)
+        _write(completeness_path, candidate_raw)
+        manifest = json.loads(json.dumps(original_manifest))
+        manifest["completeness"]["sha256"] = sha256_bytes(candidate_raw)
+        manifest["completeness"]["bytes"] = len(candidate_raw)
+        _write(manifest_path, canonical_json(manifest))
+
+    downgraded = json.loads(json.dumps(original_completeness))
+    downgraded["consequential_claim_denominator"] = unavailable_bounded_curated_claim_summary(
+        source_commit=downgraded["source_commit"],
+        source_tree_digest=downgraded["source_tree_digest"],
+    )
+    downgraded["semantic_accounting"]["consequential_claim_denominator_state"] = "not_declared"
+    rechain(downgraded)
+    for repository_root in (None, repo):
+        with pytest.raises(
+            ReleaseInputError,
+            match="compiler consequential-claim census is inconsistent",
+        ):
+            compiler_bundle.load_compiler_bundle(
+                compiler_output,
+                repository_root=repository_root,
+            )
+
+    confused = json.loads(json.dumps(original_completeness))
+    summary = confused["consequential_claim_denominator"]
+    summary["closed"] = 0
+    summary["source_universe_registered"] = True
+    gate = next(
+        item for item in confused["acceptance_gates"] if item["name"] == "consequential_claim_denominator_closed"
+    )
+    gate["expected"] = 1
+    gate["actual"] = 0
+    rechain(confused)
+    with pytest.raises(
+        ReleaseInputError,
+        match="compiler consequential-claim census is inconsistent",
+    ):
+        compiler_bundle.load_compiler_bundle(compiler_output, repository_root=repo)
 
 
 def test_dependency_assessment_names_unpatched_image_size_advisories() -> None:
