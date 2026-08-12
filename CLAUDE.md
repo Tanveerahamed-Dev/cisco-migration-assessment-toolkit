@@ -116,7 +116,7 @@ upstream patch, independently verified replacement, and fresh applicability revi
 
 ## graphify
 
-This project has a knowledge graph at graphify-out/ (12,881 nodes / 22,851 edges as of 2026-08-07 — `graphify-out/GRAPH_REPORT.md` header is the authoritative count and this figure is only a cache of it, so re-read the header rather than trusting this line; after the 2026-07-03 de-pollution that also
+This project has a knowledge graph at graphify-out/ (12,881 nodes / 22,851 edges as of 2026-08-07 — this figure is only a dated cache; the machine-readable owner is `graphify-out/graph.json`, so read it rather than copying this line; after the 2026-07-03 de-pollution that also
 excluded untracked scratch + side-engagement dirs — `ds-bundle/`+`.ds-sync/` (design-sync output), `*_DC_Design/`,
 `compass_artifact_*`, `scratch_*` — which had diluted it ~27%; the earlier 2026-06-25 pass excluded the stale `_ref/`
 engine copy + the graph's own `graphify-out/` dumps — see `.graphifyignore`). The live graph is
@@ -158,7 +158,16 @@ Rules:
   `benchmark` (the 5–15× token-reduction win).
 - Offline NAVIGATION (replaces the never-existent wiki): `python -m graphify tree` → graphify-out/GRAPH_TREE.html
   (D3 collapsible tree) and `python -m graphify export callflow-html` (Mermaid call-flow); `GRAPH_REPORT.md` for the
-  broad architecture review; `god_nodes` is the fastest map of the core abstractions.
+  broad architecture review; `god_nodes` is the fastest map of the core abstractions. **The report is a
+  derivative, not an SSOT:** installed Graphifyy 0.9.6 can count structural-only communities as “shown”,
+  can emit colliding/overlong community hub targets that do not match its collision-safe exporter, and its normal
+  watch/update path does not refresh the membership-signature sidecar needed to bind saved labels to the current
+  communities. Before using
+  report community coverage or navigation as evidence, run
+  `python -m tools.verify_graph_report graphify-out/graph.json graphify-out/GRAPH_REPORT.md`; the current
+  fixed report-residual BLOCK leaves the separately validated `graph.json` available for query/compiler use but
+  withholds those report claims. An input/graph-invalid receipt establishes no such validity. The verifier is deliberately
+  bound to the observed 0.9.6 file/stub predicate; reconcile it explicitly when the external producer changes.
 - EGRESS — do NOT use in this air-gapped repo (they break the no-egress doctrine): `graphify add <url>` (fetches
   URLs), `graphify label` (calls an LLM — forbidden even via a local backend: it would plant LLM-derived
   nodes, breaking the AST-only invariant above, which the local-Ollama carve-out does not license), and the

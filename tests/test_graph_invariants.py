@@ -15,14 +15,15 @@ Coverage-honest by construction (the graph is gitignored / owner-machine-only - 
 The locator is reused from :func:`cisco_toolkit.d10_eval_set.find_graph_json` (one owner, DRY) - it is
 already worktree-aware (resolves the main checkout via ``git rev-parse --git-common-dir``).
 """
+
 from __future__ import annotations
 
-import os
-import re
+from pathlib import Path
 
 import pytest
 
 from cisco_toolkit.d10_eval_set import find_graph_json, load_graph_settled
+from tools.verify_graph_report import KNOWN_EXTERNAL_REPORT_RESIDUALS, audit_graph_report
 
 # A real graph is ~7.5k nodes; the degenerate worktree partials observed were ~76-122. This floor
 # cleanly separates "the full owner-machine graph" (assert) from "a worktree stub" (skip) - it is a
@@ -40,8 +41,18 @@ _ALLOWED_ORIGINS = {"ast", None}
 # graph 2026-07-11). A test failure here means the schema grew - reconcile deliberately, don't paper over.
 _KNOWN_FILE_TYPES = {"code", "rationale", "document", "concept"}
 _KNOWN_RELATIONS = {
-    "calls", "contains", "defines", "imports", "imports_from", "indirect_call",
-    "inherits", "method", "rationale_for", "re_exports", "references", "uses",
+    "calls",
+    "contains",
+    "defines",
+    "imports",
+    "imports_from",
+    "indirect_call",
+    "inherits",
+    "method",
+    "rationale_for",
+    "re_exports",
+    "references",
+    "uses",
 }
 _REQUIRED_NODE_KEYS = {"id", "label", "file_type", "community", "source_file", "norm_label"}
 
@@ -50,8 +61,10 @@ def _load_graph():
     """The real graph as a dict, or a pytest SKIP - the coverage-honest gate every test shares."""
     path = find_graph_json()
     if not path:
-        pytest.skip("graph.json not reachable (clean clone / CI) - the graph is gitignored and "
-                    "owner-machine-only; invariants are checked where the graph lives")
+        pytest.skip(
+            "graph.json not reachable (clean clone / CI) - the graph is gitignored and "
+            "owner-machine-only; invariants are checked where the graph lives"
+        )
     graph, unsettled = load_graph_settled(path)
     if unsettled:
         # background git-hook rebuilds rewrite this file non-atomically under us; a torn read is a
@@ -59,8 +72,10 @@ def _load_graph():
         pytest.skip(f"graph.json could not be read as a settled whole: {unsettled}")
     n = len(graph.get("nodes", []))
     if n < _SUBSTANTIAL_FLOOR:
-        pytest.skip(f"degenerate/partial graph ({n} nodes < {_SUBSTANTIAL_FLOOR}) - the worktree stub, "
-                    "not the full owner-machine graph; the real build is asserted on the main checkout")
+        pytest.skip(
+            f"degenerate/partial graph ({n} nodes < {_SUBSTANTIAL_FLOOR}) - the worktree stub, "
+            "not the full owner-machine graph; the real build is asserted on the main checkout"
+        )
     return graph, path
 
 
@@ -82,7 +97,7 @@ def test_every_node_has_required_keys():
     graph, _ = _load_graph()
     for node in graph["nodes"]:
         missing = _REQUIRED_NODE_KEYS - set(node)
-        assert not missing, f"node {node.get('id','?')!r} missing keys {missing} - node schema drift"
+        assert not missing, f"node {node.get('id', '?')!r} missing keys {missing} - node schema drift"
 
 
 def test_no_llm_derived_nodes():
@@ -90,13 +105,12 @@ def test_no_llm_derived_nodes():
     ``graphify label`` (or any LLM extractor) would plant nodes carrying a non-AST ``_origin`` - this
     is the guard that turns that from a silent provenance breach into a red build."""
     graph, _ = _load_graph()
-    offenders = sorted({
-        node.get("_origin") for node in graph["nodes"] if node.get("_origin") not in _ALLOWED_ORIGINS
-    })
+    offenders = sorted({node.get("_origin") for node in graph["nodes"] if node.get("_origin") not in _ALLOWED_ORIGINS})
     assert not offenders, (
         f"non-AST node origin(s) {offenders} present - the AST-only / no-LLM-derived-nodes doctrine is "
         "violated (CLAUDE.md). If this is a NEW non-LLM extractor, widen _ALLOWED_ORIGINS deliberately; "
-        "if it is an LLM origin, a forbidden `graphify label`-class node was planted.")
+        "if it is an LLM origin, a forbidden `graphify label`-class node was planted."
+    )
 
 
 def test_file_types_within_known_enum():
@@ -113,22 +127,27 @@ def test_relation_kinds_within_known_vocabulary():
     assert not unknown, f"unknown edge relation(s) {unknown} - the edge vocabulary grew; reconcile intentionally"
 
 
-def test_node_count_reconciles_with_graph_report():
-    """Loose SSOT reconcile: CLAUDE.md names ``GRAPH_REPORT.md``'s header the AUTHORITATIVE node count.
-    graph.json (Stop-hook-refreshed) and the report (regenerated less often) legitimately differ, so the
-    bar is gross divergence, not equality - this is the assertion that would have caught the 76-node
-    worktree trap had the report sat beside it."""
-    graph, path = _load_graph()
-    report = os.path.join(os.path.dirname(path), "GRAPH_REPORT.md")
-    if not os.path.exists(report):
-        pytest.skip("GRAPH_REPORT.md not beside graph.json - nothing to reconcile against")
-    with open(report, encoding="utf-8") as f:
-        head = f.read(2000)
-    m = re.search(r"([\d,]+)\s+nodes", head)
-    if not m:
-        pytest.skip("could not parse a node count from GRAPH_REPORT.md header")
-    reported = int(m.group(1).replace(",", ""))
-    actual = len(graph["nodes"])
-    assert 0.5 * reported <= actual <= 1.5 * reported, (
-        f"graph.json has {actual} nodes vs GRAPH_REPORT.md's authoritative {reported} - "
-        "gross divergence (stale/partial graph or corrupt report)")
+def test_graph_report_is_exact_or_only_has_reviewed_external_residuals():
+    """Audit the report exactly without promoting an external-tool defect.
+
+    Graphifyy 0.9.6 overstates displayed communities when a community contains
+    only synthetic nodes and emits hub names that can collide with exporter
+    filenames.  The report is therefore a derivative, never the graph owner.
+    A future producer fix may make this PASS; until then, only the explicitly
+    reviewed fixed-code residuals are allowed.  Any new category is red.
+    """
+    _graph, path = _load_graph()
+    report = Path(path).with_name("GRAPH_REPORT.md")
+    assert report.is_file(), "substantial graph has no regular GRAPH_REPORT.md derivative to audit"
+
+    result = audit_graph_report(path, report)
+
+    assert "graph_report_label_membership_binding_unavailable" in result.error_codes
+    assert result.counts.get("graph_nodes", 0) >= _SUBSTANTIAL_FLOOR, (
+        "the stable graph/report/labels snapshot became degenerate after the initial owner-machine check"
+    )
+    assert set(result.error_codes) <= KNOWN_EXTERNAL_REPORT_RESIDUALS, (
+        "GRAPH_REPORT.md has an unreviewed integrity failure category; run "
+        "`python -m tools.verify_graph_report graphify-out/graph.json "
+        "graphify-out/GRAPH_REPORT.md` for the categorical receipt"
+    )
