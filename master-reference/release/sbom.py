@@ -1,20 +1,24 @@
 """CycloneDX 1.5 inventory from source-bound dependency declaration bytes.
 
-NPM package-lock v3 files provide direct and transitive resolution.  Python
-dependencies are explicitly marked as declarations because this repository has
-no hash-locked Python resolution file; the SBOM never invents transitive or
-installed-environment versions. Callers supply raw selected-commit Git-blob
-bytes so checkout filters cannot change parsing or provenance.
+NPM lock records are classified by their actual distribution evidence; a name
+and version alone are not called resolved. Python dependencies are explicitly
+marked as declarations because this repository has no hash-locked Python
+resolution file; the SBOM never invents transitive or installed-environment
+versions. Callers supply raw selected-commit Git-blob bytes so checkout filters
+cannot change parsing or provenance.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import re
+from collections import Counter
 from pathlib import PurePosixPath
 from typing import Any, Mapping
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from .model import ReleaseInputError, stable_id
 
@@ -30,6 +34,187 @@ PYTHON_DECLARATIONS = (
     "master-reference/requirements-release.txt",
     "webapp/requirements.txt",
 )
+# This release builder is repository-specific.  Fail closed if the PEP 621 owner
+# changes instead of treating an arbitrary string as a validated SPDX expression.
+PROJECT_LICENSE_EXPRESSION = "LicenseRef-Proprietary"
+_NPM_LICENSE_ATOMS = frozenset(
+    {
+        "0BSD",
+        "Apache-2.0",
+        "BSD-2-Clause",
+        "BSD-3-Clause",
+        "BlueOak-1.0.0",
+        "CC-BY-4.0",
+        "CC0-1.0",
+        "ISC",
+        "LGPL-3.0-or-later",
+        "MIT",
+        "MIT-0",
+        "MPL-2.0",
+    }
+)
+_NPM_LICENSE_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]*")
+_NPM_SRI = re.compile(
+    r"(?:sha256|sha384|sha512)-[A-Za-z0-9+/]+={0,2}"
+    r"(?:\s+(?:sha256|sha384|sha512)-[A-Za-z0-9+/]+={0,2})*"
+)
+
+
+def _npm_license_declaration(raw: object) -> tuple[str | None, str]:
+    if raw is None:
+        return None, "absent"
+    if not isinstance(raw, str):
+        return None, "rejected-non-string"
+    value = raw.strip()
+    if not value:
+        return None, "rejected-empty"
+
+    tokens: list[str] = []
+    offset = 0
+    while offset < len(value):
+        if value[offset].isspace():
+            offset += 1
+            continue
+        if value[offset] in "()":
+            tokens.append(value[offset])
+            offset += 1
+            continue
+        match = _NPM_LICENSE_TOKEN.match(value, offset)
+        if match is None:
+            return None, "rejected-unvalidated-syntax"
+        tokens.append(match.group(0))
+        offset = match.end()
+
+    index = 0
+
+    def primary() -> bool:
+        nonlocal index
+        if index >= len(tokens):
+            return False
+        token = tokens[index]
+        if token in _NPM_LICENSE_ATOMS:
+            index += 1
+            return True
+        if token != "(":
+            return False
+        index += 1
+        if not disjunction() or index >= len(tokens) or tokens[index] != ")":
+            return False
+        index += 1
+        return True
+
+    def conjunction() -> bool:
+        nonlocal index
+        if not primary():
+            return False
+        while index < len(tokens) and tokens[index] == "AND":
+            index += 1
+            if not primary():
+                return False
+        return True
+
+    def disjunction() -> bool:
+        nonlocal index
+        if not conjunction():
+            return False
+        while index < len(tokens) and tokens[index] == "OR":
+            index += 1
+            if not conjunction():
+                return False
+        return True
+
+    if not tokens or not disjunction() or index != len(tokens):
+        return None, "rejected-unvalidated-syntax"
+    return value, "accepted-bounded-spdx-syntax"
+
+
+def _npm_integrity(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    if _NPM_SRI.fullmatch(cleaned) is None:
+        return None
+    expected_sizes = {"sha256": 32, "sha384": 48, "sha512": 64}
+    for token in cleaned.split():
+        algorithm, encoded = token.split("-", 1)
+        try:
+            digest = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError):
+            return None
+        if len(digest) != expected_sizes[algorithm]:
+            return None
+    return cleaned
+
+
+def _npm_distribution_url(value: object) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    cleaned = value.strip()
+    try:
+        parsed = urlsplit(cleaned)
+    except ValueError:
+        return None
+    return cleaned if parsed.scheme.lower() == "https" and bool(parsed.netloc) else None
+
+
+def _is_local_npm_reference(value: object) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    cleaned = value.strip()
+    if re.match(r"^[A-Za-z]:[\\/]", cleaned):
+        return True
+    try:
+        parsed = urlsplit(cleaned)
+    except ValueError:
+        return False
+    return parsed.scheme.lower() in {"file", "link", "workspace"} or not parsed.scheme
+
+
+def _npm_local_link_target(value: object) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    cleaned = value.strip().replace("\\", "/")
+    while cleaned.startswith("./"):
+        cleaned = cleaned[2:]
+    path = PurePosixPath(cleaned)
+    if path.is_absolute() or ".." in path.parts or not path.parts:
+        return None
+    return path.as_posix()
+
+
+def _npm_record_evidence(
+    node_path: str,
+    item: dict[str, Any],
+    version: str | None,
+) -> tuple[str, str, str]:
+    if node_path == "":
+        return "first-party-workspace", "lockfile-workspace-root", "not-applicable-workspace-root"
+    if item.get("link") is True:
+        return "local-link-record", "lockfile-local-link", "local-link"
+    if "node_modules" not in PurePosixPath(node_path).parts or _is_local_npm_reference(item.get("resolved")):
+        return "local-package-record", "lockfile-local-package", "local-package"
+
+    distribution_url = _npm_distribution_url(item.get("resolved"))
+    integrity = _npm_integrity(item.get("integrity"))
+    if version and distribution_url and integrity:
+        return (
+            "resolved-third-party-component",
+            "lockfile-distribution-bound",
+            "https-distribution-url-and-valid-sri",
+        )
+    if not version:
+        return "unversioned-non-root-lock-record", "lockfile-unversioned", "unversioned"
+    if distribution_url and not integrity:
+        evidence = "missing-or-invalid-integrity"
+    elif integrity and not distribution_url:
+        evidence = "missing-or-invalid-https-distribution-url"
+    else:
+        evidence = "missing-or-invalid-url-and-integrity"
+    return (
+        "versioned-lock-record-missing-distribution-evidence",
+        "lockfile-version-only-not-resolved",
+        evidence,
+    )
 
 
 def _npm_name(node_path: str, item: dict[str, Any]) -> str | None:
@@ -71,12 +256,19 @@ def _purl_npm(name: str, version: str) -> str:
 
 def _npm_components(
     source_files: Mapping[str, bytes],
-) -> tuple[list[dict[str, Any]], dict[str, set[str]], list[dict[str, Any]], int]:
+) -> tuple[
+    list[dict[str, Any]],
+    dict[str, set[str]],
+    list[dict[str, Any]],
+    int,
+    dict[str, int],
+]:
     components: list[dict[str, Any]] = []
     components_by_ref: dict[str, dict[str, Any]] = {}
     dependency_map: dict[str, set[str]] = {}
     roots: list[dict[str, Any]] = []
     unresolved_optional_declarations = 0
+    evidence_counts: Counter[str] = Counter()
     for relative in NPM_LOCKFILES:
         try:
             lock = json.loads(source_files[relative].decode("utf-8", errors="strict"))
@@ -84,7 +276,11 @@ def _npm_components(
             raise ReleaseInputError(f"missing npm lockfile source bytes: {relative}") from exc
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ReleaseInputError(f"could not parse npm lockfile: {relative}") from exc
-        if not isinstance(lock, dict) or lock.get("lockfileVersion") not in {2, 3} or not isinstance(lock.get("packages"), dict):
+        if (
+            not isinstance(lock, dict)
+            or lock.get("lockfileVersion") not in {2, 3}
+            or not isinstance(lock.get("packages"), dict)
+        ):
             raise ReleaseInputError(f"unsupported or malformed npm lockfile: {relative}")
         packages: dict[str, Any] = lock["packages"]
         refs: dict[str, str] = {}
@@ -92,49 +288,86 @@ def _npm_components(
             if not isinstance(item, dict):
                 raise ReleaseInputError(f"malformed package entry in {relative}: {node_path}")
             name = _npm_name(node_path, item)
-            version = item.get("version")
-            if not name or not isinstance(version, str) or not version:
-                if node_path == "":
-                    name = str(lock.get("name") or "unnamed-npm-workspace")
-                    version = str(lock.get("version") or "0.0.0")
-                else:
-                    # Link/workspace entries without resolved identity are retained as evidence,
-                    # but cannot be represented as resolved external packages.
-                    continue
-            bom_ref = stable_id("npm-component", relative, node_path, name, version)
+            raw_version = item.get("version")
+            version = raw_version.strip() if isinstance(raw_version, str) and raw_version.strip() else None
+            if node_path == "":
+                name = name or str(lock.get("name") or "unnamed-npm-workspace")
+                version = version or str(lock.get("version") or "0.0.0")
+            else:
+                name = name or PurePosixPath(node_path).name or "unnamed-npm-lock-record"
+            record_kind, resolution, distribution_evidence = _npm_record_evidence(
+                node_path,
+                item,
+                version,
+            )
+            bom_ref = stable_id(
+                "npm-component",
+                relative,
+                node_path,
+                name,
+                version or "<unversioned>",
+            )
             refs[node_path] = bom_ref
             properties = [
                 {"name": "atlas:lockfile", "value": relative},
                 {"name": "atlas:lockfilePath", "value": node_path or "<root>"},
-                {"name": "atlas:resolution", "value": "lockfile-resolved"},
+                {"name": "atlas:resolution", "value": resolution},
                 {"name": "atlas:developmentOnly", "value": str(bool(item.get("dev"))).lower()},
+                {"name": "atlas:recordKind", "value": record_kind},
+                {"name": "atlas:distributionEvidenceStatus", "value": distribution_evidence},
             ]
+            if node_path == "":
+                properties.append(
+                    {
+                        "name": "atlas:licenseScope",
+                        "value": "repository-governed-first-party-no-expression-in-lockfile",
+                    }
+                )
             component: dict[str, Any] = {
                 "type": "application" if node_path == "" else "library",
                 "bom-ref": bom_ref,
                 "group": name.split("/", 1)[0] if name.startswith("@") else "",
                 "name": name.split("/", 1)[-1],
-                "version": version,
-                "purl": _purl_npm(name, version),
                 "properties": properties,
             }
-            if isinstance(item.get("license"), str):
-                component["licenses"] = [{"expression": item["license"]}]
-            if isinstance(item.get("integrity"), str):
-                component["externalReferences"] = [
-                    {"type": "distribution", "url": str(item.get("resolved") or "urn:atlas:undisclosed-distribution")}
-                ]
-                component["properties"].append({"name": "atlas:npmIntegrity", "value": item["integrity"]})
+            if version is not None:
+                component["version"] = version
+                component["purl"] = _purl_npm(name, version)
+            license_expression, license_declaration_status = _npm_license_declaration(item.get("license"))
+            component["properties"].append(
+                {
+                    "name": "atlas:npmLicenseDeclarationStatus",
+                    "value": license_declaration_status,
+                }
+            )
+            if license_expression is not None:
+                component["licenses"] = [{"expression": license_expression}]
+            distribution_url = _npm_distribution_url(item.get("resolved"))
+            integrity = _npm_integrity(item.get("integrity"))
+            if distribution_url is not None:
+                component["externalReferences"] = [{"type": "distribution", "url": distribution_url}]
+            if integrity is not None:
+                component["properties"].append({"name": "atlas:npmIntegrity", "value": integrity})
             components.append(component)
             components_by_ref[bom_ref] = component
             dependency_map.setdefault(bom_ref, set())
             if node_path == "":
                 roots.append({"lockfile": relative, "bom-ref": bom_ref})
+            else:
+                evidence_counts["non_root_records"] += 1
+                evidence_counts[f"record_kind:{record_kind}"] += 1
+                evidence_counts[f"license:{license_declaration_status}"] += 1
 
         for node_path, item in sorted(packages.items()):
             source_ref = refs.get(node_path)
             if not source_ref or not isinstance(item, dict):
                 continue
+            if item.get("link") is True:
+                target_path = _npm_local_link_target(item.get("resolved"))
+                target_ref = refs.get(target_path) if target_path is not None else None
+                if target_ref is None:
+                    raise ReleaseInputError(f"unresolved npm local link in {relative}: {node_path}")
+                dependency_map[source_ref].add(target_ref)
             for field in (
                 "dependencies",
                 "devDependencies",
@@ -146,9 +379,7 @@ def _npm_components(
                     continue
                 for name, constraint in sorted(value.items()):
                     if not isinstance(name, str) or not isinstance(constraint, str):
-                        raise ReleaseInputError(
-                            f"malformed {field} declaration in {relative}: {node_path}"
-                        )
+                        raise ReleaseInputError(f"malformed {field} declaration in {relative}: {node_path}")
                     resolved_path = _resolve_npm(packages, node_path, name)
                     target_ref = refs.get(resolved_path) if resolved_path is not None else None
                     if target_ref:
@@ -173,7 +404,13 @@ def _npm_components(
                         }
                     )
                     unresolved_optional_declarations += 1
-    return components, dependency_map, roots, unresolved_optional_declarations
+    return (
+        components,
+        dependency_map,
+        roots,
+        unresolved_optional_declarations,
+        dict(evidence_counts),
+    )
 
 
 _REQUIREMENT = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[([^\]]+)\])?\s*(.*)$")
@@ -194,6 +431,11 @@ def _requirement_component(raw: str, origin: str, scope: str) -> dict[str, Any] 
         {"name": "atlas:declarationScope", "value": scope},
         {"name": "atlas:declaredConstraint", "value": constraint.strip() or "unconstrained"},
         {"name": "atlas:resolution", "value": "declared-unlocked"},
+        {"name": "atlas:recordKind", "value": "dependency-declaration"},
+        {
+            "name": "atlas:licenseScope",
+            "value": "not-assessed-until-version-and-distribution-are-locked",
+        },
     ]
     if extras:
         properties.append({"name": "atlas:extras", "value": extras})
@@ -231,8 +473,30 @@ def _python_components(
         "name": project_name,
         "version": project_version,
         "purl": f"pkg:pypi/{quote(project_name, safe='')}@{quote(project_version, safe='')}",
-        "properties": [{"name": "atlas:resolution", "value": "project-metadata"}],
+        "properties": [
+            {"name": "atlas:resolution", "value": "project-metadata"},
+            {"name": "atlas:recordKind", "value": "first-party-project"},
+            {"name": "atlas:licenseScope", "value": "repository-governed-first-party"},
+        ],
     }
+    project_license = project.get("license")
+    if project_license == PROJECT_LICENSE_EXPRESSION:
+        root_component["licenses"] = [{"expression": PROJECT_LICENSE_EXPRESSION}]
+        root_component["properties"].append(
+            {
+                "name": "atlas:licenseEvidence",
+                "value": "pyproject.toml:[project].license",
+            }
+        )
+    else:
+        root_component["properties"].append(
+            {
+                "name": "atlas:licenseEvidence",
+                "value": (
+                    f"pyproject.toml:[project].license-missing-or-not-the-owned-{PROJECT_LICENSE_EXPRESSION}-expression"
+                ),
+            }
+        )
     components.append(root_component)
     declarations.append({"manifest": "pyproject.toml", "bom-ref": root_ref})
     for raw in project.get("dependencies", []):
@@ -265,7 +529,13 @@ def build_cyclonedx(
     source_commit: str,
     source_tree_digest: str,
 ) -> dict[str, Any]:
-    npm_components, npm_edges, npm_roots, npm_unresolved_optional = _npm_components(source_files)
+    (
+        npm_components,
+        npm_edges,
+        npm_roots,
+        npm_unresolved_optional,
+        npm_evidence_counts,
+    ) = _npm_components(source_files)
     python_components, python_roots = _python_components(source_files)
     components = sorted(npm_components + python_components, key=lambda item: item["bom-ref"])
     component_ref_list = [str(component["bom-ref"]) for component in components]
@@ -277,8 +547,7 @@ def build_cyclonedx(
         seen_refs.add(component_ref)
     if duplicate_refs:
         raise ReleaseInputError(
-            f"SBOM contains {len(duplicate_refs)} duplicate component refs: "
-            + ", ".join(sorted(duplicate_refs)[:5])
+            f"SBOM contains {len(duplicate_refs)} duplicate component refs: " + ", ".join(sorted(duplicate_refs)[:5])
         )
     component_refs = set(component_ref_list)
     for component in components:
@@ -308,9 +577,7 @@ def build_cyclonedx(
         *python_root_refs,
     }
 
-    unknown_targets = sorted(
-        {target for targets in dependency_map.values() for target in targets} - component_refs
-    )
+    unknown_targets = sorted({target for targets in dependency_map.values() for target in targets} - component_refs)
     if unknown_targets:
         raise ReleaseInputError(
             f"SBOM dependency graph contains {len(unknown_targets)} unknown component refs: "
@@ -333,8 +600,43 @@ def build_cyclonedx(
     dependency_edges = sum(len(targets) for targets in dependency_map.values())
 
     serial_seed = hashlib.sha256(f"{source_commit}\x1f{source_tree_digest}".encode()).hexdigest()
+    properties_by_ref = {
+        str(component["bom-ref"]): {
+            str(item.get("name")): str(item.get("value"))
+            for item in component.get("properties", [])
+            if isinstance(item, dict)
+        }
+        for component in components
+    }
+    resolved_third_party = [
+        component
+        for component in components
+        if properties_by_ref[str(component["bom-ref"])].get("atlas:recordKind") == "resolved-third-party-component"
+    ]
+    first_party_records = [
+        component
+        for component in components
+        if properties_by_ref[str(component["bom-ref"])].get("atlas:recordKind")
+        in {"first-party-project", "first-party-workspace"}
+    ]
+    python_declaration_records = [
+        component
+        for component in components
+        if properties_by_ref[str(component["bom-ref"])].get("atlas:recordKind") == "dependency-declaration"
+    ]
+    python_declaration_names = {str(component["name"]) for component in python_declaration_records}
     license_declared = sum(1 for component in components if component.get("licenses"))
     license_unknown = len(components) - license_declared
+    resolved_third_party_license_declared = sum(1 for component in resolved_third_party if component.get("licenses"))
+    resolved_third_party_license_unknown = len(resolved_third_party) - resolved_third_party_license_declared
+    if not resolved_third_party:
+        resolved_third_party_license_status = "not-assessed-empty-denominator"
+    elif resolved_third_party_license_unknown:
+        resolved_third_party_license_status = "declared-incomplete-unknowns-present"
+    else:
+        resolved_third_party_license_status = "declared-complete-for-distribution-bound-npm-components"
+    first_party_license_declared = sum(1 for component in first_party_records if component.get("licenses"))
+    first_party_repository_governed_without_expression = len(first_party_records) - first_party_license_declared
     python_unlocked = sum(
         1
         for component in python_components
@@ -368,13 +670,12 @@ def build_cyclonedx(
             ],
         },
         "components": components,
-        "dependencies": [
-            {"ref": key, "dependsOn": sorted(values)} for key, values in sorted(dependency_map.items())
-        ],
+        "dependencies": [{"ref": key, "dependsOn": sorted(values)} for key, values in sorted(dependency_map.items())],
         "properties": [
             {"name": "atlas:npmRoots", "value": str(len(npm_roots))},
             {"name": "atlas:pythonManifestRoots", "value": str(len(python_roots))},
             {"name": "atlas:componentDenominator", "value": str(len(components))},
+            {"name": "atlas:recordDenominator", "value": str(len(components))},
             {"name": "atlas:componentGraphReachable", "value": str(len(component_refs))},
             {"name": "atlas:componentGraphDisconnected", "value": "0"},
             {"name": "atlas:dependencyEdges", "value": str(dependency_edges)},
@@ -382,16 +683,135 @@ def build_cyclonedx(
                 "name": "atlas:unresolvedOptionalNpmDeclarations",
                 "value": str(npm_unresolved_optional),
             },
+            {
+                "name": "atlas:npmNonRootRecordDenominator",
+                "value": str(npm_evidence_counts.get("non_root_records", 0)),
+            },
+            {
+                "name": "atlas:npmDistributionBoundThirdPartyRecords",
+                "value": str(
+                    npm_evidence_counts.get(
+                        "record_kind:resolved-third-party-component",
+                        0,
+                    )
+                ),
+            },
+            {
+                "name": "atlas:npmLocalLinkRecords",
+                "value": str(npm_evidence_counts.get("record_kind:local-link-record", 0)),
+            },
+            {
+                "name": "atlas:npmLocalPackageRecords",
+                "value": str(npm_evidence_counts.get("record_kind:local-package-record", 0)),
+            },
+            {
+                "name": "atlas:npmVersionedMissingDistributionEvidenceRecords",
+                "value": str(
+                    npm_evidence_counts.get(
+                        "record_kind:versioned-lock-record-missing-distribution-evidence",
+                        0,
+                    )
+                ),
+            },
+            {
+                "name": "atlas:npmUnversionedRecords",
+                "value": str(
+                    npm_evidence_counts.get(
+                        "record_kind:unversioned-non-root-lock-record",
+                        0,
+                    )
+                ),
+            },
+            {
+                "name": "atlas:npmLicenseDeclarationsAcceptedBoundedSyntax",
+                "value": str(
+                    npm_evidence_counts.get(
+                        "license:accepted-bounded-spdx-syntax",
+                        0,
+                    )
+                ),
+            },
+            {
+                "name": "atlas:npmLicenseDeclarationsRejectedEmpty",
+                "value": str(npm_evidence_counts.get("license:rejected-empty", 0)),
+            },
+            {
+                "name": "atlas:npmLicenseDeclarationsRejectedSyntax",
+                "value": str(
+                    npm_evidence_counts.get(
+                        "license:rejected-unvalidated-syntax",
+                        0,
+                    )
+                ),
+            },
+            {
+                "name": "atlas:npmLicenseDeclarationsRejectedNonString",
+                "value": str(npm_evidence_counts.get("license:rejected-non-string", 0)),
+            },
+            {
+                "name": "atlas:npmLicenseDeclarationsAbsent",
+                "value": str(npm_evidence_counts.get("license:absent", 0)),
+            },
             {"name": "atlas:licenseDeclared", "value": str(license_declared)},
             {"name": "atlas:licenseUnknown", "value": str(license_unknown)},
+            {
+                "name": "atlas:legacyLicenseCountScope",
+                "value": "all-component-records-including-unresolved-declarations",
+            },
+            {
+                "name": "atlas:resolvedThirdPartyComponentDenominator",
+                "value": str(len(resolved_third_party)),
+            },
+            {
+                "name": "atlas:resolvedThirdPartyLicenseDeclared",
+                "value": str(resolved_third_party_license_declared),
+            },
+            {
+                "name": "atlas:resolvedThirdPartyLicenseUnknown",
+                "value": str(resolved_third_party_license_unknown),
+            },
+            {
+                "name": "atlas:resolvedThirdPartyLicenseStatus",
+                "value": resolved_third_party_license_status,
+            },
+            {
+                "name": "atlas:resolvedThirdPartyLicenseEvidence",
+                "value": "package-lock-license-fields-only-no-license-file-verification",
+            },
+            {
+                "name": "atlas:firstPartyRecordDenominator",
+                "value": str(len(first_party_records)),
+            },
+            {
+                "name": "atlas:firstPartyLicenseDeclared",
+                "value": str(first_party_license_declared),
+            },
+            {
+                "name": "atlas:firstPartyRepositoryGovernedWithoutExpression",
+                "value": str(first_party_repository_governed_without_expression),
+            },
             {"name": "atlas:vulnerabilityAssessed", "value": "0"},
             {"name": "atlas:vulnerabilityNotAssessed", "value": str(len(components))},
             {"name": "atlas:pythonDeclaredUnlocked", "value": str(python_unlocked)},
             {
+                "name": "atlas:pythonDeclarationRecords",
+                "value": str(len(python_declaration_records)),
+            },
+            {
+                "name": "atlas:pythonDeclarationUniqueNames",
+                "value": str(len(python_declaration_names)),
+            },
+            {
+                "name": "atlas:pythonTransitiveLockStatus",
+                "value": "blocked-no-transitive-lock",
+            },
+            {
                 "name": "atlas:releaseGate",
                 "value": (
                     "BLOCK: Python transitive lock and vulnerability assessment remain incomplete; "
-                    f"components with unknown license={license_unknown}"
+                    f"unresolved Python declaration records={len(python_declaration_records)} "
+                    f"across unique names={len(python_declaration_names)}; "
+                    f"legacy full-record components with unknown license={license_unknown}"
                 ),
             },
             {
