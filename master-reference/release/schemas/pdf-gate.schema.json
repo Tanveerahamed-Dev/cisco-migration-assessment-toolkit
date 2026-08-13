@@ -1,0 +1,299 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.local/schema/pdf-gate/1.1.0",
+  "oneOf": [
+    {"$ref": "#/$defs/noPdf"},
+    {"$ref": "#/$defs/externalPdf"},
+    {"$ref": "#/$defs/generatedPdf"}
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "nonblank": {"type": "string", "minLength": 1, "maxLength": 2048},
+    "globalDenominator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expected_candidates", "in_scope_candidates", "out_of_scope_candidates", "independently_reviewed", "unresolved", "claim_contract_digest", "classification_digest", "source_receipts_digest", "candidate_set_digest"],
+      "properties": {
+        "expected_candidates": {"const": 2136},
+        "in_scope_candidates": {"const": 315},
+        "out_of_scope_candidates": {"const": 1821},
+        "independently_reviewed": {"const": 0},
+        "unresolved": {"const": 2136},
+        "claim_contract_digest": {"const": "4ebd7da5caa6aab63f3ba122d480fef638f46b866c665845087433074f436c8d"},
+        "classification_digest": {"const": "b5bc4783b8bd6461fc4669b39a555ae061081a278e36712cdb6f70a5e673d1df"},
+        "source_receipts_digest": {"const": "863f93c7bc0599b1cfe7e5b42eb5b10c8087a704af9de194be18d9bf28008689"},
+        "candidate_set_digest": {"const": "a768b5a6c9a94390ada8e9c24627c8908f6a7b51e3f06d59b79ac8f1a5ffdd43"}
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "git_blob_oid", "candidate_count", "candidate_digest", "facet_id_set_digest", "safety_input_count"],
+      "properties": {
+        "path": {"const": "master-reference/content/open-horizon-register.json"},
+        "git_blob_oid": {"type": "string", "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$"},
+        "candidate_count": {"enum": [0, 315]},
+        "candidate_digest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]},
+        "facet_id_set_digest": {"$ref": "#/$defs/digest"},
+        "safety_input_count": {"enum": [0, 53]}
+      }
+    },
+    "observedSink": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sink_id", "state", "closes_global_gate", "expected", "mapped_exactly_once", "rendered", "explicitly_omitted", "unmapped", "multiply_mapped", "fallback_count", "fixed_prose_counted_as_source", "safety_inputs_expected", "safety_inputs_bound", "safety_violations", "rendered_subject_digest", "omitted_subject_digest", "subject_set_digest", "safety_input_digest", "producer_verdict", "independent_verdict", "error_codes"],
+      "properties": {
+        "sink_id": {"enum": ["pdf.open-horizon", "web.gaps.open-horizon"]},
+        "state": {"const": "mapped_declared_incomplete_slice"},
+        "closes_global_gate": {"const": false},
+        "expected": {"const": 315},
+        "mapped_exactly_once": {"const": 315},
+        "rendered": {"const": 167},
+        "explicitly_omitted": {"const": 148},
+        "unmapped": {"const": 0},
+        "multiply_mapped": {"const": 0},
+        "fallback_count": {"const": 0},
+        "fixed_prose_counted_as_source": {"const": 0},
+        "safety_inputs_expected": {"const": 53},
+        "safety_inputs_bound": {"const": 53},
+        "safety_violations": {"const": 0},
+        "rendered_subject_digest": {"$ref": "#/$defs/digest"},
+        "omitted_subject_digest": {"$ref": "#/$defs/digest"},
+        "subject_set_digest": {"$ref": "#/$defs/digest"},
+        "safety_input_digest": {"$ref": "#/$defs/digest"},
+        "producer_verdict": {"const": "PASS"},
+        "independent_verdict": {"const": "BLOCK"},
+        "error_codes": {"const": ["rendered_sink_universe_incomplete", "rendered_sink_independent_review_pending"]}
+      }
+    },
+    "notObservedSink": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sink_id", "state", "closes_global_gate", "expected", "mapped_exactly_once", "rendered", "explicitly_omitted", "unmapped", "multiply_mapped", "fallback_count", "fixed_prose_counted_as_source", "safety_inputs_expected", "safety_inputs_bound", "safety_violations", "producer_verdict", "independent_verdict", "error_codes"],
+      "properties": {
+        "sink_id": {"enum": ["pdf.open-horizon", "web.gaps.open-horizon"]},
+        "state": {"const": "not_observed"},
+        "closes_global_gate": {"const": false},
+        "expected": {"const": 315},
+        "mapped_exactly_once": {"const": 0},
+        "rendered": {"const": 0},
+        "explicitly_omitted": {"const": 0},
+        "unmapped": {"const": 315},
+        "multiply_mapped": {"const": 0},
+        "fallback_count": {"const": 0},
+        "fixed_prose_counted_as_source": {"const": 0},
+        "safety_inputs_expected": {"const": 53},
+        "safety_inputs_bound": {"const": 0},
+        "safety_violations": {"const": 53},
+        "producer_verdict": {"const": "BLOCK"},
+        "independent_verdict": {"const": "BLOCK"},
+        "error_codes": {"const": ["rendered_sink_not_observed"]}
+      }
+    },
+    "lineage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "id", "state", "closes_global_gate", "global_denominator", "source", "contract_digest", "sink_universe_complete", "declared_sink_count", "observed_sink_count", "sink_receipts", "sink_receipts_digest", "independent_verdict", "error_codes"],
+      "properties": {
+        "schema_version": {"const": "rendered-sink-lineage/1.0.0"},
+        "id": {"const": "atlas.rendered-sink-lineage.open-horizon.v1"},
+        "state": {"enum": ["declared_incomplete", "not_declared"]},
+        "closes_global_gate": {"const": false},
+        "global_denominator": {"$ref": "#/$defs/globalDenominator"},
+        "source": {"$ref": "#/$defs/source"},
+        "contract_digest": {"$ref": "#/$defs/digest"},
+        "sink_universe_complete": {"const": false},
+        "declared_sink_count": {"const": 2},
+        "observed_sink_count": {"type": "integer", "minimum": 0, "maximum": 1},
+        "sink_receipts": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {"oneOf": [{"$ref": "#/$defs/observedSink"}, {"$ref": "#/$defs/notObservedSink"}], "properties": {"sink_id": {"const": "pdf.open-horizon"}}, "required": ["sink_id"]},
+            {"allOf": [{"$ref": "#/$defs/notObservedSink"}, {"properties": {"sink_id": {"const": "web.gaps.open-horizon"}}, "required": ["sink_id"]}]}
+          ],
+          "items": false
+        },
+        "sink_receipts_digest": {"$ref": "#/$defs/digest"},
+        "independent_verdict": {"const": "BLOCK"},
+        "error_codes": {
+          "oneOf": [
+            {"const": ["consequential_claim_independent_review_pending", "consequential_claim_rendered_sink_universe_incomplete"]},
+            {"const": ["rendered_sink_lineage_compiler_subjects_not_declared", "consequential_claim_rendered_sink_universe_incomplete"]}
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"state": {"const": "declared_incomplete"}}, "required": ["state"]},
+          "then": {
+            "properties": {
+              "source": {"properties": {"candidate_count": {"const": 315}, "candidate_digest": {"$ref": "#/$defs/digest"}, "safety_input_count": {"const": 53}}, "required": ["candidate_count", "candidate_digest", "safety_input_count"]},
+              "error_codes": {"const": ["consequential_claim_independent_review_pending", "consequential_claim_rendered_sink_universe_incomplete"]}
+            }
+          },
+          "else": {
+            "properties": {
+              "observed_sink_count": {"const": 0},
+              "source": {"properties": {"candidate_count": {"const": 0}, "candidate_digest": {"type": "null"}, "safety_input_count": {"const": 0}}, "required": ["candidate_count", "candidate_digest", "safety_input_count"]},
+              "error_codes": {"const": ["rendered_sink_lineage_compiler_subjects_not_declared", "consequential_claim_rendered_sink_universe_incomplete"]}
+            }
+          }
+        }
+      ]
+    },
+    "lineageNotObserved": {
+      "allOf": [
+        {"$ref": "#/$defs/lineage"},
+        {
+          "properties": {
+            "observed_sink_count": {"const": 0},
+            "sink_receipts": {
+              "prefixItems": [
+                {"properties": {"state": {"const": "not_observed"}}, "required": ["state"]}
+              ]
+            }
+          },
+          "required": ["observed_sink_count", "sink_receipts"]
+        }
+      ]
+    },
+    "lineageGenerated": {
+      "oneOf": [
+        {
+          "allOf": [
+            {"$ref": "#/$defs/lineage"},
+            {
+              "properties": {
+                "state": {"const": "not_declared"},
+                "observed_sink_count": {"const": 0},
+                "sink_receipts": {
+                  "prefixItems": [
+                    {"properties": {"state": {"const": "not_observed"}}, "required": ["state"]}
+                  ]
+                }
+              },
+              "required": ["state", "observed_sink_count", "sink_receipts"]
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/lineage"},
+            {
+              "properties": {
+                "state": {"const": "declared_incomplete"},
+                "observed_sink_count": {"const": 1},
+                "sink_receipts": {
+                  "prefixItems": [
+                    {
+                      "properties": {"state": {"const": "mapped_declared_incomplete_slice"}},
+                      "required": ["state"]
+                    }
+                  ]
+                }
+              },
+              "required": ["state", "observed_sink_count", "sink_receipts"]
+            }
+          ]
+        }
+      ]
+    },
+    "common": {
+      "type": "object",
+      "required": ["schema_version", "status", "included", "required_for_verified_release", "binary_privacy_coverage", "rendered_sink_lineage", "claim", "next_gate"],
+      "properties": {
+        "schema_version": {"const": "1.0.0"},
+        "included": {"type": "boolean"},
+        "required_for_verified_release": {"const": true},
+        "binary_privacy_coverage": {"$ref": "#/$defs/nonblank"},
+        "rendered_sink_lineage": {"$ref": "#/$defs/lineage"},
+        "claim": {"$ref": "#/$defs/nonblank"},
+        "next_gate": {"$ref": "#/$defs/nonblank"}
+      }
+    },
+    "noPdf": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema_version", "status", "included", "required_for_verified_release", "binary_privacy_coverage", "rendered_sink_lineage", "claim", "next_gate"],
+          "properties": {
+            "schema_version": true,
+            "status": {"const": "pending_external_renderer"},
+            "included": {"const": false},
+            "required_for_verified_release": true,
+            "binary_privacy_coverage": {"const": "not_applicable_no_pdf"},
+            "rendered_sink_lineage": {"$ref": "#/$defs/lineageNotObserved"},
+            "claim": true,
+            "next_gate": true
+          }
+        }
+      ]
+    },
+    "externalPdf": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema_version", "status", "included", "required_for_verified_release", "binary_privacy_coverage", "sha256", "bytes", "rendered_sink_lineage", "claim", "next_gate"],
+          "properties": {
+            "schema_version": true,
+            "status": {"const": "externally_supplied_visual_review_pending"},
+            "included": {"const": true},
+            "required_for_verified_release": true,
+            "binary_privacy_coverage": {"const": "blocked_external_binary_content_not_inspected"},
+            "sha256": {"$ref": "#/$defs/digest"},
+            "bytes": {"type": "integer", "minimum": 8},
+            "rendered_sink_lineage": {"$ref": "#/$defs/lineageNotObserved"},
+            "claim": true,
+            "next_gate": true
+          }
+        }
+      ]
+    },
+    "mechanical": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verdict", "observation_digest", "verification_digest", "pdf_sha256", "rendered_observation_count", "safety_observation_count"],
+      "properties": {
+        "verdict": {"const": "PASS"},
+        "observation_digest": {"$ref": "#/$defs/digest"},
+        "verification_digest": {"$ref": "#/$defs/digest"},
+        "pdf_sha256": {"$ref": "#/$defs/digest"},
+        "rendered_observation_count": {"const": 167},
+        "safety_observation_count": {"const": 53}
+      }
+    },
+    "generatedPdf": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema_version", "status", "included", "required_for_verified_release", "binary_privacy_coverage", "sha256", "bytes", "page_count", "input_digest", "renderer", "independent_verification_verdict", "horizon_sink_mechanical_verification", "rendered_sink_lineage", "claim", "next_gate"],
+          "properties": {
+            "schema_version": true,
+            "status": {"const": "generated_visual_review_pending"},
+            "included": {"const": true},
+            "required_for_verified_release": true,
+            "binary_privacy_coverage": {"const": "source_bound_inputs_scanned_pdf_container_not_content_scanned"},
+            "sha256": {"$ref": "#/$defs/digest"},
+            "bytes": {"type": "integer", "minimum": 8},
+            "page_count": {"type": "integer", "minimum": 1},
+            "input_digest": {"$ref": "#/$defs/digest"},
+            "renderer": {"$ref": "#/$defs/nonblank"},
+            "independent_verification_verdict": {"const": "BLOCK"},
+            "horizon_sink_mechanical_verification": {"$ref": "#/$defs/mechanical"},
+            "rendered_sink_lineage": {"$ref": "#/$defs/lineageGenerated"},
+            "claim": true,
+            "next_gate": true
+          }
+        }
+      ]
+    }
+  }
+}

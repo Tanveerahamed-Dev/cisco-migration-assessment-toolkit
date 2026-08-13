@@ -10,6 +10,10 @@ import {
   filterCapabilityEntries,
   flattenCapabilityEntries,
 } from "../../app/atlas/CapabilitySelection.mjs";
+import {
+  buildHorizonGapsSinkObservations,
+  buildHorizonGapsViewModel,
+} from "../../app/atlas/horizonLineage.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -27,6 +31,12 @@ const [core, catalog, governance, horizon, outputContract] = await Promise.all([
   load("open-horizon-register.json"),
   load("output-contract.json"),
 ]);
+const sinkLineageContract = JSON.parse(
+  await readFile(
+    new URL("../../governance/rendered-sink-lineage-contract.json", import.meta.url),
+    "utf8",
+  ),
+);
 
 const documents = [core, catalog, governance, horizon, outputContract];
 const capabilities = catalog.domains.flatMap((domain) =>
@@ -891,6 +901,209 @@ test("keeps labs and external horizon content advisory-only", () => {
   }
   assert.ok(horizon.signals.some((entry) => entry.id === "horizon.unknown"));
   assert.match(horizon.promise, /never reports an industry-completeness percentage/i);
+});
+
+test("validates the exact horizon shape and exposes deterministic /gaps sink observations", () => {
+  const view = buildHorizonGapsViewModel(horizon);
+  const envelope = buildHorizonGapsSinkObservations(horizon);
+
+  assert.equal(view.horizon.watch_families.length, horizon.watch_families.length);
+  assert.equal(view.horizon.signals.length, horizon.signals.length);
+  assert.deepEqual(view.rendered_observations, envelope.rendered_observations);
+  assert.deepEqual(view.safety_observations, envelope.safety_observations);
+  assert.equal(view.rendered_observations.length, 167);
+  assert.equal(view.safety_observations.length, 53);
+  assert.ok(view.horizon.watch_families.some((item) => item.additional_urls?.length === 2));
+  const webSink = sinkLineageContract.sinks.find(
+    (sink) => sink.sink_id === "web.gaps.open-horizon",
+  );
+  assert.ok(webSink);
+  const expectedRecordsBySelector = new Map(
+    sinkLineageContract.source_scope.candidate_rules.map((rule) => [
+      rule.selector,
+      rule.expected_records,
+    ]),
+  );
+  for (const field of [
+    "intake_pipeline",
+    "review_triggers",
+    "metrics",
+    "ui_views",
+    "watch_families",
+    "signals",
+  ]) {
+    assert.equal(view.horizon[field].length, expectedRecordsBySelector.get(field));
+  }
+  assert.equal(view.rendered_observations.length, webSink.expected_rendered);
+  assert.equal(view.safety_observations.length, horizon.watch_families.length + (2 * horizon.signals.length) + 3);
+  const renderedContract = new Map(
+    webSink.rendered_rules.flatMap((rule) =>
+      rule.fields.map((field) => [`${rule.rule_id}:${field.facet_path}`, field]),
+    ),
+  );
+  for (const row of view.rendered_observations) {
+    const expected = renderedContract.get(`${row.rule_id}:${row.facet_path}`);
+    assert.ok(expected, `unexpected rendered observation ${row.rule_id}:${row.facet_path}`);
+    assert.equal(row.disposition, expected.disposition);
+    assert.equal(row.transform_id, expected.transform_id);
+    assert.equal(
+      row.slot_id,
+      expected.slot_template.replace("{record_identity}", row.record_identity),
+    );
+  }
+  const safetyContract = new Map(
+    webSink.safety_mappings.flatMap((rule) =>
+      rule.fields.map((field) => [`${rule.rule_id}:${field.field}`, field]),
+    ),
+  );
+  for (const row of view.safety_observations) {
+    const expected = safetyContract.get(`${row.rule_id}:${row.boundary_field}`);
+    assert.ok(expected, `unexpected safety observation ${row.rule_id}:${row.boundary_field}`);
+    assert.equal(row.transform_id, expected.transform_id);
+    assert.equal(
+      row.slot_id,
+      expected.slot_template.replace("{record_identity}", row.record_identity),
+    );
+  }
+  const fieldsByRule = Object.groupBy(
+    view.rendered_observations,
+    (row) => row.rule_id,
+  );
+  assert.deepEqual(
+    [...new Set(fieldsByRule["horizon.root"].map((row) => row.facet_path))].sort(),
+    ["promise"],
+  );
+  assert.deepEqual(
+    [...new Set(fieldsByRule["horizon.watch_family"].map((row) => row.facet_path))].sort(),
+    ["authority_scope", "engine_ingestion", "review_cadence"],
+  );
+  assert.deepEqual(
+    [...new Set(fieldsByRule["horizon.signal"].map((row) => row.facet_path))].sort(),
+    [
+      "business_relevance",
+      "current_coverage",
+      "disposition",
+      "maturity",
+      "next_review_rule",
+      "promotion_criteria",
+      "uncertainty",
+    ],
+  );
+
+  const renderedKeys = [
+    "disposition",
+    "facet_path",
+    "observed_value",
+    "record_identity",
+    "rule_id",
+    "slot_id",
+    "transform_id",
+  ];
+  const safetyKeys = [
+    "boundary_field",
+    "observed_value",
+    "record_identity",
+    "rule_id",
+    "slot_id",
+    "transform_id",
+  ];
+  for (const row of view.rendered_observations) {
+    assert.deepEqual(Object.keys(row).sort(), renderedKeys);
+  }
+  for (const row of view.safety_observations) {
+    assert.deepEqual(Object.keys(row).sort(), safetyKeys);
+  }
+
+  const promotionRows = view.rendered_observations.filter(
+    (row) => row.rule_id === "horizon.signal" && row.facet_path === "promotion_criteria",
+  );
+  assert.equal(promotionRows.length, horizon.signals.length);
+  for (const row of promotionRows) {
+    assert.equal(row.disposition, "rendered_ordered_array");
+    assert.deepEqual(
+      row.observed_value,
+      horizon.signals.find((signal) => signal.id === row.record_identity).promotion_criteria,
+    );
+  }
+
+  const sentinel = "SOURCE-DERIVED-HORIZON-SENTINEL-7d31";
+  const changed = structuredClone(horizon);
+  changed.signals[0].business_relevance = sentinel;
+  const changedView = buildHorizonGapsViewModel(changed);
+  assert.equal(
+    changedView.rendered_observations.find(
+      (row) =>
+        row.rule_id === "horizon.signal" &&
+        row.record_identity === changed.signals[0].id &&
+        row.facet_path === "business_relevance",
+    ).observed_value,
+    sentinel,
+    "the sink helper substituted a fixed fallback for the source field",
+  );
+});
+
+test("fails closed on missing, mixed, empty, malformed, or over-bound horizon input", () => {
+  const hostileCases = [
+    (draft) => { delete draft.content_role; },
+    (draft) => { draft.watch_families[0].content_role = "mixed-role"; },
+    (draft) => { draft.signals[0].support_claim = "supported"; },
+    (draft) => { draft.signals = []; },
+    (draft) => { delete draft.signals; },
+    (draft) => { draft.signals = draft.signals.filter((item) => item.id !== "horizon.unknown"); },
+    (draft) => { draft.signals[0].promotion_criteria = []; },
+    (draft) => { draft.signals[0].last_reviewed = "not-a-date"; },
+    (draft) => { draft.watch_families[0].unexpected = "fallback-seam"; },
+    (draft) => { draft.separation_contract = Array.from({ length: 65 }, (_, index) => `item-${index}`); },
+    ...[
+      "intake_pipeline",
+      "review_triggers",
+      "metrics",
+      "ui_views",
+      "watch_families",
+      "signals",
+    ].flatMap((field) => [
+      (draft) => { draft[field].pop(); },
+      (draft) => { draft[field].push(structuredClone(draft[field][0])); },
+    ]),
+  ];
+  for (const mutate of hostileCases) {
+    const draft = structuredClone(horizon);
+    mutate(draft);
+    assert.throws(
+      () => buildHorizonGapsViewModel(draft),
+      (error) => error instanceof TypeError && error.message === "Invalid open horizon register.",
+    );
+  }
+
+  const canary = "HOSTILE-HORIZON-CANARY-MUST-NOT-ECHO";
+  const draft = structuredClone(horizon);
+  draft.signals[0].source_refs = [canary];
+  assert.throws(
+    () => buildHorizonGapsViewModel(draft),
+    (error) => {
+      assert.equal(error.message, "Invalid open horizon register.");
+      assert.doesNotMatch(error.message, new RegExp(canary));
+      return true;
+    },
+  );
+
+  for (const hostile of [
+    Object.assign(Object.create({ inherited: true }), structuredClone(horizon)),
+    Object.defineProperty(structuredClone(horizon), "promise", {
+      enumerable: true,
+      get() { throw new Error(canary); },
+    }),
+    Object.assign(structuredClone(horizon), { [Symbol("hidden")]: canary }),
+  ]) {
+    assert.throws(
+      () => buildHorizonGapsViewModel(hostile),
+      (error) => {
+        assert.equal(error.message, "Invalid open horizon register.");
+        assert.doesNotMatch(error.message, new RegExp(canary));
+        return true;
+      },
+    );
+  }
 });
 
 test("gives every invariant an auditable formal contract with tracked enforcement and tests", async () => {

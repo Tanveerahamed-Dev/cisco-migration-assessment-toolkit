@@ -2,19 +2,20 @@ import capabilityJson from "../../content/capability-catalog.json";
 import coreJson from "../../content/atlas-core.json";
 import deliveryJson from "../../content/delivery-governance.json";
 import horizonJson from "../../content/open-horizon-register.json";
+import { buildHorizonGapsViewModel } from "./horizonLineage";
 import type {
   Capability,
   CapabilityCatalog,
   CapabilityState,
   CoreModel,
   DeliveryGovernance,
-  HorizonModel,
 } from "./types";
 
 export const core = coreJson as unknown as CoreModel;
 export const capabilityCatalog = capabilityJson as unknown as CapabilityCatalog;
 export const deliveryGovernance = deliveryJson as unknown as DeliveryGovernance;
-export const horizon = horizonJson as unknown as HorizonModel;
+export const horizonGapsViewModel = buildHorizonGapsViewModel(horizonJson);
+export const horizon = horizonGapsViewModel.horizon;
 
 export const capabilities = capabilityCatalog.domains.flatMap((domain) =>
   domain.entries.map((entry) => ({ ...entry, domain_id: domain.id })),

@@ -8,6 +8,7 @@ import test from "node:test";
 import { Miniflare } from "miniflare";
 
 import { CANONICAL_GZIP_HEADER_BYTES } from "../build/gzip-contract.js";
+import { buildHorizonGapsViewModel } from "../app/atlas/horizonLineage.ts";
 
 const root = new URL("../", import.meta.url);
 const workerUrl = new URL("../dist/server/index.js", import.meta.url);
@@ -47,6 +48,56 @@ async function render(path = "/") {
       waitUntil() {},
       passThroughOnException() {},
     },
+  );
+}
+
+function decodeHtmlText(value) {
+  return value.replaceAll(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (entity, code) => {
+    const lowered = code.toLowerCase();
+    if (lowered === "amp") return "&";
+    if (lowered === "lt") return "<";
+    if (lowered === "gt") return ">";
+    if (lowered === "quot") return '"';
+    if (lowered === "apos") return "'";
+    const point = lowered.startsWith("#x")
+      ? Number.parseInt(lowered.slice(2), 16)
+      : Number.parseInt(lowered.slice(1), 10);
+    return Number.isFinite(point) ? String.fromCodePoint(point) : entity;
+  });
+}
+
+function horizonSlotText(html) {
+  const slots = new Map();
+  const stack = [];
+  const tokenPattern = /<!--[\s\S]*?-->|<\/?[A-Za-z][^>]*>|[^<]+/g;
+  for (const token of html.match(tokenPattern) ?? []) {
+    if (token.startsWith("<!--")) continue;
+    if (!token.startsWith("<")) {
+      const text = decodeHtmlText(token);
+      for (const frame of stack) {
+        if (frame.slotId) frame.text += ` ${text}`;
+      }
+      continue;
+    }
+    if (token.startsWith("</")) {
+      stack.pop();
+      continue;
+    }
+    const tag = /^<([A-Za-z][A-Za-z0-9:-]*)\b/.exec(token)?.[1]?.toLowerCase();
+    if (!tag) continue;
+    const slotId = /\bdata-horizon-slot="([^"]+)"/.exec(token)?.[1];
+    if (slotId && slots.has(slotId)) {
+      throw new Error(`duplicate physical Horizon slot ${slotId}`);
+    }
+    const frame = { tag, slotId, text: "" };
+    stack.push(frame);
+    if (slotId) slots.set(slotId, frame);
+    if (token.endsWith("/>") || /^(?:area|base|br|col|embed|hr|img|input|link|meta|source|track|wbr)$/.test(tag)) {
+      stack.pop();
+    }
+  }
+  return new Map(
+    [...slots].map(([slotId, frame]) => [slotId, frame.text.replaceAll(/\s+/g, " ").trim()]),
   );
 }
 
@@ -801,6 +852,83 @@ test("server-renders every owner workspace with its proof boundary", async () =>
     for (const phrase of phrases) assert.ok(html.includes(phrase), `${path} is missing: ${phrase}`);
     assert.doesNotMatch(html, /Starter Project|SkeletonPreview|taking shape/i, path);
   }
+});
+
+test("server-renders the source-derived Horizon safety boundary and deterministic sink slots", async () => {
+  const [horizonText, pageSource] = await Promise.all([
+    readFile(new URL("content/open-horizon-register.json", root), "utf8"),
+    readFile(new URL("app/gaps/page.tsx", root), "utf8"),
+  ]);
+  const horizon = JSON.parse(horizonText);
+  const view = buildHorizonGapsViewModel(horizon);
+  const response = await render("/gaps");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  const slotText = horizonSlotText(html);
+
+  assert.ok(html.includes("Advisory content only"));
+  assert.ok(html.includes("No support claim"));
+  assert.ok(html.includes("No assessment-truth mutation"));
+  assert.match(html, /Source role:\s*(?:<!-- -->\s*)?<strong[^>]+>advisory<\/strong>/);
+  assert.match(html, /Source support claim:\s*(?:<!-- -->\s*)?<strong[^>]+>none<\/strong>/);
+  assert.match(html, /Mutates assessment truth:\s*(?:<!-- -->\s*)?<strong[^>]+>false<\/strong>/);
+
+  for (const observation of [
+    ...view.rendered_observations,
+    ...view.safety_observations,
+  ]) {
+    const visible = slotText.get(observation.slot_id);
+    assert.ok(visible !== undefined, `/gaps omitted the declared sink slot ${observation.slot_id}`);
+    const expectedValues = Array.isArray(observation.observed_value)
+      ? observation.observed_value
+      : [
+          observation.transform_id === "state-mark-label"
+            ? String(observation.observed_value).replaceAll("_", " ")
+            : String(observation.observed_value),
+        ];
+    let previous = -1;
+    for (const expectedValue of expectedValues) {
+      const position = visible.indexOf(String(expectedValue));
+      assert.ok(
+        position > previous,
+        `/gaps slot ${observation.slot_id} does not visibly bind its source value in order`,
+      );
+      previous = position;
+    }
+  }
+  assert.equal(slotText.size, 170, "/gaps emitted an unexpected or duplicate physical Horizon slot");
+
+  const unknown = horizon.signals.find((signal) => signal.id === "horizon.unknown");
+  assert.ok(unknown);
+  assert.ok(html.includes(`id="${unknown.id}"`));
+  for (const sourceSentinel of [
+    unknown.current_coverage,
+    unknown.business_relevance,
+    unknown.uncertainty,
+    unknown.next_review_rule,
+  ]) {
+    assert.ok(html.includes(sourceSentinel), `/gaps omitted source sentinel: ${sourceSentinel}`);
+    assert.equal(
+      pageSource.includes(sourceSentinel),
+      false,
+      "a fixed page fallback duplicated a source-owned Horizon value",
+    );
+  }
+
+  let previousCriterion = -1;
+  for (const criterion of unknown.promotion_criteria) {
+    const position = html.indexOf(criterion);
+    assert.ok(position > previousCriterion, "promotion criteria lost their source order");
+    previousCriterion = position;
+  }
+
+  const multiSourceWatch = horizon.watch_families.find((watch) => watch.additional_urls?.length);
+  assert.ok(multiSourceWatch);
+  for (const url of [multiSourceWatch.source_url, ...multiSourceWatch.additional_urls]) {
+    assert.ok(html.includes(url), `/gaps omitted watch-family URL ${url}`);
+  }
+  assert.ok(html.includes(multiSourceWatch.authority_scope));
+  assert.equal(pageSource.includes(multiSourceWatch.authority_scope), false);
 });
 
 test("exposes every dedicated owner workspace in shell navigation", async () => {

@@ -199,38 +199,107 @@ export type CoreModel = {
   domain_registry: Array<{ id: string; title: string }>;
 };
 
+export type HorizonMaturity =
+  | "research"
+  | "draft"
+  | "standardized"
+  | "shipping"
+  | "observed-in-estate"
+  | "mainstream"
+  | "unknown";
+
+export type HorizonDisposition =
+  | "adopt-candidate"
+  | "watch"
+  | "defer"
+  | "reject"
+  | "out-of-scope"
+  | "unknown";
+
+export type HorizonIntakeStep = {
+  id: string;
+  order: number;
+  action: string;
+};
+
+export type HorizonReviewTrigger = {
+  id: string;
+  event: string;
+};
+
+export type HorizonCadence = {
+  scheduled: string;
+  event_driven: string;
+  staleness_rule: string;
+  independent_challenge: string;
+};
+
+export type HorizonMetric = {
+  id: string;
+  definition: string;
+  target: string;
+  warning: string;
+};
+
+export type HorizonView = {
+  id: string;
+  label: string;
+  shows: string;
+};
+
+export type HorizonWatchFamily = {
+  id: string;
+  name: string;
+  source_url: string;
+  additional_urls?: string[];
+  authority_scope: string;
+  topics: string[];
+  review_cadence: string;
+  content_role: "advisory";
+  engine_ingestion: string;
+};
+
+export type HorizonSignal = {
+  id: string;
+  theme: string;
+  title: string;
+  first_seen: string;
+  last_reviewed: string;
+  maturity: HorizonMaturity;
+  disposition: HorizonDisposition;
+  source_refs: string[];
+  adoption_evidence: string;
+  affected_capability_refs: string[];
+  business_relevance: string;
+  risk_opportunity: string;
+  current_coverage: string;
+  uncertainty: string;
+  rationale: string;
+  owner_role: string;
+  next_review_rule: string;
+  promotion_criteria: string[];
+  privacy_trust_implications: string;
+  content_role: "advisory";
+  support_claim: "none";
+};
+
 export type HorizonModel = {
-  schema_version: string;
+  schema_version: "1.0.0";
+  id: string;
+  catalog_version: string;
+  kind: "open-world-horizon-register";
+  content_role: "advisory";
+  support_claim: "none";
+  mutates_assessment_truth: false;
   promise: string;
-  watch_families: Array<{
-    id: string;
-    name: string;
-    source_url: string;
-    authority_scope: string;
-    topics: string[];
-    review_cadence: string;
-    content_role: string;
-    engine_ingestion: string;
-  }>;
-  signals: Array<{
-    id: string;
-    theme: string;
-    title: string;
-    maturity: string;
-    disposition: string;
-    source_refs: string[];
-    adoption_evidence: string;
-    affected_capability_refs: string[];
-    business_relevance: string;
-    risk_opportunity: string;
-    current_coverage: string;
-    uncertainty: string;
-    rationale: string;
-    owner_role: string;
-    next_review_rule: string;
-    promotion_criteria: string[];
-    privacy_trust_implications: string;
-    content_role: string;
-    support_claim: string;
-  }>;
+  separation_contract: string[];
+  maturity_levels: HorizonMaturity[];
+  dispositions: HorizonDisposition[];
+  intake_pipeline: HorizonIntakeStep[];
+  review_triggers: HorizonReviewTrigger[];
+  cadence: HorizonCadence;
+  metrics: HorizonMetric[];
+  ui_views: HorizonView[];
+  watch_families: HorizonWatchFamily[];
+  signals: HorizonSignal[];
 };

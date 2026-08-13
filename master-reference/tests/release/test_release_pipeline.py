@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import binascii
 import json
@@ -227,12 +228,10 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
         },
         "invariants": [{"id": "invariant.no-write", "statement": "No device writes.", "owner_refs": ["owner.ssot"]}],
     }
-    horizon = {
-        "schema_version": "1.0.0",
-        "id": "horizon",
-        "watch_families": [{"id": "watch.one", "name": "Official source"}],
-        "signals": [{"id": "signal.one", "title": "Candidate", "disposition": "watch"}],
-    }
+    # The generated-PDF path consumes the complete, fail-closed Horizon owner.
+    # Reuse its exact tracked shape instead of maintaining an impossible partial
+    # fixture that can mask stale renderer field names or safety fallbacks.
+    horizon = json.loads((MASTER_REFERENCE / "content" / "open-horizon-register.json").read_text(encoding="utf-8"))
     output_contract = json.loads((MASTER_REFERENCE / "content" / "output-contract.json").read_text(encoding="utf-8"))
     content_values = {
         "atlas-core.json": core,
@@ -242,7 +241,10 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
         "output-contract.json": output_contract,
     }
     for name, value in content_values.items():
-        _json(content_root / name, value)
+        if name == "open-horizon-register.json":
+            _write(content_root / name, (MASTER_REFERENCE / "content" / name).read_bytes())
+        else:
+            _json(content_root / name, value)
 
     npm_lock = {
         "name": "fixture",
@@ -287,6 +289,14 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
         (MASTER_REFERENCE / "governance" / "architecture.json").read_bytes(),
     )
     _write(
+        repo / "master-reference" / "governance" / "rendered-sink-lineage-contract.json",
+        (MASTER_REFERENCE / "governance" / "rendered-sink-lineage-contract.json").read_bytes(),
+    )
+    _write(
+        repo / "master-reference" / "schema" / "rendered-sink-lineage.schema.json",
+        (MASTER_REFERENCE / "schema" / "rendered-sink-lineage.schema.json").read_bytes(),
+    )
+    _write(
         repo / "master-reference" / "release" / "pipeline.py",
         b'"""Synthetic tracked release-builder fixture."""\n',
     )
@@ -306,6 +316,8 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
         "master-reference/requirements-release.txt",
         "webapp/requirements.txt",
         "master-reference/governance/architecture.json",
+        "master-reference/governance/rendered-sink-lineage-contract.json",
+        "master-reference/schema/rendered-sink-lineage.schema.json",
         "master-reference/release/pipeline.py",
         *schema_paths,
     ]
@@ -3180,6 +3192,9 @@ def test_pdf_is_only_hash_bound_as_external_unreviewed_input(tmp_path: Path) -> 
     )
     assert manifest["gates"]["binary_output_privacy_review"] == "blocked_external_pdf"
     assert gate["sha256"] == sha256_bytes(pdf.read_bytes())
+    assert gate["rendered_sink_lineage"]["state"] == "not_declared"
+    assert gate["rendered_sink_lineage"]["closes_global_gate"] is False
+    assert gate["rendered_sink_lineage"]["observed_sink_count"] == 0
     assert (output / "master-reference.pdf").read_bytes() == pdf.read_bytes()
 
 
@@ -3196,8 +3211,46 @@ def test_release_can_generate_source_bound_pdf_but_keeps_review_blocked(tmp_path
     assert len(reader.pages) > 5
     assert gate["status"] == "generated_visual_review_pending"
     assert gate["independent_verification_verdict"] == "BLOCK"
+    assert gate["horizon_sink_mechanical_verification"]["verdict"] == "PASS"
+    assert gate["horizon_sink_mechanical_verification"]["rendered_observation_count"] == 167
+    assert gate["horizon_sink_mechanical_verification"]["safety_observation_count"] == 53
+    assert gate["rendered_sink_lineage"]["closes_global_gate"] is False
+    assert gate["rendered_sink_lineage"]["state"] == "not_declared"
     assert manifest["release_status"] == "unsigned_preview_incomplete"
     assert manifest["independent_verification_verdict"] == "BLOCK"
+    validate_release_object(repo, "pdf-gate", gate)
+
+    for mutate in (
+        lambda value: value["rendered_sink_lineage"].update(closes_global_gate=True),
+        lambda value: value["rendered_sink_lineage"]["global_denominator"].update(independently_reviewed=315),
+        lambda value: value["rendered_sink_lineage"].update(observed_sink_count=1),
+        lambda value: value["horizon_sink_mechanical_verification"].update(rendered_observation_count=166),
+    ):
+        hostile = copy.deepcopy(gate)
+        mutate(hostile)
+        with pytest.raises(RuntimeError, match="fails pdf-gate schema"):
+            validate_release_object(repo, "pdf-gate", hostile)
+
+
+def test_release_rejects_generated_pdf_replacement_after_mechanical_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("reportlab")
+    pytest.importorskip("pypdf")
+    import release.pdf_report as pdf_report
+
+    repo, compiler = _fixture_repo(tmp_path)
+    original_build = pdf_report.build_master_reference_pdf
+
+    def build_then_replace(*args, **kwargs):
+        result = original_build(*args, **kwargs)
+        result.path.write_bytes(b"%PDF-1.4\nhostile replacement\n%%EOF\n")
+        return result
+
+    monkeypatch.setattr(pdf_report, "build_master_reference_pdf", build_then_replace)
+    with pytest.raises(ReleaseError, match="changed after mechanical verification"):
+        build_release(repo, compiler, tmp_path / "release", generate_pdf=True)
 
 
 def test_external_ed25519_hooks_sign_verify_and_detect_tamper(tmp_path: Path) -> None:

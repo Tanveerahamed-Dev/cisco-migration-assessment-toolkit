@@ -10,19 +10,20 @@ from .model import ReleaseInputError, read_bytes
 
 
 SCHEMAS = {
-    "output-contract": "output-contract.schema.json",
-    "artifact-inventory": "artifact-inventory.schema.json",
-    "preservation-coverage": "preservation-coverage.schema.json",
-    "family-attestation": "family-attestation.schema.json",
-    "release-manifest": "release-manifest.schema.json",
+    "output-contract": "master-reference/release/schemas/output-contract.schema.json",
+    "pdf-gate": "master-reference/release/schemas/pdf-gate.schema.json",
+    "rendered-sink-lineage-contract": "master-reference/schema/rendered-sink-lineage.schema.json",
+    "artifact-inventory": "master-reference/release/schemas/artifact-inventory.schema.json",
+    "preservation-coverage": "master-reference/release/schemas/preservation-coverage.schema.json",
+    "family-attestation": "master-reference/release/schemas/family-attestation.schema.json",
+    "release-manifest": "master-reference/release/schemas/release-manifest.schema.json",
 }
 
 
 def validate_release_object(repo_root: Path, schema_name: str, value: Any) -> None:
-    filename = SCHEMAS.get(schema_name)
-    if filename is None:
+    relative = SCHEMAS.get(schema_name)
+    if relative is None:
         raise ReleaseInputError(f"unknown release schema: {schema_name}")
-    relative = f"master-reference/release/schemas/{filename}"
     try:
         schema = json.loads(read_bytes(repo_root, relative).decode("utf-8", errors="strict"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:

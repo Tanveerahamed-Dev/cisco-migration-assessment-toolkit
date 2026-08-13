@@ -19,8 +19,9 @@ import subprocess
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from reportlab import Version as REPORTLAB_VERSION
 from reportlab.lib import colors
@@ -73,6 +74,18 @@ _FRAME_WIDTH = _PAGE_WIDTH - _LEFT - _RIGHT
 
 
 @dataclass(frozen=True)
+class PdfHorizonSinkVerification:
+    """Mechanical proof that every declared horizon sink slot reached the PDF."""
+
+    verdict: str
+    observation_digest: str
+    verification_digest: str
+    pdf_sha256: str
+    rendered_observation_count: int
+    safety_observation_count: int
+
+
+@dataclass(frozen=True)
 class PdfReportResult:
     """Stable receipt for a generated report."""
 
@@ -85,6 +98,8 @@ class PdfReportResult:
     input_digest: str
     reportlab_version: str
     independent_verification_verdict: str
+    horizon_sink_observations: dict[str, tuple[dict[str, Any], ...]]
+    horizon_sink_verification: PdfHorizonSinkVerification
 
 
 @dataclass(frozen=True)
@@ -92,6 +107,8 @@ class PdfInspection:
     """Machine checks that complement, but never replace, visual review."""
 
     path: Path
+    sha256: str
+    bytes: int
     page_count: int
     title: str
     author: str
@@ -144,6 +161,357 @@ def _strings(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
     return [_plain(item) for item in value if _plain(item)]
+
+
+def _required_horizon_text(record: Mapping[str, Any], field: str, record_label: str) -> str:
+    value = record.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"PDF horizon {record_label} requires non-empty {field}")
+    return value
+
+
+def _required_horizon_records(
+    horizon: Mapping[str, Any],
+    field: str,
+) -> tuple[Mapping[str, Any], ...]:
+    value = horizon.get(field)
+    if not isinstance(value, list) or not value or any(not isinstance(item, dict) for item in value):
+        raise ValueError(f"PDF horizon {field} must be a non-empty array of objects")
+    return tuple(value)
+
+
+def _validated_horizon(
+    horizon: Mapping[str, Any],
+) -> tuple[tuple[Mapping[str, Any], ...], tuple[Mapping[str, Any], ...]]:
+    """Validate every source value the PDF promotes into its horizon section."""
+
+    _required_horizon_text(horizon, "promise", "root")
+    root_role = _required_horizon_text(horizon, "content_role", "root")
+    root_support = _required_horizon_text(horizon, "support_claim", "root")
+    if root_role != "advisory" or root_support != "none" or horizon.get("mutates_assessment_truth") is not False:
+        raise ValueError(
+            "PDF horizon root boundary must be content_role=advisory, "
+            "support_claim=none, mutates_assessment_truth=false"
+        )
+
+    watches = _required_horizon_records(horizon, "watch_families")
+    signals = _required_horizon_records(horizon, "signals")
+    identities: set[tuple[str, str]] = set()
+    for watch in watches:
+        record_id = _required_horizon_text(watch, "id", "watch family")
+        identity = ("watch family", record_id)
+        if identity in identities:
+            raise ValueError("PDF horizon watch family ids must be unique")
+        identities.add(identity)
+        for field in ("name", "source_url", "authority_scope", "review_cadence", "engine_ingestion"):
+            _required_horizon_text(watch, field, "watch family")
+        if _required_horizon_text(watch, "content_role", "watch family") != root_role:
+            raise ValueError("PDF horizon watch family content_role boundary mismatch")
+
+    signal_ids: set[str] = set()
+    for signal in signals:
+        record_id = _required_horizon_text(signal, "id", "signal")
+        if record_id in signal_ids:
+            raise ValueError("PDF horizon signal ids must be unique")
+        signal_ids.add(record_id)
+        for field in (
+            "title",
+            "disposition",
+            "maturity",
+            "business_relevance",
+            "current_coverage",
+            "rationale",
+            "next_review_rule",
+        ):
+            _required_horizon_text(signal, field, "signal")
+        criteria = signal.get("promotion_criteria")
+        if (
+            not isinstance(criteria, list)
+            or not criteria
+            or any(not isinstance(item, str) or not item.strip() for item in criteria)
+        ):
+            raise ValueError("PDF horizon signal requires non-empty promotion_criteria")
+        if _required_horizon_text(signal, "content_role", "signal") != root_role:
+            raise ValueError("PDF horizon signal content_role boundary mismatch")
+        if _required_horizon_text(signal, "support_claim", "signal") != root_support:
+            raise ValueError("PDF horizon signal support_claim boundary mismatch")
+    if "horizon.unknown" not in signal_ids:
+        raise ValueError("PDF horizon signals must include horizon.unknown")
+    return watches, signals
+
+
+def pdf_horizon_sink_observations(
+    horizon: Mapping[str, Any],
+) -> dict[str, tuple[dict[str, Any], ...]]:
+    """Return deterministic semantic slots rendered by the PDF horizon sink.
+
+    Values remain in memory for a future lineage evaluator to digest and omit;
+    this helper performs no ID derivation and writes no observation artifact.
+    """
+
+    watches, signals = _validated_horizon(horizon)
+    rendered: list[dict[str, Any]] = []
+    safety: list[dict[str, Any]] = []
+
+    def observe(
+        rule_id: str,
+        record_identity: str,
+        facet_path: str,
+        disposition: str,
+        transform_id: str,
+        observed_value: object,
+    ) -> None:
+        rendered.append(
+            {
+                "rule_id": rule_id,
+                "record_identity": record_identity,
+                "facet_path": facet_path,
+                "disposition": disposition,
+                "slot_id": f"pdf.horizon.{rule_id}.{record_identity}.{facet_path}",
+                "transform_id": transform_id,
+                "observed_value": observed_value,
+            }
+        )
+
+    def observe_safety(
+        rule_id: str,
+        record_identity: str,
+        boundary_field: str,
+        transform_id: str,
+        observed_value: object,
+    ) -> None:
+        safety.append(
+            {
+                "rule_id": rule_id,
+                "record_identity": record_identity,
+                "boundary_field": boundary_field,
+                "observed_value": observed_value,
+                "slot_id": f"pdf.horizon.{rule_id}.{record_identity}.boundary.{boundary_field}",
+                "transform_id": transform_id,
+            }
+        )
+
+    observe(
+        "horizon.root",
+        "@root",
+        "promise",
+        "rendered_labeled",
+        "pdf.callout_plain_text/1",
+        horizon["promise"],
+    )
+    for field in ("content_role", "support_claim", "mutates_assessment_truth"):
+        observe_safety(
+            "horizon.root",
+            "@root",
+            field,
+            "pdf.source_boundary_table/1",
+            horizon[field],
+        )
+    for watch in watches:
+        record_id = str(watch["id"])
+        for field in ("authority_scope", "review_cadence", "engine_ingestion"):
+            observe(
+                "horizon.watch_family",
+                record_id,
+                field,
+                "rendered_labeled",
+                "pdf.labeled_plain_text/1",
+                watch[field],
+            )
+        observe_safety(
+            "horizon.watch_family",
+            record_id,
+            "content_role",
+            "pdf.source_boundary_table/1",
+            watch["content_role"],
+        )
+    for signal in signals:
+        record_id = str(signal["id"])
+        for field in (
+            "disposition",
+            "maturity",
+            "next_review_rule",
+            "business_relevance",
+            "current_coverage",
+            "rationale",
+        ):
+            observe(
+                "horizon.signal",
+                record_id,
+                field,
+                "rendered_labeled",
+                "pdf.labeled_plain_text/1",
+                signal[field],
+            )
+        observe(
+            "horizon.signal",
+            record_id,
+            "promotion_criteria",
+            "rendered_ordered_array",
+            "pdf.ordered_numbered_list/1",
+            list(signal["promotion_criteria"]),
+        )
+        for field in ("content_role", "support_claim"):
+            observe_safety(
+                "horizon.signal",
+                record_id,
+                field,
+                "pdf.source_boundary_table/1",
+                signal[field],
+            )
+    return {
+        "rendered_observations": tuple(rendered),
+        "safety_observations": tuple(safety),
+    }
+
+
+def _unique_pdf_segment(text: str, anchor: str, next_anchor: str) -> str | None:
+    start = text.find(anchor)
+    if start < 0 or text.find(anchor, start + len(anchor)) >= 0:
+        return None
+    end = text.find(next_anchor, start + len(anchor))
+    if end < 0:
+        return None
+    return text[start:end]
+
+
+def verify_pdf_horizon_sink_observations(
+    pdf_path: Path,
+    horizon: Mapping[str, Any],
+    *,
+    observations: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+) -> PdfHorizonSinkVerification:
+    """Fail closed unless every horizon observation is visibly projected.
+
+    This is a deterministic mechanical sink check, not semantic or independent
+    review. It anchors each candidate to its named record section and each
+    safety input to the source-derived boundary table.
+    """
+
+    expected = pdf_horizon_sink_observations(horizon)
+    if observations is not None and canonical_json(observations) != canonical_json(expected):
+        raise ValueError("PDF horizon observation envelope differs from validated source")
+    watches, signals = _validated_horizon(horizon)
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:  # pragma: no cover - explicit environment error
+        raise RuntimeError("pypdf is required to verify PDF horizon observations") from exc
+
+    resolved = pdf_path.resolve(strict=True)
+    raw = resolved.read_bytes()
+    reader = PdfReader(BytesIO(raw))
+    text = _plain("\n".join(page.extract_text() or "" for page in reader.pages))
+    errors: list[str] = []
+
+    watch_segments: dict[str, str] = {}
+    watch_anchors = [f"{watch['id']} - {watch['name']}" for watch in watches]
+    for index, watch in enumerate(watches):
+        next_anchor = watch_anchors[index + 1] if index + 1 < len(watches) else "Tracked horizon signals"
+        segment = _unique_pdf_segment(text, watch_anchors[index], next_anchor)
+        if segment is None:
+            errors.append("watch_record_segment_missing_or_ambiguous")
+        else:
+            watch_segments[str(watch["id"])] = segment
+
+    signal_segments: dict[str, str] = {}
+    signal_anchors = [f"{signal['id']} - {signal['title']}" for signal in signals]
+    for index, signal in enumerate(signals):
+        next_anchor = (
+            signal_anchors[index + 1] if index + 1 < len(signals) else "10. Limitations and acceptance disposition"
+        )
+        segment = _unique_pdf_segment(text, signal_anchors[index], next_anchor)
+        if segment is None:
+            errors.append("signal_record_segment_missing_or_ambiguous")
+        else:
+            signal_segments[str(signal["id"])] = segment
+
+    signal_labels = {
+        "disposition": "Disposition",
+        "maturity": "Maturity",
+        "next_review_rule": "Next review rule",
+        "business_relevance": "Business relevance",
+        "current_coverage": "Current coverage",
+        "rationale": "Rationale",
+    }
+    rendered_rows = expected["rendered_observations"]
+    for row in rendered_rows:
+        rule_id = row["rule_id"]
+        facet_path = row["facet_path"]
+        value = row["observed_value"]
+        if rule_id == "horizon.root" and facet_path == "promise":
+            if f"Advisory only {_plain(value)}" not in text:
+                errors.append("root_promise_projection_missing")
+        elif rule_id == "horizon.watch_family":
+            segment = watch_segments.get(str(row["record_identity"]), "")
+            label = {
+                "authority_scope": "Authority scope",
+                "review_cadence": "Review cadence",
+                "engine_ingestion": "Engine ingestion",
+            }.get(str(facet_path))
+            if label is None or f"{label}: {_plain(value)}" not in segment:
+                errors.append("watch_observation_projection_missing")
+        elif rule_id == "horizon.signal" and facet_path == "promotion_criteria":
+            segment = signal_segments.get(str(row["record_identity"]), "")
+            criteria = value if isinstance(value, list) else []
+            positions = [segment.find(f"{index}. {_plain(item)}") for index, item in enumerate(criteria, start=1)]
+            if not positions or any(position < 0 for position in positions) or positions != sorted(positions):
+                errors.append("signal_ordered_array_projection_missing")
+        elif rule_id == "horizon.signal":
+            segment = signal_segments.get(str(row["record_identity"]), "")
+            label = signal_labels.get(str(facet_path))
+            if label is None or f"{label}: {_plain(value)}" not in segment:
+                errors.append("signal_observation_projection_missing")
+        else:
+            errors.append("unrecognized_rendered_observation")
+
+    root_role = _plain(horizon["content_role"])
+    root_support = _plain(horizon["support_claim"])
+    root_mutates = _plain(horizon["mutates_assessment_truth"]).lower()
+    safety_fragments: dict[tuple[str, str], str] = {
+        ("horizon.root", "@root"): f"root {root_role} {root_support} {root_mutates}"
+    }
+    safety_fragments.update(
+        {
+            ("horizon.watch_family", str(watch["id"])): (
+                f"watch: {_plain(watch['id'])} {_plain(watch['content_role'])} "
+                f"{root_support} (root-bound) {root_mutates} (root-bound)"
+            )
+            for watch in watches
+        }
+    )
+    safety_fragments.update(
+        {
+            ("horizon.signal", str(signal["id"])): (
+                f"signal: {_plain(signal['id'])} {_plain(signal['content_role'])} "
+                f"{_plain(signal['support_claim'])} {root_mutates} (root-bound)"
+            )
+            for signal in signals
+        }
+    )
+    for row in expected["safety_observations"]:
+        fragment = safety_fragments.get((str(row["rule_id"]), str(row["record_identity"])))
+        if fragment is None or fragment not in text:
+            errors.append("safety_observation_projection_missing")
+
+    if errors:
+        raise ValueError("PDF horizon sink verification failed: " + ", ".join(sorted(set(errors))))
+    observation_digest = sha256_bytes(canonical_json(expected))
+    pdf_digest = sha256_bytes(raw)
+    verification_material = {
+        "verdict": "PASS",
+        "pdf_sha256": pdf_digest,
+        "observation_digest": observation_digest,
+        "rendered_observation_count": len(rendered_rows),
+        "safety_observation_count": len(expected["safety_observations"]),
+    }
+    return PdfHorizonSinkVerification(
+        verdict="PASS",
+        observation_digest=observation_digest,
+        verification_digest=sha256_bytes(canonical_json(verification_material)),
+        pdf_sha256=pdf_digest,
+        rendered_observation_count=len(rendered_rows),
+        safety_observation_count=len(expected["safety_observations"]),
+    )
 
 
 def _state_color(state: str) -> colors.Color:
@@ -486,9 +854,7 @@ def _table(
     if sum(widths) > _FRAME_WIDTH + 0.01:
         raise ValueError("table widths exceed the document frame")
     mono = set(monospace_columns)
-    data: list[list[Paragraph]] = [
-        [_paragraph(header, styles["table_head"]) for header in headers]
-    ]
+    data: list[list[Paragraph]] = [[_paragraph(header, styles["table_head"]) for header in headers]]
     for row in rows:
         data.append(
             [
@@ -531,6 +897,10 @@ def _bullet_lines(values: Iterable[object], styles: dict[str, ParagraphStyle]) -
     if not rows:
         rows.append(_paragraph("None declared.", styles["small"]))
     return rows
+
+
+def _numbered_lines(values: Sequence[str], styles: dict[str, ParagraphStyle]) -> list[Flowable]:
+    return [_paragraph(f"{index}. {value}", styles["bullet"]) for index, value in enumerate(values, start=1)]
 
 
 def _load_json_object(path: Path) -> dict[str, Any]:
@@ -592,7 +962,10 @@ def _load_release_context(release_dir: Path | None, bundle: CompilerBundle) -> d
     binding = manifest.get("source_binding")
     if not isinstance(binding, dict):
         raise ValueError("release manifest has no source binding")
-    if binding.get("source_commit") != bundle.source_commit or binding.get("source_tree_digest") != bundle.source_tree_digest:
+    if (
+        binding.get("source_commit") != bundle.source_commit
+        or binding.get("source_tree_digest") != bundle.source_tree_digest
+    ):
         raise ValueError("release directory does not match the compiler source binding")
     inventory_path = root / "artifact-inventory.json"
     inventory = _load_json_object(inventory_path) if inventory_path.is_file() else None
@@ -692,13 +1065,19 @@ def _cover(
             ]
         )
     )
-    return [Spacer(1, 19 * mm), hero, Spacer(1, 12 * mm), _callout(
-        "Reading contract",
-        "This PDF is a navigational projection, not a second source of truth. It intentionally omits raw source text. "
-        "Use the content-hashed Source Explorer for line-level content, and treat every BLOCKED or unknown state as real.",
-        styles,
-        color=_AMBER,
-    ), PageBreak()]
+    return [
+        Spacer(1, 19 * mm),
+        hero,
+        Spacer(1, 12 * mm),
+        _callout(
+            "Reading contract",
+            "This PDF is a navigational projection, not a second source of truth. It intentionally omits raw source text. "
+            "Use the content-hashed Source Explorer for line-level content, and treat every BLOCKED or unknown state as real.",
+            styles,
+            color=_AMBER,
+        ),
+        PageBreak(),
+    ]
 
 
 def _contents(styles: dict[str, ParagraphStyle]) -> list[Flowable]:
@@ -743,7 +1122,9 @@ def _source_and_truth(
         ("PDF input digest", input_digest),
         ("Renderer", f"ReportLab {REPORTLAB_VERSION}; invariant mode"),
     ]
-    story.append(_table(("Binding", "Value"), source_rows, (43 * mm, _FRAME_WIDTH - 43 * mm), styles, monospace_columns=(1,)))
+    story.append(
+        _table(("Binding", "Value"), source_rows, (43 * mm, _FRAME_WIDTH - 43 * mm), styles, monospace_columns=(1,))
+    )
     truth = content.core.get("truth_contract", {})
     if isinstance(truth, dict):
         story.append(_heading("Truth rules", styles["h2"]))
@@ -854,7 +1235,11 @@ def _completeness(bundle: CompilerBundle, styles: dict[str, ParagraphStyle]) -> 
             )
         )
     else:
-        story.append(_callout("BLOCKED", "No semantic acceptance gates were emitted by this compiler bundle.", styles, color=_RED))
+        story.append(
+            _callout(
+                "BLOCKED", "No semantic acceptance gates were emitted by this compiler bundle.", styles, color=_RED
+            )
+        )
     story.append(_heading("Semantic depth", styles["h2"]))
     line_depths = semantic.get("line_explanation_depth_counts", {})
     symbol_depths = semantic.get("symbol_explanation_depth_counts", {})
@@ -866,11 +1251,15 @@ def _completeness(bundle: CompilerBundle, styles: dict[str, ParagraphStyle]) -> 
                 line_depths.get(str(depth), 0) if isinstance(line_depths, dict) else "unknown",
                 symbol_depths.get(str(depth), 0) if isinstance(symbol_depths, dict) else "unknown",
                 (
-                    "inventoried" if depth == 0 else
-                    "structurally mapped" if depth == 1 else
-                    "behaviorally explained" if depth == 2 else
-                    "verified by executable evidence" if depth == 3 else
-                    "independently human-reviewed critical logic"
+                    "inventoried"
+                    if depth == 0
+                    else "structurally mapped"
+                    if depth == 1
+                    else "behaviorally explained"
+                    if depth == 2
+                    else "verified by executable evidence"
+                    if depth == 3
+                    else "independently human-reviewed critical logic"
                 ),
             )
         )
@@ -891,10 +1280,12 @@ def _completeness(bundle: CompilerBundle, styles: dict[str, ParagraphStyle]) -> 
             styles,
         )
     )
-    story.append(_paragraph(
-        "Graphify is structural advisory evidence. Extracted or inferred edges never become runtime truth without conformance evidence.",
-        styles["small"],
-    ))
+    story.append(
+        _paragraph(
+            "Graphify is structural advisory evidence. Extracted or inferred edges never become runtime truth without conformance evidence.",
+            styles["small"],
+        )
+    )
     story.append(_heading("Privacy boundary", styles["h2"]))
     story.append(
         _table(
@@ -918,7 +1309,9 @@ def _outcomes(content: ContentBundle, styles: dict[str, ParagraphStyle]) -> list
         story.append(_heading(f"{item.get('id', 'outcome')} - {item.get('title', 'Untitled outcome')}", styles["h2"]))
         for key in ("promise", "success_signal", "owner", "scope", "limitations"):
             if item.get(key) is not None:
-                story.append(_rich(f"<b>{_markup(key.replace('_', ' ').title())}:</b> {_markup(item[key])}", styles["body"]))
+                story.append(
+                    _rich(f"<b>{_markup(key.replace('_', ' ').title())}:</b> {_markup(item[key])}", styles["body"])
+                )
     return story
 
 
@@ -931,7 +1324,11 @@ def _capabilities(content: ContentBundle, styles: dict[str, ParagraphStyle]) -> 
         _heading("4. Closed Capability Catalog", styles["h1"]),
         _callout(
             "Finite denominator",
-            _plain(content.capabilities.get("denominator_rule", "Catalog inclusion is a classification, not a support promise.")),
+            _plain(
+                content.capabilities.get(
+                    "denominator_rule", "Catalog inclusion is a classification, not a support promise."
+                )
+            ),
             styles,
         ),
         Spacer(1, 3 * mm),
@@ -949,10 +1346,12 @@ def _capabilities(content: ContentBundle, styles: dict[str, ParagraphStyle]) -> 
         domain_id = _plain(domain.get("id", "domain.unknown"))
         story.extend([PageBreak(), _heading(domain_id, styles["h2"])])
         domain_entries = _items(domain.get("entries"))
-        story.append(_paragraph(
-            f"Declared cells: {len(domain_entries)}. Every cell remains linked to current owners or an explicit gap/disposition.",
-            styles["small"],
-        ))
+        story.append(
+            _paragraph(
+                f"Declared cells: {len(domain_entries)}. Every cell remains linked to current owners or an explicit gap/disposition.",
+                styles["small"],
+            )
+        )
         for entry in domain_entries:
             story.append(CondPageBreak(31 * mm))
             state = _plain(entry.get("state", "unknown"))
@@ -969,7 +1368,11 @@ def _capabilities(content: ContentBundle, styles: dict[str, ParagraphStyle]) -> 
             if refs:
                 story.append(_paragraph(" | ".join(refs), styles["small"]))
             bar = Table([[""]], colWidths=[_FRAME_WIDTH], rowHeights=[1.4])
-            bar.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), _state_color(state)), ("LINEBELOW", (0, 0), (-1, -1), 0, _WHITE)]))
+            bar.setStyle(
+                TableStyle(
+                    [("BACKGROUND", (0, 0), (-1, -1), _state_color(state)), ("LINEBELOW", (0, 0), (-1, -1), 0, _WHITE)]
+                )
+            )
             story.append(bar)
     return story
 
@@ -1028,8 +1431,7 @@ def _governance(content: ContentBundle, styles: dict[str, ParagraphStyle]) -> li
         for key in ("status", "authority", "current_recommendation"):
             block.append(
                 _rich(
-                    f"<b>{_markup(key.replace('_', ' ').title())}:</b> "
-                    f"{_markup(decision.get(key, 'unknown'))}",
+                    f"<b>{_markup(key.replace('_', ' ').title())}:</b> {_markup(decision.get(key, 'unknown'))}",
                     styles["body"],
                 )
             )
@@ -1047,13 +1449,24 @@ def _governance(content: ContentBundle, styles: dict[str, ParagraphStyle]) -> li
         story.append(_callout("Ranking rule", _plain(portfolio["ranking_rule"]), styles))
     for opportunity in opportunities:
         story.append(CondPageBreak(35 * mm))
-        story.append(_heading(f"{opportunity.get('id', 'opportunity.unknown')} - {opportunity.get('title', 'Untitled opportunity')}", styles["h3"]))
+        story.append(
+            _heading(
+                f"{opportunity.get('id', 'opportunity.unknown')} - {opportunity.get('title', 'Untitled opportunity')}",
+                styles["h3"],
+            )
+        )
         axes = opportunity.get("axes", {})
-        axes_text = ", ".join(f"{key}={value}" for key, value in sorted(axes.items())) if isinstance(axes, dict) else "not declared"
-        story.append(_paragraph(
-            f"Horizon: {opportunity.get('horizon', 'unknown')} | Axes: {axes_text} | Gaps: {', '.join(_strings(opportunity.get('gap_refs'))) or 'none'}",
-            styles["small"],
-        ))
+        axes_text = (
+            ", ".join(f"{key}={value}" for key, value in sorted(axes.items()))
+            if isinstance(axes, dict)
+            else "not declared"
+        )
+        story.append(
+            _paragraph(
+                f"Horizon: {opportunity.get('horizon', 'unknown')} | Axes: {axes_text} | Gaps: {', '.join(_strings(opportunity.get('gap_refs'))) or 'none'}",
+                styles["small"],
+            )
+        )
         if opportunity.get("axis_notes"):
             story.append(_paragraph(opportunity["axis_notes"], styles["body"]))
     return story
@@ -1066,7 +1479,14 @@ def _architecture_and_invariants(
 ) -> list[Flowable]:
     story: list[Flowable] = [PageBreak(), _heading("6. Architecture and protected invariants", styles["h1"])]
     if architecture is None:
-        story.append(_callout("Architecture contract unavailable", "No validated architecture.json was supplied. This is an explicit limitation, not an empty architecture.", styles, color=_RED))
+        story.append(
+            _callout(
+                "Architecture contract unavailable",
+                "No validated architecture.json was supplied. This is an explicit limitation, not an empty architecture.",
+                styles,
+                color=_RED,
+            )
+        )
     else:
         components = _items(architecture.get("components"))
         story.append(_heading("Components and trust zones", styles["h2"]))
@@ -1113,10 +1533,12 @@ def _architecture_and_invariants(
                 monospace_columns=(0, 1),
             )
         )
-        story.append(_paragraph(
-            f"Allowed dependency edges declared: {len(architecture.get('allowed_edges', []))}. Edge semantics: {architecture.get('edge_semantics', 'not declared')}.",
-            styles["small"],
-        ))
+        story.append(
+            _paragraph(
+                f"Allowed dependency edges declared: {len(architecture.get('allowed_edges', []))}. Edge semantics: {architecture.get('edge_semantics', 'not declared')}.",
+                styles["small"],
+            )
+        )
     invariants = _items(content.governance.get("invariants"))
     story.append(_heading("Invariant catalog", styles["h2"]))
     if invariants:
@@ -1140,7 +1562,11 @@ def _architecture_and_invariants(
 
 
 def _source_explorer(bundle: CompilerBundle, styles: dict[str, ParagraphStyle]) -> list[Flowable]:
-    counts = {name: item.get("record_count", 0) for name, item in bundle.manifest.get("groups", {}).items() if isinstance(item, dict)}
+    counts = {
+        name: item.get("record_count", 0)
+        for name, item in bundle.manifest.get("groups", {}).items()
+        if isinstance(item, dict)
+    }
     routes = [
         ("/source", "Complete tracked file tree, classification, depth, and uncertainty"),
         ("/source/[path]", "Content-hashed safe line view with semantic breadcrumbs"),
@@ -1158,7 +1584,9 @@ def _source_explorer(bundle: CompilerBundle, styles: dict[str, ParagraphStyle]) 
             color=_AMBER,
         ),
         Spacer(1, 3 * mm),
-        _table(("Route", "Question answered"), routes, (48 * mm, _FRAME_WIDTH - 48 * mm), styles, monospace_columns=(0,)),
+        _table(
+            ("Route", "Question answered"), routes, (48 * mm, _FRAME_WIDTH - 48 * mm), styles, monospace_columns=(0,)
+        ),
         _heading("Line and symbol traversal", styles["h2"]),
         _paragraph(
             "A line link resolves its containing syntax unit, symbol, owner, behavior group, inputs and outputs, influenced claims, callers and dependencies, tests, runtime-trace state, GUI or artifact consumers, security/privacy effect, historical status, explanation depth, and unresolved reasons.",
@@ -1171,7 +1599,22 @@ def _source_explorer(bundle: CompilerBundle, styles: dict[str, ParagraphStyle]) 
         _heading("Explorer denominators", styles["h2"]),
         _table(
             ("Entity", "Records"),
-            [(name, counts.get(name, 0)) for name in ("files", "lines", "symbols", "routes", "components", "tests", "workflows", "datasets", "binaries", "dependencies", "claims")],
+            [
+                (name, counts.get(name, 0))
+                for name in (
+                    "files",
+                    "lines",
+                    "symbols",
+                    "routes",
+                    "components",
+                    "tests",
+                    "workflows",
+                    "datasets",
+                    "binaries",
+                    "dependencies",
+                    "claims",
+                )
+            ],
             (70 * mm, _FRAME_WIDTH - 70 * mm),
             styles,
         ),
@@ -1185,13 +1628,20 @@ def _release_section(
 ) -> list[Flowable]:
     story: list[Flowable] = [PageBreak(), _heading("8. Release, export, and preservation", styles["h1"])]
     if release_context is None:
-        story.append(_callout(
-            "Release context not supplied",
-            "This PDF is bound to the validated compiler and curated content. It was generated before or independently of an emitted release directory, so artifact receipts and signing state must be read from the eventual release-manifest.json.",
-            styles,
-            color=_AMBER,
-        ))
-        story.append(_paragraph("Independent verification verdict: BLOCK. Signature, visual review, and publication authority are not established by PDF generation.", styles["body"]))
+        story.append(
+            _callout(
+                "Release context not supplied",
+                "This PDF is bound to the validated compiler and curated content. It was generated before or independently of an emitted release directory, so artifact receipts and signing state must be read from the eventual release-manifest.json.",
+                styles,
+                color=_AMBER,
+            )
+        )
+        story.append(
+            _paragraph(
+                "Independent verification verdict: BLOCK. Signature, visual review, and publication authority are not established by PDF generation.",
+                styles["body"],
+            )
+        )
         return story
     manifest = release_context["manifest"]
     inventory = release_context.get("inventory")
@@ -1215,89 +1665,136 @@ def _release_section(
     gates = manifest.get("gates", {})
     if isinstance(gates, dict):
         story.append(_heading("Executable release gates", styles["h2"]))
-        story.append(_table(
-            ("Gate", "State"),
-            [(key, value) for key, value in sorted(gates.items())],
-            (83 * mm, _FRAME_WIDTH - 83 * mm),
-            styles,
-        ))
+        story.append(
+            _table(
+                ("Gate", "State"),
+                [(key, value) for key, value in sorted(gates.items())],
+                (83 * mm, _FRAME_WIDTH - 83 * mm),
+                styles,
+            )
+        )
     artifacts = _items(inventory.get("artifacts")) if isinstance(inventory, dict) else []
     story.append(_heading("Artifact inventory", styles["h2"]))
     if artifacts:
-        story.append(_table(
-            ("Path", "Role", "Bytes", "SHA-256"),
-            [
-                (item.get("path", "unknown"), item.get("role", "unknown"), item.get("bytes", ""), item.get("sha256", "unknown"))
-                for item in artifacts
-            ],
-            (54 * mm, 33 * mm, 20 * mm, _FRAME_WIDTH - 107 * mm),
-            styles,
-            monospace_columns=(0, 3),
-        ))
+        story.append(
+            _table(
+                ("Path", "Role", "Bytes", "SHA-256"),
+                [
+                    (
+                        item.get("path", "unknown"),
+                        item.get("role", "unknown"),
+                        item.get("bytes", ""),
+                        item.get("sha256", "unknown"),
+                    )
+                    for item in artifacts
+                ],
+                (54 * mm, 33 * mm, 20 * mm, _FRAME_WIDTH - 107 * mm),
+                styles,
+                monospace_columns=(0, 3),
+            )
+        )
     else:
         story.append(_paragraph("No validated artifact inventory was supplied.", styles["body"]))
     story.append(_heading("Signing and preservation boundary", styles["h2"]))
-    story.extend(_bullet_lines([
-        "Unsigned builds remain previews; a PDF digest is not an owner signature.",
-        "An offline owner-controlled Ed25519 private key must remain outside the repository.",
-        "Public publication requires separate explicit authority even after cryptographic verification.",
-        "Preservation includes source, schemas/upcasters, manifest/ledger, signatures, offline viewer, dependency caches, fixtures, and recovery instructions.",
-    ], styles))
+    story.extend(
+        _bullet_lines(
+            [
+                "Unsigned builds remain previews; a PDF digest is not an owner signature.",
+                "An offline owner-controlled Ed25519 private key must remain outside the repository.",
+                "Public publication requires separate explicit authority even after cryptographic verification.",
+                "Preservation includes source, schemas/upcasters, manifest/ledger, signatures, offline viewer, dependency caches, fixtures, and recovery instructions.",
+            ],
+            styles,
+        )
+    )
     return story
 
 
 def _horizon(content: ContentBundle, styles: dict[str, ParagraphStyle]) -> list[Flowable]:
     horizon = content.horizon
-    signals = _items(horizon.get("signals"))
-    watches = _items(horizon.get("watch_families"))
-    support_claim = _plain(horizon.get("support_claim")) or "not declared"
-    support_meaning = (
-        "no current product support is claimed by this advisory register."
-        if support_claim == "none"
-        else "this advisory register cannot establish current product support."
+    watches, signals = _validated_horizon(horizon)
+    root_role = str(horizon["content_role"])
+    root_support = str(horizon["support_claim"])
+    root_mutates = str(horizon["mutates_assessment_truth"]).lower()
+    boundary_rows: list[tuple[str, str, str, str]] = [
+        ("root", root_role, root_support, root_mutates),
+    ]
+    boundary_rows.extend(
+        (
+            f"watch: {watch['id']}",
+            str(watch["content_role"]),
+            f"{root_support} (root-bound)",
+            f"{root_mutates} (root-bound)",
+        )
+        for watch in watches
+    )
+    boundary_rows.extend(
+        (
+            f"signal: {signal['id']}",
+            str(signal["content_role"]),
+            str(signal["support_claim"]),
+            f"{root_mutates} (root-bound)",
+        )
+        for signal in signals
     )
     story: list[Flowable] = [
         PageBreak(),
         _heading("9. Open-world Horizon Register", styles["h1"]),
         _callout(
             "Advisory only",
-            _plain(horizon.get("promise", "Horizon content never proves current support and never mutates assessment truth.")),
+            str(horizon["promise"]),
             styles,
             color=_AMBER,
         ),
         Spacer(1, 3 * mm),
+        _heading("Source-derived safety boundary", styles["h2"]),
         _paragraph(
-            f"Support claim state: {support_claim} - {support_meaning}",
+            "Every row below is bound to the root or named source record. "
+            "Root-bound cells inherit the displayed root value; missing or mixed boundaries refuse PDF generation.",
             styles["small"],
+        ),
+        _table(
+            ("Source record", "Content role", "Support claim", "Mutates assessment truth"),
+            boundary_rows,
+            (67 * mm, 28 * mm, 31 * mm, _FRAME_WIDTH - 126 * mm),
+            styles,
+            monospace_columns=(0,),
         ),
         _heading("Watch families", styles["h2"]),
     ]
     for watch in watches:
-        story.append(CondPageBreak(29 * mm))
-        story.append(_heading(f"{watch.get('id', 'watch.unknown')} - {watch.get('name', 'Untitled watch family')}", styles["h3"]))
-        story.append(_paragraph(watch.get("authority_scope", "No authority scope declared."), styles["body"]))
-        story.append(_paragraph(
-            f"Cadence: {watch.get('review_cadence', 'not declared')} | Content role: {watch.get('content_role', 'advisory')} | Engine ingestion: {watch.get('engine_ingestion', 'none')}",
-            styles["small"],
-        ))
-        if watch.get("source_url"):
-            story.append(_paragraph(f"Primary source: {watch['source_url']}", styles["mono"]))
+        story.append(
+            KeepTogether(
+                [
+                    _heading(f"{watch['id']} - {watch['name']}", styles["h3"]),
+                    _rich(f"<b>Authority scope:</b> {_markup(watch['authority_scope'])}", styles["body"]),
+                    _paragraph(
+                        f"Review cadence: {watch['review_cadence']} | Content role: {watch['content_role']} | Engine ingestion: {watch['engine_ingestion']}",
+                        styles["small"],
+                    ),
+                    _paragraph(f"Primary source: {watch['source_url']}", styles["mono"]),
+                ]
+            )
+        )
     story.extend([PageBreak(), _heading("Tracked horizon signals", styles["h2"])])
-    if signals:
-        for signal in signals:
-            story.append(CondPageBreak(28 * mm))
-            story.append(_heading(f"{signal.get('id', 'signal.unknown')} - {signal.get('title', 'Untitled signal')}", styles["h3"]))
-            summary_parts = []
-            for key in ("disposition", "maturity", "status", "next_review"):
-                if signal.get(key) is not None:
-                    summary_parts.append(f"{key.replace('_', ' ')}: {signal[key]}")
-            if summary_parts:
-                story.append(_paragraph(" | ".join(summary_parts), styles["small"]))
-            for key in ("why_it_matters", "current_assessment", "rationale", "promotion_gate"):
-                if signal.get(key) is not None:
-                    story.append(_rich(f"<b>{_markup(key.replace('_', ' ').title())}:</b> {_markup(signal[key])}", styles["body"]))
-    else:
-        story.append(_paragraph("No horizon signals were emitted. The unknown bucket still remains open by contract.", styles["body"]))
+    for signal in signals:
+        block: list[Flowable] = [
+            _heading(f"{signal['id']} - {signal['title']}", styles["h3"]),
+            _paragraph(
+                f"Disposition: {signal['disposition']} | Maturity: {signal['maturity']} | "
+                f"Next review rule: {signal['next_review_rule']}",
+                styles["small"],
+            ),
+        ]
+        for field, label in (
+            ("business_relevance", "Business relevance"),
+            ("current_coverage", "Current coverage"),
+            ("rationale", "Rationale"),
+        ):
+            block.append(_rich(f"<b>{label}:</b> {_markup(signal[field])}", styles["body"]))
+        block.append(_rich("<b>Promotion criteria (source order)</b>", styles["body"]))
+        block.extend(_numbered_lines(signal["promotion_criteria"], styles))
+        story.append(KeepTogether(block))
     return story
 
 
@@ -1335,31 +1832,42 @@ def _limitations(
     ]
     if failed:
         for item in failed:
-            story.append(_rich(
-                f"<b>BLOCKED - {_markup(item.get('name', 'unnamed gate'))}</b>: expected {_markup(item.get('expected', 'unknown'))}; actual {_markup(item.get('actual', 'unknown'))}.",
-                styles["body"],
-            ))
+            story.append(
+                _rich(
+                    f"<b>BLOCKED - {_markup(item.get('name', 'unnamed gate'))}</b>: expected {_markup(item.get('expected', 'unknown'))}; actual {_markup(item.get('actual', 'unknown'))}.",
+                    styles["body"],
+                )
+            )
     else:
-        story.append(_paragraph(
-            "No failed compiler semantic gate is recorded, but independent PDF, security, accessibility, release-signing, and publication reviews still prevent self-approval.",
-            styles["body"],
-        ))
+        story.append(
+            _paragraph(
+                "No failed compiler semantic gate is recorded, but independent PDF, security, accessibility, release-signing, and publication reviews still prevent self-approval.",
+                styles["body"],
+            )
+        )
     story.append(_heading("Standing truth limits", styles["h2"]))
     story.extend(_bullet_lines(dict.fromkeys(limits), styles))
     story.append(_heading("Independent review required", styles["h2"]))
-    story.extend(_bullet_lines([
-        "File/line census and exclusion challenge.",
-        "Authority, claim, and current-versus-historical reconciliation.",
-        "Architecture conformance and forbidden-edge challenge.",
-        "Protocol/design breadth and capability-gap honesty.",
-        "Security, privacy, accessibility, and performance review.",
-        "Offline/export receipts, signing, agent-envelope, and recovery exercises.",
-    ], styles))
+    story.extend(
+        _bullet_lines(
+            [
+                "File/line census and exclusion challenge.",
+                "Authority, claim, and current-versus-historical reconciliation.",
+                "Architecture conformance and forbidden-edge challenge.",
+                "Protocol/design breadth and capability-gap honesty.",
+                "Security, privacy, accessibility, and performance review.",
+                "Offline/export receipts, signing, agent-envelope, and recovery exercises.",
+            ],
+            styles,
+        )
+    )
     story.append(Spacer(1, 6 * mm))
-    story.append(_paragraph(
-        f"End of source-bound Master Reference for commit {bundle.source_commit}. Unknowns remain explicit.",
-        styles["small"],
-    ))
+    story.append(
+        _paragraph(
+            f"End of source-bound Master Reference for commit {bundle.source_commit}. Unknowns remain explicit.",
+            styles["small"],
+        )
+    )
     return story
 
 
@@ -1380,6 +1888,7 @@ def build_master_reference_pdf(
     """
 
     _validate_bindings(bundle)
+    horizon_sink_observations = pdf_horizon_sink_observations(content.horizon)
     architecture, architecture_digest = _load_architecture(
         content,
         architecture_path,
@@ -1423,22 +1932,39 @@ def build_master_reference_pdf(
         metadata=metadata,
     )
     canvasmaker = lambda *args, **kwargs: _InvariantCanvas(*args, metadata=metadata, **kwargs)  # noqa: E731
+    inspection: PdfInspection
+    horizon_sink_verification: PdfHorizonSinkVerification
     try:
         document.multiBuild(story, canvasmaker=canvasmaker)
         raw = temporary.read_bytes()
         if not raw.startswith(b"%PDF-"):
             raise RuntimeError("ReportLab did not produce a PDF")
+        inspection = inspect_pdf_report(
+            temporary,
+            expected_commit=bundle.source_commit,
+            expected_tree_digest=bundle.source_tree_digest,
+        )
+        horizon_sink_verification = verify_pdf_horizon_sink_observations(
+            temporary,
+            content.horizon,
+            observations=horizon_sink_observations,
+        )
+        verified_raw = temporary.read_bytes()
+        if (
+            inspection.sha256 != horizon_sink_verification.pdf_sha256
+            or sha256_bytes(verified_raw) != horizon_sink_verification.pdf_sha256
+            or len(verified_raw) != inspection.bytes
+        ):
+            raise RuntimeError("PDF changed between structural and horizon verification")
         os.replace(temporary, output_path)
+        published_raw = output_path.read_bytes()
+        if published_raw != verified_raw:
+            raise RuntimeError("PDF changed during atomic publication")
     finally:
         if temporary.exists():
             temporary.unlink()
 
-    inspection = inspect_pdf_report(
-        output_path,
-        expected_commit=bundle.source_commit,
-        expected_tree_digest=bundle.source_tree_digest,
-    )
-    raw = output_path.read_bytes()
+    raw = published_raw
     return PdfReportResult(
         path=output_path,
         sha256=sha256_bytes(raw),
@@ -1449,6 +1975,8 @@ def build_master_reference_pdf(
         input_digest=digest,
         reportlab_version=str(REPORTLAB_VERSION),
         independent_verification_verdict="BLOCK",
+        horizon_sink_observations=horizon_sink_observations,
+        horizon_sink_verification=horizon_sink_verification,
     )
 
 
@@ -1490,7 +2018,7 @@ def inspect_pdf_report(
     raw = pdf_path.read_bytes()
     if not raw.startswith(b"%PDF-"):
         raise ValueError("file does not have a PDF header")
-    reader = PdfReader(str(pdf_path))
+    reader = PdfReader(BytesIO(raw))
     if not reader.pages:
         raise ValueError("PDF has no pages")
     metadata = reader.metadata or {}
@@ -1508,6 +2036,8 @@ def inspect_pdf_report(
         raise ValueError("PDF metadata is not bound to the expected source")
     return PdfInspection(
         path=pdf_path,
+        sha256=sha256_bytes(raw),
+        bytes=len(raw),
         page_count=len(reader.pages),
         title=title,
         author=author,

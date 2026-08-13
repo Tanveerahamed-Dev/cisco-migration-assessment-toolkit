@@ -9,6 +9,11 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
 from atlas_privacy import forbidden_byte_findings
+from governance.rendered_sink_lineage import (
+    evaluate_rendered_sink_lineage,
+    load_rendered_sink_lineage_contract,
+    unavailable_rendered_sink_lineage,
+)
 
 from .compiler_bundle import CompilerBundle, load_compiler_bundle
 from .content_bundle import load_content_bundle
@@ -90,6 +95,9 @@ _SEMVER_RE = re.compile(
     r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
     r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
 )
+
+RENDERED_SINK_LINEAGE_CONTRACT_PATH = "master-reference/governance/rendered-sink-lineage-contract.json"
+OPEN_HORIZON_SOURCE_PATH = "master-reference/content/open-horizon-register.json"
 
 
 def _semver_compare_to_stable(value: object, stable: tuple[int, int, int]) -> int | None:
@@ -298,6 +306,61 @@ def _pdf_input(path: Path | None) -> tuple[str, bytes | None, dict[str, Any]]:
     return status, value, gate
 
 
+def _rendered_sink_lineage_inputs(
+    repo_root: Path,
+    bundle: CompilerBundle,
+    content: Any,
+) -> tuple[dict[str, Any], bytes, str, bool]:
+    """Load the exact contract and Horizon blob for sink reconciliation."""
+
+    contract_raw = read_bound_source_blob(repo_root, bundle, RENDERED_SINK_LINEAGE_CONTRACT_PATH)
+    contract = load_rendered_sink_lineage_contract(contract_raw)
+    validate_release_object(repo_root, "rendered-sink-lineage-contract", contract)
+    horizon_raw = content.raw_files.get("open-horizon-register.json")
+    if type(horizon_raw) is not bytes:
+        raise ReleaseInputError("rendered-sink lineage retained no exact Horizon source blob")
+    facet_records = bundle.records.get("consequential_claim_facets")
+    if not isinstance(facet_records, list):
+        raise ReleaseInputError("rendered-sink lineage retained no compiler facet subjects")
+    source_oids = {
+        str(row.get("source_blob_oid")) for row in facet_records if row.get("source_path") == OPEN_HORIZON_SOURCE_PATH
+    }
+    summary = bundle.completeness.get("consequential_claim_denominator")
+    scope = contract.get("source_scope")
+    if not isinstance(scope, dict):
+        raise ReleaseInputError("rendered-sink lineage contract has no source scope")
+    if summary.get("state") == "not_declared":
+        if source_oids:
+            raise ReleaseInputError("rendered-sink lineage has subjects while its denominator is not declared")
+        return contract, horizon_raw, str(scope.get("git_blob_oid") or ""), False
+    if len(source_oids) != 1:
+        raise ReleaseInputError("rendered-sink lineage Horizon facet source binding is not unique")
+    source_oid = next(iter(source_oids))
+    receipts = summary.get("source_receipts") if isinstance(summary, dict) else None
+    receipt = (
+        next((row for row in receipts if row.get("path") == OPEN_HORIZON_SOURCE_PATH), None)
+        if isinstance(receipts, list)
+        else None
+    )
+    if (
+        not isinstance(receipt, dict)
+        or source_oid != scope.get("git_blob_oid")
+        or receipt.get("git_blob_oid") != source_oid
+        or receipt.get("candidate_count") != scope.get("expected_candidates")
+        or receipt.get("candidate_digest") != scope.get("candidate_digest")
+        or summary.get("expected_candidates") != 2136
+        or summary.get("independently_reviewed_candidates") != 0
+        or summary.get("unresolved_candidates") != 2136
+        or summary.get("contract_digest") != contract["global_denominator"]["claim_contract_digest"]
+        or summary.get("classification_digest") != contract["global_denominator"]["classification_digest"]
+        or summary.get("source_receipts_digest") != contract["global_denominator"]["source_receipts_digest"]
+        or summary.get("candidate_set_digest") != contract["global_denominator"]["candidate_set_digest"]
+        or summary.get("closed") is not False
+    ):
+        raise ReleaseInputError("rendered-sink lineage differs from the compiler claim denominator")
+    return contract, horizon_raw, source_oid, True
+
+
 def _compiler_preservation_entries(bundle: CompilerBundle) -> dict[str, bytes]:
     entries: dict[str, bytes] = {"compiler/manifest.json": canonical_json(bundle.manifest)}
     expected: dict[str, dict[str, Any]] = {
@@ -447,6 +510,11 @@ def build_release(
             ),
         )
         validate_release_object(repo_root, "output-contract", content.output_contract)
+        lineage_contract, horizon_raw, horizon_source_oid, lineage_declared = _rendered_sink_lineage_inputs(
+            repo_root,
+            bundle,
+            content,
+        )
         dependency_sources = _dependency_sources(repo_root, bundle)
         dependency_receipts = _dependency_receipts(dependency_sources)
         architecture_bytes = _bound_architecture(repo_root, bundle)
@@ -468,6 +536,29 @@ def build_release(
                     architecture_bytes=architecture_bytes,
                 )
                 pdf_value = generated_path.read_bytes()
+                if (
+                    len(pdf_value) != result.bytes
+                    or sha256_bytes(pdf_value) != result.sha256
+                    or result.sha256 != result.horizon_sink_verification.pdf_sha256
+                ):
+                    raise ReleaseError("generated PDF changed after mechanical verification")
+            lineage = (
+                evaluate_rendered_sink_lineage(
+                    contract=lineage_contract,
+                    claim_facet_records=bundle.records["consequential_claim_facets"],
+                    horizon=content.horizon,
+                    source_raw=horizon_raw,
+                    source_blob_oid=horizon_source_oid,
+                    sink_observations={"pdf.open-horizon": result.horizon_sink_observations},
+                )
+                if lineage_declared
+                else unavailable_rendered_sink_lineage(
+                    contract=lineage_contract,
+                    source_raw=horizon_raw,
+                    source_blob_oid=horizon_source_oid,
+                    reason_code="rendered_sink_lineage_compiler_subjects_not_declared",
+                )
+            )
             pdf_status = "generated_visual_review_pending"
             pdf_gate = {
                 "schema_version": "1.0.0",
@@ -481,11 +572,37 @@ def build_release(
                 "input_digest": result.input_digest,
                 "renderer": f"ReportLab {result.reportlab_version}",
                 "independent_verification_verdict": result.independent_verification_verdict,
+                "horizon_sink_mechanical_verification": {
+                    "verdict": result.horizon_sink_verification.verdict,
+                    "observation_digest": result.horizon_sink_verification.observation_digest,
+                    "verification_digest": result.horizon_sink_verification.verification_digest,
+                    "pdf_sha256": result.horizon_sink_verification.pdf_sha256,
+                    "rendered_observation_count": result.horizon_sink_verification.rendered_observation_count,
+                    "safety_observation_count": result.horizon_sink_verification.safety_observation_count,
+                },
+                "rendered_sink_lineage": lineage,
                 "claim": "The deterministic renderer produced and structurally inspected this source-bound PDF; independent page review remains required.",
                 "next_gate": "Render every page with Poppler and record independent overflow, accessibility, and content-reconciliation evidence.",
             }
         else:
             pdf_status, pdf_value, pdf_gate = _pdf_input(pdf_path)
+            if lineage_declared:
+                pdf_gate["rendered_sink_lineage"] = evaluate_rendered_sink_lineage(
+                    contract=lineage_contract,
+                    claim_facet_records=bundle.records["consequential_claim_facets"],
+                    horizon=content.horizon,
+                    source_raw=horizon_raw,
+                    source_blob_oid=horizon_source_oid,
+                    sink_observations={},
+                )
+            else:
+                pdf_gate["rendered_sink_lineage"] = unavailable_rendered_sink_lineage(
+                    contract=lineage_contract,
+                    source_raw=horizon_raw,
+                    source_blob_oid=horizon_source_oid,
+                    reason_code="rendered_sink_lineage_compiler_subjects_not_declared",
+                )
+        validate_release_object(repo_root, "pdf-gate", pdf_gate)
         expected_output_members = _validate_output_contract(content, pdf_included=pdf_value is not None)
         graph = bundle.completeness.get("graphify", {})
         graph_gate = (
