@@ -64,6 +64,46 @@ def _formatted_exception(failure: pytest.ExceptionInfo[BaseException]) -> str:
     return "".join(traceback.format_exception(failure.type, failure.value, failure.tb))
 
 
+_PDF_GATE_LINEAGES = ("rendered_sink_lineage", "capability_sink_lineage")
+
+
+def _assert_pdf_gate_receipt_digest_tamper_rejected(repo: Path, gate: dict[str, object]) -> None:
+    for lineage_name in _PDF_GATE_LINEAGES:
+        hostile = copy.deepcopy(gate)
+        hostile[lineage_name]["sink_receipts_digest"] = "7" * 64
+        with pytest.raises(ReleaseInputError) as failure:
+            validate_release_object(repo, "pdf-gate", hostile)
+        assert str(failure.value) == "release object fails pdf-gate sink receipt digest binding"
+
+
+def _assert_pdf_gate_declared_source_oid_tamper_rejected(repo: Path, gate: dict[str, object]) -> None:
+    always_equal_oid_type = type(
+        "_AlwaysEqualOid",
+        (str,),
+        {"__eq__": lambda self, other: True, "__hash__": str.__hash__},
+    )
+    for lineage_name in _PDF_GATE_LINEAGES:
+        hostile = copy.deepcopy(gate)
+        assert hostile[lineage_name]["state"] == "declared_incomplete"
+        hostile[lineage_name]["source"]["git_blob_oid"] = "7" * 40
+        with pytest.raises(ReleaseInputError, match="fails pdf-gate schema"):
+            validate_release_object(repo, "pdf-gate", hostile)
+
+        hostile = copy.deepcopy(gate)
+        hostile[lineage_name]["source"]["git_blob_oid"] = always_equal_oid_type("7" * 40)
+        with pytest.raises(ReleaseInputError) as failure:
+            validate_release_object(repo, "pdf-gate", hostile)
+        assert str(failure.value) == "release object fails pdf-gate declared lineage source binding"
+
+
+def _assert_pdf_gate_not_declared_null_source_oids_valid(repo: Path, gate: dict[str, object]) -> None:
+    hostile = copy.deepcopy(gate)
+    for lineage_name in _PDF_GATE_LINEAGES:
+        assert hostile[lineage_name]["state"] == "not_declared"
+        hostile[lineage_name]["source"]["git_blob_oid"] = None
+    validate_release_object(repo, "pdf-gate", hostile)
+
+
 def _one_pixel_png(*, compression_level: int = -1) -> bytes:
     def chunk(kind: bytes, payload: bytes) -> bytes:
         return (
@@ -159,48 +199,33 @@ def _declared_claim_repository(tmp_path: Path) -> Path:
 def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
     repo = tmp_path / "repo"
     content_root = repo / "master-reference" / "content"
+    registry_core = json.loads((MASTER_REFERENCE / "content" / "atlas-core.json").read_text(encoding="utf-8"))
+    registry_governance = json.loads(
+        (MASTER_REFERENCE / "content" / "delivery-governance.json").read_text(encoding="utf-8")
+    )
+    fixture_owner_id = registry_core["owners"][0]["id"]
+    fixture_gap_id = registry_governance["gaps"][0]["id"]
     core = {
         "schema_version": "1.0.0",
         "id": "core",
         "scope": "Synthetic repository-owned reference fixture.",
-        "owners": [{"id": "owner.ssot", "path": "docs/ssot.md"}],
+        # The exact capability catalog is meaningful only against these four
+        # authoritative registries; reuse their current owner bytes while the
+        # rest of the release fixture stays deliberately small.
+        "domain_registry": registry_core["domain_registry"],
+        "owners": registry_core["owners"],
+        "traffic_model": registry_core["traffic_model"],
         "outcomes": [{"id": "outcome.one", "title": "Evidence", "success_signal": "Owned evidence reaches output."}],
         "non_goals": [{"id": "non-goal.write", "statement": "No device writes."}],
     }
-    catalog = {
-        "schema_version": "1.0.0",
-        "id": "catalog",
-        "domains": [
-            {
-                "id": "domain.one",
-                "entries": [
-                    {
-                        "id": "cap.one",
-                        "title": "One capability",
-                        "state": "partial",
-                        "current_scope": "Fixture scope.",
-                        "owner_refs": ["owner.ssot"],
-                        "gap_refs": ["gap.one"],
-                    }
-                ],
-            }
-        ],
-    }
+    # The generated-PDF path consumes the complete, fail-closed capability
+    # owner. Reuse its exact tracked shape so fixtures cannot mask record-count,
+    # state/reference, or source-contract drift in the renderer.
+    catalog = json.loads((MASTER_REFERENCE / "content" / "capability-catalog.json").read_text(encoding="utf-8"))
     governance = {
         "schema_version": "1.0.0",
         "id": "governance",
-        "gaps": [
-            {
-                "id": "gap.one",
-                "title": "One gap",
-                "priority": "P0",
-                "disposition": "build",
-                "problem": "The fixture is deliberately incomplete.",
-                "next_actions": ["Implement a bounded slice."],
-                "acceptance_evidence": ["Executable proof."],
-                "owner_role": "fixture owner",
-            }
-        ],
+        "gaps": registry_governance["gaps"],
         "decision_queue": [
             {
                 "id": "decision.one",
@@ -210,7 +235,7 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
                 "options": ["Do nothing", "Build slice"],
                 "current_recommendation": "Build the slice.",
                 "evidence_needed": ["Test result"],
-                "gap_refs": ["gap.one"],
+                "gap_refs": [fixture_gap_id],
             }
         ],
         "opportunity_portfolio": {
@@ -219,14 +244,16 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
                 {
                     "id": "opp.one",
                     "title": "Fixture opportunity",
-                    "gap_refs": ["gap.one"],
+                    "gap_refs": [fixture_gap_id],
                     "horizon": "now",
                     "axes": {"user_value": 5, "implementation_effort": 1},
                     "axis_notes": "Synthetic only.",
                 }
             ],
         },
-        "invariants": [{"id": "invariant.no-write", "statement": "No device writes.", "owner_refs": ["owner.ssot"]}],
+        "invariants": [
+            {"id": "invariant.no-write", "statement": "No device writes.", "owner_refs": [fixture_owner_id]}
+        ],
     }
     # The generated-PDF path consumes the complete, fail-closed Horizon owner.
     # Reuse its exact tracked shape instead of maintaining an impossible partial
@@ -241,7 +268,7 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
         "output-contract.json": output_contract,
     }
     for name, value in content_values.items():
-        if name == "open-horizon-register.json":
+        if name in {"capability-catalog.json", "open-horizon-register.json"}:
             _write(content_root / name, (MASTER_REFERENCE / "content" / name).read_bytes())
         else:
             _json(content_root / name, value)
@@ -297,6 +324,14 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
         (MASTER_REFERENCE / "schema" / "rendered-sink-lineage.schema.json").read_bytes(),
     )
     _write(
+        repo / "master-reference" / "governance" / "rendered-sink-lineage-capability-contract.json",
+        (MASTER_REFERENCE / "governance" / "rendered-sink-lineage-capability-contract.json").read_bytes(),
+    )
+    _write(
+        repo / "master-reference" / "schema" / "rendered-sink-lineage-capability.schema.json",
+        (MASTER_REFERENCE / "schema" / "rendered-sink-lineage-capability.schema.json").read_bytes(),
+    )
+    _write(
         repo / "master-reference" / "release" / "pipeline.py",
         b'"""Synthetic tracked release-builder fixture."""\n',
     )
@@ -318,6 +353,8 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
         "master-reference/governance/architecture.json",
         "master-reference/governance/rendered-sink-lineage-contract.json",
         "master-reference/schema/rendered-sink-lineage.schema.json",
+        "master-reference/governance/rendered-sink-lineage-capability-contract.json",
+        "master-reference/schema/rendered-sink-lineage-capability.schema.json",
         "master-reference/release/pipeline.py",
         *schema_paths,
     ]
@@ -686,7 +723,9 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
         "source_tree_digest": source_tree_digest,
         "tracked_worktree_dirty": False,
         "release_class": "exact_commit",
-        "chunk_size": 2000,
+        # Keep this synthetic one-chunk-per-group fixture canonical even when
+        # it embeds the full capability owner used by PDF sink verification.
+        "chunk_size": 100000,
         "groups": groups,
         "completeness": {
             "path": "completeness.json",
@@ -706,6 +745,20 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
     }
     _json(compiler / "manifest.json", manifest)
     return repo, compiler
+
+
+def _declared_claim_compiler_fixture(repo: Path, compiler: Path) -> Path:
+    """Compile a small exact fixture with the real declared 2,136-facet census."""
+
+    for relative in CONSEQUENTIAL_CLAIM_CONTENT_PATHS:
+        _write(repo / relative, (MASTER_REFERENCE.parent / relative).read_bytes())
+    contract_relative = "master-reference/governance/consequential-claim-contract.json"
+    _write(repo / contract_relative, (MASTER_REFERENCE / "governance" / "consequential-claim-contract.json").read_bytes())
+    _git(repo, "add", "--all")
+    _git(repo, "commit", "-qm", "declare consequential claim census")
+    declared = compiler.parent / "declared-compiler"
+    compile_repository(repo, declared)
+    return declared
 
 
 def _replace_graph_fixture(
@@ -1021,8 +1074,12 @@ def test_release_family_is_deterministic_and_explicitly_unsigned(tmp_path: Path)
     repo, compiler = _fixture_repo(tmp_path)
     first = tmp_path / "release-a"
     second = tmp_path / "release-b"
-    manifest_a = build_release(repo, compiler, first, enhancement_gap="gap.one")
-    manifest_b = build_release(repo, compiler, second, enhancement_gap="gap.one")
+    governance = json.loads(
+        (repo / "master-reference" / "content" / "delivery-governance.json").read_text(encoding="utf-8")
+    )
+    enhancement_gap = governance["gaps"][0]["id"]
+    manifest_a = build_release(repo, compiler, first, enhancement_gap=enhancement_gap)
+    manifest_b = build_release(repo, compiler, second, enhancement_gap=enhancement_gap)
 
     assert manifest_a == manifest_b
     assert manifest_a["release_status"] == "unsigned_preview_incomplete"
@@ -3195,7 +3252,12 @@ def test_pdf_is_only_hash_bound_as_external_unreviewed_input(tmp_path: Path) -> 
     assert gate["rendered_sink_lineage"]["state"] == "not_declared"
     assert gate["rendered_sink_lineage"]["closes_global_gate"] is False
     assert gate["rendered_sink_lineage"]["observed_sink_count"] == 0
+    assert gate["capability_sink_lineage"]["state"] == "not_declared"
+    assert gate["capability_sink_lineage"]["closes_global_gate"] is False
+    assert gate["capability_sink_lineage"]["observed_sink_count"] == 0
     assert (output / "master-reference.pdf").read_bytes() == pdf.read_bytes()
+    _assert_pdf_gate_receipt_digest_tamper_rejected(repo, gate)
+    _assert_pdf_gate_not_declared_null_source_oids_valid(repo, gate)
 
 
 def test_release_can_generate_source_bound_pdf_but_keeps_review_blocked(tmp_path: Path) -> None:
@@ -3214,22 +3276,105 @@ def test_release_can_generate_source_bound_pdf_but_keeps_review_blocked(tmp_path
     assert gate["horizon_sink_mechanical_verification"]["verdict"] == "PASS"
     assert gate["horizon_sink_mechanical_verification"]["rendered_observation_count"] == 167
     assert gate["horizon_sink_mechanical_verification"]["safety_observation_count"] == 53
+    assert gate["capability_sink_mechanical_verification"]["verdict"] == "PASS"
+    assert gate["capability_sink_mechanical_verification"]["rendered_observation_count"] == 422
+    assert gate["capability_sink_mechanical_verification"]["safety_observation_count"] == 7
     assert gate["rendered_sink_lineage"]["closes_global_gate"] is False
     assert gate["rendered_sink_lineage"]["state"] == "not_declared"
+    assert gate["capability_sink_lineage"]["closes_global_gate"] is False
+    assert gate["capability_sink_lineage"]["state"] == "not_declared"
     assert manifest["release_status"] == "unsigned_preview_incomplete"
     assert manifest["independent_verification_verdict"] == "BLOCK"
     validate_release_object(repo, "pdf-gate", gate)
+    _assert_pdf_gate_receipt_digest_tamper_rejected(repo, gate)
+    _assert_pdf_gate_not_declared_null_source_oids_valid(repo, gate)
 
     for mutate in (
         lambda value: value["rendered_sink_lineage"].update(closes_global_gate=True),
         lambda value: value["rendered_sink_lineage"]["global_denominator"].update(independently_reviewed=315),
         lambda value: value["rendered_sink_lineage"].update(observed_sink_count=1),
         lambda value: value["horizon_sink_mechanical_verification"].update(rendered_observation_count=166),
+        lambda value: value["capability_sink_lineage"].update(closes_global_gate=True),
+        lambda value: value["capability_sink_lineage"]["global_denominator"].update(independently_reviewed=422),
+        lambda value: value["capability_sink_lineage"].update(observed_sink_count=1),
+        lambda value: value["capability_sink_mechanical_verification"].update(rendered_observation_count=421),
     ):
         hostile = copy.deepcopy(gate)
         mutate(hostile)
         with pytest.raises(RuntimeError, match="fails pdf-gate schema"):
             validate_release_object(repo, "pdf-gate", hostile)
+
+    hostile = copy.deepcopy(gate)
+    hostile["capability_sink_mechanical_verification"]["pdf_sha256"] = "7" * 64
+    with pytest.raises(RuntimeError, match="fails pdf-gate cross-field PDF digest binding"):
+        validate_release_object(repo, "pdf-gate", hostile)
+
+    for verification in (
+        "horizon_sink_mechanical_verification",
+        "capability_sink_mechanical_verification",
+    ):
+        hostile = copy.deepcopy(gate)
+        hostile[verification]["verification_digest"] = "7" * 64
+        with pytest.raises(RuntimeError, match="fails pdf-gate mechanical verification digest binding"):
+            validate_release_object(repo, "pdf-gate", hostile)
+
+
+def test_release_executes_declared_capability_lineage_for_all_pdf_branches(tmp_path: Path) -> None:
+    pytest.importorskip("reportlab")
+    pytest.importorskip("pypdf")
+    repo, synthetic_compiler = _fixture_repo(tmp_path)
+    compiler = _declared_claim_compiler_fixture(repo, synthetic_compiler)
+
+    generated = tmp_path / "declared-generated"
+    build_release(repo, compiler, generated, generate_pdf=True)
+    generated_gate = json.loads((generated / "pdf-gate.json").read_text(encoding="utf-8"))
+    generated_lineage = generated_gate["capability_sink_lineage"]
+    assert generated_lineage["state"] == "declared_incomplete"
+    assert generated_lineage["closes_global_gate"] is False
+    assert generated_lineage["global_denominator"]["independently_reviewed"] == 0
+    assert generated_lineage["global_denominator"]["unresolved"] == 2_136
+    assert generated_lineage["observed_sink_count"] == 1
+    generated_pdf = next(
+        row for row in generated_lineage["sink_receipts"] if row["sink_id"] == "pdf.capability-catalog"
+    )
+    assert generated_pdf["mapped_exactly_once"] == generated_pdf["rendered"] == 422
+    assert generated_pdf["safety_inputs_bound"] == 7
+    assert generated_pdf["unmapped"] == generated_pdf["multiply_mapped"] == generated_pdf["fallback_count"] == 0
+    assert generated_pdf["producer_verdict"] == "PASS"
+    assert generated_pdf["independent_verdict"] == "BLOCK"
+    _assert_pdf_gate_receipt_digest_tamper_rejected(repo, generated_gate)
+    _assert_pdf_gate_declared_source_oid_tamper_rejected(repo, generated_gate)
+
+    absent = tmp_path / "declared-absent"
+    build_release(repo, compiler, absent)
+    absent_gate = json.loads((absent / "pdf-gate.json").read_text(encoding="utf-8"))
+    absent_lineage = absent_gate["capability_sink_lineage"]
+    assert absent_lineage["state"] == "declared_incomplete"
+    assert absent_lineage["observed_sink_count"] == 0
+    assert absent_lineage["closes_global_gate"] is False
+    assert all(row["producer_verdict"] == "BLOCK" for row in absent_lineage["sink_receipts"])
+    assert all(row["unmapped"] == 422 for row in absent_lineage["sink_receipts"])
+    assert all(row["safety_violations"] == 7 for row in absent_lineage["sink_receipts"])
+    _assert_pdf_gate_receipt_digest_tamper_rejected(repo, absent_gate)
+    _assert_pdf_gate_declared_source_oid_tamper_rejected(repo, absent_gate)
+
+    supplied_pdf = tmp_path / "declared-external.pdf"
+    supplied_pdf.write_bytes(b"%PDF-1.7\nexternal unverified capability sink\n%%EOF\n")
+    external = tmp_path / "declared-external"
+    build_release(repo, compiler, external, pdf_path=supplied_pdf)
+    external_gate = json.loads((external / "pdf-gate.json").read_text(encoding="utf-8"))
+    external_lineage = external_gate["capability_sink_lineage"]
+    assert external_gate["status"] == "externally_supplied_visual_review_pending"
+    assert external_gate["sha256"] == sha256_bytes(supplied_pdf.read_bytes())
+    assert "capability_sink_mechanical_verification" not in external_gate
+    assert external_lineage["state"] == "declared_incomplete"
+    assert external_lineage["observed_sink_count"] == 0
+    assert external_lineage["closes_global_gate"] is False
+    assert all(row["producer_verdict"] == "BLOCK" for row in external_lineage["sink_receipts"])
+    assert all(row["unmapped"] == 422 for row in external_lineage["sink_receipts"])
+    assert all(row["safety_violations"] == 7 for row in external_lineage["sink_receipts"])
+    _assert_pdf_gate_receipt_digest_tamper_rejected(repo, external_gate)
+    _assert_pdf_gate_declared_source_oid_tamper_rejected(repo, external_gate)
 
 
 def test_release_rejects_generated_pdf_replacement_after_mechanical_verification(

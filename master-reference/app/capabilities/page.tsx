@@ -18,6 +18,7 @@ function first(value: string | string[] | undefined): string | undefined {
 
 export default async function CapabilityPage({ searchParams }: CapabilityPageProps) {
   const params = (await searchParams) ?? {};
+  const lineageDefaultView = Object.keys(params).length === 0;
   const titles = Object.fromEntries(core.domain_registry.map((item) => [item.id, item.title]));
   return (
     <AtlasShell active="capabilities" eyebrow="Closed Capability Catalog">
@@ -36,6 +37,7 @@ export default async function CapabilityPage({ searchParams }: CapabilityPagePro
           initialDomain={first(params.domain)}
           initialState={first(params.state)}
           initialQuery={first(params.q)}
+          lineageDefaultView={lineageDefaultView}
         />
       </section>
     </AtlasShell>

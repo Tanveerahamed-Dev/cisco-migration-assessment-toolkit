@@ -8,6 +8,11 @@ import {
   filterCapabilityEntries,
   flattenCapabilityEntries,
 } from "./CapabilitySelection.mjs";
+import {
+  capabilityEntrySlotId,
+  capabilitySafetySlotId,
+  isCapabilityLineageActive,
+} from "./capabilityLineage";
 import type { CapabilityCatalog, Gap } from "./types";
 import { OwnerLinks, StateMark } from "./Shell";
 
@@ -18,6 +23,7 @@ type CapabilityExplorerProps = {
   initialDomain?: string;
   initialState?: string;
   initialQuery?: string;
+  lineageDefaultView?: boolean;
 };
 
 function updateUrl(domain: string, state: string, query: string) {
@@ -35,10 +41,19 @@ export function CapabilityExplorer({
   initialDomain = "all",
   initialState = "all",
   initialQuery = "",
+  lineageDefaultView = false,
 }: CapabilityExplorerProps) {
   const [domain, setDomain] = useState(initialDomain);
   const [state, setState] = useState(initialState);
   const [query, setQuery] = useState(initialQuery);
+  const [lineagePristine, setLineagePristine] = useState(lineageDefaultView);
+  const lineageActive = isCapabilityLineageActive(
+    lineageDefaultView,
+    lineagePristine,
+    domain,
+    state,
+    query,
+  );
   const gapMap = useMemo(() => new Map(gaps.map((gap) => [gap.id, gap])), [gaps]);
 
   const entries = useMemo(
@@ -52,16 +67,19 @@ export function CapabilityExplorer({
   );
 
   function selectDomain(value: string) {
+    setLineagePristine(false);
     setDomain(value);
     updateUrl(value, state, query);
   }
 
   function selectState(value: string) {
+    setLineagePristine(false);
     setState(value);
     updateUrl(domain, value, query);
   }
 
   function search(value: string) {
+    setLineagePristine(false);
     setQuery(value);
     updateUrl(domain, state, value);
   }
@@ -104,8 +122,66 @@ export function CapabilityExplorer({
 
       <div className="result-summary" aria-live="polite">
         <strong>{filtered.length}</strong> of {entries.length} capability records
-        <span>{catalog.denominator_rule}</span>
+        <span
+          data-capability-slot={
+            lineageActive
+              ? capabilitySafetySlotId(
+                  "capability.root",
+                  "@root",
+                  "denominator_rule",
+                )
+              : undefined
+          }
+        >
+          {catalog.denominator_rule}
+        </span>
       </div>
+
+      <aside className="context-note" aria-label="Capability catalog source contract">
+          <strong>Source-derived catalog contract</strong>
+          <dl>
+            <div>
+              <dt>Current</dt>
+              <dd
+                data-capability-slot={
+                  lineageActive
+                    ? capabilitySafetySlotId("capability.entry_contract", "@root", "current")
+                    : undefined
+                }
+              >{catalog.entry_contract.current}</dd>
+            </div>
+            <div>
+              <dt>Partial</dt>
+              <dd
+                data-capability-slot={
+                  lineageActive
+                    ? capabilitySafetySlotId("capability.entry_contract", "@root", "partial")
+                    : undefined
+                }
+              >{catalog.entry_contract.partial}</dd>
+            </div>
+            <div>
+              <dt>Incomplete</dt>
+              <dd
+                data-capability-slot={
+                  lineageActive
+                    ? capabilitySafetySlotId("capability.entry_contract", "@root", "incomplete")
+                    : undefined
+                }
+              >{catalog.entry_contract.incomplete}</dd>
+            </div>
+            <div>
+              <dt>Catalog presence</dt>
+              <dd
+                data-capability-slot={
+                  lineageActive
+                    ? capabilitySafetySlotId("capability.entry_contract", "@root", "catalog_presence")
+                    : undefined
+                }
+              >{catalog.entry_contract.catalog_presence}</dd>
+            </div>
+          </dl>
+      </aside>
 
       <div className="capability-table-wrap">
         <table className="capability-table">
@@ -128,8 +204,24 @@ export function CapabilityExplorer({
                     <span>{domainTitles[entry.domain] ?? entry.domain}</span>
                   </span>
                 </th>
-                <td><StateMark state={entry.state} /></td>
-                <td><p>{entry.current_scope}</p></td>
+                <td
+                  data-capability-slot={
+                    lineageActive
+                      ? capabilityEntrySlotId(entry.id, "state")
+                      : undefined
+                  }
+                >
+                  <StateMark state={entry.state} />
+                </td>
+                <td
+                  data-capability-slot={
+                    lineageActive
+                      ? capabilityEntrySlotId(entry.id, "current_scope")
+                      : undefined
+                  }
+                >
+                  <p>{entry.current_scope}</p>
+                </td>
                 <td>
                   <div className="capability-proof">
                     <OwnerLinks ownerRefs={entry.owner_refs} />
@@ -142,6 +234,34 @@ export function CapabilityExplorer({
                         </a>
                       );
                     })}
+                    {entry.content_role !== undefined ? (
+                      <span>
+                        Source role:{" "}
+                        <strong
+                          data-capability-slot={
+                            lineageActive
+                              ? capabilitySafetySlotId("capability.entry", entry.id, "content_role")
+                              : undefined
+                          }
+                        >{entry.content_role}</strong>
+                      </span>
+                    ) : null}
+                    {entry.mutates_assessment_truth !== undefined ? (
+                      <span>
+                        Mutates assessment truth:{" "}
+                        <strong
+                          data-capability-slot={
+                            lineageActive
+                              ? capabilitySafetySlotId(
+                                  "capability.entry",
+                                  entry.id,
+                                  "mutates_assessment_truth",
+                                )
+                              : undefined
+                          }
+                        >{String(entry.mutates_assessment_truth)}</strong>
+                      </span>
+                    ) : null}
                   </div>
                 </td>
               </tr>

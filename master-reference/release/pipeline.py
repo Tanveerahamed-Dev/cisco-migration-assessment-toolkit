@@ -9,6 +9,11 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
 from atlas_privacy import forbidden_byte_findings
+from governance.capability_sink_lineage import (
+    evaluate_capability_sink_lineage,
+    load_capability_sink_lineage_contract,
+    unavailable_capability_sink_lineage,
+)
 from governance.rendered_sink_lineage import (
     evaluate_rendered_sink_lineage,
     load_rendered_sink_lineage_contract,
@@ -98,6 +103,10 @@ _SEMVER_RE = re.compile(
 
 RENDERED_SINK_LINEAGE_CONTRACT_PATH = "master-reference/governance/rendered-sink-lineage-contract.json"
 OPEN_HORIZON_SOURCE_PATH = "master-reference/content/open-horizon-register.json"
+CAPABILITY_SINK_LINEAGE_CONTRACT_PATH = (
+    "master-reference/governance/rendered-sink-lineage-capability-contract.json"
+)
+CAPABILITY_SOURCE_PATH = "master-reference/content/capability-catalog.json"
 
 
 def _semver_compare_to_stable(value: object, stable: tuple[int, int, int]) -> int | None:
@@ -361,6 +370,63 @@ def _rendered_sink_lineage_inputs(
     return contract, horizon_raw, source_oid, True
 
 
+def _capability_sink_lineage_inputs(
+    repo_root: Path,
+    bundle: CompilerBundle,
+    content: Any,
+) -> tuple[dict[str, Any], bytes, str, bool]:
+    """Load the exact contract and capability blob for sink reconciliation."""
+
+    contract_raw = read_bound_source_blob(repo_root, bundle, CAPABILITY_SINK_LINEAGE_CONTRACT_PATH)
+    contract = load_capability_sink_lineage_contract(contract_raw)
+    validate_release_object(repo_root, "rendered-sink-lineage-capability-contract", contract)
+    capability_raw = content.raw_files.get("capability-catalog.json")
+    if type(capability_raw) is not bytes:
+        raise ReleaseInputError("capability sink lineage retained no exact source blob")
+    facet_records = bundle.records.get("consequential_claim_facets")
+    if not isinstance(facet_records, list):
+        raise ReleaseInputError("capability sink lineage retained no compiler facet subjects")
+    source_oids = {
+        str(row.get("source_blob_oid")) for row in facet_records if row.get("source_path") == CAPABILITY_SOURCE_PATH
+    }
+    summary = bundle.completeness.get("consequential_claim_denominator")
+    scope = contract.get("source_scope")
+    if not isinstance(scope, dict):
+        raise ReleaseInputError("capability sink lineage contract has no source scope")
+    if not isinstance(summary, dict):
+        raise ReleaseInputError("capability sink lineage has no claim denominator")
+    if summary.get("state") == "not_declared":
+        if source_oids:
+            raise ReleaseInputError("capability sink lineage has subjects while its denominator is not declared")
+        return contract, capability_raw, str(scope.get("git_blob_oid") or ""), False
+    if len(source_oids) != 1:
+        raise ReleaseInputError("capability sink lineage facet source binding is not unique")
+    source_oid = next(iter(source_oids))
+    receipts = summary.get("source_receipts")
+    receipt = (
+        next((row for row in receipts if row.get("path") == CAPABILITY_SOURCE_PATH), None)
+        if isinstance(receipts, list)
+        else None
+    )
+    if (
+        not isinstance(receipt, dict)
+        or source_oid != scope.get("git_blob_oid")
+        or receipt.get("git_blob_oid") != source_oid
+        or receipt.get("candidate_count") != scope.get("expected_candidates")
+        or receipt.get("candidate_digest") != scope.get("candidate_digest")
+        or summary.get("expected_candidates") != 2136
+        or summary.get("independently_reviewed_candidates") != 0
+        or summary.get("unresolved_candidates") != 2136
+        or summary.get("contract_digest") != contract["global_denominator"]["claim_contract_digest"]
+        or summary.get("classification_digest") != contract["global_denominator"]["classification_digest"]
+        or summary.get("source_receipts_digest") != contract["global_denominator"]["source_receipts_digest"]
+        or summary.get("candidate_set_digest") != contract["global_denominator"]["candidate_set_digest"]
+        or summary.get("closed") is not False
+    ):
+        raise ReleaseInputError("capability sink lineage differs from the compiler claim denominator")
+    return contract, capability_raw, source_oid, True
+
+
 def _compiler_preservation_entries(bundle: CompilerBundle) -> dict[str, bytes]:
     entries: dict[str, bytes] = {"compiler/manifest.json": canonical_json(bundle.manifest)}
     expected: dict[str, dict[str, Any]] = {
@@ -515,6 +581,12 @@ def build_release(
             bundle,
             content,
         )
+        (
+            capability_lineage_contract,
+            capability_raw,
+            capability_source_oid,
+            capability_lineage_declared,
+        ) = _capability_sink_lineage_inputs(repo_root, bundle, content)
         dependency_sources = _dependency_sources(repo_root, bundle)
         dependency_receipts = _dependency_receipts(dependency_sources)
         architecture_bytes = _bound_architecture(repo_root, bundle)
@@ -540,6 +612,7 @@ def build_release(
                     len(pdf_value) != result.bytes
                     or sha256_bytes(pdf_value) != result.sha256
                     or result.sha256 != result.horizon_sink_verification.pdf_sha256
+                    or result.sha256 != result.capability_sink_verification.pdf_sha256
                 ):
                     raise ReleaseError("generated PDF changed after mechanical verification")
             lineage = (
@@ -557,6 +630,25 @@ def build_release(
                     source_raw=horizon_raw,
                     source_blob_oid=horizon_source_oid,
                     reason_code="rendered_sink_lineage_compiler_subjects_not_declared",
+                )
+            )
+            capability_lineage = (
+                evaluate_capability_sink_lineage(
+                    contract=capability_lineage_contract,
+                    claim_facet_records=bundle.records["consequential_claim_facets"],
+                    capability=content.capabilities,
+                    source_raw=capability_raw,
+                    source_blob_oid=capability_source_oid,
+                    sink_observations={
+                        "pdf.capability-catalog": result.capability_sink_observations,
+                    },
+                )
+                if capability_lineage_declared
+                else unavailable_capability_sink_lineage(
+                    contract=capability_lineage_contract,
+                    source_raw=capability_raw,
+                    source_blob_oid=capability_source_oid,
+                    reason_code="capability_sink_lineage_compiler_subjects_not_declared",
                 )
             )
             pdf_status = "generated_visual_review_pending"
@@ -581,6 +673,15 @@ def build_release(
                     "safety_observation_count": result.horizon_sink_verification.safety_observation_count,
                 },
                 "rendered_sink_lineage": lineage,
+                "capability_sink_mechanical_verification": {
+                    "verdict": result.capability_sink_verification.verdict,
+                    "observation_digest": result.capability_sink_verification.observation_digest,
+                    "verification_digest": result.capability_sink_verification.verification_digest,
+                    "pdf_sha256": result.capability_sink_verification.pdf_sha256,
+                    "rendered_observation_count": result.capability_sink_verification.rendered_observation_count,
+                    "safety_observation_count": result.capability_sink_verification.safety_observation_count,
+                },
+                "capability_sink_lineage": capability_lineage,
                 "claim": "The deterministic renderer produced and structurally inspected this source-bound PDF; independent page review remains required.",
                 "next_gate": "Render every page with Poppler and record independent overflow, accessibility, and content-reconciliation evidence.",
             }
@@ -601,6 +702,22 @@ def build_release(
                     source_raw=horizon_raw,
                     source_blob_oid=horizon_source_oid,
                     reason_code="rendered_sink_lineage_compiler_subjects_not_declared",
+                )
+            if capability_lineage_declared:
+                pdf_gate["capability_sink_lineage"] = evaluate_capability_sink_lineage(
+                    contract=capability_lineage_contract,
+                    claim_facet_records=bundle.records["consequential_claim_facets"],
+                    capability=content.capabilities,
+                    source_raw=capability_raw,
+                    source_blob_oid=capability_source_oid,
+                    sink_observations={},
+                )
+            else:
+                pdf_gate["capability_sink_lineage"] = unavailable_capability_sink_lineage(
+                    contract=capability_lineage_contract,
+                    source_raw=capability_raw,
+                    source_blob_oid=capability_source_oid,
+                    reason_code="capability_sink_lineage_compiler_subjects_not_declared",
                 )
         validate_release_object(repo_root, "pdf-gate", pdf_gate)
         expected_output_members = _validate_output_contract(content, pdf_included=pdf_value is not None)

@@ -102,6 +102,17 @@ closure, sentence-level completeness, or global claim closure. The bounded
 census therefore remains explicitly incomplete and its global
 closure gate remains false.
 
+Two additive rendered-sink lineage contracts currently join bounded subsets of
+those immutable facet subjects to actual presentation slots: Open Horizon in
+the PDF and canonical `/gaps` route, and the Capability Catalog in the PDF and
+canonical unfiltered `/capabilities` route. The PDF gate carries their
+payload-omitting mapping receipts, while PDF text extraction and rendered-DOM
+tests independently reconcile visible observations. Neither slice is a global
+rendered-claim universe: undeclared sources, routes and renderer states, as well
+as fixed, computed, joined and conditional claims, remain unresolved. A local
+mapping PASS never changes review state, supplies claim evidence, authorizes
+publication, or closes the global consequential-claim gate.
+
 Safe UTF-8 source is emitted only in per-file content-hashed chunks. Each source
 record carries its Git blob OID and byte basis. Restricted paths, symlinks, Git
 links and all decoded binary payloads remain metadata-only; their size comes

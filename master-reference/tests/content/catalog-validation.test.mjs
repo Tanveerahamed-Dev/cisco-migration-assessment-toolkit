@@ -14,6 +14,11 @@ import {
   buildHorizonGapsSinkObservations,
   buildHorizonGapsViewModel,
 } from "../../app/atlas/horizonLineage.ts";
+import {
+  buildCapabilityCatalogSinkObservations,
+  buildCapabilityCatalogViewModel,
+  isCapabilityLineageActive,
+} from "../../app/atlas/capabilityLineage.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -31,9 +36,24 @@ const [core, catalog, governance, horizon, outputContract] = await Promise.all([
   load("open-horizon-register.json"),
   load("output-contract.json"),
 ]);
+const capabilityReferences = {
+  domain_ids: core.domain_registry.map((domain) => domain.id),
+  owner_ids: core.owners.map((owner) => owner.id),
+  gap_ids: governance.gaps.map((gap) => gap.id),
+  traffic_plane_ids: core.traffic_model.planes.map((plane) => plane.id),
+};
 const sinkLineageContract = JSON.parse(
   await readFile(
     new URL("../../governance/rendered-sink-lineage-contract.json", import.meta.url),
+    "utf8",
+  ),
+);
+const capabilitySinkLineageContract = JSON.parse(
+  await readFile(
+    new URL(
+      "../../governance/rendered-sink-lineage-capability-contract.json",
+      import.meta.url,
+    ),
     "utf8",
   ),
 );
@@ -413,6 +433,272 @@ test("executes the shipped capability-matrix contract against the canonical cata
     assert.match(residual.problem, new RegExp(shipped, "i"));
   }
   assert.match(residual.problem, /does not yet give every capability ID a stable dossier/i);
+});
+
+test("validates the exact capability shape and exposes the default /capabilities sink", () => {
+  const view = buildCapabilityCatalogViewModel(catalog, capabilityReferences);
+  const envelope = buildCapabilityCatalogSinkObservations(catalog, capabilityReferences);
+  const entries = view.catalog.domains.flatMap((domain) => domain.entries);
+
+  assert.equal(view.catalog.domains.length, 12);
+  assert.equal(entries.length, 211);
+  assert.equal(new Set(entries.map((entry) => entry.id)).size, 211);
+  assert.equal(view.semantic_record_count, 225);
+  assert.equal(
+    view.semantic_record_count,
+    capabilitySinkLineageContract.source_scope.expected_records,
+  );
+  assert.deepEqual(view.rendered_observations, envelope.rendered_observations);
+  assert.deepEqual(view.safety_observations, envelope.safety_observations);
+  assert.equal(view.rendered_observations.length, 422);
+  assert.equal(view.safety_observations.length, 7);
+  const webSink = capabilitySinkLineageContract.sinks.find(
+    (sink) => sink.sink_id === "web.capabilities.default",
+  );
+  assert.ok(webSink);
+  assert.equal(view.rendered_observations.length, webSink.expected_rendered);
+  assert.equal(
+    view.rendered_observations.length,
+    capabilitySinkLineageContract.source_scope.expected_candidates,
+  );
+  assert.equal(webSink.expected_omitted, 0);
+  assert.equal(
+    view.safety_observations.length,
+    capabilitySinkLineageContract.source_scope.expected_safety_inputs,
+  );
+  assert.equal(
+    new Set(
+      [...view.rendered_observations, ...view.safety_observations].map(
+        (row) => row.slot_id,
+      ),
+    ).size,
+    429,
+  );
+
+  const renderedKeys = [
+    "disposition",
+    "facet_path",
+    "observed_value",
+    "record_identity",
+    "rule_id",
+    "slot_id",
+    "transform_id",
+  ];
+  const safetyKeys = [
+    "boundary_field",
+    "observed_value",
+    "record_identity",
+    "rule_id",
+    "slot_id",
+    "transform_id",
+  ];
+  for (const row of view.rendered_observations) {
+    assert.deepEqual(Object.keys(row).sort(), renderedKeys);
+    assert.equal(row.rule_id, "capability.entry");
+    const source = entries.find((entry) => entry.id === row.record_identity);
+    assert.ok(source, row.record_identity);
+    assert.equal(row.observed_value, source[row.facet_path]);
+    assert.equal(
+      row.slot_id,
+      `web.capabilities.capability.entry.${row.record_identity}.${row.facet_path}`,
+    );
+    const renderedField = webSink.rendered_rules
+      .find((rule) => rule.rule_id === row.rule_id)
+      .fields.find((field) => field.facet_path === row.facet_path);
+    assert.ok(renderedField, row.facet_path);
+    assert.equal(row.disposition, renderedField.disposition);
+    assert.equal(row.transform_id, renderedField.transform_id);
+  }
+  const safetyContract = new Map(
+    webSink.safety_mappings.flatMap((rule) =>
+      rule.fields.map((field) => [`${rule.rule_id}:${field.field}`, field]),
+    ),
+  );
+  for (const row of view.safety_observations) {
+    assert.deepEqual(Object.keys(row).sort(), safetyKeys);
+    const expected = safetyContract.get(`${row.rule_id}:${row.boundary_field}`);
+    assert.ok(expected, `${row.rule_id}:${row.boundary_field}`);
+    assert.equal(row.transform_id, expected.transform_id);
+    assert.equal(
+      row.slot_id,
+      expected.slot_template.replace("{record_identity}", row.record_identity),
+    );
+  }
+  assert.deepEqual(
+    view.safety_observations.map((row) => [
+      row.rule_id,
+      row.record_identity,
+      row.boundary_field,
+      row.observed_value,
+    ]),
+    [
+      ["capability.root", "@root", "denominator_rule", catalog.denominator_rule],
+      ["capability.entry_contract", "@root", "current", catalog.entry_contract.current],
+      ["capability.entry_contract", "@root", "partial", catalog.entry_contract.partial],
+      ["capability.entry_contract", "@root", "incomplete", catalog.entry_contract.incomplete],
+      [
+        "capability.entry_contract",
+        "@root",
+        "catalog_presence",
+        catalog.entry_contract.catalog_presence,
+      ],
+      ["capability.entry", "cap.engine.training-curriculum", "content_role", "advisory"],
+      [
+        "capability.entry",
+        "cap.engine.training-curriculum",
+        "mutates_assessment_truth",
+        false,
+      ],
+    ],
+  );
+
+  const sentinel = "SOURCE-DERIVED-CAPABILITY-SENTINEL-7d31";
+  const changed = structuredClone(catalog);
+  changed.domains[0].entries[0].current_scope = sentinel;
+  const changedView = buildCapabilityCatalogViewModel(changed, capabilityReferences);
+  const changedRows = changedView.rendered_observations.filter(
+    (row) => row.record_identity === changed.domains[0].entries[0].id,
+  );
+  assert.equal(changedRows.length, 2);
+  assert.equal(
+    changedRows.find((row) => row.facet_path === "current_scope").observed_value,
+    sentinel,
+  );
+  assert.notEqual(
+    changedRows.find((row) => row.facet_path === "state").observed_value,
+    sentinel,
+    "a source field was observed through the wrong candidate facet",
+  );
+});
+
+test("limits capability lineage to the pristine exact unfiltered runtime state", () => {
+  assert.equal(isCapabilityLineageActive(true, true, "all", "all", ""), true);
+  for (const [domain, state, query] of [
+    ["domain.outcomes", "all", ""],
+    ["all", "partial", ""],
+    ["all", "all", "BGP"],
+    ["all", "all", " "],
+  ]) {
+    assert.equal(isCapabilityLineageActive(true, true, domain, state, query), false);
+  }
+  assert.equal(isCapabilityLineageActive(false, true, "all", "all", ""), false);
+  assert.equal(
+    isCapabilityLineageActive(true, false, "all", "all", ""),
+    false,
+    "clearing filters after a runtime interaction must not reactivate the declared snapshot",
+  );
+});
+
+test("fails closed on malformed or ungrounded capability catalogs without echoing input", () => {
+  const hostileCases = [
+    (draft) => { delete draft.denominator_rule; },
+    (draft) => { draft.unexpected = "extra-root-field"; },
+    (draft) => { draft.domains.pop(); },
+    (draft) => { draft.domains.push(structuredClone(draft.domains[0])); },
+    (draft) => { draft.domains[0].unexpected = "extra-domain-field"; },
+    (draft) => { draft.domains[0].id = "domain.does-not-exist"; },
+    (draft) => { draft.domains[0].entries.pop(); },
+    (draft) => { draft.domains[0].entries.push(structuredClone(draft.domains[0].entries[0])); },
+    (draft) => { draft.domains[0].entries[0].unexpected = "extra-entry-field"; },
+    (draft) => { draft.domains[0].entries[0].state = "supported"; },
+    (draft) => { draft.domains[0].entries[0].current_scope = []; },
+    (draft) => { delete draft.domains[0].entries[0].owner_refs; },
+    (draft) => { draft.domains[0].entries[0].gap_refs = ["gap.catalog-ui"]; },
+    (draft) => {
+      const partial = draft.domains.flatMap((domain) => domain.entries)
+        .find((entry) => entry.state === "partial");
+      delete partial.gap_refs;
+    },
+    (draft) => {
+      const special = draft.domains.flatMap((domain) => domain.entries)
+        .find((entry) => entry.id === "cap.engine.training-curriculum");
+      delete special.content_role;
+    },
+    (draft) => {
+      const ordinary = draft.domains[0].entries[0];
+      ordinary.content_role = "advisory";
+      ordinary.mutates_assessment_truth = false;
+    },
+    (draft) => { draft.entry_contract.catalog_presence = false; },
+    (draft) => { draft.domains[0].entries[0].owner_refs = Array.from({ length: 65 }, (_, index) => `owner.bound-${index}`); },
+    (draft) => { draft.domains[0].entries[0].owner_refs = ["owner.does-not-exist"]; },
+    (draft) => {
+      const partial = draft.domains.flatMap((domain) => domain.entries)
+        .find((entry) => entry.state === "partial");
+      partial.gap_refs = ["gap.does-not-exist"];
+    },
+    (draft) => {
+      const traffic = draft.domains.flatMap((domain) => domain.entries)
+        .find((entry) => entry.traffic_plane_refs?.length);
+      traffic.traffic_plane_refs = ["traffic.does-not-exist"];
+    },
+  ];
+  for (const mutate of hostileCases) {
+    const draft = structuredClone(catalog);
+    mutate(draft);
+    assert.throws(
+      () => buildCapabilityCatalogViewModel(draft, capabilityReferences),
+      (error) => error instanceof TypeError && error.message === "Invalid capability catalog.",
+    );
+  }
+
+  const canary = "HOSTILE-CAPABILITY-CANARY-MUST-NOT-ECHO";
+  const wrongReference = structuredClone(catalog);
+  wrongReference.domains[0].entries[0].owner_refs = [canary];
+  assert.throws(
+    () => buildCapabilityCatalogViewModel(wrongReference, capabilityReferences),
+    (error) => {
+      assert.equal(error.message, "Invalid capability catalog.");
+      assert.doesNotMatch(error.message, new RegExp(canary));
+      return true;
+    },
+  );
+
+  const customRoot = Object.assign(
+    Object.create({ inherited: true }),
+    structuredClone(catalog),
+  );
+  const accessorRoot = Object.defineProperty(structuredClone(catalog), "denominator_rule", {
+    enumerable: true,
+    get() { throw new Error(canary); },
+  });
+  const symbolRoot = Object.assign(structuredClone(catalog), { [Symbol("hidden")]: canary });
+  const hiddenRoot = structuredClone(catalog);
+  Object.defineProperty(hiddenRoot, "hidden", { value: canary });
+  const customDomains = structuredClone(catalog);
+  customDomains.domains = Object.assign(Object.create(Array.prototype), customDomains.domains);
+  const sparseOwners = structuredClone(catalog);
+  sparseOwners.domains[0].entries[0].owner_refs = Array(1);
+  const decoratedOwners = structuredClone(catalog);
+  decoratedOwners.domains[0].entries[0].owner_refs.hidden = canary;
+  const accessorEntries = structuredClone(catalog);
+  Object.defineProperty(accessorEntries.domains[0].entries, "0", {
+    enumerable: true,
+    get() { throw new Error(canary); },
+  });
+  const symbolOwners = structuredClone(catalog);
+  symbolOwners.domains[0].entries[0].owner_refs[Symbol("hidden")] = canary;
+
+  for (const hostile of [
+    customRoot,
+    accessorRoot,
+    symbolRoot,
+    hiddenRoot,
+    customDomains,
+    sparseOwners,
+    decoratedOwners,
+    accessorEntries,
+    symbolOwners,
+  ]) {
+    assert.throws(
+      () => buildCapabilityCatalogViewModel(hostile, capabilityReferences),
+      (error) => {
+        assert.equal(error.message, "Invalid capability catalog.");
+        assert.doesNotMatch(error.message, new RegExp(canary));
+        return true;
+      },
+    );
+  }
 });
 
 test("uses only controlled support states and demonstrates every state", () => {

@@ -1,0 +1,97 @@
+{
+  "schema_version": "rendered-sink-lineage-capability-contract/1.0.0",
+  "id": "atlas.rendered-sink-lineage.capability-catalog.v1",
+  "state": "declared_incomplete",
+  "closes_global_gate": false,
+  "global_denominator": {
+    "kind": "bounded_curated_content_claim_denominator",
+    "expected_candidates": 2136,
+    "in_scope_candidates": 422,
+    "out_of_scope_candidates": 1714,
+    "independently_reviewed": 0,
+    "unresolved": 2136,
+    "claim_contract_digest": "4ebd7da5caa6aab63f3ba122d480fef638f46b866c665845087433074f436c8d",
+    "classification_digest": "b5bc4783b8bd6461fc4669b39a555ae061081a278e36712cdb6f70a5e673d1df",
+    "source_receipts_digest": "863f93c7bc0599b1cfe7e5b42eb5b10c8087a704af9de194be18d9bf28008689",
+    "candidate_set_digest": "a768b5a6c9a94390ada8e9c24627c8908f6a7b51e3f06d59b79ac8f1a5ffdd43"
+  },
+  "source_scope": {
+    "path": "master-reference/content/capability-catalog.json",
+    "git_blob_oid": "19312d959afd79e0ae91330f6b864e0bcfba0456",
+    "sha256": "f4c4c5eb652d2ceb6ac60eca299a1a533334034a2d2551910fbbc364ba5c14ef",
+    "expected_records": 225,
+    "expected_candidates": 422,
+    "expected_safety_inputs": 7,
+    "candidate_digest": "b92ac8c92f0564c7dd542ffde283633bc8d6e3e5a43aaa77cfef50f65720b18a",
+    "facet_id_set_digest": "36d5775d6b2e4c54abfbcb9030b040bab825c221f880d26139690c0cafe4d62f",
+    "candidate_rules": [
+      {"rule_id": "capability.root", "record_kind": "capability_catalog", "selector": "root", "identity": "root", "expected_records": 1, "candidate_fields": []},
+      {"rule_id": "capability.entry_contract", "record_kind": "capability_entry_contract", "selector": "entry_contract", "identity": "root", "expected_records": 1, "candidate_fields": []},
+      {"rule_id": "capability.domain", "record_kind": "capability_domain", "selector": "domains", "identity": "id", "expected_records": 12, "candidate_fields": []},
+      {"rule_id": "capability.entry", "record_kind": "capability_entry", "selector": "entries", "identity": "id", "expected_records": 211, "candidate_fields": ["state", "current_scope"]}
+    ],
+    "safety_rules": [
+      {"rule_id": "capability.root", "selector": "root", "identity": "root", "expected_records": 1, "fields": [{"field": "denominator_rule", "expected_value": "Every entry in this finite version is classified. Adding or removing an entry changes the denominator and must be disclosed as scope evolution, never disguised as progress or regression."}]},
+      {"rule_id": "capability.entry_contract", "selector": "entry_contract", "identity": "root", "expected_records": 1, "fields": [{"field": "current", "expected_value": "Requires at least one live owner reference and a bounded support statement."}, {"field": "partial", "expected_value": "Requires owner references for the implemented slice plus at least one actionable gap reference."}, {"field": "incomplete", "expected_value": "Missing, gated, excluded, and unknown entries require at least one dispositioned gap reference."}, {"field": "catalog_presence", "expected_value": "An entry documents the landscape; it is not a support promise unless state=current."}]},
+      {"rule_id": "capability.entry", "selector": "training_entry", "identity": "id", "expected_records": 1, "fields": [{"field": "content_role", "expected_value": "advisory"}, {"field": "mutates_assessment_truth", "expected_value": false}]}
+    ]
+  },
+  "sink_universe": {
+    "complete": false,
+    "declared_count": 2,
+    "known_omitted_classes": [
+      "nondefault_web_filter_query_and_runtime_states",
+      "other_curated_content_sources",
+      "other_web_routes_and_states",
+      "other_pdf_sections",
+      "fixed_template_claims",
+      "computed_and_joined_claims",
+      "responsive_print_locale_and_runtime_variants"
+    ]
+  },
+  "sinks": [
+    {
+      "sink_id": "pdf.capability-catalog",
+      "kind": "output.pdf",
+      "locator": "master-reference.pdf#closed-capability-catalog",
+      "renderer_path": "master-reference/release/pdf_report.py",
+      "renderer_symbol": "_capabilities",
+      "expected_rendered": 422,
+      "expected_omitted": 0,
+      "rendered_rules": [
+        {"rule_id": "capability.entry", "fields": [{"facet_path": "state", "disposition": "rendered_labeled", "slot_template": "pdf.capabilities.capability.entry.{record_identity}.state", "transform_id": "pdf.capability_heading_state/1"}, {"facet_path": "current_scope", "disposition": "rendered_labeled", "slot_template": "pdf.capabilities.capability.entry.{record_identity}.current_scope", "transform_id": "pdf.capability_scope_plain_text/1"}], "expected_subjects": 422}
+      ],
+      "omission_rules": [],
+      "safety_mappings": [
+        {"rule_id": "capability.root", "fields": [{"field": "denominator_rule", "slot_template": "pdf.capabilities.capability.root.@root.denominator_rule", "transform_id": "pdf.capability_support_contract/1"}], "expected_inputs": 1},
+        {"rule_id": "capability.entry_contract", "fields": [{"field": "current", "slot_template": "pdf.capabilities.capability.entry_contract.@root.current", "transform_id": "pdf.capability_support_contract/1"}, {"field": "partial", "slot_template": "pdf.capabilities.capability.entry_contract.@root.partial", "transform_id": "pdf.capability_support_contract/1"}, {"field": "incomplete", "slot_template": "pdf.capabilities.capability.entry_contract.@root.incomplete", "transform_id": "pdf.capability_support_contract/1"}, {"field": "catalog_presence", "slot_template": "pdf.capabilities.capability.entry_contract.@root.catalog_presence", "transform_id": "pdf.capability_support_contract/1"}], "expected_inputs": 4},
+        {"rule_id": "capability.entry", "fields": [{"field": "content_role", "slot_template": "pdf.capabilities.capability.entry.cap.engine.training-curriculum.content_role", "transform_id": "pdf.capability_entry_boundary/1"}, {"field": "mutates_assessment_truth", "slot_template": "pdf.capabilities.capability.entry.cap.engine.training-curriculum.mutates_assessment_truth", "transform_id": "pdf.capability_entry_boundary/1"}], "expected_inputs": 2}
+      ]
+    },
+    {
+      "sink_id": "web.capabilities.default",
+      "kind": "private_web_route",
+      "locator": "/capabilities",
+      "renderer_path": "master-reference/app/atlas/CapabilityExplorer.tsx",
+      "renderer_symbol": "CapabilityExplorer",
+      "expected_rendered": 422,
+      "expected_omitted": 0,
+      "rendered_rules": [
+        {"rule_id": "capability.entry", "fields": [{"facet_path": "state", "disposition": "rendered_derived", "slot_template": "web.capabilities.capability.entry.{record_identity}.state", "transform_id": "state-mark-label"}, {"facet_path": "current_scope", "disposition": "rendered_identity", "slot_template": "web.capabilities.capability.entry.{record_identity}.current_scope", "transform_id": "identity-text"}], "expected_subjects": 422}
+      ],
+      "omission_rules": [],
+      "safety_mappings": [
+        {"rule_id": "capability.root", "fields": [{"field": "denominator_rule", "slot_template": "web.capabilities.capability.root.@root.denominator_rule", "transform_id": "visible-source-contract-text"}], "expected_inputs": 1},
+        {"rule_id": "capability.entry_contract", "fields": [{"field": "current", "slot_template": "web.capabilities.capability.entry_contract.@root.current", "transform_id": "visible-source-contract-text"}, {"field": "partial", "slot_template": "web.capabilities.capability.entry_contract.@root.partial", "transform_id": "visible-source-contract-text"}, {"field": "incomplete", "slot_template": "web.capabilities.capability.entry_contract.@root.incomplete", "transform_id": "visible-source-contract-text"}, {"field": "catalog_presence", "slot_template": "web.capabilities.capability.entry_contract.@root.catalog_presence", "transform_id": "visible-source-contract-text"}], "expected_inputs": 4},
+        {"rule_id": "capability.entry", "fields": [{"field": "content_role", "slot_template": "web.capabilities.capability.entry.cap.engine.training-curriculum.content_role", "transform_id": "visible-source-contract-text"}, {"field": "mutates_assessment_truth", "slot_template": "web.capabilities.capability.entry.cap.engine.training-curriculum.mutates_assessment_truth", "transform_id": "visible-source-contract-text"}], "expected_inputs": 2}
+      ]
+    }
+  ],
+  "limitations": [
+    "This is a source-to-sink lineage slice for the capability catalog and two declared default sinks, not a global rendered-claim denominator.",
+    "The web scope is the unfiltered default locator only; query, filter, hydration, responsive, locale, and runtime variants remain outside this slice.",
+    "Payloads are omitted but unsalted value fingerprints can be dictionary-recovered for low-entropy values and are not confidentiality.",
+    "A mapping PASS supplies no semantic acceptance, reviewer authentication, evidence efficacy, publication authority, or claim-evidence promotion.",
+    "The 1714 out-of-scope curated facets and all undeclared template, computed, joined, conditional, locale, responsive, print, and runtime sink variants remain unresolved."
+  ]
+}

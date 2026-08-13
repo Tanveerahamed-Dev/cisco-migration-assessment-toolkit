@@ -8,6 +8,7 @@ import test from "node:test";
 import { Miniflare } from "miniflare";
 
 import { CANONICAL_GZIP_HEADER_BYTES } from "../build/gzip-contract.js";
+import { buildCapabilityCatalogViewModel } from "../app/atlas/capabilityLineage.ts";
 import { buildHorizonGapsViewModel } from "../app/atlas/horizonLineage.ts";
 
 const root = new URL("../", import.meta.url);
@@ -66,9 +67,10 @@ function decodeHtmlText(value) {
   });
 }
 
-function horizonSlotText(html) {
+function lineageSlotText(html, attribute, label) {
   const slots = new Map();
   const stack = [];
+  const slotPattern = new RegExp(`\\b${attribute}="([^"]+)"`);
   const tokenPattern = /<!--[\s\S]*?-->|<\/?[A-Za-z][^>]*>|[^<]+/g;
   for (const token of html.match(tokenPattern) ?? []) {
     if (token.startsWith("<!--")) continue;
@@ -85,9 +87,9 @@ function horizonSlotText(html) {
     }
     const tag = /^<([A-Za-z][A-Za-z0-9:-]*)\b/.exec(token)?.[1]?.toLowerCase();
     if (!tag) continue;
-    const slotId = /\bdata-horizon-slot="([^"]+)"/.exec(token)?.[1];
+    const slotId = slotPattern.exec(token)?.[1];
     if (slotId && slots.has(slotId)) {
-      throw new Error(`duplicate physical Horizon slot ${slotId}`);
+      throw new Error(`duplicate physical ${label} slot ${slotId}`);
     }
     const frame = { tag, slotId, text: "" };
     stack.push(frame);
@@ -99,6 +101,14 @@ function horizonSlotText(html) {
   return new Map(
     [...slots].map(([slotId, frame]) => [slotId, frame.text.replaceAll(/\s+/g, " ").trim()]),
   );
+}
+
+function horizonSlotText(html) {
+  return lineageSlotText(html, "data-horizon-slot", "Horizon");
+}
+
+function capabilitySlotText(html) {
+  return lineageSlotText(html, "data-capability-slot", "capability");
 }
 
 async function sourceFiles(directory) {
@@ -962,6 +972,114 @@ test("server-renders every capability domain deep link with its own records", as
     const html = await response.text();
     assert.ok(html.includes(domain.entries[0].title), `${domain.id} did not render its first record`);
     assert.doesNotMatch(html, />0<\/strong> of \d+ capability records/, domain.id);
+  }
+});
+
+test("server-renders every source-derived default capability sink slot exactly once", async () => {
+  const [catalogText, coreText, governanceText, explorerSource, pageSource] = await Promise.all([
+    readFile(new URL("content/capability-catalog.json", root), "utf8"),
+    readFile(new URL("content/atlas-core.json", root), "utf8"),
+    readFile(new URL("content/delivery-governance.json", root), "utf8"),
+    readFile(new URL("app/atlas/CapabilityExplorer.tsx", root), "utf8"),
+    readFile(new URL("app/capabilities/page.tsx", root), "utf8"),
+  ]);
+  const catalog = JSON.parse(catalogText);
+  const core = JSON.parse(coreText);
+  const governance = JSON.parse(governanceText);
+  const view = buildCapabilityCatalogViewModel(catalog, {
+    domain_ids: core.domain_registry.map((domain) => domain.id),
+    owner_ids: core.owners.map((owner) => owner.id),
+    gap_ids: governance.gaps.map((gap) => gap.id),
+    traffic_plane_ids: core.traffic_model.planes.map((plane) => plane.id),
+  });
+  const response = await render("/capabilities");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  const slotText = capabilitySlotText(html);
+
+  for (const observation of [
+    ...view.rendered_observations,
+    ...view.safety_observations,
+  ]) {
+    const visible = slotText.get(observation.slot_id);
+    assert.ok(
+      visible !== undefined,
+      `/capabilities omitted the declared sink slot ${observation.slot_id}`,
+    );
+    const expected = observation.transform_id === "state-mark-label"
+      ? String(observation.observed_value).replaceAll("_", " ")
+      : String(observation.observed_value);
+    assert.equal(
+      visible,
+      expected,
+      `/capabilities slot ${observation.slot_id} does not visibly bind its source value`,
+    );
+  }
+  assert.equal(
+    slotText.size,
+    429,
+    "/capabilities emitted an unexpected or duplicate physical capability slot",
+  );
+
+  const entrySlots = view.catalog.domains.flatMap((domain) =>
+    domain.entries.flatMap((entry) => [
+      `web.capabilities.capability.entry.${entry.id}.state`,
+      `web.capabilities.capability.entry.${entry.id}.current_scope`,
+    ]),
+  );
+  const physicalEntrySlots = [...slotText.keys()].filter(
+    (slotId) =>
+      slotId.endsWith(".state") || slotId.endsWith(".current_scope"),
+  );
+  assert.deepEqual(
+    physicalEntrySlots,
+    entrySlots,
+    "/capabilities changed the source entry or candidate-field order",
+  );
+
+  const training = catalog.domains
+    .flatMap((domain) => domain.entries)
+    .find((entry) => entry.id === "cap.engine.training-curriculum");
+  assert.ok(training);
+  assert.ok(html.includes("Source role:"));
+  assert.ok(html.includes("Mutates assessment truth:"));
+  for (const sourceSentinel of [
+    catalog.denominator_rule,
+    catalog.entry_contract.current,
+    catalog.entry_contract.partial,
+    catalog.entry_contract.incomplete,
+    catalog.entry_contract.catalog_presence,
+    training.current_scope,
+  ]) {
+    assert.ok(html.includes(sourceSentinel), `/capabilities omitted: ${sourceSentinel}`);
+    assert.equal(
+      explorerSource.includes(sourceSentinel) || pageSource.includes(sourceSentinel),
+      false,
+      "a fixed page fallback duplicated a source-owned capability value",
+    );
+  }
+
+  for (const [variant, trainingVisible] of [
+    ["/capabilities?domain=domain.outcomes", false],
+    ["/capabilities?state=partial", true],
+    ["/capabilities?q=BGP", false],
+    ["/capabilities?domain=all", true],
+    ["/capabilities?state=all", true],
+    ["/capabilities?q=", true],
+    ["/capabilities?domain=all&state=all&q=", true],
+    ["/capabilities?unused=1", true],
+  ]) {
+    const filteredResponse = await render(variant);
+    assert.equal(filteredResponse.status, 200, variant);
+    const filteredHtml = await filteredResponse.text();
+    const filteredSlots = capabilitySlotText(filteredHtml);
+    assert.equal(
+      filteredSlots.size,
+      0,
+      `${variant} was silently included in the default-route sink universe`,
+    );
+    assert.ok(filteredHtml.includes(catalog.entry_contract.catalog_presence));
+    assert.equal(filteredHtml.includes("Mutates assessment truth:"), trainingVisible);
   }
 });
 

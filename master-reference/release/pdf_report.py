@@ -14,6 +14,7 @@ import hashlib
 import html
 import json
 import os
+import re
 import shutil
 import subprocess
 import unicodedata
@@ -86,6 +87,18 @@ class PdfHorizonSinkVerification:
 
 
 @dataclass(frozen=True)
+class PdfCapabilitySinkVerification:
+    """Mechanical proof that every capability sink slot reached the PDF."""
+
+    verdict: str
+    observation_digest: str
+    verification_digest: str
+    pdf_sha256: str
+    rendered_observation_count: int
+    safety_observation_count: int
+
+
+@dataclass(frozen=True)
 class PdfReportResult:
     """Stable receipt for a generated report."""
 
@@ -98,6 +111,8 @@ class PdfReportResult:
     input_digest: str
     reportlab_version: str
     independent_verification_verdict: str
+    capability_sink_observations: dict[str, tuple[dict[str, Any], ...]]
+    capability_sink_verification: PdfCapabilitySinkVerification
     horizon_sink_observations: dict[str, tuple[dict[str, Any], ...]]
     horizon_sink_verification: PdfHorizonSinkVerification
 
@@ -161,6 +176,392 @@ def _strings(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
     return [_plain(item) for item in value if _plain(item)]
+
+
+_CAPABILITY_STATES = frozenset({"current", "partial", "missing", "gated", "excluded", "unknown"})
+_CAPABILITY_ROOT_FIELDS = frozenset(
+    {"schema_version", "id", "catalog_version", "kind", "denominator_rule", "entry_contract", "domains"}
+)
+_CAPABILITY_CONTRACT_FIELDS = ("current", "partial", "incomplete", "catalog_presence")
+_CAPABILITY_ENTRY_REQUIRED_FIELDS = frozenset({"id", "title", "state", "current_scope"})
+_CAPABILITY_ENTRY_OPTIONAL_FIELDS = frozenset(
+    {"owner_refs", "gap_refs", "traffic_plane_refs", "content_role", "mutates_assessment_truth"}
+)
+_CAPABILITY_TRAINING_ID = "cap.engine.training-curriculum"
+_CAPABILITY_REGISTRY_COUNTS = {
+    "domain": 12,
+    "owner": 29,
+    "gap": 41,
+    "traffic plane": 8,
+}
+_CAPABILITY_RENDERED_OBSERVATION_FIELDS = frozenset(
+    {"rule_id", "record_identity", "facet_path", "disposition", "slot_id", "transform_id", "observed_value"}
+)
+_CAPABILITY_SAFETY_OBSERVATION_FIELDS = frozenset(
+    {"rule_id", "record_identity", "boundary_field", "slot_id", "transform_id", "observed_value"}
+)
+
+
+class _PdfCapabilityInputError(ValueError):
+    """Static, non-echoing rejection for invalid capability PDF inputs."""
+
+
+def _capability_keys(record: object, label: str) -> frozenset[str]:
+    if type(record) is not dict:
+        raise _PdfCapabilityInputError(f"PDF capability {label} must be an exact object")
+    keys = tuple(record)
+    if any(type(key) is not str for key in keys):
+        raise _PdfCapabilityInputError(f"PDF capability {label} keys must be exact strings")
+    return frozenset(keys)
+
+
+def _capability_text_is_portable(value: str) -> bool:
+    return all(
+        ord(character) >= 0x20
+        and not 0x7F <= ord(character) <= 0x9F
+        and not 0xD800 <= ord(character) <= 0xDFFF
+        for character in value
+    )
+
+
+def _required_capability_text(record: dict[str, Any], field: str, record_label: str) -> str:
+    value = record.get(field)
+    if type(value) is not str or not value.strip() or len(value) > 4_096:
+        raise _PdfCapabilityInputError(f"PDF capability {record_label} requires non-empty {field}")
+    if not _capability_text_is_portable(value) or not _plain(value):
+        raise _PdfCapabilityInputError(f"PDF capability {record_label} requires portable non-empty {field}")
+    return value
+
+
+def _capability_identifier(value: object, prefix: str, label: str) -> str:
+    if (
+        type(value) is not str
+        or not value.startswith(prefix)
+        or len(value) > 160
+        or re.fullmatch(r"[a-z0-9]+(?:[.-][a-z0-9]+(?:-[a-z0-9]+)*)+", value) is None
+    ):
+        raise _PdfCapabilityInputError(f"PDF capability {label} must be a bounded semantic identifier")
+    return value
+
+
+def _capability_catalog_version(value: object) -> str:
+    if type(value) is not str or re.fullmatch(r"\d{4}\.\d{2}\.\d{2}", value) is None:
+        raise _PdfCapabilityInputError("PDF capability catalog_version must be a calendar date")
+    try:
+        from datetime import date
+
+        year, month, day = (int(part) for part in value.split("."))
+        parsed = date(year, month, day)
+    except ValueError as exc:
+        raise _PdfCapabilityInputError("PDF capability catalog_version must be a calendar date") from exc
+    if parsed.strftime("%Y.%m.%d") != value:
+        raise _PdfCapabilityInputError("PDF capability catalog_version must be a calendar date")
+    return value
+
+
+def _capability_registry_ids(
+    value: object,
+    *,
+    label: str,
+    prefix: str,
+) -> frozenset[str]:
+    expected_count = _CAPABILITY_REGISTRY_COUNTS[label]
+    if type(value) is not list or len(value) != expected_count:
+        raise _PdfCapabilityInputError(
+            f"PDF capability {label} registry must contain exactly {expected_count} objects"
+        )
+    identifiers: list[str] = []
+    for item in value:
+        keys = _capability_keys(item, f"{label} registry record")
+        if "id" not in keys:
+            raise _PdfCapabilityInputError(f"PDF capability {label} registry record requires id")
+        identifiers.append(_capability_identifier(item["id"], prefix, f"{label} registry id"))
+    if len(identifiers) != len(set(identifiers)):
+        raise _PdfCapabilityInputError(f"PDF capability {label} registry ids must be unique")
+    return frozenset(identifiers)
+
+
+def _capability_registries(
+    content: ContentBundle,
+) -> tuple[frozenset[str], frozenset[str], frozenset[str], frozenset[str]]:
+    core_keys = _capability_keys(content.core, "core registry envelope")
+    governance_keys = _capability_keys(content.governance, "governance registry envelope")
+    for field in ("domain_registry", "owners", "traffic_model"):
+        if field not in core_keys:
+            raise _PdfCapabilityInputError(f"PDF capability core registry envelope requires {field}")
+    if "gaps" not in governance_keys:
+        raise _PdfCapabilityInputError("PDF capability governance registry envelope requires gaps")
+
+    traffic_model = content.core["traffic_model"]
+    traffic_keys = _capability_keys(traffic_model, "traffic_model registry envelope")
+    if "planes" not in traffic_keys:
+        raise _PdfCapabilityInputError("PDF capability traffic_model registry envelope requires planes")
+    return (
+        _capability_registry_ids(content.core["domain_registry"], label="domain", prefix="domain."),
+        _capability_registry_ids(content.core["owners"], label="owner", prefix="owner."),
+        _capability_registry_ids(content.governance["gaps"], label="gap", prefix="gap."),
+        _capability_registry_ids(traffic_model["planes"], label="traffic plane", prefix="traffic."),
+    )
+
+
+def _validate_capability_refs(
+    entry: dict[str, Any],
+    field: str,
+    prefix: str,
+    registry_ids: frozenset[str],
+) -> tuple[str, ...]:
+    if field not in entry:
+        return ()
+    value = entry[field]
+    if (
+        type(value) is not list
+        or len(value) > 64
+        or any(type(item) is not str for item in value)
+    ):
+        raise _PdfCapabilityInputError(f"PDF capability entry {field} must be a unique string array")
+    identifiers = tuple(_capability_identifier(item, prefix, f"entry {field}") for item in value)
+    if len(identifiers) != len(set(identifiers)):
+        raise _PdfCapabilityInputError(f"PDF capability entry {field} must be a unique string array")
+    if any(identifier not in registry_ids for identifier in identifiers):
+        raise _PdfCapabilityInputError(f"PDF capability entry {field} contains an unresolved registry reference")
+    return identifiers
+
+
+def _validated_capabilities_impl(
+    content: ContentBundle,
+) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
+    capabilities = content.capabilities
+    if _capability_keys(capabilities, "catalog root") != _CAPABILITY_ROOT_FIELDS:
+        raise _PdfCapabilityInputError("PDF capability catalog root shape mismatch")
+    schema_version = capabilities.get("schema_version")
+    if type(schema_version) is not str or schema_version != "1.0.0":
+        raise _PdfCapabilityInputError("PDF capability schema_version must be 1.0.0")
+    catalog_version = _capability_catalog_version(capabilities.get("catalog_version"))
+    root_id = _capability_identifier(capabilities.get("id"), "atlas.capability-catalog.", "catalog id")
+    if root_id != f"atlas.capability-catalog.{catalog_version.replace('.', '-')}":
+        raise _PdfCapabilityInputError("PDF capability catalog id does not bind catalog_version")
+    _required_capability_text(capabilities, "denominator_rule", "catalog root")
+    kind = capabilities.get("kind")
+    if type(kind) is not str or kind != "closed-world-capability-catalog":
+        raise _PdfCapabilityInputError("PDF capability catalog kind mismatch")
+
+    domain_registry, owner_registry, gap_registry, traffic_registry = _capability_registries(content)
+
+    entry_contract = capabilities.get("entry_contract")
+    if _capability_keys(entry_contract, "entry_contract") != frozenset(_CAPABILITY_CONTRACT_FIELDS):
+        raise _PdfCapabilityInputError("PDF capability entry_contract shape mismatch")
+    for field in _CAPABILITY_CONTRACT_FIELDS:
+        _required_capability_text(entry_contract, field, "entry_contract")
+
+    raw_domains = capabilities.get("domains")
+    if (
+        type(raw_domains) is not list
+        or len(raw_domains) != 12
+        or any(type(domain) is not dict for domain in raw_domains)
+    ):
+        raise _PdfCapabilityInputError("PDF capability catalog must contain exactly 12 domain objects")
+    domains = tuple(raw_domains)
+    domain_ids: set[str] = set()
+    entries: list[dict[str, Any]] = []
+    entry_ids: set[str] = set()
+    observed_states: set[str] = set()
+    training_seen = False
+    for domain in domains:
+        if _capability_keys(domain, "domain") != frozenset({"id", "entity_role", "entries"}):
+            raise _PdfCapabilityInputError("PDF capability domain shape mismatch")
+        domain_id = _capability_identifier(domain.get("id"), "domain.", "domain id")
+        if domain_id in domain_ids:
+            raise _PdfCapabilityInputError("PDF capability domain ids must be unique")
+        if domain_id not in domain_registry:
+            raise _PdfCapabilityInputError("PDF capability domain id contains an unresolved registry reference")
+        domain_ids.add(domain_id)
+        entity_role = domain.get("entity_role")
+        if type(entity_role) is not str or entity_role != "reference":
+            raise _PdfCapabilityInputError("PDF capability domain entity_role must be reference")
+        raw_entries = domain.get("entries")
+        if (
+            type(raw_entries) is not list
+            or not raw_entries
+            or len(raw_entries) > 64
+            or any(type(item) is not dict for item in raw_entries)
+        ):
+            raise _PdfCapabilityInputError("PDF capability domain entries must be a non-empty array of objects")
+        for entry in raw_entries:
+            fields = _capability_keys(entry, "entry")
+            if not _CAPABILITY_ENTRY_REQUIRED_FIELDS <= fields or fields - (
+                _CAPABILITY_ENTRY_REQUIRED_FIELDS | _CAPABILITY_ENTRY_OPTIONAL_FIELDS
+            ):
+                raise _PdfCapabilityInputError("PDF capability entry shape mismatch")
+            record_id = _capability_identifier(entry.get("id"), "cap.", "entry id")
+            _required_capability_text(entry, "title", "entry")
+            _required_capability_text(entry, "current_scope", "entry")
+            if record_id in entry_ids:
+                raise _PdfCapabilityInputError("PDF capability entry ids must be unique")
+            entry_ids.add(record_id)
+            state = entry.get("state")
+            if type(state) is not str or state not in _CAPABILITY_STATES:
+                raise _PdfCapabilityInputError("PDF capability entry state is outside the controlled vocabulary")
+            observed_states.add(state)
+            owners = _validate_capability_refs(entry, "owner_refs", "owner.", owner_registry)
+            gaps = _validate_capability_refs(entry, "gap_refs", "gap.", gap_registry)
+            _validate_capability_refs(entry, "traffic_plane_refs", "traffic.", traffic_registry)
+            if state == "current" and not owners:
+                raise _PdfCapabilityInputError("PDF current capability requires owner_refs")
+            if state == "current" and gaps:
+                raise _PdfCapabilityInputError("PDF current capability cannot carry gap_refs")
+            if state == "partial" and (not owners or not gaps):
+                raise _PdfCapabilityInputError("PDF partial capability requires owner_refs and gap_refs")
+            if state in {"missing", "gated", "excluded", "unknown"} and not gaps:
+                raise _PdfCapabilityInputError("PDF incomplete capability requires gap_refs")
+            if record_id == _CAPABILITY_TRAINING_ID:
+                training_seen = True
+                content_role = entry.get("content_role")
+                if (
+                    type(content_role) is not str
+                    or content_role != "advisory"
+                    or entry.get("mutates_assessment_truth") is not False
+                ):
+                    raise _PdfCapabilityInputError(
+                        "PDF training capability boundary must be content_role=advisory and "
+                        "mutates_assessment_truth=false"
+                    )
+            elif "content_role" in entry or "mutates_assessment_truth" in entry:
+                raise _PdfCapabilityInputError("PDF capability boundary fields are reserved for the training entry")
+            entries.append(entry)
+
+    if len(entries) != 211:
+        raise _PdfCapabilityInputError("PDF capability catalog must contain exactly 211 entries")
+    if domain_ids != domain_registry:
+        raise _PdfCapabilityInputError("PDF capability domains do not exactly bind the domain registry")
+    if observed_states != _CAPABILITY_STATES:
+        raise _PdfCapabilityInputError("PDF capability catalog must exercise the complete controlled-state vocabulary")
+    if not training_seen:
+        raise _PdfCapabilityInputError("PDF capability catalog requires the advisory training entry")
+    return domains, tuple(entries)
+
+
+def _validated_capabilities(
+    content: ContentBundle,
+) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
+    """Validate the catalog and its exact registry envelope without echoing hostile inputs."""
+
+    if type(content) is not ContentBundle:
+        raise _PdfCapabilityInputError("PDF capability validation requires an exact ContentBundle")
+    try:
+        return _validated_capabilities_impl(content)
+    except _PdfCapabilityInputError:
+        raise
+    except Exception:
+        raise _PdfCapabilityInputError("PDF capability source validation failed") from None
+
+
+def _validate_capability_observation_envelope(
+    observations: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> None:
+    try:
+        if _capability_keys(observations, "observation envelope") != frozenset(
+            {"rendered_observations", "safety_observations"}
+        ):
+            raise _PdfCapabilityInputError("PDF capability observation envelope shape mismatch")
+        for field, row_fields, expected_count in (
+            ("rendered_observations", _CAPABILITY_RENDERED_OBSERVATION_FIELDS, 422),
+            ("safety_observations", _CAPABILITY_SAFETY_OBSERVATION_FIELDS, 7),
+        ):
+            rows = observations[field]
+            if type(rows) is not tuple or len(rows) != expected_count:
+                raise _PdfCapabilityInputError("PDF capability observation envelope rows must be an exact tuple")
+            for row in rows:
+                if _capability_keys(row, "observation row") != row_fields:
+                    raise _PdfCapabilityInputError("PDF capability observation row shape mismatch")
+                for key, value in row.items():
+                    if key == "observed_value":
+                        if type(value) is bool:
+                            continue
+                    if (
+                        type(value) is not str
+                        or len(value) > 4_096
+                        or not _capability_text_is_portable(value)
+                    ):
+                        raise _PdfCapabilityInputError(
+                            "PDF capability observation envelope values must be exact portable scalars"
+                        )
+    except _PdfCapabilityInputError:
+        raise
+    except Exception:
+        raise _PdfCapabilityInputError("PDF capability observation validation failed") from None
+
+
+def pdf_capability_sink_observations(
+    content: ContentBundle,
+) -> dict[str, tuple[dict[str, Any], ...]]:
+    """Return the exact candidate and safety slots rendered by the capability PDF sink."""
+
+    _, entries = _validated_capabilities(content)
+    capabilities = content.capabilities
+    rendered: list[dict[str, Any]] = []
+    safety: list[dict[str, Any]] = []
+    for entry in entries:
+        record_id = entry["id"]
+        for field, transform_id in (
+            ("state", "pdf.capability_heading_state/1"),
+            ("current_scope", "pdf.capability_scope_plain_text/1"),
+        ):
+            rendered.append(
+                {
+                    "rule_id": "capability.entry",
+                    "record_identity": record_id,
+                    "facet_path": field,
+                    "disposition": "rendered_labeled",
+                    "slot_id": f"pdf.capabilities.capability.entry.{record_id}.{field}",
+                    "transform_id": transform_id,
+                    "observed_value": entry[field],
+                }
+            )
+
+    def observe_safety(
+        rule_id: str,
+        record_identity: str,
+        boundary_field: str,
+        transform_id: str,
+        value: object,
+    ) -> None:
+        safety.append(
+            {
+                "rule_id": rule_id,
+                "record_identity": record_identity,
+                "boundary_field": boundary_field,
+                "observed_value": value,
+                "slot_id": f"pdf.capabilities.{rule_id}.{record_identity}.{boundary_field}",
+                "transform_id": transform_id,
+            }
+        )
+
+    observe_safety(
+        "capability.root",
+        "@root",
+        "denominator_rule",
+        "pdf.capability_support_contract/1",
+        capabilities["denominator_rule"],
+    )
+    entry_contract = capabilities["entry_contract"]
+    for field in _CAPABILITY_CONTRACT_FIELDS:
+        observe_safety(
+            "capability.entry_contract",
+            "@root",
+            field,
+            "pdf.capability_support_contract/1",
+            entry_contract[field],
+        )
+    training = next(entry for entry in entries if entry["id"] == _CAPABILITY_TRAINING_ID)
+    for field in ("content_role", "mutates_assessment_truth"):
+        observe_safety(
+            "capability.entry",
+            _CAPABILITY_TRAINING_ID,
+            field,
+            "pdf.capability_entry_boundary/1",
+            training[field],
+        )
+    return {"rendered_observations": tuple(rendered), "safety_observations": tuple(safety)}
 
 
 def _required_horizon_text(record: Mapping[str, Any], field: str, record_label: str) -> str:
@@ -373,6 +774,127 @@ def _unique_pdf_segment(text: str, anchor: str, next_anchor: str) -> str | None:
     if end < 0:
         return None
     return text[start:end]
+
+
+def verify_pdf_capability_sink_observations(
+    pdf_path: Path,
+    content: ContentBundle,
+    *,
+    observations: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+) -> PdfCapabilitySinkVerification:
+    """Fail closed unless every capability observation is visibly projected."""
+
+    expected = pdf_capability_sink_observations(content)
+    if observations is not None:
+        _validate_capability_observation_envelope(observations)
+        try:
+            matches_source = canonical_json(observations) == canonical_json(expected)
+        except Exception:
+            raise _PdfCapabilityInputError("PDF capability observation validation failed") from None
+        if not matches_source:
+            raise ValueError("PDF capability observation envelope differs from validated source")
+    _, entries = _validated_capabilities(content)
+    capabilities = content.capabilities
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:  # pragma: no cover - explicit environment error
+        raise RuntimeError("pypdf is required to verify PDF capability observations") from exc
+
+    resolved = pdf_path.resolve(strict=True)
+    raw = resolved.read_bytes()
+    reader = PdfReader(BytesIO(raw))
+    text = _plain("\n".join(page.extract_text() or "" for page in reader.pages))
+    errors: list[str] = []
+
+    anchors = [
+        _plain(f"{entry['id']} - {entry['title']} [{str(entry['state']).upper()}]")
+        for entry in entries
+    ]
+    positions = [text.find(anchor) for anchor in anchors]
+    if any(position < 0 for position in positions) or positions != sorted(positions):
+        errors.append("capability_record_order_or_anchor_missing")
+    if any(text.count(anchor) != 1 for anchor in anchors):
+        errors.append("capability_record_anchor_ambiguous")
+
+    segments: dict[str, str] = {}
+    for index, entry in enumerate(entries):
+        next_anchor = anchors[index + 1] if index + 1 < len(entries) else "5. Delivery governance, gaps, and decisions"
+        segment = _unique_pdf_segment(text, anchors[index], next_anchor)
+        if segment is None:
+            errors.append("capability_record_segment_missing_or_ambiguous")
+        else:
+            segments[str(entry["id"])] = segment
+
+    rendered_rows = expected["rendered_observations"]
+    if len(rendered_rows) != 422:
+        errors.append("capability_candidate_observation_count_mismatch")
+    for index, entry in enumerate(entries):
+        state_row, scope_row = rendered_rows[index * 2 : index * 2 + 2]
+        if (
+            state_row.get("record_identity") != entry["id"]
+            or state_row.get("facet_path") != "state"
+            or scope_row.get("record_identity") != entry["id"]
+            or scope_row.get("facet_path") != "current_scope"
+        ):
+            errors.append("capability_candidate_observation_order_mismatch")
+            continue
+        segment = segments.get(str(entry["id"]), "")
+        if anchors[index] not in segment:
+            errors.append("capability_state_projection_missing")
+        if segment.count(f"Current scope: {_plain(entry['current_scope'])}") != 1:
+            errors.append("capability_scope_projection_missing")
+
+    denominator_value = _plain(capabilities["denominator_rule"])
+    denominator_fragment = f"Finite denominator {denominator_value}"
+    support_segment = _unique_pdf_segment(text, denominator_fragment, anchors[0])
+    if support_segment is None:
+        errors.append("capability_support_contract_missing_or_ambiguous")
+    else:
+        support_fragments = [
+            denominator_fragment,
+            *[
+                f"entry_contract {field}: {_plain(capabilities['entry_contract'][field])}"
+                for field in _CAPABILITY_CONTRACT_FIELDS
+            ],
+        ]
+        if any(
+            support_segment.count(fragment) != 1 or text.count(fragment) != 1
+            for fragment in support_fragments
+        ) or support_segment.count(denominator_value) != 1 or text.count(denominator_value) != 1:
+            errors.append("capability_support_contract_projection_missing")
+
+    training_segment = segments.get(_CAPABILITY_TRAINING_ID, "")
+    training = next(entry for entry in entries if entry["id"] == _CAPABILITY_TRAINING_ID)
+    training_boundary = (
+        f"Entry safety boundary: content_role={_plain(training['content_role'])}; "
+        f"mutates_assessment_truth={_plain(training['mutates_assessment_truth']).lower()}"
+    )
+    if training_segment.count(training_boundary) != 1 or text.count(training_boundary) != 1:
+        errors.append("capability_training_boundary_projection_missing")
+
+    safety_rows = expected["safety_observations"]
+    if len(safety_rows) != 7:
+        errors.append("capability_safety_observation_count_mismatch")
+    if errors:
+        raise ValueError("PDF capability sink verification failed: " + ", ".join(sorted(set(errors))))
+
+    observation_digest = sha256_bytes(canonical_json(expected))
+    pdf_digest = sha256_bytes(raw)
+    verification_material = {
+        "verdict": "PASS",
+        "pdf_sha256": pdf_digest,
+        "observation_digest": observation_digest,
+        "rendered_observation_count": len(rendered_rows),
+        "safety_observation_count": len(safety_rows),
+    }
+    return PdfCapabilitySinkVerification(
+        verdict="PASS",
+        observation_digest=observation_digest,
+        verification_digest=sha256_bytes(canonical_json(verification_material)),
+        pdf_sha256=pdf_digest,
+        rendered_observation_count=len(rendered_rows),
+        safety_observation_count=len(safety_rows),
+    )
 
 
 def verify_pdf_horizon_sink_observations(
@@ -1316,9 +1838,8 @@ def _outcomes(content: ContentBundle, styles: dict[str, ParagraphStyle]) -> list
 
 
 def _capabilities(content: ContentBundle, styles: dict[str, ParagraphStyle]) -> list[Flowable]:
-    domains = _items(content.capabilities.get("domains"))
-    entries = [entry for domain in domains for entry in _items(domain.get("entries"))]
-    counts = Counter(_plain(entry.get("state", "unknown")) for entry in entries)
+    domains, entries = _validated_capabilities(content)
+    counts = Counter(_plain(entry["state"]) for entry in entries)
     story: list[Flowable] = [
         PageBreak(),
         _heading("4. Closed Capability Catalog", styles["h1"]),
@@ -1332,6 +1853,15 @@ def _capabilities(content: ContentBundle, styles: dict[str, ParagraphStyle]) -> 
             styles,
         ),
         Spacer(1, 3 * mm),
+        _heading("Source-derived capability support contract", styles["h2"]),
+        *[
+            _rich(
+                f"<b>entry_contract {field}:</b> {_markup(content.capabilities['entry_contract'][field])}",
+                styles["small"],
+            )
+            for field in _CAPABILITY_CONTRACT_FIELDS
+        ],
+        Spacer(1, 2 * mm),
         _table(
             ("State", "Cells", "Interpretation"),
             [
@@ -1343,9 +1873,9 @@ def _capabilities(content: ContentBundle, styles: dict[str, ParagraphStyle]) -> 
         ),
     ]
     for domain in domains:
-        domain_id = _plain(domain.get("id", "domain.unknown"))
+        domain_id = _plain(domain["id"])
         story.extend([PageBreak(), _heading(domain_id, styles["h2"])])
-        domain_entries = _items(domain.get("entries"))
+        domain_entries = domain["entries"]
         story.append(
             _paragraph(
                 f"Declared cells: {len(domain_entries)}. Every cell remains linked to current owners or an explicit gap/disposition.",
@@ -1354,10 +1884,21 @@ def _capabilities(content: ContentBundle, styles: dict[str, ParagraphStyle]) -> 
         )
         for entry in domain_entries:
             story.append(CondPageBreak(31 * mm))
-            state = _plain(entry.get("state", "unknown"))
-            title = f"{entry.get('id', 'capability.unknown')} - {entry.get('title', 'Untitled capability')} [{state.upper()}]"
+            state = _plain(entry["state"])
+            title = f"{entry['id']} - {entry['title']} [{state.upper()}]"
             story.append(_heading(title, styles["h3"]))
-            story.append(_paragraph(entry.get("current_scope", "No bounded scope statement."), styles["body"]))
+            story.append(
+                _rich(f"<b>Current scope:</b> {_markup(entry['current_scope'])}", styles["body"])
+            )
+            if entry["id"] == _CAPABILITY_TRAINING_ID:
+                story.append(
+                    _rich(
+                        "<b>Entry safety boundary:</b> "
+                        f"content_role={_markup(entry['content_role'])}; "
+                        f"mutates_assessment_truth={_markup(str(entry['mutates_assessment_truth']).lower())}",
+                        styles["small"],
+                    )
+                )
             refs: list[str] = []
             owners = _strings(entry.get("owner_refs"))
             gaps = _strings(entry.get("gap_refs"))
@@ -1888,6 +2429,7 @@ def build_master_reference_pdf(
     """
 
     _validate_bindings(bundle)
+    capability_sink_observations = pdf_capability_sink_observations(content)
     horizon_sink_observations = pdf_horizon_sink_observations(content.horizon)
     architecture, architecture_digest = _load_architecture(
         content,
@@ -1933,6 +2475,7 @@ def build_master_reference_pdf(
     )
     canvasmaker = lambda *args, **kwargs: _InvariantCanvas(*args, metadata=metadata, **kwargs)  # noqa: E731
     inspection: PdfInspection
+    capability_sink_verification: PdfCapabilitySinkVerification
     horizon_sink_verification: PdfHorizonSinkVerification
     try:
         document.multiBuild(story, canvasmaker=canvasmaker)
@@ -1949,13 +2492,20 @@ def build_master_reference_pdf(
             content.horizon,
             observations=horizon_sink_observations,
         )
+        capability_sink_verification = verify_pdf_capability_sink_observations(
+            temporary,
+            content,
+            observations=capability_sink_observations,
+        )
         verified_raw = temporary.read_bytes()
         if (
             inspection.sha256 != horizon_sink_verification.pdf_sha256
+            or inspection.sha256 != capability_sink_verification.pdf_sha256
             or sha256_bytes(verified_raw) != horizon_sink_verification.pdf_sha256
+            or sha256_bytes(verified_raw) != capability_sink_verification.pdf_sha256
             or len(verified_raw) != inspection.bytes
         ):
-            raise RuntimeError("PDF changed between structural and horizon verification")
+            raise RuntimeError("PDF changed between structural and rendered-sink verification")
         os.replace(temporary, output_path)
         published_raw = output_path.read_bytes()
         if published_raw != verified_raw:
@@ -1975,6 +2525,8 @@ def build_master_reference_pdf(
         input_digest=digest,
         reportlab_version=str(REPORTLAB_VERSION),
         independent_verification_verdict="BLOCK",
+        capability_sink_observations=capability_sink_observations,
+        capability_sink_verification=capability_sink_verification,
         horizon_sink_observations=horizon_sink_observations,
         horizon_sink_verification=horizon_sink_verification,
     )

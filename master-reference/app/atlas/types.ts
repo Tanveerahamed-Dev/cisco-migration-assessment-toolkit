@@ -21,18 +21,31 @@ export type Capability = {
   current_scope: string;
   owner_refs?: string[];
   gap_refs?: string[];
+  traffic_plane_refs?: string[];
+  content_role?: "advisory";
+  mutates_assessment_truth?: false;
 };
 
 export type CapabilityDomain = {
   id: string;
+  entity_role: "reference";
   entries: Capability[];
 };
 
+export type CapabilityEntryContract = {
+  current: string;
+  partial: string;
+  incomplete: string;
+  catalog_presence: string;
+};
+
 export type CapabilityCatalog = {
-  schema_version: string;
+  schema_version: "1.0.0";
   id: string;
   catalog_version: string;
+  kind: "closed-world-capability-catalog";
   denominator_rule: string;
+  entry_contract: CapabilityEntryContract;
   domains: CapabilityDomain[];
 };
 

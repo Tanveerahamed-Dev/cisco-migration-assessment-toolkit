@@ -5,6 +5,7 @@ import hashlib
 import os
 import shutil
 import sys
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 
@@ -24,8 +25,10 @@ from release.pdf_report import (  # noqa: E402
     _load_architecture,
     build_master_reference_pdf,
     inspect_pdf_report,
+    pdf_capability_sink_observations,
     pdf_horizon_sink_observations,
     render_pdf_for_visual_qa,
+    verify_pdf_capability_sink_observations,
     verify_pdf_horizon_sink_observations,
 )
 
@@ -33,6 +36,32 @@ from release.pdf_report import (  # noqa: E402
 COMMIT = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
 TREE = "9" * 64
 RAW_SOURCE_SENTINEL = "RAW-SOURCE-MUST-NEVER-ENTER-THE-PDF-7e3c86c4"
+CAPABILITY_DOMAIN_IDS = (
+    "domain.outcomes",
+    "domain.architecture",
+    "domain.protocols",
+    "domain.traffic",
+    "domain.enterprise-design",
+    "domain.security-privacy",
+    "domain.observability-operations",
+    "domain.vendors-channels",
+    "domain.gui-white-label",
+    "domain.artifacts-deliverables",
+    "domain.code-tests-release-knowledge",
+    "domain.product-business",
+)
+CAPABILITY_OWNER_IDS = (
+    "owner.ssot",
+    "owner.architecture",
+    "owner.training",
+    *(f"owner.fixture.{index:03d}" for index in range(26)),
+)
+CAPABILITY_GAP_IDS = (
+    "gap.field-validation",
+    "gap.training",
+    *(f"gap.fixture.{index:03d}" for index in range(39)),
+)
+CAPABILITY_TRAFFIC_IDS = tuple(f"traffic.fixture.{index}" for index in range(8))
 
 
 def _bundle(tmp_path: Path) -> CompilerBundle:
@@ -162,9 +191,108 @@ def _bundle(tmp_path: Path) -> CompilerBundle:
     )
 
 
+def _capability_fixture() -> dict[str, object]:
+    domains: list[dict[str, object]] = [
+        {"id": domain_id, "entity_role": "reference", "entries": []}
+        for domain_id in CAPABILITY_DOMAIN_IDS
+    ]
+
+    def add(domain_index: int, entry: dict[str, object]) -> None:
+        entries = domains[domain_index]["entries"]
+        assert isinstance(entries, list)
+        entries.append(entry)
+
+    add(
+        0,
+        {
+            "id": "cap.outcomes.traceability",
+            "title": "Evidence traceability",
+            "state": "current",
+            "current_scope": "Owned evidence reaches a decision record.",
+            "owner_refs": ["owner.ssot"],
+        },
+    )
+    add(
+        0,
+        {
+            "id": "cap.outcomes.field-validation",
+            "title": "Field validation",
+            "state": "missing",
+            "current_scope": "No client evidence is admitted in this repository fixture.",
+            "gap_refs": ["gap.field-validation"],
+        },
+    )
+    add(
+        1,
+        {
+            "id": "cap.security.read-only",
+            "title": "Read-only boundary",
+            "state": "current",
+            "current_scope": "Reference surfaces cannot collect or mutate estate evidence.",
+            "owner_refs": ["owner.architecture"],
+        },
+    )
+    add(
+        2,
+        {
+            "id": "cap.engine.training-curriculum",
+            "title": "Interactive training and lab curriculum",
+            "state": "partial",
+            "current_scope": "Advisory training contracts are defined; execution and promotion remain incomplete.",
+            "owner_refs": ["owner.training"],
+            "gap_refs": ["gap.training"],
+            "content_role": "advisory",
+            "mutates_assessment_truth": False,
+        },
+    )
+    states = ("current", "partial", "missing", "gated", "excluded", "unknown")
+    for index in range(207):
+        state = states[index % len(states)]
+        entry: dict[str, object] = {
+            "id": f"cap.fixture.{index:03d}",
+            "title": f"Fixture capability {index:03d}",
+            "state": state,
+            "current_scope": f"Bounded fixture scope {index:03d} remains source-derived.",
+        }
+        if state in {"current", "partial"}:
+            entry["owner_refs"] = [CAPABILITY_OWNER_IDS[3 + (index % 26)]]
+        if state != "current":
+            entry["gap_refs"] = [CAPABILITY_GAP_IDS[2 + (index % 39)]]
+        entry["traffic_plane_refs"] = [CAPABILITY_TRAFFIC_IDS[index % 8]]
+        add(index % len(domains), entry)
+
+    return {
+        "schema_version": "1.0.0",
+        "id": "atlas.capability-catalog.2099-01-01",
+        "catalog_version": "2099.01.01",
+        "kind": "closed-world-capability-catalog",
+        "denominator_rule": "Every declared cell is classified; expansion changes the denominator.",
+        "entry_contract": {
+            "current": "Current requires a live owner and bounded statement.",
+            "partial": "Partial requires implemented ownership and an actionable gap.",
+            "incomplete": "Incomplete states require a dispositioned gap.",
+            "catalog_presence": "Catalog presence is not a support promise unless state=current.",
+        },
+        "domains": domains,
+    }
+
+
 def _content(tmp_path: Path) -> ContentBundle:
     content_root = tmp_path / "master-reference" / "content"
     content_root.mkdir(parents=True)
+    gaps = [
+        {
+            "id": gap_id,
+            "title": f"Fixture gap {index:02d}",
+            "priority": "P2",
+            "disposition": "research",
+            "problem": f"Fixture gap {index:02d} remains explicitly unresolved.",
+            "next_actions": [f"Review fixture gap {index:02d}."],
+            "acceptance_evidence": [f"Approved evidence for fixture gap {index:02d}."],
+            "owner_role": "fixture owner",
+        }
+        for index, gap_id in enumerate(CAPABILITY_GAP_IDS)
+    ]
     core = {
         "schema_version": "1.0.0",
         "id": "atlas.core.fixture",
@@ -183,63 +311,17 @@ def _content(tmp_path: Path) -> ContentBundle:
             }
         ],
         "non_goals": [{"id": "non-goal.write", "statement": "No device writes."}],
+        "domain_registry": [{"id": domain_id} for domain_id in CAPABILITY_DOMAIN_IDS],
+        "owners": [{"id": owner_id} for owner_id in CAPABILITY_OWNER_IDS],
+        "traffic_model": {
+            "planes": [{"id": traffic_id} for traffic_id in CAPABILITY_TRAFFIC_IDS],
+        },
     }
-    capabilities = {
-        "schema_version": "1.0.0",
-        "id": "atlas.capabilities.fixture",
-        "denominator_rule": "Every declared cell is classified; expansion changes the denominator.",
-        "domains": [
-            {
-                "id": "domain.outcomes",
-                "entries": [
-                    {
-                        "id": "cap.outcomes.traceability",
-                        "title": "Evidence traceability",
-                        "state": "current",
-                        "current_scope": "Owned evidence reaches a decision record.",
-                        "owner_refs": ["owner.ssot"],
-                    },
-                    {
-                        "id": "cap.outcomes.field-validation",
-                        "title": "Field validation",
-                        "state": "missing",
-                        "current_scope": "No client evidence is admitted in this repository fixture.",
-                        "gap_refs": ["gap.field-validation"],
-                    },
-                ],
-            },
-            {
-                "id": "domain.security",
-                "entries": [
-                    {
-                        "id": "cap.security.read-only",
-                        "title": "Read-only boundary",
-                        "state": "current",
-                        "current_scope": "Reference surfaces cannot collect or mutate estate evidence.",
-                        "owner_refs": ["owner.architecture"],
-                    }
-                ],
-            },
-        ],
-    }
+    capabilities = _capability_fixture()
     governance = {
         "schema_version": "1.0.0",
         "id": "atlas.governance.fixture",
-        "gaps": [
-            {
-                "id": "gap.field-validation",
-                "title": "Field validation is absent",
-                "priority": "P1",
-                "disposition": "evidence-first",
-                "problem": "Synthetic fixtures cannot establish production outcomes.",
-                "next_actions": [
-                    "Define an owner-approved evidence contract.",
-                    "Collect only after explicit authority.",
-                ],
-                "acceptance_evidence": ["Sanitized field receipt.", "Independent outcome review."],
-                "owner_role": "network owner",
-            }
-        ],
+        "gaps": gaps,
         "decision_queue": [
             {
                 "id": "decision.field-evidence",
@@ -447,6 +529,14 @@ def test_pdf_is_deterministic_source_bound_polished_and_never_embeds_source(tmp_
     assert result_a.sha256 == hashlib.sha256(first.read_bytes()).hexdigest()
     assert result_a.sha256 == result_b.sha256
     assert result_a.independent_verification_verdict == "BLOCK"
+    assert result_a.capability_sink_verification.verdict == "PASS"
+    assert result_a.capability_sink_verification.pdf_sha256 == result_a.sha256
+    assert result_a.capability_sink_verification.rendered_observation_count == 422
+    assert result_a.capability_sink_verification.safety_observation_count == 7
+    assert (
+        result_a.capability_sink_verification.observation_digest
+        == hashlib.sha256(canonical_json(result_a.capability_sink_observations)).hexdigest()
+    )
     assert result_a.horizon_sink_verification.verdict == "PASS"
     assert result_a.horizon_sink_verification.pdf_sha256 == result_a.sha256
     assert (
@@ -467,6 +557,7 @@ def test_pdf_is_deterministic_source_bound_polished_and_never_embeds_source(tmp_
     assert reader.trailer["/Root"].get("/Outlines") is not None
 
     extracted = _text(first)
+    normalized = " ".join(extracted.split())
     assert COMMIT in extracted
     assert "BLOCKED" in extracted
     assert "every_safe_line_behaviorally_explained" in extracted
@@ -476,6 +567,16 @@ def test_pdf_is_deterministic_source_bound_polished_and_never_embeds_source(tmp_
     assert "\x7f" not in extracted
     assert "\ufffd" not in extracted
     assert RAW_SOURCE_SENTINEL not in extracted
+    capability_safety_fragments = [
+        f"Finite denominator {content.capabilities['denominator_rule']}",
+        *[
+            f"entry_contract {field}: {content.capabilities['entry_contract'][field]}"
+            for field in ("current", "partial", "incomplete", "catalog_presence")
+        ],
+        "Entry safety boundary: content_role=advisory; mutates_assessment_truth=false",
+    ]
+    assert all(normalized.count(fragment) == 1 for fragment in capability_safety_fragments)
+    assert normalized.count(content.capabilities["denominator_rule"]) == 1
 
     inspected = inspect_pdf_report(first, expected_commit=COMMIT, expected_tree_digest=TREE)
     assert inspected.page_count == result_a.page_count
@@ -572,6 +673,360 @@ def test_pdf_horizon_sink_observations_are_deterministic_and_all_rendered(tmp_pa
         assert identity in extracted
 
 
+def test_pdf_capability_sink_observations_are_exact_and_deterministic(tmp_path: Path) -> None:
+    content = _content(tmp_path)
+    assert len(content.core["domain_registry"]) == 12
+    assert len(content.core["owners"]) == 29
+    assert len(content.governance["gaps"]) == 41
+    assert len(content.core["traffic_model"]["planes"]) == 8
+    first = pdf_capability_sink_observations(content)
+    second = pdf_capability_sink_observations(copy.deepcopy(content))
+    assert first == second
+    assert set(first) == {"rendered_observations", "safety_observations"}
+    assert len(first["rendered_observations"]) == 422
+    assert len(first["safety_observations"]) == 7
+    assert [row["facet_path"] for row in first["rendered_observations"][:4]] == [
+        "state",
+        "current_scope",
+        "state",
+        "current_scope",
+    ]
+    assert first["rendered_observations"][0] == {
+        "rule_id": "capability.entry",
+        "record_identity": "cap.outcomes.traceability",
+        "facet_path": "state",
+        "disposition": "rendered_labeled",
+        "slot_id": "pdf.capabilities.capability.entry.cap.outcomes.traceability.state",
+        "transform_id": "pdf.capability_heading_state/1",
+        "observed_value": "current",
+    }
+    assert [row["slot_id"] for row in first["safety_observations"]] == [
+        "pdf.capabilities.capability.root.@root.denominator_rule",
+        "pdf.capabilities.capability.entry_contract.@root.current",
+        "pdf.capabilities.capability.entry_contract.@root.partial",
+        "pdf.capabilities.capability.entry_contract.@root.incomplete",
+        "pdf.capabilities.capability.entry_contract.@root.catalog_presence",
+        "pdf.capabilities.capability.entry.cap.engine.training-curriculum.content_role",
+        "pdf.capabilities.capability.entry.cap.engine.training-curriculum.mutates_assessment_truth",
+    ]
+
+
+def test_production_capability_sink_verifier_rejects_stale_visible_projection(tmp_path: Path) -> None:
+    content = _content(tmp_path)
+    pdf = tmp_path / "atlas-capability-stale.pdf"
+    result = build_master_reference_pdf(
+        _bundle(tmp_path),
+        content,
+        pdf,
+        architecture_path=_architecture(tmp_path),
+    )
+    assert result.capability_sink_verification.verdict == "PASS"
+
+    changed = copy.deepcopy(content.capabilities)
+    changed["domains"][0]["entries"][0]["current_scope"] = "A changed source value absent from the PDF."
+    with pytest.raises(ValueError, match="capability sink verification failed"):
+        verify_pdf_capability_sink_observations(pdf, replace(content, capabilities=changed))
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("duplicate_entry", "entry ids must be unique"),
+        ("missing_entry", "exactly 211 entries"),
+        ("missing_scope", "entry shape mismatch"),
+        ("fallback_scope", "requires non-empty current_scope"),
+        ("current_gap", "current capability cannot carry gap_refs"),
+        ("null_owner_refs", "owner_refs must be a unique string array"),
+        ("wrong_schema", "schema_version must be 1.0.0"),
+        ("bad_catalog_date", "catalog_version must be a calendar date"),
+        ("stale_root_id", "catalog id does not bind catalog_version"),
+        ("bad_entry_id", "entry id must be a bounded semantic identifier"),
+    ],
+)
+def test_pdf_capability_source_validation_fails_closed(
+    tmp_path: Path,
+    mutation: str,
+    message: str,
+) -> None:
+    content = _content(tmp_path)
+    capabilities = copy.deepcopy(content.capabilities)
+    domains = capabilities["domains"]
+    assert isinstance(domains, list)
+    entries = domains[0]["entries"]
+    assert isinstance(entries, list)
+    if mutation == "duplicate_entry":
+        entries[1]["id"] = entries[0]["id"]
+    elif mutation == "missing_entry":
+        entries.pop()
+    elif mutation == "missing_scope":
+        entries[0].pop("current_scope")
+    elif mutation == "fallback_scope":
+        entries[0]["current_scope"] = ""
+    elif mutation == "current_gap":
+        entries[0]["gap_refs"] = ["gap.field-validation"]
+    elif mutation == "null_owner_refs":
+        entries[0]["owner_refs"] = None
+    elif mutation == "wrong_schema":
+        capabilities["schema_version"] = "2.0.0"
+    elif mutation == "bad_catalog_date":
+        capabilities["catalog_version"] = "2099.02.31"
+    elif mutation == "stale_root_id":
+        capabilities["id"] = "atlas.capability-catalog.2099-01-02"
+    else:
+        entries[0]["id"] = "cap.BAD"
+    with pytest.raises(ValueError, match=message):
+        pdf_capability_sink_observations(replace(content, capabilities=capabilities))
+
+
+@pytest.mark.parametrize("reference_kind", ["domain", "owner", "gap", "traffic"])
+def test_pdf_capability_source_rejects_unknown_registry_references(
+    tmp_path: Path,
+    reference_kind: str,
+) -> None:
+    content = _content(tmp_path)
+    capabilities = copy.deepcopy(content.capabilities)
+    domains = capabilities["domains"]
+    entries = [entry for domain in domains for entry in domain["entries"]]
+    if reference_kind == "domain":
+        domains[0]["id"] = "domain.does-not-exist"
+    elif reference_kind == "owner":
+        entries[0]["owner_refs"] = ["owner.does-not-exist"]
+    elif reference_kind == "gap":
+        entries[1]["gap_refs"] = ["gap.does-not-exist"]
+    else:
+        next(entry for entry in entries if "traffic_plane_refs" in entry)["traffic_plane_refs"] = [
+            "traffic.does-not-exist"
+        ]
+
+    with pytest.raises(ValueError, match="unresolved registry reference"):
+        pdf_capability_sink_observations(replace(content, capabilities=capabilities))
+
+
+@pytest.mark.parametrize(
+    "hostile_value",
+    ["visible\x00text", "visible\x7ftext", "visible\x80text", "\ud800", chr(0x1F4A3)],
+)
+def test_pdf_capability_source_rejects_nonportable_or_erased_text(
+    tmp_path: Path,
+    hostile_value: str,
+) -> None:
+    content = _content(tmp_path)
+    capabilities = copy.deepcopy(content.capabilities)
+    capabilities["domains"][0]["entries"][0]["current_scope"] = hostile_value
+
+    with pytest.raises(ValueError, match="portable non-empty current_scope"):
+        pdf_capability_sink_observations(replace(content, capabilities=capabilities))
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["evil_key", "evil_scope", "evil_state", "evil_ref", "dict_subclass", "list_subclass", "accessor"],
+)
+def test_pdf_capability_public_boundaries_reject_hostile_types_without_echo(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    canary = "HOSTILE-CAPABILITY-CANARY-MUST-NOT-ECHO"
+
+    class EvilText(str):
+        def __eq__(self, other):
+            raise RuntimeError(canary)
+
+        def __hash__(self):
+            raise RuntimeError(canary)
+
+        def __str__(self):
+            raise RuntimeError(canary)
+
+        def startswith(self, prefix, *args):
+            raise RuntimeError(canary)
+
+        def strip(self, chars=None):
+            raise RuntimeError(canary)
+
+    class EvilKey(str):
+        armed = False
+
+        def __eq__(self, other):
+            if type(self).armed:
+                raise RuntimeError(canary)
+            return str.__eq__(self, other)
+
+        def __hash__(self):
+            if type(self).armed:
+                raise RuntimeError(canary)
+            return str.__hash__(self)
+
+    class EvilDict(dict):
+        def keys(self):
+            raise RuntimeError(canary)
+
+    class EvilList(list):
+        def __iter__(self):
+            raise RuntimeError(canary)
+
+    class EvilAccessor(Mapping):
+        def __getitem__(self, key):
+            raise RuntimeError(canary)
+
+        def __iter__(self):
+            raise RuntimeError(canary)
+
+        def __len__(self):
+            raise RuntimeError(canary)
+
+    content = _content(tmp_path)
+    capabilities = copy.deepcopy(content.capabilities)
+    first_entry = capabilities["domains"][0]["entries"][0]
+    if mutation == "evil_key":
+        schema_version = capabilities.pop("schema_version")
+        key = EvilKey("schema_version")
+        capabilities[key] = schema_version
+        EvilKey.armed = True
+    elif mutation == "evil_scope":
+        first_entry["current_scope"] = EvilText(first_entry["current_scope"])
+    elif mutation == "evil_state":
+        first_entry["state"] = EvilText(first_entry["state"])
+    elif mutation == "evil_ref":
+        first_entry["owner_refs"] = [EvilText("owner.ssot")]
+    elif mutation == "dict_subclass":
+        capabilities = EvilDict(capabilities)
+    elif mutation == "list_subclass":
+        capabilities["domains"] = EvilList(capabilities["domains"])
+    else:
+        capabilities = EvilAccessor()
+    hostile = replace(content, capabilities=capabilities)
+    output = tmp_path / "hostile-capability.pdf"
+    operations = (
+        lambda: pdf_capability_sink_observations(hostile),
+        lambda: verify_pdf_capability_sink_observations(tmp_path / "absent.pdf", hostile),
+        lambda: build_master_reference_pdf(
+            _bundle(tmp_path),
+            hostile,
+            output,
+            architecture_path=tmp_path / "unused-architecture.json",
+        ),
+    )
+    try:
+        for operation in operations:
+            with pytest.raises(ValueError) as caught:
+                operation()
+            assert canary not in str(caught.value)
+    finally:
+        EvilKey.armed = False
+    assert not output.exists()
+
+
+def test_pdf_capability_unexpected_validation_errors_use_fixed_no_echo_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = _content(tmp_path)
+    canary = "UNEXPECTED-CAPABILITY-CANARY-MUST-NOT-ECHO"
+
+    def explode(_content):
+        raise RuntimeError(canary)
+
+    monkeypatch.setattr("release.pdf_report._validated_capabilities_impl", explode)
+    output = tmp_path / "unexpected-capability.pdf"
+    operations = (
+        lambda: pdf_capability_sink_observations(content),
+        lambda: verify_pdf_capability_sink_observations(tmp_path / "absent.pdf", content),
+        lambda: build_master_reference_pdf(
+            _bundle(tmp_path),
+            content,
+            output,
+            architecture_path=tmp_path / "unused-architecture.json",
+        ),
+    )
+    for operation in operations:
+        with pytest.raises(ValueError) as caught:
+            operation()
+        assert str(caught.value) == "PDF capability source validation failed"
+        assert canary not in str(caught.value)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("mutation", ["evil_key", "evil_value", "dict_subclass", "list_rows"])
+def test_pdf_capability_verifier_rejects_hostile_observation_envelopes_without_echo(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    canary = "HOSTILE-OBSERVATION-CANARY-MUST-NOT-ECHO"
+
+    class EvilText(str):
+        def __eq__(self, other):
+            raise RuntimeError(canary)
+
+        def __hash__(self):
+            raise RuntimeError(canary)
+
+        def __str__(self):
+            raise RuntimeError(canary)
+
+    class EvilKey(str):
+        armed = False
+
+        def __eq__(self, other):
+            if type(self).armed:
+                raise RuntimeError(canary)
+            return str.__eq__(self, other)
+
+        def __hash__(self):
+            if type(self).armed:
+                raise RuntimeError(canary)
+            return str.__hash__(self)
+
+    content = _content(tmp_path)
+    observations = copy.deepcopy(pdf_capability_sink_observations(content))
+    if mutation == "evil_key":
+        rows = observations.pop("rendered_observations")
+        key = EvilKey("rendered_observations")
+        observations[key] = rows
+        EvilKey.armed = True
+    elif mutation == "evil_value":
+        observations["rendered_observations"][0]["observed_value"] = EvilText("current")
+    elif mutation == "dict_subclass":
+        observations = type("ObservationDict", (dict,), {})(observations)
+    else:
+        observations["rendered_observations"] = list(observations["rendered_observations"])
+    try:
+        with pytest.raises(ValueError) as caught:
+            verify_pdf_capability_sink_observations(
+                tmp_path / "absent.pdf",
+                content,
+                observations=observations,
+            )
+        assert canary not in str(caught.value)
+    finally:
+        EvilKey.armed = False
+
+
+@pytest.mark.parametrize("registry", ["domain", "owner", "gap", "traffic"])
+def test_pdf_capability_registries_require_exact_counts_and_unique_ids(
+    tmp_path: Path,
+    registry: str,
+) -> None:
+    content = _content(tmp_path)
+    core = copy.deepcopy(content.core)
+    governance = copy.deepcopy(content.governance)
+    if registry == "domain":
+        core["domain_registry"].pop()
+        message = "domain registry must contain exactly 12 objects"
+    elif registry == "owner":
+        core["owners"].pop()
+        message = "owner registry must contain exactly 29 objects"
+    elif registry == "gap":
+        governance["gaps"][1]["id"] = governance["gaps"][0]["id"]
+        message = "gap registry ids must be unique"
+    else:
+        core["traffic_model"]["planes"].append({"id": "traffic.fixture.extra"})
+        message = "traffic plane registry must contain exactly 8 objects"
+
+    with pytest.raises(ValueError, match=message):
+        pdf_capability_sink_observations(replace(content, core=core, governance=governance))
+
+
 def test_production_horizon_sink_verifier_rejects_a_stale_visible_projection(tmp_path: Path) -> None:
     content = _content(tmp_path)
     pdf = tmp_path / "atlas-stale-projection.pdf"
@@ -609,9 +1064,11 @@ def test_pdf_verifiers_parse_the_same_byte_buffer_they_hash(tmp_path: Path, monk
 
     monkeypatch.setattr(pypdf, "PdfReader", recording_reader)
     inspect_pdf_report(pdf, expected_commit=COMMIT, expected_tree_digest=TREE)
+    capability_verification = verify_pdf_capability_sink_observations(pdf, content)
     verification = verify_pdf_horizon_sink_observations(pdf, content.horizon)
+    assert capability_verification.pdf_sha256 == hashlib.sha256(pdf.read_bytes()).hexdigest()
     assert verification.pdf_sha256 == hashlib.sha256(pdf.read_bytes()).hexdigest()
-    assert len(sources) == 2
+    assert len(sources) == 3
 
 
 def test_pdf_build_rejects_replacement_during_atomic_publication(
@@ -634,6 +1091,33 @@ def test_pdf_build_rejects_replacement_during_atomic_publication(
             output,
             architecture_path=_architecture(tmp_path),
         )
+
+
+def test_pdf_build_rejects_replacement_after_capability_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = _content(tmp_path)
+    output = tmp_path / "atlas-capability-toctou.pdf"
+    original_verifier = verify_pdf_capability_sink_observations
+
+    def verify_then_tamper(pdf_path, content_bundle, *, observations=None):
+        verification = original_verifier(pdf_path, content_bundle, observations=observations)
+        Path(pdf_path).write_bytes(b"%PDF-1.4\nhostile post-verification replacement\n%%EOF\n")
+        return verification
+
+    monkeypatch.setattr(
+        "release.pdf_report.verify_pdf_capability_sink_observations",
+        verify_then_tamper,
+    )
+    with pytest.raises(RuntimeError, match="changed between structural and rendered-sink verification"):
+        build_master_reference_pdf(
+            _bundle(tmp_path),
+            content,
+            output,
+            architecture_path=_architecture(tmp_path),
+        )
+    assert not output.exists()
 
 
 @pytest.mark.parametrize(
@@ -770,6 +1254,9 @@ def test_curated_pdf_keeps_complete_records_together_and_extracts_clean_ascii(tm
     assert result.horizon_sink_verification.verdict == "PASS"
     assert result.horizon_sink_verification.rendered_observation_count == 167
     assert result.horizon_sink_verification.safety_observation_count == 53
+    assert result.capability_sink_verification.verdict == "PASS"
+    assert result.capability_sink_verification.rendered_observation_count == 422
+    assert result.capability_sink_verification.safety_observation_count == 7
 
     raw_pages = [page.extract_text() or "" for page in PdfReader(str(pdf)).pages]
     pages = [" ".join(page.split()) for page in raw_pages]
