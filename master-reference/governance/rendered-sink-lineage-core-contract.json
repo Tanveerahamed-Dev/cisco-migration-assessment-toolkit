@@ -1,0 +1,144 @@
+{
+  "schema_version": "rendered-sink-lineage-core-contract/1.0.0",
+  "id": "atlas.rendered-sink-lineage.core.v1",
+  "state": "declared_incomplete",
+  "closes_global_gate": false,
+  "global_denominator": {
+    "kind": "bounded_curated_content_claim_denominator",
+    "expected_candidates": 2136,
+    "in_scope_candidates": 155,
+    "out_of_scope_candidates": 1981,
+    "independently_reviewed": 0,
+    "unresolved": 2136,
+    "claim_contract_digest": "4ebd7da5caa6aab63f3ba122d480fef638f46b866c665845087433074f436c8d",
+    "classification_digest": "b5bc4783b8bd6461fc4669b39a555ae061081a278e36712cdb6f70a5e673d1df",
+    "source_receipts_digest": "863f93c7bc0599b1cfe7e5b42eb5b10c8087a704af9de194be18d9bf28008689",
+    "candidate_set_digest": "a768b5a6c9a94390ada8e9c24627c8908f6a7b51e3f06d59b79ac8f1a5ffdd43"
+  },
+  "source_scope": {
+    "path": "master-reference/content/atlas-core.json",
+    "git_blob_oid": "27b7c166a78894d957bd3f35b5f64170dd11afb4",
+    "sha256": "e6c53929bab88f27eb31f48afd4fe60a8dab80d04d06dd03759347924f110a26",
+    "bytes": 40781,
+    "expected_records": 135,
+    "expected_candidates": 155,
+    "expected_safety_inputs": 0,
+    "expected_grounding_fallback_candidates": 62,
+    "candidate_digest": "79253dc74d3c25a49179f38b57ea25c7ff603195eb03ee97c5eb38793d78d894",
+    "facet_id_set_digest": "7bd48e7f5f587aa500136f7235e9c924ea56ef6d3e499258bfca6db257231119",
+    "grounding": {
+      "relationships": [
+        {"field": "owner_refs", "mode": "reference_array", "registry": "owner_refs"},
+        {"field": "gap_refs", "mode": "reference_array", "registry": "gap_refs"},
+        {"field": "relation_to_next", "mode": "relation_scalar", "registry": null},
+        {"field": "from", "mode": "reference_scalar", "registry": "system_plane_refs"},
+        {"field": "to", "mode": "reference_scalar", "registry": "system_plane_refs"}
+      ],
+      "declared_owner_fields": [],
+      "fallback_owner_ref": "owner.reference.contract",
+      "require_nonempty": true
+    },
+    "candidate_rules": [
+      {"rule_id": "core.root", "record_kind": "atlas_core", "selector": [], "identity": {"kind": "root"}, "expected_records": 1, "candidate_fields": [{"facet_path": "scope", "claim_kind": "scope_boundary", "value_type": "string"}]},
+      {"rule_id": "core.truth_contract", "record_kind": "truth_contract", "selector": ["truth_contract"], "identity": {"kind": "root"}, "expected_records": 1, "candidate_fields": [{"facet_path": "declared_scope_promise", "claim_kind": "truth_rule", "value_type": "string"}, {"facet_path": "open_world_promise", "claim_kind": "truth_rule", "value_type": "string"}, {"facet_path": "support_rule", "claim_kind": "truth_rule", "value_type": "string"}, {"facet_path": "partial_rule", "claim_kind": "truth_rule", "value_type": "string"}, {"facet_path": "training_rule", "claim_kind": "truth_rule", "value_type": "string"}, {"facet_path": "client_data_rule", "claim_kind": "truth_rule", "value_type": "string"}]},
+      {"rule_id": "core.controlled_state", "record_kind": "controlled_state", "selector": ["controlled_states[]"], "identity": {"kind": "field", "field": "id"}, "expected_records": 6, "candidate_fields": [{"facet_path": "meaning", "claim_kind": "support_state_semantics", "value_type": "string"}]},
+      {"rule_id": "core.owner", "record_kind": "owner", "selector": ["owners[]"], "identity": {"kind": "field", "field": "id"}, "expected_records": 29, "candidate_fields": [{"facet_path": "claim_scope", "claim_kind": "owner_claim_scope", "value_type": "string"}]},
+      {"rule_id": "core.current_baseline", "record_kind": "current_baseline", "selector": ["current_baseline[]"], "identity": {"kind": "field", "field": "id"}, "expected_records": 6, "candidate_fields": [{"facet_path": "statement", "claim_kind": "baseline_claim", "value_type": "string"}, {"facet_path": "value", "claim_kind": "baseline_value", "value_type": "baseline_value"}]},
+      {"rule_id": "core.outcome", "record_kind": "outcome", "selector": ["outcomes[]"], "identity": {"kind": "field", "field": "id"}, "expected_records": 9, "candidate_fields": [{"facet_path": "success_signal", "claim_kind": "success_condition", "value_type": "string"}]},
+      {"rule_id": "core.maturity_model", "record_kind": "maturity_model", "selector": ["maturity_model[]"], "identity": {"kind": "field", "field": "id"}, "expected_records": 7, "candidate_fields": [{"facet_path": "exit_criteria", "claim_kind": "acceptance_condition", "value_type": "string"}]},
+      {"rule_id": "core.current_maturity", "record_kind": "current_maturity", "selector": ["current_maturity[]"], "identity": {"kind": "field", "field": "id"}, "expected_records": 6, "candidate_fields": [{"facet_path": "level", "claim_kind": "maturity_claim", "value_type": "integer"}, {"facet_path": "state", "claim_kind": "support_state", "value_type": "string"}, {"facet_path": "basis", "claim_kind": "evidence_basis", "value_type": "string"}]},
+      {"rule_id": "core.non_goal", "record_kind": "non_goal", "selector": ["non_goals[]"], "identity": {"kind": "field", "field": "id"}, "expected_records": 8, "candidate_fields": [{"facet_path": "statement", "claim_kind": "scope_boundary", "value_type": "string"}]},
+      {"rule_id": "core.lifecycle_stage", "record_kind": "lifecycle_stage", "selector": ["lifecycle_stages[]"], "identity": {"kind": "field", "field": "id"}, "expected_records": 10, "candidate_fields": []},
+      {"rule_id": "core.digital_thread", "record_kind": "digital_thread", "selector": ["digital_thread"], "identity": {"kind": "field", "field": "id"}, "expected_records": 1, "candidate_fields": [{"facet_path": "abstention_rule", "claim_kind": "abstention_rule", "value_type": "string"}]},
+      {"rule_id": "core.digital_thread_stage", "record_kind": "digital_thread_stage", "selector": ["digital_thread", "stages[]"], "identity": {"kind": "field", "field": "id"}, "expected_records": 17, "candidate_fields": [{"facet_path": "abstention", "claim_kind": "abstention_rule", "value_type": "string"}]},
+      {"rule_id": "core.system_architecture", "record_kind": "system_architecture", "selector": ["system_architecture"], "identity": {"kind": "field", "field": "id"}, "expected_records": 1, "candidate_fields": []},
+      {"rule_id": "core.system_plane", "record_kind": "system_plane", "selector": ["system_architecture", "planes[]"], "identity": {"kind": "field", "field": "id"}, "expected_records": 6, "candidate_fields": [{"facet_path": "purpose", "claim_kind": "architecture_claim", "value_type": "string"}, {"facet_path": "inputs", "claim_kind": "architecture_input", "value_type": "string_array"}, {"facet_path": "outputs", "claim_kind": "architecture_output", "value_type": "string_array"}]},
+      {"rule_id": "core.system_flow", "record_kind": "system_flow", "selector": ["system_architecture", "flow[]"], "identity": {"kind": "composite", "fields": ["from", "to"]}, "expected_records": 6, "candidate_fields": [{"facet_path": "contract", "claim_kind": "architecture_contract", "value_type": "string"}]},
+      {"rule_id": "core.traffic_model", "record_kind": "traffic_model", "selector": ["traffic_model"], "identity": {"kind": "field", "field": "id"}, "expected_records": 1, "candidate_fields": [{"facet_path": "warning", "claim_kind": "scope_boundary", "value_type": "string"}]},
+      {"rule_id": "core.traffic_plane", "record_kind": "traffic_plane", "selector": ["traffic_model", "planes[]"], "identity": {"kind": "field", "field": "id"}, "expected_records": 8, "candidate_fields": [{"facet_path": "state", "claim_kind": "support_state", "value_type": "string"}, {"facet_path": "current_scope", "claim_kind": "scope_boundary", "value_type": "string"}]},
+      {"rule_id": "core.domain", "record_kind": "domain", "selector": ["domain_registry[]"], "identity": {"kind": "field", "field": "id"}, "expected_records": 12, "candidate_fields": []}
+    ],
+    "safety_rules": []
+  },
+  "sink_universe": {
+    "complete": false,
+    "declared_count": 2,
+    "known_omitted_classes": [
+      "other_core_facets_outside_outcome_success_signals",
+      "other_curated_content_sources",
+      "other_web_routes_and_states",
+      "other_pdf_sections",
+      "fixed_template_claims",
+      "computed_and_joined_claims",
+      "responsive_print_locale_and_runtime_variants"
+    ]
+  },
+  "sinks": [
+    {
+      "sink_id": "pdf.product-purpose-and-outcomes",
+      "kind": "output.pdf",
+      "locator": "master-reference.pdf#product-purpose-and-outcomes",
+      "renderer_path": "master-reference/release/pdf_report.py",
+      "renderer_symbol": "_outcomes",
+      "expected_rendered": 9,
+      "expected_omitted": 146,
+      "rendered_rules": [
+        {"rule_id": "core.outcome", "fields": [{"facet_path": "success_signal", "disposition": "rendered_labeled", "slot_template": "pdf.product-purpose-and-outcomes.core.outcome.{record_identity}.success_signal", "transform_id": "pdf.core_outcome_success_signal_plain_text/1"}], "expected_subjects": 9}
+      ],
+      "omission_rules": [
+        {"rule_id": "core.root", "facet_paths": ["scope"], "expected_subjects": 1, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "core.truth_contract", "facet_paths": ["declared_scope_promise", "open_world_promise", "support_rule", "partial_rule", "training_rule", "client_data_rule"], "expected_subjects": 6, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "core.controlled_state", "facet_paths": ["meaning"], "expected_subjects": 6, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "core.owner", "facet_paths": ["claim_scope"], "expected_subjects": 29, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "core.current_baseline", "facet_paths": ["statement", "value"], "expected_subjects": 12, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "core.maturity_model", "facet_paths": ["exit_criteria"], "expected_subjects": 7, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "core.current_maturity", "facet_paths": ["level", "state", "basis"], "expected_subjects": 18, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "core.non_goal", "facet_paths": ["statement"], "expected_subjects": 8, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "core.digital_thread", "facet_paths": ["abstention_rule"], "expected_subjects": 1, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "core.digital_thread_stage", "facet_paths": ["abstention"], "expected_subjects": 17, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "core.system_plane", "facet_paths": ["purpose", "inputs", "outputs"], "expected_subjects": 18, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "core.system_flow", "facet_paths": ["contract"], "expected_subjects": 6, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "core.traffic_model", "facet_paths": ["warning"], "expected_subjects": 1, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "core.traffic_plane", "facet_paths": ["state", "current_scope"], "expected_subjects": 16, "reason_code": "sink_v1_not_rendered"}
+      ],
+      "safety_mappings": []
+    },
+    {
+      "sink_id": "web.product.core-outcomes",
+      "kind": "private_web_route",
+      "locator": "/product#core-outcome-contracts",
+      "renderer_path": "master-reference/app/product/page.tsx",
+      "renderer_symbol": "ProductPage",
+      "expected_rendered": 9,
+      "expected_omitted": 146,
+      "rendered_rules": [
+        {"rule_id": "core.outcome", "fields": [{"facet_path": "success_signal", "disposition": "rendered_identity", "slot_template": "web.product.core.outcome.{record_identity}.success_signal", "transform_id": "identity-text"}], "expected_subjects": 9}
+      ],
+      "omission_rules": [
+        {"rule_id": "core.root", "facet_paths": ["scope"], "expected_subjects": 1, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "core.truth_contract", "facet_paths": ["declared_scope_promise", "open_world_promise", "support_rule", "partial_rule", "training_rule", "client_data_rule"], "expected_subjects": 6, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "core.controlled_state", "facet_paths": ["meaning"], "expected_subjects": 6, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "core.owner", "facet_paths": ["claim_scope"], "expected_subjects": 29, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "core.current_baseline", "facet_paths": ["statement", "value"], "expected_subjects": 12, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "core.maturity_model", "facet_paths": ["exit_criteria"], "expected_subjects": 7, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "core.current_maturity", "facet_paths": ["level", "state", "basis"], "expected_subjects": 18, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "core.non_goal", "facet_paths": ["statement"], "expected_subjects": 8, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "core.digital_thread", "facet_paths": ["abstention_rule"], "expected_subjects": 1, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "core.digital_thread_stage", "facet_paths": ["abstention"], "expected_subjects": 17, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "core.system_plane", "facet_paths": ["purpose", "inputs", "outputs"], "expected_subjects": 18, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "core.system_flow", "facet_paths": ["contract"], "expected_subjects": 6, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "core.traffic_model", "facet_paths": ["warning"], "expected_subjects": 1, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "core.traffic_plane", "facet_paths": ["state", "current_scope"], "expected_subjects": 16, "reason_code": "sink_v1_not_rendered"}
+      ],
+      "safety_mappings": []
+    }
+  ],
+  "limitations": [
+    "This is a source-wide Core candidate accounting slice with two narrow outcome-success-signal sinks, not a global rendered-claim denominator.",
+    "Each declared sink renders nine Core outcome success signals and explicitly omits the other 146 Core candidates; all other routes, sections, and states remain outside this slice.",
+    "The Core source has no separately declared safety-input denominator in this slice; zero safety inputs is not evidence that other fixed, computed, or joined prose is safe or complete.",
+    "Payloads are omitted but unsalted value fingerprints can be dictionary-recovered for low-entropy values and are not confidentiality.",
+    "A mapping PASS supplies no semantic acceptance, reviewer authentication, evidence efficacy, publication authority, or claim-evidence promotion.",
+    "The 1981 out-of-scope curated facets and all undeclared template, computed, joined, conditional, locale, responsive, print, and runtime sink variants remain unresolved."
+  ]
+}

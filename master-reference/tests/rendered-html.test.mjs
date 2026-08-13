@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -6,15 +7,56 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Miniflare } from "miniflare";
+import htmlParser from "next/dist/compiled/node-html-parser/index.js";
 
 import { CANONICAL_GZIP_HEADER_BYTES } from "../build/gzip-contract.js";
 import { buildCapabilityCatalogViewModel } from "../app/atlas/capabilityLineage.ts";
+import { buildCoreOutcomeViewModel } from "../app/atlas/coreOutcomeLineage.ts";
 import { buildHorizonGapsViewModel } from "../app/atlas/horizonLineage.ts";
 
 const root = new URL("../", import.meta.url);
 const workerUrl = new URL("../dist/server/index.js", import.meta.url);
 workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
 const { default: worker } = await import(workerUrl.href);
+const { parse: parseHtml } = htmlParser;
+const HTML_PARSE_OPTIONS = {
+  comment: false,
+  blockTextElements: {
+    iframe: true,
+    noembed: true,
+    noframes: true,
+    noscript: true,
+    plaintext: true,
+    script: true,
+    style: true,
+    template: true,
+    textarea: true,
+    title: true,
+    xmp: true,
+  },
+};
+const INERT_TEXT_TAGS = new Set([
+  "iframe",
+  "noembed",
+  "noframes",
+  "plaintext",
+  "script",
+  "style",
+  "template",
+  "textarea",
+  "title",
+  "xmp",
+]);
+const CORE_OUTCOME_STYLESHEET = Object.freeze({
+  href: "/assets/index-DJZ4gasp.css",
+  sha256: "e4bc80765bd0993ad5cb6afa1b0f8dd69ef487df8c1b74fff91312589e1e4f0d",
+  attributes: Object.freeze({
+    "data-precedence": "vite-rsc/importer-resources",
+    "data-rsc-css-href": "/assets/index-DJZ4gasp.css",
+    href: "/assets/index-DJZ4gasp.css",
+    rel: "stylesheet",
+  }),
+});
 
 function canonicalGzip(source) {
   const encoded = gzipSync(source, { level: 9 });
@@ -67,40 +109,91 @@ function decodeHtmlText(value) {
   });
 }
 
+function parsedHtml(html) {
+  return parseHtml(html, HTML_PARSE_OPTIONS);
+}
+
+async function assertCoreOutcomeStyleCustody(
+  html,
+  readStylesheet = async (href) => {
+    const clientRoot = new URL("../dist/client/", import.meta.url);
+    const target = new URL(`../dist/client${href}`, import.meta.url);
+    assert.ok(
+      target.href.startsWith(clientRoot.href),
+      "Core outcome stylesheet escaped dist/client",
+    );
+    return readFile(target);
+  },
+) {
+  const document = parsedHtml(html);
+  assert.equal(
+    document.querySelectorAll("style").length,
+    0,
+    "Core outcome style custody rejects embedded styles",
+  );
+  assert.equal(
+    document.querySelectorAll("[style]").length,
+    0,
+    "Core outcome style custody rejects inline styles",
+  );
+  const links = document.querySelectorAll("link").filter((link) =>
+    (link.getAttribute("rel") ?? "")
+      .split(/[\t\n\f\r ]+/)
+      .some((token) => token.toLowerCase() === "stylesheet"),
+  );
+  assert.equal(
+    links.length,
+    1,
+    "Core outcome style custody requires exactly one built stylesheet",
+  );
+  const attributes = Object.fromEntries(
+    Object.entries(links[0].attributes ?? {}).sort(([left], [right]) => left.localeCompare(right)),
+  );
+  assert.deepEqual(
+    attributes,
+    CORE_OUTCOME_STYLESHEET.attributes,
+    "Core outcome built stylesheet attributes changed; a canonical build refresh is required",
+  );
+  const href = attributes.href;
+  assert.match(href, /^\/assets\/[A-Za-z0-9][A-Za-z0-9._-]*\.css$/);
+  assert.equal(href.includes("?"), false);
+  assert.equal(href.includes("#"), false);
+  assert.equal(
+    decodeURIComponent(href),
+    href,
+    "Core outcome stylesheet path must not contain encoded path or query syntax",
+  );
+  const stylesheet = await readStylesheet(href);
+  assert.ok(
+    stylesheet instanceof Uint8Array,
+    "Core outcome stylesheet loader returned non-byte content",
+  );
+  assert.equal(
+    createHash("sha256").update(stylesheet).digest("hex"),
+    CORE_OUTCOME_STYLESHEET.sha256,
+    "Core outcome built stylesheet bytes changed; a canonical build refresh is required",
+  );
+  const css = new TextDecoder("utf-8", { fatal: true }).decode(stylesheet);
+  assert.doesNotMatch(css, /@import\b/i, "Core outcome stylesheet custody rejects CSS imports");
+}
+
+function liveText(node) {
+  if (node.nodeType === 3) return node.rawText ?? "";
+  if (node.nodeType !== 1 || INERT_TEXT_TAGS.has(node.rawTagName?.toLowerCase())) return "";
+  return (node.childNodes ?? []).map((child) => liveText(child)).join(" ");
+}
+
 function lineageSlotText(html, attribute, label) {
   const slots = new Map();
-  const stack = [];
-  const slotPattern = new RegExp(`\\b${attribute}="([^"]+)"`);
-  const tokenPattern = /<!--[\s\S]*?-->|<\/?[A-Za-z][^>]*>|[^<]+/g;
-  for (const token of html.match(tokenPattern) ?? []) {
-    if (token.startsWith("<!--")) continue;
-    if (!token.startsWith("<")) {
-      const text = decodeHtmlText(token);
-      for (const frame of stack) {
-        if (frame.slotId) frame.text += ` ${text}`;
-      }
-      continue;
-    }
-    if (token.startsWith("</")) {
-      stack.pop();
-      continue;
-    }
-    const tag = /^<([A-Za-z][A-Za-z0-9:-]*)\b/.exec(token)?.[1]?.toLowerCase();
-    if (!tag) continue;
-    const slotId = slotPattern.exec(token)?.[1];
-    if (slotId && slots.has(slotId)) {
+  for (const element of parsedHtml(html).querySelectorAll(`[${attribute}]`)) {
+    const slotId = element.getAttribute(attribute);
+    if (!slotId) throw new Error(`empty physical ${label} slot`);
+    if (slots.has(slotId)) {
       throw new Error(`duplicate physical ${label} slot ${slotId}`);
     }
-    const frame = { tag, slotId, text: "" };
-    stack.push(frame);
-    if (slotId) slots.set(slotId, frame);
-    if (token.endsWith("/>") || /^(?:area|base|br|col|embed|hr|img|input|link|meta|source|track|wbr)$/.test(tag)) {
-      stack.pop();
-    }
+    slots.set(slotId, decodeHtmlText(liveText(element)).replaceAll(/\s+/g, " ").trim());
   }
-  return new Map(
-    [...slots].map(([slotId, frame]) => [slotId, frame.text.replaceAll(/\s+/g, " ").trim()]),
-  );
+  return slots;
 }
 
 function horizonSlotText(html) {
@@ -109,6 +202,176 @@ function horizonSlotText(html) {
 
 function capabilitySlotText(html) {
   return lineageSlotText(html, "data-capability-slot", "capability");
+}
+
+function coreOutcomeSlotText(html) {
+  return lineageSlotText(html, "data-core-outcome-slot", "Core outcome");
+}
+
+function normalizedVisibleText(html) {
+  return decodeHtmlText(liveText(parsedHtml(html))).replaceAll(/\s+/g, " ").trim();
+}
+
+function visibleTextOccurrences(html, expected) {
+  const text = normalizedVisibleText(html);
+  const target = expected.replaceAll(/\s+/g, " ").trim();
+  let count = 0;
+  let offset = 0;
+  while (target && (offset = text.indexOf(target, offset)) !== -1) {
+    count += 1;
+    offset += target.length;
+  }
+  return count;
+}
+
+function sectionById(html, id) {
+  const matches = parsedHtml(html).querySelectorAll(`section#${id}`);
+  assert.equal(matches.length, 1, `expected exactly one section#${id}`);
+  let node = matches[0];
+  const requiredAncestors = [
+    ["section", { class: "workspace-section" }],
+    ["main", { class: "atlas-content", id: "atlas-content" }],
+    ["div", { class: "atlas-frame" }],
+    ["div", { class: "atlas-shell" }],
+    ["body", {}],
+    ["html", { lang: "en" }],
+  ];
+  const actualAncestors = [];
+  while (node?.nodeType === 1) {
+    const attributes = node.attributes ?? {};
+    const style = attributes.style?.replaceAll(/\s+/g, "").toLowerCase() ?? "";
+    assert.equal(Object.hasOwn(attributes, "hidden"), false, `section#${id} has a hidden ancestor`);
+    assert.notEqual(attributes["aria-hidden"]?.toLowerCase(), "true", `section#${id} has an aria-hidden ancestor`);
+    assert.equal(/(?:^|;)display:none(?:;|$)/.test(style), false, `section#${id} has a display-none ancestor`);
+    assert.equal(/(?:^|;)visibility:hidden(?:;|$)/.test(style), false, `section#${id} has a visibility-hidden ancestor`);
+    assert.equal(
+      node.rawTagName?.toLowerCase() === "dialog" && !Object.hasOwn(attributes, "open"),
+      false,
+      `section#${id} is inside a closed dialog`,
+    );
+    assert.equal(
+      node.rawTagName?.toLowerCase() === "details" && !Object.hasOwn(attributes, "open"),
+      false,
+      `section#${id} is inside closed details`,
+    );
+    if (node !== matches[0] && node.rawTagName) actualAncestors.push(node);
+    node = node.parentNode;
+  }
+  assert.equal(actualAncestors.length, requiredAncestors.length, `section#${id} changed its ancestor depth`);
+  for (const [index, [tag, expectedAttributes]] of requiredAncestors.entries()) {
+    const ancestor = actualAncestors[index];
+    assert.equal(ancestor.rawTagName?.toLowerCase(), tag, `section#${id} changed ancestor ${index}`);
+    assert.deepEqual(
+      ancestor.attributes,
+      expectedAttributes,
+      `section#${id} changed ancestor ${index} attributes`,
+    );
+  }
+  return matches[0].toString();
+}
+
+function tagAttributes(tag) {
+  const opening = /^<([A-Za-z][A-Za-z0-9:-]*)\b([\s\S]*?)\/?\s*>$/.exec(tag);
+  assert.ok(opening, `invalid opening tag in Core outcome locator: ${tag}`);
+  const attributes = new Map();
+  const source = opening[2];
+  const attributePattern = /\s+([A-Za-z_:][A-Za-z0-9_.:-]*)\s*=\s*"([^"]*)"/g;
+  let cursor = 0;
+  for (let match = attributePattern.exec(source); match; match = attributePattern.exec(source)) {
+    assert.equal(
+      source.slice(cursor, match.index).trim(),
+      "",
+      `unsupported Core outcome attribute syntax on <${opening[1]}>`,
+    );
+    assert.equal(
+      attributes.has(match[1]),
+      false,
+      `duplicate Core outcome attribute ${match[1]}`,
+    );
+    attributes.set(match[1], decodeHtmlText(match[2]));
+    cursor = attributePattern.lastIndex;
+  }
+  assert.equal(
+    source.slice(cursor).trim(),
+    "",
+    `unsupported Core outcome attribute syntax on <${opening[1]}>`,
+  );
+  return { tag: opening[1].toLowerCase(), attributes };
+}
+
+function assertCoreOutcomeMarkup(html, core, observations) {
+  const expectedArticles = new Map(
+    core.outcomes.map((outcome) => [outcome.id, outcome]),
+  );
+  const expectedSlots = new Map(
+    observations.map((row) => [row.slot_id, row.record_identity]),
+  );
+  const seenArticles = new Set();
+  const seenSlots = new Set();
+  const stack = [];
+  for (const token of html.match(/<!--[\s\S]*?-->|<\/?[A-Za-z][^>]*>/g) ?? []) {
+    if (token.startsWith("<!--")) continue;
+    if (token.startsWith("</")) {
+      const closing = /^<\/([A-Za-z][A-Za-z0-9:-]*)\s*>$/.exec(token);
+      assert.ok(closing, `invalid closing tag in Core outcome locator: ${token}`);
+      assert.equal(stack.pop(), closing[1].toLowerCase(), "misnested Core outcome markup");
+      continue;
+    }
+    const parsed = tagAttributes(token);
+    const keys = [...parsed.attributes.keys()].sort();
+    if (parsed.tag === "section") {
+      assert.deepEqual(keys, ["aria-label", "id"]);
+      assert.equal(parsed.attributes.get("id"), "core-outcome-contracts");
+      assert.equal(parsed.attributes.get("aria-label"), "Outcome success signals");
+    } else if (parsed.tag === "div") {
+      assert.deepEqual(keys, ["class"]);
+      assert.match(parsed.attributes.get("class"), /^_cardGrid_[a-z0-9_]+$/i);
+    } else if (parsed.tag === "article") {
+      assert.deepEqual(keys, ["class", "id"]);
+      assert.match(parsed.attributes.get("class"), /^_card_[a-z0-9_]+$/i);
+      const id = parsed.attributes.get("id");
+      assert.ok(expectedArticles.has(id), `unexpected Core outcome article ${id}`);
+      assert.equal(seenArticles.has(id), false, `duplicate Core outcome article ${id}`);
+      seenArticles.add(id);
+    } else if (parsed.tag === "p") {
+      assert.deepEqual(keys, ["data-core-outcome-slot"]);
+      const slot = parsed.attributes.get("data-core-outcome-slot");
+      assert.ok(expectedSlots.has(slot), `unexpected Core outcome slot ${slot}`);
+      assert.equal(seenSlots.has(slot), false, `duplicate Core outcome slot ${slot}`);
+      seenSlots.add(slot);
+    } else {
+      assert.ok(["code", "h3"].includes(parsed.tag), `unexpected Core outcome tag ${parsed.tag}`);
+      assert.deepEqual(keys, []);
+    }
+    stack.push(parsed.tag);
+  }
+  assert.deepEqual(stack, []);
+  assert.deepEqual([...seenArticles], core.outcomes.map((outcome) => outcome.id));
+  assert.deepEqual([...seenSlots], observations.map((row) => row.slot_id));
+}
+
+function recordsForSelector(document, selector) {
+  let records = [document];
+  for (const token of selector) {
+    const isArray = token.endsWith("[]");
+    const field = isArray ? token.slice(0, -2) : token;
+    records = records.flatMap((record) =>
+      isArray ? record[field] : [record[field]],
+    );
+  }
+  return records;
+}
+
+function coreCandidateRows(core, sourceScope) {
+  return sourceScope.candidate_rules.flatMap((rule) =>
+    recordsForSelector(core, rule.selector).flatMap((record) =>
+      rule.candidate_fields.map((field) => ({
+        rule_id: rule.rule_id,
+        facet_path: field.facet_path,
+        value: record[field.facet_path],
+      })),
+    ),
+  );
 }
 
 async function sourceFiles(directory) {
@@ -862,6 +1125,331 @@ test("server-renders every owner workspace with its proof boundary", async () =>
     for (const phrase of phrases) assert.ok(html.includes(phrase), `${path} is missing: ${phrase}`);
     assert.doesNotMatch(html, /Starter Project|SkeletonPreview|taking shape/i, path);
   }
+});
+
+test("Core outcome locator guards reject hidden attributes and tag-independent duplicates", () => {
+  const scope = "OMITTED-CORE-SCOPE-SENTINEL";
+  const core = {
+    outcomes: [{ id: "outcome.synthetic", title: "Synthetic", success_signal: "Visible" }],
+  };
+  const observations = [{
+    record_identity: "outcome.synthetic",
+    slot_id: "web.product.core.outcome.outcome.synthetic.success_signal",
+  }];
+  const clean = [
+    '<section id="core-outcome-contracts" aria-label="Outcome success signals">',
+    '<div class="_cardGrid_fixture_1">',
+    '<article class="_card_fixture_1" id="outcome.synthetic">',
+    '<code>outcome.synthetic</code><h3>Synthetic</h3>',
+    '<p data-core-outcome-slot="web.product.core.outcome.outcome.synthetic.success_signal">Visible</p>',
+    "</article></div></section>",
+  ].join("");
+  assert.doesNotThrow(() => assertCoreOutcomeMarkup(clean, core, observations));
+  for (const attribute of ["aria-label", "title", "data-omitted"]) {
+    const hostile = clean.replace(
+      /(<section\b[^>]*\bid="core-outcome-contracts"[^>]*)>/i,
+      `$1 ${attribute}="${scope}">`,
+    );
+    assert.equal(normalizedVisibleText(hostile), normalizedVisibleText(clean));
+    assert.throws(
+      () => assertCoreOutcomeMarkup(hostile, core, observations),
+      `the markup guard accepted omitted Core scope through ${attribute}`,
+    );
+  }
+  assert.equal(
+    visibleTextOccurrences("<p>Visible</p><span>Visible</span>", "Visible"),
+    2,
+  );
+  assert.equal(
+    visibleTextOccurrences(
+      '<p>Visible</p><script type="application/json">{"serialized":"Visible"}</script>',
+      "Visible",
+    ),
+    1,
+    "hydration serialization must not count as rendered text",
+  );
+  assert.equal(
+    visibleTextOccurrences("<noscript>Visible</noscript>", "Visible"),
+    1,
+    "the scripting-disabled fallback remains potentially visible",
+  );
+  const inertLocator = clean;
+  for (const hostile of [
+    `<script type="application/json">${inertLocator}</script>`,
+    `<script>${inertLocator}`,
+    `<!-- ${inertLocator} -->`,
+    `<template>${inertLocator}</template>`,
+    `<textarea>${inertLocator}</textarea>`,
+    `<title>${inertLocator}</title>`,
+    `<xmp>${inertLocator}</xmp>`,
+    `<iframe>${inertLocator}</iframe>`,
+  ]) {
+    assert.throws(
+      () => sectionById(hostile, "core-outcome-contracts"),
+      "the locator parser accepted a Core outcome section from an inert HTML context",
+    );
+    assert.equal(
+      coreOutcomeSlotText(hostile).size,
+      0,
+      "the slot parser accepted a Core outcome slot from an inert HTML context",
+    );
+  }
+  const canonicalDocument = (ancestorAttribute) =>
+    `<html lang="en"><body><div class="atlas-shell"><div class="atlas-frame"><main class="atlas-content" id="atlas-content"><section class="workspace-section"${ancestorAttribute}>${clean}</section></main></div></div></body></html>`;
+  for (const hostile of [
+    canonicalDocument(" hidden"),
+    canonicalDocument(' aria-hidden="true"'),
+    canonicalDocument(' style="display:none!important"'),
+    canonicalDocument(' style="visibility:hidden!important"'),
+    canonicalDocument(" popover"),
+    `<html lang="en"><body><div class="atlas-shell"><div class="atlas-frame"><dialog><main class="atlas-content" id="atlas-content"><section class="workspace-section">${clean}</section></main></dialog></div></div></body></html>`,
+    `<html lang="en"><body><div class="atlas-shell"><div class="atlas-frame"><details><main class="atlas-content" id="atlas-content"><section class="workspace-section">${clean}</section></main></details></div></div></body></html>`,
+  ]) {
+    assert.throws(
+      () => sectionById(hostile, "core-outcome-contracts"),
+      "the locator parser accepted a Core outcome section hidden by an ancestor",
+    );
+  }
+});
+
+test("Core outcome computed-visibility proof retains exact built stylesheet custody", async () => {
+  const stylesheetLink = [
+    '<link rel="stylesheet"',
+    ` href="${CORE_OUTCOME_STYLESHEET.href}"`,
+    ` data-rsc-css-href="${CORE_OUTCOME_STYLESHEET.href}"`,
+    ' data-precedence="vite-rsc/importer-resources"/>',
+  ].join("");
+  const clean = [
+    "<html><head>",
+    stylesheetLink,
+    "</head><body>",
+    '<section id="core-outcome-contracts" aria-label="Outcome success signals">',
+    '<p data-core-outcome-slot="web.product.core.outcome.outcome.synthetic.success_signal">',
+    "Visible",
+    "</p></section></body></html>",
+  ].join("");
+  await assert.doesNotReject(() => assertCoreOutcomeStyleCustody(clean));
+  await assert.doesNotReject(() =>
+    assertCoreOutcomeStyleCustody(
+      clean.replace(
+        stylesheetLink,
+        `<link data-precedence="vite-rsc/importer-resources" data-rsc-css-href="${CORE_OUTCOME_STYLESHEET.href}" href="${CORE_OUTCOME_STYLESHEET.href}" rel="stylesheet"/>`,
+      ),
+    ),
+  );
+
+  const hostileMarkup = [
+    clean.replace(
+      "</head>",
+      '<style>#core-outcome-contracts{display:none!important}</style></head>',
+    ),
+    clean.replace(
+      '<section id="core-outcome-contracts"',
+      '<section style="opacity:0!important" id="core-outcome-contracts"',
+    ),
+    clean.replace(
+      "Visible",
+      '<span style="transform:scale(0)!important">Visible</span>',
+    ),
+    clean.replace(
+      "</head>",
+      '<link rel="stylesheet" href="https://hostile.invalid/hide-core.css"></head>',
+    ),
+    clean.replace(
+      "</head>",
+      '<link rel="STYLESHEET" href="https://hostile.invalid/hide-core.css"></head>',
+    ),
+    clean.replace(
+      "</head>",
+      '<link rel="preload stylesheet" href="https://hostile.invalid/hide-core.css"></head>',
+    ),
+    clean.replaceAll(
+      CORE_OUTCOME_STYLESHEET.href,
+      `${CORE_OUTCOME_STYLESHEET.href}?hide=1`,
+    ),
+    clean.replaceAll(
+      CORE_OUTCOME_STYLESHEET.href,
+      `${CORE_OUTCOME_STYLESHEET.href}#hide`,
+    ),
+    clean.replaceAll(
+      CORE_OUTCOME_STYLESHEET.href,
+      "/assets/%2e%2e/hostile.css",
+    ),
+  ];
+  for (const hostile of hostileMarkup) {
+    await assert.rejects(
+      () => assertCoreOutcomeStyleCustody(hostile),
+      "Core outcome style custody accepted an unproven styling path",
+    );
+  }
+
+  const stylesheet = await readFile(
+    new URL(`../dist/client${CORE_OUTCOME_STYLESHEET.href}`, import.meta.url),
+  );
+  await assert.rejects(
+    () =>
+      assertCoreOutcomeStyleCustody(clean, async () =>
+        Buffer.concat([
+          stylesheet,
+          Buffer.from("\n#core-outcome-contracts{display:none!important}\n"),
+        ])),
+    /canonical build refresh is required/,
+    "Core outcome style custody accepted mutated stylesheet bytes",
+  );
+});
+
+test("server-renders the exact nine Core outcome success-signal slots in source order", async () => {
+  const [coreText, governanceText, pageSource, contractText] = await Promise.all([
+    readFile(new URL("content/atlas-core.json", root), "utf8"),
+    readFile(new URL("content/delivery-governance.json", root), "utf8"),
+    readFile(new URL("app/product/page.tsx", root), "utf8"),
+    readFile(
+      new URL("governance/rendered-sink-lineage-core-contract.json", root),
+      "utf8",
+    ),
+  ]);
+  const core = JSON.parse(coreText);
+  const governance = JSON.parse(governanceText);
+  const contract = JSON.parse(contractText);
+  const view = buildCoreOutcomeViewModel(core, {
+    gap_ids: governance.gaps.map((gap) => gap.id),
+  });
+  const webSink = contract.sinks.find(
+    (sink) => sink.sink_id === "web.product.core-outcomes",
+  );
+  assert.ok(webSink);
+  assert.equal(webSink.locator, "/product#core-outcome-contracts");
+  const candidateRows = coreCandidateRows(core, contract.source_scope);
+  const renderedFacets = new Set(
+    webSink.rendered_rules.flatMap((rule) =>
+      rule.fields.map((field) => `${rule.rule_id}\u0000${field.facet_path}`),
+    ),
+  );
+  const omittedRows = candidateRows.filter(
+    (row) => !renderedFacets.has(`${row.rule_id}\u0000${row.facet_path}`),
+  );
+  assert.equal(candidateRows.length, contract.source_scope.expected_candidates);
+  assert.equal(omittedRows.length, webSink.expected_omitted);
+
+  const response = await render("/product");
+  assert.equal(response.status, 200);
+  assert.equal(
+    response.headers.get("link"),
+    null,
+    "Core outcome style custody rejects unbound HTTP Link stylesheet relations",
+  );
+  const html = await response.text();
+  await assertCoreOutcomeStyleCustody(html);
+  const outcomeSection = sectionById(html, "core-outcome-contracts");
+  assertCoreOutcomeMarkup(outcomeSection, core, view.rendered_observations);
+  const slotText = coreOutcomeSlotText(outcomeSection);
+  assert.equal(slotText.size, 9, "/product emitted an unexpected or duplicate Core outcome slot");
+  assert.equal(
+    coreOutcomeSlotText(html).size,
+    slotText.size,
+    "/product emitted a Core outcome slot outside the declared nested locator",
+  );
+  const duplicateCounterexample = core.outcomes[0].success_signal;
+  assert.equal(
+    visibleTextOccurrences(
+      `<section><p>${duplicateCounterexample}</p><span>${duplicateCounterexample}</span></section>`,
+      duplicateCounterexample,
+    ),
+    2,
+    "the occurrence guard must detect a duplicate rendered through another element type",
+  );
+  assert.equal(
+    visibleTextOccurrences(`<section>${core.scope}</section>`, core.scope),
+    1,
+    "the omission guard must detect the omitted Core root scope inside the locator",
+  );
+  for (const attribute of ["aria-label", "title", "data-omitted"]) {
+    assert.throws(
+      () =>
+        assertCoreOutcomeMarkup(
+          outcomeSection.replace(
+            /(<section\b[^>]*\bid="core-outcome-contracts"[^>]*)>/i,
+            `$1 ${attribute}="${core.scope}">`,
+          ),
+          core,
+          view.rendered_observations,
+        ),
+      `the markup guard accepted omitted Core scope through ${attribute}`,
+    );
+  }
+  assert.equal(
+    visibleTextOccurrences(outcomeSection, core.scope),
+    0,
+    "the omitted Core root scope entered the declared nested locator",
+  );
+  const expectedLocatorText = core.outcomes
+    .flatMap((outcome) => [outcome.id, outcome.title, outcome.success_signal])
+    .join(" ")
+    .replaceAll(/\s+/g, " ")
+    .trim();
+  assert.equal(
+    normalizedVisibleText(outcomeSection),
+    expectedLocatorText,
+    "the declared nested locator rendered text beyond outcome identity context and the nine success signals",
+  );
+  for (const omitted of omittedRows) {
+    const values = Array.isArray(omitted.value)
+      ? omitted.value
+      : typeof omitted.value === "object" && omitted.value !== null
+        ? Object.values(omitted.value).flat()
+        : [omitted.value];
+    for (const value of values) {
+      const visibleValue = String(value);
+      assert.equal(
+        visibleTextOccurrences(outcomeSection, visibleValue),
+        visibleTextOccurrences(expectedLocatorText, visibleValue),
+        `${omitted.rule_id}/${omitted.facet_path} entered the declared nested locator`,
+      );
+    }
+  }
+
+  for (const observation of view.rendered_observations) {
+    const visible = slotText.get(observation.slot_id);
+    assert.ok(
+      visible !== undefined,
+      `/product omitted the declared Core outcome slot ${observation.slot_id}`,
+    );
+    assert.equal(
+      visible,
+      observation.observed_value,
+      `/product slot ${observation.slot_id} does not exactly bind its source value`,
+    );
+  }
+  assert.deepEqual(
+    [...slotText.keys()],
+    view.rendered_observations.map((row) => row.slot_id),
+    "/product changed Core outcome or candidate-field order",
+  );
+
+  for (const outcome of core.outcomes) {
+    assert.equal(
+      pageSource.includes(outcome.success_signal),
+      false,
+      "a fixed page fallback duplicated a source-owned Core outcome value",
+    );
+    assert.equal(
+      visibleTextOccurrences(outcomeSection, outcome.success_signal),
+      1,
+      `${outcome.id} changed its occurrence count within the declared nested locator`,
+    );
+  }
+  assert.equal(
+    visibleTextOccurrences(html, core.outcomes.at(-1).success_signal),
+    2,
+    "the known page-wide business-value occurrence count changed",
+  );
+  const businessValueSlot =
+    "web.product.core.outcome.outcome.business-value.success_signal";
+  assert.equal(
+    [...slotText.keys()].filter((slotId) => slotId === businessValueSlot).length,
+    1,
+    "the known business-value duplicate entered the declared nested locator",
+  );
 });
 
 test("server-renders the source-derived Horizon safety boundary and deterministic sink slots", async () => {

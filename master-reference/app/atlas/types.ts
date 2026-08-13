@@ -14,6 +14,17 @@ export type OwnerRef = {
   claim_scope: string;
 };
 
+export type CoreOutcome = {
+  id: string;
+  title: string;
+  success_signal: string;
+};
+
+export type CoreBaselineValue =
+  | string
+  | string[]
+  | Record<string, string | number | string[]>;
+
 export type Capability = {
   id: string;
   title: string;
@@ -131,21 +142,33 @@ export type DeliveryGovernance = {
 };
 
 export type CoreModel = {
-  schema_version: string;
+  schema_version: "1.0.0";
   id: string;
   catalog_version: string;
   title: string;
   as_of: string;
   scope: string;
-  truth_contract: Record<string, string>;
+  truth_contract: {
+    declared_scope_promise: string;
+    open_world_promise: string;
+    support_rule: string;
+    partial_rule: string;
+    training_rule: string;
+    client_data_rule: string;
+  };
+  controlled_states: Array<{
+    id: string;
+    value: CapabilityState;
+    meaning: string;
+  }>;
   owners: OwnerRef[];
   current_baseline: Array<{
     id: string;
     statement: string;
-    value: unknown;
+    value: CoreBaselineValue;
     owner_refs: string[];
   }>;
-  outcomes: Array<{ id: string; title: string; success_signal: string }>;
+  outcomes: CoreOutcome[];
   maturity_model: Array<{
     id: string;
     level: number;

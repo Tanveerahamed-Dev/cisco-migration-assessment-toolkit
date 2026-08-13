@@ -14,6 +14,11 @@ from governance.capability_sink_lineage import (
     load_capability_sink_lineage_contract,
     unavailable_capability_sink_lineage,
 )
+from governance.core_sink_lineage import (
+    evaluate_core_sink_lineage,
+    load_core_sink_lineage_contract,
+    unavailable_core_sink_lineage,
+)
 from governance.rendered_sink_lineage import (
     evaluate_rendered_sink_lineage,
     load_rendered_sink_lineage_contract,
@@ -107,6 +112,30 @@ CAPABILITY_SINK_LINEAGE_CONTRACT_PATH = (
     "master-reference/governance/rendered-sink-lineage-capability-contract.json"
 )
 CAPABILITY_SOURCE_PATH = "master-reference/content/capability-catalog.json"
+CORE_SINK_LINEAGE_CONTRACT_PATH = "master-reference/governance/rendered-sink-lineage-core-contract.json"
+CORE_SOURCE_PATH = "master-reference/content/atlas-core.json"
+
+_GENERATED_PDF_OBSERVATION_BINDINGS = (
+    ("horizon_sink_observations", "horizon_sink_verification"),
+    ("capability_sink_observations", "capability_sink_verification"),
+    ("core_sink_observations", "core_sink_verification"),
+)
+
+
+def _validate_generated_pdf_observation_bindings(result: Any) -> None:
+    """Bind each mechanical digest to the exact observation envelope it attests."""
+
+    try:
+        for observations_name, verification_name in _GENERATED_PDF_OBSERVATION_BINDINGS:
+            observations = getattr(result, observations_name)
+            verification = getattr(result, verification_name)
+            digest = verification.observation_digest
+            if type(digest) is not str or digest != sha256_bytes(canonical_json(observations)):
+                raise ReleaseError("generated PDF sink observation digest differs from producer observations")
+    except ReleaseError:
+        raise
+    except Exception:
+        raise ReleaseError("generated PDF sink observation binding could not be evaluated") from None
 
 
 def _semver_compare_to_stable(value: object, stable: tuple[int, int, int]) -> int | None:
@@ -427,6 +456,63 @@ def _capability_sink_lineage_inputs(
     return contract, capability_raw, source_oid, True
 
 
+def _core_sink_lineage_inputs(
+    repo_root: Path,
+    bundle: CompilerBundle,
+    content: Any,
+) -> tuple[dict[str, Any], bytes, str, bool]:
+    """Load the exact contract and Atlas Core blob for sink reconciliation."""
+
+    contract_raw = read_bound_source_blob(repo_root, bundle, CORE_SINK_LINEAGE_CONTRACT_PATH)
+    contract = load_core_sink_lineage_contract(contract_raw)
+    validate_release_object(repo_root, "rendered-sink-lineage-core-contract", contract)
+    core_raw = content.raw_files.get("atlas-core.json")
+    if type(core_raw) is not bytes:
+        raise ReleaseInputError("Core sink lineage retained no exact source blob")
+    facet_records = bundle.records.get("consequential_claim_facets")
+    if not isinstance(facet_records, list):
+        raise ReleaseInputError("Core sink lineage retained no compiler facet subjects")
+    source_oids = {
+        str(row.get("source_blob_oid")) for row in facet_records if row.get("source_path") == CORE_SOURCE_PATH
+    }
+    summary = bundle.completeness.get("consequential_claim_denominator")
+    scope = contract.get("source_scope")
+    if not isinstance(scope, dict):
+        raise ReleaseInputError("Core sink lineage contract has no source scope")
+    if not isinstance(summary, dict):
+        raise ReleaseInputError("Core sink lineage has no claim denominator")
+    if summary.get("state") == "not_declared":
+        if source_oids:
+            raise ReleaseInputError("Core sink lineage has subjects while its denominator is not declared")
+        return contract, core_raw, str(scope.get("git_blob_oid") or ""), False
+    if len(source_oids) != 1:
+        raise ReleaseInputError("Core sink lineage facet source binding is not unique")
+    source_oid = next(iter(source_oids))
+    receipts = summary.get("source_receipts")
+    receipt = (
+        next((row for row in receipts if row.get("path") == CORE_SOURCE_PATH), None)
+        if isinstance(receipts, list)
+        else None
+    )
+    if (
+        not isinstance(receipt, dict)
+        or source_oid != scope.get("git_blob_oid")
+        or receipt.get("git_blob_oid") != source_oid
+        or receipt.get("candidate_count") != scope.get("expected_candidates")
+        or receipt.get("candidate_digest") != scope.get("candidate_digest")
+        or summary.get("expected_candidates") != 2136
+        or summary.get("independently_reviewed_candidates") != 0
+        or summary.get("unresolved_candidates") != 2136
+        or summary.get("contract_digest") != contract["global_denominator"]["claim_contract_digest"]
+        or summary.get("classification_digest") != contract["global_denominator"]["classification_digest"]
+        or summary.get("source_receipts_digest") != contract["global_denominator"]["source_receipts_digest"]
+        or summary.get("candidate_set_digest") != contract["global_denominator"]["candidate_set_digest"]
+        or summary.get("closed") is not False
+    ):
+        raise ReleaseInputError("Core sink lineage differs from the compiler claim denominator")
+    return contract, core_raw, source_oid, True
+
+
 def _compiler_preservation_entries(bundle: CompilerBundle) -> dict[str, bytes]:
     entries: dict[str, bytes] = {"compiler/manifest.json": canonical_json(bundle.manifest)}
     expected: dict[str, dict[str, Any]] = {
@@ -587,6 +673,11 @@ def build_release(
             capability_source_oid,
             capability_lineage_declared,
         ) = _capability_sink_lineage_inputs(repo_root, bundle, content)
+        core_lineage_contract, core_raw, core_source_oid, core_lineage_declared = _core_sink_lineage_inputs(
+            repo_root,
+            bundle,
+            content,
+        )
         dependency_sources = _dependency_sources(repo_root, bundle)
         dependency_receipts = _dependency_receipts(dependency_sources)
         architecture_bytes = _bound_architecture(repo_root, bundle)
@@ -596,25 +687,65 @@ def build_release(
             raise ReleaseInputError("dependency inputs changed during SBOM generation")
         if pdf_path is not None and generate_pdf:
             raise ReleaseInputError("choose either an external PDF or deterministic PDF generation, not both")
+        generated_pdf_provenance: dict[str, Any] | None = None
         if generate_pdf:
-            from .pdf_report import build_master_reference_pdf
+            from . import pdf_report
+
+            architecture, _ = pdf_report._load_architecture(  # noqa: SLF001 - producer owner
+                content,
+                None,
+                architecture_bytes,
+            )
+            expected_input_digest = pdf_report._input_digest(  # noqa: SLF001 - producer owner
+                bundle,
+                content,
+                architecture,
+                None,
+            )
+            expected_reportlab_version = str(pdf_report.REPORTLAB_VERSION)
 
             with tempfile.TemporaryDirectory(prefix="atlas-pdf-") as temporary:
                 generated_path = Path(temporary) / "master-reference.pdf"
-                result = build_master_reference_pdf(
+                result = pdf_report.build_master_reference_pdf(
                     bundle,
                     content,
                     generated_path,
                     architecture_bytes=architecture_bytes,
                 )
                 pdf_value = generated_path.read_bytes()
+                _validate_generated_pdf_observation_bindings(result)
                 if (
                     len(pdf_value) != result.bytes
                     or sha256_bytes(pdf_value) != result.sha256
                     or result.sha256 != result.horizon_sink_verification.pdf_sha256
                     or result.sha256 != result.capability_sink_verification.pdf_sha256
+                    or result.sha256 != result.core_sink_verification.pdf_sha256
                 ):
                     raise ReleaseError("generated PDF changed after mechanical verification")
+                inspection = pdf_report.inspect_pdf_report(
+                    generated_path,
+                    expected_commit=bundle.source_commit,
+                    expected_tree_digest=bundle.source_tree_digest,
+                )
+                inspected_sha256 = inspection.sha256
+                inspected_bytes = inspection.bytes
+                inspected_page_count = inspection.page_count
+                if (
+                    generated_path.read_bytes() != pdf_value
+                    or inspected_sha256 != result.sha256
+                    or inspected_bytes != result.bytes
+                    or inspected_page_count != result.page_count
+                    or result.input_digest != expected_input_digest
+                    or result.reportlab_version != expected_reportlab_version
+                ):
+                    raise ReleaseError("generated PDF provenance differs from verified producer owners")
+                generated_pdf_provenance = {
+                    "sha256": sha256_bytes(pdf_value),
+                    "bytes": len(pdf_value),
+                    "page_count": inspected_page_count,
+                    "input_digest": expected_input_digest,
+                    "renderer": f"ReportLab {expected_reportlab_version}",
+                }
             lineage = (
                 evaluate_rendered_sink_lineage(
                     contract=lineage_contract,
@@ -651,6 +782,25 @@ def build_release(
                     reason_code="capability_sink_lineage_compiler_subjects_not_declared",
                 )
             )
+            core_lineage = (
+                evaluate_core_sink_lineage(
+                    contract=core_lineage_contract,
+                    claim_facet_records=bundle.records["consequential_claim_facets"],
+                    core=content.core,
+                    source_raw=core_raw,
+                    source_blob_oid=core_source_oid,
+                    sink_observations={
+                        "pdf.product-purpose-and-outcomes": result.core_sink_observations,
+                    },
+                )
+                if core_lineage_declared
+                else unavailable_core_sink_lineage(
+                    contract=core_lineage_contract,
+                    source_raw=core_raw,
+                    source_blob_oid=core_source_oid,
+                    reason_code="core_sink_lineage_compiler_subjects_not_declared",
+                )
+            )
             pdf_status = "generated_visual_review_pending"
             pdf_gate = {
                 "schema_version": "1.0.0",
@@ -658,11 +808,11 @@ def build_release(
                 "included": True,
                 "required_for_verified_release": True,
                 "binary_privacy_coverage": "source_bound_inputs_scanned_pdf_container_not_content_scanned",
-                "sha256": result.sha256,
-                "bytes": result.bytes,
-                "page_count": result.page_count,
-                "input_digest": result.input_digest,
-                "renderer": f"ReportLab {result.reportlab_version}",
+                "sha256": generated_pdf_provenance["sha256"],
+                "bytes": generated_pdf_provenance["bytes"],
+                "page_count": generated_pdf_provenance["page_count"],
+                "input_digest": generated_pdf_provenance["input_digest"],
+                "renderer": generated_pdf_provenance["renderer"],
                 "independent_verification_verdict": result.independent_verification_verdict,
                 "horizon_sink_mechanical_verification": {
                     "verdict": result.horizon_sink_verification.verdict,
@@ -682,6 +832,15 @@ def build_release(
                     "safety_observation_count": result.capability_sink_verification.safety_observation_count,
                 },
                 "capability_sink_lineage": capability_lineage,
+                "core_sink_mechanical_verification": {
+                    "verdict": result.core_sink_verification.verdict,
+                    "observation_digest": result.core_sink_verification.observation_digest,
+                    "verification_digest": result.core_sink_verification.verification_digest,
+                    "pdf_sha256": result.core_sink_verification.pdf_sha256,
+                    "rendered_observation_count": result.core_sink_verification.rendered_observation_count,
+                    "safety_observation_count": result.core_sink_verification.safety_observation_count,
+                },
+                "core_sink_lineage": core_lineage,
                 "claim": "The deterministic renderer produced and structurally inspected this source-bound PDF; independent page review remains required.",
                 "next_gate": "Render every page with Poppler and record independent overflow, accessibility, and content-reconciliation evidence.",
             }
@@ -719,7 +878,28 @@ def build_release(
                     source_blob_oid=capability_source_oid,
                     reason_code="capability_sink_lineage_compiler_subjects_not_declared",
                 )
-        validate_release_object(repo_root, "pdf-gate", pdf_gate)
+            if core_lineage_declared:
+                pdf_gate["core_sink_lineage"] = evaluate_core_sink_lineage(
+                    contract=core_lineage_contract,
+                    claim_facet_records=bundle.records["consequential_claim_facets"],
+                    core=content.core,
+                    source_raw=core_raw,
+                    source_blob_oid=core_source_oid,
+                    sink_observations={},
+                )
+            else:
+                pdf_gate["core_sink_lineage"] = unavailable_core_sink_lineage(
+                    contract=core_lineage_contract,
+                    source_raw=core_raw,
+                    source_blob_oid=core_source_oid,
+                    reason_code="core_sink_lineage_compiler_subjects_not_declared",
+                )
+        validate_release_object(
+            repo_root,
+            "pdf-gate",
+            pdf_gate,
+            pdf_provenance=generated_pdf_provenance,
+        )
         expected_output_members = _validate_output_contract(content, pdf_included=pdf_value is not None)
         graph = bundle.completeness.get("graphify", {})
         graph_gate = (

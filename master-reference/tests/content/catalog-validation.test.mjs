@@ -19,6 +19,12 @@ import {
   buildCapabilityCatalogViewModel,
   isCapabilityLineageActive,
 } from "../../app/atlas/capabilityLineage.ts";
+import {
+  buildCoreOutcomeSinkObservations,
+  buildCoreOutcomeViewModel,
+  coreOutcomeSlotId,
+  requireCoreOutcome,
+} from "../../app/atlas/coreOutcomeLineage.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -42,6 +48,9 @@ const capabilityReferences = {
   gap_ids: governance.gaps.map((gap) => gap.id),
   traffic_plane_ids: core.traffic_model.planes.map((plane) => plane.id),
 };
+const coreReferences = {
+  gap_ids: governance.gaps.map((gap) => gap.id),
+};
 const sinkLineageContract = JSON.parse(
   await readFile(
     new URL("../../governance/rendered-sink-lineage-contract.json", import.meta.url),
@@ -52,6 +61,15 @@ const capabilitySinkLineageContract = JSON.parse(
   await readFile(
     new URL(
       "../../governance/rendered-sink-lineage-capability-contract.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+);
+const coreSinkLineageContract = JSON.parse(
+  await readFile(
+    new URL(
+      "../../governance/rendered-sink-lineage-core-contract.json",
       import.meta.url,
     ),
     "utf8",
@@ -569,6 +587,327 @@ test("validates the exact capability shape and exposes the default /capabilities
     sentinel,
     "a source field was observed through the wrong candidate facet",
   );
+});
+
+test("validates all Atlas Core records and exposes only the nine outcome success signals", () => {
+  const view = buildCoreOutcomeViewModel(core, coreReferences);
+  const envelope = buildCoreOutcomeSinkObservations(core, coreReferences);
+  const webSink = coreSinkLineageContract.sinks.find(
+    (sink) => sink.sink_id === "web.product.core-outcomes",
+  );
+
+  assert.ok(webSink);
+  assert.equal(webSink.locator, "/product#core-outcome-contracts");
+  assert.equal(view.semantic_record_count, 135);
+  assert.equal(view.semantic_record_count, coreSinkLineageContract.source_scope.expected_records);
+  assert.equal(coreSinkLineageContract.source_scope.expected_candidates, 155);
+  assert.equal(coreSinkLineageContract.source_scope.expected_safety_inputs, 0);
+  assert.equal(view.core.outcomes.length, 9);
+  assert.equal(view.rendered_observations.length, webSink.expected_rendered);
+  assert.equal(webSink.expected_rendered, 9);
+  assert.equal(webSink.expected_omitted, 146);
+  assert.deepEqual(view.rendered_observations, envelope.rendered_observations);
+  assert.deepEqual(view.safety_observations, []);
+  assert.deepEqual(envelope.safety_observations, []);
+  assert.equal(
+    new Set(view.rendered_observations.map((row) => row.slot_id)).size,
+    view.rendered_observations.length,
+  );
+
+  const renderedField = webSink.rendered_rules
+    .find((rule) => rule.rule_id === "core.outcome")
+    .fields.find((field) => field.facet_path === "success_signal");
+  assert.ok(renderedField);
+  const renderedKeys = [
+    "disposition",
+    "facet_path",
+    "observed_value",
+    "record_identity",
+    "rule_id",
+    "slot_id",
+    "transform_id",
+  ];
+  for (const [index, row] of view.rendered_observations.entries()) {
+    const outcome = view.core.outcomes[index];
+    assert.deepEqual(Object.keys(row).sort(), renderedKeys);
+    assert.equal(row.rule_id, "core.outcome");
+    assert.equal(row.record_identity, outcome.id);
+    assert.equal(row.facet_path, "success_signal");
+    assert.equal(row.disposition, renderedField.disposition);
+    assert.equal(row.transform_id, renderedField.transform_id);
+    assert.equal(row.observed_value, outcome.success_signal);
+    assert.equal(
+      row.slot_id,
+      `web.product.core.outcome.${outcome.id}.success_signal`,
+    );
+  }
+
+  const businessValue = requireCoreOutcome(view.core, "outcome.business-value");
+  assert.equal(businessValue.success_signal, core.outcomes.at(-1).success_signal);
+  assert.throws(
+    () => requireCoreOutcome(view.core, "outcome.absent"),
+    (error) =>
+      error instanceof TypeError && error.message === "Invalid Atlas Core contract.",
+  );
+
+  const sentinel = "SOURCE-DERIVED-CORE-OUTCOME-SENTINEL-7d31";
+  const changed = structuredClone(core);
+  changed.outcomes[0].success_signal = sentinel;
+  const changedView = buildCoreOutcomeViewModel(changed, coreReferences);
+  assert.equal(changedView.rendered_observations[0].observed_value, sentinel);
+  assert.equal(
+    changedView.rendered_observations.slice(1).some((row) => row.observed_value === sentinel),
+    false,
+    "a source outcome was observed through more than its own candidate facet",
+  );
+});
+
+test("fails closed on malformed, ungrounded, hostile, or non-portable Atlas Core input", () => {
+  const exactContainerMutations = [
+    (draft) => { draft.controlled_states[0].unexpected = true; },
+    (draft) => { draft.owners[0].unexpected = true; },
+    (draft) => { draft.current_baseline[0].unexpected = true; },
+    (draft) => { draft.outcomes[0].unexpected = true; },
+    (draft) => { draft.maturity_model[0].unexpected = true; },
+    (draft) => { draft.current_maturity[0].unexpected = true; },
+    (draft) => { draft.non_goals[0].unexpected = true; },
+    (draft) => { draft.lifecycle_stages[0].unexpected = true; },
+    (draft) => { draft.digital_thread.unexpected = true; },
+    (draft) => { draft.digital_thread.stages[0].unexpected = true; },
+    (draft) => { draft.system_architecture.unexpected = true; },
+    (draft) => { draft.system_architecture.planes[0].unexpected = true; },
+    (draft) => { draft.system_architecture.flow[0].unexpected = true; },
+    (draft) => { draft.traffic_model.unexpected = true; },
+    (draft) => { draft.traffic_model.planes[0].unexpected = true; },
+    (draft) => { draft.domain_registry[0].unexpected = true; },
+  ];
+  const denominatorMutations = [
+    "controlled_states",
+    "owners",
+    "current_baseline",
+    "outcomes",
+    "maturity_model",
+    "current_maturity",
+    "non_goals",
+    "lifecycle_stages",
+    "domain_registry",
+  ].map((field) => (draft) => { draft[field].pop(); });
+  const hostileCases = [
+    (draft) => { delete draft.scope; },
+    (draft) => { draft.unexpected = "extra-root-field"; },
+    (draft) => { draft.schema_version = "evil"; },
+    (draft) => { draft.catalog_version = "not-a-date"; },
+    (draft) => { draft.catalog_version = "2026.02.30"; },
+    (draft) => { draft.as_of = "tomorrow"; },
+    (draft) => { draft.as_of = "2026-02-30"; },
+    (draft) => { draft.id = "atlas.core.unrelated"; },
+    (draft) => { draft.catalog_version = "2026.08.08"; },
+    (draft) => { draft.as_of = "2026-08-08"; },
+    (draft) => { draft.truth_contract.unexpected = true; },
+    ...exactContainerMutations,
+    ...denominatorMutations,
+    (draft) => { draft.digital_thread.stages.pop(); },
+    (draft) => { draft.system_architecture.planes.pop(); },
+    (draft) => { draft.system_architecture.flow.pop(); },
+    (draft) => { draft.traffic_model.planes.pop(); },
+    (draft) => { draft.outcomes.push(structuredClone(draft.outcomes[0])); },
+    (draft) => { draft.outcomes[0].id = 'EvilKey" data-core-outcome-slot="laundered'; },
+    (draft) => { draft.outcomes[0].id = "outcome.unsafe space"; },
+    (draft) => { draft.outcomes[0].id = "owner.wrong-family"; },
+    (draft) => { draft.owners[1].id = draft.owners[0].id; },
+    (draft) => { draft.domain_registry[1].id = draft.domain_registry[0].id; },
+    (draft) => { draft.controlled_states[0].value = "supported"; },
+    (draft) => { draft.maturity_model[0].level = 1; },
+    (draft) => { draft.current_maturity[0].owner_refs = ["owner.does-not-exist"]; },
+    (draft) => { draft.current_maturity[1].gap_refs = ["gap.does-not-exist"]; },
+    (draft) => { draft.current_baseline[0].owner_refs = ["owner.does-not-exist"]; },
+    (draft) => { draft.non_goals[0].owner_refs = ["owner.does-not-exist"]; },
+    (draft) => { draft.digital_thread.stages[0].owner_refs = ["owner.does-not-exist"]; },
+    (draft) => { draft.system_architecture.planes[0].owner_refs = ["owner.does-not-exist"]; },
+    (draft) => { draft.system_architecture.flow[0].from = "plane.does-not-exist"; },
+    (draft) => { draft.traffic_model.planes[0].owner_refs = ["owner.does-not-exist"]; },
+    (draft) => { draft.traffic_model.planes[0].gap_refs = ["gap.does-not-exist"]; },
+    (draft) => { draft.outcomes[0].success_signal = "unsafe\ud800unicode"; },
+    (draft) => { draft.outcomes[0].success_signal = "unsafe\u0007unicode"; },
+    (draft) => { draft.outcomes[0].success_signal = "unsafe\ufffeunicode"; },
+    (draft) => { draft.outcomes[0].success_signal = "unsafe\u061cunicode"; },
+    (draft) => { draft.outcomes[0].success_signal = "unsafe\u200eunicode"; },
+    (draft) => { draft.outcomes[0].success_signal = "unsafe\u200funicode"; },
+    (draft) => { draft.outcomes[0].success_signal = "unsafe\u202eunicode"; },
+    (draft) => { draft.outcomes[0].success_signal = "unsafe\u2066unicode"; },
+    (draft) => { draft.outcomes[0].success_signal = "\u200b"; },
+    (draft) => { draft.outcomes[0].success_signal = "\u200c"; },
+    (draft) => { draft.outcomes[0].success_signal = "\u200d"; },
+    (draft) => { draft.outcomes[0].success_signal = "\u2060"; },
+    (draft) => { draft.outcomes[0].success_signal = "\ufeff"; },
+    (draft) => { draft.outcomes[0].success_signal = "\ufe0e"; },
+    (draft) => { draft.outcomes[0].success_signal = "\ufe0f"; },
+    (draft) => { draft.outcomes[0].success_signal = "\u{e0100}"; },
+    (draft) => { draft.outcomes[0].success_signal = "\u0301"; },
+    (draft) => { draft.outcomes[0].success_signal = "\u0301\u0327"; },
+    (draft) => { draft.outcomes[0].success_signal = " \u0301 "; },
+    (draft) => { draft.outcomes[0].success_signal = "\u00ad"; },
+    (draft) => { draft.outcomes[0].success_signal = "\u034f"; },
+    (draft) => { draft.outcomes[0].success_signal = "\u115f"; },
+    (draft) => { draft.outcomes[0].success_signal = "\u17b4"; },
+    (draft) => { draft.outcomes[0].success_signal = "\u180e"; },
+    (draft) => { draft.outcomes[0].success_signal = "\u3164"; },
+    (draft) => { draft.outcomes[0].success_signal = "\uffa0"; },
+    (draft) => { draft.outcomes[0].success_signal = "\ufff0"; },
+    (draft) => { draft.outcomes[0].success_signal = "\u{1bca0}"; },
+    (draft) => { draft.outcomes[0].success_signal = "\u{1d173}"; },
+    (draft) => { draft.outcomes[0].success_signal = "\u{e0001}"; },
+    (draft) => { draft.outcomes[0].success_signal = "\u0890"; },
+    (draft) => { draft.outcomes[0].success_signal = "\u0891"; },
+    (draft) => { draft.outcomes[0].success_signal = "\ufff9"; },
+    (draft) => { draft.outcomes[0].success_signal = "\ufffa"; },
+    (draft) => { draft.outcomes[0].success_signal = "\ufffb"; },
+    (draft) => { draft.outcomes[0].success_signal = "\u{13430}"; },
+    (draft) => { draft.outcomes[0].success_signal = "\u{13438}"; },
+    (draft) => { draft.outcomes[0].success_signal = "\u2800"; },
+    (draft) => { draft.current_baseline[1].value["\u0301"] = "hidden"; },
+    (draft) => { draft.current_baseline[1].value.classes = Number.MAX_SAFE_INTEGER + 1; },
+    (draft) => { draft.current_baseline[0].owner_refs = Array(65).fill("owner.ssot.registry"); },
+  ];
+  for (const mutate of hostileCases) {
+    const draft = structuredClone(core);
+    mutate(draft);
+    assert.throws(
+      () => buildCoreOutcomeViewModel(draft, coreReferences),
+      (error) =>
+        error instanceof TypeError && error.message === "Invalid Atlas Core contract.",
+    );
+  }
+
+  for (const visible of ["é", "e\u0301", "—", "مرحبا", "日本語", "\u2801"]) {
+    const draft = structuredClone(core);
+    draft.outcomes[0].success_signal = visible;
+    assert.equal(
+      buildCoreOutcomeViewModel(draft, coreReferences).rendered_observations[0]
+        .observed_value,
+      visible,
+    );
+  }
+
+  const canary = "HOSTILE-CORE-CANARY-MUST-NOT-ECHO";
+  for (const hostileId of [
+    'outcome.evil" data-core-outcome-slot="laundered',
+    "outcome.unsafe space",
+    "owner.wrong-family",
+  ]) {
+    assert.throws(
+      () => coreOutcomeSlotId(hostileId),
+      (error) =>
+        error instanceof TypeError && error.message === "Invalid Atlas Core contract.",
+    );
+  }
+  const wrongReference = structuredClone(core);
+  wrongReference.current_baseline[0].owner_refs = [canary];
+  assert.throws(
+    () => buildCoreOutcomeViewModel(wrongReference, coreReferences),
+    (error) => {
+      assert.equal(error.message, "Invalid Atlas Core contract.");
+      assert.doesNotMatch(error.message, new RegExp(canary));
+      return true;
+    },
+  );
+
+  const customRoot = Object.assign(Object.create({ inherited: true }), structuredClone(core));
+  const accessorRoot = Object.defineProperty(structuredClone(core), "scope", {
+    enumerable: true,
+    configurable: true,
+    get() { throw new Error(canary); },
+  });
+  const symbolRoot = Object.assign(structuredClone(core), { [Symbol("hidden")]: canary });
+  const hiddenRoot = structuredClone(core);
+  Object.defineProperty(hiddenRoot, "hidden", { value: canary });
+  const fixedRoot = structuredClone(core);
+  Object.defineProperty(fixedRoot, "scope", {
+    value: fixedRoot.scope,
+    enumerable: true,
+    configurable: true,
+    writable: false,
+  });
+  const customOutcomes = structuredClone(core);
+  customOutcomes.outcomes = Object.assign(Object.create(Array.prototype), customOutcomes.outcomes);
+  const sparseOutcomes = structuredClone(core);
+  sparseOutcomes.outcomes = Array(9);
+  const decoratedOutcomes = structuredClone(core);
+  decoratedOutcomes.outcomes.hidden = canary;
+  const accessorOutcomes = structuredClone(core);
+  Object.defineProperty(accessorOutcomes.outcomes, "0", {
+    enumerable: true,
+    configurable: true,
+    get() { throw new Error(canary); },
+  });
+  const symbolOutcomes = structuredClone(core);
+  symbolOutcomes.outcomes[Symbol("hidden")] = canary;
+  const customBaselineValue = structuredClone(core);
+  customBaselineValue.current_baseline[1].value = Object.assign(
+    Object.create({ inherited: true }),
+    customBaselineValue.current_baseline[1].value,
+  );
+  const hostileReferences = structuredClone(coreReferences);
+  hostileReferences.gap_ids[Symbol("hidden")] = canary;
+  const customReferences = Object.assign(
+    Object.create({ inherited: true }),
+    structuredClone(coreReferences),
+  );
+  const accessorReferences = Object.defineProperty(
+    structuredClone(coreReferences),
+    "gap_ids",
+    {
+      enumerable: true,
+      configurable: true,
+      get() { throw new Error(canary); },
+    },
+  );
+  const symbolReferences = Object.assign(structuredClone(coreReferences), {
+    [Symbol("hidden")]: canary,
+  });
+  const sparseReferences = structuredClone(coreReferences);
+  sparseReferences.gap_ids = Array(coreReferences.gap_ids.length);
+  const unsafeReferences = structuredClone(coreReferences);
+  unsafeReferences.gap_ids[0] = "gap.unsafe\ud800unicode";
+  const proxyTrap = new Proxy(structuredClone(core), {
+    getPrototypeOf() {
+      const hostileError = Object.create(TypeError.prototype);
+      Object.defineProperty(hostileError, "message", {
+        get() { throw new Error(canary); },
+      });
+      throw hostileError;
+    },
+  });
+
+  for (const [hostile, references = coreReferences] of [
+    [customRoot],
+    [accessorRoot],
+    [symbolRoot],
+    [hiddenRoot],
+    [fixedRoot],
+    [customOutcomes],
+    [sparseOutcomes],
+    [decoratedOutcomes],
+    [accessorOutcomes],
+    [symbolOutcomes],
+    [customBaselineValue],
+    [proxyTrap],
+    [structuredClone(core), hostileReferences],
+    [structuredClone(core), customReferences],
+    [structuredClone(core), accessorReferences],
+    [structuredClone(core), symbolReferences],
+    [structuredClone(core), sparseReferences],
+    [structuredClone(core), unsafeReferences],
+  ]) {
+    assert.throws(
+      () => buildCoreOutcomeViewModel(hostile, references),
+      (error) => {
+        assert.equal(error.message, "Invalid Atlas Core contract.");
+        assert.doesNotMatch(error.message, new RegExp(canary));
+        return true;
+      },
+    );
+  }
 });
 
 test("limits capability lineage to the pristine exact unfiltered runtime state", () => {

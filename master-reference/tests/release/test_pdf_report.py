@@ -18,6 +18,7 @@ MASTER_REFERENCE = Path(__file__).resolve().parents[2]
 if str(MASTER_REFERENCE) not in sys.path:
     sys.path.insert(0, str(MASTER_REFERENCE))
 
+import release.pdf_report as pdf_report  # noqa: E402
 from release.compiler_bundle import CompilerBundle  # noqa: E402
 from release.content_bundle import ContentBundle, load_content_bundle  # noqa: E402
 from release.model import canonical_json  # noqa: E402
@@ -26,9 +27,11 @@ from release.pdf_report import (  # noqa: E402
     build_master_reference_pdf,
     inspect_pdf_report,
     pdf_capability_sink_observations,
+    pdf_core_sink_observations,
     pdf_horizon_sink_observations,
     render_pdf_for_visual_qa,
     verify_pdf_capability_sink_observations,
+    verify_pdf_core_sink_observations,
     verify_pdf_horizon_sink_observations,
 )
 
@@ -62,6 +65,28 @@ CAPABILITY_GAP_IDS = (
     *(f"gap.fixture.{index:03d}" for index in range(39)),
 )
 CAPABILITY_TRAFFIC_IDS = tuple(f"traffic.fixture.{index}" for index in range(8))
+CORE_OUTCOME_IDS = (
+    "outcome.explainable-truth",
+    "outcome.coverage-honesty",
+    "outcome.safe-change",
+    "outcome.one-delivery-set",
+    "outcome.portable-field-use",
+    "outcome.targetable-roadmap",
+    "outcome.white-label",
+    "outcome.learning-with-boundaries",
+    "outcome.business-value",
+)
+
+
+def _core_outcome_fixture() -> list[dict[str, str]]:
+    return [
+        {
+            "id": identifier,
+            "title": f"Fixture outcome {index:02d}",
+            "success_signal": f"Fixture success signal {index:02d} remains source-derived.",
+        }
+        for index, identifier in enumerate(CORE_OUTCOME_IDS, start=1)
+    ]
 
 
 def _bundle(tmp_path: Path) -> CompilerBundle:
@@ -295,21 +320,15 @@ def _content(tmp_path: Path) -> ContentBundle:
     ]
     core = {
         "schema_version": "1.0.0",
-        "id": "atlas.core.fixture",
+        "id": "atlas.core.2026-08-07",
+        "catalog_version": "2026.08.07",
         "as_of": "2026-08-07",
         "scope": "Repository-owned, client-free Atlas reference fixture.",
         "truth_contract": {
             "support_rule": "Catalog presence is not implementation support.",
             "client_data_rule": "No client or device evidence enters this layer.",
         },
-        "outcomes": [
-            {
-                "id": "outcome.evidence",
-                "title": "Evidence to decision",
-                "success_signal": "Every decision can reach owned evidence.",
-                "limitations": "Synthetic proof is not field validation.",
-            }
-        ],
+        "outcomes": _core_outcome_fixture(),
         "non_goals": [{"id": "non-goal.write", "statement": "No device writes."}],
         "domain_registry": [{"id": domain_id} for domain_id in CAPABILITY_DOMAIN_IDS],
         "owners": [{"id": owner_id} for owner_id in CAPABILITY_OWNER_IDS],
@@ -529,6 +548,14 @@ def test_pdf_is_deterministic_source_bound_polished_and_never_embeds_source(tmp_
     assert result_a.sha256 == hashlib.sha256(first.read_bytes()).hexdigest()
     assert result_a.sha256 == result_b.sha256
     assert result_a.independent_verification_verdict == "BLOCK"
+    assert result_a.core_sink_verification.verdict == "PASS"
+    assert result_a.core_sink_verification.pdf_sha256 == result_a.sha256
+    assert result_a.core_sink_verification.rendered_observation_count == 9
+    assert result_a.core_sink_verification.safety_observation_count == 0
+    assert (
+        result_a.core_sink_verification.observation_digest
+        == hashlib.sha256(canonical_json(result_a.core_sink_observations)).hexdigest()
+    )
     assert result_a.capability_sink_verification.verdict == "PASS"
     assert result_a.capability_sink_verification.pdf_sha256 == result_a.sha256
     assert result_a.capability_sink_verification.rendered_observation_count == 422
@@ -577,6 +604,12 @@ def test_pdf_is_deterministic_source_bound_polished_and_never_embeds_source(tmp_
     ]
     assert all(normalized.count(fragment) == 1 for fragment in capability_safety_fragments)
     assert normalized.count(content.capabilities["denominator_rule"]) == 1
+    core_start = normalized.index("Outcome lineage boundary")
+    core_end = normalized.index("4. Closed Capability", core_start)
+    core_section = normalized[core_start:core_end]
+    assert core_section.count("Success signal:") == 9
+    assert all(f"{item['id']} - {item['title']}" in core_section for item in content.core["outcomes"])
+    assert all(label not in core_section for label in ("Promise:", "Owner:", "Scope:", "Limitations:"))
 
     inspected = inspect_pdf_report(first, expected_commit=COMMIT, expected_tree_digest=TREE)
     assert inspected.page_count == result_a.page_count
@@ -671,6 +704,469 @@ def test_pdf_horizon_sink_observations_are_deterministic_and_all_rendered(tmp_pa
         assert all(str(value) in extracted for value in values), row["slot_id"]
     for identity in ("root", "watch: watch.official", "signal: signal.one", "signal: horizon.unknown"):
         assert identity in extracted
+
+
+def test_pdf_core_sink_observations_are_exact_deterministic_and_source_ordered(tmp_path: Path) -> None:
+    content = _content(tmp_path)
+    first = pdf_core_sink_observations(content)
+    second = pdf_core_sink_observations(copy.deepcopy(content))
+
+    assert first == second
+    assert set(first) == {"rendered_observations", "safety_observations"}
+    assert first["safety_observations"] == ()
+    assert len(first["rendered_observations"]) == 9
+    assert [row["record_identity"] for row in first["rendered_observations"]] == list(CORE_OUTCOME_IDS)
+    assert all(
+        set(row)
+        == {
+            "rule_id",
+            "record_identity",
+            "facet_path",
+            "disposition",
+            "slot_id",
+            "transform_id",
+            "observed_value",
+        }
+        for row in first["rendered_observations"]
+    )
+    assert first["rendered_observations"][0] == {
+        "rule_id": "core.outcome",
+        "record_identity": "outcome.explainable-truth",
+        "facet_path": "success_signal",
+        "disposition": "rendered_labeled",
+        "slot_id": (
+            "pdf.product-purpose-and-outcomes.core.outcome."
+            "outcome.explainable-truth.success_signal"
+        ),
+        "transform_id": "pdf.core_outcome_success_signal_plain_text/1",
+        "observed_value": "Fixture success signal 01 remains source-derived.",
+    }
+
+
+def test_pdf_core_live_owner_emits_exact_nine_success_signal_slots(tmp_path: Path) -> None:
+    content = load_content_bundle(MASTER_REFERENCE / "content")
+    observations = pdf_core_sink_observations(content)
+    live_outcomes = content.core["outcomes"]
+
+    assert len(live_outcomes) == 9
+    assert [row["record_identity"] for row in observations["rendered_observations"]] == [
+        item["id"] for item in live_outcomes
+    ]
+    assert [row["observed_value"] for row in observations["rendered_observations"]] == [
+        " ".join(item["success_signal"].split()) for item in live_outcomes
+    ]
+    pdf = tmp_path / "atlas-live-core.pdf"
+    result = build_master_reference_pdf(
+        _bundle(tmp_path),
+        content,
+        pdf,
+        architecture_path=MASTER_REFERENCE / "governance" / "architecture.json",
+    )
+    assert result.core_sink_verification.verdict == "PASS"
+    assert result.core_sink_verification.rendered_observation_count == 9
+    assert result.core_sink_verification.safety_observation_count == 0
+
+
+@pytest.mark.parametrize("stale_alias", ["promise", "owner", "scope", "limitations"])
+def test_pdf_core_outcomes_reject_stale_alias_fields(tmp_path: Path, stale_alias: str) -> None:
+    content = _content(tmp_path)
+    core = copy.deepcopy(content.core)
+    core["outcomes"][0][stale_alias] = "A stale renderer alias must not be admitted."
+
+    with pytest.raises(ValueError, match="outcome record shape mismatch"):
+        pdf_core_sink_observations(replace(content, core=core))
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("schema_version", "evil", "schema_version must be 1.0.0"),
+        ("catalog_version", "not-a-date", "catalog_version must be a calendar date"),
+        ("catalog_version", "2026.02.30", "catalog_version must be a calendar date"),
+        ("catalog_version", "2026.08.08", "does not identify the live Atlas Core contract"),
+        ("as_of", "tomorrow", "as_of must be a calendar date"),
+        ("as_of", "2026-02-30", "as_of must be a calendar date"),
+        ("as_of", "2026-08-08", "does not identify the live Atlas Core contract"),
+        ("id", "atlas.core.unrelated", "does not identify the live Atlas Core contract"),
+    ],
+)
+def test_pdf_core_root_metadata_is_exact_and_live_bound(
+    tmp_path: Path,
+    field: str,
+    value: str,
+    message: str,
+) -> None:
+    content = _content(tmp_path)
+    core = copy.deepcopy(content.core)
+    core[field] = value
+
+    with pytest.raises(ValueError, match=message):
+        pdf_core_sink_observations(replace(content, core=core))
+
+
+@pytest.mark.parametrize("mutation", ["missing", "extra", "duplicate", "wrong_collection_type"])
+def test_pdf_core_outcome_registry_fails_closed_on_cardinality_identity_and_type(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    content = _content(tmp_path)
+    core = copy.deepcopy(content.core)
+    if mutation == "missing":
+        core["outcomes"].pop()
+        message = "exactly 9 exact objects"
+    elif mutation == "extra":
+        extra = copy.deepcopy(core["outcomes"][-1])
+        extra["id"] = "outcome.extra"
+        core["outcomes"].append(extra)
+        message = "exactly 9 exact objects"
+    elif mutation == "duplicate":
+        core["outcomes"][1]["id"] = core["outcomes"][0]["id"]
+        message = "outcome ids must be unique"
+    else:
+        core["outcomes"] = tuple(core["outcomes"])
+        message = "exactly 9 exact objects"
+
+    with pytest.raises(ValueError, match=message):
+        pdf_core_sink_observations(replace(content, core=core))
+
+
+@pytest.mark.parametrize("mutation", ["order", "value"])
+def test_production_core_sink_verifier_rejects_stale_source_order_or_value(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    content = _content(tmp_path)
+    pdf = tmp_path / "atlas-core-stale.pdf"
+    result = build_master_reference_pdf(
+        _bundle(tmp_path),
+        content,
+        pdf,
+        architecture_path=_architecture(tmp_path),
+    )
+    assert result.core_sink_verification.verdict == "PASS"
+
+    core = copy.deepcopy(content.core)
+    if mutation == "order":
+        core["outcomes"][0], core["outcomes"][1] = core["outcomes"][1], core["outcomes"][0]
+    else:
+        core["outcomes"][0]["success_signal"] = "A changed source value is absent from the PDF."
+    with pytest.raises(ValueError, match="core sink verification failed"):
+        verify_pdf_core_sink_observations(pdf, replace(content, core=core))
+
+
+@pytest.mark.parametrize(
+    "erased_value",
+    ["Evidence \U0001f4a3 trace", "Caf\u00e9 outcome", "Ambiguous \u2014 outcome", "\ud800"],
+)
+def test_pdf_core_rejects_unicode_that_the_plain_text_transform_would_erase(
+    tmp_path: Path,
+    erased_value: str,
+) -> None:
+    content = _content(tmp_path)
+    core = copy.deepcopy(content.core)
+    core["outcomes"][0]["success_signal"] = erased_value
+
+    with pytest.raises(ValueError, match="lossless portable success_signal"):
+        pdf_core_sink_observations(replace(content, core=core))
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["evil_key", "evil_value", "core_subclass", "outcome_subclass", "list_subclass", "wrong_bundle_type"],
+)
+def test_pdf_core_public_boundaries_reject_hostile_types_without_echo(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    canary = "HOSTILE-CORE-CANARY-MUST-NOT-ECHO"
+
+    class EvilText(str):
+        def __eq__(self, other):
+            raise RuntimeError(canary)
+
+        def __hash__(self):
+            raise RuntimeError(canary)
+
+        def __str__(self):
+            raise RuntimeError(canary)
+
+        def strip(self, chars=None):
+            raise RuntimeError(canary)
+
+    class EvilKey(str):
+        armed = False
+
+        def __eq__(self, other):
+            if type(self).armed:
+                raise RuntimeError(canary)
+            return str.__eq__(self, other)
+
+        def __hash__(self):
+            if type(self).armed:
+                raise RuntimeError(canary)
+            return str.__hash__(self)
+
+    class EvilDict(dict):
+        def __iter__(self):
+            raise RuntimeError(canary)
+
+    class EvilList(list):
+        def __iter__(self):
+            raise RuntimeError(canary)
+
+    content = _content(tmp_path)
+    core = copy.deepcopy(content.core)
+    hostile: object
+    if mutation == "evil_key":
+        title = core["outcomes"][0].pop("title")
+        key = EvilKey("title")
+        core["outcomes"][0][key] = title
+        EvilKey.armed = True
+        hostile = replace(content, core=core)
+    elif mutation == "evil_value":
+        core["outcomes"][0]["success_signal"] = EvilText("Unsafe value")
+        hostile = replace(content, core=core)
+    elif mutation == "core_subclass":
+        hostile = replace(content, core=EvilDict(core))
+    elif mutation == "outcome_subclass":
+        core["outcomes"][0] = EvilDict(core["outcomes"][0])
+        hostile = replace(content, core=core)
+    elif mutation == "list_subclass":
+        core["outcomes"] = EvilList(core["outcomes"])
+        hostile = replace(content, core=core)
+    else:
+        hostile = {"core": core}
+
+    try:
+        with pytest.raises(ValueError) as caught:
+            pdf_core_sink_observations(hostile)  # type: ignore[arg-type]
+        assert canary not in str(caught.value)
+    finally:
+        EvilKey.armed = False
+
+
+def test_pdf_core_unexpected_validation_errors_use_fixed_no_echo_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = _content(tmp_path)
+    canary = "UNEXPECTED-CORE-CANARY-MUST-NOT-ECHO"
+
+    def explode(_content):
+        raise RuntimeError(canary)
+
+    monkeypatch.setattr("release.pdf_report._validated_outcomes_impl", explode)
+    with pytest.raises(ValueError) as caught:
+        pdf_core_sink_observations(content)
+    assert str(caught.value) == "PDF core outcome source validation failed"
+    assert canary not in str(caught.value)
+
+
+@pytest.mark.parametrize("mutation", ["extra_key", "list_rows", "nonempty_safety", "evil_key", "evil_value"])
+def test_pdf_core_verifier_rejects_hostile_observation_envelopes_without_echo(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    canary = "HOSTILE-CORE-OBSERVATION-CANARY-MUST-NOT-ECHO"
+
+    class EvilText(str):
+        def __str__(self):
+            raise RuntimeError(canary)
+
+    class EvilKey(str):
+        armed = False
+
+        def __eq__(self, other):
+            if type(self).armed:
+                raise RuntimeError(canary)
+            return str.__eq__(self, other)
+
+        def __hash__(self):
+            if type(self).armed:
+                raise RuntimeError(canary)
+            return str.__hash__(self)
+
+    content = _content(tmp_path)
+    observations = copy.deepcopy(pdf_core_sink_observations(content))
+    if mutation == "extra_key":
+        observations["rendered_observations"][0]["unexpected"] = "value"
+    elif mutation == "list_rows":
+        observations["rendered_observations"] = list(observations["rendered_observations"])
+    elif mutation == "nonempty_safety":
+        observations["safety_observations"] = ({},)
+    elif mutation == "evil_key":
+        rows = observations.pop("rendered_observations")
+        key = EvilKey("rendered_observations")
+        observations[key] = rows
+        EvilKey.armed = True
+    else:
+        observations["rendered_observations"][0]["observed_value"] = EvilText("unsafe")
+    try:
+        with pytest.raises(ValueError) as caught:
+            verify_pdf_core_sink_observations(
+                tmp_path / "absent.pdf",
+                content,
+                observations=observations,
+            )
+        assert canary not in str(caught.value)
+    finally:
+        EvilKey.armed = False
+
+
+@pytest.mark.parametrize(
+    "physical_mutation",
+    ["missing", "duplicate", "unlabeled_duplicate", "omitted_scope"],
+)
+def test_pdf_core_verifier_requires_one_physical_candidate_per_labeled_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    physical_mutation: str,
+) -> None:
+    content = _content(tmp_path)
+    original_outcomes = pdf_report._outcomes
+
+    def hostile_outcomes(content_bundle, styles):
+        story = original_outcomes(content_bundle, styles)
+        if physical_mutation == "missing":
+            story.pop()
+        elif physical_mutation == "duplicate":
+            final_signal = content_bundle.core["outcomes"][-1]["success_signal"]
+            story.append(pdf_report._rich(f"<b>Success signal:</b> {final_signal}", styles["body"]))
+        elif physical_mutation == "unlabeled_duplicate":
+            final_signal = content_bundle.core["outcomes"][-1]["success_signal"]
+            story.append(pdf_report._paragraph(final_signal, styles["body"]))
+        else:
+            story.append(pdf_report._paragraph(content_bundle.core["scope"], styles["body"]))
+        return story
+
+    monkeypatch.setattr(pdf_report, "_outcomes", hostile_outcomes)
+    output = tmp_path / f"atlas-core-{physical_mutation}.pdf"
+    with pytest.raises(ValueError, match="core sink verification failed"):
+        build_master_reference_pdf(
+            _bundle(tmp_path),
+            content,
+            output,
+            architecture_path=_architecture(tmp_path),
+        )
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "laundered_value",
+    [
+        "Page 1",
+        "ATLAS / MASTER REFERENCE",
+        "SOURCE abcdef123456",
+        "PRIVATE / READ-ONLY / CLIENT-DATA INGESTION PROHIBITED",
+    ],
+)
+def test_pdf_core_verifier_does_not_launder_body_text_as_page_furniture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    laundered_value: str,
+) -> None:
+    content = _content(tmp_path)
+    original_outcomes = pdf_report._outcomes
+
+    def hostile_outcomes(content_bundle, styles):
+        story = original_outcomes(content_bundle, styles)
+        story.append(pdf_report._paragraph(laundered_value, styles["body"]))
+        return story
+
+    monkeypatch.setattr(pdf_report, "_outcomes", hostile_outcomes)
+    output = tmp_path / "atlas-core-furniture-laundering.pdf"
+    with pytest.raises(ValueError, match="core_outcome_section_visible_text_not_exact"):
+        build_master_reference_pdf(
+            _bundle(tmp_path),
+            content,
+            output,
+            architecture_path=_architecture(tmp_path),
+        )
+    assert not output.exists()
+
+
+def test_pdf_core_verifier_rejects_visible_text_erased_by_the_declared_transform(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = _content(tmp_path)
+    pdf = tmp_path / "atlas-core-visible-unicode.pdf"
+    result = build_master_reference_pdf(
+        _bundle(tmp_path),
+        content,
+        pdf,
+        architecture_path=_architecture(tmp_path),
+    )
+    assert result.core_sink_verification.verdict == "PASS"
+
+    original_reader = pypdf.PdfReader
+
+    class HostilePage:
+        def __init__(self, page):
+            self._page = page
+
+        def extract_text(self, *args, **kwargs):
+            return f"{self._page.extract_text(*args, **kwargs) or ''}\n\U0001f4a3"
+
+    class HostileReader:
+        def __init__(self, source, *args, **kwargs):
+            delegate = original_reader(source, *args, **kwargs)
+            self.pages = [*(HostilePage(page) for page in delegate.pages)]
+
+    monkeypatch.setattr(pypdf, "PdfReader", HostileReader)
+    with pytest.raises(ValueError, match="core_outcome_extracted_text_not_lossless"):
+        verify_pdf_core_sink_observations(pdf, content)
+
+
+@pytest.mark.parametrize("furniture_pair", ["header_source", "footer_page_number"])
+def test_pdf_core_verifier_does_not_launder_page_boundary_body_furniture_pairs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    furniture_pair: str,
+) -> None:
+    content = _content(tmp_path)
+    original_outcomes = pdf_report._outcomes
+
+    class DynamicBodyPageNumber(pdf_report.Flowable):
+        def wrap(self, available_width, _available_height):
+            return available_width, 12
+
+        def draw(self):
+            self.canv.setFont("Helvetica", 8)
+            self.canv.drawString(0, 0, f"Page {self.canv.getPageNumber()}")
+
+    def hostile_outcomes(content_bundle, styles):
+        story = original_outcomes(content_bundle, styles)
+        story.append(pdf_report.PageBreak())
+        if furniture_pair == "header_source":
+            story.extend(
+                [
+                    pdf_report._paragraph("ATLAS / MASTER REFERENCE", styles["body"]),
+                    pdf_report._paragraph(f"SOURCE {COMMIT[:12]}", styles["body"]),
+                ]
+            )
+        else:
+            story.extend(
+                [
+                    pdf_report._paragraph(
+                        "PRIVATE / READ-ONLY / CLIENT-DATA INGESTION PROHIBITED",
+                        styles["body"],
+                    ),
+                    DynamicBodyPageNumber(),
+                ]
+            )
+        return story
+
+    monkeypatch.setattr(pdf_report, "_outcomes", hostile_outcomes)
+    output = tmp_path / f"atlas-core-page-boundary-{furniture_pair}.pdf"
+    with pytest.raises(ValueError, match="core_outcome_section_visible_text_not_exact"):
+        build_master_reference_pdf(
+            _bundle(tmp_path),
+            content,
+            output,
+            architecture_path=_architecture(tmp_path),
+        )
+    assert not output.exists()
 
 
 def test_pdf_capability_sink_observations_are_exact_and_deterministic(tmp_path: Path) -> None:
@@ -1064,11 +1560,13 @@ def test_pdf_verifiers_parse_the_same_byte_buffer_they_hash(tmp_path: Path, monk
 
     monkeypatch.setattr(pypdf, "PdfReader", recording_reader)
     inspect_pdf_report(pdf, expected_commit=COMMIT, expected_tree_digest=TREE)
+    core_verification = verify_pdf_core_sink_observations(pdf, content)
     capability_verification = verify_pdf_capability_sink_observations(pdf, content)
     verification = verify_pdf_horizon_sink_observations(pdf, content.horizon)
+    assert core_verification.pdf_sha256 == hashlib.sha256(pdf.read_bytes()).hexdigest()
     assert capability_verification.pdf_sha256 == hashlib.sha256(pdf.read_bytes()).hexdigest()
     assert verification.pdf_sha256 == hashlib.sha256(pdf.read_bytes()).hexdigest()
-    assert len(sources) == 3
+    assert len(sources) == 4
 
 
 def test_pdf_build_rejects_replacement_during_atomic_publication(
@@ -1108,6 +1606,33 @@ def test_pdf_build_rejects_replacement_after_capability_verification(
 
     monkeypatch.setattr(
         "release.pdf_report.verify_pdf_capability_sink_observations",
+        verify_then_tamper,
+    )
+    with pytest.raises(RuntimeError, match="changed between structural and rendered-sink verification"):
+        build_master_reference_pdf(
+            _bundle(tmp_path),
+            content,
+            output,
+            architecture_path=_architecture(tmp_path),
+        )
+    assert not output.exists()
+
+
+def test_pdf_build_rejects_replacement_after_core_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = _content(tmp_path)
+    output = tmp_path / "atlas-core-toctou.pdf"
+    original_verifier = verify_pdf_core_sink_observations
+
+    def verify_then_tamper(pdf_path, content_bundle, *, observations=None):
+        verification = original_verifier(pdf_path, content_bundle, observations=observations)
+        Path(pdf_path).write_bytes(b"%PDF-1.4\nhostile post-core-verification replacement\n%%EOF\n")
+        return verification
+
+    monkeypatch.setattr(
+        "release.pdf_report.verify_pdf_core_sink_observations",
         verify_then_tamper,
     )
     with pytest.raises(RuntimeError, match="changed between structural and rendered-sink verification"):
@@ -1257,6 +1782,9 @@ def test_curated_pdf_keeps_complete_records_together_and_extracts_clean_ascii(tm
     assert result.capability_sink_verification.verdict == "PASS"
     assert result.capability_sink_verification.rendered_observation_count == 422
     assert result.capability_sink_verification.safety_observation_count == 7
+    assert result.core_sink_verification.verdict == "PASS"
+    assert result.core_sink_verification.rendered_observation_count == 9
+    assert result.core_sink_verification.safety_observation_count == 0
 
     raw_pages = [page.extract_text() or "" for page in PdfReader(str(pdf)).pages]
     pages = [" ".join(page.split()) for page in raw_pages]

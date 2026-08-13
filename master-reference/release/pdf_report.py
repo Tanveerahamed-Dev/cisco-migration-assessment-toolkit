@@ -75,6 +75,18 @@ _FRAME_WIDTH = _PAGE_WIDTH - _LEFT - _RIGHT
 
 
 @dataclass(frozen=True)
+class PdfCoreSinkVerification:
+    """Mechanical proof that every declared core outcome slot reached the PDF."""
+
+    verdict: str
+    observation_digest: str
+    verification_digest: str
+    pdf_sha256: str
+    rendered_observation_count: int
+    safety_observation_count: int
+
+
+@dataclass(frozen=True)
 class PdfHorizonSinkVerification:
     """Mechanical proof that every declared horizon sink slot reached the PDF."""
 
@@ -111,6 +123,8 @@ class PdfReportResult:
     input_digest: str
     reportlab_version: str
     independent_verification_verdict: str
+    core_sink_observations: dict[str, tuple[dict[str, Any], ...]]
+    core_sink_verification: PdfCoreSinkVerification
     capability_sink_observations: dict[str, tuple[dict[str, Any], ...]]
     capability_sink_verification: PdfCapabilitySinkVerification
     horizon_sink_observations: dict[str, tuple[dict[str, Any], ...]]
@@ -176,6 +190,176 @@ def _strings(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
     return [_plain(item) for item in value if _plain(item)]
+
+
+_CORE_OUTCOME_COUNT = 9
+_CORE_SCHEMA_VERSION = "1.0.0"
+_CORE_ROOT_ID = "atlas.core.2026-08-07"
+_CORE_OUTCOME_FIELDS = frozenset({"id", "title", "success_signal"})
+_CORE_RENDERED_OBSERVATION_FIELDS = frozenset(
+    {"rule_id", "record_identity", "facet_path", "disposition", "slot_id", "transform_id", "observed_value"}
+)
+_CORE_SECTION_MARKER_TITLE = "Outcome lineage boundary"
+_CORE_SECTION_MARKER_BODY = (
+    "Only the source-derived Success signal for each outcome is a lineage subject in this bounded PDF sink; "
+    "identifiers and titles are labels, not candidate evidence."
+)
+_CORE_SECTION_MARKER = f"{_CORE_SECTION_MARKER_TITLE} {_CORE_SECTION_MARKER_BODY}"
+
+
+class _PdfCoreInputError(ValueError):
+    """Static, non-echoing rejection for invalid core-outcome PDF inputs."""
+
+
+def _core_keys(record: object, label: str) -> frozenset[str]:
+    if type(record) is not dict:
+        raise _PdfCoreInputError(f"PDF core {label} must be an exact object")
+    keys = tuple(record)
+    if any(type(key) is not str for key in keys):
+        raise _PdfCoreInputError(f"PDF core {label} keys must be exact strings")
+    return frozenset(keys)
+
+
+def _core_calendar_date(value: object, separator: str, label: str) -> str:
+    pattern = rf"\d{{4}}\{separator}\d{{2}}\{separator}\d{{2}}"
+    if type(value) is not str or re.fullmatch(pattern, value) is None:
+        raise _PdfCoreInputError(f"PDF core {label} must be a calendar date")
+    try:
+        from datetime import date
+
+        year, month, day = (int(part) for part in value.split(separator))
+        parsed = date(year, month, day)
+    except ValueError as exc:
+        raise _PdfCoreInputError(f"PDF core {label} must be a calendar date") from exc
+    if parsed.strftime(f"%Y{separator}%m{separator}%d") != value:
+        raise _PdfCoreInputError(f"PDF core {label} must be a calendar date")
+    return value
+
+
+def _core_plain_text(record: dict[str, Any], field: str, label: str, *, limit: int = 4_096) -> str:
+    value = record[field]
+    if type(value) is not str or not value.strip() or len(value) > limit:
+        raise _PdfCoreInputError(f"PDF core {label} requires bounded non-empty {field}")
+    if any(ord(character) < 0x20 or ord(character) > 0x7E for character in value):
+        raise _PdfCoreInputError(f"PDF core {label} requires lossless portable {field}")
+    normalized = _plain(value)
+    if not normalized:
+        raise _PdfCoreInputError(f"PDF core {label} requires lossless portable {field}")
+    return normalized
+
+
+def _validated_outcomes_impl(content: ContentBundle) -> tuple[dict[str, Any], ...]:
+    if type(content) is not ContentBundle:
+        raise _PdfCoreInputError("PDF core outcome validation requires an exact ContentBundle")
+    core = content.core
+    core_keys = _core_keys(core, "registry envelope")
+    if not {"schema_version", "id", "catalog_version", "as_of", "outcomes"}.issubset(core_keys):
+        raise _PdfCoreInputError("PDF core registry envelope requires live root metadata and outcomes")
+    schema_version = core["schema_version"]
+    if type(schema_version) is not str or schema_version != _CORE_SCHEMA_VERSION:
+        raise _PdfCoreInputError(f"PDF core schema_version must be {_CORE_SCHEMA_VERSION}")
+    catalog_version = _core_calendar_date(core["catalog_version"], ".", "catalog_version")
+    as_of = _core_calendar_date(core["as_of"], "-", "as_of")
+    core_id = core["id"]
+    if (
+        type(core_id) is not str
+        or core_id != _CORE_ROOT_ID
+        or catalog_version.replace(".", "-") != as_of
+        or core_id != f"atlas.core.{as_of}"
+    ):
+        raise _PdfCoreInputError("PDF core root metadata does not identify the live Atlas Core contract")
+    raw_outcomes = core["outcomes"]
+    if (
+        type(raw_outcomes) is not list
+        or len(raw_outcomes) != _CORE_OUTCOME_COUNT
+        or any(type(item) is not dict for item in raw_outcomes)
+    ):
+        raise _PdfCoreInputError(f"PDF core outcomes must contain exactly {_CORE_OUTCOME_COUNT} exact objects")
+
+    outcomes: list[dict[str, Any]] = []
+    identities: set[str] = set()
+    for item in raw_outcomes:
+        if _core_keys(item, "outcome record") != _CORE_OUTCOME_FIELDS:
+            raise _PdfCoreInputError("PDF core outcome record shape mismatch")
+        record_id = item["id"]
+        if (
+            type(record_id) is not str
+            or len(record_id) > 160
+            or re.fullmatch(r"outcome\.[a-z0-9]+(?:-[a-z0-9]+)*", record_id) is None
+        ):
+            raise _PdfCoreInputError("PDF core outcome id must be a bounded semantic identifier")
+        if record_id in identities:
+            raise _PdfCoreInputError("PDF core outcome ids must be unique")
+        identities.add(record_id)
+        _core_plain_text(item, "title", "outcome record", limit=512)
+        _core_plain_text(item, "success_signal", "outcome record")
+        outcomes.append(item)
+    return tuple(outcomes)
+
+
+def _validated_outcomes(content: ContentBundle) -> tuple[dict[str, Any], ...]:
+    """Validate the exact outcome registry without invoking hostile producer values."""
+
+    try:
+        return _validated_outcomes_impl(content)
+    except _PdfCoreInputError:
+        raise
+    except Exception:
+        raise _PdfCoreInputError("PDF core outcome source validation failed") from None
+
+
+def _validate_core_observation_envelope(
+    observations: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> None:
+    try:
+        if _core_keys(observations, "observation envelope") != frozenset(
+            {"rendered_observations", "safety_observations"}
+        ):
+            raise _PdfCoreInputError("PDF core observation envelope shape mismatch")
+        rendered = observations["rendered_observations"]
+        safety = observations["safety_observations"]
+        if type(rendered) is not tuple or len(rendered) != _CORE_OUTCOME_COUNT or type(safety) is not tuple or safety:
+            raise _PdfCoreInputError("PDF core observation envelope rows must be exact tuples")
+        for row in rendered:
+            if _core_keys(row, "observation row") != _CORE_RENDERED_OBSERVATION_FIELDS:
+                raise _PdfCoreInputError("PDF core observation row shape mismatch")
+            for value in row.values():
+                if (
+                    type(value) is not str
+                    or not value
+                    or len(value) > 4_096
+                    or any(ord(character) < 0x20 or ord(character) > 0x7E for character in value)
+                    or _plain(value) != value
+                ):
+                    raise _PdfCoreInputError("PDF core observation values must be exact portable plain text")
+    except _PdfCoreInputError:
+        raise
+    except Exception:
+        raise _PdfCoreInputError("PDF core observation validation failed") from None
+
+
+def pdf_core_sink_observations(
+    content: ContentBundle,
+) -> dict[str, tuple[dict[str, Any], ...]]:
+    """Return the exact nine source-ordered outcome success-signal slots."""
+
+    outcomes = _validated_outcomes(content)
+    rendered = tuple(
+        {
+            "rule_id": "core.outcome",
+            "record_identity": item["id"],
+            "facet_path": "success_signal",
+            "disposition": "rendered_labeled",
+            "slot_id": (
+                "pdf.product-purpose-and-outcomes.core.outcome."
+                f"{item['id']}.success_signal"
+            ),
+            "transform_id": "pdf.core_outcome_success_signal_plain_text/1",
+            "observed_value": _plain(item["success_signal"]),
+        }
+        for item in outcomes
+    )
+    return {"rendered_observations": rendered, "safety_observations": ()}
 
 
 _CAPABILITY_STATES = frozenset({"current", "partial", "missing", "gated", "excluded", "unknown"})
@@ -774,6 +958,138 @@ def _unique_pdf_segment(text: str, anchor: str, next_anchor: str) -> str | None:
     if end < 0:
         return None
     return text[start:end]
+
+
+def _core_pdf_body_text(pages: Sequence[Any]) -> str:
+    """Strip only exact page-furniture prefixes, never body-equivalent text."""
+
+    body_pages: list[str] = []
+    privacy_footer = "PRIVATE / READ-ONLY / CLIENT-DATA INGESTION PROHIBITED"
+    for page_number, page in enumerate(pages, start=1):
+        raw_lines = (page.extract_text() or "").splitlines()
+        lines: list[str] = []
+        for raw_line in raw_lines:
+            normalized = _plain(raw_line)
+            if raw_line.strip() and _ascii(raw_line) != raw_line:
+                raise ValueError("PDF core sink verification failed: core_outcome_extracted_text_not_lossless")
+            if normalized:
+                lines.append(normalized)
+        cursor = 0
+        if (
+            page_number > 1
+            and len(lines) >= 2
+            and lines[0] == "ATLAS / MASTER REFERENCE"
+            and re.fullmatch(r"SOURCE [0-9a-f]{12}", lines[1]) is not None
+        ):
+            cursor = 2
+        if (
+            len(lines) >= cursor + 2
+            and lines[cursor] == privacy_footer
+            and lines[cursor + 1] == f"Page {page_number}"
+        ):
+            cursor += 2
+        body_pages.append(" ".join(lines[cursor:]))
+    return _plain(" ".join(body_pages))
+
+
+def verify_pdf_core_sink_observations(
+    pdf_path: Path,
+    content: ContentBundle,
+    *,
+    observations: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+) -> PdfCoreSinkVerification:
+    """Fail closed unless each outcome success signal is visible exactly once."""
+
+    expected = pdf_core_sink_observations(content)
+    if observations is not None:
+        _validate_core_observation_envelope(observations)
+        try:
+            matches_source = canonical_json(observations) == canonical_json(expected)
+        except Exception:
+            raise _PdfCoreInputError("PDF core observation validation failed") from None
+        if not matches_source:
+            raise ValueError("PDF core observation envelope differs from validated source")
+    outcomes = _validated_outcomes(content)
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:  # pragma: no cover - explicit environment error
+        raise RuntimeError("pypdf is required to verify PDF core observations") from exc
+
+    resolved = pdf_path.resolve(strict=True)
+    raw = resolved.read_bytes()
+    reader = PdfReader(BytesIO(raw))
+    text = _core_pdf_body_text(reader.pages)
+    errors: list[str] = []
+    section = _unique_pdf_segment(text, _CORE_SECTION_MARKER, "4. Closed Capability Catalog")
+    if section is None:
+        errors.append("core_outcome_section_missing_or_ambiguous")
+        section = ""
+
+    anchors = [f"{item['id']} - {_plain(item['title'])}" for item in outcomes]
+    positions = [section.find(anchor) for anchor in anchors]
+    if any(position < 0 for position in positions) or positions != sorted(positions):
+        errors.append("core_outcome_record_order_or_anchor_missing")
+    if any(section.count(anchor) != 1 for anchor in anchors):
+        errors.append("core_outcome_record_anchor_ambiguous")
+
+    rendered_rows = expected["rendered_observations"]
+    if len(rendered_rows) != _CORE_OUTCOME_COUNT:
+        errors.append("core_outcome_candidate_observation_count_mismatch")
+    if section.count("Success signal:") != _CORE_OUTCOME_COUNT:
+        errors.append("core_outcome_physical_slot_count_mismatch")
+    expected_section_text = _plain(
+        " ".join(
+            [
+                _CORE_SECTION_MARKER,
+                *[
+                    (
+                        f"{item['id']} - {_plain(item['title'])} "
+                        f"Success signal: {row['observed_value']}"
+                    )
+                    for item, row in zip(outcomes, rendered_rows, strict=True)
+                ],
+            ]
+        )
+    )
+    if _plain(section) != expected_section_text:
+        errors.append("core_outcome_section_visible_text_not_exact")
+    if not errors:
+        for index, (item, row) in enumerate(zip(outcomes, rendered_rows, strict=True)):
+            start = positions[index]
+            end = positions[index + 1] if index + 1 < len(positions) else len(section)
+            segment = section[start:end]
+            expected_fragment = f"Success signal: {row['observed_value']}"
+            if (
+                row["record_identity"] != item["id"]
+                or row["facet_path"] != "success_signal"
+                or segment.count("Success signal:") != 1
+                or segment.count(expected_fragment) != 1
+                or segment.count(str(row["observed_value"])) != 1
+            ):
+                errors.append("core_outcome_success_signal_projection_missing_or_ambiguous")
+
+    if expected["safety_observations"]:
+        errors.append("core_outcome_safety_observation_count_mismatch")
+    if errors:
+        raise ValueError("PDF core sink verification failed: " + ", ".join(sorted(set(errors))))
+
+    observation_digest = sha256_bytes(canonical_json(expected))
+    pdf_digest = sha256_bytes(raw)
+    verification_material = {
+        "verdict": "PASS",
+        "pdf_sha256": pdf_digest,
+        "observation_digest": observation_digest,
+        "rendered_observation_count": len(rendered_rows),
+        "safety_observation_count": 0,
+    }
+    return PdfCoreSinkVerification(
+        verdict="PASS",
+        observation_digest=observation_digest,
+        verification_digest=sha256_bytes(canonical_json(verification_material)),
+        pdf_sha256=pdf_digest,
+        rendered_observation_count=len(rendered_rows),
+        safety_observation_count=0,
+    )
 
 
 def verify_pdf_capability_sink_observations(
@@ -1821,19 +2137,21 @@ def _completeness(bundle: CompilerBundle, styles: dict[str, ParagraphStyle]) -> 
 
 
 def _outcomes(content: ContentBundle, styles: dict[str, ParagraphStyle]) -> list[Flowable]:
-    outcomes = _items(content.core.get("outcomes"))
-    story: list[Flowable] = [PageBreak(), _heading("3. Product purpose and outcomes", styles["h1"])]
-    if not outcomes:
-        story.append(_paragraph("No outcome contracts were declared.", styles["body"]))
-        return story
+    outcomes = _validated_outcomes(content)
+    story: list[Flowable] = [
+        PageBreak(),
+        _heading("3. Product purpose and outcomes", styles["h1"]),
+        _callout(
+            _CORE_SECTION_MARKER_TITLE,
+            _CORE_SECTION_MARKER_BODY,
+            styles,
+        ),
+        Spacer(1, 3 * mm),
+    ]
     for item in outcomes:
         story.append(CondPageBreak(35 * mm))
-        story.append(_heading(f"{item.get('id', 'outcome')} - {item.get('title', 'Untitled outcome')}", styles["h2"]))
-        for key in ("promise", "success_signal", "owner", "scope", "limitations"):
-            if item.get(key) is not None:
-                story.append(
-                    _rich(f"<b>{_markup(key.replace('_', ' ').title())}:</b> {_markup(item[key])}", styles["body"])
-                )
+        story.append(_heading(f"{item['id']} - {item['title']}", styles["h2"]))
+        story.append(_rich(f"<b>Success signal:</b> {_markup(item['success_signal'])}", styles["body"]))
     return story
 
 
@@ -2429,6 +2747,7 @@ def build_master_reference_pdf(
     """
 
     _validate_bindings(bundle)
+    core_sink_observations = pdf_core_sink_observations(content)
     capability_sink_observations = pdf_capability_sink_observations(content)
     horizon_sink_observations = pdf_horizon_sink_observations(content.horizon)
     architecture, architecture_digest = _load_architecture(
@@ -2475,6 +2794,7 @@ def build_master_reference_pdf(
     )
     canvasmaker = lambda *args, **kwargs: _InvariantCanvas(*args, metadata=metadata, **kwargs)  # noqa: E731
     inspection: PdfInspection
+    core_sink_verification: PdfCoreSinkVerification
     capability_sink_verification: PdfCapabilitySinkVerification
     horizon_sink_verification: PdfHorizonSinkVerification
     try:
@@ -2492,17 +2812,39 @@ def build_master_reference_pdf(
             content.horizon,
             observations=horizon_sink_observations,
         )
+        horizon_verified_raw = temporary.read_bytes()
+        if (
+            inspection.sha256 != horizon_sink_verification.pdf_sha256
+            or sha256_bytes(horizon_verified_raw) != horizon_sink_verification.pdf_sha256
+            or len(horizon_verified_raw) != inspection.bytes
+        ):
+            raise RuntimeError("PDF changed between structural and rendered-sink verification")
         capability_sink_verification = verify_pdf_capability_sink_observations(
             temporary,
             content,
             observations=capability_sink_observations,
         )
+        capability_verified_raw = temporary.read_bytes()
+        if (
+            inspection.sha256 != capability_sink_verification.pdf_sha256
+            or sha256_bytes(capability_verified_raw) != capability_sink_verification.pdf_sha256
+            or capability_verified_raw != horizon_verified_raw
+        ):
+            raise RuntimeError("PDF changed between structural and rendered-sink verification")
+        core_sink_verification = verify_pdf_core_sink_observations(
+            temporary,
+            content,
+            observations=core_sink_observations,
+        )
         verified_raw = temporary.read_bytes()
         if (
             inspection.sha256 != horizon_sink_verification.pdf_sha256
             or inspection.sha256 != capability_sink_verification.pdf_sha256
+            or inspection.sha256 != core_sink_verification.pdf_sha256
             or sha256_bytes(verified_raw) != horizon_sink_verification.pdf_sha256
             or sha256_bytes(verified_raw) != capability_sink_verification.pdf_sha256
+            or sha256_bytes(verified_raw) != core_sink_verification.pdf_sha256
+            or verified_raw != capability_verified_raw
             or len(verified_raw) != inspection.bytes
         ):
             raise RuntimeError("PDF changed between structural and rendered-sink verification")
@@ -2525,6 +2867,8 @@ def build_master_reference_pdf(
         input_digest=digest,
         reportlab_version=str(REPORTLAB_VERSION),
         independent_verification_verdict="BLOCK",
+        core_sink_observations=core_sink_observations,
+        core_sink_verification=core_sink_verification,
         capability_sink_observations=capability_sink_observations,
         capability_sink_verification=capability_sink_verification,
         horizon_sink_observations=horizon_sink_observations,

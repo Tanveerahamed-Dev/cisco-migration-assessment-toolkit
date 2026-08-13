@@ -102,12 +102,14 @@ closure, sentence-level completeness, or global claim closure. The bounded
 census therefore remains explicitly incomplete and its global
 closure gate remains false.
 
-Two additive rendered-sink lineage contracts currently join bounded subsets of
-those immutable facet subjects to actual presentation slots: Open Horizon in
-the PDF and canonical `/gaps` route, and the Capability Catalog in the PDF and
-canonical unfiltered `/capabilities` route. The PDF gate carries their
+Three additive rendered-sink lineage contracts currently join bounded subsets
+of those immutable facet subjects to actual presentation slots: Open Horizon in
+the PDF and canonical `/gaps` route, the Capability Catalog in the PDF and
+canonical unfiltered `/capabilities` route, and the nine Atlas Core outcome
+success signals in the PDF outcomes section and `/product#core-outcome-contracts`.
+The PDF gate carries their
 payload-omitting mapping receipts, while PDF text extraction and rendered-DOM
-tests independently reconcile visible observations. Neither slice is a global
+tests independently reconcile visible observations. None of these slices is a global
 rendered-claim universe: undeclared sources, routes and renderer states, as well
 as fixed, computed, joined and conditional claims, remain unresolved. A local
 mapping PASS never changes review state, supplies claim evidence, authorizes

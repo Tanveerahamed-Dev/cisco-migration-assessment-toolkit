@@ -5,6 +5,7 @@ import {
   deliveryGovernance,
   gapById,
 } from "../atlas/data";
+import { coreOutcomeSlotId, requireCoreOutcome } from "../atlas/coreOutcomeLineage";
 import { AtlasShell, OwnerLinks, SectionHeading, StateMark } from "../atlas/Shell";
 import styles from "../atlas/Workspace.module.css";
 
@@ -40,7 +41,7 @@ const productBoundary = deliveryGovernance.decision_queue.find(
 const whiteLabelBoundary = deliveryGovernance.decision_queue.find(
   (decision) => decision.id === "decision.white-label-depth",
 );
-const valueOutcome = core.outcomes.find((outcome) => outcome.id === "outcome.business-value");
+const valueOutcome = requireCoreOutcome(core, "outcome.business-value");
 const valueCapability = productCapabilities.find((entry) => entry.id === "cap.product.roi-tco");
 
 export default function ProductPage() {
@@ -69,15 +70,19 @@ export default function ProductPage() {
           title="Purpose and outcome contracts"
           description={core.scope}
         />
-        <div className={styles.cardGrid}>
-          {core.outcomes.map((outcome) => (
-            <article className={styles.card} id={outcome.id} key={outcome.id}>
-              <code>{outcome.id}</code>
-              <h3>{outcome.title}</h3>
-              <p>{outcome.success_signal}</p>
-            </article>
-          ))}
-        </div>
+        <section id="core-outcome-contracts" aria-label="Outcome success signals">
+          <div className={styles.cardGrid}>
+            {core.outcomes.map((outcome) => (
+              <article className={styles.card} id={outcome.id} key={outcome.id}>
+                <code>{outcome.id}</code>
+                <h3>{outcome.title}</h3>
+                <p data-core-outcome-slot={coreOutcomeSlotId(outcome.id)}>
+                  {outcome.success_signal}
+                </p>
+              </article>
+            ))}
+          </div>
+        </section>
       </section>
 
       <section className="workspace-section">
@@ -139,8 +144,8 @@ export default function ProductPage() {
         <div className={styles.split}>
           <article className={styles.card}>
             <StateMark state="target" />
-            <h3>{valueOutcome?.title ?? "Business-value outcome is not declared"}</h3>
-            <p>{valueOutcome?.success_signal ?? "The canonical outcome owner is absent, so this view abstains."}</p>
+            <h3>{valueOutcome.title}</h3>
+            <p>{valueOutcome.success_signal}</p>
           </article>
           <article className={styles.card}>
             <StateMark state={valueCapability?.state ?? "unknown"} />

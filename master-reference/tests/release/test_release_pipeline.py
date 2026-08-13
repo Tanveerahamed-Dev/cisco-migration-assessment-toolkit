@@ -13,7 +13,9 @@ import traceback
 import zipfile
 import zlib
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -64,19 +66,182 @@ def _formatted_exception(failure: pytest.ExceptionInfo[BaseException]) -> str:
     return "".join(traceback.format_exception(failure.type, failure.value, failure.tb))
 
 
-_PDF_GATE_LINEAGES = ("rendered_sink_lineage", "capability_sink_lineage")
+_PDF_GATE_LINEAGES = ("rendered_sink_lineage", "capability_sink_lineage", "core_sink_lineage")
+_PDF_PROVENANCE_FIELDS = ("sha256", "bytes", "page_count", "input_digest", "renderer")
+
+
+def _captured_pdf_provenance(gate: dict[str, object]) -> dict[str, object] | None:
+    if gate.get("status") != "generated_visual_review_pending":
+        return None
+    return {field: gate[field] for field in _PDF_PROVENANCE_FIELDS}
+
+
+def test_release_schema_boundary_rejects_hostile_non_json_without_echo() -> None:
+    canary = "HOSTILE-RELEASE-SCHEMA-CANARY-MUST-NOT-ECHO"
+    expected = "release object is not bounded plain JSON: pdf-gate"
+
+    class EvilDict(dict):
+        def __iter__(self):
+            raise RuntimeError(canary)
+
+        def keys(self):
+            raise RuntimeError(canary)
+
+        def values(self):
+            raise RuntimeError(canary)
+
+    class EvilList(list):
+        def __iter__(self):
+            raise RuntimeError(canary)
+
+    class EvilText(str):
+        def __str__(self):
+            raise RuntimeError(canary)
+
+        def __repr__(self):
+            raise RuntimeError(canary)
+
+    class EvilKey(str):
+        armed = False
+
+        def __eq__(self, other):
+            if type(self).armed:
+                raise RuntimeError(canary)
+            return str.__eq__(self, other)
+
+        def __hash__(self):
+            if type(self).armed:
+                raise RuntimeError(canary)
+            return str.__hash__(self)
+
+        def __str__(self):
+            raise RuntimeError(canary)
+
+        def __repr__(self):
+            raise RuntimeError(canary)
+
+    class AccessorObject:
+        @property
+        def keys(self):
+            raise RuntimeError(canary)
+
+    evil_key = EvilKey("schema_version")
+    evil_key_value = {evil_key: "1.0.0"}
+    EvilKey.armed = True
+    nested: object = None
+    for _ in range(65):
+        nested = [nested]
+    hostile_values = (
+        EvilDict(),
+        {"rows": EvilList()},
+        {"value": EvilText(canary)},
+        evil_key_value,
+        AccessorObject(),
+        {"nested": nested},
+        {"oversized": "x" * 1_048_577},
+        {"integer": 9_007_199_254_740_992},
+        {"unicode": f"unsafe\u202e{canary}"},
+    )
+    try:
+        for hostile in hostile_values:
+            with pytest.raises(ReleaseInputError) as failure:
+                validate_release_object(MASTER_REFERENCE.parent, "pdf-gate", hostile)
+            assert str(failure.value) == expected
+            assert canary not in str(failure.value)
+    finally:
+        EvilKey.armed = False
+
+
+def test_release_schema_boundary_preserves_ordinary_schema_diagnostics() -> None:
+    with pytest.raises(ReleaseInputError, match=r"fails pdf-gate schema validation \(oneOf\)"):
+        validate_release_object(MASTER_REFERENCE.parent, "pdf-gate", {})
+
+
+def test_release_schema_diagnostics_do_not_echo_exact_string_values_or_keys() -> None:
+    canary = "HOSTILE-EXACT-JSON-CANARY-MUST-NOT-ECHO"
+    cases = (
+        {
+            "schema_version": "1.0.0",
+            "status": canary,
+        },
+        {
+            "schema_version": "1.0.0",
+            "status": "absent",
+            "included": False,
+            "required_for_verified_release": True,
+            canary: True,
+        },
+    )
+    for hostile in cases:
+        with pytest.raises(ReleaseInputError) as failure:
+            validate_release_object(MASTER_REFERENCE.parent, "pdf-gate", hostile)
+        assert str(failure.value).startswith("release object fails pdf-gate schema validation (")
+        assert canary not in _formatted_exception(failure)
+
+
+def test_release_schema_boundary_does_not_echo_unknown_schema_or_repository_root(tmp_path: Path) -> None:
+    canary = "HOSTILE-SCHEMA-LOOKUP-CANARY-MUST-NOT-ECHO"
+
+    class EvilSchemaName(str):
+        def __str__(self):
+            raise RuntimeError(canary)
+
+        def __repr__(self):
+            raise RuntimeError(canary)
+
+    for schema_name in (canary, EvilSchemaName(canary)):
+        with pytest.raises(ReleaseInputError) as failure:
+            validate_release_object(MASTER_REFERENCE.parent, schema_name, {})
+        assert str(failure.value) == "unknown release schema"
+        assert canary not in _formatted_exception(failure)
+
+    class AccessorRoot:
+        @property
+        def resolve(self):
+            raise RuntimeError(canary)
+
+    relative = "master-reference/release/schemas/pdf-gate.schema.json"
+    for repo_root in (tmp_path / canary, AccessorRoot()):
+        with pytest.raises(ReleaseInputError) as failure:
+            validate_release_object(repo_root, "pdf-gate", {})  # type: ignore[arg-type]
+        assert str(failure.value) == f"release schema could not be read: {relative}"
+        assert canary not in _formatted_exception(failure)
+
+
+@pytest.mark.parametrize(
+    "schema_bytes",
+    [
+        b'{"$schema":"https://json-schema.org/draft/2020-12/schema","$schema":"duplicate"}',
+        b'{"$schema":"https://json-schema.org/draft/2020-12/schema","multipleOf":NaN}',
+        b'{"$schema":"https://json-schema.org/draft/2020-12/schema","multipleOf":1.5}',
+    ],
+)
+def test_release_schema_loader_rejects_duplicate_or_nonportable_json(
+    tmp_path: Path,
+    schema_bytes: bytes,
+) -> None:
+    relative = Path("master-reference/release/schemas/pdf-gate.schema.json")
+    schema = tmp_path / relative
+    schema.parent.mkdir(parents=True)
+    schema.write_bytes(schema_bytes)
+
+    with pytest.raises(ReleaseInputError) as failure:
+        validate_release_object(tmp_path, "pdf-gate", {})
+    assert str(failure.value) == f"release schema is invalid UTF-8 JSON: {relative.as_posix()}"
 
 
 def _assert_pdf_gate_receipt_digest_tamper_rejected(repo: Path, gate: dict[str, object]) -> None:
+    provenance = _captured_pdf_provenance(gate)
     for lineage_name in _PDF_GATE_LINEAGES:
         hostile = copy.deepcopy(gate)
         hostile[lineage_name]["sink_receipts_digest"] = "7" * 64
         with pytest.raises(ReleaseInputError) as failure:
-            validate_release_object(repo, "pdf-gate", hostile)
+            validate_release_object(repo, "pdf-gate", hostile, pdf_provenance=provenance)
         assert str(failure.value) == "release object fails pdf-gate sink receipt digest binding"
 
 
 def _assert_pdf_gate_declared_source_oid_tamper_rejected(repo: Path, gate: dict[str, object]) -> None:
+    provenance = _captured_pdf_provenance(gate)
     always_equal_oid_type = type(
         "_AlwaysEqualOid",
         (str,),
@@ -87,21 +252,117 @@ def _assert_pdf_gate_declared_source_oid_tamper_rejected(repo: Path, gate: dict[
         assert hostile[lineage_name]["state"] == "declared_incomplete"
         hostile[lineage_name]["source"]["git_blob_oid"] = "7" * 40
         with pytest.raises(ReleaseInputError, match="fails pdf-gate schema"):
-            validate_release_object(repo, "pdf-gate", hostile)
+            validate_release_object(repo, "pdf-gate", hostile, pdf_provenance=provenance)
 
         hostile = copy.deepcopy(gate)
         hostile[lineage_name]["source"]["git_blob_oid"] = always_equal_oid_type("7" * 40)
         with pytest.raises(ReleaseInputError) as failure:
-            validate_release_object(repo, "pdf-gate", hostile)
-        assert str(failure.value) == "release object fails pdf-gate declared lineage source binding"
+            validate_release_object(repo, "pdf-gate", hostile, pdf_provenance=provenance)
+        assert str(failure.value) == "release object is not bounded plain JSON: pdf-gate"
 
 
-def _assert_pdf_gate_not_declared_null_source_oids_valid(repo: Path, gate: dict[str, object]) -> None:
+def _assert_pdf_gate_not_declared_legacy_null_source_oids_valid(repo: Path, gate: dict[str, object]) -> None:
     hostile = copy.deepcopy(gate)
-    for lineage_name in _PDF_GATE_LINEAGES:
+    for lineage_name in ("rendered_sink_lineage", "capability_sink_lineage"):
         assert hostile[lineage_name]["state"] == "not_declared"
         hostile[lineage_name]["source"]["git_blob_oid"] = None
+    assert hostile["core_sink_lineage"]["state"] == "not_declared"
+    assert (
+        hostile["core_sink_lineage"]["source"]["git_blob_oid"]
+        == "27b7c166a78894d957bd3f35b5f64170dd11afb4"
+    )
     validate_release_object(repo, "pdf-gate", hostile)
+
+
+def _assert_pdf_gate_not_declared_wrong_nonnull_source_oids_rejected(
+    repo: Path,
+    gate: dict[str, object],
+) -> None:
+    for lineage_name in ("rendered_sink_lineage", "capability_sink_lineage"):
+        hostile = copy.deepcopy(gate)
+        assert hostile[lineage_name]["state"] == "not_declared"
+        hostile[lineage_name]["source"]["git_blob_oid"] = "7" * 40
+        with pytest.raises(ReleaseInputError, match="fails pdf-gate schema validation"):
+            validate_release_object(repo, "pdf-gate", hostile)
+
+
+def _assert_pdf_gate_generated_source_oids_pinned(repo: Path, gate: dict[str, object]) -> None:
+    assert gate["status"] == "generated_visual_review_pending"
+    provenance = _captured_pdf_provenance(gate)
+    for lineage_name in ("rendered_sink_lineage", "capability_sink_lineage"):
+        for hostile_oid in (None, "7" * 40):
+            hostile = copy.deepcopy(gate)
+            assert hostile[lineage_name]["state"] == "not_declared"
+            hostile[lineage_name]["source"]["git_blob_oid"] = hostile_oid
+            with pytest.raises(ReleaseInputError) as failure:
+                validate_release_object(repo, "pdf-gate", hostile, pdf_provenance=provenance)
+            expected = (
+                "release object fails pdf-gate declared lineage source binding"
+                if hostile_oid is None
+                else "release object fails pdf-gate schema validation"
+            )
+            assert expected in str(failure.value)
+
+
+def _assert_pdf_gate_core_source_oid_tamper_rejected(repo: Path, gate: dict[str, object]) -> None:
+    provenance = _captured_pdf_provenance(gate)
+    always_equal_oid_type = type(
+        "_AlwaysEqualCoreOid",
+        (str,),
+        {"__eq__": lambda self, other: True, "__hash__": str.__hash__},
+    )
+    for hostile_oid in (None, "7" * 40, always_equal_oid_type("7" * 40)):
+        hostile = copy.deepcopy(gate)
+        hostile["core_sink_lineage"]["source"]["git_blob_oid"] = hostile_oid
+        with pytest.raises(ReleaseInputError) as failure:
+            validate_release_object(repo, "pdf-gate", hostile, pdf_provenance=provenance)
+        expected = (
+            "release object is not bounded plain JSON: pdf-gate"
+            if type(hostile_oid) is always_equal_oid_type
+            else "release object fails pdf-gate"
+        )
+        if type(hostile_oid) is always_equal_oid_type:
+            assert str(failure.value) == expected
+        else:
+            assert expected in str(failure.value)
+
+
+def test_generated_pdf_observation_binding_recomputes_all_tuple_envelopes_without_echo() -> None:
+    envelope = {"rendered_observations": (), "safety_observations": ()}
+    digest = sha256_bytes(canonical_json(envelope))
+    result = SimpleNamespace(
+        horizon_sink_observations=envelope,
+        horizon_sink_verification=SimpleNamespace(observation_digest=digest),
+        capability_sink_observations=envelope,
+        capability_sink_verification=SimpleNamespace(observation_digest=digest),
+        core_sink_observations=envelope,
+        core_sink_verification=SimpleNamespace(observation_digest=digest),
+    )
+    release_pipeline._validate_generated_pdf_observation_bindings(result)
+
+    for verification_name in (
+        "horizon_sink_verification",
+        "capability_sink_verification",
+        "core_sink_verification",
+    ):
+        hostile = copy.copy(result)
+        setattr(hostile, verification_name, SimpleNamespace(observation_digest="7" * 64))
+        with pytest.raises(ReleaseError) as failure:
+            release_pipeline._validate_generated_pdf_observation_bindings(hostile)
+        assert str(failure.value) == "generated PDF sink observation digest differs from producer observations"
+
+    canary = "HOSTILE-PRODUCER-OBSERVATION-CANARY-MUST-NOT-ECHO"
+
+    class EvilObservation:
+        def __repr__(self):
+            raise RuntimeError(canary)
+
+    hostile = copy.copy(result)
+    hostile.core_sink_observations = EvilObservation()
+    with pytest.raises(ReleaseError) as failure:
+        release_pipeline._validate_generated_pdf_observation_bindings(hostile)
+    assert str(failure.value) == "generated PDF sink observation binding could not be evaluated"
+    assert canary not in _formatted_exception(failure)
 
 
 def _one_pixel_png(*, compression_level: int = -1) -> bytes:
@@ -205,19 +466,10 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
     )
     fixture_owner_id = registry_core["owners"][0]["id"]
     fixture_gap_id = registry_governance["gaps"][0]["id"]
-    core = {
-        "schema_version": "1.0.0",
-        "id": "core",
-        "scope": "Synthetic repository-owned reference fixture.",
-        # The exact capability catalog is meaningful only against these four
-        # authoritative registries; reuse their current owner bytes while the
-        # rest of the release fixture stays deliberately small.
-        "domain_registry": registry_core["domain_registry"],
-        "owners": registry_core["owners"],
-        "traffic_model": registry_core["traffic_model"],
-        "outcomes": [{"id": "outcome.one", "title": "Evidence", "success_signal": "Owned evidence reaches output."}],
-        "non_goals": [{"id": "non-goal.write", "statement": "No device writes."}],
-    }
+    # The generated-PDF path consumes the complete, fail-closed Core owner.
+    # Reuse its exact tracked shape and bytes so fixtures cannot mask outcome
+    # count, field, source-transform, or source-contract drift in the renderer.
+    core = registry_core
     # The generated-PDF path consumes the complete, fail-closed capability
     # owner. Reuse its exact tracked shape so fixtures cannot mask record-count,
     # state/reference, or source-contract drift in the renderer.
@@ -268,7 +520,7 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
         "output-contract.json": output_contract,
     }
     for name, value in content_values.items():
-        if name in {"capability-catalog.json", "open-horizon-register.json"}:
+        if name in {"atlas-core.json", "capability-catalog.json", "open-horizon-register.json"}:
             _write(content_root / name, (MASTER_REFERENCE / "content" / name).read_bytes())
         else:
             _json(content_root / name, value)
@@ -332,6 +584,14 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
         (MASTER_REFERENCE / "schema" / "rendered-sink-lineage-capability.schema.json").read_bytes(),
     )
     _write(
+        repo / "master-reference" / "governance" / "rendered-sink-lineage-core-contract.json",
+        (MASTER_REFERENCE / "governance" / "rendered-sink-lineage-core-contract.json").read_bytes(),
+    )
+    _write(
+        repo / "master-reference" / "schema" / "rendered-sink-lineage-core.schema.json",
+        (MASTER_REFERENCE / "schema" / "rendered-sink-lineage-core.schema.json").read_bytes(),
+    )
+    _write(
         repo / "master-reference" / "release" / "pipeline.py",
         b'"""Synthetic tracked release-builder fixture."""\n',
     )
@@ -355,6 +615,8 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
         "master-reference/schema/rendered-sink-lineage.schema.json",
         "master-reference/governance/rendered-sink-lineage-capability-contract.json",
         "master-reference/schema/rendered-sink-lineage-capability.schema.json",
+        "master-reference/governance/rendered-sink-lineage-core-contract.json",
+        "master-reference/schema/rendered-sink-lineage-core.schema.json",
         "master-reference/release/pipeline.py",
         *schema_paths,
     ]
@@ -1109,6 +1371,10 @@ def test_release_family_is_deterministic_and_explicitly_unsigned(tmp_path: Path)
     assert subjects["owner-handbook.md"] == hashlib.sha256((first / "owner-handbook.md").read_bytes()).hexdigest()
     assert all(value != compiler_manifest["source_tree_digest"] for value in subjects.values())
     assert provenance["predicate"]["runDetails"]["metadata"]["reproducible"] is False
+    absent_gate = json.loads((first / "pdf-gate.json").read_text(encoding="utf-8"))
+    _assert_pdf_gate_not_declared_legacy_null_source_oids_valid(repo, absent_gate)
+    _assert_pdf_gate_not_declared_wrong_nonnull_source_oids_rejected(repo, absent_gate)
+    _assert_pdf_gate_core_source_oid_tamper_rejected(repo, absent_gate)
 
 
 def test_compiler_bundle_preserves_pending_binary_review_and_rejects_custody_or_digest_tamper(
@@ -3255,9 +3521,14 @@ def test_pdf_is_only_hash_bound_as_external_unreviewed_input(tmp_path: Path) -> 
     assert gate["capability_sink_lineage"]["state"] == "not_declared"
     assert gate["capability_sink_lineage"]["closes_global_gate"] is False
     assert gate["capability_sink_lineage"]["observed_sink_count"] == 0
+    assert gate["core_sink_lineage"]["state"] == "not_declared"
+    assert gate["core_sink_lineage"]["closes_global_gate"] is False
+    assert gate["core_sink_lineage"]["observed_sink_count"] == 0
     assert (output / "master-reference.pdf").read_bytes() == pdf.read_bytes()
     _assert_pdf_gate_receipt_digest_tamper_rejected(repo, gate)
-    _assert_pdf_gate_not_declared_null_source_oids_valid(repo, gate)
+    _assert_pdf_gate_not_declared_legacy_null_source_oids_valid(repo, gate)
+    _assert_pdf_gate_not_declared_wrong_nonnull_source_oids_rejected(repo, gate)
+    _assert_pdf_gate_core_source_oid_tamper_rejected(repo, gate)
 
 
 def test_release_can_generate_source_bound_pdf_but_keeps_review_blocked(tmp_path: Path) -> None:
@@ -3279,15 +3550,77 @@ def test_release_can_generate_source_bound_pdf_but_keeps_review_blocked(tmp_path
     assert gate["capability_sink_mechanical_verification"]["verdict"] == "PASS"
     assert gate["capability_sink_mechanical_verification"]["rendered_observation_count"] == 422
     assert gate["capability_sink_mechanical_verification"]["safety_observation_count"] == 7
+    assert gate["core_sink_mechanical_verification"]["verdict"] == "PASS"
+    assert gate["core_sink_mechanical_verification"]["rendered_observation_count"] == 9
+    assert gate["core_sink_mechanical_verification"]["safety_observation_count"] == 0
     assert gate["rendered_sink_lineage"]["closes_global_gate"] is False
     assert gate["rendered_sink_lineage"]["state"] == "not_declared"
     assert gate["capability_sink_lineage"]["closes_global_gate"] is False
     assert gate["capability_sink_lineage"]["state"] == "not_declared"
+    assert gate["core_sink_lineage"]["closes_global_gate"] is False
+    assert gate["core_sink_lineage"]["state"] == "not_declared"
     assert manifest["release_status"] == "unsigned_preview_incomplete"
     assert manifest["independent_verification_verdict"] == "BLOCK"
-    validate_release_object(repo, "pdf-gate", gate)
+    provenance = _captured_pdf_provenance(gate)
+    assert provenance is not None
+    validate_release_object(repo, "pdf-gate", gate, pdf_provenance=provenance)
     _assert_pdf_gate_receipt_digest_tamper_rejected(repo, gate)
-    _assert_pdf_gate_not_declared_null_source_oids_valid(repo, gate)
+    _assert_pdf_gate_generated_source_oids_pinned(repo, gate)
+    _assert_pdf_gate_core_source_oid_tamper_rejected(repo, gate)
+
+    provenance_tampers = {
+        "sha256": "7" * 64,
+        "bytes": gate["bytes"] + 1,
+        "page_count": gate["page_count"] + 1,
+        "input_digest": "7" * 64,
+        "renderer": f"{gate['renderer']} hostile",
+    }
+    for field, hostile_value in provenance_tampers.items():
+        hostile = copy.deepcopy(gate)
+        hostile[field] = hostile_value
+        with pytest.raises(ReleaseInputError) as failure:
+            validate_release_object(repo, "pdf-gate", hostile, pdf_provenance=provenance)
+        assert str(failure.value) == "release object fails pdf-gate generated PDF provenance binding"
+
+    rechained = copy.deepcopy(gate)
+    rechained["sha256"] = "7" * 64
+    for verification_name in (
+        "horizon_sink_mechanical_verification",
+        "capability_sink_mechanical_verification",
+        "core_sink_mechanical_verification",
+    ):
+        verification = rechained[verification_name]
+        verification["pdf_sha256"] = rechained["sha256"]
+        verification["verification_digest"] = sha256_bytes(
+            canonical_json(
+                {
+                    "verdict": verification["verdict"],
+                    "pdf_sha256": verification["pdf_sha256"],
+                    "observation_digest": verification["observation_digest"],
+                    "rendered_observation_count": verification["rendered_observation_count"],
+                    "safety_observation_count": verification["safety_observation_count"],
+                }
+            )
+        )
+    with pytest.raises(ReleaseInputError) as failure:
+        validate_release_object(repo, "pdf-gate", rechained, pdf_provenance=provenance)
+    assert str(failure.value) == "release object fails pdf-gate generated PDF provenance binding"
+
+    for missing_or_invalid in (None, {}, {**provenance, "unexpected": True}):
+        with pytest.raises(ReleaseInputError) as failure:
+            validate_release_object(repo, "pdf-gate", gate, pdf_provenance=missing_or_invalid)
+        assert str(failure.value) == "release object has no valid independent generated PDF provenance"
+
+    canary = "HOSTILE-PDF-PROVENANCE-CANARY-MUST-NOT-ECHO"
+
+    class EvilProvenance(dict):
+        def __iter__(self):
+            raise RuntimeError(canary)
+
+    with pytest.raises(ReleaseInputError) as failure:
+        validate_release_object(repo, "pdf-gate", gate, pdf_provenance=EvilProvenance(provenance))
+    assert str(failure.value) == "release object has no valid independent generated PDF provenance"
+    assert canary not in _formatted_exception(failure)
 
     for mutate in (
         lambda value: value["rendered_sink_lineage"].update(closes_global_gate=True),
@@ -3298,28 +3631,78 @@ def test_release_can_generate_source_bound_pdf_but_keeps_review_blocked(tmp_path
         lambda value: value["capability_sink_lineage"]["global_denominator"].update(independently_reviewed=422),
         lambda value: value["capability_sink_lineage"].update(observed_sink_count=1),
         lambda value: value["capability_sink_mechanical_verification"].update(rendered_observation_count=421),
+        lambda value: value["core_sink_lineage"].update(closes_global_gate=True),
+        lambda value: value["core_sink_lineage"]["global_denominator"].update(independently_reviewed=155),
+        lambda value: value["core_sink_lineage"].update(observed_sink_count=1),
+        lambda value: value["core_sink_lineage"]["source"].update(
+            grounding_fallback_candidate_count=61
+        ),
+        lambda value: value["core_sink_mechanical_verification"].update(rendered_observation_count=8),
     ):
         hostile = copy.deepcopy(gate)
         mutate(hostile)
         with pytest.raises(RuntimeError, match="fails pdf-gate schema"):
-            validate_release_object(repo, "pdf-gate", hostile)
+            validate_release_object(repo, "pdf-gate", hostile, pdf_provenance=provenance)
 
     hostile = copy.deepcopy(gate)
-    hostile["capability_sink_mechanical_verification"]["pdf_sha256"] = "7" * 64
+    hostile["core_sink_mechanical_verification"]["pdf_sha256"] = "7" * 64
     with pytest.raises(RuntimeError, match="fails pdf-gate cross-field PDF digest binding"):
-        validate_release_object(repo, "pdf-gate", hostile)
+        validate_release_object(repo, "pdf-gate", hostile, pdf_provenance=provenance)
 
     for verification in (
         "horizon_sink_mechanical_verification",
         "capability_sink_mechanical_verification",
+        "core_sink_mechanical_verification",
     ):
         hostile = copy.deepcopy(gate)
         hostile[verification]["verification_digest"] = "7" * 64
         with pytest.raises(RuntimeError, match="fails pdf-gate mechanical verification digest binding"):
-            validate_release_object(repo, "pdf-gate", hostile)
+            validate_release_object(repo, "pdf-gate", hostile, pdf_provenance=provenance)
+
+    for verification in (
+        "horizon_sink_mechanical_verification",
+        "capability_sink_mechanical_verification",
+        "core_sink_mechanical_verification",
+    ):
+        hostile = copy.deepcopy(gate)
+        mechanical = hostile[verification]
+        mechanical["observation_digest"] = "7" * 64
+        mechanical["verification_digest"] = hashlib.sha256(
+            canonical_json(
+                {
+                    "verdict": mechanical["verdict"],
+                    "pdf_sha256": mechanical["pdf_sha256"],
+                    "observation_digest": mechanical["observation_digest"],
+                    "rendered_observation_count": mechanical["rendered_observation_count"],
+                    "safety_observation_count": mechanical["safety_observation_count"],
+                }
+            )
+        ).hexdigest()
+        with pytest.raises(RuntimeError, match="fails pdf-gate mechanical observation digest binding"):
+            validate_release_object(repo, "pdf-gate", hostile, pdf_provenance=provenance)
 
 
-def test_release_executes_declared_capability_lineage_for_all_pdf_branches(tmp_path: Path) -> None:
+def _assert_generated_pdf_receipts_bound(repo: Path, gate: dict[str, object]) -> None:
+    provenance = _captured_pdf_provenance(gate)
+    digest_fields = (
+        "rendered_subject_digest",
+        "omitted_subject_digest",
+        "subject_set_digest",
+        "safety_input_digest",
+    )
+    for lineage_name in _PDF_GATE_LINEAGES:
+        for field in digest_fields:
+            hostile = copy.deepcopy(gate)
+            lineage = hostile[lineage_name]
+            assert lineage["observed_sink_count"] == 1
+            lineage["sink_receipts"][0][field] = "7" * 64
+            lineage["sink_receipts_digest"] = sha256_bytes(canonical_json(lineage["sink_receipts"]))
+            with pytest.raises(ReleaseInputError) as failure:
+                validate_release_object(repo, "pdf-gate", hostile, pdf_provenance=provenance)
+            assert str(failure.value) == "release object fails pdf-gate observed PDF sink receipt binding"
+
+
+def test_release_executes_all_declared_sink_lineages_for_all_pdf_branches(tmp_path: Path) -> None:
     pytest.importorskip("reportlab")
     pytest.importorskip("pypdf")
     repo, synthetic_compiler = _fixture_repo(tmp_path)
@@ -3342,8 +3725,42 @@ def test_release_executes_declared_capability_lineage_for_all_pdf_branches(tmp_p
     assert generated_pdf["unmapped"] == generated_pdf["multiply_mapped"] == generated_pdf["fallback_count"] == 0
     assert generated_pdf["producer_verdict"] == "PASS"
     assert generated_pdf["independent_verdict"] == "BLOCK"
+    generated_core_lineage = generated_gate["core_sink_lineage"]
+    assert generated_core_lineage["state"] == "declared_incomplete"
+    assert generated_core_lineage["closes_global_gate"] is False
+    assert generated_core_lineage["global_denominator"]["independently_reviewed"] == 0
+    assert generated_core_lineage["global_denominator"]["unresolved"] == 2_136
+    assert generated_core_lineage["source"]["grounding_fallback_candidate_count"] == 62
+    assert generated_core_lineage["observed_sink_count"] == 1
+    generated_core_pdf = next(
+        row
+        for row in generated_core_lineage["sink_receipts"]
+        if row["sink_id"] == "pdf.product-purpose-and-outcomes"
+    )
+    assert generated_core_pdf["mapped_exactly_once"] == 155
+    assert generated_core_pdf["rendered"] == 9
+    assert generated_core_pdf["explicitly_omitted"] == 146
+    assert generated_core_pdf["safety_inputs_expected"] == generated_core_pdf["safety_inputs_bound"] == 0
+    assert generated_core_pdf["unmapped"] == generated_core_pdf["multiply_mapped"] == 0
+    assert generated_core_pdf["fallback_count"] == 0
+    assert generated_core_pdf["producer_verdict"] == "PASS"
+    assert generated_core_pdf["independent_verdict"] == "BLOCK"
+    provenance = _captured_pdf_provenance(generated_gate)
+    assert provenance is not None
+    _assert_generated_pdf_receipts_bound(repo, generated_gate)
     _assert_pdf_gate_receipt_digest_tamper_rejected(repo, generated_gate)
     _assert_pdf_gate_declared_source_oid_tamper_rejected(repo, generated_gate)
+
+    for field in ("contract_digest",):
+        hostile = copy.deepcopy(generated_gate)
+        hostile["rendered_sink_lineage"][field] = "7" * 64
+        with pytest.raises(ReleaseInputError, match="fails pdf-gate schema validation"):
+            validate_release_object(repo, "pdf-gate", hostile, pdf_provenance=provenance)
+    for field in ("candidate_digest", "facet_id_set_digest"):
+        hostile = copy.deepcopy(generated_gate)
+        hostile["rendered_sink_lineage"]["source"][field] = "7" * 64
+        with pytest.raises(ReleaseInputError, match="fails pdf-gate schema validation"):
+            validate_release_object(repo, "pdf-gate", hostile, pdf_provenance=provenance)
 
     absent = tmp_path / "declared-absent"
     build_release(repo, compiler, absent)
@@ -3355,6 +3772,13 @@ def test_release_executes_declared_capability_lineage_for_all_pdf_branches(tmp_p
     assert all(row["producer_verdict"] == "BLOCK" for row in absent_lineage["sink_receipts"])
     assert all(row["unmapped"] == 422 for row in absent_lineage["sink_receipts"])
     assert all(row["safety_violations"] == 7 for row in absent_lineage["sink_receipts"])
+    absent_core_lineage = absent_gate["core_sink_lineage"]
+    assert absent_core_lineage["state"] == "declared_incomplete"
+    assert absent_core_lineage["observed_sink_count"] == 0
+    assert absent_core_lineage["closes_global_gate"] is False
+    assert all(row["producer_verdict"] == "BLOCK" for row in absent_core_lineage["sink_receipts"])
+    assert all(row["unmapped"] == 155 for row in absent_core_lineage["sink_receipts"])
+    assert all(row["safety_violations"] == 0 for row in absent_core_lineage["sink_receipts"])
     _assert_pdf_gate_receipt_digest_tamper_rejected(repo, absent_gate)
     _assert_pdf_gate_declared_source_oid_tamper_rejected(repo, absent_gate)
 
@@ -3373,6 +3797,14 @@ def test_release_executes_declared_capability_lineage_for_all_pdf_branches(tmp_p
     assert all(row["producer_verdict"] == "BLOCK" for row in external_lineage["sink_receipts"])
     assert all(row["unmapped"] == 422 for row in external_lineage["sink_receipts"])
     assert all(row["safety_violations"] == 7 for row in external_lineage["sink_receipts"])
+    external_core_lineage = external_gate["core_sink_lineage"]
+    assert "core_sink_mechanical_verification" not in external_gate
+    assert external_core_lineage["state"] == "declared_incomplete"
+    assert external_core_lineage["observed_sink_count"] == 0
+    assert external_core_lineage["closes_global_gate"] is False
+    assert all(row["producer_verdict"] == "BLOCK" for row in external_core_lineage["sink_receipts"])
+    assert all(row["unmapped"] == 155 for row in external_core_lineage["sink_receipts"])
+    assert all(row["safety_violations"] == 0 for row in external_core_lineage["sink_receipts"])
     _assert_pdf_gate_receipt_digest_tamper_rejected(repo, external_gate)
     _assert_pdf_gate_declared_source_oid_tamper_rejected(repo, external_gate)
 
@@ -3396,6 +3828,74 @@ def test_release_rejects_generated_pdf_replacement_after_mechanical_verification
     monkeypatch.setattr(pdf_report, "build_master_reference_pdf", build_then_replace)
     with pytest.raises(ReleaseError, match="changed after mechanical verification"):
         build_release(repo, compiler, tmp_path / "release", generate_pdf=True)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["sha256", "bytes", "page_count", "input_digest", "reportlab_version"],
+)
+def test_release_rejects_generated_pdf_result_provenance_tamper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+) -> None:
+    pytest.importorskip("reportlab")
+    pytest.importorskip("pypdf")
+    import release.pdf_report as pdf_report
+
+    repo, compiler = _fixture_repo(tmp_path)
+    original_build = pdf_report.build_master_reference_pdf
+
+    def build_then_tamper(*args, **kwargs):
+        result = original_build(*args, **kwargs)
+        current = getattr(result, field)
+        hostile = current + 1 if type(current) is int else f"{current} hostile"
+        if field in {"sha256", "input_digest"}:
+            hostile = "7" * 64
+        return replace(result, **{field: hostile})
+
+    monkeypatch.setattr(pdf_report, "build_master_reference_pdf", build_then_tamper)
+    expected = (
+        "changed after mechanical verification"
+        if field in {"sha256", "bytes"}
+        else "provenance differs from verified producer owners"
+    )
+    with pytest.raises(ReleaseError, match=expected):
+        build_release(repo, compiler, tmp_path / "release", generate_pdf=True)
+
+
+def test_release_rejects_stateful_generated_pdf_inspection_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("reportlab")
+    pytest.importorskip("pypdf")
+    import release.pdf_report as pdf_report
+
+    repo, compiler = _fixture_repo(tmp_path)
+    original_inspect = pdf_report.inspect_pdf_report
+
+    class StatefulInspection:
+        def __init__(self, inspection):
+            self.sha256 = inspection.sha256
+            self.bytes = inspection.bytes
+            self._page_count = inspection.page_count
+            self._reads = 0
+
+        @property
+        def page_count(self):
+            self._reads += 1
+            return self._page_count if self._reads == 1 else self._page_count + 1
+
+    def inspect_with_stateful_page_count(*args, **kwargs):
+        return StatefulInspection(original_inspect(*args, **kwargs))
+
+    monkeypatch.setattr(pdf_report, "inspect_pdf_report", inspect_with_stateful_page_count)
+    output = tmp_path / "release"
+    build_release(repo, compiler, output, generate_pdf=True)
+    gate = json.loads((output / "pdf-gate.json").read_text(encoding="utf-8"))
+    pypdf = pytest.importorskip("pypdf")
+    assert gate["page_count"] == len(pypdf.PdfReader(output / "master-reference.pdf").pages)
 
 
 def test_external_ed25519_hooks_sign_verify_and_detect_tamper(tmp_path: Path) -> None:
