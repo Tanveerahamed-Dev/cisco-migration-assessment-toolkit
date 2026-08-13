@@ -31,7 +31,10 @@ from compiler.graphify import (  # noqa: E402
     OPAQUE_IDENTIFIER_POLICY,
 )
 from compiler.binary_review import unavailable_summary as unavailable_binary_review_summary  # noqa: E402
-from governance.consequential_claims import unavailable_bounded_curated_claim_summary  # noqa: E402
+from governance.consequential_claims import (  # noqa: E402
+    CONTENT_PATHS as CONSEQUENTIAL_CLAIM_CONTENT_PATHS,
+    unavailable_bounded_curated_claim_summary,
+)
 from release.model import (  # noqa: E402
     ReleaseInputError,
     canonical_json,
@@ -1281,13 +1284,88 @@ def test_compiler_bundle_preserves_pending_binary_review_and_rejects_custody_or_
 
 def test_compiler_bundle_recomputes_declared_claim_census_and_rejects_downgrade_or_json_type_confusion(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = _declared_claim_repository(tmp_path)
     compiler_output = tmp_path / "declared-claim-compiler"
     compile_repository(repo, compiler_output)
 
     bundle = compiler_bundle.load_compiler_bundle(compiler_output, repository_root=repo)
-    assert bundle.completeness["consequential_claim_denominator"]["state"] == "declared_incomplete"
+    summary = bundle.completeness["consequential_claim_denominator"]
+    expected_receipts = {
+        "master-reference/content/atlas-core.json": (
+            155,
+            "04ab89206d463fced49716ebef233b71f9e5f5e77e922f7b752dc6cb6c3a4f34",
+            "79253dc74d3c25a49179f38b57ea25c7ff603195eb03ee97c5eb38793d78d894",
+        ),
+        "master-reference/content/capability-catalog.json": (
+            422,
+            "12c2a143a2955faaf7694f22b78799af833cbd4f8e49a1bed87ea142dfe68917",
+            "b92ac8c92f0564c7dd542ffde283633bc8d6e3e5a43aaa77cfef50f65720b18a",
+        ),
+        "master-reference/content/delivery-governance.json": (
+            969,
+            "98bdb41437f666511812d40535906835082885e2b51b86f57bc4732865c9b622",
+            "623c12f3371523a93aa326169a83ab9eb554a35d2cfcf31668f2618af4774f76",
+        ),
+        "master-reference/content/open-horizon-register.json": (
+            315,
+            "e546770f88f1e941de2b2e98582c1aab90a0f0aaf5c581e593b6ef073905656b",
+            "0629c2857218a5b6a63a4e6979644ebbbd55753ddba248bde293478f142b35af",
+        ),
+        "master-reference/content/output-contract.json": (
+            275,
+            "8a87328023c97c137ca946d01a24d38c2230c22f1b48a51bd3ef1a7d2a49cc6f",
+            "3a7fdc2ab75413ec3993a5287edacc97a2fdb7f14f33bd25f47b5575670068d1",
+        ),
+    }
+    assert summary["schema_version"] == "bounded-curated-consequential-claims/2"
+    assert summary["state"] == "declared_incomplete"
+    assert summary["closed"] is False
+    assert summary["source_universe_expected"] == 5
+    assert summary["source_universe_registered"] == 5
+    assert summary["source_universe_unclassified"] == 0
+    assert summary["expected_candidates"] == 2_136
+    assert summary["discovered_candidates"] == 2_136
+    assert summary["classified_candidates"] == 2_136
+    assert summary["independently_reviewed_candidates"] == 0
+    assert summary["unresolved_candidates"] == 2_136
+    assert summary["candidate_set_digest"] == "a768b5a6c9a94390ada8e9c24627c8908f6a7b51e3f06d59b79ac8f1a5ffdd43"
+    assert summary["classification_digest"] == "b5bc4783b8bd6461fc4669b39a555ae061081a278e36712cdb6f70a5e673d1df"
+    assert summary["source_receipts_digest"] == "863f93c7bc0599b1cfe7e5b42eb5b10c8087a704af9de194be18d9bf28008689"
+    assert summary["error_codes"] == [
+        "consequential_claim_independent_review_pending",
+        "consequential_claim_rendered_sink_universe_incomplete",
+    ]
+    assert [receipt["path"] for receipt in summary["source_receipts"]] == list(CONSEQUENTIAL_CLAIM_CONTENT_PATHS)
+    for receipt in summary["source_receipts"]:
+        count, rule_set_digest, candidate_digest = expected_receipts[receipt["path"]]
+        assert set(receipt) == {
+            "path",
+            "git_blob_oid",
+            "sha256",
+            "bytes",
+            "classification",
+            "rule_set_digest",
+            "candidate_count",
+            "candidate_digest",
+        }
+        assert receipt["classification"] == "candidate_census"
+        assert receipt["candidate_count"] == count
+        assert receipt["rule_set_digest"] == rule_set_digest
+        assert receipt["candidate_digest"] == candidate_digest
+
+    claim_gate = next(
+        item
+        for item in bundle.completeness["acceptance_gates"]
+        if item["name"] == "consequential_claim_denominator_closed"
+    )
+    assert claim_gate == {
+        "name": "consequential_claim_denominator_closed",
+        "passed": False,
+        "expected": True,
+        "actual": False,
+    }
 
     completeness_path = compiler_output / "completeness.json"
     manifest_path = compiler_output / "manifest.json"
@@ -1302,22 +1380,26 @@ def test_compiler_bundle_recomputes_declared_claim_census_and_rejects_downgrade_
         manifest["completeness"]["bytes"] = len(candidate_raw)
         _write(manifest_path, canonical_json(manifest))
 
+    fixed_error = "compiler consequential-claim census is inconsistent"
+
+    def reject(candidate: dict[str, object], *, repository_root: Path | None = None) -> None:
+        rechain(candidate)
+        with pytest.raises(ReleaseInputError) as failure:
+            compiler_bundle.load_compiler_bundle(
+                compiler_output,
+                repository_root=repository_root,
+            )
+        assert str(failure.value) == fixed_error
+
     downgraded = json.loads(json.dumps(original_completeness))
     downgraded["consequential_claim_denominator"] = unavailable_bounded_curated_claim_summary(
         source_commit=downgraded["source_commit"],
         source_tree_digest=downgraded["source_tree_digest"],
     )
+    downgraded["consequential_claim_denominator"]["schema_version"] = "bounded-curated-consequential-claims/1"
     downgraded["semantic_accounting"]["consequential_claim_denominator_state"] = "not_declared"
-    rechain(downgraded)
     for repository_root in (None, repo):
-        with pytest.raises(
-            ReleaseInputError,
-            match="compiler consequential-claim census is inconsistent",
-        ):
-            compiler_bundle.load_compiler_bundle(
-                compiler_output,
-                repository_root=repository_root,
-            )
+        reject(downgraded, repository_root=repository_root)
 
     confused = json.loads(json.dumps(original_completeness))
     summary = confused["consequential_claim_denominator"]
@@ -1328,12 +1410,82 @@ def test_compiler_bundle_recomputes_declared_claim_census_and_rejects_downgrade_
     )
     gate["expected"] = 1
     gate["actual"] = 0
-    rechain(confused)
-    with pytest.raises(
-        ReleaseInputError,
-        match="compiler consequential-claim census is inconsistent",
+    reject(confused, repository_root=repo)
+
+    receipt_mutations = (
+        lambda receipts: receipts.pop(),
+        lambda receipts: receipts.append(json.loads(json.dumps(receipts[0]))),
+        lambda receipts: receipts.__setitem__(slice(0, 2), [receipts[1], receipts[0]]),
+    )
+    for mutate_receipts in receipt_mutations:
+        candidate = json.loads(json.dumps(original_completeness))
+        mutate_receipts(candidate["consequential_claim_denominator"]["source_receipts"])
+        reject(candidate)
+
+    for field, value in (
+        ("candidate_count", 156),
+        ("candidate_digest", "0" * 64),
+        ("rule_set_digest", "1" * 64),
     ):
+        candidate = json.loads(json.dumps(original_completeness))
+        candidate["consequential_claim_denominator"]["source_receipts"][0][field] = value
+        reject(candidate)
+
+    producer_value = r"D:\Users\Foreign.Person\Desktop\Atlas\semantic-spec-remap"
+    remapped = json.loads(json.dumps(original_completeness))
+    remapped["consequential_claim_denominator"]["classification_digest"] = producer_value
+    rechain(remapped)
+    with pytest.raises(ReleaseInputError) as failure:
+        compiler_bundle.load_compiler_bundle(compiler_output)
+    assert str(failure.value) == fixed_error
+    assert producer_value not in _formatted_exception(failure)
+
+    # Exercise the independent selected-commit comparison after the in-bundle
+    # census has recomputed successfully. The injected Git blob never reaches
+    # an error surface.
+    rechain(original_completeness)
+    from release import source_binding
+
+    original_read_git_blobs = source_binding._read_git_blobs
+    original_tree_census = source_binding._tree_census
+
+    def mismatched_git_blobs(root: Path, entries: list[object]) -> dict[str, bytes]:
+        raw_by_path = original_read_git_blobs(root, entries)
+        path = CONSEQUENTIAL_CLAIM_CONTENT_PATHS[0]
+        if path in raw_by_path:
+            raw_by_path[path] += producer_value.encode("utf-8")
+        return raw_by_path
+
+    monkeypatch.setattr(source_binding, "_read_git_blobs", mismatched_git_blobs)
+    with pytest.raises(ReleaseInputError) as failure:
         compiler_bundle.load_compiler_bundle(compiler_output, repository_root=repo)
+    assert str(failure.value) == fixed_error
+    assert producer_value not in _formatted_exception(failure)
+
+    # Exact bytes alone are insufficient: the retained compiler record OID
+    # must also be the selected commit's tree OID.  This catches mixed-object-
+    # format or substituted object identities before attempting a blob read.
+    monkeypatch.setattr(source_binding, "_read_git_blobs", original_read_git_blobs)
+    hostile_oid = "f" * 40
+
+    def mismatched_tree_census(root: Path, commit: str) -> list[object]:
+        entries = original_tree_census(root, commit)
+        target = CONSEQUENTIAL_CLAIM_CONTENT_PATHS[0]
+        return [
+            type(entry)(
+                mode=entry.mode,
+                blob_oid=hostile_oid if entry.path == target else entry.blob_oid,
+                stage=entry.stage,
+                path=entry.path,
+            )
+            for entry in entries
+        ]
+
+    monkeypatch.setattr(source_binding, "_tree_census", mismatched_tree_census)
+    with pytest.raises(ReleaseInputError) as failure:
+        compiler_bundle.load_compiler_bundle(compiler_output, repository_root=repo)
+    assert str(failure.value) == fixed_error
+    assert hostile_oid not in _formatted_exception(failure)
 
 
 def test_dependency_assessment_names_unpatched_image_size_advisories() -> None:

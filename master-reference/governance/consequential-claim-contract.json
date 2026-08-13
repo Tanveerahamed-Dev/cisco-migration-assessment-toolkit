@@ -1,81 +1,3357 @@
 {
-  "schema_version": "bounded-curated-consequential-claims/1",
+  "schema_version": "bounded-curated-consequential-claims/2",
   "contract_kind": "bounded_curated_content_claim_denominator",
   "source_universe": [
     {
       "path": "master-reference/content/atlas-core.json",
       "git_blob_oid": "27b7c166a78894d957bd3f35b5f64170dd11afb4",
-      "classification": "unclassified_source",
-      "reason_code": "consequential_claim_source_not_classified"
+      "classification": "candidate_census",
+      "expected_records": 135,
+      "expected_candidates": 155,
+      "grounding": {
+        "relationships": [
+          {
+            "field": "owner_refs",
+            "mode": "reference_array",
+            "registry": "owner_refs"
+          },
+          {
+            "field": "gap_refs",
+            "mode": "reference_array",
+            "registry": "gap_refs"
+          },
+          {
+            "field": "relation_to_next",
+            "mode": "relation_scalar",
+            "registry": null
+          },
+          {
+            "field": "from",
+            "mode": "reference_scalar",
+            "registry": "system_plane_refs"
+          },
+          {
+            "field": "to",
+            "mode": "reference_scalar",
+            "registry": "system_plane_refs"
+          }
+        ],
+        "declared_owner_fields": [],
+        "fallback_owner_ref": "owner.reference.contract",
+        "require_nonempty": true
+      },
+      "object_rules": [
+        {
+          "rule_id": "core.root",
+          "selector": [],
+          "record_kind": "atlas_core",
+          "identity": {
+            "kind": "root"
+          },
+          "expected_records": 1,
+          "fields": [
+            {
+              "field": "schema_version",
+              "classification": "registry_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "catalog_version",
+              "classification": "registry_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "title",
+              "classification": "label_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "as_of",
+              "classification": "registry_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "scope",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "scope_boundary"
+            },
+            {
+              "field": "truth_contract",
+              "classification": "container",
+              "value_type": "object",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "controlled_states",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "owners",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "current_baseline",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "outcomes",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "maturity_model",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "current_maturity",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "non_goals",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "lifecycle_stages",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "digital_thread",
+              "classification": "container",
+              "value_type": "object",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "system_architecture",
+              "classification": "container",
+              "value_type": "object",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "traffic_model",
+              "classification": "container",
+              "value_type": "object",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "domain_registry",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            }
+          ],
+          "constraints": []
+        },
+        {
+          "rule_id": "core.truth_contract",
+          "selector": [
+            "truth_contract"
+          ],
+          "record_kind": "truth_contract",
+          "identity": {
+            "kind": "root"
+          },
+          "expected_records": 1,
+          "fields": [
+            {
+              "field": "declared_scope_promise",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "truth_rule"
+            },
+            {
+              "field": "open_world_promise",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "truth_rule"
+            },
+            {
+              "field": "support_rule",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "truth_rule"
+            },
+            {
+              "field": "partial_rule",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "truth_rule"
+            },
+            {
+              "field": "training_rule",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "truth_rule"
+            },
+            {
+              "field": "client_data_rule",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "truth_rule"
+            }
+          ],
+          "constraints": []
+        },
+        {
+          "rule_id": "core.controlled_state",
+          "selector": [
+            "controlled_states[]"
+          ],
+          "record_kind": "controlled_state",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 6,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "value",
+              "classification": "registry_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "meaning",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "support_state_semantics"
+            }
+          ],
+          "constraints": [
+            {
+              "kind": "enum",
+              "field": "value",
+              "values": [
+                "current",
+                "partial",
+                "missing",
+                "gated",
+                "excluded",
+                "unknown"
+              ]
+            },
+            {
+              "kind": "unique_field",
+              "field": "value"
+            }
+          ]
+        },
+        {
+          "rule_id": "core.owner",
+          "selector": [
+            "owners[]"
+          ],
+          "record_kind": "owner",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 29,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "path",
+              "classification": "registry_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "symbol",
+              "classification": "registry_metadata",
+              "value_type": "string",
+              "required": false,
+              "claim_kind": null
+            },
+            {
+              "field": "kind",
+              "classification": "registry_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "claim_scope",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "owner_claim_scope"
+            }
+          ],
+          "constraints": []
+        },
+        {
+          "rule_id": "core.current_baseline",
+          "selector": [
+            "current_baseline[]"
+          ],
+          "record_kind": "current_baseline",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 6,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "statement",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "baseline_claim"
+            },
+            {
+              "field": "value",
+              "classification": "candidate",
+              "value_type": "baseline_value",
+              "required": true,
+              "claim_kind": "baseline_value"
+            },
+            {
+              "field": "owner_refs",
+              "classification": "relationship_metadata",
+              "value_type": "unique_string_array",
+              "required": true,
+              "claim_kind": null
+            }
+          ],
+          "constraints": []
+        },
+        {
+          "rule_id": "core.outcome",
+          "selector": [
+            "outcomes[]"
+          ],
+          "record_kind": "outcome",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 9,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "title",
+              "classification": "label_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "success_signal",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "success_condition"
+            }
+          ],
+          "constraints": []
+        },
+        {
+          "rule_id": "core.maturity_model",
+          "selector": [
+            "maturity_model[]"
+          ],
+          "record_kind": "maturity_model",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 7,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "level",
+              "classification": "registry_metadata",
+              "value_type": "integer",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "label",
+              "classification": "label_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "exit_criteria",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "acceptance_condition"
+            }
+          ],
+          "constraints": [
+            {
+              "kind": "integer_range",
+              "field": "level",
+              "minimum": 0,
+              "maximum": 6
+            },
+            {
+              "kind": "unique_field",
+              "field": "level"
+            }
+          ]
+        },
+        {
+          "rule_id": "core.current_maturity",
+          "selector": [
+            "current_maturity[]"
+          ],
+          "record_kind": "current_maturity",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 6,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "dimension",
+              "classification": "label_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "level",
+              "classification": "candidate",
+              "value_type": "integer",
+              "required": true,
+              "claim_kind": "maturity_claim"
+            },
+            {
+              "field": "state",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "support_state"
+            },
+            {
+              "field": "basis",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "evidence_basis"
+            },
+            {
+              "field": "owner_refs",
+              "classification": "relationship_metadata",
+              "value_type": "unique_string_array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "gap_refs",
+              "classification": "relationship_metadata",
+              "value_type": "unique_string_array_allow_empty",
+              "required": false,
+              "claim_kind": null
+            }
+          ],
+          "constraints": [
+            {
+              "kind": "integer_range",
+              "field": "level",
+              "minimum": 0,
+              "maximum": 6
+            },
+            {
+              "kind": "enum",
+              "field": "state",
+              "values": [
+                "current",
+                "partial",
+                "missing",
+                "gated",
+                "excluded",
+                "unknown"
+              ]
+            },
+            {
+              "kind": "reference_by_state",
+              "state_field": "state",
+              "owner_values": [
+                "current",
+                "partial"
+              ],
+              "owner_field": "owner_refs",
+              "gap_exempt_values": [
+                "current"
+              ],
+              "gap_field": "gap_refs"
+            }
+          ]
+        },
+        {
+          "rule_id": "core.non_goal",
+          "selector": [
+            "non_goals[]"
+          ],
+          "record_kind": "non_goal",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 8,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "statement",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "scope_boundary"
+            },
+            {
+              "field": "owner_refs",
+              "classification": "relationship_metadata",
+              "value_type": "unique_string_array",
+              "required": false,
+              "claim_kind": null
+            }
+          ],
+          "constraints": []
+        },
+        {
+          "rule_id": "core.lifecycle_stage",
+          "selector": [
+            "lifecycle_stages[]"
+          ],
+          "record_kind": "lifecycle_stage",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 10,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "order",
+              "classification": "registry_metadata",
+              "value_type": "integer",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "label",
+              "classification": "label_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "question",
+              "classification": "governance_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            }
+          ],
+          "constraints": []
+        },
+        {
+          "rule_id": "core.digital_thread",
+          "selector": [
+            "digital_thread"
+          ],
+          "record_kind": "digital_thread",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 1,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "abstention_rule",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "abstention_rule"
+            },
+            {
+              "field": "stages",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            }
+          ],
+          "constraints": []
+        },
+        {
+          "rule_id": "core.digital_thread_stage",
+          "selector": [
+            "digital_thread",
+            "stages[]"
+          ],
+          "record_kind": "digital_thread_stage",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 17,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "order",
+              "classification": "registry_metadata",
+              "value_type": "integer",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "label",
+              "classification": "label_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "entity_type",
+              "classification": "registry_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "question",
+              "classification": "governance_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "owner_refs",
+              "classification": "relationship_metadata",
+              "value_type": "unique_string_array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "abstention",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "abstention_rule"
+            },
+            {
+              "field": "relation_to_next",
+              "classification": "relationship_metadata",
+              "value_type": "string_or_null",
+              "required": true,
+              "claim_kind": null
+            }
+          ],
+          "constraints": []
+        },
+        {
+          "rule_id": "core.system_architecture",
+          "selector": [
+            "system_architecture"
+          ],
+          "record_kind": "system_architecture",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 1,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "planes",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "flow",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            }
+          ],
+          "constraints": []
+        },
+        {
+          "rule_id": "core.system_plane",
+          "selector": [
+            "system_architecture",
+            "planes[]"
+          ],
+          "record_kind": "system_plane",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 6,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "order",
+              "classification": "registry_metadata",
+              "value_type": "integer",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "title",
+              "classification": "label_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "purpose",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "architecture_claim"
+            },
+            {
+              "field": "inputs",
+              "classification": "candidate",
+              "value_type": "string_array",
+              "required": true,
+              "claim_kind": "architecture_input"
+            },
+            {
+              "field": "outputs",
+              "classification": "candidate",
+              "value_type": "string_array",
+              "required": true,
+              "claim_kind": "architecture_output"
+            },
+            {
+              "field": "owner_refs",
+              "classification": "relationship_metadata",
+              "value_type": "unique_string_array",
+              "required": true,
+              "claim_kind": null
+            }
+          ],
+          "constraints": []
+        },
+        {
+          "rule_id": "core.system_flow",
+          "selector": [
+            "system_architecture",
+            "flow[]"
+          ],
+          "record_kind": "system_flow",
+          "identity": {
+            "kind": "composite",
+            "fields": [
+              "from",
+              "to"
+            ]
+          },
+          "expected_records": 6,
+          "fields": [
+            {
+              "field": "from",
+              "classification": "relationship_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "to",
+              "classification": "relationship_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "contract",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "architecture_contract"
+            }
+          ],
+          "constraints": []
+        },
+        {
+          "rule_id": "core.traffic_model",
+          "selector": [
+            "traffic_model"
+          ],
+          "record_kind": "traffic_model",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 1,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "warning",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "scope_boundary"
+            },
+            {
+              "field": "planes",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            }
+          ],
+          "constraints": []
+        },
+        {
+          "rule_id": "core.traffic_plane",
+          "selector": [
+            "traffic_model",
+            "planes[]"
+          ],
+          "record_kind": "traffic_plane",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 8,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "order",
+              "classification": "registry_metadata",
+              "value_type": "integer",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "title",
+              "classification": "label_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "questions",
+              "classification": "governance_metadata",
+              "value_type": "string_array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "state",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "support_state"
+            },
+            {
+              "field": "current_scope",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "scope_boundary"
+            },
+            {
+              "field": "owner_refs",
+              "classification": "relationship_metadata",
+              "value_type": "unique_string_array_allow_empty",
+              "required": false,
+              "claim_kind": null
+            },
+            {
+              "field": "gap_refs",
+              "classification": "relationship_metadata",
+              "value_type": "unique_string_array",
+              "required": true,
+              "claim_kind": null
+            }
+          ],
+          "constraints": [
+            {
+              "kind": "enum",
+              "field": "state",
+              "values": [
+                "current",
+                "partial",
+                "missing",
+                "gated",
+                "excluded",
+                "unknown"
+              ]
+            },
+            {
+              "kind": "reference_by_state",
+              "state_field": "state",
+              "owner_values": [
+                "current",
+                "partial"
+              ],
+              "owner_field": "owner_refs",
+              "gap_exempt_values": [
+                "current"
+              ],
+              "gap_field": "gap_refs"
+            }
+          ]
+        },
+        {
+          "rule_id": "core.domain",
+          "selector": [
+            "domain_registry[]"
+          ],
+          "record_kind": "domain",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 12,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "title",
+              "classification": "label_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            }
+          ],
+          "constraints": []
+        }
+      ]
     },
     {
       "path": "master-reference/content/capability-catalog.json",
       "git_blob_oid": "19312d959afd79e0ae91330f6b864e0bcfba0456",
       "classification": "candidate_census",
-      "semantic_collection_selector": "domains[].entries[]",
-      "id_field": "id",
-      "owner_reference_fields": ["owner_refs", "gap_refs"],
-      "root_fields": [
-        {"field": "catalog_version", "classification": "registry_metadata"},
-        {"field": "denominator_rule", "classification": "governance_metadata"},
-        {"field": "domains", "classification": "collection_container"},
-        {"field": "entry_contract", "classification": "governance_metadata"},
-        {"field": "id", "classification": "identifier_metadata"},
-        {"field": "kind", "classification": "registry_metadata"},
-        {"field": "schema_version", "classification": "registry_metadata"}
-      ],
-      "domain_fields": [
-        {"field": "entity_role", "classification": "governance_metadata"},
-        {"field": "entries", "classification": "collection_container"},
-        {"field": "id", "classification": "identifier_metadata"}
-      ],
-      "facets": [
+      "expected_records": 225,
+      "expected_candidates": 422,
+      "grounding": {
+        "relationships": [
+          {
+            "field": "owner_refs",
+            "mode": "reference_array",
+            "registry": "owner_refs"
+          },
+          {
+            "field": "gap_refs",
+            "mode": "reference_array",
+            "registry": "gap_refs"
+          },
+          {
+            "field": "traffic_plane_refs",
+            "mode": "reference_array",
+            "registry": "traffic_plane_refs"
+          }
+        ],
+        "declared_owner_fields": [],
+        "fallback_owner_ref": "owner.reference.contract",
+        "require_nonempty": true
+      },
+      "object_rules": [
         {
-          "field": "state",
-          "classification": "consequential_claim_candidate",
-          "review_state": "pending_independent_review"
+          "rule_id": "capability.root",
+          "selector": [],
+          "record_kind": "capability_catalog",
+          "identity": {
+            "kind": "root"
+          },
+          "expected_records": 1,
+          "fields": [
+            {
+              "field": "schema_version",
+              "classification": "registry_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "catalog_version",
+              "classification": "registry_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "kind",
+              "classification": "registry_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "denominator_rule",
+              "classification": "governance_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "entry_contract",
+              "classification": "container",
+              "value_type": "object",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "domains",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            }
+          ],
+          "constraints": []
         },
         {
-          "field": "current_scope",
-          "classification": "consequential_claim_candidate",
-          "review_state": "pending_independent_review"
+          "rule_id": "capability.entry_contract",
+          "selector": [
+            "entry_contract"
+          ],
+          "record_kind": "capability_entry_contract",
+          "identity": {
+            "kind": "root"
+          },
+          "expected_records": 1,
+          "fields": [
+            {
+              "field": "current",
+              "classification": "governance_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "partial",
+              "classification": "governance_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "incomplete",
+              "classification": "governance_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "catalog_presence",
+              "classification": "governance_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            }
+          ],
+          "constraints": []
+        },
+        {
+          "rule_id": "capability.domain",
+          "selector": [
+            "domains[]"
+          ],
+          "record_kind": "capability_domain",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 12,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "entity_role",
+              "classification": "governance_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "entries",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            }
+          ],
+          "constraints": []
+        },
+        {
+          "rule_id": "capability.entry",
+          "selector": [
+            "domains[]",
+            "entries[]"
+          ],
+          "record_kind": "capability_entry",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 211,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "title",
+              "classification": "label_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "state",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "support_state"
+            },
+            {
+              "field": "current_scope",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "scope_boundary"
+            },
+            {
+              "field": "owner_refs",
+              "classification": "relationship_metadata",
+              "value_type": "unique_string_array_allow_empty",
+              "required": false,
+              "claim_kind": null
+            },
+            {
+              "field": "gap_refs",
+              "classification": "relationship_metadata",
+              "value_type": "unique_string_array_allow_empty",
+              "required": false,
+              "claim_kind": null
+            },
+            {
+              "field": "traffic_plane_refs",
+              "classification": "relationship_metadata",
+              "value_type": "unique_string_array_allow_empty",
+              "required": false,
+              "claim_kind": null
+            },
+            {
+              "field": "content_role",
+              "classification": "governance_metadata",
+              "value_type": "string",
+              "required": false,
+              "claim_kind": null
+            },
+            {
+              "field": "mutates_assessment_truth",
+              "classification": "governance_metadata",
+              "value_type": "boolean",
+              "required": false,
+              "claim_kind": null
+            }
+          ],
+          "constraints": [
+            {
+              "kind": "enum",
+              "field": "state",
+              "values": [
+                "current",
+                "partial",
+                "missing",
+                "gated",
+                "excluded",
+                "unknown"
+              ]
+            },
+            {
+              "kind": "reference_by_state",
+              "state_field": "state",
+              "owner_values": [
+                "current",
+                "partial"
+              ],
+              "owner_field": "owner_refs",
+              "gap_exempt_values": [
+                "current"
+              ],
+              "gap_field": "gap_refs"
+            }
+          ]
         }
-      ],
-      "excluded_fields": [
-        {"field": "content_role", "classification": "governance_metadata"},
-        {"field": "gap_refs", "classification": "relationship_metadata"},
-        {"field": "id", "classification": "identifier_metadata"},
-        {"field": "mutates_assessment_truth", "classification": "governance_metadata"},
-        {"field": "owner_refs", "classification": "relationship_metadata"},
-        {"field": "title", "classification": "label_metadata"},
-        {"field": "traffic_plane_refs", "classification": "relationship_metadata"}
       ]
     },
     {
       "path": "master-reference/content/delivery-governance.json",
       "git_blob_oid": "4db11fe882cc5c498c85e4b71c34979ae35e1b8b",
-      "classification": "unclassified_source",
-      "reason_code": "consequential_claim_source_not_classified"
+      "classification": "candidate_census",
+      "expected_records": 154,
+      "expected_candidates": 969,
+      "grounding": {
+        "relationships": [
+          {
+            "field": "owner_refs",
+            "mode": "reference_array",
+            "registry": "owner_refs"
+          },
+          {
+            "field": "gap_refs",
+            "mode": "reference_array",
+            "registry": "gap_refs"
+          }
+        ],
+        "declared_owner_fields": [
+          "owner_role",
+          "authority",
+          "independent_verifier"
+        ],
+        "fallback_owner_ref": "owner.reference.contract",
+        "require_nonempty": true
+      },
+      "object_rules": [
+        {
+          "rule_id": "delivery.root",
+          "selector": [],
+          "record_kind": "delivery_governance",
+          "identity": {
+            "kind": "root"
+          },
+          "expected_records": 1,
+          "fields": [
+            {
+              "field": "schema_version",
+              "classification": "registry_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "catalog_version",
+              "classification": "registry_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "gap_dispositions",
+              "classification": "candidate",
+              "value_type": "unique_string_array",
+              "required": true,
+              "claim_kind": "governance_vocabulary"
+            },
+            {
+              "field": "gaps",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "opportunity_axes",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "opportunity_portfolio",
+              "classification": "container",
+              "value_type": "object",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "decision_queue",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "invariants",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "quality_scenarios",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "labs",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            }
+          ],
+          "constraints": [
+            {
+              "kind": "const",
+              "field": "gap_dispositions",
+              "value": [
+                "build",
+                "evidence-first",
+                "research",
+                "human-decision",
+                "defer",
+                "out-of-scope"
+              ]
+            }
+          ]
+        },
+        {
+          "rule_id": "delivery.gap",
+          "selector": [
+            "gaps[]"
+          ],
+          "record_kind": "gap",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 41,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "title",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "rendered_framing_claim"
+            },
+            {
+              "field": "disposition",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "governance_disposition"
+            },
+            {
+              "field": "priority",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "recommendation_priority"
+            },
+            {
+              "field": "problem",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "gap_assertion"
+            },
+            {
+              "field": "next_actions",
+              "classification": "candidate",
+              "value_type": "string_array",
+              "required": true,
+              "claim_kind": "recommendation"
+            },
+            {
+              "field": "acceptance_evidence",
+              "classification": "candidate",
+              "value_type": "string_array",
+              "required": true,
+              "claim_kind": "acceptance_condition"
+            },
+            {
+              "field": "owner_role",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "accountability_assignment"
+            }
+          ],
+          "constraints": [
+            {
+              "kind": "enum",
+              "field": "disposition",
+              "values": [
+                "build",
+                "evidence-first",
+                "research",
+                "human-decision",
+                "defer",
+                "out-of-scope"
+              ]
+            },
+            {
+              "kind": "enum",
+              "field": "priority",
+              "values": [
+                "P0",
+                "P1",
+                "P2",
+                "P3"
+              ]
+            }
+          ]
+        },
+        {
+          "rule_id": "delivery.opportunity_axis",
+          "selector": [
+            "opportunity_axes[]"
+          ],
+          "record_kind": "opportunity_axis",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 7,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "range",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "decision_method_boundary"
+            },
+            {
+              "field": "five_means",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "decision_method_semantics"
+            }
+          ],
+          "constraints": [
+            {
+              "kind": "enum",
+              "field": "id",
+              "values": [
+                "axis.user-value",
+                "axis.risk-reduction",
+                "axis.evidence-readiness",
+                "axis.strategic-reach",
+                "axis.implementation-effort",
+                "axis.operational-change-risk",
+                "axis.uncertainty"
+              ]
+            }
+          ]
+        },
+        {
+          "rule_id": "delivery.opportunity_portfolio",
+          "selector": [
+            "opportunity_portfolio"
+          ],
+          "record_kind": "opportunity_portfolio",
+          "identity": {
+            "kind": "root"
+          },
+          "expected_records": 1,
+          "fields": [
+            {
+              "field": "ranking_rule",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "decision_method_boundary"
+            },
+            {
+              "field": "items",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            }
+          ],
+          "constraints": []
+        },
+        {
+          "rule_id": "delivery.opportunity",
+          "selector": [
+            "opportunity_portfolio",
+            "items[]"
+          ],
+          "record_kind": "opportunity",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 14,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "title",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "rendered_framing_claim"
+            },
+            {
+              "field": "gap_refs",
+              "classification": "relationship_metadata",
+              "value_type": "unique_string_array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "horizon",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "planning_recommendation"
+            },
+            {
+              "field": "axes",
+              "classification": "container",
+              "value_type": "object",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "axis_notes",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "decision_rationale"
+            }
+          ],
+          "constraints": []
+        },
+        {
+          "rule_id": "delivery.opportunity_axes",
+          "selector": [
+            "opportunity_portfolio",
+            "items[]",
+            "axes"
+          ],
+          "record_kind": "opportunity_axes",
+          "identity": {
+            "kind": "parent_field",
+            "field": "id"
+          },
+          "expected_records": 14,
+          "fields": [
+            {
+              "field": "user_value",
+              "classification": "candidate",
+              "value_type": "integer",
+              "required": true,
+              "claim_kind": "decision_input"
+            },
+            {
+              "field": "risk_reduction",
+              "classification": "candidate",
+              "value_type": "integer",
+              "required": true,
+              "claim_kind": "decision_input"
+            },
+            {
+              "field": "evidence_readiness",
+              "classification": "candidate",
+              "value_type": "integer",
+              "required": true,
+              "claim_kind": "decision_input"
+            },
+            {
+              "field": "strategic_reach",
+              "classification": "candidate",
+              "value_type": "integer",
+              "required": true,
+              "claim_kind": "decision_input"
+            },
+            {
+              "field": "implementation_effort",
+              "classification": "candidate",
+              "value_type": "integer",
+              "required": true,
+              "claim_kind": "decision_input"
+            },
+            {
+              "field": "operational_change_risk",
+              "classification": "candidate",
+              "value_type": "integer",
+              "required": true,
+              "claim_kind": "decision_input"
+            },
+            {
+              "field": "uncertainty",
+              "classification": "candidate",
+              "value_type": "integer",
+              "required": true,
+              "claim_kind": "decision_input"
+            }
+          ],
+          "constraints": [
+            {
+              "kind": "integer_range",
+              "field": "user_value",
+              "minimum": 1,
+              "maximum": 5
+            },
+            {
+              "kind": "integer_range",
+              "field": "risk_reduction",
+              "minimum": 1,
+              "maximum": 5
+            },
+            {
+              "kind": "integer_range",
+              "field": "evidence_readiness",
+              "minimum": 1,
+              "maximum": 5
+            },
+            {
+              "kind": "integer_range",
+              "field": "strategic_reach",
+              "minimum": 1,
+              "maximum": 5
+            },
+            {
+              "kind": "integer_range",
+              "field": "implementation_effort",
+              "minimum": 1,
+              "maximum": 5
+            },
+            {
+              "kind": "integer_range",
+              "field": "operational_change_risk",
+              "minimum": 1,
+              "maximum": 5
+            },
+            {
+              "kind": "integer_range",
+              "field": "uncertainty",
+              "minimum": 1,
+              "maximum": 5
+            }
+          ]
+        },
+        {
+          "rule_id": "delivery.decision",
+          "selector": [
+            "decision_queue[]"
+          ],
+          "record_kind": "decision",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 10,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "title",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "rendered_framing_claim"
+            },
+            {
+              "field": "status",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "decision_status"
+            },
+            {
+              "field": "authority",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "accountability_assignment"
+            },
+            {
+              "field": "options",
+              "classification": "candidate",
+              "value_type": "string_array",
+              "required": true,
+              "claim_kind": "decision_option_set"
+            },
+            {
+              "field": "current_recommendation",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "recommendation"
+            },
+            {
+              "field": "evidence_needed",
+              "classification": "candidate",
+              "value_type": "string_array",
+              "required": true,
+              "claim_kind": "acceptance_condition"
+            },
+            {
+              "field": "gap_refs",
+              "classification": "relationship_metadata",
+              "value_type": "unique_string_array",
+              "required": true,
+              "claim_kind": null
+            }
+          ],
+          "constraints": [
+            {
+              "kind": "enum",
+              "field": "status",
+              "values": [
+                "open",
+                "gated"
+              ]
+            }
+          ]
+        },
+        {
+          "rule_id": "delivery.invariant",
+          "selector": [
+            "invariants[]"
+          ],
+          "record_kind": "invariant",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 20,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "statement",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "normative_rule"
+            },
+            {
+              "field": "owner_refs",
+              "classification": "relationship_metadata",
+              "value_type": "unique_string_array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "formal_rule",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "normative_rule"
+            },
+            {
+              "field": "scope",
+              "classification": "candidate",
+              "value_type": "string_array",
+              "required": true,
+              "claim_kind": "scope_boundary"
+            },
+            {
+              "field": "enforcement_points",
+              "classification": "candidate",
+              "value_type": "string_array",
+              "required": true,
+              "claim_kind": "enforcement_claim"
+            },
+            {
+              "field": "supporting_tests",
+              "classification": "candidate",
+              "value_type": "string_array",
+              "required": true,
+              "claim_kind": "evidence_claim"
+            },
+            {
+              "field": "counterexample_test",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "evidence_claim"
+            },
+            {
+              "field": "exceptions_allowed",
+              "classification": "candidate",
+              "value_type": "string_array_allow_empty",
+              "required": true,
+              "claim_kind": "exception_boundary"
+            },
+            {
+              "field": "residual_risk",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "risk_boundary"
+            },
+            {
+              "field": "independent_verifier",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "accountability_assignment"
+            }
+          ],
+          "constraints": []
+        },
+        {
+          "rule_id": "delivery.quality_scenario",
+          "selector": [
+            "quality_scenarios[]"
+          ],
+          "record_kind": "quality_scenario",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 18,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "quality",
+              "classification": "registry_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "stimulus",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "scenario_premise"
+            },
+            {
+              "field": "environment",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "scope_boundary"
+            },
+            {
+              "field": "response",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "expected_behavior"
+            },
+            {
+              "field": "measure",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "acceptance_condition"
+            },
+            {
+              "field": "state",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "support_state"
+            },
+            {
+              "field": "owner_refs",
+              "classification": "relationship_metadata",
+              "value_type": "unique_string_array_allow_empty",
+              "required": false,
+              "claim_kind": null
+            },
+            {
+              "field": "gap_refs",
+              "classification": "relationship_metadata",
+              "value_type": "unique_string_array_allow_empty",
+              "required": false,
+              "claim_kind": null
+            }
+          ],
+          "constraints": [
+            {
+              "kind": "enum",
+              "field": "state",
+              "values": [
+                "current",
+                "partial",
+                "missing",
+                "gated",
+                "excluded",
+                "unknown"
+              ]
+            },
+            {
+              "kind": "reference_by_state",
+              "state_field": "state",
+              "owner_values": [
+                "current",
+                "partial"
+              ],
+              "owner_field": "owner_refs",
+              "gap_exempt_values": [
+                "current"
+              ],
+              "gap_field": "gap_refs"
+            }
+          ]
+        },
+        {
+          "rule_id": "delivery.lab",
+          "selector": [
+            "labs[]"
+          ],
+          "record_kind": "lab",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 14,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "number",
+              "classification": "registry_metadata",
+              "value_type": "integer",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "title",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "rendered_framing_claim"
+            },
+            {
+              "field": "content_role",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "advisory_boundary"
+            },
+            {
+              "field": "mutates_assessment_truth",
+              "classification": "candidate",
+              "value_type": "boolean",
+              "required": true,
+              "claim_kind": "truth_mutation_boundary"
+            },
+            {
+              "field": "underlying_support_state",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "support_state"
+            },
+            {
+              "field": "objective",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "advisory_scope"
+            },
+            {
+              "field": "interaction",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "advisory_procedure"
+            },
+            {
+              "field": "data_policy",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "normative_data_boundary"
+            },
+            {
+              "field": "proves",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "proof_scope"
+            },
+            {
+              "field": "does_not_prove",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "proof_boundary"
+            },
+            {
+              "field": "owner_refs",
+              "classification": "relationship_metadata",
+              "value_type": "unique_string_array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "gap_refs",
+              "classification": "relationship_metadata",
+              "value_type": "unique_string_array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "deterministic_definition",
+              "classification": "container",
+              "value_type": "object",
+              "required": true,
+              "claim_kind": null
+            }
+          ],
+          "constraints": [
+            {
+              "kind": "const",
+              "field": "content_role",
+              "value": "advisory"
+            },
+            {
+              "kind": "const",
+              "field": "mutates_assessment_truth",
+              "value": false
+            },
+            {
+              "kind": "enum",
+              "field": "underlying_support_state",
+              "values": [
+                "current",
+                "partial",
+                "missing",
+                "gated",
+                "excluded",
+                "unknown"
+              ]
+            },
+            {
+              "kind": "contains_reference",
+              "field": "gap_refs",
+              "reference": "gap.training-labs"
+            }
+          ]
+        },
+        {
+          "rule_id": "delivery.lab_definition",
+          "selector": [
+            "labs[]",
+            "deterministic_definition"
+          ],
+          "record_kind": "lab_definition",
+          "identity": {
+            "kind": "parent_field",
+            "field": "id"
+          },
+          "expected_records": 14,
+          "fields": [
+            {
+              "field": "execution_state",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "execution_state"
+            },
+            {
+              "field": "deterministic_inputs",
+              "classification": "candidate",
+              "value_type": "string_array",
+              "required": true,
+              "claim_kind": "scenario_premise"
+            },
+            {
+              "field": "expected_observations",
+              "classification": "candidate",
+              "value_type": "string_array",
+              "required": true,
+              "claim_kind": "expected_behavior"
+            },
+            {
+              "field": "reset_rule",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "advisory_procedure"
+            },
+            {
+              "field": "source_binding",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "provenance_claim"
+            }
+          ],
+          "constraints": [
+            {
+              "kind": "const",
+              "field": "execution_state",
+              "value": "definition_only"
+            }
+          ]
+        }
+      ]
     },
     {
       "path": "master-reference/content/open-horizon-register.json",
       "git_blob_oid": "ed375f35a60b7eb4cc5719223b5c349fd2bddba2",
-      "classification": "unclassified_source",
-      "reason_code": "consequential_claim_source_not_classified"
+      "classification": "candidate_census",
+      "expected_records": 65,
+      "expected_candidates": 315,
+      "grounding": {
+        "relationships": [
+          {
+            "field": "source_refs",
+            "mode": "reference_array",
+            "registry": "source_refs"
+          },
+          {
+            "field": "affected_capability_refs",
+            "mode": "reference_array",
+            "registry": "affected_capability_refs"
+          }
+        ],
+        "declared_owner_fields": [
+          "owner_role"
+        ],
+        "fallback_owner_ref": "owner.reference.contract",
+        "require_nonempty": true
+      },
+      "object_rules": [
+        {
+          "rule_id": "horizon.root",
+          "selector": [],
+          "record_kind": "horizon_register",
+          "identity": {
+            "kind": "root"
+          },
+          "expected_records": 1,
+          "fields": [
+            {
+              "field": "schema_version",
+              "classification": "registry_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "catalog_version",
+              "classification": "registry_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "kind",
+              "classification": "registry_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "content_role",
+              "classification": "governance_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "support_claim",
+              "classification": "governance_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "mutates_assessment_truth",
+              "classification": "governance_metadata",
+              "value_type": "boolean",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "promise",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "scope_boundary"
+            },
+            {
+              "field": "separation_contract",
+              "classification": "candidate",
+              "value_type": "string_array",
+              "required": true,
+              "claim_kind": "governance_rule"
+            },
+            {
+              "field": "maturity_levels",
+              "classification": "governance_metadata",
+              "value_type": "unique_string_array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "dispositions",
+              "classification": "governance_metadata",
+              "value_type": "unique_string_array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "intake_pipeline",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "review_triggers",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "cadence",
+              "classification": "container",
+              "value_type": "object",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "metrics",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "ui_views",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "watch_families",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "signals",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            }
+          ],
+          "constraints": [
+            {
+              "kind": "const",
+              "field": "content_role",
+              "value": "advisory"
+            },
+            {
+              "kind": "const",
+              "field": "support_claim",
+              "value": "none"
+            },
+            {
+              "kind": "const",
+              "field": "mutates_assessment_truth",
+              "value": false
+            },
+            {
+              "kind": "const",
+              "field": "maturity_levels",
+              "value": [
+                "research",
+                "draft",
+                "standardized",
+                "shipping",
+                "observed-in-estate",
+                "mainstream",
+                "unknown"
+              ]
+            },
+            {
+              "kind": "const",
+              "field": "dispositions",
+              "value": [
+                "adopt-candidate",
+                "watch",
+                "defer",
+                "reject",
+                "out-of-scope",
+                "unknown"
+              ]
+            }
+          ]
+        },
+        {
+          "rule_id": "horizon.intake",
+          "selector": [
+            "intake_pipeline[]"
+          ],
+          "record_kind": "horizon_intake",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 8,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "order",
+              "classification": "registry_metadata",
+              "value_type": "integer",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "action",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "governance_procedure"
+            }
+          ],
+          "constraints": []
+        },
+        {
+          "rule_id": "horizon.trigger",
+          "selector": [
+            "review_triggers[]"
+          ],
+          "record_kind": "horizon_trigger",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 7,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "event",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "review_trigger"
+            }
+          ],
+          "constraints": []
+        },
+        {
+          "rule_id": "horizon.cadence",
+          "selector": [
+            "cadence"
+          ],
+          "record_kind": "horizon_cadence",
+          "identity": {
+            "kind": "root"
+          },
+          "expected_records": 1,
+          "fields": [
+            {
+              "field": "scheduled",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "governance_cadence"
+            },
+            {
+              "field": "event_driven",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "governance_cadence"
+            },
+            {
+              "field": "staleness_rule",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "governance_cadence"
+            },
+            {
+              "field": "independent_challenge",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "governance_cadence"
+            }
+          ],
+          "constraints": []
+        },
+        {
+          "rule_id": "horizon.metric",
+          "selector": [
+            "metrics[]"
+          ],
+          "record_kind": "horizon_metric",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 9,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "definition",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "metric_definition"
+            },
+            {
+              "field": "target",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "metric_target"
+            },
+            {
+              "field": "warning",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "metric_boundary"
+            }
+          ],
+          "constraints": []
+        },
+        {
+          "rule_id": "horizon.ui_view",
+          "selector": [
+            "ui_views[]"
+          ],
+          "record_kind": "horizon_ui_view",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 5,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "label",
+              "classification": "label_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "shows",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "rendered_scope"
+            }
+          ],
+          "constraints": []
+        },
+        {
+          "rule_id": "horizon.watch_family",
+          "selector": [
+            "watch_families[]"
+          ],
+          "record_kind": "watch_family",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 18,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "name",
+              "classification": "label_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "source_url",
+              "classification": "registry_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "additional_urls",
+              "classification": "registry_metadata",
+              "value_type": "string_array",
+              "required": false,
+              "claim_kind": null
+            },
+            {
+              "field": "authority_scope",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "authority_boundary"
+            },
+            {
+              "field": "topics",
+              "classification": "governance_metadata",
+              "value_type": "string_array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "review_cadence",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "governance_cadence"
+            },
+            {
+              "field": "content_role",
+              "classification": "governance_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "engine_ingestion",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "ingestion_boundary"
+            }
+          ],
+          "constraints": [
+            {
+              "kind": "const",
+              "field": "content_role",
+              "value": "advisory"
+            },
+            {
+              "kind": "root_const",
+              "field": "support_claim",
+              "value": "none"
+            },
+            {
+              "kind": "root_const",
+              "field": "mutates_assessment_truth",
+              "value": false
+            }
+          ]
+        },
+        {
+          "rule_id": "horizon.signal",
+          "selector": [
+            "signals[]"
+          ],
+          "record_kind": "horizon_signal",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 16,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "theme",
+              "classification": "registry_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "title",
+              "classification": "label_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "first_seen",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "temporal_claim"
+            },
+            {
+              "field": "last_reviewed",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "temporal_claim"
+            },
+            {
+              "field": "maturity",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "support_state"
+            },
+            {
+              "field": "disposition",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "governance_disposition"
+            },
+            {
+              "field": "source_refs",
+              "classification": "relationship_metadata",
+              "value_type": "unique_string_array_allow_empty",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "adoption_evidence",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "evidence_claim"
+            },
+            {
+              "field": "affected_capability_refs",
+              "classification": "relationship_metadata",
+              "value_type": "unique_string_array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "business_relevance",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "business_claim"
+            },
+            {
+              "field": "risk_opportunity",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "risk_boundary"
+            },
+            {
+              "field": "current_coverage",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "scope_boundary"
+            },
+            {
+              "field": "uncertainty",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "uncertainty_boundary"
+            },
+            {
+              "field": "rationale",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "decision_rationale"
+            },
+            {
+              "field": "owner_role",
+              "classification": "registry_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "next_review_rule",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "governance_rule"
+            },
+            {
+              "field": "promotion_criteria",
+              "classification": "candidate",
+              "value_type": "string_array",
+              "required": true,
+              "claim_kind": "acceptance_condition"
+            },
+            {
+              "field": "privacy_trust_implications",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "privacy_boundary"
+            },
+            {
+              "field": "content_role",
+              "classification": "governance_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "support_claim",
+              "classification": "governance_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            }
+          ],
+          "constraints": [
+            {
+              "kind": "const",
+              "field": "content_role",
+              "value": "advisory"
+            },
+            {
+              "kind": "const",
+              "field": "support_claim",
+              "value": "none"
+            },
+            {
+              "kind": "root_const",
+              "field": "mutates_assessment_truth",
+              "value": false
+            },
+            {
+              "kind": "enum",
+              "field": "maturity",
+              "values": [
+                "research",
+                "draft",
+                "standardized",
+                "shipping",
+                "observed-in-estate",
+                "mainstream",
+                "unknown"
+              ]
+            },
+            {
+              "kind": "enum",
+              "field": "disposition",
+              "values": [
+                "adopt-candidate",
+                "watch",
+                "defer",
+                "reject",
+                "out-of-scope",
+                "unknown"
+              ]
+            },
+            {
+              "kind": "emptiness_by_enum",
+              "enum_field": "id",
+              "value_field": "source_refs",
+              "empty_values": [
+                "horizon.unknown"
+              ]
+            }
+          ]
+        }
+      ]
     },
     {
       "path": "master-reference/content/output-contract.json",
       "git_blob_oid": "e791ddf8e424de69e950b706fd18538cb90b4cd8",
-      "classification": "unclassified_source",
-      "reason_code": "consequential_claim_source_not_classified"
+      "classification": "candidate_census",
+      "expected_records": 64,
+      "expected_candidates": 275,
+      "grounding": {
+        "relationships": [
+          {
+            "field": "owner_refs",
+            "mode": "reference_array",
+            "registry": "owner_refs"
+          },
+          {
+            "field": "cross_artifact_ids",
+            "mode": "reference_array",
+            "registry": "cross_artifact_ids"
+          }
+        ],
+        "declared_owner_fields": [],
+        "fallback_owner_ref": "owner.reference.contract",
+        "require_nonempty": true
+      },
+      "object_rules": [
+        {
+          "rule_id": "output.root",
+          "selector": [],
+          "record_kind": "output_contract",
+          "identity": {
+            "kind": "root"
+          },
+          "expected_records": 1,
+          "fields": [
+            {
+              "field": "schema_version",
+              "classification": "registry_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "catalog_version",
+              "classification": "registry_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "purpose",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "scope_boundary"
+            },
+            {
+              "field": "members",
+              "classification": "container",
+              "value_type": "array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "external_signature_member",
+              "classification": "registry_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "disclosure",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "disclosure_boundary"
+            }
+          ],
+          "constraints": []
+        },
+        {
+          "rule_id": "output.member",
+          "selector": [
+            "members[]"
+          ],
+          "record_kind": "output_member",
+          "identity": {
+            "kind": "field",
+            "field": "id"
+          },
+          "expected_records": 21,
+          "fields": [
+            {
+              "field": "id",
+              "classification": "identifier_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "label",
+              "classification": "label_metadata",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "manifest_member",
+              "classification": "registry_metadata",
+              "value_type": "string_or_null",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "emission",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "emission_contract"
+            },
+            {
+              "field": "ui_surface",
+              "classification": "candidate",
+              "value_type": "boolean",
+              "required": true,
+              "claim_kind": "surface_claim"
+            },
+            {
+              "field": "gate",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "gate_contract"
+            },
+            {
+              "field": "dossier",
+              "classification": "container",
+              "value_type": "object",
+              "required": true,
+              "claim_kind": null
+            }
+          ],
+          "constraints": []
+        },
+        {
+          "rule_id": "output.dossier",
+          "selector": [
+            "members[]",
+            "dossier"
+          ],
+          "record_kind": "output_dossier",
+          "identity": {
+            "kind": "parent_field",
+            "field": "id"
+          },
+          "expected_records": 21,
+          "fields": [
+            {
+              "field": "audience",
+              "classification": "registry_metadata",
+              "value_type": "string_array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "decision_supported",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "decision_scope"
+            },
+            {
+              "field": "inputs",
+              "classification": "candidate",
+              "value_type": "string_array",
+              "required": true,
+              "claim_kind": "input_contract"
+            },
+            {
+              "field": "owner_refs",
+              "classification": "relationship_metadata",
+              "value_type": "unique_string_array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "producing_writer",
+              "classification": "container",
+              "value_type": "object",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "gate_behavior",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "gate_contract"
+            },
+            {
+              "field": "redaction",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "privacy_boundary"
+            },
+            {
+              "field": "cross_artifact_ids",
+              "classification": "relationship_metadata",
+              "value_type": "unique_string_array",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "validation",
+              "classification": "candidate",
+              "value_type": "string_array",
+              "required": true,
+              "claim_kind": "validation_contract"
+            },
+            {
+              "field": "distribution_inclusion",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "distribution_contract"
+            },
+            {
+              "field": "safe_sample_status",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "support_state"
+            },
+            {
+              "field": "human_owned_evidence",
+              "classification": "candidate",
+              "value_type": "string_array",
+              "required": true,
+              "claim_kind": "evidence_boundary"
+            },
+            {
+              "field": "limitations",
+              "classification": "candidate",
+              "value_type": "string_array",
+              "required": true,
+              "claim_kind": "scope_boundary"
+            }
+          ],
+          "constraints": []
+        },
+        {
+          "rule_id": "output.writer",
+          "selector": [
+            "members[]",
+            "dossier",
+            "producing_writer"
+          ],
+          "record_kind": "output_writer",
+          "identity": {
+            "kind": "parent_field",
+            "field": "id"
+          },
+          "expected_records": 21,
+          "fields": [
+            {
+              "field": "state",
+              "classification": "candidate",
+              "value_type": "string",
+              "required": true,
+              "claim_kind": "support_state"
+            },
+            {
+              "field": "path",
+              "classification": "registry_metadata",
+              "value_type": "string_or_null",
+              "required": true,
+              "claim_kind": null
+            },
+            {
+              "field": "symbol",
+              "classification": "registry_metadata",
+              "value_type": "string_or_null",
+              "required": true,
+              "claim_kind": null
+            }
+          ],
+          "constraints": [
+            {
+              "kind": "enum",
+              "field": "state",
+              "values": [
+                "current",
+                "conditional",
+                "external"
+              ]
+            },
+            {
+              "kind": "nullability_by_enum",
+              "field": "state",
+              "cases": [
+                {
+                  "value": "external",
+                  "null_fields": [
+                    "path",
+                    "symbol"
+                  ],
+                  "non_null_fields": []
+                },
+                {
+                  "value": "current",
+                  "null_fields": [],
+                  "non_null_fields": [
+                    "path",
+                    "symbol"
+                  ]
+                },
+                {
+                  "value": "conditional",
+                  "null_fields": [],
+                  "non_null_fields": [
+                    "path",
+                    "symbol"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
     }
   ],
   "compiler_integrity_claims": [
-    {"predicate": "repository.full_exposure_file_count", "classification": "integrity_metadata", "consequential": false},
-    {"predicate": "repository.graphify_status", "classification": "integrity_metadata", "consequential": false},
-    {"predicate": "repository.nonblank_line_record_count", "classification": "integrity_metadata", "consequential": false},
-    {"predicate": "repository.source_commit", "classification": "integrity_metadata", "consequential": false},
-    {"predicate": "repository.source_tree_digest", "classification": "integrity_metadata", "consequential": false},
-    {"predicate": "repository.tracked_file_count", "classification": "integrity_metadata", "consequential": false}
+    {
+      "predicate": "repository.full_exposure_file_count",
+      "classification": "integrity_metadata",
+      "consequential": false
+    },
+    {
+      "predicate": "repository.graphify_status",
+      "classification": "integrity_metadata",
+      "consequential": false
+    },
+    {
+      "predicate": "repository.nonblank_line_record_count",
+      "classification": "integrity_metadata",
+      "consequential": false
+    },
+    {
+      "predicate": "repository.source_commit",
+      "classification": "integrity_metadata",
+      "consequential": false
+    },
+    {
+      "predicate": "repository.source_tree_digest",
+      "classification": "integrity_metadata",
+      "consequential": false
+    },
+    {
+      "predicate": "repository.tracked_file_count",
+      "classification": "integrity_metadata",
+      "consequential": false
+    }
   ]
 }

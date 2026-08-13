@@ -969,6 +969,11 @@ def _validate_consequential_claim_projection(
             tree_by_path = {entry.path: entry for entry in _tree_census(root, source_commit)}
             if any(path not in tree_by_path for path in required_paths):
                 raise ValueError
+            if any(
+                str(sources_by_path[path].get("git_blob_oid") or "") != tree_by_path[path].blob_oid
+                for path in required_paths
+            ):
+                raise ValueError
             git_raw = _read_git_blobs(root, [tree_by_path[path] for path in sorted(required_paths)])
             if any(git_raw[path] != raw_by_path[path] for path in required_paths):
                 raise ValueError

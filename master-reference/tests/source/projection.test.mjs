@@ -22,6 +22,10 @@ const gitBlobOid = (value) => createHash("sha1")
   .update(Buffer.from(`blob ${value.byteLength}\0`, "ascii"))
   .update(value)
   .digest("hex");
+const gitBlobOid64 = (value) => createHash("sha256")
+  .update(Buffer.from(`blob ${value.byteLength}\0`, "ascii"))
+  .update(value)
+  .digest("hex");
 const stableJson = (value) => {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
   if (value && typeof value === "object") {
@@ -119,7 +123,7 @@ function unavailableConsequentialClaimSummary(
   reasonCode = "consequential_claim_contract_absent",
 ) {
   return {
-    schema_version: "bounded-curated-consequential-claims/1",
+    schema_version: "bounded-curated-consequential-claims/2",
     denominator_kind: "bounded_curated_content_claim_denominator",
     state: "not_declared",
     closed: false,
@@ -949,11 +953,57 @@ async function makeCompilerFixture(root) {
 }
 
 async function trackedConsequentialClaimFixture() {
+  const goldenReceipts = new Map([
+    ["master-reference/content/atlas-core.json", {
+      git_blob_oid: "27b7c166a78894d957bd3f35b5f64170dd11afb4",
+      sha256: "e6c53929bab88f27eb31f48afd4fe60a8dab80d04d06dd03759347924f110a26",
+      bytes: 40781,
+      rule_set_digest: "04ab89206d463fced49716ebef233b71f9e5f5e77e922f7b752dc6cb6c3a4f34",
+      candidate_count: 155,
+      candidate_digest: "79253dc74d3c25a49179f38b57ea25c7ff603195eb03ee97c5eb38793d78d894",
+    }],
+    ["master-reference/content/capability-catalog.json", {
+      git_blob_oid: "19312d959afd79e0ae91330f6b864e0bcfba0456",
+      sha256: "f4c4c5eb652d2ceb6ac60eca299a1a533334034a2d2551910fbbc364ba5c14ef",
+      bytes: 92635,
+      rule_set_digest: "12c2a143a2955faaf7694f22b78799af833cbd4f8e49a1bed87ea142dfe68917",
+      candidate_count: 422,
+      candidate_digest: "b92ac8c92f0564c7dd542ffde283633bc8d6e3e5a43aaa77cfef50f65720b18a",
+    }],
+    ["master-reference/content/delivery-governance.json", {
+      git_blob_oid: "4db11fe882cc5c498c85e4b71c34979ae35e1b8b",
+      sha256: "08d93874d6a611ee1661cc19705a9f0bb52a5b4240df7305d6ec7f6565afe787",
+      bytes: 105687,
+      rule_set_digest: "98bdb41437f666511812d40535906835082885e2b51b86f57bc4732865c9b622",
+      candidate_count: 969,
+      candidate_digest: "623c12f3371523a93aa326169a83ab9eb554a35d2cfcf31668f2618af4774f76",
+    }],
+    ["master-reference/content/open-horizon-register.json", {
+      git_blob_oid: "ed375f35a60b7eb4cc5719223b5c349fd2bddba2",
+      sha256: "428024fe0b19cc39a67d497e73f466dd1a3c7908c013a4bb0be11f4cd196116f",
+      bytes: 44570,
+      rule_set_digest: "e546770f88f1e941de2b2e98582c1aab90a0f0aaf5c581e593b6ef073905656b",
+      candidate_count: 315,
+      candidate_digest: "0629c2857218a5b6a63a4e6979644ebbbd55753ddba248bde293478f142b35af",
+    }],
+    ["master-reference/content/output-contract.json", {
+      git_blob_oid: "e791ddf8e424de69e950b706fd18538cb90b4cd8",
+      sha256: "2d5821c3597c911098bbbefd06f2d4edcd6c46a9707219ecbccf919670a3df7d",
+      bytes: 32430,
+      rule_set_digest: "8a87328023c97c137ca946d01a24d38c2230c22f1b48a51bd3ef1a7d2a49cc6f",
+      candidate_count: 275,
+      candidate_digest: "3a7fdc2ab75413ec3993a5287edacc97a2fdb7f14f33bd25f47b5575670068d1",
+    }],
+  ]);
   const rawSources = new Map();
   const contractRaw = await readFile(
     new URL(`../../../${CONSEQUENTIAL_CLAIM_CONTRACT_PATH}`, import.meta.url),
   );
   const contract = JSON.parse(contractRaw.toString("utf8"));
+  assert.equal(
+    sha256(contractRaw),
+    "4ebd7da5caa6aab63f3ba122d480fef638f46b866c665845087433074f436c8d",
+  );
   rawSources.set(CONSEQUENTIAL_CLAIM_CONTRACT_PATH, {
     raw: contractRaw,
     gitBlobOid: gitBlobOid(contractRaw),
@@ -963,17 +1013,26 @@ async function trackedConsequentialClaimFixture() {
     const raw = await readFile(new URL(`../../../${path}`, import.meta.url));
     const oid = gitBlobOid(raw);
     assert.equal(contractByPath.get(path).git_blob_oid, oid);
+    assert.deepEqual(
+      { git_blob_oid: oid, sha256: sha256(raw), bytes: raw.byteLength },
+      (({ git_blob_oid, sha256, bytes }) => ({ git_blob_oid, sha256, bytes }))(
+        goldenReceipts.get(path),
+      ),
+    );
     rawSources.set(path, { raw, gitBlobOid: oid });
   }
   const sourceReceipts = CONSEQUENTIAL_CLAIM_PATHS.map((path) => ({
     path,
-    git_blob_oid: rawSources.get(path).gitBlobOid,
-    sha256: sha256(rawSources.get(path).raw),
-    bytes: rawSources.get(path).raw.byteLength,
-    classification: contractByPath.get(path).classification,
+    git_blob_oid: goldenReceipts.get(path).git_blob_oid,
+    sha256: goldenReceipts.get(path).sha256,
+    bytes: goldenReceipts.get(path).bytes,
+    classification: "candidate_census",
+    rule_set_digest: goldenReceipts.get(path).rule_set_digest,
+    candidate_count: goldenReceipts.get(path).candidate_count,
+    candidate_digest: goldenReceipts.get(path).candidate_digest,
   }));
   const summary = {
-    schema_version: "bounded-curated-consequential-claims/1",
+    schema_version: "bounded-curated-consequential-claims/2",
     denominator_kind: "bounded_curated_content_claim_denominator",
     state: "declared_incomplete",
     closed: false,
@@ -983,27 +1042,24 @@ async function trackedConsequentialClaimFixture() {
     contract_path: CONSEQUENTIAL_CLAIM_CONTRACT_PATH,
     contract_git_blob_oid: gitBlobOid(contractRaw),
     contract_digest: sha256(contractRaw),
-    classification_digest: digestObject({
-      source_universe: contract.source_universe,
-      compiler_integrity_claims: contract.compiler_integrity_claims,
-    }),
+    classification_digest: "b5bc4783b8bd6461fc4669b39a555ae061081a278e36712cdb6f70a5e673d1df",
     source_universe_expected: 5,
-    source_universe_registered: 1,
-    source_universe_unclassified: 4,
+    source_universe_registered: 5,
+    source_universe_unclassified: 0,
     source_receipts: sourceReceipts,
-    source_receipts_digest: digestObject(sourceReceipts),
-    expected_candidates: 422,
-    discovered_candidates: 422,
-    classified_candidates: 422,
+    source_receipts_digest: "863f93c7bc0599b1cfe7e5b42eb5b10c8087a704af9de194be18d9bf28008689",
+    expected_candidates: 2136,
+    discovered_candidates: 2136,
+    classified_candidates: 2136,
     independently_reviewed_candidates: 0,
-    unresolved_candidates: 422,
-    candidate_set_digest: "413c6b4bc88a14621af2d314425a14fd3dd31973adf2c435030b6a6aa883b6ba",
+    unresolved_candidates: 2136,
+    candidate_set_digest: "a768b5a6c9a94390ada8e9c24627c8908f6a7b51e3f06d59b79ac8f1a5ffdd43",
     compiler_integrity_claims_expected: 6,
     compiler_integrity_claims_classified: 6,
     compiler_integrity_claims_consequential: 0,
     error_codes: [
       "consequential_claim_independent_review_pending",
-      "consequential_claim_source_universe_incomplete",
+      "consequential_claim_rendered_sink_universe_incomplete",
     ],
   };
   const completeness = {
@@ -1028,6 +1084,10 @@ async function trackedConsequentialClaimFixture() {
 test("projection independently recomputes the bounded claim census and rejects self-receipted drift", async () => {
   assert.equal(isPythonStripEmpty("\u001c"), true);
   assert.equal(isPythonStripEmpty("\u3000"), true);
+  assert.equal(isPythonStripEmpty("\u00a0\u2007\u202f"), true);
+  assert.equal(isPythonStripEmpty("\ufeff"), false);
+  assert.equal(isPythonStripEmpty("\u180e"), false);
+  assert.equal(isPythonStripEmpty("\ud83d\ude80"), false);
   assert.equal(isPythonStripEmpty("not-blank"), false);
   const fixture = await trackedConsequentialClaimFixture();
   validateConsequentialClaimCensus({
@@ -1035,6 +1095,91 @@ test("projection independently recomputes the bounded claim census and rejects s
     rawSources: fixture.rawSources,
     claimPredicates: CONSEQUENTIAL_INTEGRITY_PREDICATES,
   });
+
+  const bomContractRaw = Buffer.concat([
+    Buffer.from([0xEF, 0xBB, 0xBF]),
+    fixture.rawSources.get(CONSEQUENTIAL_CLAIM_CONTRACT_PATH).raw,
+  ]);
+  const bomSources = new Map(fixture.rawSources);
+  bomSources.set(CONSEQUENTIAL_CLAIM_CONTRACT_PATH, {
+    raw: bomContractRaw,
+    gitBlobOid: gitBlobOid(bomContractRaw),
+  });
+  const bomCompleteness = structuredClone(fixture.completeness);
+  Object.assign(bomCompleteness.consequential_claim_denominator, {
+    contract_git_blob_oid: gitBlobOid(bomContractRaw),
+    contract_digest: sha256(bomContractRaw),
+  });
+  assert.throws(
+    () => validateConsequentialClaimCensus({
+      completeness: bomCompleteness,
+      rawSources: bomSources,
+      claimPredicates: CONSEQUENTIAL_INTEGRITY_PREDICATES,
+    }),
+    /^Error: compiler consequential-claim census is inconsistent$/,
+  );
+
+  const floatPath = "master-reference/content/atlas-core.json";
+  const floatSourceText = fixture.rawSources.get(floatPath).raw.toString("utf8");
+  assert.equal(floatSourceText.includes('"level": 0'), true);
+  const floatRaw = Buffer.from(floatSourceText.replace('"level": 0', '"level": 0.0'), "utf8");
+  const floatSources = new Map(fixture.rawSources);
+  floatSources.set(floatPath, { raw: floatRaw, gitBlobOid: gitBlobOid(floatRaw) });
+  const floatContract = structuredClone(fixture.contract);
+  floatContract.source_universe.find((source) => source.path === floatPath).git_blob_oid =
+    gitBlobOid(floatRaw);
+  const floatContractRaw = Buffer.from(`${stableJson(floatContract)}\n`, "utf8");
+  floatSources.set(CONSEQUENTIAL_CLAIM_CONTRACT_PATH, {
+    raw: floatContractRaw,
+    gitBlobOid: gitBlobOid(floatContractRaw),
+  });
+  const floatCompleteness = structuredClone(fixture.completeness);
+  Object.assign(floatCompleteness.consequential_claim_denominator, {
+    contract_git_blob_oid: gitBlobOid(floatContractRaw),
+    contract_digest: sha256(floatContractRaw),
+    classification_digest: digestObject({
+      source_universe: floatContract.source_universe,
+      compiler_integrity_claims: floatContract.compiler_integrity_claims,
+    }),
+  });
+  assert.throws(
+    () => validateConsequentialClaimCensus({
+      completeness: floatCompleteness,
+      rawSources: floatSources,
+      claimPredicates: CONSEQUENTIAL_INTEGRITY_PREDICATES,
+    }),
+    /^Error: compiler consequential-claim census is inconsistent$/,
+  );
+
+  const mixedPath = CONSEQUENTIAL_CLAIM_PATHS[0];
+  const mixedRaw = fixture.rawSources.get(mixedPath).raw;
+  const mixedSources = new Map(fixture.rawSources);
+  mixedSources.set(mixedPath, { raw: mixedRaw, gitBlobOid: gitBlobOid64(mixedRaw) });
+  const mixedContract = structuredClone(fixture.contract);
+  mixedContract.source_universe.find((source) => source.path === mixedPath).git_blob_oid =
+    gitBlobOid64(mixedRaw);
+  const mixedContractRaw = Buffer.from(`${stableJson(mixedContract)}\n`, "utf8");
+  mixedSources.set(CONSEQUENTIAL_CLAIM_CONTRACT_PATH, {
+    raw: mixedContractRaw,
+    gitBlobOid: gitBlobOid(mixedContractRaw),
+  });
+  const mixedCompleteness = structuredClone(fixture.completeness);
+  Object.assign(mixedCompleteness.consequential_claim_denominator, {
+    contract_git_blob_oid: gitBlobOid(mixedContractRaw),
+    contract_digest: sha256(mixedContractRaw),
+    classification_digest: digestObject({
+      source_universe: mixedContract.source_universe,
+      compiler_integrity_claims: mixedContract.compiler_integrity_claims,
+    }),
+  });
+  assert.throws(
+    () => validateConsequentialClaimCensus({
+      completeness: mixedCompleteness,
+      rawSources: mixedSources,
+      claimPredicates: CONSEQUENTIAL_INTEGRITY_PREDICATES,
+    }),
+    /^Error: compiler consequential-claim census is inconsistent$/,
+  );
 
   const unavailable = {
     source_commit: "d".repeat(40),
@@ -1059,15 +1204,42 @@ test("projection independently recomputes the bounded claim census and rejects s
     }),
     /^Error: compiler consequential-claim census is inconsistent$/,
   );
+  const unavailableMarker = "private-unavailable-reason";
+  assert.throws(
+    () => validateConsequentialClaimCensus({
+      completeness: unavailable,
+      rawSources: new Map(),
+      claimPredicates: CONSEQUENTIAL_INTEGRITY_PREDICATES,
+      unavailableReason: unavailableMarker,
+    }),
+    (error) => {
+      assert.equal(error.message, "compiler consequential-claim census is inconsistent");
+      assert.equal(String(error.stack).includes(unavailableMarker), false);
+      return true;
+    },
+  );
+  assert.throws(
+    () => validateConsequentialClaimCensus({
+      completeness: null,
+      rawSources: null,
+      claimPredicates: null,
+    }),
+    /^Error: compiler consequential-claim census is inconsistent$/,
+  );
+  const halfBound = structuredClone(unavailable);
+  halfBound.consequential_claim_denominator.source_tree_digest = null;
+  assert.throws(
+    () => validateConsequentialClaimCensus({
+      completeness: halfBound,
+      rawSources: new Map(),
+      claimPredicates: CONSEQUENTIAL_INTEGRITY_PREDICATES,
+    }),
+    /^Error: compiler consequential-claim census is inconsistent$/,
+  );
 
   const reorderedContract = structuredClone(fixture.contract);
   reorderedContract.source_universe.reverse();
   reorderedContract.compiler_integrity_claims.reverse();
-  const census = reorderedContract.source_universe.find(
-    (row) => row.classification === "candidate_census",
-  );
-  census.owner_reference_fields.reverse();
-  census.facets.reverse();
   const reorderedRaw = Buffer.from(`${stableJson(reorderedContract)}\n`, "utf8");
   const reorderedSources = new Map(fixture.rawSources);
   reorderedSources.set(CONSEQUENTIAL_CLAIM_CONTRACT_PATH, {
@@ -1100,6 +1272,38 @@ test("projection independently recomputes the bounded claim census and rejects s
     /^Error: compiler consequential-claim census is inconsistent$/,
   );
 
+  const receiptMismatch = structuredClone(fixture.completeness);
+  receiptMismatch.consequential_claim_denominator.source_receipts[0].rule_set_digest =
+    "1".repeat(64);
+  receiptMismatch.consequential_claim_denominator.source_receipts_digest = digestObject(
+    receiptMismatch.consequential_claim_denominator.source_receipts,
+  );
+  assert.throws(
+    () => validateConsequentialClaimCensus({
+      completeness: receiptMismatch,
+      rawSources: fixture.rawSources,
+      claimPredicates: CONSEQUENTIAL_INTEGRITY_PREDICATES,
+    }),
+    /^Error: compiler consequential-claim census is inconsistent$/,
+  );
+
+  const swappedReceipts = structuredClone(fixture.completeness);
+  const firstDigest = swappedReceipts.consequential_claim_denominator.source_receipts[0].candidate_digest;
+  swappedReceipts.consequential_claim_denominator.source_receipts[0].candidate_digest =
+    swappedReceipts.consequential_claim_denominator.source_receipts[1].candidate_digest;
+  swappedReceipts.consequential_claim_denominator.source_receipts[1].candidate_digest = firstDigest;
+  swappedReceipts.consequential_claim_denominator.source_receipts_digest = digestObject(
+    swappedReceipts.consequential_claim_denominator.source_receipts,
+  );
+  assert.throws(
+    () => validateConsequentialClaimCensus({
+      completeness: swappedReceipts,
+      rawSources: fixture.rawSources,
+      claimPredicates: CONSEQUENTIAL_INTEGRITY_PREDICATES,
+    }),
+    /^Error: compiler consequential-claim census is inconsistent$/,
+  );
+
   const downgraded = structuredClone(fixture.completeness);
   downgraded.semantic_accounting.consequential_claim_denominator_state = "not_declared";
   downgraded.consequential_claim_denominator = unavailableConsequentialClaimSummary(
@@ -1115,11 +1319,201 @@ test("projection independently recomputes the bounded claim census and rejects s
     /^Error: compiler consequential-claim census is inconsistent$/,
   );
 
+  const contractMutations = {
+    "v1 downgrade": (contract) => {
+      contract.schema_version = "bounded-curated-consequential-claims/1";
+    },
+    "selector drift": (contract) => {
+      contract.source_universe[0].object_rules[0].selector.push("attacker[]");
+    },
+    "field type drift": (contract) => {
+      const field = contract.source_universe[0].object_rules[0].fields[0];
+      field.value_type = field.value_type === "any" ? "string" : "any";
+    },
+    "generic candidate collection": (contract) => {
+      const field = contract.source_universe
+        .flatMap((source) => source.object_rules)
+        .flatMap((rule) => rule.fields)
+        .find((item) => item.classification === "candidate");
+      field.value_type = "array";
+    },
+    "identity drift": (contract) => {
+      const rule = contract.source_universe
+        .flatMap((source) => source.object_rules)
+        .find((item) => item.identity.kind !== "root");
+      rule.identity = { kind: "root" };
+    },
+    "grounding drift": (contract) => {
+      contract.source_universe[0].grounding.fallback_owner_ref = "owner.projection-attacker";
+    },
+    "source count drift": (contract) => {
+      contract.source_universe[0].expected_candidates += 1;
+    },
+    "equal-count field-class swap": (contract) => {
+      const rule = contract.source_universe
+        .flatMap((source) => source.object_rules)
+        .find((item) =>
+          item.fields.some((field) => field.classification === "candidate") &&
+          item.fields.some((field) => field.classification !== "candidate"));
+      const candidate = rule.fields.find((field) => field.classification === "candidate");
+      const excluded = rule.fields.find((field) => field.classification !== "candidate");
+      const claimKind = candidate.claim_kind;
+      candidate.classification = excluded.classification;
+      candidate.claim_kind = null;
+      excluded.classification = "candidate";
+      excluded.claim_kind = claimKind;
+    },
+  };
+  for (const [label, mutate] of Object.entries(contractMutations)) {
+    const changed = structuredClone(fixture.contract);
+    mutate(changed);
+    const raw = Buffer.from(`${stableJson(changed)}\n`, "utf8");
+    const sources = new Map(fixture.rawSources);
+    sources.set(CONSEQUENTIAL_CLAIM_CONTRACT_PATH, { raw, gitBlobOid: gitBlobOid(raw) });
+    const completeness = structuredClone(fixture.completeness);
+    Object.assign(completeness.consequential_claim_denominator, {
+      contract_git_blob_oid: gitBlobOid(raw),
+      contract_digest: sha256(raw),
+      classification_digest: digestObject({
+        source_universe: changed.source_universe,
+        compiler_integrity_claims: changed.compiler_integrity_claims,
+      }),
+    });
+    assert.throws(
+      () => validateConsequentialClaimCensus({
+        completeness,
+        rawSources: sources,
+        claimPredicates: CONSEQUENTIAL_INTEGRITY_PREDICATES,
+      }),
+      /^Error: compiler consequential-claim census is inconsistent$/,
+      label,
+    );
+  }
+
+  const sourceMutations = {
+    "candidate field type": (sources) => {
+      const path = "master-reference/content/capability-catalog.json";
+      const value = JSON.parse(sources.get(path).raw.toString("utf8"));
+      value.domains[0].entries[0].current_scope = true;
+      return [path, value];
+    },
+    "record identity": (sources) => {
+      const path = "master-reference/content/capability-catalog.json";
+      const value = JSON.parse(sources.get(path).raw.toString("utf8"));
+      const entries = value.domains.flatMap((domain) => domain.entries);
+      entries[1].id = entries[0].id;
+      return [path, value];
+    },
+    "inflated owner registry": (sources) => {
+      const path = "master-reference/content/atlas-core.json";
+      const value = JSON.parse(sources.get(path).raw.toString("utf8"));
+      const template = value.owners[0];
+      value.owners.push(...Array.from({ length: 5_000 }, (_item, index) => ({
+        ...structuredClone(template),
+        id: `owner.load-probe.${index}`,
+      })));
+      return [path, value];
+    },
+    "orphan grounding": (sources) => {
+      const path = "master-reference/content/capability-catalog.json";
+      const value = JSON.parse(sources.get(path).raw.toString("utf8"));
+      const entry = value.domains.flatMap((domain) => domain.entries)
+        .find((item) => Array.isArray(item.owner_refs) && item.owner_refs.length > 0);
+      entry.owner_refs = ["owner.projection-attacker"];
+      return [path, value];
+    },
+    "gap on exempt state": (sources) => {
+      const path = "master-reference/content/capability-catalog.json";
+      const value = JSON.parse(sources.get(path).raw.toString("utf8"));
+      const delivery = JSON.parse(
+        sources.get("master-reference/content/delivery-governance.json").raw.toString("utf8"),
+      );
+      const entry = value.domains.flatMap((domain) => domain.entries)
+        .find((item) => item.state === "current" && item.owner_refs.length > 0);
+      entry.gap_refs = [delivery.gaps[0].id];
+      return [path, value];
+    },
+    "candidate value swap": (sources) => {
+      const path = "master-reference/content/capability-catalog.json";
+      const value = JSON.parse(sources.get(path).raw.toString("utf8"));
+      const entry = value.domains[0].entries[0];
+      [entry.state, entry.current_scope] = [entry.current_scope, entry.state];
+      return [path, value];
+    },
+    "decoded C0 control": (sources) => {
+      const path = "master-reference/content/capability-catalog.json";
+      const value = JSON.parse(sources.get(path).raw.toString("utf8"));
+      value.domains[0].entries[0].current_scope = "private\u0000candidate";
+      return [path, value];
+    },
+    "decoded C1 control": (sources) => {
+      const path = "master-reference/content/capability-catalog.json";
+      const value = JSON.parse(sources.get(path).raw.toString("utf8"));
+      value.domains[0].entries[0].current_scope = "private\u0085candidate";
+      return [path, value];
+    },
+    "decoded unpaired surrogate": (sources) => {
+      const path = "master-reference/content/capability-catalog.json";
+      const value = JSON.parse(sources.get(path).raw.toString("utf8"));
+      value.domains[0].entries[0].current_scope = "private\ud800candidate";
+      return [path, value];
+    },
+    "rule-set uniqueness": (sources) => {
+      const path = "master-reference/content/atlas-core.json";
+      const value = JSON.parse(sources.get(path).raw.toString("utf8"));
+      value.controlled_states[1].value = value.controlled_states[0].value;
+      return [path, value];
+    },
+    "known horizon signal without source refs": (sources) => {
+      const path = "master-reference/content/open-horizon-register.json";
+      const value = JSON.parse(sources.get(path).raw.toString("utf8"));
+      value.signals.find((signal) => signal.id !== "horizon.unknown").source_refs = [];
+      return [path, value];
+    },
+    "unknown horizon signal with source refs": (sources) => {
+      const path = "master-reference/content/open-horizon-register.json";
+      const value = JSON.parse(sources.get(path).raw.toString("utf8"));
+      value.signals.find((signal) => signal.id === "horizon.unknown").source_refs = [
+        value.watch_families[0].id,
+      ];
+      return [path, value];
+    },
+  };
+  for (const [label, mutate] of Object.entries(sourceMutations)) {
+    const sources = new Map(fixture.rawSources);
+    const [path, value] = mutate(sources);
+    const raw = Buffer.from(`${stableJson(value)}\n`, "utf8");
+    sources.set(path, { raw, gitBlobOid: gitBlobOid(raw) });
+    const contract = structuredClone(fixture.contract);
+    contract.source_universe.find((source) => source.path === path).git_blob_oid = gitBlobOid(raw);
+    const contractRaw = Buffer.from(`${stableJson(contract)}\n`, "utf8");
+    sources.set(CONSEQUENTIAL_CLAIM_CONTRACT_PATH, {
+      raw: contractRaw,
+      gitBlobOid: gitBlobOid(contractRaw),
+    });
+    const completeness = structuredClone(fixture.completeness);
+    Object.assign(completeness.consequential_claim_denominator, {
+      contract_git_blob_oid: gitBlobOid(contractRaw),
+      contract_digest: sha256(contractRaw),
+      classification_digest: digestObject({
+        source_universe: contract.source_universe,
+        compiler_integrity_claims: contract.compiler_integrity_claims,
+      }),
+    });
+    assert.throws(
+      () => validateConsequentialClaimCensus({
+        completeness,
+        rawSources: sources,
+        claimPredicates: CONSEQUENTIAL_INTEGRITY_PREDICATES,
+      }),
+      /^Error: compiler consequential-claim census is inconsistent$/,
+      label,
+    );
+  }
+
   const marker = "private-census-marker";
   const hostileContract = structuredClone(fixture.contract);
-  hostileContract.source_universe
-    .find((row) => row.classification === "candidate_census")
-    .root_fields[0].unexpected = marker;
+  hostileContract.source_universe[0].object_rules[0].fields[0].unexpected = marker;
   const hostileRaw = Buffer.from(`${stableJson(hostileContract)}\n`, "utf8");
   const hostileSources = new Map(fixture.rawSources);
   hostileSources.set(CONSEQUENTIAL_CLAIM_CONTRACT_PATH, {
@@ -1151,17 +1545,25 @@ test("projection independently recomputes the bounded claim census and rejects s
 
 test("projection removes staging when the bounded claim ledger is rechained", async (context) => {
   const mutations = {
-    "absent-summary denominator": (completeness) => {
-      completeness.consequential_claim_denominator.expected_candidates = 1;
+    "absent-summary denominator": {
+      mutate: (completeness) => {
+        completeness.consequential_claim_denominator.expected_candidates = 1;
+      },
     },
-    "global gate": (completeness) => {
-      const gate = completeness.acceptance_gates.find(
-        (item) => item.name === "consequential_claim_denominator_closed",
-      );
-      gate.expected = false;
+    "global gate": {
+      mutate: (completeness) => {
+        const gate = completeness.acceptance_gates.find(
+          (item) => item.name === "consequential_claim_denominator_closed",
+        );
+        gate.expected = false;
+      },
+    },
+    "float-typed candidate count": {
+      mutate: () => {},
+      rewrite: (text) => text.replace('"expected_candidates":0,', '"expected_candidates":0.0,'),
     },
   };
-  for (const [label, mutate] of Object.entries(mutations)) {
+  for (const [label, { mutate, rewrite }] of Object.entries(mutations)) {
     await context.test(label, async () => {
       const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-claim-rechain-"));
       try {
@@ -1175,11 +1577,24 @@ test("projection removes staging when the bounded claim ledger is rechained", as
           await readFile(join(input, ...manifest.completeness.path.split("/")), "utf8"),
         );
         mutate(completeness);
-        manifest.completeness = await writeVerifiedValue(
-          input,
-          manifest.completeness,
-          completeness,
-        );
+        if (rewrite) {
+          const canonical = `${stableJson(completeness)}\n`;
+          const rewritten = rewrite(canonical);
+          assert.notEqual(rewritten, canonical);
+          const bytes = Buffer.from(rewritten, "utf8");
+          await writeFile(join(input, ...manifest.completeness.path.split("/")), bytes);
+          manifest.completeness = {
+            ...manifest.completeness,
+            bytes: bytes.byteLength,
+            sha256: sha256(bytes),
+          };
+        } else {
+          manifest.completeness = await writeVerifiedValue(
+            input,
+            manifest.completeness,
+            completeness,
+          );
+        }
         await writeFile(manifestPath, `${stableJson(manifest)}\n`, "utf8");
         const output = join(scratch, "projection");
         await assert.rejects(

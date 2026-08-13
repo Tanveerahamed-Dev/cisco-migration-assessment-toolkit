@@ -67,7 +67,7 @@ const REQUIRED_ACCEPTANCE_GATES = Object.freeze([
   "bitemporal_event_ledger_populated_and_replayable",
   "release_lifecycle_transitions_integrated_and_receipted",
 ]);
-const CONSEQUENTIAL_CLAIM_SCHEMA_VERSION = "bounded-curated-consequential-claims/1";
+const CONSEQUENTIAL_CLAIM_SCHEMA_VERSION = "bounded-curated-consequential-claims/2";
 const CONSEQUENTIAL_CLAIM_KIND = "bounded_curated_content_claim_denominator";
 const CONSEQUENTIAL_CLAIM_CONTRACT_PATH =
   "master-reference/governance/consequential-claim-contract.json";
@@ -90,39 +90,59 @@ const CONSEQUENTIAL_INTEGRITY_PREDICATES = Object.freeze([
   "repository.source_tree_digest",
   "repository.tracked_file_count",
 ]);
-const CONSEQUENTIAL_ROOT_FIELDS = Object.freeze([
-  "catalog_version",
-  "denominator_rule",
-  "domains",
-  "entry_contract",
-  "id",
-  "kind",
-  "schema_version",
+const CONSEQUENTIAL_SOURCE_COUNTS = Object.freeze({
+  "master-reference/content/atlas-core.json": 155,
+  "master-reference/content/capability-catalog.json": 422,
+  "master-reference/content/delivery-governance.json": 969,
+  "master-reference/content/open-horizon-register.json": 315,
+  "master-reference/content/output-contract.json": 275,
+});
+const CONSEQUENTIAL_SOURCE_SPEC_DIGESTS = Object.freeze({
+  "master-reference/content/atlas-core.json":
+    "88945e355209ff0d42376c1fc5273f23729a21d5d82021f7c1ae63d38f65402e",
+  "master-reference/content/capability-catalog.json":
+    "21fb22df10f364ed8c6ac043d53aa31221ac6763e554a5a4f2c50fbe41015748",
+  "master-reference/content/delivery-governance.json":
+    "62b113259ea0bc532a3c76faa63c8ee55f20746dd928e17a29b380ca45c15d38",
+  "master-reference/content/open-horizon-register.json":
+    "5739641632a20c199cb3b12f57efb18825879c45dc0c2d8be22da6079c9c6d27",
+  "master-reference/content/output-contract.json":
+    "417d637ca609aed5e37c62004cc279618655c0c214ef4f61dab1db3b829d9084",
+});
+const CONSEQUENTIAL_EXPECTED_CANDIDATES = 2_136;
+const CONSEQUENTIAL_MAX_CANDIDATES = 100_000;
+const CONSEQUENTIAL_MAX_REFERENCES = 1_000;
+const CONSEQUENTIAL_MAX_REFERENCE_LENGTH = 1_024;
+const CONSEQUENTIAL_NOT_DECLARED_REASONS = new Set([
+  "consequential_claim_contract_absent",
+  "consequential_claim_contract_invalid",
+  "consequential_claim_dirty_preview_not_eligible",
 ]);
-const CONSEQUENTIAL_DOMAIN_FIELDS = Object.freeze(["entity_role", "entries", "id"]);
-const CONSEQUENTIAL_ROOT_FIELD_CLASSIFICATIONS = Object.freeze({
-  catalog_version: "registry_metadata",
-  denominator_rule: "governance_metadata",
-  domains: "collection_container",
-  entry_contract: "governance_metadata",
-  id: "identifier_metadata",
-  kind: "registry_metadata",
-  schema_version: "registry_metadata",
-});
-const CONSEQUENTIAL_DOMAIN_FIELD_CLASSIFICATIONS = Object.freeze({
-  entity_role: "governance_metadata",
-  entries: "collection_container",
-  id: "identifier_metadata",
-});
-const CONSEQUENTIAL_EXCLUDED_FIELD_CLASSIFICATIONS = Object.freeze({
-  content_role: "governance_metadata",
-  gap_refs: "relationship_metadata",
-  id: "identifier_metadata",
-  mutates_assessment_truth: "governance_metadata",
-  owner_refs: "relationship_metadata",
-  title: "label_metadata",
-  traffic_plane_refs: "relationship_metadata",
-});
+const CONSEQUENTIAL_CLASSIFICATIONS = new Set([
+  "candidate",
+  "container",
+  "governance_metadata",
+  "identifier_metadata",
+  "label_metadata",
+  "registry_metadata",
+  "relationship_metadata",
+]);
+const CONSEQUENTIAL_VALUE_TYPES = new Set([
+  "array",
+  "baseline_value",
+  "boolean",
+  "integer",
+  "null",
+  "object",
+  "string",
+  "string_array",
+  "string_array_allow_empty",
+  "string_or_null",
+  "unique_string_array",
+  "unique_string_array_allow_empty",
+]);
+const CONSEQUENTIAL_RULE_ID_PATTERN = /^[a-z][a-z0-9_.-]{0,127}$/;
+const CONSEQUENTIAL_SELECTOR_TOKEN_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*(?:\[\])?$/;
 const CONSEQUENTIAL_JSON_MAX_BYTES = 8 * 1024 * 1024;
 const CONSEQUENTIAL_JSON_MAX_DEPTH = 64;
 const CONSEQUENTIAL_JSON_MAX_VALUES = 1_000_000;
@@ -193,6 +213,7 @@ const COMPILER_JSON_MAX_BYTES = 32 * 1024 * 1024;
 const COMPILER_JSON_MAX_DEPTH = 128;
 const COMPILER_JSON_MAX_VALUES = 2_000_000;
 const COMPILER_JSON_MAX_STRING_BYTES = 8 * 1024 * 1024;
+const COMPILER_FLOAT_TOKEN_PATHS = new WeakMap();
 const ATLAS_STABLE_ID_PATTERN = /^urn:atlas:[a-z-]+:[0-9a-f]{24}$/;
 export const COMPILER_RECORD_KEYS_BY_GROUP = Object.freeze(Object.fromEntries(
   Object.entries({
@@ -250,7 +271,7 @@ function parseStrictSourceJson(bytes) {
   }
   let source;
   try {
-    source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
   } catch {
     throw new Error("compiler consequential-claim source JSON is invalid");
   }
@@ -286,7 +307,9 @@ function parseStrictSourceJson(bytes) {
         let characters = 0;
         for (let offset = 0; offset < parsed.length; offset += 1) {
           const unit = parsed.charCodeAt(offset);
-          if (unit >= 0xD800 && unit <= 0xDBFF) {
+          if (unit <= 0x001F || (unit >= 0x007F && unit <= 0x009F)) {
+            fail();
+          } else if (unit >= 0xD800 && unit <= 0xDBFF) {
             const next = parsed.charCodeAt(offset + 1);
             if (!(next >= 0xDC00 && next <= 0xDFFF)) fail();
             offset += 1;
@@ -379,15 +402,13 @@ function parseStrictSourceJson(bytes) {
     }
     numberPattern.lastIndex = index;
     const match = numberPattern.exec(source);
-    if (!match || match[0].length > 128 || !Number.isFinite(Number(match[0]))) fail();
-    if (!match[0].includes(".") && !/[eE]/.test(match[0])) {
-      try {
-        if (BigInt(match[0]) > BigInt(Number.MAX_SAFE_INTEGER) || BigInt(match[0]) < BigInt(Number.MIN_SAFE_INTEGER)) {
-          fail();
-        }
-      } catch {
+    if (!match || match[0].length > 128 || match[0].includes(".") || /[eE]/.test(match[0])) fail();
+    try {
+      if (BigInt(match[0]) > BigInt(Number.MAX_SAFE_INTEGER) || BigInt(match[0]) < BigInt(Number.MIN_SAFE_INTEGER)) {
         fail();
       }
+    } catch {
+      fail();
     }
     index += match[0].length;
   };
@@ -419,6 +440,13 @@ function unavailableConsequentialClaimSummary(
   sourceTreeDigest,
   reasonCode = "consequential_claim_contract_absent",
 ) {
+  const unbound = sourceCommit === null && sourceTreeDigest === null;
+  const bound = typeof sourceCommit === "string" &&
+    /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sourceCommit) &&
+    typeof sourceTreeDigest === "string" && /^[0-9a-f]{64}$/.test(sourceTreeDigest);
+  if ((!unbound && !bound) || !CONSEQUENTIAL_NOT_DECLARED_REASONS.has(reasonCode)) {
+    throw new Error("compiler consequential-claim census is inconsistent");
+  }
   return {
     schema_version: CONSEQUENTIAL_CLAIM_SCHEMA_VERSION,
     denominator_kind: CONSEQUENTIAL_CLAIM_KIND,
@@ -448,7 +476,7 @@ function unavailableConsequentialClaimSummary(
     error_codes: [
       reasonCode,
       "consequential_claim_source_universe_incomplete",
-    ],
+    ].sort(compareUnicodeCodePoints),
   };
 }
 
@@ -460,25 +488,6 @@ function exactStringMembership(value, expected) {
     stableJson([...value].sort(compareUnicodeCodePoints)) ===
       stableJson([...expected].sort(compareUnicodeCodePoints))
   );
-}
-
-function exactClassifiedFields(value, expected) {
-  if (!Array.isArray(value) || value.length !== Object.keys(expected).length) return false;
-  const actual = new Map();
-  for (const item of value) {
-    if (
-      !item ||
-      typeof item !== "object" ||
-      Array.isArray(item) ||
-      stableJson(Object.keys(item).sort()) !== stableJson(["classification", "field"]) ||
-      typeof item.field !== "string" ||
-      actual.has(item.field)
-    ) {
-      return false;
-    }
-    actual.set(item.field, item.classification);
-  }
-  return Object.entries(expected).every(([field, classification]) => actual.get(field) === classification);
 }
 
 export function isPythonStripEmpty(value) {
@@ -502,6 +511,584 @@ export function isPythonStripEmpty(value) {
   return true;
 }
 
+function consequentialCanonicalJson(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map(consequentialCanonicalJson).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort(compareUnicodeCodePoints)
+      .map((key) => `${JSON.stringify(key)}:${consequentialCanonicalJson(value[key])}`)
+      .join(",")}}`;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new Error("compiler consequential-claim census is inconsistent");
+    }
+    if (Number.isInteger(value)) return String(value);
+    const token = pythonFloatToken(value);
+    if (token === null) {
+      throw new Error("compiler consequential-claim census is inconsistent");
+    }
+    return token;
+  }
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined) {
+    throw new Error("compiler consequential-claim census is inconsistent");
+  }
+  return encoded;
+}
+
+function consequentialDigest(value) {
+  return sha256(Buffer.from(`${consequentialCanonicalJson(value)}\n`, "utf8"));
+}
+
+function isObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasExactKeys(value, expected) {
+  return (
+    isObject(value) &&
+    consequentialCanonicalJson(Object.keys(value).sort(compareUnicodeCodePoints)) ===
+      consequentialCanonicalJson([...expected].sort(compareUnicodeCodePoints))
+  );
+}
+
+function isNonblankString(value) {
+  return typeof value === "string" && !isPythonStripEmpty(value);
+}
+
+function nonemptyDistinctStrings(value) {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every(isNonblankString) &&
+    new Set(value).size === value.length
+  );
+}
+
+function valueMatchesConsequentialType(value, expected) {
+  const stringArray = (allowEmpty, unique) =>
+    Array.isArray(value) &&
+    (allowEmpty || value.length > 0) &&
+    value.every(isNonblankString) &&
+    (!unique || new Set(value).size === value.length);
+  if (expected === "array") return Array.isArray(value);
+  if (expected === "baseline_value") {
+    if (isNonblankString(value)) return true;
+    if (Array.isArray(value)) return value.length > 0 && value.every(isNonblankString);
+    if (!isObject(value) || Object.keys(value).length === 0) return false;
+    return Object.entries(value).every(([key, item]) =>
+      isNonblankString(key) && (
+        isNonblankString(item) ||
+        Number.isSafeInteger(item) ||
+        (Array.isArray(item) && item.length > 0 && item.every(isNonblankString))
+      ));
+  }
+  if (expected === "boolean") return typeof value === "boolean";
+  if (expected === "integer") return Number.isSafeInteger(value);
+  if (expected === "null") return value === null;
+  if (expected === "object") return isObject(value);
+  if (expected === "string") return isNonblankString(value);
+  if (expected === "string_array") return stringArray(false, false);
+  if (expected === "string_array_allow_empty") return stringArray(true, false);
+  if (expected === "unique_string_array") return stringArray(false, true);
+  if (expected === "unique_string_array_allow_empty") return stringArray(true, true);
+  if (expected === "string_or_null") return value === null || isNonblankString(value);
+  return false;
+}
+
+function validateConstraintContract(constraint, fieldRules) {
+  if (!isObject(constraint) || typeof constraint.kind !== "string") return false;
+  const kind = constraint.kind;
+  if (kind === "const") {
+    return hasExactKeys(constraint, ["kind", "field", "value"]) && fieldRules.has(constraint.field);
+  }
+  if (kind === "enum") {
+    return hasExactKeys(constraint, ["kind", "field", "values"]) &&
+      fieldRules.has(constraint.field) && nonemptyDistinctStrings(constraint.values);
+  }
+  if (kind === "integer_range") {
+    return hasExactKeys(constraint, ["kind", "field", "minimum", "maximum"]) &&
+      fieldRules.has(constraint.field) &&
+      Number.isSafeInteger(constraint.minimum) &&
+      Number.isSafeInteger(constraint.maximum) &&
+      constraint.minimum <= constraint.maximum &&
+      fieldRules.get(constraint.field).value_type === "integer";
+  }
+  if (kind === "unique_field") {
+    return hasExactKeys(constraint, ["kind", "field"]) &&
+      fieldRules.has(constraint.field) && fieldRules.get(constraint.field).required === true;
+  }
+  if (kind === "contains_reference") {
+    return hasExactKeys(constraint, ["kind", "field", "reference"]) &&
+      fieldRules.has(constraint.field) &&
+      fieldRules.get(constraint.field).classification === "relationship_metadata" &&
+      isNonblankString(constraint.reference);
+  }
+  if (kind === "root_const") {
+    return hasExactKeys(constraint, ["kind", "field", "value"]) &&
+      isNonblankString(constraint.field);
+  }
+  if (kind === "reference_by_state") {
+    const keys = [
+      "kind",
+      "state_field",
+      "owner_values",
+      "owner_field",
+      "gap_exempt_values",
+      "gap_field",
+    ];
+    return hasExactKeys(constraint, keys) &&
+      fieldRules.has(constraint.state_field) &&
+      fieldRules.has(constraint.owner_field) &&
+      fieldRules.has(constraint.gap_field) &&
+      nonemptyDistinctStrings(constraint.owner_values) &&
+      nonemptyDistinctStrings(constraint.gap_exempt_values) &&
+      fieldRules.get(constraint.owner_field).classification === "relationship_metadata" &&
+      fieldRules.get(constraint.gap_field).classification === "relationship_metadata";
+  }
+  if (kind === "emptiness_by_enum") {
+    return hasExactKeys(constraint, ["kind", "enum_field", "value_field", "empty_values"]) &&
+      fieldRules.has(constraint.enum_field) && fieldRules.has(constraint.value_field) &&
+      nonemptyDistinctStrings(constraint.empty_values) &&
+      ["string_array_allow_empty", "unique_string_array_allow_empty"].includes(
+        fieldRules.get(constraint.value_field).value_type,
+      );
+  }
+  if (kind !== "nullability_by_enum" ||
+      !hasExactKeys(constraint, ["kind", "field", "cases"]) ||
+      !fieldRules.has(constraint.field) ||
+      !Array.isArray(constraint.cases) ||
+      constraint.cases.length === 0) {
+    return false;
+  }
+  const values = new Set();
+  for (const item of constraint.cases) {
+    if (!hasExactKeys(item, ["value", "null_fields", "non_null_fields"]) ||
+        !isNonblankString(item.value) || values.has(item.value) ||
+        !Array.isArray(item.null_fields) || !Array.isArray(item.non_null_fields) ||
+        new Set(item.null_fields).size !== item.null_fields.length ||
+        new Set(item.non_null_fields).size !== item.non_null_fields.length) {
+      return false;
+    }
+    const allFields = [...item.null_fields, ...item.non_null_fields];
+    if (allFields.some((field) => typeof field !== "string" || !fieldRules.has(field)) ||
+        item.null_fields.some((field) => item.non_null_fields.includes(field)) ||
+        allFields.some((field) => fieldRules.get(field).value_type !== "string_or_null")) {
+      return false;
+    }
+    values.add(item.value);
+  }
+  return true;
+}
+
+function validateSourceRuleContract(source, allRuleIds, fail) {
+  if (!hasExactKeys(source.grounding, [
+    "relationships",
+    "declared_owner_fields",
+    "fallback_owner_ref",
+    "require_nonempty",
+  ])) fail();
+  const grounding = source.grounding;
+  if (!Array.isArray(grounding.relationships) ||
+      !Array.isArray(grounding.declared_owner_fields) ||
+      grounding.declared_owner_fields.some((field) => !isNonblankString(field)) ||
+      new Set(grounding.declared_owner_fields).size !== grounding.declared_owner_fields.length ||
+      !isNonblankString(grounding.fallback_owner_ref) || grounding.require_nonempty !== true) {
+    fail();
+  }
+  const relationships = new Map();
+  for (const relationship of grounding.relationships) {
+    if (!hasExactKeys(relationship, ["field", "mode", "registry"]) ||
+        !isNonblankString(relationship.field) || relationships.has(relationship.field) ||
+        !["reference_array", "reference_scalar", "relation_scalar"].includes(relationship.mode) ||
+        (["reference_array", "reference_scalar"].includes(relationship.mode) &&
+          !isNonblankString(relationship.registry)) ||
+        (relationship.mode === "relation_scalar" && relationship.registry !== null)) {
+      fail();
+    }
+    relationships.set(relationship.field, relationship);
+  }
+  if (!Array.isArray(source.object_rules) || source.object_rules.length === 0) fail();
+  let recordTotal = 0;
+  let candidateTotal = 0;
+  const classifiedRelationships = new Map();
+  const classifiedFields = new Set();
+  for (const rule of source.object_rules) {
+    if (!hasExactKeys(rule, [
+      "rule_id",
+      "selector",
+      "record_kind",
+      "identity",
+      "expected_records",
+      "fields",
+      "constraints",
+    ]) ||
+        typeof rule.rule_id !== "string" || !CONSEQUENTIAL_RULE_ID_PATTERN.test(rule.rule_id) ||
+        allRuleIds.has(rule.rule_id) ||
+        !Array.isArray(rule.selector) ||
+        rule.selector.some((token) => typeof token !== "string" || !CONSEQUENTIAL_SELECTOR_TOKEN_PATTERN.test(token)) ||
+        !isNonblankString(rule.record_kind) ||
+        !Number.isSafeInteger(rule.expected_records) || rule.expected_records < 1 ||
+        !Array.isArray(rule.fields) || rule.fields.length === 0 ||
+        !Array.isArray(rule.constraints)) {
+      fail();
+    }
+    allRuleIds.add(rule.rule_id);
+    const identity = rule.identity;
+    if (!isObject(identity) || !["root", "field", "parent_field", "composite"].includes(identity.kind)) {
+      fail();
+    }
+    if ((identity.kind === "root" && !hasExactKeys(identity, ["kind"])) ||
+        (["field", "parent_field"].includes(identity.kind) &&
+          (!hasExactKeys(identity, ["kind", "field"]) || !isNonblankString(identity.field))) ||
+        (identity.kind === "composite" &&
+          (!hasExactKeys(identity, ["kind", "fields"]) || !nonemptyDistinctStrings(identity.fields)))) {
+      fail();
+    }
+    const fieldRules = new Map();
+    for (const field of rule.fields) {
+      if (!hasExactKeys(field, ["field", "classification", "value_type", "required", "claim_kind"]) ||
+          !isNonblankString(field.field) || fieldRules.has(field.field) ||
+          !CONSEQUENTIAL_CLASSIFICATIONS.has(field.classification) ||
+          !CONSEQUENTIAL_VALUE_TYPES.has(field.value_type) ||
+          (field.classification === "candidate" && ["array", "object"].includes(field.value_type)) ||
+          typeof field.required !== "boolean" ||
+          (field.classification === "candidate"
+            ? typeof field.claim_kind !== "string" || !CONSEQUENTIAL_RULE_ID_PATTERN.test(field.claim_kind)
+            : field.claim_kind !== null)) {
+        fail();
+      }
+      fieldRules.set(field.field, field);
+      classifiedFields.add(field.field);
+      if (field.classification === "relationship_metadata") {
+        if (!classifiedRelationships.has(field.field)) classifiedRelationships.set(field.field, new Set());
+        classifiedRelationships.get(field.field).add(field.value_type);
+      }
+      if (field.classification === "candidate") candidateTotal += rule.expected_records;
+    }
+    const identityFields = identity.kind === "field" ? [identity.field]
+      : identity.kind === "composite" ? identity.fields : [];
+    if (identityFields.some((field) => !fieldRules.has(field))) fail();
+    if (rule.constraints.some((constraint) => !validateConstraintContract(constraint, fieldRules))) fail();
+    recordTotal += rule.expected_records;
+  }
+  if (classifiedRelationships.size !== relationships.size ||
+      [...classifiedRelationships.keys()].some((field) => !relationships.has(field))) {
+    fail();
+  }
+  if (grounding.declared_owner_fields.some((field) => !classifiedFields.has(field))) fail();
+  for (const [field, valueTypes] of classifiedRelationships) {
+    const mode = relationships.get(field).mode;
+    const allowed = mode === "reference_array"
+      ? new Set(["unique_string_array", "unique_string_array_allow_empty"])
+      : new Set(["string", "string_or_null"]);
+    if ([...valueTypes].some((valueType) => !allowed.has(valueType))) fail();
+  }
+  if (source.expected_records !== recordTotal || source.expected_candidates !== candidateTotal) fail();
+}
+
+function recordsForConsequentialSelector(document, selector, fail) {
+  let rows = [{ record: document, pointer: "", ancestors: [] }];
+  for (const token of selector) {
+    const collection = token.endsWith("[]");
+    const field = collection ? token.slice(0, -2) : token;
+    const next = [];
+    for (const row of rows) {
+      if (!isObject(row.record) || !Object.hasOwn(row.record, field)) fail();
+      const selected = row.record[field];
+      const pointer = `${row.pointer}/${field.replaceAll("~", "~0").replaceAll("/", "~1")}`;
+      if (collection) {
+        if (!Array.isArray(selected)) fail();
+        selected.forEach((record, index) => next.push({
+          record,
+          pointer: `${pointer}/${index}`,
+          ancestors: [...row.ancestors, row.record],
+        }));
+      } else {
+        next.push({ record: selected, pointer, ancestors: [...row.ancestors, row.record] });
+      }
+    }
+    rows = next;
+  }
+  if (rows.some((row) => !isObject(row.record))) fail();
+  return rows;
+}
+
+function validateConsequentialReferences(value, fail) {
+  if (!Array.isArray(value) || value.length > CONSEQUENTIAL_MAX_REFERENCES ||
+      value.some((item) => !isNonblankString(item) || [...item].length > CONSEQUENTIAL_MAX_REFERENCE_LENGTH) ||
+      new Set(value).size !== value.length) {
+    fail();
+  }
+  return value;
+}
+
+function pythonTruthy(value) {
+  if (Array.isArray(value) || typeof value === "string") return value.length > 0;
+  if (isObject(value)) return Object.keys(value).length > 0;
+  return Boolean(value);
+}
+
+function validateConsequentialConstraints(document, record, constraints, fail) {
+  const get = (object, field) => Object.hasOwn(object, field) ? object[field] : null;
+  for (const constraint of constraints) {
+    if (constraint.kind === "unique_field") continue;
+    let valid;
+    if (constraint.kind === "const") {
+      valid = consequentialDigest(get(record, constraint.field)) === consequentialDigest(constraint.value);
+    } else if (constraint.kind === "enum") {
+      valid = constraint.values.includes(get(record, constraint.field));
+    } else if (constraint.kind === "integer_range") {
+      const value = get(record, constraint.field);
+      valid = Number.isSafeInteger(value) && value >= constraint.minimum && value <= constraint.maximum;
+    } else if (constraint.kind === "contains_reference") {
+      const value = get(record, constraint.field);
+      valid = Array.isArray(value) && value.includes(constraint.reference);
+    } else if (constraint.kind === "root_const") {
+      valid = consequentialDigest(get(document, constraint.field)) === consequentialDigest(constraint.value);
+    } else if (constraint.kind === "reference_by_state") {
+      const state = get(record, constraint.state_field);
+      const ownerValid = !constraint.owner_values.includes(state) ||
+        pythonTruthy(get(record, constraint.owner_field));
+      const gapExempt = constraint.gap_exempt_values.includes(state);
+      const hasGaps = pythonTruthy(get(record, constraint.gap_field));
+      const gapValid = gapExempt ? !hasGaps : hasGaps;
+      valid = ownerValid && gapValid;
+    } else if (constraint.kind === "emptiness_by_enum") {
+      const enumValue = get(record, constraint.enum_field);
+      const value = get(record, constraint.value_field);
+      valid = constraint.empty_values.includes(enumValue) ? !pythonTruthy(value) : pythonTruthy(value);
+    } else {
+      const state = get(record, constraint.field);
+      const item = constraint.cases.find((candidate) => candidate.value === state);
+      valid = Boolean(item) && item.null_fields.every((field) => get(record, field) === null) &&
+        item.non_null_fields.every((field) => get(record, field) !== null);
+    }
+    if (!valid) fail();
+  }
+}
+
+function validateConsequentialRuleSetConstraints(rows, constraints, fail) {
+  for (const constraint of constraints) {
+    if (constraint.kind !== "unique_field") continue;
+    const values = rows.map(({ record }) => consequentialDigest(record[constraint.field]));
+    if (new Set(values).size !== values.length) fail();
+  }
+}
+
+function registryIds(rows, fail) {
+  if (!Array.isArray(rows)) fail();
+  const ids = new Set();
+  for (const row of rows) {
+    if (!isObject(row) || !isNonblankString(row.id) ||
+        [...row.id].length > CONSEQUENTIAL_MAX_REFERENCE_LENGTH || ids.has(row.id)) {
+      fail();
+    }
+    ids.add(row.id);
+  }
+  if (ids.size === 0) fail();
+  return ids;
+}
+
+function buildConsequentialRegistries(parsedByPath, fail) {
+  const core = parsedByPath.get("master-reference/content/atlas-core.json");
+  const capability = parsedByPath.get("master-reference/content/capability-catalog.json");
+  const delivery = parsedByPath.get("master-reference/content/delivery-governance.json");
+  const horizon = parsedByPath.get("master-reference/content/open-horizon-register.json");
+  const output = parsedByPath.get("master-reference/content/output-contract.json");
+  if (!isObject(core?.traffic_model) || !isObject(core?.system_architecture) ||
+      !Array.isArray(capability?.domains) ||
+      capability.domains.some((domain) => !isObject(domain) || !Array.isArray(domain.entries))) {
+    fail();
+  }
+  return new Map([
+    ["owner_refs", registryIds(core.owners, fail)],
+    ["gap_refs", registryIds(delivery?.gaps, fail)],
+    ["traffic_plane_refs", registryIds(core.traffic_model.planes, fail)],
+    ["system_plane_refs", registryIds(core.system_architecture.planes, fail)],
+    ["source_refs", registryIds(horizon?.watch_families, fail)],
+    ["affected_capability_refs", registryIds(capability.domains.flatMap((domain) => domain.entries), fail)],
+    ["cross_artifact_ids", registryIds(output?.members, fail)],
+  ]);
+}
+
+function collectConsequentialCandidates(sourceContract, document, sourceOid, registries, fail) {
+  const candidates = [];
+  const coveredObjects = new Set();
+  const groundingContract = sourceContract.grounding;
+  const relationships = new Map(
+    groundingContract.relationships.map((relationship) => [relationship.field, relationship]),
+  );
+  const declaredOwnerFields = new Set(groundingContract.declared_owner_fields);
+  for (const rule of sourceContract.object_rules) {
+    const rows = recordsForConsequentialSelector(document, rule.selector, fail);
+    if (rows.length !== rule.expected_records) fail();
+    const fieldRules = new Map(rule.fields.map((field) => [field.field, field]));
+    const identities = new Set();
+    for (const { record, pointer, ancestors } of rows) {
+      if (coveredObjects.has(record)) fail();
+      coveredObjects.add(record);
+      const required = rule.fields.filter((field) => field.required).map((field) => field.field);
+      if (required.some((field) => !Object.hasOwn(record, field)) ||
+          Object.keys(record).some((field) => !fieldRules.has(field))) {
+        fail();
+      }
+      const identity = rule.identity;
+      let semanticIdentity;
+      if (identity.kind === "root") {
+        semanticIdentity = "@root";
+      } else if (identity.kind === "field") {
+        semanticIdentity = record[identity.field];
+        if (!isNonblankString(semanticIdentity)) fail();
+      } else if (identity.kind === "parent_field") {
+        semanticIdentity = null;
+        for (let index = ancestors.length - 1; index >= 0; index -= 1) {
+          if (Object.hasOwn(ancestors[index], identity.field)) {
+            semanticIdentity = ancestors[index][identity.field];
+            break;
+          }
+        }
+        if (!isNonblankString(semanticIdentity)) fail();
+      } else {
+        const values = identity.fields.map((field) => record[field]);
+        if (values.some((value) => !isNonblankString(value))) fail();
+        semanticIdentity = consequentialDigest(values);
+      }
+      const identityKey = `${rule.record_kind}:${semanticIdentity}`;
+      if (identities.has(identityKey)) fail();
+      identities.add(identityKey);
+
+      const grounding = [];
+      for (const [fieldName, fieldRule] of [...fieldRules.entries()].sort(
+        ([left], [right]) => compareUnicodeCodePoints(left, right),
+      )) {
+        if (!Object.hasOwn(record, fieldName)) continue;
+        const value = record[fieldName];
+        if (!valueMatchesConsequentialType(value, fieldRule.value_type)) fail();
+        if (fieldRule.classification === "relationship_metadata") {
+          const relationship = relationships.get(fieldName);
+          if (!relationship) fail();
+          let references;
+          if (relationship.mode === "reference_array") {
+            references = validateConsequentialReferences(value, fail);
+          } else if (value === null && fieldRule.value_type === "string_or_null") {
+            references = [];
+          } else if (isNonblankString(value)) {
+            references = [value];
+          } else {
+            fail();
+          }
+          if (relationship.registry !== null) {
+            const registry = registries.get(relationship.registry);
+            if (!registry || references.some((reference) => !registry.has(reference))) fail();
+          }
+          references.forEach((reference) => grounding.push({ field: fieldName, reference }));
+        } else if (declaredOwnerFields.has(fieldName)) {
+          if (!isNonblankString(value)) fail();
+          grounding.push({ field: fieldName, reference: value });
+        }
+      }
+      validateConsequentialConstraints(document, record, rule.constraints, fail);
+      const fallback = groundingContract.fallback_owner_ref;
+      if (!registries.get("owner_refs")?.has(fallback)) fail();
+      if (grounding.length === 0) {
+        grounding.push({ field: "@source_owner", reference: fallback });
+      }
+      if (groundingContract.require_nonempty === true && grounding.length === 0) fail();
+      grounding.sort((left, right) =>
+        compareUnicodeCodePoints(left.field, right.field) ||
+        compareUnicodeCodePoints(left.reference, right.reference));
+      const groundingDigest = consequentialDigest(grounding);
+      for (const [fieldName, fieldRule] of [...fieldRules.entries()].sort(
+        ([left], [right]) => compareUnicodeCodePoints(left, right),
+      )) {
+        if (fieldRule.classification !== "candidate" || !Object.hasOwn(record, fieldName)) continue;
+        const facetIdentity = {
+          source_path: sourceContract.path,
+          rule_id: rule.rule_id,
+          record_kind: rule.record_kind,
+          record_identity: semanticIdentity,
+          facet_path: fieldName,
+        };
+        candidates.push({
+          facet_id: `urn:atlas:claim-facet:${consequentialDigest(facetIdentity)}`,
+          source_path: sourceContract.path,
+          source_blob_oid: sourceOid,
+          source_pointer: `${pointer}/${fieldName.replaceAll("~", "~0").replaceAll("/", "~1")}`,
+          rule_id: rule.rule_id,
+          record_kind: rule.record_kind,
+          record_identity: semanticIdentity,
+          facet_path: fieldName,
+          classification: "consequential_claim_candidate",
+          claim_kind: fieldRule.claim_kind,
+          review_state: "pending_independent_review",
+          grounding_digest: groundingDigest,
+          value_digest: consequentialDigest(record[fieldName]),
+        });
+        if (candidates.length > CONSEQUENTIAL_MAX_CANDIDATES) fail();
+      }
+    }
+    validateConsequentialRuleSetConstraints(rows, rule.constraints, fail);
+  }
+  const declaredChildren = new Set([document]);
+  for (const rule of sourceContract.object_rules) {
+    const fieldRules = new Map(rule.fields.map((field) => [field.field, field]));
+    for (const { record } of recordsForConsequentialSelector(document, rule.selector, fail)) {
+      for (const [fieldName, fieldRule] of fieldRules) {
+        if (fieldRule.classification !== "container" || !Object.hasOwn(record, fieldName)) continue;
+        const value = record[fieldName];
+        if (isObject(value)) declaredChildren.add(value);
+        if (Array.isArray(value)) value.filter(isObject).forEach((item) => declaredChildren.add(item));
+      }
+    }
+  }
+  if (coveredObjects.size !== declaredChildren.size ||
+      [...coveredObjects].some((record) => !declaredChildren.has(record)) ||
+      candidates.length !== sourceContract.expected_candidates) {
+    fail();
+  }
+  candidates.sort((left, right) => compareUnicodeCodePoints(left.facet_id, right.facet_id));
+  return { candidates, ruleSetDigest: consequentialDigest(sourceContract.object_rules) };
+}
+
+function validateConsequentialIntegerTokenTypes(completeness, summary, fail) {
+  const floatTokenPaths = COMPILER_FLOAT_TOKEN_PATHS.get(completeness);
+  const prefix = "/consequential_claim_denominator";
+  const integerFields = [
+    "source_universe_expected",
+    "source_universe_registered",
+    "source_universe_unclassified",
+    "expected_candidates",
+    "discovered_candidates",
+    "classified_candidates",
+    "independently_reviewed_candidates",
+    "unresolved_candidates",
+    "compiler_integrity_claims_expected",
+    "compiler_integrity_claims_classified",
+    "compiler_integrity_claims_consequential",
+  ];
+  for (const field of integerFields) {
+    if (!Number.isSafeInteger(summary[field]) || floatTokenPaths?.has(`${prefix}/${field}`)) {
+      fail();
+    }
+  }
+  if (!Array.isArray(summary.source_receipts)) fail();
+  for (const [index, receipt] of summary.source_receipts.entries()) {
+    if (!isObject(receipt)) fail();
+    for (const field of ["bytes", "candidate_count"]) {
+      if (
+        !Number.isSafeInteger(receipt[field]) ||
+        floatTokenPaths?.has(`${prefix}/source_receipts/${index}/${field}`)
+      ) {
+        fail();
+      }
+    }
+  }
+}
+
 export function validateConsequentialClaimCensus({
   completeness,
   rawSources,
@@ -511,6 +1098,8 @@ export function validateConsequentialClaimCensus({
   const fail = () => {
     throw new Error("compiler consequential-claim census is inconsistent");
   };
+  if (!(rawSources instanceof Map)) fail();
+  try {
   const summary = completeness?.consequential_claim_denominator;
   const gate = completeness?.acceptance_gates?.find(
     (item) => item?.name === "consequential_claim_denominator_closed",
@@ -525,7 +1114,7 @@ export function validateConsequentialClaimCensus({
     !summary ||
     typeof summary !== "object" ||
     Array.isArray(summary) ||
-    stableJson(gate) !== stableJson(expectedGate) ||
+    consequentialCanonicalJson(gate) !== consequentialCanonicalJson(expectedGate) ||
     completeness?.semantic_accounting?.consequential_claim_denominator_state !== summary.state
   ) {
     fail();
@@ -533,10 +1122,11 @@ export function validateConsequentialClaimCensus({
   if (!exactStringMembership(claimPredicates, CONSEQUENTIAL_INTEGRITY_PREDICATES)) {
     fail();
   }
+  validateConsequentialIntegerTokenTypes(completeness, summary, fail);
   if (summary.state === "not_declared") {
     if (
-      stableJson(summary) !==
-        stableJson(
+      consequentialCanonicalJson(summary) !==
+        consequentialCanonicalJson(
           unavailableConsequentialClaimSummary(
             completeness.source_commit,
             completeness.source_tree_digest,
@@ -569,8 +1159,12 @@ export function validateConsequentialClaimCensus({
   const contractSource = rawSources.get(CONSEQUENTIAL_CLAIM_CONTRACT_PATH);
   const contract = parsedByPath.get(CONSEQUENTIAL_CLAIM_CONTRACT_PATH);
   if (
-    stableJson(Object.keys(contract).sort()) !==
-      stableJson(["compiler_integrity_claims", "contract_kind", "schema_version", "source_universe"]) ||
+    !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(completeness.source_commit) ||
+    !/^[0-9a-f]{64}$/.test(completeness.source_tree_digest) ||
+    [...rawSources.values()].some(
+      (source) => source.gitBlobOid.length !== completeness.source_commit.length,
+    ) ||
+    !hasExactKeys(contract, ["compiler_integrity_claims", "contract_kind", "schema_version", "source_universe"]) ||
     contract.schema_version !== CONSEQUENTIAL_CLAIM_SCHEMA_VERSION ||
     contract.contract_kind !== CONSEQUENTIAL_CLAIM_KIND ||
     !Array.isArray(contract.source_universe) ||
@@ -587,8 +1181,7 @@ export function validateConsequentialClaimCensus({
       !item ||
       typeof item !== "object" ||
       Array.isArray(item) ||
-      stableJson(Object.keys(item).sort()) !==
-        stableJson(["classification", "consequential", "predicate"]) ||
+      !hasExactKeys(item, ["classification", "consequential", "predicate"]) ||
       typeof item.predicate !== "string" ||
       !item.predicate ||
       integrityPredicates.includes(item.predicate) ||
@@ -606,11 +1199,18 @@ export function validateConsequentialClaimCensus({
   }
 
   const sourceByPath = new Map();
+  const allRuleIds = new Set();
   for (const row of contract.source_universe) {
     if (
-      !row ||
-      typeof row !== "object" ||
-      Array.isArray(row) ||
+      !hasExactKeys(row, [
+        "path",
+        "git_blob_oid",
+        "classification",
+        "expected_records",
+        "expected_candidates",
+        "grounding",
+        "object_rules",
+      ]) ||
       !CONSEQUENTIAL_CLAIM_CONTENT_PATHS.includes(row.path)
     ) {
       fail();
@@ -618,180 +1218,53 @@ export function validateConsequentialClaimCensus({
     if (sourceByPath.has(row.path)) fail();
     sourceByPath.set(row.path, row);
     const source = rawSources.get(row.path);
-    if (!source || row.git_blob_oid !== source.gitBlobOid) fail();
-    if (row.path === "master-reference/content/capability-catalog.json") {
-      const expectedKeys = [
-        "classification",
-        "domain_fields",
-        "excluded_fields",
-        "facets",
-        "git_blob_oid",
-        "id_field",
-        "owner_reference_fields",
-        "path",
-        "root_fields",
-        "semantic_collection_selector",
-      ];
-      if (
-        stableJson(Object.keys(row).sort()) !== stableJson(expectedKeys) ||
+    const { git_blob_oid: _gitBlobOid, ...semanticSpec } = row;
+    if (!source || row.git_blob_oid !== source.gitBlobOid ||
         row.classification !== "candidate_census" ||
-        row.semantic_collection_selector !== "domains[].entries[]" ||
-        row.id_field !== "id" ||
-        !exactStringMembership(row.owner_reference_fields, ["owner_refs", "gap_refs"]) ||
-        !Array.isArray(row.owner_reference_fields) ||
-        row.owner_reference_fields.length > 8 ||
-        row.owner_reference_fields.some(
-          (field) => [...field].length > 128,
-        ) ||
-        !exactClassifiedFields(row.root_fields, CONSEQUENTIAL_ROOT_FIELD_CLASSIFICATIONS) ||
-        !exactClassifiedFields(row.domain_fields, CONSEQUENTIAL_DOMAIN_FIELD_CLASSIFICATIONS) ||
-        !exactClassifiedFields(row.excluded_fields, CONSEQUENTIAL_EXCLUDED_FIELD_CLASSIFICATIONS)
-      ) {
-        fail();
-      }
-      const facetFields = [];
-      if (!Array.isArray(row.facets) || row.facets.length !== 2) fail();
-      for (const facet of row.facets) {
-        if (
-          !facet ||
-          typeof facet !== "object" ||
-          Array.isArray(facet) ||
-          stableJson(Object.keys(facet).sort()) !==
-            stableJson(["classification", "field", "review_state"]) ||
-          typeof facet.field !== "string" ||
-          !facet.field ||
-          facetFields.includes(facet.field) ||
-          facet.classification !== "consequential_claim_candidate" ||
-          facet.review_state !== "pending_independent_review"
-        ) {
-          fail();
-        }
-        facetFields.push(facet.field);
-      }
-      if (!exactStringMembership(facetFields, ["state", "current_scope"])) {
-        fail();
-      }
-    } else if (
-      stableJson(Object.keys(row).sort()) !==
-        stableJson(["classification", "git_blob_oid", "path", "reason_code"]) ||
-      row.classification !== "unclassified_source" ||
-      row.reason_code !== "consequential_claim_source_not_classified"
-    ) {
+        row.expected_candidates !== CONSEQUENTIAL_SOURCE_COUNTS[row.path] ||
+        consequentialDigest(semanticSpec) !== CONSEQUENTIAL_SOURCE_SPEC_DIGESTS[row.path]) {
       fail();
     }
+    validateSourceRuleContract(row, allRuleIds, fail);
   }
-  if (sourceByPath.size !== CONSEQUENTIAL_CLAIM_CONTENT_PATHS.length) fail();
-
-  const catalogPath = "master-reference/content/capability-catalog.json";
-  const catalog = parsedByPath.get(catalogPath);
-  const catalogContract = sourceByPath.get(catalogPath);
-  const facets = new Map(catalogContract.facets.map((facet) => [facet.field, facet]));
-  const excludedFields = new Set(catalogContract.excluded_fields.map((item) => item.field));
-  if (
-    stableJson(Object.keys(catalog).sort()) !== stableJson([...CONSEQUENTIAL_ROOT_FIELDS]) ||
-    !Array.isArray(catalog.domains) ||
-    catalog.domains.length === 0
-  ) {
+  if (sourceByPath.size !== CONSEQUENTIAL_CLAIM_CONTENT_PATHS.length ||
+      allRuleIds.size !== 45 ||
+      Object.values(CONSEQUENTIAL_SOURCE_COUNTS).reduce((sum, count) => sum + count, 0) !==
+        CONSEQUENTIAL_EXPECTED_CANDIDATES) {
     fail();
   }
-  const candidates = [];
-  const domainIds = new Set();
-  const entryIds = new Set();
-  for (const [domainIndex, domain] of catalog.domains.entries()) {
-    if (
-      !domain ||
-      typeof domain !== "object" ||
-      Array.isArray(domain) ||
-      stableJson(Object.keys(domain).sort()) !== stableJson([...CONSEQUENTIAL_DOMAIN_FIELDS]) ||
-      typeof domain.id !== "string" ||
-      !domain.id ||
-      domainIds.has(domain.id) ||
-      !Array.isArray(domain.entries)
-    ) {
-      fail();
-    }
-    domainIds.add(domain.id);
-    for (const [entryIndex, entry] of domain.entries.entries()) {
-      if (
-        !entry ||
-        typeof entry !== "object" ||
-        Array.isArray(entry) ||
-        Object.keys(entry).some((field) => !facets.has(field) && !excludedFields.has(field)) ||
-        typeof entry.id !== "string" ||
-        !entry.id ||
-        entryIds.has(entry.id)
-      ) {
-        fail();
-      }
-      entryIds.add(entry.id);
-      const ownerReferences = [];
-      for (const field of catalogContract.owner_reference_fields) {
-        if (!Object.hasOwn(entry, field)) continue;
-        const references = entry[field];
-        if (
-          !Array.isArray(references) ||
-          references.length > 1000 ||
-          references.some(
-            (item) =>
-              typeof item !== "string" ||
-              isPythonStripEmpty(item) ||
-              [...item].length > 1024,
-          ) ||
-          new Set(references).size !== references.length
-        ) {
-          fail();
-        }
-        ownerReferences.push(...references.map((reference) => ({ field, reference })));
-      }
-      ownerReferences.sort((left, right) => {
-        const fieldOrder = compareUnicodeCodePoints(left.field, right.field);
-        return fieldOrder || compareUnicodeCodePoints(left.reference, right.reference);
-      });
-      if (ownerReferences.length === 0) fail();
-      for (const [field, facet] of [...facets.entries()].sort(([left], [right]) =>
-        compareUnicodeCodePoints(left, right))) {
-        const value = entry[field];
-        if (typeof value !== "string" || isPythonStripEmpty(value)) {
-          fail();
-        }
-        const facetIdentity = {
-          source_path: catalogPath,
-          source_blob_oid: catalogContract.git_blob_oid,
-          domain_id: domain.id,
-          entry_id: entry.id,
-          field,
-        };
-        candidates.push({
-          facet_id: `urn:atlas:claim-facet:${digestObject(facetIdentity).slice(0, 24)}`,
-          source_path: catalogPath,
-          source_blob_oid: catalogContract.git_blob_oid,
-          source_pointer: `/domains/${domainIndex}/entries/${entryIndex}/${field.replaceAll("~", "~0").replaceAll("/", "~1")}`,
-          domain_id: domain.id,
-          entry_id: entry.id,
-          field,
-          classification: facet.classification,
-          review_state: facet.review_state,
-          owner_reference_digest: digestObject(ownerReferences),
-          value_digest: digestObject(value),
-        });
-        if (candidates.length > 100000) fail();
-      }
-    }
-  }
-  if (candidates.length === 0) fail();
-  candidates.sort((left, right) => compareUnicodeCodePoints(left.facet_id, right.facet_id));
-  if (new Set(candidates.map((item) => item.facet_id)).size !== candidates.length) fail();
 
-  const sourceReceipts = CONSEQUENTIAL_CLAIM_CONTENT_PATHS.map((path) => {
+  const registries = buildConsequentialRegistries(parsedByPath, fail);
+  const sourceReceipts = [];
+  const allCandidates = [];
+  for (const path of CONSEQUENTIAL_CLAIM_CONTENT_PATHS) {
     const source = rawSources.get(path);
-    return {
+    const sourceContract = sourceByPath.get(path);
+    const { candidates, ruleSetDigest } = collectConsequentialCandidates(
+      sourceContract,
+      parsedByPath.get(path),
+      source.gitBlobOid,
+      registries,
+      fail,
+    );
+    sourceReceipts.push({
       path,
       git_blob_oid: source.gitBlobOid,
       sha256: sha256(source.raw),
       bytes: source.raw.byteLength,
-      classification: sourceByPath.get(path).classification,
-    };
-  });
+      classification: sourceContract.classification,
+      rule_set_digest: ruleSetDigest,
+      candidate_count: candidates.length,
+      candidate_digest: consequentialDigest(candidates),
+    });
+    allCandidates.push(...candidates);
+  }
+  const facetIds = allCandidates.map((candidate) => candidate.facet_id);
+  if (new Set(facetIds).size !== facetIds.length ||
+      allCandidates.length !== CONSEQUENTIAL_EXPECTED_CANDIDATES) {
+    fail();
+  }
+  allCandidates.sort((left, right) => compareUnicodeCodePoints(left.facet_id, right.facet_id));
   const expected = {
     schema_version: CONSEQUENTIAL_CLAIM_SCHEMA_VERSION,
     denominator_kind: CONSEQUENTIAL_CLAIM_KIND,
@@ -803,30 +1276,33 @@ export function validateConsequentialClaimCensus({
     contract_path: CONSEQUENTIAL_CLAIM_CONTRACT_PATH,
     contract_git_blob_oid: contractSource.gitBlobOid,
     contract_digest: sha256(contractSource.raw),
-    classification_digest: digestObject({
+    classification_digest: consequentialDigest({
       source_universe: contract.source_universe,
       compiler_integrity_claims: contract.compiler_integrity_claims,
     }),
     source_universe_expected: 5,
-    source_universe_registered: 1,
-    source_universe_unclassified: 4,
+    source_universe_registered: 5,
+    source_universe_unclassified: 0,
     source_receipts: sourceReceipts,
-    source_receipts_digest: digestObject(sourceReceipts),
-    expected_candidates: candidates.length,
-    discovered_candidates: candidates.length,
-    classified_candidates: candidates.length,
+    source_receipts_digest: consequentialDigest(sourceReceipts),
+    expected_candidates: CONSEQUENTIAL_EXPECTED_CANDIDATES,
+    discovered_candidates: CONSEQUENTIAL_EXPECTED_CANDIDATES,
+    classified_candidates: CONSEQUENTIAL_EXPECTED_CANDIDATES,
     independently_reviewed_candidates: 0,
-    unresolved_candidates: candidates.length,
-    candidate_set_digest: digestObject(candidates),
+    unresolved_candidates: CONSEQUENTIAL_EXPECTED_CANDIDATES,
+    candidate_set_digest: consequentialDigest(allCandidates),
     compiler_integrity_claims_expected: 6,
     compiler_integrity_claims_classified: 6,
     compiler_integrity_claims_consequential: 0,
     error_codes: [
       "consequential_claim_independent_review_pending",
-      "consequential_claim_source_universe_incomplete",
+      "consequential_claim_rendered_sink_universe_incomplete",
     ],
   };
-  if (stableJson(summary) !== stableJson(expected)) fail();
+  if (consequentialCanonicalJson(summary) !== consequentialCanonicalJson(expected)) fail();
+  } catch {
+    fail();
+  }
 }
 
 function compareUnicodeCodePoints(left, right) {
@@ -888,7 +1364,7 @@ function parseCanonicalCompilerJson(bytes) {
   }
   let text;
   try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
   } catch {
     throw new Error("compiler JSON is not canonical UTF-8");
   }
@@ -941,7 +1417,8 @@ function parseCanonicalCompilerJson(bytes) {
     }
     fail();
   };
-  const value = (depth) => {
+  const floatTokenPaths = new Set();
+  const value = (depth, pointer) => {
     values += 1;
     if (depth > COMPILER_JSON_MAX_DEPTH || values > COMPILER_JSON_MAX_VALUES) fail();
     const token = source[index];
@@ -959,7 +1436,7 @@ function parseCanonicalCompilerJson(bytes) {
         previousKey = key;
         if (source[index] !== ":") fail();
         index += 1;
-        value(depth + 1);
+        value(depth + 1, `${pointer}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
         if (source[index] === "}") {
           index += 1;
           return;
@@ -975,8 +1452,10 @@ function parseCanonicalCompilerJson(bytes) {
         index += 1;
         return;
       }
+      let itemIndex = 0;
       while (index < source.length) {
-        value(depth + 1);
+        value(depth + 1, `${pointer}/${itemIndex}`);
+        itemIndex += 1;
         if (source[index] === "]") {
           index += 1;
           return;
@@ -1003,6 +1482,7 @@ function parseCanonicalCompilerJson(bytes) {
     if (numberToken.length > 128) fail();
     if (numberToken.includes(".") || /[eE]/.test(numberToken)) {
       if (pythonFloatToken(Number(numberToken)) !== numberToken) fail();
+      floatTokenPaths.add(pointer);
     } else {
       let canonicalInteger;
       try {
@@ -1015,13 +1495,16 @@ function parseCanonicalCompilerJson(bytes) {
     index += numberToken.length;
   };
 
-  value(0);
+  value(0, "");
   if (index !== source.length) fail();
   let parsed;
   try {
     parsed = JSON.parse(source);
   } catch {
     fail();
+  }
+  if (parsed && typeof parsed === "object") {
+    COMPILER_FLOAT_TOKEN_PATHS.set(parsed, floatTokenPaths);
   }
   return parsed;
 }
