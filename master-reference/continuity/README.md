@@ -36,7 +36,16 @@ is observed again after traversal, and any mutation or source-binding change
 fails the request. Restricted or metadata-only source never becomes enhancement
 evidence.
 
-`enhance` accepts only an exact, clean compiler schema `1.1.0` corpus. It
+Payload-omitting consequential-claim facet records remain available through
+the full release-backed `query` command, including `--path` via their
+`source_path`. They are deliberately not valid `enhance --id` seeds and are not
+part of enhancement impact traversal: the lazy enhancement reader does not
+independently reconstruct their complete subject census from the five selected-Git
+source blobs. Treating a merely re-chained facet record as an exact subject
+would otherwise launder unverified source pointers or fingerprints into an
+exact-commit-looking scaffold.
+
+`enhance` accepts only an exact, clean compiler schema `1.2.0` corpus. It
 requires unique, exact-denominator invariants for every safe structural line,
 every GUI route/component dossier and every parsed-source structural root, plus
 non-empty acceptance gates and current source-bound Graphify and static

@@ -78,7 +78,7 @@ as `core.autocrlf` therefore cannot change source, line, or tree digests. A
 separate worktree snapshot plus before/after Git checks still detects local
 changes. Restricted payloads are never read.
 
-Compiler corpus contract `1.1.0` keeps hard structural invariants separate from
+Compiler corpus contract `1.2.0` keeps hard structural invariants separate from
 semantic acceptance gates. Every successfully parsed safe source has exactly
 one typed, parser-owned `structural_entities` root (for example a Python module,
 TypeScript SourceFile, stylesheet, template, configuration, workflow, structured
@@ -89,6 +89,18 @@ provenance plus explicit generated-origin uncertainty, but never claim runtime
 behavior. The compiler may therefore prove 100% tracked-file, exact-line, root,
 and structural-mapping coverage while still blocking behavioral, runtime,
 executed-coverage, binary-review, or Level-4 claims.
+
+The required `consequential_claim_facets` group emits one schema-validated,
+payload-omitting fingerprint record for each field-atomic candidate in the bounded
+curated-content census. Its manifest receipt is the count owner; the records
+carry stable facet identity, selected-commit Git-blob provenance, an RFC 6901
+source pointer, classification and review state, and only grounding/value
+digests. They contain no claim values, but their unsalted fingerprints are
+staleness bindings rather than confidentiality; low-entropy values may be
+dictionary-recoverable. They provide no independent review, rendered-sink
+closure, sentence-level completeness, or global claim closure. The bounded
+census therefore remains explicitly incomplete and its global
+closure gate remains false.
 
 Safe UTF-8 source is emitted only in per-file content-hashed chunks. Each source
 record carries its Git blob OID and byte basis. Restricted paths, symlinks, Git

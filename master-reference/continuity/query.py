@@ -51,8 +51,11 @@ def _summary(group: str, record: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": record.get("id"),
         "record_type": group,
-        "path": record.get("path"),
-        "name": record.get("qualified_name") or record.get("name") or record.get("predicate"),
+        "path": record.get("path") or record.get("source_path"),
+        "name": record.get("qualified_name")
+        or record.get("name")
+        or record.get("predicate")
+        or record.get("claim_kind"),
         "range": record.get("range"),
     }
 
@@ -86,7 +89,11 @@ def query_by_path(bundle: Any, path: str, line: int | None = None) -> tuple[int,
     path = safe_relative(path)
     if line is not None and line <= 0:
         raise ContinuityInputError("line must be a positive integer")
-    matches = [(group, record) for group, record in _records(bundle) if record.get("path") == path]
+    matches = [
+        (group, record)
+        for group, record in _records(bundle)
+        if (record.get("path") or record.get("source_path")) == path
+    ]
     if not matches:
         return 3, {
             **_base(bundle, "path"),

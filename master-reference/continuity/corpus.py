@@ -18,7 +18,7 @@ from typing import Any, Iterator
 from .model import ContinuityInputError, canonical_json, digest_object, safe_relative, sha256_bytes
 
 
-COMPILER_SCHEMA_VERSION = "1.1.0"
+COMPILER_SCHEMA_VERSION = "1.2.0"
 MAX_VALIDATED_RECEIPT_READS = 512
 MAX_VALIDATED_RECEIPT_BYTES = 1024 * 1024 * 1024
 MAX_VALIDATED_CHUNK_CACHE_BYTES = 512 * 1024 * 1024
@@ -80,6 +80,7 @@ REQUIRED_GROUPS = frozenset(
         "binaries",
         "dependencies",
         "claims",
+        "consequential_claim_facets",
     }
 )
 
@@ -140,9 +141,7 @@ def _streaming_id_digest_finish(digest: Any) -> str:
 
 def _validate_gate_contract(manifest: dict[str, Any], completeness: dict[str, Any]) -> None:
     if completeness.get("schema_version") != COMPILER_SCHEMA_VERSION:
-        raise ContinuityInputError(
-            f"unsupported compiler completeness schema: {completeness.get('schema_version')!r}"
-        )
+        raise ContinuityInputError(f"unsupported compiler completeness schema: {completeness.get('schema_version')!r}")
     if completeness.get("hard_failure") is not False or completeness.get("fatal_errors"):
         raise ContinuityInputError("compiler completeness ledger contains a hard failure")
     invariants = completeness.get("invariants")
@@ -276,10 +275,7 @@ class LazyCompilerCorpus:
             raise ContinuityInputError("compiler request exceeds the validated receipt-read budget")
         if self._chunk_bytes + expected_bytes + 1 > MAX_VALIDATED_RECEIPT_BYTES:
             raise ContinuityInputError("compiler request exceeds the validated receipt-byte budget")
-        if (
-            cache_validated_raw
-            and self._chunk_cache_bytes + expected_bytes > MAX_VALIDATED_CHUNK_CACHE_BYTES
-        ):
+        if cache_validated_raw and self._chunk_cache_bytes + expected_bytes > MAX_VALIDATED_CHUNK_CACHE_BYTES:
             raise ContinuityInputError("compiler request exceeds the validated raw-chunk cache budget")
         path = self._path(relative)
         with path.open("rb") as handle:
@@ -362,9 +358,7 @@ class LazyCompilerCorpus:
             "validated_receipt_byte_limit": MAX_VALIDATED_RECEIPT_BYTES,
             "validated_receipt_bytes_remaining": MAX_VALIDATED_RECEIPT_BYTES - self._chunk_bytes,
             "validated_chunk_cache_byte_limit": MAX_VALIDATED_CHUNK_CACHE_BYTES,
-            "validated_chunk_cache_bytes_remaining": (
-                MAX_VALIDATED_CHUNK_CACHE_BYTES - self._chunk_cache_bytes
-            ),
+            "validated_chunk_cache_bytes_remaining": (MAX_VALIDATED_CHUNK_CACHE_BYTES - self._chunk_cache_bytes),
             "request_snapshot": True,
             "budget_scope": "compiler_receipts_only_manifest_and_git_observation_excluded",
         }
@@ -411,8 +405,7 @@ def load_enhancement_corpus(root: Path) -> LazyCompilerCorpus:
         raise ContinuityInputError("compiler Graphify metadata schema is stale")
     if (
         architecture.get("schema_version") != COMPILER_SCHEMA_VERSION
-        or
-        architecture.get("source_commit") != manifest["source_commit"]
+        or architecture.get("source_commit") != manifest["source_commit"]
         or architecture.get("source_tree_digest") != manifest["source_tree_digest"]
         or architecture.get("status") != "passed"
         or architecture.get("errors")

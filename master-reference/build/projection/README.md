@@ -9,7 +9,7 @@ Publishable build:
 node build/projection/build.mjs --input <compiler-output> --output public/atlas-projection
 ```
 
-The command accepts only the compiler's exact `1.1.0` contract. It fails unless
+The command accepts only the compiler's exact `1.2.0` contract. It fails unless
 the manifest declares `release_class` as `exact_commit`, the tracked worktree is
 clean, all required record groups and named completeness invariants are present,
 the completeness ledger has no hard/fatal failure, every consumed chunk matches

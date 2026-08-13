@@ -41,7 +41,7 @@ from compiler.compiler import RECORD_GROUPS
 from governance.consequential_claims import (
     CONTENT_PATHS as CONSEQUENTIAL_CLAIM_CONTENT_PATHS,
     CONTRACT_PATH as CONSEQUENTIAL_CLAIM_CONTRACT_PATH,
-    evaluate_bounded_curated_claims,
+    evaluate_bounded_curated_claim_census,
     unavailable_bounded_curated_claim_summary,
 )
 
@@ -56,7 +56,7 @@ from .model import (
 )
 
 
-COMPILER_SCHEMA_VERSION = "1.1.0"
+COMPILER_SCHEMA_VERSION = "1.2.0"
 REQUIRED_STRUCTURAL_INVARIANTS = frozenset(
     {
         "every_safe_parsed_source_has_one_structural_root",
@@ -242,6 +242,7 @@ _RECORD_KEY_TEXT_BY_GROUP = {
     "binaries": "content_digest entity_type file_id git_blob_oid id inspection_mode media_type path privacy_exposure size_bytes unresolved_reasons",
     "calls": "callee containing_symbol entity_type extraction_disposition file_id id path range resolved statement_digest tests unresolved_reasons",
     "claims": "basis confidence conflicts_with current_view denominator derived_from effective_time entity_type evidence_class evidence_ids extraction_mode freshness id lineage origin owner predicate recorded_time revocation_reason revoked_by satisfies_evidence_requirement scope source_commit status subject temporal_basis transformation unit unresolved_reasons value verdict",
+    "consequential_claim_facets": "classification claim_kind entity_type evidence_state facet_id facet_path grounding_digest id record_identity record_kind review_state rule_id source_blob_oid source_path source_pointer value_digest",
     "components": "attribute_names attributes_digest component_role detection entity_type exported extraction_disposition file_id framework gui_dossier handler id kind method name path range route self_closing tag_name unresolved_reasons",
     "configs": "content_digest entity_type file_id id language path roles",
     "datasets": "content_digest entity_type file_id format id path size_bytes structured_record_count",
@@ -913,6 +914,7 @@ def _validate_consequential_claim_projection(
             if (
                 not _json_exact_equal(summary, expected_absent)
                 or semantic_accounting.get("consequential_claim_denominator_state") != "not_declared"
+                or records.get("consequential_claim_facets") != []
             ):
                 raise ValueError
             source_paths = {
@@ -948,7 +950,7 @@ def _validate_consequential_claim_projection(
             for path in CONSEQUENTIAL_CLAIM_CONTENT_PATHS
         }
         claim_predicates = [str(item.get("predicate") or "") for item in records.get("claims", [])]
-        expected = evaluate_bounded_curated_claims(
+        expected_census = evaluate_bounded_curated_claim_census(
             contract_raw=raw_by_path[CONSEQUENTIAL_CLAIM_CONTRACT_PATH],
             contract_git_blob_oid=str(contract_record.get("git_blob_oid") or ""),
             source_blobs=source_blobs,
@@ -956,9 +958,45 @@ def _validate_consequential_claim_projection(
             source_tree_digest=source_tree_digest,
             compiler_claim_predicates=claim_predicates,
         )
+        expected = expected_census["summary"]
         if not _json_exact_equal(summary, expected):
             raise ValueError
         if semantic_accounting.get("consequential_claim_denominator_state") != expected["state"]:
+            raise ValueError
+        facet_records = records.get("consequential_claim_facets")
+        if not isinstance(facet_records, list) or len(facet_records) != len(expected_census["candidates"]):
+            raise ValueError
+        expected_by_facet = {candidate["facet_id"]: candidate for candidate in expected_census["candidates"]}
+        actual_by_facet: dict[str, dict[str, Any]] = {}
+        facet_record_ids: set[str] = set()
+        for record in facet_records:
+            if (
+                not isinstance(record, dict)
+                or record.get("entity_type") != "consequential_claim_facet"
+                or record.get("evidence_state") != "payload_omitted_value_fingerprint_index_only"
+                or record.get("id") != stable_id("claim-facet-record", record.get("facet_id"))
+            ):
+                raise ValueError
+            facet_id = record.get("facet_id")
+            if not isinstance(facet_id, str) or facet_id in actual_by_facet:
+                raise ValueError
+            facet_record_ids.add(str(record["id"]))
+            actual_by_facet[facet_id] = {
+                key: value for key, value in record.items() if key not in {"id", "entity_type", "evidence_state"}
+            }
+        if set(actual_by_facet) != set(expected_by_facet) or any(
+            not _json_exact_equal(actual_by_facet[facet_id], candidate)
+            for facet_id, candidate in expected_by_facet.items()
+        ):
+            raise ValueError
+        projected = [actual_by_facet[facet_id] for facet_id in sorted(actual_by_facet)]
+        if digest_object(projected) != expected["candidate_set_digest"]:
+            raise ValueError
+        if any(
+            evidence_id in facet_record_ids
+            for claim in records.get("claims", [])
+            for evidence_id in claim.get("evidence_ids", [])
+        ):
             raise ValueError
 
         if repository_root is not None:
@@ -1484,6 +1522,7 @@ def load_compiler_bundle(
         "components",
         "binaries",
         "claims",
+        "consequential_claim_facets",
     }
     if not validation_groups.issubset(wanted):
         raise ReleaseInputError("retained compiler groups omit records required for structural denominator validation")

@@ -276,6 +276,52 @@ class CompilerTests(unittest.TestCase):
             self.assertEqual(summary["unresolved_candidates"], 2136)
             self.assertEqual(summary["compiler_integrity_claims_classified"], 6)
             self.assertEqual(summary["compiler_integrity_claims_consequential"], 0)
+            facet_records = group_records(output, "consequential_claim_facets")
+            self.assertEqual(len(facet_records), 2136)
+            self.assertEqual(manifest["groups"]["consequential_claim_facets"]["record_count"], 2136)
+            self.assertEqual(len({row["id"] for row in facet_records}), 2136)
+            self.assertEqual(len({row["facet_id"] for row in facet_records}), 2136)
+            self.assertTrue(all(row["id"] == stable_id("claim-facet-record", row["facet_id"]) for row in facet_records))
+            self.assertTrue(all(row["entity_type"] == "consequential_claim_facet" for row in facet_records))
+            self.assertTrue(
+                all(row["evidence_state"] == "payload_omitted_value_fingerprint_index_only" for row in facet_records)
+            )
+            self.assertTrue(all(row["review_state"] == "pending_independent_review" for row in facet_records))
+            self.assertTrue(all("value" not in row and "verdict" not in row for row in facet_records))
+            facet_ids = {str(row["id"]) for row in facet_records}
+            known_evidence_ids = {
+                evidence_id for claim in group_records(output, "claims") for evidence_id in claim["evidence_ids"]
+            }
+            self.assertTrue(facet_ids.isdisjoint(known_evidence_ids))
+            projected = [
+                {key: value for key, value in row.items() if key not in {"id", "entity_type", "evidence_state"}}
+                for row in sorted(facet_records, key=lambda item: str(item["facet_id"]))
+            ]
+            self.assertEqual(hashlib.sha256(canonical_json(projected)).hexdigest(), summary["candidate_set_digest"])
+            records_schema = json.loads(
+                (MASTER_REFERENCE / "schema" / "atlas-records.schema.json").read_text(encoding="utf-8")
+            )
+            facet_envelope = json.loads(
+                (output / manifest["groups"]["consequential_claim_facets"]["chunks"][0]["path"]).read_text(
+                    encoding="utf-8"
+                )
+            )
+            facet_validator = Draft202012Validator(records_schema)
+            facet_validator.validate(facet_envelope)
+            for field, value in (
+                ("source_blob_oid", "f" * 39),
+                ("source_pointer", "/invalid~2pointer"),
+                ("review_state", "independently_reviewed"),
+            ):
+                mutated = copy.deepcopy(facet_envelope)
+                mutated["records"][0][field] = value
+                with self.assertRaises(ValidationError):
+                    facet_validator.validate(mutated)
+            self.assertEqual(len(facet_envelope["source_commit"]), 40)
+            mixed_object_format = copy.deepcopy(facet_envelope)
+            mixed_object_format["records"][0]["source_blob_oid"] = "f" * 64
+            with self.assertRaises(ValidationError):
+                facet_validator.validate(mixed_object_format)
             self.assertEqual(
                 summary["contract_git_blob_oid"],
                 git(repository, "rev-parse", f"{commit}:master-reference/governance/consequential-claim-contract.json"),
@@ -413,7 +459,7 @@ class CompilerTests(unittest.TestCase):
 
             self.assertEqual(output_bytes(first_output), output_bytes(second_output))
             self.assertEqual(first_manifest["source_commit"], commit)
-            self.assertEqual(first_manifest["schema_version"], "1.1.0")
+            self.assertEqual(first_manifest["schema_version"], "1.2.0")
             self.assertEqual(first_manifest["groups"]["files"]["record_count"], 10)
             self.assertEqual(first_manifest["source_tree_digest"], second_manifest["source_tree_digest"])
 
@@ -718,7 +764,7 @@ class CompilerTests(unittest.TestCase):
             metadata = json.loads((output / "graphify-metadata.json").read_text(encoding="utf-8"))
             self.assertFalse(metadata["available"])
             self.assertEqual(metadata["status"], "absent")
-            self.assertEqual(metadata["schema_version"], "1.1.0")
+            self.assertEqual(metadata["schema_version"], "1.2.0")
             self.assertEqual(metadata["source_commit"], commit)
             self.assertEqual(metadata["source_tree_digest"], manifest["source_tree_digest"])
             ledger = json.loads((output / "completeness.json").read_text(encoding="utf-8"))
@@ -1423,7 +1469,7 @@ class CompilerTests(unittest.TestCase):
             initialize_repository(repository, {"README.md": "# Graphify mismatch\n"})
             output = base / "failed"
             mismatched = {
-                "schema_version": "1.1.0",
+                "schema_version": "1.2.0",
                 "source_commit": "0" * 40,
                 "source_tree_digest": "1" * 64,
                 "available": False,
@@ -1887,6 +1933,22 @@ class CompilerTests(unittest.TestCase):
             validator.assert_called_once()
             self.assertIn("claim_integrity:forced_violation", caught.exception.errors)
             self.assertFalse((output / "manifest.json").exists())
+
+    def test_payload_omitting_claim_facets_are_not_admitted_as_claim_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            repository = base / "repo"
+            initialize_repository(repository, consequential_claim_fixture_files())
+            output = base / "compiled"
+
+            with mock.patch("compiler.compiler.validate_claims", return_value=()) as validator:
+                compile_repository(repository, output)
+
+            validator.assert_called_once()
+            known_evidence_ids = validator.call_args.kwargs["known_evidence_ids"]
+            facet_ids = {str(row["id"]) for row in group_records(output, "consequential_claim_facets")}
+            self.assertTrue(facet_ids)
+            self.assertTrue(facet_ids.isdisjoint(known_evidence_ids))
 
     def test_python_parser_failure_emits_ledger_without_partial_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2951,7 +3013,7 @@ class CompilerTests(unittest.TestCase):
         self.assertIn("claimRecord", records_schema["$defs"])
         self.assertIn("lineRecord", records_schema["$defs"])
         self.assertIn("structuralEntityRecord", records_schema["$defs"])
-        self.assertEqual(records_schema["properties"]["schema_version"]["const"], "1.1.0")
+        self.assertEqual(records_schema["properties"]["schema_version"]["const"], "1.2.0")
         self.assertEqual(records_schema["properties"]["record_count"]["minimum"], 1)
         self.assertEqual(records_schema["properties"]["records"]["minItems"], 1)
         graphify_schema = json.loads(

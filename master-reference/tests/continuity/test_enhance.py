@@ -22,6 +22,7 @@ import continuity.enhance as enhance_module  # noqa: E402
 import continuity.git_state as git_state  # noqa: E402
 from continuity.enhance import build_enhancement_package  # noqa: E402
 from continuity.corpus import load_enhancement_corpus  # noqa: E402
+from continuity.query import query_by_id, query_by_path  # noqa: E402
 from continuity.model import (  # noqa: E402
     ContinuityInputError,
     canonical_json,
@@ -361,12 +362,32 @@ def _fixture(tmp_path: Path, *, metadata_terminator: str = "\n") -> tuple[Path, 
                 "evidence_ids": [symbol_app],
             }
         ],
+        "consequential_claim_facets": [
+            {
+                "id": "urn:atlas:claim-facet-record:000000000000000000000001",
+                "entity_type": "consequential_claim_facet",
+                "evidence_state": "payload_omitted_value_fingerprint_index_only",
+                "facet_id": f"urn:atlas:claim-facet:{'1' * 64}",
+                "source_path": "src/app.py",
+                "source_blob_oid": "a" * 40,
+                "source_pointer": "/scope",
+                "rule_id": "core.root",
+                "record_kind": "atlas_core",
+                "record_identity": "@root",
+                "facet_path": "scope",
+                "classification": "consequential_claim_candidate",
+                "claim_kind": "scope_boundary",
+                "review_state": "pending_independent_review",
+                "grounding_digest": "2" * 64,
+                "value_digest": "3" * 64,
+            }
+        ],
         "datasets": [],
         "binaries": [],
         "dependencies": [],
     }
     completeness = {
-        "schema_version": "1.1.0",
+        "schema_version": "1.2.0",
         "id": "urn:atlas:completeness:fixture",
         "hard_failure": False,
         "fatal_errors": [],
@@ -409,7 +430,7 @@ def _fixture(tmp_path: Path, *, metadata_terminator: str = "\n") -> tuple[Path, 
         source_commit=commit,
         source_tree_digest="c" * 64,
         manifest={
-            "schema_version": "1.1.0",
+            "schema_version": "1.2.0",
             "source_commit": commit,
             "source_tree_digest": "c" * 64,
             "release_class": "exact_commit",
@@ -426,10 +447,7 @@ def _fixture(tmp_path: Path, *, metadata_terminator: str = "\n") -> tuple[Path, 
                     for item in files
                 ]
             ),
-            "groups": {
-                group: {"record_count": len(group_records)}
-                for group, group_records in records.items()
-            },
+            "groups": {group: {"record_count": len(group_records)} for group, group_records in records.items()},
         },
         completeness=completeness,
         records=records,
@@ -452,7 +470,7 @@ def _compiler_output(root: Path, bundle: FakeBundle) -> Path:
         chunks: list[dict[str, Any]] = []
         if records:
             envelope = {
-                "schema_version": "1.1.0",
+                "schema_version": "1.2.0",
                 "record_type": group,
                 "source_commit": bundle.source_commit,
                 "source_tree_digest": bundle.source_tree_digest,
@@ -471,9 +489,9 @@ def _compiler_output(root: Path, bundle: FakeBundle) -> Path:
             "chunks": chunks,
         }
 
-    graphify = {"schema_version": "1.1.0", **bundle.completeness["graphify"]}
+    graphify = {"schema_version": "1.2.0", **bundle.completeness["graphify"]}
     architecture = {
-        "schema_version": "1.1.0",
+        "schema_version": "1.2.0",
         "source_commit": bundle.source_commit,
         "source_tree_digest": bundle.source_tree_digest,
         "status": "passed",
@@ -552,12 +570,13 @@ def test_exact_closure_is_deterministic_cited_and_read_only(tmp_path: Path) -> N
         "tests",
         "workflows",
     }.issubset(record_types)
-    relations = {
-        item["relation"] for item in first["dependency_and_impact_closure"]["edges"]
-    }
+    relations = {item["relation"] for item in first["dependency_and_impact_closure"]["edges"]}
     assert "statically_resolved_import_path" in relations
     assert "static_callee_name_candidate" in relations
-    assert all(item["citation"]["source_commit"] == bundle.source_commit for item in first["dependency_and_impact_closure"]["records"])
+    assert all(
+        item["citation"]["source_commit"] == bundle.source_commit
+        for item in first["dependency_and_impact_closure"]["records"]
+    )
     assert {item["id"] for item in first["affected_architecture_owners"]} == {
         "engine",
         "release_distribution",
@@ -573,6 +592,35 @@ def test_exact_closure_is_deterministic_cited_and_read_only(tmp_path: Path) -> N
     assert first["side_effects"] == "none"
     assert _workspace_snapshot(repo) == before
     assert _git(repo, "status", "--porcelain=v1", "--untracked-files=all") == before_status
+
+
+def test_payload_omitted_claim_facet_is_queryable_but_not_an_enhancement_seed(tmp_path: Path) -> None:
+    repo, bundle = _fixture(tmp_path)
+    identifier = "urn:atlas:claim-facet-record:000000000000000000000001"
+
+    code, result = build_enhancement_package(
+        bundle,
+        repo,
+        seed_kind="id",
+        seed_value=identifier,
+        max_depth=1,
+        max_records=10,
+        max_edges=10,
+    )
+
+    assert code == 3
+    assert result["status"] == "abstained"
+    assert result["reason"] == "stable_seed_kind_is_not_routable"
+    id_code, id_result = query_by_id(bundle, identifier)
+    assert id_code == 0
+    assert id_result["record_type"] == "consequential_claim_facets"
+    assert id_result["record"]["id"] == identifier
+    path_code, path_result = query_by_path(bundle, "src/app.py")
+    assert path_code == 0
+    assert any(
+        item["record_type"] == "consequential_claim_facets" and item["id"] == identifier
+        for item in path_result["records"]
+    )
 
 
 def test_gap_seed_uses_exact_governance_and_does_not_invent_code_impact(tmp_path: Path) -> None:
@@ -592,12 +640,8 @@ def test_gap_seed_uses_exact_governance_and_does_not_invent_code_impact(tmp_path
         if item["path"] == "master-reference/content/delivery-governance.json"
     )
     assert result["smallest_safe_vertical_slice"]["status"] == "blocked_pending_evidence"
-    assert "no_gui_or_artifact_surface_linked" in {
-        item["category"] for item in result["unresolved_impact_categories"]
-    }
-    closure_ids = {
-        item["id"] for item in result["dependency_and_impact_closure"]["records"]
-    }
+    assert "no_gui_or_artifact_surface_linked" in {item["category"] for item in result["unresolved_impact_categories"]}
+    closure_ids = {item["id"] for item in result["dependency_and_impact_closure"]["records"]}
     assert "urn:atlas:symbol:app" not in closure_ids
 
 
@@ -612,9 +656,7 @@ def test_line_seed_reaches_declared_test_and_same_file_surfaces(tmp_path: Path) 
     )
 
     assert code == 0
-    closure_ids = {
-        item["id"] for item in result["dependency_and_impact_closure"]["records"]
-    }
+    closure_ids = {item["id"] for item in result["dependency_and_impact_closure"]["records"]}
     assert "urn:atlas:test:app" in closure_ids
     assert "urn:atlas:route:app" in closure_ids
     assert "urn:atlas:component:app" in closure_ids
@@ -640,20 +682,12 @@ def test_missing_seed_or_gap_evidence_abstains(tmp_path: Path) -> None:
     without_governance = copy.deepcopy(bundle)
     governance_path = "master-reference/content/delivery-governance.json"
     governance_file_ids = {
-        item["id"]
-        for item in without_governance.records["files"]
-        if item["path"] == governance_path
+        item["id"] for item in without_governance.records["files"] if item["path"] == governance_path
     }
     without_governance.records["source_text"] = [
-        item
-        for item in without_governance.records["source_text"]
-        if item["file_id"] not in governance_file_ids
+        item for item in without_governance.records["source_text"] if item["file_id"] not in governance_file_ids
     ]
-    governance_file = next(
-        item
-        for item in without_governance.records["files"]
-        if item["path"] == governance_path
-    )
+    governance_file = next(item for item in without_governance.records["files"] if item["path"] == governance_path)
     governance_file["privacy_exposure"] = "metadata_only"
     governance_file["content_source"] = "metadata_only_git_object"
     governance_file["content_digest"] = None
@@ -731,9 +765,7 @@ def test_traversal_limits_are_enforced_and_disclosed(tmp_path: Path) -> None:
     assert traversal["truncated"] is True
     assert "max_depth_reached" in traversal["truncation_reasons"]
     assert result["smallest_safe_vertical_slice"]["status"] == "blocked_pending_evidence"
-    assert "bounded_closure_truncated" in {
-        item["category"] for item in result["unresolved_impact_categories"]
-    }
+    assert "bounded_closure_truncated" in {item["category"] for item in result["unresolved_impact_categories"]}
 
 
 def test_cli_enhance_dispatches_exact_seed_and_limits(
@@ -915,9 +947,7 @@ def test_stale_missing_and_duplicate_compiler_gates_fail_closed(tmp_path: Path) 
     cases.append((missing, "required exact-denominator invariants are absent"))
 
     duplicated = copy.deepcopy(bundle)
-    duplicated.completeness["invariants"].append(
-        copy.deepcopy(duplicated.completeness["invariants"][0])
-    )
+    duplicated.completeness["invariants"].append(copy.deepcopy(duplicated.completeness["invariants"][0]))
     cases.append((duplicated, "invalid or duplicate name"))
 
     no_acceptance = copy.deepcopy(bundle)
@@ -925,9 +955,7 @@ def test_stale_missing_and_duplicate_compiler_gates_fail_closed(tmp_path: Path) 
     cases.append((no_acceptance, "semantic acceptance gates are absent"))
 
     missing_acceptance = copy.deepcopy(bundle)
-    missing_acceptance.completeness["acceptance_gates"] = (
-        missing_acceptance.completeness["acceptance_gates"][:-1]
-    )
+    missing_acceptance.completeness["acceptance_gates"] = missing_acceptance.completeness["acceptance_gates"][:-1]
     cases.append((missing_acceptance, "acceptance gate registry is incomplete or stale"))
 
     for candidate, message in cases:

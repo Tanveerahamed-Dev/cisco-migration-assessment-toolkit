@@ -29,7 +29,7 @@ from governance.consequential_claims import (
     CONTENT_PATHS as CONSEQUENTIAL_CLAIM_CONTENT_PATHS,
     CONTRACT_PATH as CONSEQUENTIAL_CLAIM_CONTRACT_PATH,
     ConsequentialClaimContractError,
-    evaluate_bounded_curated_claims,
+    evaluate_bounded_curated_claim_census,
     unavailable_bounded_curated_claim_summary,
 )
 from governance.policy import validate_claims
@@ -76,6 +76,7 @@ RECORD_GROUPS = (
     "graph_nodes",
     "graph_edges",
     "claims",
+    "consequential_claim_facets",
 )
 FALLBACK_ENTITY_TYPE_BY_GROUP = {
     "files": "file",
@@ -100,6 +101,7 @@ FALLBACK_ENTITY_TYPE_BY_GROUP = {
     "graph_nodes": "graph_node",
     "graph_edges": "graph_edge",
     "claims": "claim",
+    "consequential_claim_facets": "consequential_claim_facet",
 }
 
 GUI_DOSSIER_FIELDS = (
@@ -2813,13 +2815,23 @@ def compile_repository(
                     for path in CONSEQUENTIAL_CLAIM_CONTENT_PATHS
                     if path in commit_entries_by_path and path in canonical_blobs
                 }
-                consequential_claim_denominator = evaluate_bounded_curated_claims(
+                consequential_claim_census = evaluate_bounded_curated_claim_census(
                     contract_raw=contract_raw,
                     contract_git_blob_oid=commit_entries_by_path[CONSEQUENTIAL_CLAIM_CONTRACT_PATH].blob_oid,
                     source_blobs=source_blobs,
                     source_commit=source_commit,
                     source_tree_digest=source_tree_digest,
                     compiler_claim_predicates=[str(row.get("predicate") or "") for row in records["claims"]],
+                )
+                consequential_claim_denominator = consequential_claim_census["summary"]
+                records["consequential_claim_facets"].extend(
+                    {
+                        "id": stable_id("claim-facet-record", candidate["facet_id"]),
+                        "entity_type": "consequential_claim_facet",
+                        "evidence_state": "payload_omitted_value_fingerprint_index_only",
+                        **candidate,
+                    }
+                    for candidate in consequential_claim_census["candidates"]
                 )
             except (ConsequentialClaimContractError, KeyError) as exc:
                 codes = (
@@ -2836,7 +2848,7 @@ def compile_repository(
         evidence_universe = {
             str(record["id"])
             for group in RECORD_GROUPS
-            if group != "claims"
+            if group not in {"claims", "consequential_claim_facets"}
             for record in records[group]
             if isinstance(record.get("id"), str)
         }

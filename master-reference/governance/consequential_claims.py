@@ -942,7 +942,7 @@ def _collect_source_candidates(
     return candidates, _digest(rule_set)
 
 
-def evaluate_bounded_curated_claims(
+def evaluate_bounded_curated_claim_census(
     *,
     contract_raw: bytes,
     contract_git_blob_oid: str,
@@ -951,7 +951,13 @@ def evaluate_bounded_curated_claims(
     source_tree_digest: str,
     compiler_claim_predicates: tuple[str, ...] | list[str],
 ) -> dict[str, Any]:
-    """Return an exact-source, value-redacted, deliberately incomplete census."""
+    """Return the exact summary and immutable payload-omitting review subjects.
+
+    The subject records are addressability metadata, not review evidence.  Their
+    ``review_state`` is part of the candidate-set identity and must never be
+    mutated to represent an external verdict; authenticated verdicts belong in
+    a separate, exact-subject join.
+    """
 
     if (
         not isinstance(source_commit, str)
@@ -1070,7 +1076,7 @@ def evaluate_bounded_curated_claims(
     all_candidates.sort(key=lambda item: item["facet_id"])
     if len(all_candidates) != EXPECTED_TOTAL_CANDIDATES:
         raise ConsequentialClaimContractError(["consequential_claim_candidate_denominator_mismatch"])
-    return {
+    summary = {
         "schema_version": CONTRACT_SCHEMA_VERSION,
         "denominator_kind": CONTRACT_KIND,
         "state": "declared_incomplete",
@@ -1103,3 +1109,25 @@ def evaluate_bounded_curated_claims(
         "compiler_integrity_claims_consequential": 0,
         "error_codes": list(_FIXED_PENDING_CODES),
     }
+    return {"summary": summary, "candidates": all_candidates}
+
+
+def evaluate_bounded_curated_claims(
+    *,
+    contract_raw: bytes,
+    contract_git_blob_oid: str,
+    source_blobs: Mapping[str, tuple[str, bytes]],
+    source_commit: str,
+    source_tree_digest: str,
+    compiler_claim_predicates: tuple[str, ...] | list[str],
+) -> dict[str, Any]:
+    """Return the compatibility summary for the bounded curated census."""
+
+    return evaluate_bounded_curated_claim_census(
+        contract_raw=contract_raw,
+        contract_git_blob_oid=contract_git_blob_oid,
+        source_blobs=source_blobs,
+        source_commit=source_commit,
+        source_tree_digest=source_tree_digest,
+        compiler_claim_predicates=compiler_claim_predicates,
+    )["summary"]

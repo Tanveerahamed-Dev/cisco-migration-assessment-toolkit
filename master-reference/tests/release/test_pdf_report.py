@@ -46,10 +46,11 @@ def _bundle(tmp_path: Path) -> CompilerBundle:
             "binaries": 2,
             "dependencies": 11,
             "claims": 6,
+            "consequential_claim_facets": 0,
         }.items()
     }
     manifest = {
-        "schema_version": "1.1.0",
+        "schema_version": "1.2.0",
         "status": "complete",
         "source_commit": COMMIT,
         "head_tree_oid": "8" * 40,
@@ -60,7 +61,7 @@ def _bundle(tmp_path: Path) -> CompilerBundle:
     }
     completeness = {
         "id": "urn:atlas:completeness:fixture",
-        "schema_version": "1.1.0",
+        "schema_version": "1.2.0",
         "source_commit": COMMIT,
         "source_tree_digest": TREE,
         "tracked_worktree_dirty": False,
@@ -97,7 +98,7 @@ def _bundle(tmp_path: Path) -> CompilerBundle:
             "coverage_evidence_state": "structural_links_only",
         },
         "graphify": {
-            "schema_version": "1.1.0",
+            "schema_version": "1.2.0",
             "source_commit": COMMIT,
             "source_tree_digest": TREE,
             "available": True,
@@ -117,7 +118,12 @@ def _bundle(tmp_path: Path) -> CompilerBundle:
             {"name": "every_nonblank_text_line_has_one_record", "passed": True, "expected": 87, "actual": 87},
             {"name": "every_safe_parsed_source_has_one_structural_root", "passed": True, "expected": 10, "actual": 10},
             {"name": "every_safe_line_structurally_mapped", "passed": True, "expected": 87, "actual": 87},
-            {"name": "every_gui_surface_has_standardized_evidence_honest_dossier", "passed": True, "expected": 9, "actual": 9},
+            {
+                "name": "every_gui_surface_has_standardized_evidence_honest_dossier",
+                "passed": True,
+                "expected": 9,
+                "actual": 9,
+            },
             {"name": "no_silent_parser_failure", "passed": True, "expected": 0, "actual": 0},
         ],
         "acceptance_gates": [
@@ -132,6 +138,9 @@ def _bundle(tmp_path: Path) -> CompilerBundle:
             {"name": "exact_clean_commit_binding", "passed": True, "expected": False, "actual": False},
         ],
     }
+    # This is a renderer-only partial CompilerBundle, not an object accepted by
+    # load_compiler_bundle. Keep the 1.2 review-subject group visible in its
+    # machine-group table even though this PDF fixture has no subject rows.
     # The generator receives records but must never read raw source or previews.
     records = {
         "source_text": [{"id": "source.fixture", "text": RAW_SOURCE_SENTINEL}],
@@ -217,7 +226,10 @@ def _content(tmp_path: Path) -> ContentBundle:
                 "priority": "P1",
                 "disposition": "evidence-first",
                 "problem": "Synthetic fixtures cannot establish production outcomes.",
-                "next_actions": ["Define an owner-approved evidence contract.", "Collect only after explicit authority."],
+                "next_actions": [
+                    "Define an owner-approved evidence contract.",
+                    "Collect only after explicit authority.",
+                ],
                 "acceptance_evidence": ["Sanitized field receipt.", "Independent outcome review."],
                 "owner_role": "network owner",
             }
@@ -411,9 +423,7 @@ def test_curated_pdf_keeps_complete_records_together_and_extracts_clean_ascii(tm
     for start, end in anchors:
         assert any(start in page and end in page for page in pages), f"record split across pages: {start}"
     horizon_index = next(
-        index
-        for index, page in enumerate(pages)
-        if "Open-world Horizon Register" in page and "Advisory only" in page
+        index for index, page in enumerate(pages) if "Open-world Horizon Register" in page and "Advisory only" in page
     )
     assert (
         "Support claim state: none - no current product support is claimed by this advisory register."

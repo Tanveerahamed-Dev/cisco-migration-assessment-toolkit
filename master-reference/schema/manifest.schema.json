@@ -19,7 +19,7 @@
     "architecture_conformance"
   ],
   "properties": {
-    "schema_version": {"const": "1.1.0"},
+    "schema_version": {"const": "1.2.0"},
     "status": {"const": "complete"},
     "release_class": {"enum": ["exact_commit", "dirty_preview"]},
     "source_commit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
@@ -53,7 +53,8 @@
         "dependencies",
         "graph_nodes",
         "graph_edges",
-        "claims"
+        "claims",
+        "consequential_claim_facets"
       ],
       "properties": {
         "files": {"$ref": "#/$defs/groupReceipt"},
@@ -77,7 +78,8 @@
         "dependencies": {"$ref": "#/$defs/groupReceipt"},
         "graph_nodes": {"$ref": "#/$defs/groupReceipt"},
         "graph_edges": {"$ref": "#/$defs/groupReceipt"},
-        "claims": {"$ref": "#/$defs/groupReceipt"}
+        "claims": {"$ref": "#/$defs/groupReceipt"},
+        "consequential_claim_facets": {"$ref": "#/$defs/groupReceipt"}
       },
       "additionalProperties": false
     },
@@ -133,7 +135,7 @@
       "properties": {
         "path": {
           "type": "string",
-          "pattern": "^chunks/(?:files|lines|source_text|symbols|structural_entities|imports|calls|markdown|structured|documents|routes|components|tests|workflows|datasets|binaries|manifests|configs|dependencies|graph_nodes|graph_edges|claims)/[0-9]{5}\\.json$"
+          "pattern": "^chunks/(?:files|lines|source_text|symbols|structural_entities|imports|calls|markdown|structured|documents|routes|components|tests|workflows|datasets|binaries|manifests|configs|dependencies|graph_nodes|graph_edges|claims|consequential_claim_facets)/[0-9]{5}\\.json$"
         },
         "record_count": {"type": "integer", "minimum": 1},
         "sha256": {"$ref": "#/$defs/digest"},

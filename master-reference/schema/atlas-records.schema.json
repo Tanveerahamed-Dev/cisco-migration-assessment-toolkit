@@ -15,7 +15,7 @@
     "records"
   ],
   "properties": {
-    "schema_version": {"const": "1.1.0"},
+    "schema_version": {"const": "1.2.0"},
     "record_type": {"type": "string", "minLength": 1},
     "source_commit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
     "source_tree_digest": {"$ref": "#/$defs/digest"},
@@ -38,6 +38,23 @@
     {"if": {"properties": {"record_type": {"const": "routes"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/guiSurfaceRecord"}}}}},
     {"if": {"properties": {"record_type": {"const": "components"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/guiSurfaceRecord"}}}}},
     {"if": {"properties": {"record_type": {"const": "claims"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/claimRecord"}}}}},
+    {"if": {"properties": {"record_type": {"const": "consequential_claim_facets"}}}, "then": {
+      "properties": {"records": {"items": {"$ref": "#/$defs/consequentialClaimFacetRecord"}}},
+      "oneOf": [
+        {
+          "properties": {
+            "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+            "records": {"items": {"properties": {"source_blob_oid": {"type": "string", "pattern": "^[0-9a-f]{40}$"}}}}
+          }
+        },
+        {
+          "properties": {
+            "source_commit": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "records": {"items": {"properties": {"source_blob_oid": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}}}
+          }
+        }
+      ]
+    }},
     {"if": {"properties": {"record_type": {"const": "graph_nodes"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/graphNodeRecord"}}}}},
     {"if": {"properties": {"record_type": {"const": "graph_edges"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/graphEdgeRecord"}}}}},
     {"if": {"properties": {"record_type": {"const": "files"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/filesRecordKeyFence"}}}}},
@@ -61,7 +78,8 @@
     {"if": {"properties": {"record_type": {"const": "dependencies"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/dependenciesRecordKeyFence"}}}}},
     {"if": {"properties": {"record_type": {"const": "graph_nodes"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/graphNodesRecordKeyFence"}}}}},
     {"if": {"properties": {"record_type": {"const": "graph_edges"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/graphEdgesRecordKeyFence"}}}}},
-    {"if": {"properties": {"record_type": {"const": "claims"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/claimsRecordKeyFence"}}}}}
+    {"if": {"properties": {"record_type": {"const": "claims"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/claimsRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "consequential_claim_facets"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/consequentialClaimFacetsRecordKeyFence"}}}}}
   ],
   "$defs": {
     "atlasId": {
@@ -99,6 +117,7 @@
     "graphNodesRecordKeyFence": {"propertyNames": {"enum": ["community", "coordinate_occurrence", "entity_type", "extraction_mode", "file_id", "file_type", "graphify_id", "id", "kind", "label", "language", "origin", "source_file", "source_location", "unresolved_reasons"]}},
     "graphEdgesRecordKeyFence": {"propertyNames": {"enum": ["confidence", "coordinate_occurrence", "entity_type", "extraction_mode", "id", "relation", "source", "source_file", "source_location", "target", "unresolved_reasons"]}},
     "claimsRecordKeyFence": {"propertyNames": {"enum": ["basis", "confidence", "conflicts_with", "current_view", "denominator", "derived_from", "effective_time", "entity_type", "evidence_class", "evidence_ids", "extraction_mode", "freshness", "id", "lineage", "origin", "owner", "predicate", "recorded_time", "revocation_reason", "revoked_by", "satisfies_evidence_requirement", "scope", "source_commit", "status", "subject", "temporal_basis", "transformation", "unit", "unresolved_reasons", "value", "verdict"]}},
+    "consequentialClaimFacetsRecordKeyFence": {"propertyNames": {"enum": ["classification", "claim_kind", "entity_type", "evidence_state", "facet_id", "facet_path", "grounding_digest", "id", "record_identity", "record_kind", "review_state", "rule_id", "source_blob_oid", "source_path", "source_pointer", "value_digest"]}},
     "range": {
       "type": "object",
       "required": ["start_line", "start_column", "end_line", "end_column"],
@@ -485,6 +504,50 @@
             ,"criticality": {"enum": ["internal", "review_required"]}
             ,"explanation_depth": {"type": "integer", "minimum": 0, "maximum": 4}
             ,"review_state": {"type": "string"}
+          }
+        }
+      ]
+    },
+    "consequentialClaimFacetRecord": {
+      "allOf": [
+        {"$ref": "#/$defs/baseRecord"},
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "entity_type",
+            "evidence_state",
+            "facet_id",
+            "source_path",
+            "source_blob_oid",
+            "source_pointer",
+            "rule_id",
+            "record_kind",
+            "record_identity",
+            "facet_path",
+            "classification",
+            "claim_kind",
+            "review_state",
+            "grounding_digest",
+            "value_digest"
+          ],
+          "properties": {
+            "id": {"$ref": "#/$defs/atlasId"},
+            "entity_type": {"const": "consequential_claim_facet"},
+            "evidence_state": {"const": "payload_omitted_value_fingerprint_index_only"},
+            "facet_id": {"type": "string", "pattern": "^urn:atlas:claim-facet:[0-9a-f]{64}$"},
+            "source_path": {"$ref": "#/$defs/repositoryPath"},
+            "source_blob_oid": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+            "source_pointer": {"type": "string", "pattern": "^/(?:[^~/]|~[01])*(?:/(?:[^~/]|~[01])*)*$"},
+            "rule_id": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,127}$"},
+            "record_kind": {"type": "string", "pattern": "^(?=.*[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000])[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]+$"},
+            "record_identity": {"type": "string", "pattern": "^(?=.*[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000])[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]+$"},
+            "facet_path": {"type": "string", "pattern": "^(?=.*[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000])[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]+$"},
+            "classification": {"const": "consequential_claim_candidate"},
+            "claim_kind": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,127}$"},
+            "review_state": {"const": "pending_independent_review"},
+            "grounding_digest": {"$ref": "#/$defs/digest"},
+            "value_digest": {"$ref": "#/$defs/digest"}
           }
         }
       ]

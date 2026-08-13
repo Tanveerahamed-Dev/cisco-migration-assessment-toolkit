@@ -13,7 +13,7 @@
     "unresolved_reasons"
   ],
   "properties": {
-    "schema_version": {"const": "1.1.0"},
+    "schema_version": {"const": "1.2.0"},
     "source_commit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
     "source_tree_digest": {"$ref": "#/$defs/digest"},
     "available": {"type": "boolean"},

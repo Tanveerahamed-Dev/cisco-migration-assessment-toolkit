@@ -14,6 +14,7 @@ import {
   buildProjection,
   COMPILER_RECORD_KEYS_BY_GROUP,
   isPythonStripEmpty,
+  reconstructConsequentialClaimFacetRecords,
   validateConsequentialClaimCensus,
 } from "../../build/projection/build.mjs";
 
@@ -254,7 +255,7 @@ async function rewriteCompilerPacking(input, chunkSize, targetGroup, mutateParti
     const chunks = [];
     for (const [index, partition] of partitions.entries()) {
       const envelope = {
-        schema_version: "1.1.0",
+        schema_version: "1.2.0",
         record_type: group,
         source_commit: manifest.source_commit,
         source_tree_digest: manifest.source_tree_digest,
@@ -784,6 +785,7 @@ async function makeCompilerFixture(root) {
       source_commit: "d".repeat(40),
       unresolved_reasons: [],
     })),
+    consequential_claim_facets: [],
   };
   normalizeFixtureUrns(records);
 
@@ -800,7 +802,7 @@ async function makeCompilerFixture(root) {
     }
     const canonicalGroupRecords = [...groupRecords].sort((left, right) => left.id.localeCompare(right.id));
     const envelope = {
-      schema_version: "1.1.0",
+      schema_version: "1.2.0",
       record_type: group,
       source_commit: "d".repeat(40),
       source_tree_digest: "e".repeat(64),
@@ -819,7 +821,7 @@ async function makeCompilerFixture(root) {
     };
   }
   const graphifyValue = {
-    schema_version: "1.1.0",
+    schema_version: "1.2.0",
     source_commit: "d".repeat(40),
     source_tree_digest: "e".repeat(64),
     available: true,
@@ -879,7 +881,7 @@ async function makeCompilerFixture(root) {
   };
   const completenessValue = {
     id: fixtureStableId("urn:atlas:completeness:fixture"),
-    schema_version: "1.1.0",
+    schema_version: "1.2.0",
     source_commit: "d".repeat(40),
     source_tree_digest: "e".repeat(64),
     tracked_worktree_dirty: false,
@@ -929,12 +931,12 @@ async function makeCompilerFixture(root) {
   const completeness = await writeDescriptor(input, "completeness.json", completenessValue);
   const graphify = await writeDescriptor(input, "graphify-metadata.json", graphifyValue);
   const architecture = await writeDescriptor(input, "architecture-conformance.json", {
-    schema_version: "1.1.0",
+    schema_version: "1.2.0",
     source_commit: "d".repeat(40),
     source_tree_digest: "e".repeat(64),
   });
   const manifest = {
-    schema_version: "1.1.0",
+    schema_version: "1.2.0",
     status: "complete",
     release_class: "exact_commit",
     source_commit: "d".repeat(40),
@@ -1078,7 +1080,12 @@ async function trackedConsequentialClaimFixture() {
       },
     ],
   };
-  return { completeness, contract, rawSources };
+  const facetRecords = reconstructConsequentialClaimFacetRecords({
+    completeness,
+    rawSources,
+    claimPredicates: CONSEQUENTIAL_INTEGRITY_PREDICATES,
+  });
+  return { completeness, contract, facetRecords, rawSources };
 }
 
 test("projection independently recomputes the bounded claim census and rejects self-receipted drift", async () => {
@@ -1094,6 +1101,7 @@ test("projection independently recomputes the bounded claim census and rejects s
     completeness: fixture.completeness,
     rawSources: fixture.rawSources,
     claimPredicates: CONSEQUENTIAL_INTEGRITY_PREDICATES,
+    facetRecords: fixture.facetRecords,
   });
 
   const bomContractRaw = Buffer.concat([
@@ -1115,6 +1123,7 @@ test("projection independently recomputes the bounded claim census and rejects s
       completeness: bomCompleteness,
       rawSources: bomSources,
       claimPredicates: CONSEQUENTIAL_INTEGRITY_PREDICATES,
+      facetRecords: fixture.facetRecords,
     }),
     /^Error: compiler consequential-claim census is inconsistent$/,
   );
@@ -1147,6 +1156,7 @@ test("projection independently recomputes the bounded claim census and rejects s
       completeness: floatCompleteness,
       rawSources: floatSources,
       claimPredicates: CONSEQUENTIAL_INTEGRITY_PREDICATES,
+      facetRecords: fixture.facetRecords,
     }),
     /^Error: compiler consequential-claim census is inconsistent$/,
   );
@@ -1177,6 +1187,7 @@ test("projection independently recomputes the bounded claim census and rejects s
       completeness: mixedCompleteness,
       rawSources: mixedSources,
       claimPredicates: CONSEQUENTIAL_INTEGRITY_PREDICATES,
+      facetRecords: fixture.facetRecords,
     }),
     /^Error: compiler consequential-claim census is inconsistent$/,
   );
@@ -1201,6 +1212,7 @@ test("projection independently recomputes the bounded claim census and rejects s
       completeness: unavailable,
       rawSources: new Map(),
       claimPredicates: ["repository.attacker_supplied"],
+      facetRecords: [],
     }),
     /^Error: compiler consequential-claim census is inconsistent$/,
   );
@@ -1210,6 +1222,7 @@ test("projection independently recomputes the bounded claim census and rejects s
       completeness: unavailable,
       rawSources: new Map(),
       claimPredicates: CONSEQUENTIAL_INTEGRITY_PREDICATES,
+      facetRecords: [],
       unavailableReason: unavailableMarker,
     }),
     (error) => {
@@ -1223,6 +1236,7 @@ test("projection independently recomputes the bounded claim census and rejects s
       completeness: null,
       rawSources: null,
       claimPredicates: null,
+      facetRecords: null,
     }),
     /^Error: compiler consequential-claim census is inconsistent$/,
   );
@@ -1233,6 +1247,7 @@ test("projection independently recomputes the bounded claim census and rejects s
       completeness: halfBound,
       rawSources: new Map(),
       claimPredicates: CONSEQUENTIAL_INTEGRITY_PREDICATES,
+      facetRecords: [],
     }),
     /^Error: compiler consequential-claim census is inconsistent$/,
   );
@@ -1259,6 +1274,7 @@ test("projection independently recomputes the bounded claim census and rejects s
     completeness: reorderedCompleteness,
     rawSources: reorderedSources,
     claimPredicates: [...CONSEQUENTIAL_INTEGRITY_PREDICATES].reverse(),
+    facetRecords: fixture.facetRecords,
   });
 
   const tamperedSummary = structuredClone(fixture.completeness);
@@ -1268,6 +1284,7 @@ test("projection independently recomputes the bounded claim census and rejects s
       completeness: tamperedSummary,
       rawSources: fixture.rawSources,
       claimPredicates: CONSEQUENTIAL_INTEGRITY_PREDICATES,
+      facetRecords: fixture.facetRecords,
     }),
     /^Error: compiler consequential-claim census is inconsistent$/,
   );
@@ -1283,6 +1300,7 @@ test("projection independently recomputes the bounded claim census and rejects s
       completeness: receiptMismatch,
       rawSources: fixture.rawSources,
       claimPredicates: CONSEQUENTIAL_INTEGRITY_PREDICATES,
+      facetRecords: fixture.facetRecords,
     }),
     /^Error: compiler consequential-claim census is inconsistent$/,
   );
@@ -1300,6 +1318,7 @@ test("projection independently recomputes the bounded claim census and rejects s
       completeness: swappedReceipts,
       rawSources: fixture.rawSources,
       claimPredicates: CONSEQUENTIAL_INTEGRITY_PREDICATES,
+      facetRecords: fixture.facetRecords,
     }),
     /^Error: compiler consequential-claim census is inconsistent$/,
   );
@@ -1315,6 +1334,7 @@ test("projection independently recomputes the bounded claim census and rejects s
       completeness: downgraded,
       rawSources: fixture.rawSources,
       claimPredicates: CONSEQUENTIAL_INTEGRITY_PREDICATES,
+      facetRecords: fixture.facetRecords,
     }),
     /^Error: compiler consequential-claim census is inconsistent$/,
   );
@@ -1384,6 +1404,7 @@ test("projection independently recomputes the bounded claim census and rejects s
         completeness,
         rawSources: sources,
         claimPredicates: CONSEQUENTIAL_INTEGRITY_PREDICATES,
+        facetRecords: fixture.facetRecords,
       }),
       /^Error: compiler consequential-claim census is inconsistent$/,
       label,
@@ -1505,6 +1526,7 @@ test("projection independently recomputes the bounded claim census and rejects s
         completeness,
         rawSources: sources,
         claimPredicates: CONSEQUENTIAL_INTEGRITY_PREDICATES,
+        facetRecords: fixture.facetRecords,
       }),
       /^Error: compiler consequential-claim census is inconsistent$/,
       label,
@@ -1534,6 +1556,7 @@ test("projection independently recomputes the bounded claim census and rejects s
       completeness: hostileCompleteness,
       rawSources: hostileSources,
       claimPredicates: CONSEQUENTIAL_INTEGRITY_PREDICATES,
+      facetRecords: fixture.facetRecords,
     }),
     (error) => {
       assert.equal(error.message, "compiler consequential-claim census is inconsistent");
@@ -1541,6 +1564,123 @@ test("projection independently recomputes the bounded claim census and rejects s
       return true;
     },
   );
+});
+
+test("projection binds every consequential-claim facet subject without accepting review promotion", async () => {
+  const fixture = await trackedConsequentialClaimFixture();
+  assert.equal(fixture.facetRecords.length, 2_136);
+  assert.equal(
+    digestObject(fixture.facetRecords.map(
+      ({ id: _id, entity_type: _entityType, evidence_state: _evidenceState, ...subject }) => subject,
+    ).sort((left, right) => left.facet_id.localeCompare(right.facet_id))),
+    fixture.completeness.consequential_claim_denominator.candidate_set_digest,
+  );
+  assert.ok(fixture.facetRecords.every((record) => (
+    record.id === stableId("claim-facet-record", record.facet_id) &&
+    record.entity_type === "consequential_claim_facet" &&
+    record.evidence_state === "payload_omitted_value_fingerprint_index_only" &&
+    record.review_state === "pending_independent_review" &&
+    !Object.hasOwn(record, "value")
+  )));
+
+  const rejectMutation = (label, mutate, { preserveOrder = false } = {}) => {
+    const facetRecords = structuredClone(fixture.facetRecords);
+    mutate(facetRecords);
+    if (!preserveOrder) facetRecords.sort((left, right) => left.id.localeCompare(right.id));
+    assert.throws(
+      () => validateConsequentialClaimCensus({
+        completeness: fixture.completeness,
+        rawSources: fixture.rawSources,
+        claimPredicates: CONSEQUENTIAL_INTEGRITY_PREDICATES,
+        facetRecords,
+      }),
+      /^Error: compiler consequential-claim census is inconsistent$/,
+      label,
+    );
+  };
+  rejectMutation("missing", (records) => records.pop());
+  rejectMutation("duplicate", (records) => records.push(structuredClone(records[0])));
+  rejectMutation("substitution", (records) => {
+    records[0].facet_id = `urn:atlas:claim-facet:${"0".repeat(64)}`;
+    records[0].id = stableId("claim-facet-record", records[0].facet_id);
+  });
+  rejectMutation("reorder", (records) => records.reverse(), { preserveOrder: true });
+  rejectMutation("value digest", (records) => {
+    records[0].value_digest = "0".repeat(64);
+  });
+  rejectMutation("review state", (records) => {
+    records[0].review_state = "independently_reviewed";
+  });
+  rejectMutation("evidence state", (records) => {
+    records[0].evidence_state = "authenticated_review_evidence";
+  });
+});
+
+test("projection refuses consequential-claim facet subjects as claim evidence", async () => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-claim-evidence-separation-"));
+  try {
+    const { input } = await makeCompilerFixture(scratch);
+    const facetId = `urn:atlas:claim-facet:${"a".repeat(64)}`;
+    const facetRecord = {
+      id: stableId("claim-facet-record", facetId),
+      entity_type: "consequential_claim_facet",
+      evidence_state: "payload_omitted_value_fingerprint_index_only",
+      facet_id: facetId,
+      source_path: "master-reference/content/atlas-core.json",
+      source_blob_oid: "a".repeat(40),
+      source_pointer: "/owners/0/current_scope",
+      rule_id: "fixture_claim_field",
+      record_kind: "owners",
+      record_identity: "owner.fixture",
+      facet_path: "current_scope",
+      classification: "consequential_claim_candidate",
+      claim_kind: "catalog_assertion",
+      review_state: "pending_independent_review",
+      grounding_digest: "b".repeat(64),
+      value_digest: "c".repeat(64),
+    };
+    const manifestPath = join(input, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    const recordsDigest = digestObject([facetRecord.id]);
+    const facetEnvelope = {
+      schema_version: "1.2.0",
+      record_type: "consequential_claim_facets",
+      source_commit: manifest.source_commit,
+      source_tree_digest: manifest.source_tree_digest,
+      chunk_index: 0,
+      chunk_count: 1,
+      record_count: 1,
+      records_digest: recordsDigest,
+      records: [facetRecord],
+    };
+    const facetChunk = await writeDescriptor(
+      input,
+      "chunks/consequential_claim_facets/00000.json",
+      facetEnvelope,
+    );
+    manifest.groups.consequential_claim_facets = {
+      record_count: 1,
+      chunk_count: 1,
+      records_digest: recordsDigest,
+      chunks: [{ ...facetChunk, record_count: 1 }],
+    };
+    const completeness = JSON.parse(
+      await readFile(join(input, ...manifest.completeness.path.split("/")), "utf8"),
+    );
+    completeness.record_counts.consequential_claim_facets = 1;
+    manifest.completeness = await writeVerifiedValue(input, manifest.completeness, completeness);
+    await writeFile(manifestPath, `${stableJson(manifest)}\n`, "utf8");
+    await mutateCompilerGroup(input, "claims", (claimEnvelope) => {
+      claimEnvelope.records[0].evidence_ids = [facetRecord.id];
+    });
+
+    await assert.rejects(
+      buildProjection({ input, output: join(scratch, "projection") }),
+      /^Error: compiler claim evidence references a consequential-claim facet subject$/,
+    );
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
 });
 
 test("projection removes staging when the bounded claim ledger is rechained", async (context) => {
@@ -1782,6 +1922,16 @@ test("projection is deterministic, lazy, privacy-gated, and exact-source preserv
       }
       assert.equal(manifestA.search.indexedRecordCounts[group], records[group].length);
     }
+    assert.equal(
+      Object.hasOwn(manifestA.search.groupRecordCounts, "consequential_claim_facets"),
+      false,
+      "payload-omitting claim subjects must not become search documents",
+    );
+    assert.equal(
+      Object.hasOwn(manifestA.recordBuckets, "consequential_claim_facets"),
+      false,
+      "claim subjects must not be routed through reviewed-evidence dossiers",
+    );
     const lexical = await loaded.searchRecords(["repository.source_commit"]);
     assert.equal(lexical.records[0].id, fixtureStableId("urn:atlas:claim:greeting"));
     const backlinkCapped = await loaded.searchRecords([fixtureStableId("urn:atlas:test:hello")]);
@@ -2562,7 +2712,7 @@ test("projection rejects a missing semantic acceptance gate before rendering ide
 
     await assert.rejects(
       buildProjection({ input, output: join(scratch, "projection") }),
-      /semantic acceptance gate registry differs from schema 1\.1\.0/,
+      /semantic acceptance gate registry differs from schema 1\.2\.0/,
     );
   } finally {
     await rm(scratch, { recursive: true, force: true });
@@ -2677,8 +2827,8 @@ test("projection rejects self-receipted noncanonical compiler JSON", async () =>
       "duplicate-key",
       "chunk",
       (parsed) => `${stableJson(parsed).replace(
-        '"schema_version":"1.1.0"',
-        `"schema_version":"${marker}","schema_version":"1.1.0"`,
+        '"schema_version":"1.2.0"',
+        `"schema_version":"${marker}","schema_version":"1.2.0"`,
       )}\n`,
     ],
     [
@@ -2986,6 +3136,7 @@ test("projection record-key registry is identical to the strict atlas-record sch
     graph_nodes: "graphNodesRecordKeyFence",
     graph_edges: "graphEdgesRecordKeyFence",
     claims: "claimsRecordKeyFence",
+    consequential_claim_facets: "consequentialClaimFacetsRecordKeyFence",
   };
   assert.deepEqual(Object.keys(COMPILER_RECORD_KEYS_BY_GROUP).sort(), Object.keys(fenceByGroup).sort());
   for (const [group, fenceName] of Object.entries(fenceByGroup)) {

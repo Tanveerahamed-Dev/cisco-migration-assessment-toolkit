@@ -21,12 +21,13 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const GENERATED_MARKER = ".atlas-projection-generated";
-const COMPILER_SCHEMA_VERSION = "1.1.0";
+const COMPILER_SCHEMA_VERSION = "1.2.0";
 const PROJECTION_SCHEMA_VERSION = "1.1.0";
 const REQUIRED_COMPILER_GROUPS = Object.freeze([
   "binaries",
   "calls",
   "claims",
+  "consequential_claim_facets",
   "components",
   "configs",
   "datasets",
@@ -215,11 +216,15 @@ const COMPILER_JSON_MAX_VALUES = 2_000_000;
 const COMPILER_JSON_MAX_STRING_BYTES = 8 * 1024 * 1024;
 const COMPILER_FLOAT_TOKEN_PATHS = new WeakMap();
 const ATLAS_STABLE_ID_PATTERN = /^urn:atlas:[a-z-]+:[0-9a-f]{24}$/;
+const CONSEQUENTIAL_CLAIM_FACET_RECORD_KEYS = Object.freeze(
+  "classification claim_kind entity_type evidence_state facet_id facet_path grounding_digest id record_identity record_kind review_state rule_id source_blob_oid source_path source_pointer value_digest".split(" "),
+);
 export const COMPILER_RECORD_KEYS_BY_GROUP = Object.freeze(Object.fromEntries(
   Object.entries({
     binaries: "content_digest entity_type file_id git_blob_oid id inspection_mode media_type path privacy_exposure size_bytes unresolved_reasons",
     calls: "callee containing_symbol entity_type extraction_disposition file_id id path range resolved statement_digest tests unresolved_reasons",
     claims: "basis confidence conflicts_with current_view denominator derived_from effective_time entity_type evidence_class evidence_ids extraction_mode freshness id lineage origin owner predicate recorded_time revocation_reason revoked_by satisfies_evidence_requirement scope source_commit status subject temporal_basis transformation unit unresolved_reasons value verdict",
+    consequential_claim_facets: CONSEQUENTIAL_CLAIM_FACET_RECORD_KEYS.join(" "),
     components: "attribute_names attributes_digest component_role detection entity_type exported extraction_disposition file_id framework gui_dossier handler id kind method name path range route self_closing tag_name unresolved_reasons",
     configs: "content_digest entity_type file_id id language path roles",
     datasets: "content_digest entity_type file_id format id path size_bytes structured_record_count",
@@ -1089,7 +1094,7 @@ function validateConsequentialIntegerTokenTypes(completeness, summary, fail) {
   }
 }
 
-export function validateConsequentialClaimCensus({
+export function reconstructConsequentialClaimFacetRecords({
   completeness,
   rawSources,
   claimPredicates,
@@ -1138,7 +1143,7 @@ export function validateConsequentialClaimCensus({
     ) {
       fail();
     }
-    return;
+    return [];
   }
   if (summary.state !== "declared_incomplete" || rawSources.size !== CONSEQUENTIAL_CLAIM_PATHS.size) {
     fail();
@@ -1300,6 +1305,66 @@ export function validateConsequentialClaimCensus({
     ],
   };
   if (consequentialCanonicalJson(summary) !== consequentialCanonicalJson(expected)) fail();
+  return allCandidates.map((candidate) => ({
+    id: stableId("claim-facet-record", candidate.facet_id),
+    entity_type: "consequential_claim_facet",
+    evidence_state: "payload_omitted_value_fingerprint_index_only",
+    ...candidate,
+  })).sort((left, right) => compareUnicodeCodePoints(left.id, right.id));
+  } catch {
+    fail();
+  }
+}
+
+export function validateConsequentialClaimCensus({
+  completeness,
+  rawSources,
+  claimPredicates,
+  facetRecords,
+  unavailableReason = "consequential_claim_contract_absent",
+}) {
+  const fail = () => {
+    throw new Error("compiler consequential-claim census is inconsistent");
+  };
+  try {
+    if (!Array.isArray(facetRecords)) fail();
+    const expectedRecords = reconstructConsequentialClaimFacetRecords({
+      completeness,
+      rawSources,
+      claimPredicates,
+      unavailableReason,
+    });
+    if (facetRecords.length !== expectedRecords.length) fail();
+    const seenFacetIds = new Set();
+    const subjects = [];
+    let previousId = null;
+    for (const record of facetRecords) {
+      if (
+        !hasExactKeys(record, CONSEQUENTIAL_CLAIM_FACET_RECORD_KEYS) ||
+        record.entity_type !== "consequential_claim_facet" ||
+        record.evidence_state !== "payload_omitted_value_fingerprint_index_only" ||
+        record.id !== stableId("claim-facet-record", record.facet_id) ||
+        seenFacetIds.has(record.facet_id) ||
+        (previousId !== null && compareUnicodeCodePoints(previousId, record.id) >= 0)
+      ) {
+        fail();
+      }
+      seenFacetIds.add(record.facet_id);
+      previousId = record.id;
+      const { id: _id, entity_type: _entityType, evidence_state: _evidenceState, ...subject } = record;
+      subjects.push(subject);
+    }
+    subjects.sort((left, right) => compareUnicodeCodePoints(left.facet_id, right.facet_id));
+    const expectedSubjects = expectedRecords.map(
+      ({ id: _id, entity_type: _entityType, evidence_state: _evidenceState, ...subject }) => subject,
+    ).sort((left, right) => compareUnicodeCodePoints(left.facet_id, right.facet_id));
+    if (
+      consequentialCanonicalJson(subjects) !== consequentialCanonicalJson(expectedSubjects) ||
+      (subjects.length > 0 &&
+        consequentialDigest(subjects) !== completeness?.consequential_claim_denominator?.candidate_set_digest)
+    ) {
+      fail();
+    }
   } catch {
     fail();
   }
@@ -1720,6 +1785,12 @@ function compactRecord(group, record) {
       unresolvedReasons: record.unresolved_reasons ?? [],
     };
   }
+  if (group === "consequential_claim_facets") {
+    return {
+      ...record,
+      derivation: "payload_omitted_value_fingerprint_index_only",
+    };
+  }
   if (group === "graph_nodes") {
     return {
       id: record.id,
@@ -1999,6 +2070,12 @@ async function loadGroup(
       ) {
         throw new Error("compiler graph edge record shape is malformed");
       }
+      if (
+        group === "consequential_claim_facets" &&
+        !hasExactObjectKeys(record, CONSEQUENTIAL_CLAIM_FACET_RECORD_KEYS)
+      ) {
+        throw new Error("compiler consequential-claim facet record shape is malformed");
+      }
       const id = record.id;
       if (typeof id !== "string" || id.length > 128 || !ATLAS_STABLE_ID_PATTERN.test(id)) {
         throw new Error("compiler record lacks a stable ID");
@@ -2031,6 +2108,18 @@ async function loadGroup(
     throw new Error(`record-count mismatch for ${group}`);
   }
   return records;
+}
+
+function validateClaimEvidenceSubjectSeparation(claimRecords, seenIds) {
+  for (const claim of claimRecords) {
+    if (
+      claim.evidence_ids.some(
+        (evidenceId) => seenIds.get(evidenceId) === "consequential_claim_facets",
+      )
+    ) {
+      throw new Error("compiler claim evidence references a consequential-claim facet subject");
+    }
+  }
 }
 
 function requireCount(value, label) {
@@ -2075,7 +2164,7 @@ function validateCompilerContract(manifest, completeness, graphify) {
   const declaredGroups = Object.keys(manifest.groups).sort();
   const contractGroups = [...REQUIRED_COMPILER_GROUPS].sort();
   if (stableJson(declaredGroups) !== stableJson(contractGroups)) {
-    throw new Error("compiler manifest record groups do not exactly match schema 1.1.0");
+    throw new Error("compiler manifest record groups do not exactly match schema 1.2.0");
   }
   if (!completeness.record_counts || typeof completeness.record_counts !== "object") {
     throw new Error("compiler completeness record_counts are absent or malformed");
@@ -2137,7 +2226,7 @@ function validateCompilerContract(manifest, completeness, graphify) {
     stableJson(acceptanceNames.sort()) !==
     stableJson([...REQUIRED_ACCEPTANCE_GATES].sort())
   ) {
-    throw new Error("compiler semantic acceptance gate registry differs from schema 1.1.0");
+    throw new Error("compiler semantic acceptance gate registry differs from schema 1.2.0");
   }
   return invariantByName;
 }
@@ -2749,6 +2838,7 @@ async function writeSourceProjection({
   seenIds,
   completeness,
   claimPredicates,
+  claimFacetRecords,
   claimUnavailableReason,
 }) {
   await mkdir(join(staging, "source", "chunks"), { recursive: true });
@@ -2974,6 +3064,7 @@ async function writeSourceProjection({
       completeness,
       rawSources: consequentialClaimSources,
       claimPredicates,
+      facetRecords: claimFacetRecords,
       unavailableReason: claimUnavailableReason,
     });
   } catch {
@@ -3922,14 +4013,19 @@ async function buildProjectionUnsafe({ input, output, allowPreview = false }, li
     .sort();
   const seenIds = new Map();
   const dossierIds = new Set();
+  let claimRecords = [];
+  let consequentialClaimFacetRecords = [];
   const groups = Object.fromEntries(metadataGroupNames.map((name) => [name, []]));
   for (const name of metadataGroupNames) {
     const rawRecords = await loadGroup(inputRoot, manifest, name, { seenIds });
+    if (name === "claims") claimRecords = rawRecords;
+    if (name === "consequential_claim_facets") consequentialClaimFacetRecords = rawRecords;
     if (name === "routes" || name === "components") {
       for (const record of rawRecords) validateGuiDossier(record, name, manifest, dossierIds);
     }
     groups[name] = rawRecords.map((record) => compactRecord(name, record));
   }
+  validateClaimEvidenceSubjectSeparation(claimRecords, seenIds);
 
   const filesByPath = new Map();
   for (const file of groups.files) {
@@ -4138,6 +4234,7 @@ async function buildProjectionUnsafe({ input, output, allowPreview = false }, li
     seenIds,
     completeness,
     claimPredicates: groups.claims.map((record) => record.predicate),
+    claimFacetRecords: consequentialClaimFacetRecords,
     claimUnavailableReason:
       manifest.release_class === "dirty_preview" && manifest.tracked_worktree_dirty === true
         ? "consequential_claim_dirty_preview_not_eligible"

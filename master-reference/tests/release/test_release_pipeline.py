@@ -465,7 +465,7 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
         chunks = []
         if rows:
             envelope = {
-                "schema_version": "1.1.0",
+                "schema_version": "1.2.0",
                 "record_type": group_name,
                 "source_commit": commit,
                 "source_tree_digest": source_tree_digest,
@@ -487,7 +487,7 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
         }
 
     architecture = {
-        "schema_version": "1.1.0",
+        "schema_version": "1.2.0",
         "source_commit": commit,
         "source_tree_digest": source_tree_digest,
         "status": "passed",
@@ -497,7 +497,7 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
     }
     completeness = {
         "id": "completeness-fixture",
-        "schema_version": "1.1.0",
+        "schema_version": "1.2.0",
         "source_commit": commit,
         "source_tree_digest": source_tree_digest,
         "tracked_worktree_dirty": False,
@@ -600,7 +600,7 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
         ],
     }
     graphify = {
-        "schema_version": "1.1.0",
+        "schema_version": "1.2.0",
         "source_commit": commit,
         "source_tree_digest": source_tree_digest,
         "available": True,
@@ -666,7 +666,7 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
     _write(compiler / "graphify-metadata.json", graphify_raw)
     _write(compiler / "architecture-conformance.json", architecture_raw)
     manifest = {
-        "schema_version": "1.1.0",
+        "schema_version": "1.2.0",
         "status": "complete",
         "source_commit": commit,
         "head_tree_oid": head_tree_oid,
@@ -709,7 +709,7 @@ def _replace_graph_fixture(
         chunks: list[dict[str, object]] = []
         if rows:
             envelope = {
-                "schema_version": "1.1.0",
+                "schema_version": "1.2.0",
                 "record_type": group_name,
                 "source_commit": manifest["source_commit"],
                 "source_tree_digest": manifest["source_tree_digest"],
@@ -855,7 +855,7 @@ def _replace_group_fixture(
     chunks: list[dict[str, object]] = []
     if rows:
         envelope = {
-            "schema_version": "1.1.0",
+            "schema_version": "1.2.0",
             "record_type": group_name,
             "source_commit": manifest["source_commit"],
             "source_tree_digest": manifest["source_tree_digest"],
@@ -896,7 +896,7 @@ def _replace_group_chunk_fixture(
     chunks: list[dict[str, object]] = []
     for index, rows in enumerate(chunk_rows):
         envelope = {
-            "schema_version": "1.1.0",
+            "schema_version": "1.2.0",
             "record_type": group_name,
             "source_commit": manifest["source_commit"],
             "source_tree_digest": manifest["source_tree_digest"],
@@ -1487,6 +1487,47 @@ def test_compiler_bundle_recomputes_declared_claim_census_and_rejects_downgrade_
     assert str(failure.value) == fixed_error
     assert hostile_oid not in _formatted_exception(failure)
 
+    # The emitted subject index is not self-authenticating. Even a fully
+    # rechained, schema-valid value digest must match the independently
+    # reconstructed selected-commit facet set.
+    monkeypatch.setattr(source_binding, "_tree_census", original_tree_census)
+    manifest_before_facet_tamper = manifest_path.read_bytes()
+    manifest_value = json.loads(manifest_before_facet_tamper)
+    facet_relative = manifest_value["groups"]["consequential_claim_facets"]["chunks"][0]["path"]
+    facet_path = compiler_output / facet_relative
+    facet_before_tamper = facet_path.read_bytes()
+
+    def replace_facet_value_digest(envelope: dict[str, object]) -> None:
+        records = envelope["records"]
+        assert isinstance(records, list) and isinstance(records[0], dict)
+        records[0]["value_digest"] = "0" * 64
+
+    _rewrite_chunk(compiler_output, "consequential_claim_facets", replace_facet_value_digest)
+    with pytest.raises(ReleaseInputError) as failure:
+        compiler_bundle.load_compiler_bundle(compiler_output, repository_root=repo)
+    assert str(failure.value) == fixed_error
+    _write(facet_path, facet_before_tamper)
+    _write(manifest_path, manifest_before_facet_tamper)
+
+    # Subject fingerprints are not evidence. A re-chained compiler claim may
+    # not use a facet record to satisfy its evidence relation.
+    facet_record_id = json.loads(facet_before_tamper)["records"][0]["id"]
+    claims_relative = manifest_value["groups"]["claims"]["chunks"][0]["path"]
+    claims_path = compiler_output / claims_relative
+    claims_before_tamper = claims_path.read_bytes()
+
+    def replace_claim_evidence_with_facet(envelope: dict[str, object]) -> None:
+        records = envelope["records"]
+        assert isinstance(records, list) and isinstance(records[0], dict)
+        records[0]["evidence_ids"] = [facet_record_id]
+
+    _rewrite_chunk(compiler_output, "claims", replace_claim_evidence_with_facet)
+    with pytest.raises(ReleaseInputError) as failure:
+        compiler_bundle.load_compiler_bundle(compiler_output, repository_root=repo)
+    assert str(failure.value) == fixed_error
+    _write(claims_path, claims_before_tamper)
+    _write(manifest_path, manifest_before_facet_tamper)
+
 
 def test_dependency_assessment_names_unpatched_image_size_advisories() -> None:
     gate, limits = release_pipeline._dependency_vulnerability_assessment(
@@ -1916,7 +1957,7 @@ def test_family_intake_strictly_validates_absent_graph_receipt_before_return(
     manifest_path = compiler / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     graphify = {
-        "schema_version": "1.1.0",
+        "schema_version": "1.2.0",
         "source_commit": manifest["source_commit"],
         "source_tree_digest": manifest["source_tree_digest"],
         "available": False,

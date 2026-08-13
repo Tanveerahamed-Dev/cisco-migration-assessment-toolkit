@@ -11,7 +11,7 @@ from typing import Any, Iterable
 # Corpus contract version.  This version is shared by the compiler manifest,
 # completeness ledger, and every record-chunk envelope.  It is intentionally
 # independent from the release-family document schemas.
-SCHEMA_VERSION = "1.1.0"
+SCHEMA_VERSION = "1.2.0"
 PREVIEW_LIMIT = 240
 
 
