@@ -43,7 +43,11 @@ Output layout:
   split stable-ID dossier buckets. Every ID routes through the same exported
   prefix map used to write the leaf module. Test assertion groups and workflow
   job/step/permission/artifact entities retain their adapter fields.
-- `projection-manifest.json` — digests for every generated module.
+- `projection-manifest.json` — canonical digests for every generated module.
+  The projection compiler writes this raw conceptual receipt. Sites packaging
+  replaces it with deterministic `projection-manifest.json.gz`, records both
+  raw and representation byte/hash joins in
+  `compression-manifest.json.gz`, and leaves no raw JSON duplicate in `dist`.
 - `.atlas-projection-generated` — ownership marker required before replacement.
 
 The generated directory is a release product, not authored source. Ignore only

@@ -2,7 +2,8 @@
 /**
  * Losslessly replace the generated Atlas projection modules with deterministic
  * gzip members for Sites packaging. The worker maps virtual `.mjs` requests to
- * these `.mjs.gz` assets; this build step never changes the projection manifest.
+ * these `.mjs.gz` assets. The exact canonical projection/compression JSON bytes
+ * remain the conceptual receipts but are stored as deterministic `.json.gz`.
  */
 import { createHash } from "node:crypto";
 import {
@@ -17,16 +18,18 @@ import {
 } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import { constants, crc32, deflateRaw, gunzip } from "node:zlib";
+import { gunzip } from "node:zlib";
 import { pathToFileURL } from "node:url";
 
-import { CANONICAL_GZIP_HEADER_BYTES } from "./gzip-contract.js";
+import { deterministicGzip, expandReceiptBoundGzip } from "./deterministic-gzip.mjs";
 
-const RECEIPT_NAME = "compression-manifest.json";
+const RECEIPT_NAME = "compression-manifest.json.gz";
 const PROJECTION_MANIFEST_NAME = "projection-manifest.json";
+const PROJECTION_MANIFEST_REPRESENTATION_NAME = `${PROJECTION_MANIFEST_NAME}.gz`;
 const CONCURRENCY = 4;
-const deflateRawAsync = promisify(deflateRaw);
 const gunzipAsync = promisify(gunzip);
+const MAX_JSON_RECEIPT_BYTES = 32 * 1024 * 1024;
+const PUBLIC_OPTIONS_KEYS = new Set(["projectionDir"]);
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
@@ -156,17 +159,6 @@ async function mapBounded(values, operation) {
   return results;
 }
 
-async function deterministicGzip(original) {
-  const deflated = await deflateRawAsync(original, { level: constants.Z_BEST_COMPRESSION });
-  // RFC 1952 header: no optional fields, zero mtime, best-compression XFL,
-  // and OS=unknown. This prevents host metadata from entering the artifact.
-  const header = Buffer.from(CANONICAL_GZIP_HEADER_BYTES);
-  const trailer = Buffer.alloc(8);
-  trailer.writeUInt32LE(crc32(original) >>> 0, 0);
-  trailer.writeUInt32LE(original.byteLength >>> 0, 4);
-  return Buffer.concat([header, deflated, trailer]);
-}
-
 async function verifyCompressed(bytes, record, label) {
   if (bytes.byteLength !== record.compressedBytes || sha256(bytes) !== record.compressedSha256) {
     throw new Error(`compressed byte/hash verification failed: ${label}`);
@@ -174,8 +166,8 @@ async function verifyCompressed(bytes, record, label) {
   let expanded;
   try {
     expanded = await gunzipAsync(bytes);
-  } catch (error) {
-    throw new Error(`compressed module cannot be gunzipped: ${label}`, { cause: error });
+  } catch {
+    throw new Error(`compressed module cannot be gunzipped: ${label}`);
   }
   if (
     expanded.byteLength !== record.originalBytes ||
@@ -190,11 +182,16 @@ async function assertRegularFile(path, label) {
   if (!info.isFile() || info.isSymbolicLink()) throw new Error(`${label} is not a regular file`);
 }
 
-export async function compressProjection({ projectionDir = "dist/client/atlas-projection" } = {}) {
+async function compressProjectionInternal({ projectionDir = "dist/client/atlas-projection" } = {}) {
   const root = resolve(projectionDir);
-  const rootInfo = await lstat(root);
+  let rootInfo;
+  try {
+    rootInfo = await lstat(root);
+  } catch {
+    throw new Error("projection root is unavailable");
+  }
   if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
-    throw new Error(`projection root is not a regular directory: ${root}`);
+    throw new Error("projection root is not a regular directory");
   }
   const manifestPath = join(root, PROJECTION_MANIFEST_NAME);
   await assertRegularFile(manifestPath, "projection manifest");
@@ -202,8 +199,8 @@ export async function compressProjection({ projectionDir = "dist/client/atlas-pr
   let manifest;
   try {
     manifest = JSON.parse(manifestBytes.toString("utf8"));
-  } catch (error) {
-    throw new Error("projection manifest is not valid UTF-8 JSON", { cause: error });
+  } catch {
+    throw new Error("projection manifest is not valid UTF-8 JSON");
   }
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
     throw new Error("projection manifest is not a JSON object");
@@ -211,8 +208,15 @@ export async function compressProjection({ projectionDir = "dist/client/atlas-pr
   const { modules: declared, declarationCount } = collectDeclaredModules(manifest);
   const existingFiles = await walkFiles(root);
   const receiptPath = join(root, RECEIPT_NAME);
-  if (existingFiles.some((path) => path === receiptPath)) {
-    throw new Error(`${RECEIPT_NAME} already exists; refusing to overwrite a prior receipt`);
+  const projectionRepresentationPath = join(root, PROJECTION_MANIFEST_REPRESENTATION_NAME);
+  const refusedReceipts = new Set([
+    receiptPath,
+    projectionRepresentationPath,
+    join(root, "compression-manifest.json"),
+  ]);
+  const priorReceipt = existingFiles.find((path) => refusedReceipts.has(path));
+  if (priorReceipt) {
+    throw new Error(`generated gzip receipt already exists; refusing to overwrite: ${priorReceipt === receiptPath ? RECEIPT_NAME : "projection receipt"}`);
   }
   const precompressed = existingFiles
     .map((path) => relativePosix(root, path))
@@ -314,16 +318,33 @@ export async function compressProjection({ projectionDir = "dist/client/atlas-pr
       throw new Error("projection-manifest.json changed during compression");
     }
 
+    if (!manifestBytes.equals(Buffer.from(`${stableJson(manifest)}\n`, "utf8"))) {
+      throw new Error("projection manifest is not stable canonical JSON with one trailing LF");
+    }
+    const projectionRepresentation = await deterministicGzip(manifestBytes);
+    await expandReceiptBoundGzip(projectionRepresentation, {
+      label: "projection manifest",
+      maximumCompressedBytes: MAX_JSON_RECEIPT_BYTES,
+      maximumExpandedBytes: MAX_JSON_RECEIPT_BYTES,
+    });
     const receipt = {
-      schemaVersion: "1.0.0",
-      algorithm: "gzip:deflate-raw:level-9:mtime-0:os-255",
+      schemaVersion: "1.1.0",
+      algorithm: "gzip:deflate-raw:level-9:fixed-header:receipt-bound",
+      producerRuntime: {
+        node: process.versions.node,
+        zlib: process.versions.zlib,
+      },
       sourceCommit: manifest.sourceCommit ?? null,
       sourceTreeDigest: manifest.sourceTreeDigest ?? null,
       projectionSchemaVersion: manifest.schemaVersion ?? null,
       projectionManifest: {
         path: PROJECTION_MANIFEST_NAME,
+        representationPath: PROJECTION_MANIFEST_REPRESENTATION_NAME,
+        contentEncoding: "gzip",
         bytes: manifestBytes.byteLength,
         sha256: sha256(manifestBytes),
+        representationBytes: projectionRepresentation.byteLength,
+        representationSha256: sha256(projectionRepresentation),
       },
       declarationCount,
       moduleCount: records.length,
@@ -332,15 +353,73 @@ export async function compressProjection({ projectionDir = "dist/client/atlas-pr
       modules: records,
     };
     const receiptBytes = Buffer.from(`${stableJson(receipt)}\n`, "utf8");
+    const receiptRepresentation = await deterministicGzip(receiptBytes);
+    await expandReceiptBoundGzip(receiptRepresentation, {
+      label: "compression manifest",
+      maximumCompressedBytes: MAX_JSON_RECEIPT_BYTES,
+      maximumExpandedBytes: MAX_JSON_RECEIPT_BYTES,
+    });
+    const temporaryProjection = `${projectionRepresentationPath}.tmp-${process.pid}`;
     const temporaryReceipt = `${receiptPath}.tmp-${process.pid}`;
-    await writeFile(temporaryReceipt, receiptBytes, { flag: "wx" });
-    await rename(temporaryReceipt, receiptPath);
+    await writeFile(temporaryProjection, projectionRepresentation, { flag: "wx" });
+    await writeFile(temporaryReceipt, receiptRepresentation, { flag: "wx" });
+    await rename(temporaryProjection, projectionRepresentationPath);
+    try {
+      await rename(temporaryReceipt, receiptPath);
+    } catch {
+      await rm(projectionRepresentationPath, { force: true });
+      throw new Error("compressed receipt publication failed");
+    }
+    await unlink(manifestPath);
     return receipt;
   } finally {
     await rm(stagingRoot, { recursive: true, force: true });
     await rm(`${receiptPath}.tmp-${process.pid}`, { force: true });
+    await rm(`${projectionRepresentationPath}.tmp-${process.pid}`, { force: true });
   }
 }
+
+function snapshotPublicOptions(options) {
+  if (
+    options === undefined ||
+    options === null ||
+    typeof options !== "object" ||
+    Object.getPrototypeOf(options) !== Object.prototype
+  ) {
+    throw new Error("invalid options");
+  }
+  const keys = Reflect.ownKeys(options);
+  if (
+    keys.some((key) => typeof key !== "string" || !PUBLIC_OPTIONS_KEYS.has(key))
+  ) {
+    throw new Error("invalid options");
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(options);
+  if (
+    Object.values(descriptors).some(
+      (descriptor) => !("value" in descriptor) || descriptor.enumerable !== true,
+    )
+  ) {
+    throw new Error("invalid options");
+  }
+  const projectionDir = descriptors.projectionDir?.value;
+  if (projectionDir !== undefined && typeof projectionDir !== "string") {
+    throw new Error("invalid options");
+  }
+  return projectionDir === undefined ? {} : { projectionDir };
+}
+
+export async function compressProjection(options = {}) {
+  try {
+    return await compressProjectionInternal(snapshotPublicOptions(options));
+  } catch {
+    throw new Error("projection compression failed");
+  }
+}
+
+export const compressionTestOnly = Object.freeze({
+  compressProjectionInternal,
+});
 
 const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : "";
 if (import.meta.url === invokedPath) {

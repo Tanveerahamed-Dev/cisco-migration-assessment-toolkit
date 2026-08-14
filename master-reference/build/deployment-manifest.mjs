@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /**
  * Produce and verify the outer, exact-member receipt for a Sites deployment.
- * The receipt is deliberately not self-hashed: its member census is every
- * other regular file under dist/, and verification recomputes that closed set.
+ * Its raw canonical JSON is deliberately not self-hashed: the physical
+ * deterministic-gzip representation is excluded from the member census, and
+ * verification reconstructs and recomputes the conceptual receipt in memory.
  */
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -10,31 +11,34 @@ import {
   link,
   lstat,
   open,
-  readFile,
   readdir,
   unlink,
 } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { promisify, TextDecoder } from "node:util";
 import { pathToFileURL } from "node:url";
-import { gunzip } from "node:zlib";
 
-import { CANONICAL_GZIP_HEADER_BYTES } from "./gzip-contract.js";
+import { deterministicGzip, expandReceiptBoundGzip } from "./deterministic-gzip.mjs";
 
 const execFileAsync = promisify(execFile);
-const gunzipAsync = promisify(gunzip);
-const MANIFEST_NAME = "deployment-manifest.json";
-const SCHEMA_VERSION = "1.0.0";
+const MANIFEST_SOURCE_NAME = "deployment-manifest.json";
+const MANIFEST_NAME = `${MANIFEST_SOURCE_NAME}.gz`;
+const SCHEMA_VERSION = "1.1.0";
 const RECORD_TYPE = "atlas_deployment_bundle";
 const IO_CONCURRENCY = 16;
 const PRIVACY_SCAN_CONCURRENCY = 4;
 const MAX_JSON_RECEIPT_BYTES = 32 * 1024 * 1024;
+const MAX_GZIP_RECEIPT_BYTES = 32 * 1024 * 1024;
 const MAX_JSON_STRUCTURE_DEPTH = 64;
 const MAX_JSON_STRUCTURE_VALUES = 5_000_000;
 const MAX_COMPRESSED_MODULE_BYTES = 8 * 1024 * 1024;
 const MAX_EXPANDED_MODULE_BYTES = 8 * 1024 * 1024;
 const MAX_COMPRESSED_PROJECTION_BYTES = 512 * 1024 * 1024;
 const MAX_EXPANDED_PROJECTION_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_DEPLOYMENT_MEMBER_BYTES = 248 * 1024 * 1024;
+const MAX_DEPLOYMENT_BYTES = 248 * 1024 * 1024;
+const MAX_RUNTIME_VERSION_BYTES = 64;
+const PUBLIC_OPTIONS_KEYS = new Set(["distDir", "repoRoot"]);
 const GENERIC_AUTOMATION_USERS = new Set([
   "actions",
   "agent",
@@ -48,10 +52,11 @@ const GENERIC_AUTOMATION_USERS = new Set([
 const GENERIC_WINDOWS_USER_HOME = /(?:^|[^a-z0-9])(?:[a-z]:|[\\/]{2,}[^\\/\r\n]+)[\\/]+users[\\/]+[^\\/\p{Cc}<>:"|?*']{1,128}(?=[\\/]|$|["'])/u;
 const GENERIC_POSIX_USER_HOME = /(?:^|[^a-z0-9])\/(?:home|users)\/[^/\p{Cc}"']{1,128}(?=\/|$|["'])/u;
 const GENERIC_COLLAPSED_USER_HOME = /(?:^|_)(?:[a-z]_users|home|users)_[a-z0-9][a-z0-9_]{0,127}_(?:appdata|build|cache|checkout|checkouts|code|config|desktop|documents|downloads|git|onedrive|project|projects|repo|repos|source|src|work|workspace)(?:_|$)/;
-const GZIP_HEADER = Buffer.from(CANONICAL_GZIP_HEADER_BYTES);
 const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
 const MANIFEST_RULE = Object.freeze({
-  path: MANIFEST_NAME,
+  path: MANIFEST_SOURCE_NAME,
+  representationPath: MANIFEST_NAME,
+  contentEncoding: "gzip",
   selfHash: false,
   memberCensus: "every_regular_file_under_dist_except_this_manifest",
   verification: "manifest_must_exist_once_but_must_not_appear_in_members",
@@ -73,6 +78,15 @@ const SOURCE_RULE = Object.freeze({
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const compareText = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
+
+function hasExactKeys(value, keys) {
+  return (
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    stableJson(Object.keys(value).sort(compareText)) === stableJson([...keys].sort(compareText))
+  );
+}
 
 function stableJson(value) {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
@@ -180,14 +194,6 @@ async function assertRegularFile(path, label) {
   return info;
 }
 
-async function readFileFixed(path, label) {
-  try {
-    return await readFile(path);
-  } catch {
-    throw new Error(`${label} cannot be read`);
-  }
-}
-
 function sameFileIdentity(left, right) {
   return left.dev === right.dev && left.ino === right.ino;
 }
@@ -207,31 +213,22 @@ async function readStableBoundedBytes(
   maximumBytes,
   hooks = {},
 ) {
-  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0) {
-    throw new Error(`${label} has an invalid bounded byte limit`);
-  }
-  const pathBefore = await assertRegularFile(path, label);
-  if (pathBefore.size > maximumBytes) {
-    throw new Error(`${label} exceeds the bounded JSON receipt limit`);
-  }
-  await hooks.afterPathStat?.();
-
   let handle;
   try {
+    if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0) {
+      throw new Error(`${label} has an invalid bounded byte limit`);
+    }
+    const pathBefore = await assertRegularFile(path, label);
+    if (pathBefore.size > maximumBytes) {
+      throw new Error(`${label} exceeds the bounded byte limit`);
+    }
+    await hooks.afterPathStat?.({ path, label });
     handle = await open(path, "r");
-  } catch {
-    throw new Error(`${label} cannot be read`);
-  }
-
-  let operationError = null;
-  let bytes;
-  let handleAfter;
-  try {
     const handleBefore = await handle.stat();
     if (!handleBefore.isFile() || !sameFileSnapshot(pathBefore, handleBefore)) {
       throw new Error(`${label} changed during its bounded read`);
     }
-    await hooks.afterHandleStat?.();
+    await hooks.afterHandleStat?.({ path, label });
 
     const chunks = [];
     let totalBytes = 0;
@@ -251,33 +248,33 @@ async function readStableBoundedBytes(
       position += bytesRead;
     }
     if (totalBytes > maximumBytes) {
-      throw new Error(`${label} exceeds the bounded JSON receipt limit`);
+      throw new Error(`${label} exceeds the bounded byte limit`);
     }
-    bytes = Buffer.concat(chunks, totalBytes);
-    handleAfter = await handle.stat();
+    const bytes = Buffer.concat(chunks, totalBytes);
+    const handleAfter = await handle.stat();
     if (
       !sameFileSnapshot(handleBefore, handleAfter) ||
       bytes.byteLength !== handleAfter.size
     ) {
       throw new Error(`${label} changed during its bounded read`);
     }
-  } catch (error) {
-    operationError = error instanceof Error && error.message.startsWith(`${label} `)
-      ? error
-      : new Error(`${label} cannot be read`);
-  }
-  try {
     await handle.close();
+    handle = null;
+    const pathAfter = await assertRegularFile(path, label);
+    if (!sameFileSnapshot(handleAfter, pathAfter)) {
+      throw new Error(`${label} changed during its bounded read`);
+    }
+    return bytes;
   } catch {
-    operationError ??= new Error(`${label} cannot be read`);
+    if (handle) {
+      try {
+        await handle.close();
+      } catch {
+        // The public fixed error below is the only disclosure boundary.
+      }
+    }
+    throw new Error(`${label} bounded read failed`);
   }
-  if (operationError) throw operationError;
-
-  const pathAfter = await assertRegularFile(path, label);
-  if (!sameFileSnapshot(handleAfter, pathAfter)) {
-    throw new Error(`${label} changed during its bounded read`);
-  }
-  return bytes;
 }
 
 async function walkRegularFiles(root) {
@@ -363,6 +360,36 @@ async function readJsonObject(
   }
   assertBoundedJsonStructure(value, label);
   return { bytes, value };
+}
+
+async function readGzipJsonObject(
+  path,
+  label,
+  maximumExpandedBytes = MAX_JSON_RECEIPT_BYTES,
+  hooks = {},
+) {
+  const representationBytes = await readStableBoundedBytes(
+    path,
+    label,
+    MAX_GZIP_RECEIPT_BYTES,
+    hooks,
+  );
+  const bytes = await expandReceiptBoundGzip(representationBytes, {
+    label,
+    maximumCompressedBytes: MAX_GZIP_RECEIPT_BYTES,
+    maximumExpandedBytes,
+  });
+  let value;
+  try {
+    value = JSON.parse(STRICT_UTF8.decode(bytes));
+  } catch {
+    throw new Error(`${label} is not valid UTF-8 JSON`);
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} is not a JSON object`);
+  }
+  assertBoundedJsonStructure(value, label);
+  return { bytes, representationBytes, value };
 }
 
 function safeProjectionModulePath(value, label = "projection module") {
@@ -571,6 +598,7 @@ async function validateCompressedProjection({
   projection,
   compression,
   repoRoot,
+  readHooks = {},
 }) {
   if (!projection.bytes.equals(canonicalBytes(projection.value))) {
     throw new Error("projection manifest is not stable canonical JSON with one trailing LF");
@@ -597,8 +625,34 @@ async function validateCompressedProjection({
   const receipt = compression.value;
   const records = receipt.modules;
   if (
-    receipt.schemaVersion !== "1.0.0" ||
-    receipt.algorithm !== "gzip:deflate-raw:level-9:mtime-0:os-255" ||
+    !hasExactKeys(receipt, [
+      "algorithm",
+      "compressedBytes",
+      "declarationCount",
+      "moduleCount",
+      "modules",
+      "originalBytes",
+      "producerRuntime",
+      "projectionManifest",
+      "projectionSchemaVersion",
+      "schemaVersion",
+      "sourceCommit",
+      "sourceTreeDigest",
+    ]) ||
+    !hasExactKeys(receipt.producerRuntime, ["node", "zlib"]) ||
+    !hasExactKeys(receipt.projectionManifest, [
+      "bytes",
+      "contentEncoding",
+      "path",
+      "representationBytes",
+      "representationPath",
+      "representationSha256",
+      "sha256",
+    ]) ||
+    receipt.schemaVersion !== "1.1.0" ||
+    !/^gzip:deflate-raw:level-[0-9]:fixed-header:receipt-bound$/.test(
+      String(receipt.algorithm ?? ""),
+    ) ||
     !Array.isArray(records) ||
     receipt.declarationCount !== declarationCount ||
     receipt.moduleCount !== declared.size ||
@@ -617,6 +671,16 @@ async function validateCompressedProjection({
   let originalBytes = 0;
   let compressedBytes = 0;
   for (const record of records) {
+    if (!hasExactKeys(record, [
+      "compressedBytes",
+      "compressedPath",
+      "compressedSha256",
+      "originalBytes",
+      "originalSha256",
+      "path",
+    ])) {
+      throw new Error("compressed projection module receipt has an unexpected shape");
+    }
     const path = safeProjectionModulePath(record?.path, "compression module");
     const compressedPath = safeMemberPath(
       record?.compressedPath,
@@ -672,6 +736,12 @@ async function validateCompressedProjection({
   if (actualOriginalModules.length) {
     throw new Error(`uncompressed projection module remains: ${actualOriginalModules[0]}`);
   }
+  if (
+    actualProjectionPaths.includes("projection-manifest.json") ||
+    actualProjectionPaths.includes("compression-manifest.json")
+  ) {
+    throw new Error("raw projection receipt duplicate is forbidden");
+  }
   const actualCompressed = new Set(
     actualProjectionPaths
       .filter((path) => path.endsWith(".mjs.gz")),
@@ -688,44 +758,24 @@ async function validateCompressedProjection({
     records,
     async (record, index) => {
       const memberPath = join(projectionRoot, ...record.compressedPath.split("/"));
-      const metadataBefore = await assertRegularFile(
+      const bytes = await readStableBoundedBytes(
         memberPath,
-        `compressed projection module ${record.compressedPath}`,
+        "compressed projection module",
+        Math.min(record.compressedBytes, MAX_COMPRESSED_MODULE_BYTES),
+        readHooks.module,
       );
-      if (
-        metadataBefore.size !== record.compressedBytes ||
-        metadataBefore.size > MAX_COMPRESSED_MODULE_BYTES
-      ) {
-        throw new Error(`compressed projection module byte receipt mismatch: ${record.compressedPath}`);
-      }
-      const bytes = await readFileFixed(memberPath, "compressed projection module");
-      const metadataAfter = await assertRegularFile(
-        memberPath,
-        "compressed projection module after read",
-      );
-      if (
-        metadataAfter.isSymbolicLink() ||
-        !metadataAfter.isFile() ||
-        metadataAfter.size !== metadataBefore.size ||
-        metadataAfter.mtimeMs !== metadataBefore.mtimeMs ||
-        bytes.byteLength !== record.compressedBytes ||
-        sha256(bytes) !== record.compressedSha256
-      ) {
+      if (bytes.byteLength !== record.compressedBytes || sha256(bytes) !== record.compressedSha256) {
         throw new Error(`compressed projection module byte/hash mismatch: ${record.compressedPath}`);
-      }
-      if (
-        bytes.byteLength < GZIP_HEADER.byteLength ||
-        !bytes.subarray(0, GZIP_HEADER.byteLength).equals(GZIP_HEADER)
-      ) {
-        throw new Error(`compressed projection module has a non-canonical gzip header: ${record.compressedPath}`);
       }
       let expanded;
       try {
-        expanded = await gunzipAsync(bytes, { maxOutputLength: MAX_EXPANDED_MODULE_BYTES });
-      } catch (error) {
-        throw new Error(`compressed projection module cannot be bounded-gunzipped: ${record.compressedPath}`, {
-          cause: error,
+        expanded = await expandReceiptBoundGzip(bytes, {
+          label: "compressed projection module",
+          maximumCompressedBytes: MAX_COMPRESSED_MODULE_BYTES,
+          maximumExpandedBytes: MAX_EXPANDED_MODULE_BYTES,
         });
+      } catch {
+        throw new Error(`compressed projection module cannot be bounded-gunzipped: ${record.compressedPath}`);
       }
       if (
         expanded.byteLength !== record.originalBytes ||
@@ -736,10 +786,8 @@ async function validateCompressedProjection({
       let text;
       try {
         text = STRICT_UTF8.decode(expanded);
-      } catch (error) {
-        throw new Error(`expanded projection module is not strict UTF-8: ${record.compressedPath}`, {
-          cause: error,
-        });
+      } catch {
+        throw new Error(`expanded projection module is not strict UTF-8: ${record.compressedPath}`);
       }
       const rule = localIdentityRule(text, privacyContract);
       const genericRule = (
@@ -761,12 +809,22 @@ async function validateCompressedProjection({
   );
 }
 
-async function readReferenceSource(distRoot, repoRoot, expectedSourceCommit) {
+async function readReferenceSource(distRoot, repoRoot, expectedSourceCommit, readHooks = {}) {
   const projectionRoot = join(distRoot, "client", "atlas-projection");
-  const projectionPath = join(projectionRoot, "projection-manifest.json");
-  const compressionPath = join(projectionRoot, "compression-manifest.json");
-  const projection = await readJsonObject(projectionPath, "projection manifest");
-  const compression = await readJsonObject(compressionPath, "compression manifest");
+  const projectionPath = join(projectionRoot, "projection-manifest.json.gz");
+  const compressionPath = join(projectionRoot, "compression-manifest.json.gz");
+  const projection = await readGzipJsonObject(
+    projectionPath,
+    "projection manifest",
+    MAX_JSON_RECEIPT_BYTES,
+    readHooks.projection,
+  );
+  const compression = await readGzipJsonObject(
+    compressionPath,
+    "compression manifest",
+    MAX_JSON_RECEIPT_BYTES,
+    readHooks.compression,
+  );
   const commitPattern = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
   const digestPattern = /^[0-9a-f]{64}$/;
   if (
@@ -778,11 +836,30 @@ async function readReferenceSource(distRoot, repoRoot, expectedSourceCommit) {
   ) {
     throw new Error("projection/compression source binding mismatch");
   }
+  const runtime = compression.value.producerRuntime;
+  if (
+    !runtime ||
+    Object.keys(runtime).sort(compareText).join("\0") !== "node\0zlib" ||
+    typeof runtime.node !== "string" ||
+    runtime.node.length < 1 ||
+    Buffer.byteLength(runtime.node, "utf8") > MAX_RUNTIME_VERSION_BYTES ||
+    typeof runtime.zlib !== "string" ||
+    runtime.zlib.length < 1 ||
+    Buffer.byteLength(runtime.zlib, "utf8") > MAX_RUNTIME_VERSION_BYTES ||
+    !/^(?:0|[1-9]\d{0,2})\.(?:0|[1-9]\d{0,2})\.(?:0|[1-9]\d{0,3})(?:[-+][0-9A-Za-z.-]{1,32})?$/.test(runtime.node) ||
+    !/^(?:0|[1-9]\d{0,2})\.(?:0|[1-9]\d{0,2})\.(?:0|[1-9]\d{0,3})(?:[-+][0-9A-Za-z.-]{1,32})?$/.test(runtime.zlib)
+  ) {
+    throw new Error("compression receipt producer runtime is malformed");
+  }
   const projectionReceipt = compression.value.projectionManifest;
   if (
     projectionReceipt?.path !== "projection-manifest.json" ||
+    projectionReceipt.representationPath !== "projection-manifest.json.gz" ||
+    projectionReceipt.contentEncoding !== "gzip" ||
     projectionReceipt.bytes !== projection.bytes.byteLength ||
-    projectionReceipt.sha256 !== sha256(projection.bytes)
+    projectionReceipt.sha256 !== sha256(projection.bytes) ||
+    projectionReceipt.representationBytes !== projection.representationBytes.byteLength ||
+    projectionReceipt.representationSha256 !== sha256(projection.representationBytes)
   ) {
     throw new Error("compression receipt does not bind the exact projection manifest");
   }
@@ -794,6 +871,7 @@ async function readReferenceSource(distRoot, repoRoot, expectedSourceCommit) {
     projection,
     compression,
     repoRoot,
+    readHooks,
   });
   return {
     commit: projection.value.sourceCommit,
@@ -813,7 +891,7 @@ function assertExactSourceJoin(source, referenceSource) {
   }
 }
 
-async function censusMembers(distRoot, repoRoot) {
+async function censusMembers(distRoot, repoRoot, readHooks = {}) {
   const files = await walkRegularFiles(distRoot);
   const paths = files
     .map((path) => relativePosix(distRoot, path))
@@ -826,14 +904,21 @@ async function censusMembers(distRoot, repoRoot) {
   if (new Set(paths).size !== paths.length) {
     throw new Error("deployment member census contains duplicate relative paths");
   }
-  return mapBounded(paths, async (path) => {
+  const members = await mapBounded(paths, async (path) => {
     safeMemberPath(path);
-    const bytes = await readFileFixed(
+    const bytes = await readStableBoundedBytes(
       join(distRoot, ...path.split("/")),
       "deployment member",
+      MAX_DEPLOYMENT_MEMBER_BYTES,
+      readHooks.member,
     );
     return { path, bytes: bytes.byteLength, sha256: sha256(bytes) };
   });
+  const totalBytes = members.reduce((total, member) => total + member.bytes, 0);
+  if (!Number.isSafeInteger(totalBytes) || totalBytes > MAX_DEPLOYMENT_BYTES) {
+    throw new Error("deployment member aggregate exceeds the Sites expanded limit");
+  }
+  return members;
 }
 
 function digestPayload({ source, referenceSource, members }) {
@@ -868,22 +953,61 @@ function describeCensusDifference(declared, actual) {
   return `deployment member census mismatch; missing=${sample(missing)}; extra=${sample(extra)}`;
 }
 
-async function verifyDeploymentManifestReceipt({ distDir = "dist", repoRoot = ".." } = {}) {
+async function verifyDeploymentManifestReceipt(
+  { distDir = "dist", repoRoot = ".." } = {},
+  readHooks = {},
+) {
   const distRoot = resolve(distDir);
   const manifestPath = join(distRoot, MANIFEST_NAME);
-  const manifestReceipt = await readJsonObject(manifestPath, "deployment manifest");
+  const manifestReceipt = await readGzipJsonObject(
+    manifestPath,
+    "deployment manifest",
+    MAX_JSON_RECEIPT_BYTES,
+    readHooks.manifest,
+  );
   if (!manifestReceipt.bytes.equals(canonicalBytes(manifestReceipt.value))) {
     throw new Error("deployment manifest is not stable canonical JSON with one trailing LF");
   }
   const receipt = manifestReceipt.value;
   if (!Array.isArray(receipt.members)) throw new Error("deployment manifest members are malformed");
   const privacyContract = localIdentityContract(repoRoot);
+  assertGeneratedReceiptPrivacy(
+    manifestReceipt.bytes,
+    privacyContract,
+    "deployment-manifest",
+  );
+  let declaredTotalBytes = 0;
+  for (const member of receipt.members) {
+    if (
+      !hasExactKeys(member, ["bytes", "path", "sha256"]) ||
+      typeof member.path !== "string" ||
+      !Number.isSafeInteger(member?.bytes) ||
+      member.bytes < 0 ||
+      member.bytes > MAX_DEPLOYMENT_MEMBER_BYTES ||
+      typeof member.sha256 !== "string" ||
+      !/^[0-9a-f]{64}$/.test(member.sha256)
+    ) {
+      throw new Error("deployment manifest members are malformed");
+    }
+    declaredTotalBytes += member.bytes;
+    if (!Number.isSafeInteger(declaredTotalBytes) || declaredTotalBytes > MAX_DEPLOYMENT_BYTES) {
+      throw new Error("deployment member aggregate exceeds the Sites expanded limit");
+    }
+  }
+  if (
+    receipt.memberCount !== receipt.members.length ||
+    receipt.totalBytes !== declaredTotalBytes ||
+    declaredTotalBytes + manifestReceipt.representationBytes.byteLength > MAX_DEPLOYMENT_BYTES
+  ) {
+    throw new Error("deployment manifest member aggregate is inconsistent");
+  }
   receipt.members.forEach((member, index) => {
     assertGeneratedPathPrivacy(member?.path, privacyContract, "deployment-member", index);
   });
   const declaredPaths = receipt.members.map((member) => safeMemberPath(member?.path));
   if (
     declaredPaths.includes(MANIFEST_NAME) ||
+    declaredPaths.includes(MANIFEST_SOURCE_NAME) ||
     new Set(declaredPaths).size !== declaredPaths.length ||
     stableJson(declaredPaths) !== stableJson([...declaredPaths].sort(compareText))
   ) {
@@ -895,6 +1019,12 @@ async function verifyDeploymentManifestReceipt({ distDir = "dist", repoRoot = ".
       .map((path) => relativePosix(distRoot, path))
       .filter((path) => path !== MANIFEST_NAME),
   );
+  if (
+    actualPaths.has("client/atlas-projection/projection-manifest.json") ||
+    actualPaths.has("client/atlas-projection/compression-manifest.json")
+  ) {
+    throw new Error("raw projection receipt duplicate is forbidden");
+  }
   [...actualPaths].sort(compareText).forEach((path, index) => {
     assertGeneratedPathPrivacy(path, privacyContract, "deployment-member", index);
   });
@@ -908,26 +1038,32 @@ async function verifyDeploymentManifestReceipt({ distDir = "dist", repoRoot = ".
     ) {
       throw new Error(`deployment member receipt is malformed: ${member.path}`);
     }
-    const bytes = await readFileFixed(
+    if (member.bytes > MAX_DEPLOYMENT_MEMBER_BYTES) {
+      throw new Error(`deployment member receipt is malformed: ${member.path}`);
+    }
+    const bytes = await readStableBoundedBytes(
       join(distRoot, ...member.path.split("/")),
       "deployment member",
+      Math.min(member.bytes, MAX_DEPLOYMENT_MEMBER_BYTES),
+      readHooks.member,
     );
     if (bytes.byteLength !== member.bytes || sha256(bytes) !== member.sha256) {
       throw new Error(`deployment member byte/hash mismatch: ${member.path}`);
     }
   });
   const source = await readCleanGitSource(repoRoot);
-  const referenceSource = await readReferenceSource(distRoot, repoRoot, source.commit);
+  const referenceSource = await readReferenceSource(
+    distRoot,
+    repoRoot,
+    source.commit,
+    readHooks,
+  );
   assertExactSourceJoin(source, referenceSource);
   const expected = createManifest({ source, referenceSource, members: receipt.members });
   if (!canonicalBytes(receipt).equals(canonicalBytes(expected))) {
     throw new Error("deployment manifest does not match its recomputed source-bound receipt");
   }
   return receipt;
-}
-
-export async function verifyDeploymentManifest(options = {}) {
-  return verifyDeploymentManifestReceipt(options);
 }
 
 function isMissingFileError(error) {
@@ -1071,19 +1207,33 @@ async function buildDeploymentManifestInternal(
   const manifestPath = join(distRoot, MANIFEST_NAME);
   await assertDirectory(distRoot, "deployment root");
   const initialFiles = await walkRegularFiles(distRoot);
-  if (initialFiles.some((path) => relativePosix(distRoot, path) === MANIFEST_NAME)) {
+  if (initialFiles.some((path) => [MANIFEST_NAME, MANIFEST_SOURCE_NAME].includes(relativePosix(distRoot, path)))) {
     throw new Error(`${MANIFEST_NAME} already exists; refusing to overwrite a prior outer receipt`);
   }
   const source = await readCleanGitSource(repoRoot);
-  const referenceSource = await readReferenceSource(distRoot, repoRoot, source.commit);
+  const referenceSource = await readReferenceSource(
+    distRoot,
+    repoRoot,
+    source.commit,
+    hooks.readHooks,
+  );
   assertExactSourceJoin(source, referenceSource);
-  const members = await censusMembers(distRoot, repoRoot);
+  const members = await censusMembers(distRoot, repoRoot, hooks.readHooks);
   const finalSource = await readCleanGitSource(repoRoot);
   if (stableJson(source) !== stableJson(finalSource)) {
     throw new Error("tracked Git source changed while deployment members were being hashed");
   }
   const receipt = createManifest({ source, referenceSource, members });
   const receiptBytes = canonicalBytes(receipt);
+  const receiptRepresentation = await deterministicGzip(receiptBytes);
+  await expandReceiptBoundGzip(receiptRepresentation, {
+    label: "deployment manifest",
+    maximumCompressedBytes: MAX_GZIP_RECEIPT_BYTES,
+    maximumExpandedBytes: MAX_JSON_RECEIPT_BYTES,
+  });
+  if (receipt.totalBytes + receiptRepresentation.byteLength > MAX_DEPLOYMENT_BYTES) {
+    throw new Error("deployment bundle exceeds the Sites expanded limit");
+  }
   const temporaryPath = join(
     dirname(distRoot),
     `.${basename(distRoot)}.${MANIFEST_NAME}.${randomUUID()}.tmp`,
@@ -1091,14 +1241,17 @@ async function buildDeploymentManifestInternal(
   let temporary;
   let published;
   try {
-    temporary = await createOwnedPublication(temporaryPath, receiptBytes, hooks);
+    temporary = await createOwnedPublication(temporaryPath, receiptRepresentation, hooks);
     await hooks.beforePublish?.();
     published = await publishManifestNoClobber(temporary, manifestPath);
     if (!await removeOwnedPublication(temporary, "deployment manifest temporary publication", hooks)) {
       throw new Error("deployment manifest temporary publication cleanup refused");
     }
     temporary = null;
-    await verifyDeploymentManifest({ distDir: distRoot, repoRoot });
+    await verifyDeploymentManifestReceipt(
+      { distDir: distRoot, repoRoot },
+      hooks.readHooks,
+    );
     return receipt;
   } catch (error) {
     let cleanupFailure = false;
@@ -1121,13 +1274,57 @@ async function buildDeploymentManifestInternal(
   }
 }
 
+function snapshotPublicOptions(options) {
+  if (
+    options === undefined ||
+    options === null ||
+    typeof options !== "object" ||
+    Object.getPrototypeOf(options) !== Object.prototype
+  ) {
+    throw new Error("invalid options");
+  }
+  const keys = Reflect.ownKeys(options);
+  if (keys.some((key) => typeof key !== "string" || !PUBLIC_OPTIONS_KEYS.has(key))) {
+    throw new Error("invalid options");
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(options);
+  if (
+    Object.values(descriptors).some(
+      (descriptor) => !("value" in descriptor) || descriptor.enumerable !== true,
+    )
+  ) {
+    throw new Error("invalid options");
+  }
+  const result = {};
+  for (const key of PUBLIC_OPTIONS_KEYS) {
+    const value = descriptors[key]?.value;
+    if (value !== undefined && typeof value !== "string") throw new Error("invalid options");
+    if (value !== undefined) result[key] = value;
+  }
+  return result;
+}
+
+export async function verifyDeploymentManifest(options = {}) {
+  try {
+    return await verifyDeploymentManifestReceipt(snapshotPublicOptions(options));
+  } catch {
+    throw new Error("deployment manifest verification failed");
+  }
+}
+
 export async function buildDeploymentManifest(options = {}) {
-  return buildDeploymentManifestInternal(options);
+  try {
+    return await buildDeploymentManifestInternal(snapshotPublicOptions(options));
+  } catch {
+    throw new Error("deployment manifest build failed");
+  }
 }
 
 export const deploymentManifestTestOnly = Object.freeze({
   buildDeploymentManifestWithHooks: buildDeploymentManifestInternal,
+  verifyDeploymentManifestWithHooks: verifyDeploymentManifestReceipt,
   readJsonObject,
+  readGzipJsonObject,
 });
 
 const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : "";

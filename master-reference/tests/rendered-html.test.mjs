@@ -1072,12 +1072,14 @@ test("keeps the complete compressed projection inside the Sites expanded limit",
   const projectionDirectory = fileURLToPath(
     new URL("../dist/client/atlas-projection/", import.meta.url),
   );
-  const [distPaths, projectionPaths, receiptText, projectionManifestText] = await Promise.all([
+  const [distPaths, projectionPaths, receiptBytes, projectionManifestBytes] = await Promise.all([
     sourceFiles(distDirectory),
     sourceFiles(projectionDirectory),
-    readFile(join(projectionDirectory, "compression-manifest.json"), "utf8"),
-    readFile(join(projectionDirectory, "projection-manifest.json"), "utf8"),
+    readFile(join(projectionDirectory, "compression-manifest.json.gz")),
+    readFile(join(projectionDirectory, "projection-manifest.json.gz")),
   ]);
+  const receiptText = gunzipSync(receiptBytes).toString("utf8");
+  const projectionManifestText = gunzipSync(projectionManifestBytes).toString("utf8");
   const receipt = JSON.parse(receiptText);
   const projectionManifest = JSON.parse(projectionManifestText);
   const compressed = projectionPaths.filter((path) => path.endsWith(".mjs.gz"));
@@ -1086,10 +1088,37 @@ test("keeps the complete compressed projection inside the Sites expanded limit",
   const expandedBytes = sizes.reduce((total, size) => total + size, 0);
 
   assert.equal(originals.length, 0, "deployable dist retained uncompressed projection modules");
+  assert.deepEqual(
+    [...receiptBytes.subarray(0, CANONICAL_GZIP_HEADER_BYTES.length)],
+    CANONICAL_GZIP_HEADER_BYTES,
+  );
+  assert.deepEqual(
+    [...projectionManifestBytes.subarray(0, CANONICAL_GZIP_HEADER_BYTES.length)],
+    CANONICAL_GZIP_HEADER_BYTES,
+  );
+  assert.equal(receiptText.endsWith("\n"), true);
+  assert.equal(projectionManifestText.endsWith("\n"), true);
   assert.equal(compressed.length, receipt.moduleCount);
   assert.equal(receipt.modules.length, receipt.moduleCount);
   assert.equal(receipt.sourceCommit, projectionManifest.sourceCommit);
   assert.equal(receipt.sourceTreeDigest, projectionManifest.sourceTreeDigest);
+  assert.equal(receipt.projectionManifest.path, "projection-manifest.json");
+  assert.equal(receipt.projectionManifest.representationPath, "projection-manifest.json.gz");
+  assert.equal(receipt.projectionManifest.contentEncoding, "gzip");
+  assert.equal(receipt.projectionManifest.bytes, Buffer.byteLength(projectionManifestText));
+  assert.equal(
+    receipt.projectionManifest.sha256,
+    createHash("sha256").update(projectionManifestText).digest("hex"),
+  );
+  assert.equal(receipt.projectionManifest.representationBytes, projectionManifestBytes.byteLength);
+  assert.equal(
+    receipt.projectionManifest.representationSha256,
+    createHash("sha256").update(projectionManifestBytes).digest("hex"),
+  );
+  assert.ok(!projectionPaths.includes(join(projectionDirectory, "projection-manifest.json")));
+  assert.ok(!projectionPaths.includes(join(projectionDirectory, "compression-manifest.json")));
+  assert.ok(distPaths.includes(join(distDirectory, "deployment-manifest.json.gz")));
+  assert.ok(!distPaths.includes(join(distDirectory, "deployment-manifest.json")));
   assert.ok(receipt.originalBytes > receipt.compressedBytes);
   assert.ok(
     expandedBytes <= 248 * 1024 * 1024,

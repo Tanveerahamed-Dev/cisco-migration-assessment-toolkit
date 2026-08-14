@@ -8,7 +8,12 @@ import { gunzip } from "node:zlib";
 import test from "node:test";
 
 import { CANONICAL_GZIP_HEADER_BYTES } from "../../build/gzip-contract.js";
-import { compressProjection } from "../../build/compress-projection.mjs";
+import {
+  compressProjection as compressProjectionPublic,
+  compressionTestOnly,
+} from "../../build/compress-projection.mjs";
+
+const compressProjection = compressionTestOnly.compressProjectionInternal;
 
 const gunzipAsync = promisify(gunzip);
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
@@ -73,7 +78,7 @@ async function listCompressed(root) {
   return output.sort();
 }
 
-test("projection compression is deterministic, lossless, and preserves the projection manifest", async () => {
+test("projection compression is deterministic, lossless, and preserves canonical receipt bytes", async () => {
   assert.deepEqual(CANONICAL_GZIP_HEADER_BYTES, [
     0x1f,
     0x8b,
@@ -91,12 +96,20 @@ test("projection compression is deterministic, lossless, and preserves the proje
     const first = await writeFixture(join(scratch, "first"));
     const second = await writeFixture(join(scratch, "second"));
     const firstManifest = await readFile(first.manifestPath);
-    await compressProjection({ projectionDir: first.projection });
+    await compressProjectionPublic({ projectionDir: first.projection });
     await compressProjection({ projectionDir: second.projection });
-    assert.deepEqual(await readFile(first.manifestPath), firstManifest);
+    await assert.rejects(readFile(first.manifestPath), /ENOENT/);
+    const firstProjectionReceipt = await readFile(`${first.manifestPath}.gz`);
+    const secondProjectionReceipt = await readFile(`${second.manifestPath}.gz`);
+    assert.deepEqual(firstProjectionReceipt, secondProjectionReceipt);
+    assert.deepEqual(await gunzipAsync(firstProjectionReceipt), firstManifest);
     assert.deepEqual(
-      await readFile(join(first.projection, "compression-manifest.json")),
-      await readFile(join(second.projection, "compression-manifest.json")),
+      [...firstProjectionReceipt.subarray(0, CANONICAL_GZIP_HEADER_BYTES.length)],
+      CANONICAL_GZIP_HEADER_BYTES,
+    );
+    assert.deepEqual(
+      await readFile(join(first.projection, "compression-manifest.json.gz")),
+      await readFile(join(second.projection, "compression-manifest.json.gz")),
     );
     const compressed = await listCompressed(first.projection);
     assert.deepEqual(compressed, [...first.values.keys()].map((path) => `${path}.gz`).sort());
@@ -111,7 +124,27 @@ test("projection compression is deterministic, lossless, and preserves the proje
       );
       assert.deepEqual(await gunzipAsync(firstGzip), first.values.get(path));
     }
-    const receipt = JSON.parse(await readFile(join(first.projection, "compression-manifest.json"), "utf8"));
+    const receiptRepresentation = await readFile(join(first.projection, "compression-manifest.json.gz"));
+    assert.deepEqual(
+      [...receiptRepresentation.subarray(0, CANONICAL_GZIP_HEADER_BYTES.length)],
+      CANONICAL_GZIP_HEADER_BYTES,
+    );
+    const receipt = JSON.parse(await gunzipAsync(receiptRepresentation));
+    assert.equal(receipt.schemaVersion, "1.1.0");
+    assert.equal(receipt.algorithm, "gzip:deflate-raw:level-9:fixed-header:receipt-bound");
+    assert.deepEqual(receipt.producerRuntime, {
+      node: process.versions.node,
+      zlib: process.versions.zlib,
+    });
+    assert.deepEqual(receipt.projectionManifest, {
+      path: "projection-manifest.json",
+      representationPath: "projection-manifest.json.gz",
+      contentEncoding: "gzip",
+      bytes: firstManifest.byteLength,
+      sha256: sha256(firstManifest),
+      representationBytes: firstProjectionReceipt.byteLength,
+      representationSha256: sha256(firstProjectionReceipt),
+    });
     assert.equal(receipt.moduleCount, first.values.size);
     assert.equal(receipt.declarationCount, first.values.size + 1);
     assert.equal(receipt.modules.length, first.values.size);
@@ -130,7 +163,7 @@ test("projection compression requires exact equality between declared and actual
       try {
         const fixture = await writeFixture(scratch, options);
         await assert.rejects(compressProjection({ projectionDir: fixture.projection }), expected);
-        await assert.rejects(readFile(join(fixture.projection, "compression-manifest.json")), /ENOENT/);
+        await assert.rejects(readFile(join(fixture.projection, "compression-manifest.json.gz")), /ENOENT/);
         assert.deepEqual(await listCompressed(fixture.projection), []);
       } finally {
         await rm(scratch, { recursive: true, force: true });
@@ -149,8 +182,57 @@ test("projection compression rejects module tampering before writing or removing
     );
     assert.match(await readFile(join(fixture.projection, "index.mjs"), "utf8"), /tampered/);
     assert.deepEqual(await listCompressed(fixture.projection), []);
-    await assert.rejects(readFile(join(fixture.projection, "compression-manifest.json")), /ENOENT/);
+    await assert.rejects(readFile(join(fixture.projection, "compression-manifest.json.gz")), /ENOENT/);
   } finally {
     await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("public projection compression rejects hostile options without disclosure", async (context) => {
+  const marker = "private-compression-options-sentinel";
+  const accessor = {};
+  Object.defineProperty(accessor, "projectionDir", {
+    enumerable: true,
+    get() {
+      throw new Error(marker);
+    },
+  });
+  const nonenumerable = {};
+  Object.defineProperty(nonenumerable, "projectionDir", {
+    enumerable: false,
+    value: marker,
+  });
+  const cases = [
+    ["null", null],
+    ["scalar", 7],
+    ["string scalar", marker],
+    ["accessor", accessor],
+    ["string wrapper", { projectionDir: new String(marker) }],
+    ["custom prototype", Object.assign(Object.create({ marker }), { projectionDir: marker })],
+    ["symbol key", { [Symbol(marker)]: true }],
+    ["unknown key", { EvilKey: marker }],
+    ["non-enumerable key", nonenumerable],
+    [
+      "prototype proxy trap",
+      new Proxy({}, {
+        getPrototypeOf() {
+          throw new Error(marker);
+        },
+      }),
+    ],
+  ];
+  for (const [name, options] of cases) {
+    await context.test(name, async () => {
+      let failure;
+      try {
+        await compressProjectionPublic(options);
+      } catch (error) {
+        failure = error;
+      }
+      assert.ok(failure instanceof Error);
+      assert.equal(failure.message, "projection compression failed");
+      assert.equal(failure.stack.includes(marker), false);
+      assert.equal(failure.cause, undefined);
+    });
   }
 });

@@ -35,13 +35,17 @@ remains static and dependency-light. Oxlint enforces correctness,
 accessibility, import, Node.js, React, and Next.js rules with warnings treated
 as failures. The audit covers runtime and build-time dependencies.
 
-Production builds also create a lossless Sites packaging profile. The tracked
-projection manifest remains unchanged, while every generated `.mjs` payload in
-`dist` is replaced by a deterministic, receipt-bound `.mjs.gz` member. The
+Production builds also create a lossless Sites packaging profile. The canonical
+projection and compression JSON receipts remain byte-for-byte reconstructable,
+but `dist` stores only their deterministic `.json.gz` representations; the
+outer deployment receipt uses the same representation and excludes only itself
+from its exact physical member census. Every generated `.mjs` payload in `dist`
+is likewise replaced by a deterministic, receipt-bound `.mjs.gz` member. The
 Worker serves that member at the original virtual module URL with explicit gzip
-and JavaScript response headers. Build tests require exact module-census and
-SHA-256 agreement, gunzip equivalence, no uncompressed deployment duplicate,
-and a complete expanded `dist` below the Sites limit. For body-bearing GETs
+and JavaScript response headers. Build tests require fixed-header single-member bounded expansion,
+exact raw/representation SHA-256 joins, exact module census, module gunzip
+equivalence, no uncompressed deployment duplicate, and a complete expanded
+`dist` below the Sites limit. For body-bearing GETs
 whose asset binding omits encoding metadata—including when it infers
 JavaScript from the compound suffix—the Worker accepts the response only after
 replay-safe validation against the

@@ -56,6 +56,15 @@ falsifiable fact and cite where it is checkable (a file, a test, or a commit).
   Validate the registered canonical gzip prefix before replaying a missing-encoding GET, and exercise the
   exact tuple across the Workerd HTTP boundary. Evidence: `master-reference/worker/index.ts` +
   `master-reference/tests/rendered-html.test.mjs` (`serves the exact live Sites-inferred metadata tuple`).
+- Large generated JSON receipts can dominate Sites expanded size even when every payload module is already
+  compressed. Preserve their canonical raw bytes as the conceptual digest basis, store only a deterministic
+  gzip representation, and bind raw and representation byte/hash receipts across a noncircular outer census.
+  A header check alone is insufficient: bounded loaders must use the same opened file handle, require exactly
+  one fixed-header member and EOF after its CRC/ISIZE trailer, then enforce strict UTF-8, canonical JSON, and
+  exact raw/physical digests. Deflate bytes are producer-runtime-dependent, so portable verification must not
+  recompress locally and compare bytes; the producer runtime is disclosed and receipt-bound instead. Evidence:
+  `master-reference/build/deterministic-gzip.mjs`, `compress-projection.mjs`, and
+  `deployment-manifest.mjs` plus their focused source tests.
 - Memory consolidation deletes "superseded" facts on a schedule, so a rarely-referenced safety
   constraint survives only via the protected tier marker `protected: true`. Evidence:
   `cisco_toolkit/memory_guard.py` (D12) + the out-of-repo `anthropic-skills:consolidate-memory` skill.

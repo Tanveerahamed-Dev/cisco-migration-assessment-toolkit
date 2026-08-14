@@ -16,19 +16,35 @@ import {
 import os from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { constants, crc32, deflateRawSync } from "node:zlib";
+import { constants, crc32, deflateRawSync, gunzipSync } from "node:zlib";
 import test from "node:test";
 import { CANONICAL_GZIP_HEADER_BYTES } from "../../build/gzip-contract.js";
 import {
-  buildDeploymentManifest,
+  buildDeploymentManifest as buildDeploymentManifestPublic,
   deploymentManifestTestOnly,
-  verifyDeploymentManifest,
+  verifyDeploymentManifest as verifyDeploymentManifestPublic,
 } from "../../build/deployment-manifest.mjs";
-import { prepareDeployment } from "../../build/prepare-deployment.mjs";
+import {
+  prepareDeployment as prepareDeploymentPublic,
+  prepareDeploymentTestOnly,
+} from "../../build/prepare-deployment.mjs";
+import {
+  deterministicGzip as deterministicGzipPublic,
+  expandReceiptBoundGzip,
+} from "../../build/deterministic-gzip.mjs";
 
 const execFileAsync = promisify(execFile);
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const compareText = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
+const PROJECTION_MANIFEST_NAME = "projection-manifest.json.gz";
+const COMPRESSION_MANIFEST_NAME = "compression-manifest.json.gz";
+const DEPLOYMENT_MANIFEST_NAME = "deployment-manifest.json.gz";
+const buildDeploymentManifest = (options) =>
+  deploymentManifestTestOnly.buildDeploymentManifestWithHooks(options);
+const verifyDeploymentManifest = (options) =>
+  deploymentManifestTestOnly.verifyDeploymentManifestWithHooks(options);
+const prepareDeployment = (options) =>
+  prepareDeploymentTestOnly.prepareDeploymentInternal(options);
 const collapsedAsciiIdentity = (value) => value
   .normalize("NFKC")
   .toLowerCase()
@@ -42,12 +58,43 @@ const stableJson = (value) => {
   return JSON.stringify(value);
 };
 
-function deterministicGzip(original) {
-  const deflated = deflateRawSync(original, { level: constants.Z_BEST_COMPRESSION });
+function deterministicGzip(original, level = constants.Z_BEST_COMPRESSION) {
+  const deflated = deflateRawSync(original, { level });
   const trailer = Buffer.alloc(8);
   trailer.writeUInt32LE(crc32(original) >>> 0, 0);
   trailer.writeUInt32LE(original.byteLength >>> 0, 4);
   return Buffer.concat([Buffer.from(CANONICAL_GZIP_HEADER_BYTES), deflated, trailer]);
+}
+
+const canonicalJsonBytes = (value) => Buffer.from(`${stableJson(value)}\n`);
+const readGzipJson = async (path) => JSON.parse(gunzipSync(await readFile(path)));
+
+async function writeGzipJson(path, value) {
+  const raw = canonicalJsonBytes(value);
+  const representation = deterministicGzip(raw);
+  await writeFile(path, representation);
+  return { raw, representation };
+}
+
+async function writeInnerReceipts(projectionRoot, projection, compression) {
+  const projectionResult = await writeGzipJson(
+    join(projectionRoot, PROJECTION_MANIFEST_NAME),
+    projection,
+  );
+  compression.projectionManifest = {
+    path: "projection-manifest.json",
+    representationPath: PROJECTION_MANIFEST_NAME,
+    contentEncoding: "gzip",
+    bytes: projectionResult.raw.byteLength,
+    sha256: sha256(projectionResult.raw),
+    representationBytes: projectionResult.representation.byteLength,
+    representationSha256: sha256(projectionResult.representation),
+  };
+  const compressionResult = await writeGzipJson(
+    join(projectionRoot, COMPRESSION_MANIFEST_NAME),
+    compression,
+  );
+  return { compressionResult, projectionResult };
 }
 
 async function git(repo, ...args) {
@@ -109,15 +156,23 @@ async function writeDist(
   }
   const projectionBytes = Buffer.from(`${stableJson(projection)}\n`);
   const compression = {
-    schemaVersion: "1.0.0",
-    algorithm: "gzip:deflate-raw:level-9:mtime-0:os-255",
+    schemaVersion: "1.1.0",
+    algorithm: "gzip:deflate-raw:level-9:fixed-header:receipt-bound",
+    producerRuntime: {
+      node: process.versions.node,
+      zlib: process.versions.zlib,
+    },
     sourceCommit,
     sourceTreeDigest,
     projectionSchemaVersion: projection.schemaVersion,
     projectionManifest: {
       path: "projection-manifest.json",
-      bytes: projectionBytes.byteLength,
-      sha256: sha256(projectionBytes),
+      representationPath: PROJECTION_MANIFEST_NAME,
+      contentEncoding: "gzip",
+      bytes: 0,
+      sha256: "0".repeat(64),
+      representationBytes: 0,
+      representationSha256: "0".repeat(64),
     },
     declarationCount: 1,
     moduleCount: 1,
@@ -134,12 +189,27 @@ async function writeDist(
       },
     ],
   };
+  const projectionResult = {
+    raw: projectionBytes,
+    representation: deterministicGzip(projectionBytes),
+  };
+  compression.projectionManifest = {
+    path: "projection-manifest.json",
+    representationPath: PROJECTION_MANIFEST_NAME,
+    contentEncoding: "gzip",
+    bytes: projectionResult.raw.byteLength,
+    sha256: sha256(projectionResult.raw),
+    representationBytes: projectionResult.representation.byteLength,
+    representationSha256: sha256(projectionResult.representation),
+  };
+  const compressionBytes = canonicalJsonBytes(compression);
+  const compressionRepresentation = deterministicGzip(compressionBytes);
   const members = new Map([
     ["index.html", Buffer.from("<!doctype html><title>Atlas</title>\n")],
     ["client/app.js", Buffer.from("export const atlas = true;\n")],
     ["client/app.css", Buffer.from(":root{color-scheme:dark}\n")],
-    ["client/atlas-projection/projection-manifest.json", projectionBytes],
-    ["client/atlas-projection/compression-manifest.json", Buffer.from(`${stableJson(compression)}\n`)],
+    [`client/atlas-projection/${PROJECTION_MANIFEST_NAME}`, projectionResult.representation],
+    [`client/atlas-projection/${COMPRESSION_MANIFEST_NAME}`, compressionRepresentation],
     [`client/atlas-projection/${compressedPath}`, compressedModule],
   ]);
   for (const [path, bytes] of members) {
@@ -150,17 +220,14 @@ async function writeDist(
 
 async function replaceReceiptedProjectionModule(dist, projectionModule) {
   const projectionRoot = join(dist, "client", "atlas-projection");
-  const projectionPath = join(projectionRoot, "projection-manifest.json");
-  const compressionPath = join(projectionRoot, "compression-manifest.json");
+  const projectionPath = join(projectionRoot, PROJECTION_MANIFEST_NAME);
+  const compressionPath = join(projectionRoot, COMPRESSION_MANIFEST_NAME);
   const compressedPath = join(projectionRoot, "identity.mjs.gz");
-  const projection = JSON.parse(await readFile(projectionPath, "utf8"));
+  const projection = await readGzipJson(projectionPath);
   projection.identity.bytes = projectionModule.byteLength;
   projection.identity.sha256 = sha256(projectionModule);
-  const projectionBytes = Buffer.from(`${stableJson(projection)}\n`);
   const compressedModule = deterministicGzip(projectionModule);
-  const compression = JSON.parse(await readFile(compressionPath, "utf8"));
-  compression.projectionManifest.bytes = projectionBytes.byteLength;
-  compression.projectionManifest.sha256 = sha256(projectionBytes);
+  const compression = await readGzipJson(compressionPath);
   compression.originalBytes = projectionModule.byteLength;
   compression.compressedBytes = compressedModule.byteLength;
   compression.modules[0] = {
@@ -171,37 +238,29 @@ async function replaceReceiptedProjectionModule(dist, projectionModule) {
     compressedBytes: compressedModule.byteLength,
     compressedSha256: sha256(compressedModule),
   };
-  await writeFile(projectionPath, projectionBytes);
   await writeFile(compressedPath, compressedModule);
-  await writeFile(compressionPath, `${stableJson(compression)}\n`);
+  await writeInnerReceipts(projectionRoot, projection, compression);
 }
 
 async function addReceiptedProjectionMetadata(dist, key, value) {
   const projectionRoot = join(dist, "client", "atlas-projection");
-  const projectionPath = join(projectionRoot, "projection-manifest.json");
-  const compressionPath = join(projectionRoot, "compression-manifest.json");
-  const projection = JSON.parse(await readFile(projectionPath, "utf8"));
+  const projectionPath = join(projectionRoot, PROJECTION_MANIFEST_NAME);
+  const compressionPath = join(projectionRoot, COMPRESSION_MANIFEST_NAME);
+  const projection = await readGzipJson(projectionPath);
   projection[key] = value;
-  const projectionBytes = Buffer.from(`${stableJson(projection)}\n`);
-  const compression = JSON.parse(await readFile(compressionPath, "utf8"));
-  compression.projectionManifest.bytes = projectionBytes.byteLength;
-  compression.projectionManifest.sha256 = sha256(projectionBytes);
-  await writeFile(projectionPath, projectionBytes);
-  await writeFile(compressionPath, `${stableJson(compression)}\n`);
+  const compression = await readGzipJson(compressionPath);
+  await writeInnerReceipts(projectionRoot, projection, compression);
 }
 
 async function replaceReceiptedProjectionModulePath(dist, modulePath) {
   const projectionRoot = join(dist, "client", "atlas-projection");
-  const projectionPath = join(projectionRoot, "projection-manifest.json");
-  const compressionPath = join(projectionRoot, "compression-manifest.json");
+  const projectionPath = join(projectionRoot, PROJECTION_MANIFEST_NAME);
+  const compressionPath = join(projectionRoot, COMPRESSION_MANIFEST_NAME);
   const oldCompressedPath = "identity.mjs.gz";
   const newCompressedPath = `${modulePath}.gz`;
-  const projection = JSON.parse(await readFile(projectionPath, "utf8"));
+  const projection = await readGzipJson(projectionPath);
   projection.identity.path = modulePath;
-  const projectionBytes = Buffer.from(`${stableJson(projection)}\n`);
-  const compression = JSON.parse(await readFile(compressionPath, "utf8"));
-  compression.projectionManifest.bytes = projectionBytes.byteLength;
-  compression.projectionManifest.sha256 = sha256(projectionBytes);
+  const compression = await readGzipJson(compressionPath);
   compression.modules[0].path = modulePath;
   compression.modules[0].compressedPath = newCompressedPath;
   await mkdir(dirname(join(projectionRoot, ...newCompressedPath.split("/"))), { recursive: true });
@@ -209,24 +268,23 @@ async function replaceReceiptedProjectionModulePath(dist, modulePath) {
     join(projectionRoot, oldCompressedPath),
     join(projectionRoot, ...newCompressedPath.split("/")),
   );
-  await writeFile(projectionPath, projectionBytes);
-  await writeFile(compressionPath, `${stableJson(compression)}\n`);
+  await writeInnerReceipts(projectionRoot, projection, compression);
 
-  const manifestPath = join(dist, "deployment-manifest.json");
-  const receipt = JSON.parse(await readFile(manifestPath, "utf8"));
+  const manifestPath = join(dist, DEPLOYMENT_MANIFEST_NAME);
+  const receipt = await readGzipJson(manifestPath);
   const member = receipt.members.find(
     (entry) => entry.path === `client/atlas-projection/${oldCompressedPath}`,
   );
   assert.ok(member);
   member.path = `client/atlas-projection/${newCompressedPath}`;
   receipt.members.sort((left, right) => compareText(left.path, right.path));
-  await writeFile(manifestPath, `${stableJson(receipt)}\n`);
+  await writeFile(manifestPath, deterministicGzip(canonicalJsonBytes(receipt)));
   return refreshOuterDeploymentReceipt(dist);
 }
 
 async function refreshOuterDeploymentReceipt(dist) {
-  const manifestPath = join(dist, "deployment-manifest.json");
-  const receipt = JSON.parse(await readFile(manifestPath, "utf8"));
+  const manifestPath = join(dist, DEPLOYMENT_MANIFEST_NAME);
+  const receipt = await readGzipJson(manifestPath);
   for (const member of receipt.members) {
     const bytes = await readFile(join(dist, ...member.path.split("/")));
     member.bytes = bytes.byteLength;
@@ -235,13 +293,13 @@ async function refreshOuterDeploymentReceipt(dist) {
   receipt.memberCount = receipt.members.length;
   receipt.totalBytes = receipt.members.reduce((total, member) => total + member.bytes, 0);
   const projectionBytes = await readFile(
-    join(dist, "client", "atlas-projection", "projection-manifest.json"),
+    join(dist, "client", "atlas-projection", PROJECTION_MANIFEST_NAME),
   );
   const compressionBytes = await readFile(
-    join(dist, "client", "atlas-projection", "compression-manifest.json"),
+    join(dist, "client", "atlas-projection", COMPRESSION_MANIFEST_NAME),
   );
-  receipt.referenceSource.projectionManifestSha256 = sha256(projectionBytes);
-  receipt.referenceSource.compressionManifestSha256 = sha256(compressionBytes);
+  receipt.referenceSource.projectionManifestSha256 = sha256(gunzipSync(projectionBytes));
+  receipt.referenceSource.compressionManifestSha256 = sha256(gunzipSync(compressionBytes));
   receipt.membersDigest = sha256(Buffer.from(`${stableJson(receipt.members)}\n`));
   const payload = {
     schemaVersion: receipt.schemaVersion,
@@ -253,9 +311,21 @@ async function refreshOuterDeploymentReceipt(dist) {
     members: receipt.members,
   };
   receipt.bundleDigest = sha256(Buffer.from(`${stableJson(payload)}\n`));
-  const manifestBytes = Buffer.from(`${stableJson(receipt)}\n`);
+  const manifestBytes = deterministicGzip(canonicalJsonBytes(receipt));
   await writeFile(manifestPath, manifestBytes);
   return manifestBytes;
+}
+
+async function addOuterReceiptMembers(dist, paths) {
+  const manifestPath = join(dist, DEPLOYMENT_MANIFEST_NAME);
+  const receipt = await readGzipJson(manifestPath);
+  for (const path of paths) {
+    const bytes = await readFile(join(dist, ...path.split("/")));
+    receipt.members.push({ path, bytes: bytes.byteLength, sha256: sha256(bytes) });
+  }
+  receipt.members.sort((left, right) => compareText(left.path, right.path));
+  await writeFile(manifestPath, deterministicGzip(canonicalJsonBytes(receipt)));
+  return refreshOuterDeploymentReceipt(dist);
 }
 
 async function listRegularFiles(root, prefix = "") {
@@ -275,28 +345,49 @@ test("outer deployment receipt is deterministic, exact-source bound, and covers 
     const fixture = await initializeFixture(scratch);
     const first = await writeDist(fixture.repo, "dist-first");
     const second = await writeDist(fixture.repo, "dist-second");
-    const receiptA = await buildDeploymentManifest({ distDir: first.dist, repoRoot: fixture.repo });
+    const receiptA = await buildDeploymentManifestPublic({
+      distDir: first.dist,
+      repoRoot: fixture.repo,
+    });
     const receiptB = await buildDeploymentManifest({ distDir: second.dist, repoRoot: fixture.repo });
     assert.deepEqual(
-      await readFile(join(first.dist, "deployment-manifest.json")),
-      await readFile(join(second.dist, "deployment-manifest.json")),
+      await readFile(join(first.dist, DEPLOYMENT_MANIFEST_NAME)),
+      await readFile(join(second.dist, DEPLOYMENT_MANIFEST_NAME)),
     );
-    assert.equal(receiptA.schemaVersion, "1.0.0");
+    assert.equal(receiptA.schemaVersion, "1.1.0");
     assert.equal(receiptA.recordType, "atlas_deployment_bundle");
     assert.equal(receiptA.source.commit, fixture.commit);
     assert.equal(receiptA.source.treeOid, fixture.treeOid);
     assert.equal(receiptA.source.trackedTreeState, "clean");
     assert.equal(receiptA.referenceSource.commit, fixture.commit);
     assert.equal(receiptA.manifestRule.path, "deployment-manifest.json");
+    assert.equal(receiptA.manifestRule.representationPath, DEPLOYMENT_MANIFEST_NAME);
+    assert.equal(receiptA.manifestRule.contentEncoding, "gzip");
     assert.equal(receiptA.manifestRule.selfHash, false);
-    assert.ok(!receiptA.members.some((member) => member.path === "deployment-manifest.json"));
+    assert.ok(!receiptA.members.some((member) => ["deployment-manifest.json", DEPLOYMENT_MANIFEST_NAME].includes(member.path)));
+    assert.deepEqual(
+      [...(await readFile(join(first.dist, DEPLOYMENT_MANIFEST_NAME))).subarray(
+        0,
+        CANONICAL_GZIP_HEADER_BYTES.length,
+      )],
+      CANONICAL_GZIP_HEADER_BYTES,
+    );
+    await assert.rejects(readFile(join(first.dist, "deployment-manifest.json")), /ENOENT/);
+    await assert.rejects(
+      readFile(join(first.projectionRoot, "projection-manifest.json")),
+      /ENOENT/,
+    );
+    await assert.rejects(
+      readFile(join(first.projectionRoot, "compression-manifest.json")),
+      /ENOENT/,
+    );
     const actualMembers = (await listRegularFiles(first.dist))
-      .filter((path) => path !== "deployment-manifest.json");
+      .filter((path) => path !== DEPLOYMENT_MANIFEST_NAME);
     assert.deepEqual(receiptA.members.map((member) => member.path), actualMembers);
     assert.equal(receiptA.memberCount, actualMembers.length);
     assert.deepEqual(receiptB, receiptA);
     assert.deepEqual(
-      await verifyDeploymentManifest({ distDir: first.dist, repoRoot: fixture.repo }),
+      await verifyDeploymentManifestPublic({ distDir: first.dist, repoRoot: fixture.repo }),
       receiptA,
     );
   } finally {
@@ -331,7 +422,7 @@ test("bounded JSON receipt reads reject deterministic replacement and growth rac
         failure = error;
       }
       assert.ok(failure instanceof Error);
-      assert.equal(failure.message, "test receipt changed during its bounded read");
+      assert.equal(failure.message, "test receipt bounded read failed");
       assert.equal(failure.stack.includes(marker), false);
       assert.equal(failure.cause, undefined);
     } finally {
@@ -362,7 +453,7 @@ test("bounded JSON receipt reads reject deterministic replacement and growth rac
       assert.ok(failure instanceof Error);
       assert.equal(
         failure.message,
-        "test receipt exceeds the bounded JSON receipt limit",
+        "test receipt bounded read failed",
       );
       assert.equal(failure.stack.includes(marker), false);
       assert.equal(failure.cause, undefined);
@@ -370,6 +461,447 @@ test("bounded JSON receipt reads reject deterministic replacement and growth rac
       await rm(scratch, { recursive: true, force: true });
     }
   });
+});
+
+test("receipt-bound gzip reads reject lossy, oversized, malformed, and unsafe representations", async (context) => {
+  const marker = "private-gzip-receipt-sentinel";
+  const cases = [
+    {
+      name: "noncanonical header",
+      bytes: () => {
+        const bytes = deterministicGzip(canonicalJsonBytes({ value: "public" }));
+        bytes[4] = 1;
+        return bytes;
+      },
+      maximumExpandedBytes: 1024,
+      expected: "receipt-bound gzip verification failed",
+    },
+    {
+      name: "concatenated canonical member",
+      bytes: () => {
+        const first = deterministicGzip(canonicalJsonBytes({ value: "public" }));
+        return Buffer.concat([first, deterministicGzip(Buffer.from("second\n"))]);
+      },
+      maximumExpandedBytes: 1024,
+      expected: "receipt-bound gzip verification failed",
+    },
+    {
+      name: "second member with optional filename metadata",
+      bytes: () => {
+        const first = deterministicGzip(canonicalJsonBytes({ value: "public" }));
+        const second = deterministicGzip(Buffer.from("second\n"));
+        const namedHeader = Buffer.concat([
+          Buffer.from([0x1f, 0x8b, 0x08, 0x08, 0, 0, 0, 0, 0x02, 0xff]),
+          Buffer.from("private-name-sentinel\0"),
+        ]);
+        return Buffer.concat([first, namedHeader, second.subarray(10)]);
+      },
+      maximumExpandedBytes: 1024,
+      expected: "receipt-bound gzip verification failed",
+    },
+    {
+      name: "trailing bytes",
+      bytes: () => Buffer.concat([
+        deterministicGzip(canonicalJsonBytes({ value: "public" })),
+        Buffer.from("private-trailing-sentinel"),
+      ]),
+      maximumExpandedBytes: 1024,
+      expected: "receipt-bound gzip verification failed",
+    },
+    {
+      name: "bad CRC trailer",
+      bytes: () => {
+        const bytes = deterministicGzip(canonicalJsonBytes({ value: "public" }));
+        bytes[bytes.byteLength - 8] ^= 0xff;
+        return bytes;
+      },
+      maximumExpandedBytes: 1024,
+      expected: "receipt-bound gzip verification failed",
+    },
+    {
+      name: "truncated member",
+      bytes: () => {
+        const bytes = deterministicGzip(canonicalJsonBytes({ value: marker }));
+        return bytes.subarray(0, bytes.byteLength - 4);
+      },
+      maximumExpandedBytes: 1024,
+      expected: "receipt-bound gzip verification failed",
+    },
+    {
+      name: "expanded limit",
+      bytes: () => deterministicGzip(canonicalJsonBytes({ value: marker.repeat(64) })),
+      maximumExpandedBytes: 32,
+      expected: "receipt-bound gzip verification failed",
+    },
+    {
+      name: "malformed JSON",
+      bytes: () => deterministicGzip(Buffer.from(`{${marker}\n`)),
+      maximumExpandedBytes: 1024,
+      expected: "test gzip receipt is not valid UTF-8 JSON",
+    },
+  ];
+  for (const hostile of cases) {
+    await context.test(hostile.name, async () => {
+      const scratch = await mkdtemp(join(os.tmpdir(), "atlas-deployment-gzip-receipt-"));
+      const receiptPath = join(scratch, "receipt.json.gz");
+      try {
+        await writeFile(receiptPath, hostile.bytes());
+        let failure;
+        try {
+          await deploymentManifestTestOnly.readGzipJsonObject(
+            receiptPath,
+            "test gzip receipt",
+            hostile.maximumExpandedBytes,
+          );
+        } catch (error) {
+          failure = error;
+        }
+        assert.ok(failure instanceof Error);
+        assert.equal(failure.message, hostile.expected);
+        assert.equal(failure.stack.includes(marker), false);
+        assert.equal(failure.cause, undefined);
+      } finally {
+        await rm(scratch, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("public receipt-bound gzip verifier rejects hostile API values without disclosure", async (context) => {
+  const raw = canonicalJsonBytes({ value: "public" });
+  const representation = deterministicGzip(raw);
+  const validOptions = {
+    label: "test gzip receipt",
+    maximumCompressedBytes: 1024,
+    maximumExpandedBytes: 1024,
+  };
+  assert.deepEqual(await expandReceiptBoundGzip(representation, validOptions), raw);
+
+  const marker = "private-options-sentinel";
+  const accessorOptions = {};
+  Object.defineProperties(accessorOptions, {
+    label: {
+      enumerable: true,
+      get() {
+        throw new Error(marker);
+      },
+    },
+    maximumCompressedBytes: { enumerable: true, value: 1024 },
+    maximumExpandedBytes: { enumerable: true, value: 1024 },
+  });
+  const cases = [
+    ["null", null],
+    ["scalar", 7],
+    ["string scalar", marker],
+    ["accessor", accessorOptions],
+    ["string wrapper label", { ...validOptions, label: new String(marker) }],
+    ["custom prototype", Object.assign(Object.create({ marker }), validOptions)],
+    ["symbol key", { ...validOptions, [Symbol(marker)]: true }],
+    [
+      "prototype proxy trap",
+      new Proxy({}, {
+        getPrototypeOf() {
+          throw new Error(marker);
+        },
+      }),
+    ],
+    [
+      "descriptor proxy trap",
+      new Proxy(validOptions, {
+        getOwnPropertyDescriptor() {
+          throw new Error(marker);
+        },
+      }),
+    ],
+  ];
+  for (const [name, options] of cases) {
+    await context.test(name, async () => {
+      let failure;
+      try {
+        await expandReceiptBoundGzip(representation, options);
+      } catch (error) {
+        failure = error;
+      }
+      assert.ok(failure instanceof Error);
+      assert.equal(failure.message, "receipt-bound gzip verification failed");
+      assert.equal(failure.stack.includes(marker), false);
+      assert.equal(failure.cause, undefined);
+    });
+  }
+});
+
+test("gzip helpers snapshot caller bytes before asynchronous work and accept receipt-bound alternate deflate", async () => {
+  const original = Buffer.from("public immutable gzip input\n".repeat(128));
+  const expected = Buffer.from(original);
+  const compression = deterministicGzipPublic(original);
+  original.fill(0x78);
+  assert.deepEqual(gunzipSync(await compression), expected);
+
+  const representation = deterministicGzip(expected, constants.Z_BEST_SPEED);
+  const representationSnapshot = Buffer.from(representation);
+  const expansion = expandReceiptBoundGzip(representation, {
+    label: "alternate deflate",
+    maximumCompressedBytes: 64 * 1024,
+    maximumExpandedBytes: 64 * 1024,
+  });
+  representation.fill(0x78);
+  assert.deepEqual(await expansion, expected);
+  assert.notDeepEqual(representation, representationSnapshot);
+});
+
+test("public deployment APIs reject hostile options without disclosure", async (context) => {
+  const marker = "private-deployment-options-sentinel";
+  const apis = [
+    ["build", buildDeploymentManifestPublic, "deployment manifest build failed", ["distDir", "repoRoot"]],
+    ["verify", verifyDeploymentManifestPublic, "deployment manifest verification failed", ["distDir", "repoRoot"]],
+    ["prepare", prepareDeploymentPublic, "deployment preparation failed", ["distDir"]],
+  ];
+  for (const [apiName, api, expected, allowedKeys] of apis) {
+    await context.test(apiName, async (apiContext) => {
+      const accessor = {};
+      Object.defineProperty(accessor, allowedKeys[0], {
+        enumerable: true,
+        get() {
+          throw new Error(marker);
+        },
+      });
+      const nonenumerable = {};
+      Object.defineProperty(nonenumerable, allowedKeys[0], {
+        enumerable: false,
+        value: marker,
+      });
+      const cases = [
+        ["null", null],
+        ["scalar", 7],
+        ["string scalar", marker],
+        ["accessor", accessor],
+        ["string wrapper", { [allowedKeys[0]]: new String(marker) }],
+        ["custom prototype", Object.assign(Object.create({ marker }), { [allowedKeys[0]]: marker })],
+        ["symbol key", { [Symbol(marker)]: true }],
+        ["unknown key", { EvilKey: marker }],
+        ["non-enumerable key", nonenumerable],
+        [
+          "prototype proxy trap",
+          new Proxy({}, {
+            getPrototypeOf() {
+              throw new Error(marker);
+            },
+          }),
+        ],
+      ];
+      for (const [caseName, options] of cases) {
+        await apiContext.test(caseName, async () => {
+          let failure;
+          try {
+            await api(options);
+          } catch (error) {
+            failure = error;
+          }
+          assert.ok(failure instanceof Error);
+          assert.equal(failure.message, expected);
+          assert.equal(failure.stack.includes(marker), false);
+          assert.equal(failure.cause, undefined);
+        });
+      }
+    });
+  }
+});
+
+test("standalone verification accepts a fully receipt-bound alternate deflate producer", async () => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-deployment-alt-deflate-"));
+  try {
+    const fixture = await initializeFixture(scratch);
+    const deployment = await writeDist(fixture.repo, "dist");
+    await buildDeploymentManifest({ distDir: deployment.dist, repoRoot: fixture.repo });
+    const projectionPath = join(deployment.projectionRoot, PROJECTION_MANIFEST_NAME);
+    const compressionPath = join(deployment.projectionRoot, COMPRESSION_MANIFEST_NAME);
+    const modulePath = join(deployment.projectionRoot, "identity.mjs.gz");
+    const projection = await readGzipJson(projectionPath);
+    const compression = await readGzipJson(compressionPath);
+    const original = gunzipSync(await readFile(modulePath));
+    const alternate = deterministicGzip(original, constants.Z_BEST_SPEED);
+    compression.algorithm = "gzip:deflate-raw:level-1:fixed-header:receipt-bound";
+    compression.producerRuntime = { node: "22.13.0", zlib: "1.2.13" };
+    compression.modules[0].compressedBytes = alternate.byteLength;
+    compression.modules[0].compressedSha256 = sha256(alternate);
+    compression.compressedBytes = alternate.byteLength;
+    await writeFile(modulePath, alternate);
+    await writeInnerReceipts(deployment.projectionRoot, projection, compression);
+    await refreshOuterDeploymentReceipt(deployment.dist);
+    const receipt = await verifyDeploymentManifest({
+      distDir: deployment.dist,
+      repoRoot: fixture.repo,
+    });
+    assert.equal(receipt.memberCount, deployment.members.size);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("compression receipt exact shapes reject self-receipted extra keys", async (context) => {
+  for (const [name, mutate, expected] of [
+    [
+      "top-level extra",
+      (compression) => { compression.EvilKey = "private-shape-sentinel"; },
+      /compression module receipt is absent or inconsistent/,
+    ],
+    [
+      "runtime extra",
+      (compression) => { compression.producerRuntime.EvilKey = "private-shape-sentinel"; },
+      /compression receipt producer runtime is malformed/,
+    ],
+    [
+      "projection receipt extra",
+      (compression) => { compression.projectionManifest.EvilKey = "private-shape-sentinel"; },
+      /compression module receipt is absent or inconsistent/,
+    ],
+    [
+      "module record extra",
+      (compression) => { compression.modules[0].EvilKey = "private-shape-sentinel"; },
+      /compressed projection module receipt has an unexpected shape/,
+    ],
+  ]) {
+    await context.test(name, async () => {
+      const scratch = await mkdtemp(join(os.tmpdir(), "atlas-deployment-shape-"));
+      try {
+        const fixture = await initializeFixture(scratch);
+        const deployment = await writeDist(fixture.repo, "dist");
+        await buildDeploymentManifest({ distDir: deployment.dist, repoRoot: fixture.repo });
+        const projection = await readGzipJson(
+          join(deployment.projectionRoot, PROJECTION_MANIFEST_NAME),
+        );
+        const compression = await readGzipJson(
+          join(deployment.projectionRoot, COMPRESSION_MANIFEST_NAME),
+        );
+        await writeInnerReceipts(deployment.projectionRoot, projection, compression);
+        mutate(compression);
+        await writeGzipJson(
+          join(deployment.projectionRoot, COMPRESSION_MANIFEST_NAME),
+          compression,
+        );
+        await refreshOuterDeploymentReceipt(deployment.dist);
+        await assert.rejects(
+          verifyDeploymentManifest({ distDir: deployment.dist, repoRoot: fixture.repo }),
+          expected,
+        );
+      } finally {
+        await rm(scratch, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("standalone verification forbids self-receipted raw inner receipt duplicates", async () => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-deployment-raw-duplicates-"));
+  try {
+    const fixture = await initializeFixture(scratch);
+    const deployment = await writeDist(fixture.repo, "dist");
+    await buildDeploymentManifest({ distDir: deployment.dist, repoRoot: fixture.repo });
+    const rawPaths = [
+      "client/atlas-projection/projection-manifest.json",
+      "client/atlas-projection/compression-manifest.json",
+    ];
+    for (const path of rawPaths) {
+      const representation = await readFile(`${join(deployment.dist, ...path.split("/"))}.gz`);
+      await writeFile(join(deployment.dist, ...path.split("/")), gunzipSync(representation));
+    }
+    await addOuterReceiptMembers(deployment.dist, rawPaths);
+    await assert.rejects(
+      verifyDeploymentManifest({ distDir: deployment.dist, repoRoot: fixture.repo }),
+      /raw projection receipt duplicate is forbidden/,
+    );
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("module and outer member reads reject same-handle replacement, growth, and hook failures", async (context) => {
+  const cases = [
+    {
+      name: "module same-size replacement after path stat",
+      hookKind: "module",
+      hookName: "afterPathStat",
+      target: (deployment) => join(deployment.projectionRoot, "identity.mjs.gz"),
+      mutate: async (path, marker) => {
+        const displaced = `${path}.displaced`;
+        const original = await readFile(path);
+        await rename(path, displaced);
+        const replacement = Buffer.alloc(original.byteLength, 0x61);
+        Buffer.from(marker).copy(replacement);
+        await writeFile(path, replacement);
+      },
+      expected: "compressed projection module bounded read failed",
+    },
+    {
+      name: "module growth after handle stat",
+      hookKind: "module",
+      hookName: "afterHandleStat",
+      target: (deployment) => join(deployment.projectionRoot, "identity.mjs.gz"),
+      mutate: (path, marker) => appendFile(path, marker),
+      expected: "compressed projection module bounded read failed",
+    },
+    {
+      name: "outer member same-size replacement after path stat",
+      hookKind: "member",
+      hookName: "afterPathStat",
+      target: (deployment) => join(deployment.dist, "client", "app.js"),
+      mutate: async (path, marker) => {
+        const displaced = `${path}.displaced`;
+        const original = await readFile(path);
+        await rename(path, displaced);
+        const replacement = Buffer.alloc(original.byteLength, 0x61);
+        Buffer.from(marker).copy(replacement);
+        await writeFile(path, replacement);
+      },
+      expected: "deployment member bounded read failed",
+    },
+    {
+      name: "outer member hook exception",
+      hookKind: "member",
+      hookName: "afterPathStat",
+      target: (deployment) => join(deployment.dist, "client", "app.js"),
+      mutate: async (_path, marker) => { throw new Error(marker); },
+      expected: "deployment member bounded read failed",
+    },
+  ];
+  for (const race of cases) {
+    await context.test(race.name, async () => {
+      const scratch = await mkdtemp(join(os.tmpdir(), "atlas-deployment-member-race-"));
+      const marker = "private-member-race-sentinel";
+      try {
+        const fixture = await initializeFixture(scratch);
+        const deployment = await writeDist(fixture.repo, "dist");
+        await buildDeploymentManifest({ distDir: deployment.dist, repoRoot: fixture.repo });
+        const targetPath = race.target(deployment);
+        let injected = false;
+        let failure;
+        try {
+          await deploymentManifestTestOnly.verifyDeploymentManifestWithHooks(
+            { distDir: deployment.dist, repoRoot: fixture.repo },
+            {
+              [race.hookKind]: {
+                [race.hookName]: async ({ path }) => {
+                  if (!injected && path === targetPath) {
+                    injected = true;
+                    await race.mutate(path, marker);
+                  }
+                },
+              },
+            },
+          );
+        } catch (error) {
+          failure = error;
+        }
+        assert.equal(injected, true);
+        assert.ok(failure instanceof Error);
+        assert.equal(failure.message, race.expected);
+        assert.equal(failure.stack.includes(marker), false);
+        assert.equal(failure.cause, undefined);
+      } finally {
+        await rm(scratch, { recursive: true, force: true });
+      }
+    });
+  }
 });
 
 test("concurrent builders publish exactly one no-clobber receipt and preserve the winner", { timeout: 15_000 }, async () => {
@@ -420,7 +952,7 @@ test("concurrent builders publish exactly one no-clobber receipt and preserve th
     const siblingNames = await readdir(dirname(deployment.dist));
     assert.equal(
       siblingNames.some(
-        (name) => name.startsWith(".dist.deployment-manifest.json.") && name.endsWith(".tmp"),
+        (name) => name.startsWith(".dist.deployment-manifest.json.gz.") && name.endsWith(".tmp"),
       ),
       false,
     );
@@ -463,13 +995,13 @@ test("owned publication cleanup refuses non-missing stat failures without disclo
     assert.equal(failure.stack.includes(marker), false);
     assert.equal(failure.cause, undefined);
     await assert.rejects(
-      readFile(join(deployment.dist, "deployment-manifest.json")),
+      readFile(join(deployment.dist, DEPLOYMENT_MANIFEST_NAME)),
       /ENOENT/,
     );
     const siblingNames = await readdir(dirname(deployment.dist));
     assert.equal(
       siblingNames.some(
-        (name) => name.startsWith(".dist.deployment-manifest.json.") && name.endsWith(".tmp"),
+        (name) => name.startsWith(".dist.deployment-manifest.json.gz.") && name.endsWith(".tmp"),
       ),
       false,
     );
@@ -507,12 +1039,70 @@ test("outer deployment verification detects extra, missing, and tampered members
           verifyDeploymentManifest({ distDir: deployment.dist, repoRoot: fixture.repo }),
           expected,
         );
-        await readFile(join(deployment.dist, "deployment-manifest.json"));
+        await readFile(join(deployment.dist, DEPLOYMENT_MANIFEST_NAME));
       } finally {
         await rm(scratch, { recursive: true, force: true });
       }
     });
   }
+});
+
+test("outer deployment rejects self-receipted member extras and private raw metadata", async (context) => {
+  await context.test("member extra key", async () => {
+    const scratch = await mkdtemp(join(os.tmpdir(), "atlas-deployment-member-shape-"));
+    const marker = "private-outer-member-sentinel";
+    try {
+      const fixture = await initializeFixture(scratch);
+      const deployment = await writeDist(fixture.repo, "dist");
+      await buildDeploymentManifest({ distDir: deployment.dist, repoRoot: fixture.repo });
+      const manifestPath = join(deployment.dist, DEPLOYMENT_MANIFEST_NAME);
+      const receipt = await readGzipJson(manifestPath);
+      receipt.members[0].EvilKey = marker;
+      await writeFile(manifestPath, deterministicGzip(canonicalJsonBytes(receipt)));
+      await refreshOuterDeploymentReceipt(deployment.dist);
+      let failure;
+      try {
+        await verifyDeploymentManifest({ distDir: deployment.dist, repoRoot: fixture.repo });
+      } catch (error) {
+        failure = error;
+      }
+      assert.ok(failure instanceof Error);
+      assert.equal(failure.message, "deployment manifest members are malformed");
+      assert.equal(failure.stack.includes(marker), false);
+      assert.equal(failure.cause, undefined);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+
+  await context.test("private outer metadata", async () => {
+    const scratch = await mkdtemp(join(os.tmpdir(), "atlas-deployment-outer-privacy-"));
+    try {
+      const fixture = await initializeFixture(scratch);
+      const deployment = await writeDist(fixture.repo, "dist");
+      await buildDeploymentManifest({ distDir: deployment.dist, repoRoot: fixture.repo });
+      const marker = collapsedAsciiIdentity(fixture.repo);
+      const manifestPath = join(deployment.dist, DEPLOYMENT_MANIFEST_NAME);
+      const receipt = await readGzipJson(manifestPath);
+      receipt.EvilKey = marker;
+      await writeFile(manifestPath, deterministicGzip(canonicalJsonBytes(receipt)));
+      let failure;
+      try {
+        await verifyDeploymentManifest({ distDir: deployment.dist, repoRoot: fixture.repo });
+      } catch (error) {
+        failure = error;
+      }
+      assert.ok(failure instanceof Error);
+      assert.match(
+        failure.message,
+        /^deployment generated-metadata privacy scan failed: rule=local_repository_collapsed_path; category=deployment-manifest$/,
+      );
+      assert.equal(failure.stack.includes(marker), false);
+      assert.equal(failure.cause, undefined);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
 });
 
 test("outer deployment refuses a local identity inside a receipted gzip before manifest creation", async () => {
@@ -535,7 +1125,7 @@ test("outer deployment refuses a local identity inside a receipted gzip before m
       /^deployment projection privacy scan failed: rule=local_repository_collapsed_path; category=compressed-projection-module; index=0$/,
     );
     assert.equal(failure.message.includes(localMarker), false);
-    await assert.rejects(readFile(join(deployment.dist, "deployment-manifest.json")), /ENOENT/);
+    await assert.rejects(readFile(join(deployment.dist, DEPLOYMENT_MANIFEST_NAME)), /ENOENT/);
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
@@ -589,7 +1179,7 @@ test("outer deployment rejects foreign user-home identities in graph-only module
           new RegExp(`^deployment projection privacy scan failed: rule=${rule}; category=compressed-projection-module; index=0$`),
         );
         assert.equal(failure.message.includes(marker), false);
-        await assert.rejects(readFile(join(deployment.dist, "deployment-manifest.json")), /ENOENT/);
+        await assert.rejects(readFile(join(deployment.dist, DEPLOYMENT_MANIFEST_NAME)), /ENOENT/);
       } finally {
         await rm(scratch, { recursive: true, force: true });
       }
@@ -619,7 +1209,7 @@ test("outer deployment rejects a foreign identity in a self-consistent module pa
       /^deployment path privacy scan failed: rule=generic_collapsed_user_home_path; category=projection-declaration; index=0$/,
     );
     assert.equal(failure.stack.includes(marker), false);
-    await assert.rejects(readFile(join(deployment.dist, "deployment-manifest.json")), /ENOENT/);
+    await assert.rejects(readFile(join(deployment.dist, DEPLOYMENT_MANIFEST_NAME)), /ENOENT/);
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
@@ -645,10 +1235,10 @@ test("standalone verifier rejects a self-consistent private module path and rema
     assert.ok(failure instanceof Error);
     assert.match(
       failure.message,
-      /^deployment path privacy scan failed: rule=generic_collapsed_user_home_path; category=deployment-member; index=\d+$/,
+      /^deployment generated-metadata privacy scan failed: rule=generic_collapsed_user_home_path; category=deployment-manifest$/,
     );
     assert.equal(failure.stack.includes(marker), false);
-    assert.deepEqual(await readFile(join(deployment.dist, "deployment-manifest.json")), manifestBytes);
+    assert.deepEqual(await readFile(join(deployment.dist, DEPLOYMENT_MANIFEST_NAME)), manifestBytes);
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
@@ -673,7 +1263,7 @@ test("outer deployment rejects a self-receipted foreign identity in generated pr
       /^deployment generated-metadata privacy scan failed: rule=generic_collapsed_user_home_path; category=projection-manifest$/,
     );
     assert.equal(failure.stack.includes(marker), false);
-    await assert.rejects(readFile(join(deployment.dist, "deployment-manifest.json")), /ENOENT/);
+    await assert.rejects(readFile(join(deployment.dist, DEPLOYMENT_MANIFEST_NAME)), /ENOENT/);
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
@@ -700,7 +1290,7 @@ test("standalone verifier rejects self-receipted local projection metadata and r
       /^deployment generated-metadata privacy scan failed: rule=local_repository_collapsed_path; category=projection-manifest$/,
     );
     assert.equal(failure.stack.includes(marker), false);
-    assert.deepEqual(await readFile(join(deployment.dist, "deployment-manifest.json")), manifestBytes);
+    assert.deepEqual(await readFile(join(deployment.dist, DEPLOYMENT_MANIFEST_NAME)), manifestBytes);
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
@@ -751,7 +1341,7 @@ test("projection census preflights unexpected member paths before reporting them
       /^deployment path privacy scan failed: rule=generic_collapsed_user_home_path; category=projection-member; index=\d+$/,
     );
     assert.equal(failure.stack.includes(marker), false);
-    await assert.rejects(readFile(join(deployment.dist, "deployment-manifest.json")), /ENOENT/);
+    await assert.rejects(readFile(join(deployment.dist, DEPLOYMENT_MANIFEST_NAME)), /ENOENT/);
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
@@ -763,16 +1353,24 @@ test("deployment rejects deeply nested generated metadata with a fixed non-echoi
     const fixture = await initializeFixture(scratch);
     const deployment = await writeDist(fixture.repo, "dist");
     const marker = "home_foreign_owner_checkout_private";
-    const projectionPath = join(deployment.projectionRoot, "projection-manifest.json");
-    const compressionPath = join(deployment.projectionRoot, "compression-manifest.json");
+    const projectionPath = join(deployment.projectionRoot, PROJECTION_MANIFEST_NAME);
+    const compressionPath = join(deployment.projectionRoot, COMPRESSION_MANIFEST_NAME);
     const projectionBytes = Buffer.from(
       `{"deep":${"[".repeat(80)}${JSON.stringify(marker)}${"]".repeat(80)}}\n`,
     );
-    const compression = JSON.parse(await readFile(compressionPath, "utf8"));
-    compression.projectionManifest.bytes = projectionBytes.byteLength;
-    compression.projectionManifest.sha256 = sha256(projectionBytes);
-    await writeFile(projectionPath, projectionBytes);
-    await writeFile(compressionPath, `${stableJson(compression)}\n`);
+    const compression = await readGzipJson(compressionPath);
+    const projectionRepresentation = deterministicGzip(projectionBytes);
+    compression.projectionManifest = {
+      path: "projection-manifest.json",
+      representationPath: PROJECTION_MANIFEST_NAME,
+      contentEncoding: "gzip",
+      bytes: projectionBytes.byteLength,
+      sha256: sha256(projectionBytes),
+      representationBytes: projectionRepresentation.byteLength,
+      representationSha256: sha256(projectionRepresentation),
+    };
+    await writeFile(projectionPath, projectionRepresentation);
+    await writeGzipJson(compressionPath, compression);
     let failure;
     try {
       await buildDeploymentManifest({ distDir: deployment.dist, repoRoot: fixture.repo });
@@ -786,7 +1384,7 @@ test("deployment rejects deeply nested generated metadata with a fixed non-echoi
     );
     assert.equal(failure.stack.includes(marker), false);
     assert.equal(failure.cause, undefined);
-    await assert.rejects(readFile(join(deployment.dist, "deployment-manifest.json")), /ENOENT/);
+    await assert.rejects(readFile(join(deployment.dist, DEPLOYMENT_MANIFEST_NAME)), /ENOENT/);
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
@@ -816,7 +1414,7 @@ test("standalone verifier scans self-consistent nested gzip privacy and remains 
       /^deployment projection privacy scan failed: rule=local_repository_collapsed_path; category=compressed-projection-module; index=0$/,
     );
     assert.equal(failure.message.includes(localMarker), false);
-    assert.deepEqual(await readFile(join(deployment.dist, "deployment-manifest.json")), manifestBytes);
+    assert.deepEqual(await readFile(join(deployment.dist, DEPLOYMENT_MANIFEST_NAME)), manifestBytes);
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
@@ -833,7 +1431,7 @@ test("outer deployment bounds expanded projection members before manifest creati
       buildDeploymentManifest({ distDir: deployment.dist, repoRoot: fixture.repo }),
       /projection module declaration lacks a bounded byte\/hash receipt/,
     );
-    await assert.rejects(readFile(join(deployment.dist, "deployment-manifest.json")), /ENOENT/);
+    await assert.rejects(readFile(join(deployment.dist, DEPLOYMENT_MANIFEST_NAME)), /ENOENT/);
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
@@ -846,16 +1444,16 @@ test("outer deployment rejects an oversized aggregate compression receipt withou
     const deployment = await writeDist(fixture.repo, "dist");
     const compressionPath = join(
       deployment.projectionRoot,
-      "compression-manifest.json",
+      COMPRESSION_MANIFEST_NAME,
     );
-    const compression = JSON.parse(await readFile(compressionPath, "utf8"));
+    const compression = await readGzipJson(compressionPath);
     compression.compressedBytes = 600 * 1024 * 1024;
-    await writeFile(compressionPath, `${stableJson(compression)}\n`);
+    await writeGzipJson(compressionPath, compression);
     await assert.rejects(
       buildDeploymentManifest({ distDir: deployment.dist, repoRoot: fixture.repo }),
       /compression module receipt is absent or inconsistent/,
     );
-    await assert.rejects(readFile(join(deployment.dist, "deployment-manifest.json")), /ENOENT/);
+    await assert.rejects(readFile(join(deployment.dist, DEPLOYMENT_MANIFEST_NAME)), /ENOENT/);
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
@@ -871,7 +1469,7 @@ test("outer deployment receipt refuses a dirty tracked Git tree", async () => {
       buildDeploymentManifest({ distDir: deployment.dist, repoRoot: fixture.repo }),
       /tracked Git tree is not clean; deployment receipt refused/,
     );
-    await assert.rejects(readFile(join(deployment.dist, "deployment-manifest.json")), /ENOENT/);
+    await assert.rejects(readFile(join(deployment.dist, DEPLOYMENT_MANIFEST_NAME)), /ENOENT/);
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
@@ -883,20 +1481,22 @@ test("prebuild removes only a prior regular deployment receipt", async () => {
     const dist = join(scratch, "dist");
     await mkdir(dist, { recursive: true });
     assert.deepEqual(await prepareDeployment({ distDir: dist }), {
-      path: join(dist, "deployment-manifest.json"),
+      path: join(dist, DEPLOYMENT_MANIFEST_NAME),
       removed: false,
     });
-    await writeFile(join(dist, "deployment-manifest.json"), "generated\n");
+    await writeFile(join(dist, DEPLOYMENT_MANIFEST_NAME), "generated\n");
     assert.deepEqual(await prepareDeployment({ distDir: dist }), {
-      path: join(dist, "deployment-manifest.json"),
+      path: join(dist, DEPLOYMENT_MANIFEST_NAME),
       removed: true,
     });
-    await assert.rejects(readFile(join(dist, "deployment-manifest.json")), /ENOENT/);
-    await mkdir(join(dist, "deployment-manifest.json"));
+    await assert.rejects(readFile(join(dist, DEPLOYMENT_MANIFEST_NAME)), /ENOENT/);
+    await mkdir(join(dist, DEPLOYMENT_MANIFEST_NAME));
+    await writeFile(join(dist, "deployment-manifest.json"), "legacy generated\n");
     await assert.rejects(
       prepareDeployment({ distDir: dist }),
       /prior deployment receipt is not a regular file/,
     );
+    assert.equal(await readFile(join(dist, "deployment-manifest.json"), "utf8"), "legacy generated\n");
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
@@ -914,7 +1514,7 @@ test("outer deployment receipt refuses a stale reference on a clean newer commit
       buildDeploymentManifest({ distDir: deployment.dist, repoRoot: fixture.repo }),
       /reference projection commit does not equal clean build commit/,
     );
-    await assert.rejects(readFile(join(deployment.dist, "deployment-manifest.json")), /ENOENT/);
+    await assert.rejects(readFile(join(deployment.dist, DEPLOYMENT_MANIFEST_NAME)), /ENOENT/);
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
