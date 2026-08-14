@@ -194,6 +194,41 @@ python -m cli verify --manifest C:\release\release-manifest.json `
 python -m cli verify-family --manifest C:\release\release-manifest.json
 ```
 
+An independent reviewer may also verify a separately stored, canonical review
+of the compiler's bounded curated-claim subjects. The review payload,
+signature, external trust policy, and trusted reviewer public key must remain
+outside the exact-census release directory:
+
+```powershell
+python -m cli verify-claim-review `
+  --repo-root .. `
+  --compiler-output C:\path\to\compiler-output `
+  --payload D:\review-custody\claim-review.json `
+  --signature D:\review-custody\claim-review.sig.json `
+  --trust-policy D:\review-custody\reviewer-policy.json `
+  --public-key D:\review-custody\independent-reviewer.pub
+```
+
+This command reads only: it validates canonical bounded inputs, verifies a
+purpose-bound Ed25519 signature against the separately supplied policy/key,
+rejoins every signed row to the exact compiler subjects, revalidates source
+before and after, and writes its receipt only to stdout. Even an all-PASS
+bounded review reports `current_gate_promoted=false` and
+`global_gate_closed=false`; rendered-sink coverage, binary evidence, release
+signature, recovery, and publication authority remain independent gates.
+
+Review payload records are ordered lexically by `facet_id`; `records_digest`
+is SHA-256 over their canonical JSON array including the trailing LF. External
+signers should call
+`release.authenticated_review.consequential_claim_review_signing_material()`
+and sign its returned bytes exactly. The owned construction is the fixed
+domain `ATLAS-AUTHENTICATED-REVIEW\0v1\0`, purpose, target schema version,
+SHA-256 of the canonical trust-policy bytes, and the canonical payload bytes,
+with the documented NUL separators. The policy and key are caller-selected
+external trust inputs: the verifier proves consistency with that exact policy
+snapshot, but does not discover its authority, freshness, revocation history,
+or custody from the repository or signature envelope.
+
 Verification checks the signature, the independently trusted public-key
 fingerprint, and every artifact byte count/SHA-256 receipt in the manifest; it
 also rejects undeclared sibling files and inventory divergence. It does not

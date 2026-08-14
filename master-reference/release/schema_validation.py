@@ -22,6 +22,16 @@ SCHEMAS = {
     "preservation-coverage": "master-reference/release/schemas/preservation-coverage.schema.json",
     "family-attestation": "master-reference/release/schemas/family-attestation.schema.json",
     "release-manifest": "master-reference/release/schemas/release-manifest.schema.json",
+    "authenticated-review-signature": (
+        "master-reference/release/schemas/authenticated-review-signature.schema.json"
+    ),
+    "reviewer-key-policy": "master-reference/release/schemas/reviewer-key-policy.schema.json",
+    "consequential-claim-review": (
+        "master-reference/release/schemas/consequential-claim-review.schema.json"
+    ),
+    "authenticated-review-result": (
+        "master-reference/release/schemas/authenticated-review-result.schema.json"
+    ),
 }
 
 _MAX_JSON_DEPTH = 64

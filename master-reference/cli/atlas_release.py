@@ -9,8 +9,16 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
+from release.authenticated_review import (
+    AuthenticatedReviewError,
+    read_review_evidence_files,
+    verify_consequential_claim_review,
+)
+from release.compiler_bundle import load_compiler_bundle
 from release.pipeline import ReleaseError, build_release
+from release.schema_validation import validate_release_object
 from release.signing import SigningUnavailable, sign_manifest, verify_artifact_family, verify_manifest
+from release.source_binding import validate_exact_source
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -52,6 +60,17 @@ def _parser() -> argparse.ArgumentParser:
         help="verify canonical manifest syntax and every artifact receipt without asserting signature trust",
     )
     verify_family.add_argument("--manifest", type=Path, required=True)
+
+    verify_claim_review = commands.add_parser(
+        "verify-claim-review",
+        help="verify an external signed review against the exact compiler claim subjects",
+    )
+    verify_claim_review.add_argument("--repo-root", type=Path, required=True)
+    verify_claim_review.add_argument("--compiler-output", type=Path, required=True)
+    verify_claim_review.add_argument("--payload", type=Path, required=True)
+    verify_claim_review.add_argument("--signature", type=Path, required=True)
+    verify_claim_review.add_argument("--trust-policy", type=Path, required=True)
+    verify_claim_review.add_argument("--public-key", type=Path, required=True)
     return parser
 
 
@@ -96,7 +115,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         elif args.command == "verify":
             result = verify_manifest(args.manifest, args.signature, args.public_key)
             result["ok"] = True
-        else:
+        elif args.command == "verify-family":
             result = verify_artifact_family(args.manifest)
             result.update(
                 {
@@ -105,8 +124,46 @@ def main(arguments: Sequence[str] | None = None) -> int:
                     "trust_note": "Artifact receipts verified; signature trust, semantic approval, and publication authority remain separate gates.",
                 }
             )
+        elif args.command == "verify-claim-review":
+            try:
+                repo_root = args.repo_root.resolve(strict=True)
+                bundle = load_compiler_bundle(args.compiler_output, repository_root=repo_root)
+                source_before = validate_exact_source(repo_root, bundle)
+            except Exception:
+                raise AuthenticatedReviewError("authenticated_review_source_invalid") from None
+            evidence = read_review_evidence_files(
+                args.payload,
+                args.signature,
+                args.trust_policy,
+                args.public_key,
+            )
+            review = verify_consequential_claim_review(repo_root, bundle, evidence)
+            result = review.as_dict()
+            try:
+                validate_release_object(repo_root, "authenticated-review-result", result)
+            except Exception:
+                raise AuthenticatedReviewError("authenticated_review_result_invalid") from None
+            try:
+                source_after = validate_exact_source(repo_root, bundle)
+            except Exception:
+                raise AuthenticatedReviewError("authenticated_review_source_invalid") from None
+            if source_before != source_after:
+                raise AuthenticatedReviewError("authenticated_review_source_changed")
+            evidence_after = read_review_evidence_files(
+                args.payload,
+                args.signature,
+                args.trust_policy,
+                args.public_key,
+            )
+            if evidence != evidence_after:
+                raise AuthenticatedReviewError("authenticated_review_input_changed")
+        else:  # pragma: no cover - argparse owns the command vocabulary
+            raise AuthenticatedReviewError("authenticated_review_command_invalid")
         print(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2))
         return 0
+    except AuthenticatedReviewError as exc:
+        print(json.dumps({"ok": False, "error": exc.code}, sort_keys=True), file=sys.stderr)
+        return 2
     except (ReleaseError, SigningUnavailable, RuntimeError, OSError, ValueError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, sort_keys=True), file=sys.stderr)
         return 2

@@ -85,6 +85,12 @@ source records live in lazy hosted modules and the offline compiler projection. 
 its continuity CLI may collect client evidence, write devices or the Vault, call runtime external AI, or
 grant publication authority.
 
+The read-only `verify-claim-review` command is the first authenticated external-evidence boundary. It
+accepts an exact canonical review payload, detached signature, separately supplied trust policy, and
+separately supplied reviewer public key; it rejoins every row to the immutable compiler claim subjects.
+It does not write a family member or mutate compiler/release gates. No accepted review envelope is
+currently present, so the bounded reviewed count remains zero and global closure remains false.
+
 The 2026-08-09 dependency audit is also an explicit release boundary, not a silent waiver. Nano ID is
 locked to the patched 3.3.18 line through both the Master Reference and AssessHub npm overrides.
 `image-size@2.0.2`, pulled

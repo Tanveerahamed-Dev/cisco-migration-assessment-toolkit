@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.local/schema/authenticated-review-result/1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "status", "purpose", "signature_verified", "bounded_review_complete", "current_gate_promoted", "global_gate_closed", "candidate_count", "passed_count", "blocked_count", "unresolved_count", "payload_sha256", "trust_policy_sha256", "signer_key_fingerprint", "claim_boundary"],
+  "properties": {
+    "schema_version": {"const": "authenticated-review-result/1"},
+    "status": {"enum": ["absent", "verified_complete_not_promoted", "verified_blocked_not_promoted"]},
+    "purpose": {"const": "consequential_claim_review"},
+    "signature_verified": {"type": "boolean"},
+    "bounded_review_complete": {"type": "boolean"},
+    "current_gate_promoted": {"const": false},
+    "global_gate_closed": {"const": false},
+    "candidate_count": {"type": "integer", "minimum": 1, "maximum": 100000},
+    "passed_count": {"type": "integer", "minimum": 0, "maximum": 100000},
+    "blocked_count": {"type": "integer", "minimum": 0, "maximum": 100000},
+    "unresolved_count": {"type": "integer", "minimum": 0, "maximum": 100000},
+    "payload_sha256": {"$ref": "#/$defs/nullableDigest"},
+    "trust_policy_sha256": {"$ref": "#/$defs/nullableDigest"},
+    "signer_key_fingerprint": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}]},
+    "claim_boundary": {"type": "string", "minLength": 1, "maxLength": 1024}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "absent"}}, "required": ["status"]},
+      "then": {
+        "properties": {
+          "signature_verified": {"const": false},
+          "bounded_review_complete": {"const": false},
+          "passed_count": {"const": 0},
+          "blocked_count": {"const": 0},
+          "payload_sha256": {"type": "null"},
+          "trust_policy_sha256": {"type": "null"},
+          "signer_key_fingerprint": {"type": "null"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"status": {"const": "verified_complete_not_promoted"}}, "required": ["status"]},
+      "then": {
+        "properties": {
+          "signature_verified": {"const": true},
+          "bounded_review_complete": {"const": true},
+          "blocked_count": {"const": 0},
+          "unresolved_count": {"const": 0},
+          "payload_sha256": {"$ref": "#/$defs/digest"},
+          "trust_policy_sha256": {"$ref": "#/$defs/digest"},
+          "signer_key_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"status": {"const": "verified_blocked_not_promoted"}}, "required": ["status"]},
+      "then": {
+        "anyOf": [
+          {"properties": {"blocked_count": {"minimum": 1}}, "required": ["blocked_count"]},
+          {"properties": {"unresolved_count": {"minimum": 1}}, "required": ["unresolved_count"]}
+        ],
+        "properties": {
+          "signature_verified": {"const": true},
+          "bounded_review_complete": {"const": false},
+          "payload_sha256": {"$ref": "#/$defs/digest"},
+          "trust_policy_sha256": {"$ref": "#/$defs/digest"},
+          "signer_key_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "nullableDigest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]}
+  }
+}
