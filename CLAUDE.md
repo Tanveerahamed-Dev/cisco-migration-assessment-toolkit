@@ -119,7 +119,7 @@ upstream patch, independently verified replacement, and fresh applicability revi
 This project has a knowledge graph at graphify-out/ (12,881 nodes / 22,851 edges as of 2026-08-07 — this figure is only a dated cache; the machine-readable owner is `graphify-out/graph.json`, so read it rather than copying this line; after the 2026-07-03 de-pollution that also
 excluded untracked scratch + side-engagement dirs — `ds-bundle/`+`.ds-sync/` (design-sync output), `*_DC_Design/`,
 `compass_artifact_*`, `scratch_*` — which had diluted it ~27%; the earlier 2026-06-25 pass excluded the stale `_ref/`
-engine copy + the graph's own `graphify-out/` dumps — see `.graphifyignore`). The live graph is
+engine copy + ordinary graph-output dumps — see `.graphifyignore` and the installed-producer exceptions below). The live graph is
 **AST-only / no-egress** (the offline `update` re-extract): it is reproducible on an air-gapped host and contains
 NO LLM-derived nodes — the de-pollution rebuild intentionally dropped a prior LLM-semantic "rationale" layer
 (~434 nodes — NB: a DIFFERENT thing from the current extractor's ~2.9k `file_type: rationale` nodes, which
@@ -144,6 +144,16 @@ the real main-checkout graph is thousands of nodes and **function-granular** —
 `explain`, `path` all resolve function symbols as advertised. Verified graphify 0.9.6, 2026-07-11.) NB the
 extractor indexes functions, classes and docstrings, NOT module-level assignments: a constant such as
 `_RACE_RETRIES` is not a node, so `affected` on one returns nothing and that is a scope limit, not a stale graph.
+
+Installed Graphify 0.9.6 also has two separately reviewed corpus/coverage residuals that local ignore syntax cannot
+override. Its special saved-memory scan bypasses `.graphifyignore`/CLI excludes and can re-ingest
+`graphify-out/memory/*.md`; its hard-coded noise pruning skips every directory named `build`, including authored
+`master-reference/build/*.mjs` release owners. These are exact external BLOCK categories
+`graph_corpus_memory_ignore_override` and `graph_corpus_authored_build_dir_pruned`, bounded by
+`tests/test_graph_invariants.py`; do not treat a graph query as proof of absence across either corpus. A full forced
+rebuild can remove a deliberately deleted privacy-offending node and heal incremental edges, but it cannot close
+these two producer gaps. Reconcile the residual tests only when upstream makes explicit include/ignore policy
+authoritative over both special scans.
 
 Rules:
 - For codebase questions, run `python -m graphify query "<question>"` first. Use `python -m graphify path "<A>" "<B>"`
