@@ -131,7 +131,10 @@ test("projection compression is deterministic, lossless, and preserves canonical
     );
     const receipt = JSON.parse(await gunzipAsync(receiptRepresentation));
     assert.equal(receipt.schemaVersion, "1.1.0");
-    assert.equal(receipt.algorithm, "gzip:deflate-raw:level-9:fixed-header:receipt-bound");
+    assert.equal(
+      receipt.algorithm,
+      "gzip:deflate-raw:level-9:memlevel-8:strategy-filtered:mtime-0:os-255",
+    );
     assert.deepEqual(receipt.producerRuntime, {
       node: process.versions.node,
       zlib: process.versions.zlib,

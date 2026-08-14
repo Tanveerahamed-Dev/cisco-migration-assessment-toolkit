@@ -67,8 +67,8 @@ falsifiable fact and cite where it is checkable (a file, a test, or a commit).
   one fixed-header member and EOF after its CRC/ISIZE trailer, then enforce strict UTF-8, canonical JSON, and
   exact raw/physical digests. Same-handle reads close only their individual read windows; a verifier that reads
   member classes in phases also needs exact pre/post physical-tree identity, size, and timestamp snapshots to
-  reject inter-phase replacement. Deflate bytes are producer-runtime-dependent, so portable verification must not
-  recompress locally and compare bytes; the producer runtime is disclosed and receipt-bound instead. Evidence:
+  reject inter-phase replacement. Pin the producer profile explicitly (currently level 9, memLevel 8 and `Z_FILTERED`) and reject receipt algorithm drift, but keep that declaration separate from portable proof:
+  deflate bytes are producer-runtime-dependent, so verification must not recompress locally and compare bytes; the producer runtime and physical representation are disclosed and receipt-bound instead. Evidence:
   `master-reference/build/deterministic-gzip.mjs`, `compress-projection.mjs`, and
   `deployment-manifest.mjs` plus their focused source tests.
 - Memory consolidation deletes "superseded" facts on a schedule, so a rarely-referenced safety

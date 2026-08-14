@@ -18,7 +18,11 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { promisify, TextDecoder } from "node:util";
 import { pathToFileURL } from "node:url";
 
-import { deterministicGzip, expandReceiptBoundGzip } from "./deterministic-gzip.mjs";
+import {
+  deterministicGzip,
+  expandReceiptBoundGzip,
+  RECEIPT_BOUND_GZIP_ALGORITHM,
+} from "./deterministic-gzip.mjs";
 
 const execFileAsync = promisify(execFile);
 const MANIFEST_SOURCE_NAME = "deployment-manifest.json";
@@ -685,9 +689,7 @@ async function validateCompressedProjection({
       "sha256",
     ]) ||
     receipt.schemaVersion !== "1.1.0" ||
-    !/^gzip:deflate-raw:level-[0-9]:fixed-header:receipt-bound$/.test(
-      String(receipt.algorithm ?? ""),
-    ) ||
+    receipt.algorithm !== RECEIPT_BOUND_GZIP_ALGORITHM ||
     !Array.isArray(records) ||
     receipt.declarationCount !== declarationCount ||
     receipt.moduleCount !== declared.size ||

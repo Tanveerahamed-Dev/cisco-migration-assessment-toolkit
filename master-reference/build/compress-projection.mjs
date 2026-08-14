@@ -21,7 +21,11 @@ import { promisify } from "node:util";
 import { gunzip } from "node:zlib";
 import { pathToFileURL } from "node:url";
 
-import { deterministicGzip, expandReceiptBoundGzip } from "./deterministic-gzip.mjs";
+import {
+  deterministicGzip,
+  expandReceiptBoundGzip,
+  RECEIPT_BOUND_GZIP_ALGORITHM,
+} from "./deterministic-gzip.mjs";
 
 const RECEIPT_NAME = "compression-manifest.json.gz";
 const PROJECTION_MANIFEST_NAME = "projection-manifest.json";
@@ -329,7 +333,7 @@ async function compressProjectionInternal({ projectionDir = "dist/client/atlas-p
     });
     const receipt = {
       schemaVersion: "1.1.0",
-      algorithm: "gzip:deflate-raw:level-9:fixed-header:receipt-bound",
+      algorithm: RECEIPT_BOUND_GZIP_ALGORITHM,
       producerRuntime: {
         node: process.versions.node,
         zlib: process.versions.zlib,

@@ -7,6 +7,9 @@ const deflateRawAsync = promisify(deflateRaw);
 const inflateRawAsync = promisify(inflateRaw);
 const CANONICAL_HEADER = Buffer.from(CANONICAL_GZIP_HEADER_BYTES);
 
+export const RECEIPT_BOUND_GZIP_ALGORITHM =
+  "gzip:deflate-raw:level-9:memlevel-8:strategy-filtered:mtime-0:os-255";
+
 export async function deterministicGzip(original) {
   if (!Buffer.isBuffer(original)) {
     throw new Error("deterministic gzip input must be bytes");
@@ -14,7 +17,11 @@ export async function deterministicGzip(original) {
   const input = Buffer.from(original);
   let deflated;
   try {
-    deflated = await deflateRawAsync(input, { level: constants.Z_BEST_COMPRESSION });
+    deflated = await deflateRawAsync(input, {
+      level: constants.Z_BEST_COMPRESSION,
+      memLevel: 8,
+      strategy: constants.Z_FILTERED,
+    });
   } catch {
     throw new Error("deterministic gzip compression failed");
   }

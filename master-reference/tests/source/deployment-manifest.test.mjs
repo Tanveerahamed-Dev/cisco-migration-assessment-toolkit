@@ -31,6 +31,7 @@ import {
 import {
   deterministicGzip as deterministicGzipPublic,
   expandReceiptBoundGzip,
+  RECEIPT_BOUND_GZIP_ALGORITHM,
 } from "../../build/deterministic-gzip.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -61,8 +62,16 @@ const stableJson = (value) => {
   return JSON.stringify(value);
 };
 
-function deterministicGzip(original, level = constants.Z_BEST_COMPRESSION) {
-  const deflated = deflateRawSync(original, { level });
+function deterministicGzip(
+  original,
+  level = constants.Z_BEST_COMPRESSION,
+  { memLevel = 8, strategy = constants.Z_FILTERED } = {},
+) {
+  const deflated = deflateRawSync(original, {
+    level,
+    memLevel,
+    strategy,
+  });
   const trailer = Buffer.alloc(8);
   trailer.writeUInt32LE(crc32(original) >>> 0, 0);
   trailer.writeUInt32LE(original.byteLength >>> 0, 4);
@@ -160,7 +169,7 @@ async function writeDist(
   const projectionBytes = Buffer.from(`${stableJson(projection)}\n`);
   const compression = {
     schemaVersion: "1.1.0",
-    algorithm: "gzip:deflate-raw:level-9:fixed-header:receipt-bound",
+    algorithm: RECEIPT_BOUND_GZIP_ALGORITHM,
     producerRuntime: {
       node: process.versions.node,
       zlib: process.versions.zlib,
@@ -910,23 +919,52 @@ test("public receipt-bound gzip verifier rejects hostile API values without disc
   }
 });
 
-test("gzip helpers snapshot caller bytes before asynchronous work and accept receipt-bound alternate deflate", async () => {
+test("gzip helpers pin the filtered producer profile, snapshot bytes, and accept alternate deflate", async () => {
+  assert.equal(
+    RECEIPT_BOUND_GZIP_ALGORITHM,
+    "gzip:deflate-raw:level-9:memlevel-8:strategy-filtered:mtime-0:os-255",
+  );
   const original = Buffer.from("public immutable gzip input\n".repeat(128));
   const expected = Buffer.from(original);
   const compression = deterministicGzipPublic(original);
   original.fill(0x78);
-  assert.deepEqual(gunzipSync(await compression), expected);
+  const productionRepresentation = await compression;
+  assert.deepEqual(productionRepresentation, deterministicGzip(expected));
+  assert.deepEqual(gunzipSync(productionRepresentation), expected);
 
-  const representation = deterministicGzip(expected, constants.Z_BEST_SPEED);
-  const representationSnapshot = Buffer.from(representation);
-  const expansion = expandReceiptBoundGzip(representation, {
+  const profileInput = Buffer.from(
+    `${Array.from({ length: 1000 }, (_, index) => JSON.stringify({
+      path: `metadata/symbols/${String(index).padStart(5, "0")}-${(index * 2654435761 >>> 0).toString(16)}.mjs`,
+      bytes: 1000 + (index % 997),
+      sha256: index.toString(16).padStart(8, "0").repeat(8),
+      tags: ["atlas", "projection", `group-${index % 37}`],
+      value: "alpha beta gamma delta ".repeat(1 + (index % 7)),
+    })).join("\n")}\n`,
+  );
+  const profileRepresentation = await deterministicGzipPublic(profileInput);
+  assert.deepEqual(profileRepresentation, deterministicGzip(profileInput));
+  assert.notDeepEqual(profileRepresentation, deterministicGzip(profileInput, 8));
+  assert.notDeepEqual(
+    profileRepresentation,
+    deterministicGzip(profileInput, constants.Z_BEST_COMPRESSION, { memLevel: 9 }),
+  );
+  assert.notDeepEqual(
+    profileRepresentation,
+    deterministicGzip(profileInput, constants.Z_BEST_COMPRESSION, {
+      strategy: constants.Z_DEFAULT_STRATEGY,
+    }),
+  );
+
+  const alternateRepresentation = deterministicGzip(expected, constants.Z_BEST_SPEED);
+  const representationSnapshot = Buffer.from(alternateRepresentation);
+  const expansion = expandReceiptBoundGzip(alternateRepresentation, {
     label: "alternate deflate",
     maximumCompressedBytes: 64 * 1024,
     maximumExpandedBytes: 64 * 1024,
   });
-  representation.fill(0x78);
+  alternateRepresentation.fill(0x78);
   assert.deepEqual(await expansion, expected);
-  assert.notDeepEqual(representation, representationSnapshot);
+  assert.notDeepEqual(alternateRepresentation, representationSnapshot);
 });
 
 test("public deployment APIs reject hostile options without disclosure", async (context) => {
@@ -987,7 +1025,7 @@ test("public deployment APIs reject hostile options without disclosure", async (
   }
 });
 
-test("standalone verification accepts a fully receipt-bound alternate deflate producer", async () => {
+test("standalone verification remains portable across fully receipt-bound alternate deflate bytes", async () => {
   const scratch = await mkdtemp(join(os.tmpdir(), "atlas-deployment-alt-deflate-"));
   try {
     const fixture = await initializeFixture(scratch);
@@ -1000,7 +1038,6 @@ test("standalone verification accepts a fully receipt-bound alternate deflate pr
     const compression = await readGzipJson(compressionPath);
     const original = gunzipSync(await readFile(modulePath));
     const alternate = deterministicGzip(original, constants.Z_BEST_SPEED);
-    compression.algorithm = "gzip:deflate-raw:level-1:fixed-header:receipt-bound";
     compression.producerRuntime = { node: "22.13.0", zlib: "1.2.13" };
     compression.modules[0].compressedBytes = alternate.byteLength;
     compression.modules[0].compressedSha256 = sha256(alternate);
@@ -1018,8 +1055,65 @@ test("standalone verification accepts a fully receipt-bound alternate deflate pr
   }
 });
 
-test("compression receipt exact shapes reject self-receipted extra keys", async (context) => {
+test("compression receipt exact shapes and algorithm reject self-receipted drift", async (context) => {
   for (const [name, mutate, expected] of [
+    [
+      "legacy generic algorithm",
+      (compression) => {
+        compression.algorithm = "gzip:deflate-raw:level-9:fixed-header:receipt-bound";
+      },
+      /compression module receipt is absent or inconsistent/,
+    ],
+    [
+      "wrong memory level",
+      (compression) => {
+        compression.algorithm =
+          "gzip:deflate-raw:level-9:memlevel-9:strategy-filtered:mtime-0:os-255";
+      },
+      /compression module receipt is absent or inconsistent/,
+    ],
+    [
+      "wrong compression level",
+      (compression) => {
+        compression.algorithm =
+          "gzip:deflate-raw:level-8:memlevel-8:strategy-filtered:mtime-0:os-255";
+      },
+      /compression module receipt is absent or inconsistent/,
+    ],
+    [
+      "wrong strategy",
+      (compression) => {
+        compression.algorithm =
+          "gzip:deflate-raw:level-9:memlevel-8:strategy-default:mtime-0:os-255";
+      },
+      /compression module receipt is absent or inconsistent/,
+    ],
+    [
+      "algorithm scalar",
+      (compression) => { compression.algorithm = 9; },
+      /compression module receipt is absent or inconsistent/,
+    ],
+    [
+      "wrong modification time",
+      (compression) => {
+        compression.algorithm =
+          "gzip:deflate-raw:level-9:memlevel-8:strategy-filtered:mtime-1:os-255";
+      },
+      /compression module receipt is absent or inconsistent/,
+    ],
+    [
+      "wrong operating system",
+      (compression) => {
+        compression.algorithm =
+          "gzip:deflate-raw:level-9:memlevel-8:strategy-filtered:mtime-0:os-3";
+      },
+      /compression module receipt is absent or inconsistent/,
+    ],
+    [
+      "algorithm suffix",
+      (compression) => { compression.algorithm = `${RECEIPT_BOUND_GZIP_ALGORITHM}:EvilKey`; },
+      /compression module receipt is absent or inconsistent/,
+    ],
     [
       "top-level extra",
       (compression) => { compression.EvilKey = "private-shape-sentinel"; },
