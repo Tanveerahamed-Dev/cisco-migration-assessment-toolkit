@@ -2258,17 +2258,14 @@ class CompilerTests(unittest.TestCase):
         self.assertEqual(summary["format_counts"], {"gzip_tsv": 2, "png": 44, "unsupported": 0})
         self.assertEqual(summary["status"], "incomplete")
         self.assertEqual(summary["identity_matched_files"], 46)
-        self.assertEqual(summary["automated_format_passed_files"], 44)
-        self.assertEqual(summary["automated_format_pending_files"], 2)
+        self.assertEqual(summary["automated_format_passed_files"], 46)
+        self.assertEqual(summary["automated_format_pending_files"], 0)
         self.assertEqual(summary["claimed_independent_contextual_passed_files"], 46)
         self.assertEqual(summary["independent_contextual_passed_files"], 0)
         self.assertEqual(summary["accepted_files"], 0)
         self.assertEqual(
             summary["error_codes"],
-            [
-                "binary_review_automated_format_pending_unsupported_png_ancillary",
-                "binary_review_reviewer_authentication_pending",
-            ],
+            ["binary_review_reviewer_authentication_pending"],
         )
 
     def test_binary_review_join_rejects_missing_orphan_duplicate_wrong_stale_and_malformed_rows(self) -> None:

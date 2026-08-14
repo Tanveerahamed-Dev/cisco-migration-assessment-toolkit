@@ -1,8 +1,8 @@
 {
   "schema_version": "tracked-binary-review/1",
   "receipt_kind": "tracked_repository_binary_privacy_review",
-  "review_basis_commit": "719d91dad5d6cc6f04acf6b31c4e8d005c68f94a",
-  "binary_set_digest": "97cc564b8021fafdd336ed61ca5f6566ea1d4d3407cda708cd742c39856104de",
+  "review_basis_commit": "302df8b6ba08c928af98a79030d766c519a44bd5",
+  "binary_set_digest": "664d3efa62bfae77102e7dd2ac8503f681c5b66fdb0db46c43ef2397c42ceac0",
   "records": [
     {
       "path": "cisco_toolkit/data/oui_registry.tsv.gz",
@@ -101,9 +101,9 @@
     },
     {
       "path": "master-reference/public/atlas-social-card.png",
-      "git_blob_oid": "903c562481bea3758eb784a387b7b85cac745365",
-      "raw_sha256": "15854acd763600b578913cc263b3b48e56474b042f5713185e121f6f90545828",
-      "raw_bytes": 1766077,
+      "git_blob_oid": "42bb6da1263aa99a20d6f60747044d0be51cdb97",
+      "raw_sha256": "5dc834a42e0f75c83f894a290a85b5524e255339789dc6255286443180745055",
+      "raw_bytes": 1741155,
       "media_type": "image/png",
       "format": "png",
       "automated_format_evidence": {
@@ -119,7 +119,7 @@
         "bit_depth": 8,
         "color_type": 2,
         "interlace_method": 0,
-        "chunk_count": 30,
+        "chunk_count": 29,
         "idat_chunk_count": 27,
         "idat_compressed_bytes": 1740786,
         "decoded_scanline_bytes": 4721346,
@@ -148,9 +148,9 @@
     },
     {
       "path": "master-reference/public/og.png",
-      "git_blob_oid": "a3bc7ec2f626fd34bc110f44fbbfad76adb77af2",
-      "raw_sha256": "ea17869f8f9f1a933e6d14ffed48d51fad2908c293d5eb439f4d61218b1cc208",
-      "raw_bytes": 2338417,
+      "git_blob_oid": "b7ad3c4c1b8f305b68a7ef9ed0cdd3b71095f975",
+      "raw_sha256": "27bbfe929681a2acbbb74627fb02c22d548abffef773be3c04ca21453062651a",
+      "raw_bytes": 2313495,
       "media_type": "image/png",
       "format": "png",
       "automated_format_evidence": {
@@ -166,7 +166,7 @@
         "bit_depth": 8,
         "color_type": 2,
         "interlace_method": 0,
-        "chunk_count": 39,
+        "chunk_count": 38,
         "idat_chunk_count": 36,
         "idat_compressed_bytes": 2313018,
         "decoded_scanline_bytes": 4718619,
