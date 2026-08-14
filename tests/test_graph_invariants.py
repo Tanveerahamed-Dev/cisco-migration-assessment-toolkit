@@ -168,29 +168,33 @@ def _checkout_path_disclosure_count(graph: object, repo_root: Path | str) -> int
         return -1
     disclosures = 0
     for value in _iter_serialized_strings(graph):
-        for candidate in _decoded_text_variants(value):
-            if root_slug in _normalized_path_slug(candidate):
-                disclosures += 1
-                break
+        variants, decode_bound_exceeded = _decoded_text_variants(value)
+        if decode_bound_exceeded or any(
+            root_slug in _normalized_path_slug(candidate) for candidate in variants
+        ):
+            disclosures += 1
     return disclosures
 
 
-def _decoded_text_variants(value: str):
-    """Yield a bounded raw/percent-decoded chain for path-equivalence checks."""
+def _decoded_text_variants(value: str) -> tuple[tuple[str, ...], bool]:
+    """Return raw plus three decoded layers and whether another layer remains."""
     candidate = value
+    variants = [candidate]
     for _ in range(3):
-        yield candidate
         decoded = unquote(candidate)
         if decoded == candidate:
-            break
+            return tuple(variants), False
         candidate = decoded
+        variants.append(candidate)
+    return tuple(variants), unquote(candidate) != candidate
 
 
 def _graph_output_path_kind(value: object) -> str | None:
     """Classify a graph-output path as canonical, a disguised alias, or unrelated."""
     if not isinstance(value, str) or not value:
         return None
-    for candidate in _decoded_text_variants(value):
+    variants, decode_bound_exceeded = _decoded_text_variants(value)
+    for candidate in variants:
         slash_path = candidate.replace("\\", "/")
         parts = slash_path.split("/")
         if "graphify-out" not in {part.casefold() for part in parts}:
@@ -201,7 +205,7 @@ def _graph_output_path_kind(value: object) -> str | None:
             and all(part not in {"", ".", ".."} for part in parts)
         )
         return "canonical" if canonical else "alias"
-    return None
+    return "alias" if decode_bound_exceeded else None
 
 
 def _canonical_rows_digest(rows: list[str] | set[str]) -> str:
@@ -240,12 +244,13 @@ def _tracked_build_path_kind(value: object) -> str | None:
     if not isinstance(value, str) or not value:
         return None
     expected = {source.casefold() for source in _KNOWN_PRUNED_BUILD_SOURCES}
-    for candidate in _decoded_text_variants(value):
+    variants, decode_bound_exceeded = _decoded_text_variants(value)
+    for candidate in variants:
         slash_path = candidate.replace("\\", "/")
         normalized = posixpath.normpath(slash_path).casefold()
         if any(normalized == source or normalized.endswith(f"/{source}") for source in expected):
             return "canonical" if candidate == value and value in _KNOWN_PRUNED_BUILD_SOURCES else "alias"
-    return None
+    return "alias" if decode_bound_exceeded else None
 
 
 def _has_exact_build_component(value: object) -> bool:
@@ -484,6 +489,7 @@ def test_memory_residual_receipts_reject_substitution_extra_and_path_aliases():
         "C:/private/graphify-out/memory/example.md",
         "graphify-out\\memory\\example.md",
         quote(quote("C:/private/graphify-out/memory/example.md", safe=""), safe=""),
+        quote(quote(quote("C:/private/graphify-out/memory/example.md", safe=""), safe=""), safe=""),
     ):
         assert _graph_output_path_kind(alias) == "alias"
 
@@ -538,6 +544,10 @@ def test_build_residual_path_classifier_rejects_aliases():
         "master-reference\\build\\deterministic-gzip.mjs",
         "C:/private/repo/master-reference/build/deterministic-gzip.mjs",
         quote(quote("C:/private/repo/master-reference/build/deterministic-gzip.mjs", safe=""), safe=""),
+        quote(
+            quote(quote("C:/private/repo/master-reference/build/deterministic-gzip.mjs", safe=""), safe=""),
+            safe="",
+        ),
     ):
         assert _tracked_build_path_kind(alias) == "alias"
     assert _tracked_build_path_kind("master-reference/app/builders.ts") is None
@@ -577,9 +587,28 @@ def test_checkout_path_disclosure_counter_covers_nodes_links_and_hyperedges():
         "nodes": [{"id": f"{root_slug}_node"}, {"id": "safe_node"}],
         "links": [{"source": "safe_node", "target": f"{root_slug}_link_target"}],
         "hyperedges": [{"endpoints": ["safe_node", f"{root_slug}_hyperedge_target"]}],
-        "metadata": {quote(quote(synthetic_root, safe=""), safe=""): "safe"},
+        "metadata": {
+            quote(quote(quote(synthetic_root, safe=""), safe=""), safe=""): "safe",
+            quote(quote(quote(quote(synthetic_root, safe=""), safe=""), safe=""), safe=""): "safe",
+        },
     }
-    assert _checkout_path_disclosure_count(graph, synthetic_root) == 4
+    assert _checkout_path_disclosure_count(graph, synthetic_root) == 5
+
+
+def test_percent_decoding_bound_inspects_third_layer_and_fails_closed_after_it():
+    source = "C:/private/graphify-out/memory/example.md"
+    triple_encoded = quote(quote(quote(source, safe=""), safe=""), safe="")
+    quadruple_encoded = quote(triple_encoded, safe="")
+    build_source = "C:/private/repo/master-reference/build/deterministic-gzip.mjs"
+    quadruple_encoded_build = quote(quote(quote(quote(build_source, safe=""), safe=""), safe=""), safe="")
+
+    triple_variants, triple_exceeded = _decoded_text_variants(triple_encoded)
+    assert triple_variants[-1] == source
+    assert not triple_exceeded
+    _, quadruple_exceeded = _decoded_text_variants(quadruple_encoded)
+    assert quadruple_exceeded
+    assert _graph_output_path_kind(quadruple_encoded) == "alias"
+    assert _tracked_build_path_kind(quadruple_encoded_build) == "alias"
 
 
 def test_file_types_within_known_enum():
