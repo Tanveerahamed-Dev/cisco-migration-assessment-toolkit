@@ -38,9 +38,13 @@ as failures. The audit covers runtime and build-time dependencies.
 Production builds also create a lossless Sites packaging profile. The canonical
 projection and compression JSON receipts remain byte-for-byte reconstructable,
 but `dist` stores only their deterministic `.json.gz` representations; the
-outer deployment receipt uses the same representation and excludes only itself
-from its exact physical member census. Every generated `.mjs` payload in `dist`
-is likewise replaced by a deterministic, receipt-bound `.mjs.gz` member. The
+outer deployment receipt uses the same representation. Its v1.2 contract keeps
+non-projection files (including both inner receipt representations) in a direct
+ledger and binds the projection-module ledger once through the fully validated
+compression receipt; the count, bytes, and digest cover their sorted physical
+union and exclude only the outer representation itself. Every generated `.mjs`
+payload in `dist` is likewise replaced by a deterministic, receipt-bound
+`.mjs.gz` member. The
 Worker serves that member at the original virtual module URL with explicit gzip
 and JavaScript response headers. Build tests require fixed-header single-member bounded expansion,
 exact raw/representation SHA-256 joins, exact module census, module gunzip

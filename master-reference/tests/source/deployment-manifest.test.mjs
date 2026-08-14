@@ -39,6 +39,9 @@ const compareText = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
 const PROJECTION_MANIFEST_NAME = "projection-manifest.json.gz";
 const COMPRESSION_MANIFEST_NAME = "compression-manifest.json.gz";
 const DEPLOYMENT_MANIFEST_NAME = "deployment-manifest.json.gz";
+const PROJECTION_DIRECTORY = "client/atlas-projection";
+const PROJECTION_MANIFEST_REPRESENTATION = `${PROJECTION_DIRECTORY}/${PROJECTION_MANIFEST_NAME}`;
+const PROJECTION_MEMBER_AUTHORITY = `${PROJECTION_DIRECTORY}/${COMPRESSION_MANIFEST_NAME}`;
 const buildDeploymentManifest = (options) =>
   deploymentManifestTestOnly.buildDeploymentManifestWithHooks(options);
 const verifyDeploymentManifest = (options) =>
@@ -252,6 +255,42 @@ async function addReceiptedProjectionMetadata(dist, key, value) {
   await writeInnerReceipts(projectionRoot, projection, compression);
 }
 
+async function addReceiptedProjectionModule(
+  dist,
+  modulePath = "alpha.mjs",
+  moduleBytes = Buffer.from("export const alpha = true;\n"),
+) {
+  const projectionRoot = join(dist, "client", "atlas-projection");
+  const projection = await readGzipJson(
+    join(projectionRoot, PROJECTION_MANIFEST_NAME),
+  );
+  const compression = await readGzipJson(
+    join(projectionRoot, COMPRESSION_MANIFEST_NAME),
+  );
+  const compressedPath = `${modulePath}.gz`;
+  const compressedBytes = deterministicGzip(moduleBytes);
+  projection.secondary = {
+    path: modulePath,
+    bytes: moduleBytes.byteLength,
+    sha256: sha256(moduleBytes),
+  };
+  compression.modules.push({
+    path: modulePath,
+    compressedPath,
+    originalBytes: moduleBytes.byteLength,
+    originalSha256: sha256(moduleBytes),
+    compressedBytes: compressedBytes.byteLength,
+    compressedSha256: sha256(compressedBytes),
+  });
+  compression.modules.sort((left, right) => compareText(left.path, right.path));
+  compression.declarationCount += 1;
+  compression.moduleCount += 1;
+  compression.originalBytes += moduleBytes.byteLength;
+  compression.compressedBytes += compressedBytes.byteLength;
+  await writeBytes(join(projectionRoot, ...compressedPath.split("/")), compressedBytes);
+  await writeInnerReceipts(projectionRoot, projection, compression);
+}
+
 async function replaceReceiptedProjectionModulePath(dist, modulePath) {
   const projectionRoot = join(dist, "client", "atlas-projection");
   const projectionPath = join(projectionRoot, PROJECTION_MANIFEST_NAME);
@@ -269,17 +308,39 @@ async function replaceReceiptedProjectionModulePath(dist, modulePath) {
     join(projectionRoot, ...newCompressedPath.split("/")),
   );
   await writeInnerReceipts(projectionRoot, projection, compression);
-
-  const manifestPath = join(dist, DEPLOYMENT_MANIFEST_NAME);
-  const receipt = await readGzipJson(manifestPath);
-  const member = receipt.members.find(
-    (entry) => entry.path === `client/atlas-projection/${oldCompressedPath}`,
-  );
-  assert.ok(member);
-  member.path = `client/atlas-projection/${newCompressedPath}`;
-  receipt.members.sort((left, right) => compareText(left.path, right.path));
-  await writeFile(manifestPath, deterministicGzip(canonicalJsonBytes(receipt)));
   return refreshOuterDeploymentReceipt(dist);
+}
+
+function projectionMemberLedger(compression) {
+  return compression.modules.map((record) => ({
+    path: `${PROJECTION_DIRECTORY}/${record.compressedPath}`,
+    bytes: record.compressedBytes,
+    sha256: record.compressedSha256,
+  }));
+}
+
+function projectionMembersSummary(ledger) {
+  return {
+    authorityRepresentationPath: PROJECTION_MEMBER_AUTHORITY,
+    memberCount: ledger.length,
+    totalBytes: ledger.reduce((total, member) => total + member.bytes, 0),
+    membersDigest: sha256(canonicalJsonBytes(ledger)),
+  };
+}
+
+function rechainOuterBundleDigest(receipt) {
+  const payload = {
+    schemaVersion: receipt.schemaVersion,
+    recordType: receipt.recordType,
+    source: receipt.source,
+    referenceSource: receipt.referenceSource,
+    memberCount: receipt.memberCount,
+    totalBytes: receipt.totalBytes,
+    members: receipt.members,
+    membersDigest: receipt.membersDigest,
+    projectionMembers: receipt.projectionMembers,
+  };
+  receipt.bundleDigest = sha256(canonicalJsonBytes(payload));
 }
 
 async function refreshOuterDeploymentReceipt(dist) {
@@ -290,27 +351,26 @@ async function refreshOuterDeploymentReceipt(dist) {
     member.bytes = bytes.byteLength;
     member.sha256 = sha256(bytes);
   }
-  receipt.memberCount = receipt.members.length;
-  receipt.totalBytes = receipt.members.reduce((total, member) => total + member.bytes, 0);
   const projectionBytes = await readFile(
     join(dist, "client", "atlas-projection", PROJECTION_MANIFEST_NAME),
   );
   const compressionBytes = await readFile(
     join(dist, "client", "atlas-projection", COMPRESSION_MANIFEST_NAME),
   );
+  const compression = JSON.parse(gunzipSync(compressionBytes));
+  const projectionLedger = projectionMemberLedger(compression);
+  const reconstructedMembers = [...receipt.members, ...projectionLedger]
+    .sort((left, right) => compareText(left.path, right.path));
   receipt.referenceSource.projectionManifestSha256 = sha256(gunzipSync(projectionBytes));
   receipt.referenceSource.compressionManifestSha256 = sha256(gunzipSync(compressionBytes));
-  receipt.membersDigest = sha256(Buffer.from(`${stableJson(receipt.members)}\n`));
-  const payload = {
-    schemaVersion: receipt.schemaVersion,
-    recordType: receipt.recordType,
-    source: receipt.source,
-    referenceSource: receipt.referenceSource,
-    memberCount: receipt.memberCount,
-    totalBytes: receipt.totalBytes,
-    members: receipt.members,
-  };
-  receipt.bundleDigest = sha256(Buffer.from(`${stableJson(payload)}\n`));
+  receipt.projectionMembers = projectionMembersSummary(projectionLedger);
+  receipt.memberCount = reconstructedMembers.length;
+  receipt.totalBytes = reconstructedMembers.reduce(
+    (total, member) => total + member.bytes,
+    0,
+  );
+  receipt.membersDigest = sha256(canonicalJsonBytes(reconstructedMembers));
+  rechainOuterBundleDigest(receipt);
   const manifestBytes = deterministicGzip(canonicalJsonBytes(receipt));
   await writeFile(manifestPath, manifestBytes);
   return manifestBytes;
@@ -339,7 +399,7 @@ async function listRegularFiles(root, prefix = "") {
   return files.sort(compareText);
 }
 
-test("outer deployment receipt is deterministic, exact-source bound, and covers every other file", async () => {
+test("outer deployment receipt is deterministic, exact-source bound, and compactly covers every other file", async () => {
   const scratch = await mkdtemp(join(os.tmpdir(), "atlas-deployment-manifest-"));
   try {
     const fixture = await initializeFixture(scratch);
@@ -354,7 +414,7 @@ test("outer deployment receipt is deterministic, exact-source bound, and covers 
       await readFile(join(first.dist, DEPLOYMENT_MANIFEST_NAME)),
       await readFile(join(second.dist, DEPLOYMENT_MANIFEST_NAME)),
     );
-    assert.equal(receiptA.schemaVersion, "1.1.0");
+    assert.equal(receiptA.schemaVersion, "1.2.0");
     assert.equal(receiptA.recordType, "atlas_deployment_bundle");
     assert.equal(receiptA.source.commit, fixture.commit);
     assert.equal(receiptA.source.treeOid, fixture.treeOid);
@@ -383,7 +443,27 @@ test("outer deployment receipt is deterministic, exact-source bound, and covers 
     );
     const actualMembers = (await listRegularFiles(first.dist))
       .filter((path) => path !== DEPLOYMENT_MANIFEST_NAME);
-    assert.deepEqual(receiptA.members.map((member) => member.path), actualMembers);
+    const compression = await readGzipJson(
+      join(first.projectionRoot, COMPRESSION_MANIFEST_NAME),
+    );
+    const projectionLedger = projectionMemberLedger(compression);
+    const projectionPaths = new Set(projectionLedger.map((member) => member.path));
+    assert.deepEqual(
+      receiptA.members.map((member) => member.path),
+      actualMembers.filter((path) => !projectionPaths.has(path)),
+    );
+    assert.deepEqual(receiptA.projectionMembers, projectionMembersSummary(projectionLedger));
+    assert.equal(receiptA.members.some((member) => member.path.endsWith(".mjs.gz")), false);
+    assert.ok(receiptA.members.some((member) => member.path === PROJECTION_MEMBER_AUTHORITY));
+    assert.ok(receiptA.members.some(
+      (member) => member.path === PROJECTION_MANIFEST_REPRESENTATION,
+    ));
+    assert.deepEqual(
+      [...receiptA.members, ...projectionLedger]
+        .sort((left, right) => compareText(left.path, right.path))
+        .map((member) => member.path),
+      actualMembers,
+    );
     assert.equal(receiptA.memberCount, actualMembers.length);
     assert.deepEqual(receiptB, receiptA);
     assert.deepEqual(
@@ -392,6 +472,206 @@ test("outer deployment receipt is deterministic, exact-source bound, and covers 
     );
   } finally {
     await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("projection member summary rejects hostile shape and a fully rechained forged ledger", async (context) => {
+  const marker = "private-projection-summary-sentinel";
+  for (const [name, mutate, expected] of [
+    [
+      "extra summary key",
+      async (receipt) => {
+        receipt.projectionMembers.EvilKey = marker;
+        rechainOuterBundleDigest(receipt);
+      },
+      "deployment projection member summary is malformed",
+    ],
+    [
+      "forged projection ledger",
+      async (receipt, deployment) => {
+        const compression = await readGzipJson(
+          join(deployment.projectionRoot, COMPRESSION_MANIFEST_NAME),
+        );
+        const forgedLedger = projectionMemberLedger(compression).map((member, index) => ({
+          ...member,
+          sha256: index === 0
+            ? `${member.sha256.startsWith("0") ? "1" : "0"}${member.sha256.slice(1)}`
+            : member.sha256,
+        }));
+        receipt.projectionMembers = projectionMembersSummary(forgedLedger);
+        const forgedUnion = [...receipt.members, ...forgedLedger]
+          .sort((left, right) => compareText(left.path, right.path));
+        receipt.memberCount = forgedUnion.length;
+        receipt.totalBytes = forgedUnion.reduce((total, member) => total + member.bytes, 0);
+        receipt.membersDigest = sha256(canonicalJsonBytes(forgedUnion));
+        rechainOuterBundleDigest(receipt);
+      },
+      "deployment projection member summary does not match the fully validated compression manifest",
+    ],
+  ]) {
+    await context.test(name, async () => {
+      const scratch = await mkdtemp(join(os.tmpdir(), "atlas-deployment-summary-hostile-"));
+      try {
+        const fixture = await initializeFixture(scratch);
+        const deployment = await writeDist(fixture.repo, "dist");
+        await buildDeploymentManifest({ distDir: deployment.dist, repoRoot: fixture.repo });
+        const manifestPath = join(deployment.dist, DEPLOYMENT_MANIFEST_NAME);
+        const receipt = await readGzipJson(manifestPath);
+        await mutate(receipt, deployment);
+        const manifestBytes = deterministicGzip(canonicalJsonBytes(receipt));
+        await writeFile(manifestPath, manifestBytes);
+        let failure;
+        try {
+          await verifyDeploymentManifest({ distDir: deployment.dist, repoRoot: fixture.repo });
+        } catch (error) {
+          failure = error;
+        }
+        assert.ok(failure instanceof Error);
+        assert.equal(failure.message, expected);
+        assert.equal(failure.stack.includes(marker), false);
+        assert.deepEqual(await readFile(manifestPath), manifestBytes);
+      } finally {
+        await rm(scratch, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("compact member ledgers reject projection overlap, order, and authority aliases", async (context) => {
+  for (const [name, mutate, expected] of [
+    [
+      "projection overlap",
+      async (receipt, deployment) => {
+        const compression = await readGzipJson(
+          join(deployment.projectionRoot, COMPRESSION_MANIFEST_NAME),
+        );
+        const ledger = projectionMemberLedger(compression);
+        receipt.members.push({ ...ledger[0] });
+        receipt.members.sort((left, right) => compareText(left.path, right.path));
+        const overlappingUnion = [...receipt.members, ...ledger]
+          .sort((left, right) => compareText(left.path, right.path));
+        receipt.memberCount = overlappingUnion.length;
+        receipt.totalBytes = overlappingUnion.reduce(
+          (total, member) => total + member.bytes,
+          0,
+        );
+        receipt.membersDigest = sha256(canonicalJsonBytes(overlappingUnion));
+        rechainOuterBundleDigest(receipt);
+      },
+      "deployment direct and projection member ledgers overlap",
+    ],
+    [
+      "direct order",
+      async (receipt) => {
+        receipt.members.reverse();
+        rechainOuterBundleDigest(receipt);
+      },
+      "deployment manifest direct member paths violate the compact sorted census rule",
+    ],
+    [
+      "authority path case alias",
+      async (receipt, deployment) => {
+        const compression = await readGzipJson(
+          join(deployment.projectionRoot, COMPRESSION_MANIFEST_NAME),
+        );
+        const ledger = projectionMemberLedger(compression);
+        const aliasedPath = `${PROJECTION_DIRECTORY}/Compression-Manifest.json.gz`;
+        const member = receipt.members.find(
+          (candidate) => candidate.path === PROJECTION_MEMBER_AUTHORITY,
+        );
+        assert.ok(member);
+        const temporaryPath = join(deployment.projectionRoot, "compression-authority.tmp");
+        await rename(
+          join(deployment.projectionRoot, COMPRESSION_MANIFEST_NAME),
+          temporaryPath,
+        );
+        await rename(
+          temporaryPath,
+          join(deployment.dist, ...aliasedPath.split("/")),
+        );
+        member.path = aliasedPath;
+        receipt.members.sort((left, right) => compareText(left.path, right.path));
+        const aliasedUnion = [...receipt.members, ...ledger]
+          .sort((left, right) => compareText(left.path, right.path));
+        receipt.membersDigest = sha256(canonicalJsonBytes(aliasedUnion));
+        rechainOuterBundleDigest(receipt);
+      },
+      "deployment manifest direct member paths violate the compact sorted census rule",
+    ],
+  ]) {
+    await context.test(name, async () => {
+      const scratch = await mkdtemp(join(os.tmpdir(), "atlas-deployment-ledger-hostile-"));
+      try {
+        const fixture = await initializeFixture(scratch);
+        const deployment = await writeDist(fixture.repo, "dist");
+        await buildDeploymentManifest({ distDir: deployment.dist, repoRoot: fixture.repo });
+        const manifestPath = join(deployment.dist, DEPLOYMENT_MANIFEST_NAME);
+        const receipt = await readGzipJson(manifestPath);
+        await mutate(receipt, deployment);
+        const manifestBytes = deterministicGzip(canonicalJsonBytes(receipt));
+        await writeFile(manifestPath, manifestBytes);
+        await assert.rejects(
+          verifyDeploymentManifest({ distDir: deployment.dist, repoRoot: fixture.repo }),
+          (error) => error instanceof Error && error.message === expected,
+        );
+        assert.deepEqual(await readFile(manifestPath), manifestBytes);
+      } finally {
+        await rm(scratch, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("compression authority rejects missing, extra, and noncanonical projection members", async (context) => {
+  for (const [name, prepare, mutate, expected] of [
+    [
+      "missing",
+      async () => {},
+      async (deployment) => unlink(join(deployment.projectionRoot, "identity.mjs.gz")),
+      /compressed projection deployment member census mismatch; missing=identity\.mjs\.gz; extra=none/,
+    ],
+    [
+      "extra",
+      async () => {},
+      async (deployment) => writeFile(
+        join(deployment.projectionRoot, "rogue.mjs.gz"),
+        deterministicGzip(Buffer.from("export const rogue = true;\n")),
+      ),
+      /compressed projection deployment member census mismatch; missing=none; extra=rogue\.mjs\.gz/,
+    ],
+    [
+      "order",
+      async (deployment) => addReceiptedProjectionModule(deployment.dist),
+      async (deployment) => {
+        const projection = await readGzipJson(
+          join(deployment.projectionRoot, PROJECTION_MANIFEST_NAME),
+        );
+        const compression = await readGzipJson(
+          join(deployment.projectionRoot, COMPRESSION_MANIFEST_NAME),
+        );
+        compression.modules.reverse();
+        await writeInnerReceipts(deployment.projectionRoot, projection, compression);
+        await refreshOuterDeploymentReceipt(deployment.dist);
+      },
+      /compression module census or aggregate receipt is inconsistent/,
+    ],
+  ]) {
+    await context.test(name, async () => {
+      const scratch = await mkdtemp(join(os.tmpdir(), "atlas-deployment-authority-hostile-"));
+      try {
+        const fixture = await initializeFixture(scratch);
+        const deployment = await writeDist(fixture.repo, "dist");
+        await prepare(deployment);
+        await buildDeploymentManifest({ distDir: deployment.dist, repoRoot: fixture.repo });
+        await mutate(deployment);
+        await assert.rejects(
+          verifyDeploymentManifest({ distDir: deployment.dist, repoRoot: fixture.repo }),
+          expected,
+        );
+      } finally {
+        await rm(scratch, { recursive: true, force: true });
+      }
+    });
   }
 });
 
@@ -904,6 +1184,86 @@ test("module and outer member reads reject same-handle replacement, growth, and 
   }
 });
 
+test("full-tree snapshots reject inter-phase projection and earlier-direct mutations", async (context) => {
+  const cases = [
+    {
+      name: "projection module mutation during direct reads",
+      createHooks: (deployment, marker, markInjected) => ({
+        member: {
+          afterPathStat: async ({ path }) => {
+            if (path === join(deployment.dist, "client", "app.js")) {
+              markInjected();
+              await appendFile(
+                join(deployment.projectionRoot, "identity.mjs.gz"),
+                marker,
+              );
+            }
+          },
+        },
+      }),
+    },
+    {
+      name: "earlier direct member mutation during a later direct read",
+      createHooks: (deployment, marker, markInjected) => {
+        const earlierPath = join(deployment.dist, "client", "app.css");
+        const laterPath = join(deployment.dist, "index.html");
+        let releaseEarlierRead;
+        const earlierRead = new Promise((resolveRead) => {
+          releaseEarlierRead = resolveRead;
+        });
+        return {
+          member: {
+            afterPathStat: async ({ path }) => {
+              if (path === laterPath) {
+                await earlierRead;
+                markInjected();
+                await appendFile(earlierPath, marker);
+              }
+            },
+            afterRead: async ({ path }) => {
+              if (path === earlierPath) releaseEarlierRead();
+            },
+          },
+        };
+      },
+    },
+  ];
+  for (const hostile of cases) {
+    await context.test(hostile.name, async () => {
+      const scratch = await mkdtemp(join(os.tmpdir(), "atlas-deployment-inter-phase-"));
+      const marker = "private-inter-phase-sentinel";
+      try {
+        const fixture = await initializeFixture(scratch);
+        const deployment = await writeDist(fixture.repo, "dist");
+        await buildDeploymentManifest({ distDir: deployment.dist, repoRoot: fixture.repo });
+        const manifestPath = join(deployment.dist, DEPLOYMENT_MANIFEST_NAME);
+        const manifestBytes = await readFile(manifestPath);
+        let injected = false;
+        let failure;
+        try {
+          await deploymentManifestTestOnly.verifyDeploymentManifestWithHooks(
+            { distDir: deployment.dist, repoRoot: fixture.repo },
+            hostile.createHooks(deployment, marker, () => { injected = true; }),
+          );
+        } catch (error) {
+          failure = error;
+        }
+        assert.equal(injected, true);
+        assert.ok(failure instanceof Error);
+        assert.equal(
+          failure.message,
+          "deployment physical tree changed during verification",
+        );
+        assert.equal(failure.stack.includes(marker), false);
+        assert.equal(failure.cause, undefined);
+        assert.deepEqual(await readFile(manifestPath), manifestBytes);
+      } finally {
+        await rm(scratch, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
 test("concurrent builders publish exactly one no-clobber receipt and preserve the winner", { timeout: 15_000 }, async () => {
   const scratch = await mkdtemp(join(os.tmpdir(), "atlas-deployment-publish-race-"));
   try {
@@ -1235,7 +1595,7 @@ test("standalone verifier rejects a self-consistent private module path and rema
     assert.ok(failure instanceof Error);
     assert.match(
       failure.message,
-      /^deployment generated-metadata privacy scan failed: rule=generic_collapsed_user_home_path; category=deployment-manifest$/,
+      /^deployment path privacy scan failed: rule=generic_collapsed_user_home_path; category=projection-declaration; index=0$/,
     );
     assert.equal(failure.stack.includes(marker), false);
     assert.deepEqual(await readFile(join(deployment.dist, DEPLOYMENT_MANIFEST_NAME)), manifestBytes);

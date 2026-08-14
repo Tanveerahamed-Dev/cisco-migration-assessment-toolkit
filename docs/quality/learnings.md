@@ -59,9 +59,15 @@ falsifiable fact and cite where it is checkable (a file, a test, or a commit).
 - Large generated JSON receipts can dominate Sites expanded size even when every payload module is already
   compressed. Preserve their canonical raw bytes as the conceptual digest basis, store only a deterministic
   gzip representation, and bind raw and representation byte/hash receipts across a noncircular outer census.
+  When a fully validated inner receipt already owns a very large physical-member ledger, the outer receipt
+  should store that authority representation as a direct member plus an exact count/bytes/full-ledger-digest
+  summary, then compute its overall census from the sorted reconstructed union; duplicating all rows can itself
+  exhaust the deployment budget.
   A header check alone is insufficient: bounded loaders must use the same opened file handle, require exactly
   one fixed-header member and EOF after its CRC/ISIZE trailer, then enforce strict UTF-8, canonical JSON, and
-  exact raw/physical digests. Deflate bytes are producer-runtime-dependent, so portable verification must not
+  exact raw/physical digests. Same-handle reads close only their individual read windows; a verifier that reads
+  member classes in phases also needs exact pre/post physical-tree identity, size, and timestamp snapshots to
+  reject inter-phase replacement. Deflate bytes are producer-runtime-dependent, so portable verification must not
   recompress locally and compare bytes; the producer runtime is disclosed and receipt-bound instead. Evidence:
   `master-reference/build/deterministic-gzip.mjs`, `compress-projection.mjs`, and
   `deployment-manifest.mjs` plus their focused source tests.

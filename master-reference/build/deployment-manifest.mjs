@@ -23,8 +23,11 @@ import { deterministicGzip, expandReceiptBoundGzip } from "./deterministic-gzip.
 const execFileAsync = promisify(execFile);
 const MANIFEST_SOURCE_NAME = "deployment-manifest.json";
 const MANIFEST_NAME = `${MANIFEST_SOURCE_NAME}.gz`;
-const SCHEMA_VERSION = "1.1.0";
+const SCHEMA_VERSION = "1.2.0";
 const RECORD_TYPE = "atlas_deployment_bundle";
+const PROJECTION_DIRECTORY = "client/atlas-projection";
+const PROJECTION_MANIFEST_REPRESENTATION = `${PROJECTION_DIRECTORY}/projection-manifest.json.gz`;
+const PROJECTION_MEMBER_AUTHORITY = `${PROJECTION_DIRECTORY}/compression-manifest.json.gz`;
 const IO_CONCURRENCY = 16;
 const PRIVACY_SCAN_CONCURRENCY = 4;
 const MAX_JSON_RECEIPT_BYTES = 32 * 1024 * 1024;
@@ -58,14 +61,22 @@ const MANIFEST_RULE = Object.freeze({
   representationPath: MANIFEST_NAME,
   contentEncoding: "gzip",
   selfHash: false,
-  memberCensus: "every_regular_file_under_dist_except_this_manifest",
-  verification: "manifest_must_exist_once_but_must_not_appear_in_members",
+  memberCensus: "sorted_union_of_members_and_compression_manifest_projection_members",
+  directMembers:
+    "every_non_projection_module_regular_file_under_dist_except_this_manifest",
+  projectionMembers:
+    "derived_only_from_the_fully_validated_compression_manifest_representation",
+  verification:
+    "manifest_must_exist_once_but_must_not_appear_in_the_reconstructed_union",
 });
 const HASH_RULE = Object.freeze({
   member: "sha256(raw_file_bytes)",
-  membersDigest: "sha256(utf8(stable_json(members)+LF))",
+  projectionMembersDigest:
+    "sha256(utf8(stable_json(compression_manifest_projection_member_ledger)+LF))",
+  membersDigest:
+    "sha256(utf8(stable_json(sorted_union(members,compression_manifest_projection_member_ledger))+LF))",
   bundleDigest:
-    "sha256(utf8(stable_json({schemaVersion,recordType,source,referenceSource,memberCount,totalBytes,members})+LF))",
+    "sha256(utf8(stable_json({schemaVersion,recordType,source,referenceSource,memberCount,totalBytes,members,membersDigest,projectionMembers})+LF))",
   ordering: "ascending_utf16_code_unit_relative_posix_path",
   filesystem: "regular_files_only;symlinks_and_special_entries_forbidden",
 });
@@ -264,6 +275,7 @@ async function readStableBoundedBytes(
     if (!sameFileSnapshot(handleAfter, pathAfter)) {
       throw new Error(`${label} changed during its bounded read`);
     }
+    await hooks.afterRead?.({ path, label });
     return bytes;
   } catch {
     if (handle) {
@@ -298,6 +310,29 @@ async function walkRegularFiles(root) {
   }
   await walk(root);
   return files;
+}
+
+async function snapshotDeploymentTree(distRoot) {
+  try {
+    const files = await walkRegularFiles(distRoot);
+    const snapshot = await mapBounded(files, async (path) => {
+      const info = await lstat(path, { bigint: true });
+      if (!info.isFile() || info.isSymbolicLink()) {
+        throw new Error("deployment snapshot entry is not a regular file");
+      }
+      return {
+        path: relativePosix(distRoot, path),
+        dev: info.dev.toString(),
+        ino: info.ino.toString(),
+        size: info.size.toString(),
+        mtimeNs: info.mtimeNs.toString(),
+        ctimeNs: info.ctimeNs.toString(),
+      };
+    });
+    return snapshot.sort((left, right) => compareText(left.path, right.path));
+  } catch {
+    throw new Error("deployment physical tree snapshot failed");
+  }
 }
 
 async function runGit(repoRoot, args) {
@@ -807,6 +842,11 @@ async function validateCompressedProjection({
     },
     PRIVACY_SCAN_CONCURRENCY,
   );
+  return records.map((record) => ({
+    path: `${PROJECTION_DIRECTORY}/${record.compressedPath}`,
+    bytes: record.compressedBytes,
+    sha256: record.compressedSha256,
+  }));
 }
 
 async function readReferenceSource(distRoot, repoRoot, expectedSourceCommit, readHooks = {}) {
@@ -866,7 +906,7 @@ async function readReferenceSource(distRoot, repoRoot, expectedSourceCommit, rea
   if (projection.value.sourceCommit !== expectedSourceCommit) {
     throw new Error("reference projection commit does not equal clean build commit");
   }
-  await validateCompressedProjection({
+  const projectionMemberLedger = await validateCompressedProjection({
     projectionRoot,
     projection,
     compression,
@@ -874,12 +914,15 @@ async function readReferenceSource(distRoot, repoRoot, expectedSourceCommit, rea
     readHooks,
   });
   return {
-    commit: projection.value.sourceCommit,
-    compilerTreeDigest: projection.value.sourceTreeDigest,
-    projectionSchemaVersion: projection.value.schemaVersion,
-    compressionSchemaVersion: compression.value.schemaVersion,
-    projectionManifestSha256: sha256(projection.bytes),
-    compressionManifestSha256: sha256(compression.bytes),
+    referenceSource: {
+      commit: projection.value.sourceCommit,
+      compilerTreeDigest: projection.value.sourceTreeDigest,
+      projectionSchemaVersion: projection.value.schemaVersion,
+      compressionSchemaVersion: compression.value.schemaVersion,
+      projectionManifestSha256: sha256(projection.bytes),
+      compressionManifestSha256: sha256(compression.bytes),
+    },
+    projectionMemberLedger,
   };
 }
 
@@ -891,18 +934,41 @@ function assertExactSourceJoin(source, referenceSource) {
   }
 }
 
-async function censusMembers(distRoot, repoRoot, readHooks = {}) {
+function isProjectionModuleRepresentationPath(path) {
+  return path.startsWith(`${PROJECTION_DIRECTORY}/`) && path.endsWith(".mjs.gz");
+}
+
+async function censusMembers(
+  distRoot,
+  repoRoot,
+  projectionMemberPaths,
+  readHooks = {},
+) {
   const files = await walkRegularFiles(distRoot);
-  const paths = files
+  const allPaths = files
     .map((path) => relativePosix(distRoot, path))
     .filter((path) => path !== MANIFEST_NAME)
     .sort(compareText);
   const privacyContract = localIdentityContract(repoRoot);
-  paths.forEach((path, index) => {
+  allPaths.forEach((path, index) => {
     assertGeneratedPathPrivacy(path, privacyContract, "deployment-member", index);
   });
-  if (new Set(paths).size !== paths.length) {
+  const allPathSet = new Set(allPaths);
+  if (allPathSet.size !== allPaths.length) {
     throw new Error("deployment member census contains duplicate relative paths");
+  }
+  if (
+    !allPathSet.has(PROJECTION_MANIFEST_REPRESENTATION) ||
+    !allPathSet.has(PROJECTION_MEMBER_AUTHORITY)
+  ) {
+    throw new Error("projection receipt representations lack their canonical deployment paths");
+  }
+  if ([...projectionMemberPaths].some((path) => !allPathSet.has(path))) {
+    throw new Error("compression manifest projection member is absent from the deployment census");
+  }
+  const paths = allPaths.filter((path) => !projectionMemberPaths.has(path));
+  if (paths.some(isProjectionModuleRepresentationPath)) {
+    throw new Error("undeclared projection module cannot be serialized as a direct deployment member");
   }
   const members = await mapBounded(paths, async (path) => {
     safeMemberPath(path);
@@ -921,26 +987,67 @@ async function censusMembers(distRoot, repoRoot, readHooks = {}) {
   return members;
 }
 
-function digestPayload({ source, referenceSource, members }) {
+function projectionMembersSummary(projectionMemberLedger) {
+  const totalBytes = projectionMemberLedger.reduce(
+    (total, member) => total + member.bytes,
+    0,
+  );
+  if (!Number.isSafeInteger(totalBytes) || totalBytes > MAX_DEPLOYMENT_BYTES) {
+    throw new Error("projection member aggregate exceeds the Sites expanded limit");
+  }
+  return {
+    authorityRepresentationPath: PROJECTION_MEMBER_AUTHORITY,
+    memberCount: projectionMemberLedger.length,
+    totalBytes,
+    membersDigest: sha256(canonicalBytes(projectionMemberLedger)),
+  };
+}
+
+function reconstructMembers(members, projectionMemberLedger) {
+  const directPaths = new Set(members.map((member) => member.path));
+  if (projectionMemberLedger.some((member) => directPaths.has(member.path))) {
+    throw new Error("deployment direct and projection member ledgers overlap");
+  }
+  return [...members, ...projectionMemberLedger].sort((left, right) =>
+    compareText(left.path, right.path));
+}
+
+function digestPayload({ source, referenceSource, members, projectionMemberLedger }) {
+  const projectionMembers = projectionMembersSummary(projectionMemberLedger);
+  const reconstructedMembers = reconstructMembers(members, projectionMemberLedger);
+  const totalBytes = reconstructedMembers.reduce(
+    (total, member) => total + member.bytes,
+    0,
+  );
+  if (!Number.isSafeInteger(totalBytes) || totalBytes > MAX_DEPLOYMENT_BYTES) {
+    throw new Error("deployment member aggregate exceeds the Sites expanded limit");
+  }
+  const membersDigest = sha256(canonicalBytes(reconstructedMembers));
   return {
     schemaVersion: SCHEMA_VERSION,
     recordType: RECORD_TYPE,
     source,
     referenceSource,
-    memberCount: members.length,
-    totalBytes: members.reduce((total, member) => total + member.bytes, 0),
+    memberCount: reconstructedMembers.length,
+    totalBytes,
     members,
+    membersDigest,
+    projectionMembers,
   };
 }
 
-function createManifest({ source, referenceSource, members }) {
-  const payload = digestPayload({ source, referenceSource, members });
+function createManifest({ source, referenceSource, members, projectionMemberLedger }) {
+  const payload = digestPayload({
+    source,
+    referenceSource,
+    members,
+    projectionMemberLedger,
+  });
   return {
     ...payload,
     manifestRule: MANIFEST_RULE,
     hashRule: HASH_RULE,
     sourceRule: SOURCE_RULE,
-    membersDigest: sha256(canonicalBytes(members)),
     bundleDigest: sha256(canonicalBytes(payload)),
   };
 }
@@ -953,11 +1060,33 @@ function describeCensusDifference(declared, actual) {
   return `deployment member census mismatch; missing=${sample(missing)}; extra=${sample(extra)}`;
 }
 
+function assertProjectionMembersSummaryShape(value) {
+  if (
+    !hasExactKeys(value, [
+      "authorityRepresentationPath",
+      "memberCount",
+      "membersDigest",
+      "totalBytes",
+    ]) ||
+    value.authorityRepresentationPath !== PROJECTION_MEMBER_AUTHORITY ||
+    !Number.isSafeInteger(value.memberCount) ||
+    value.memberCount < 0 ||
+    value.memberCount > MAX_JSON_STRUCTURE_VALUES ||
+    !Number.isSafeInteger(value.totalBytes) ||
+    value.totalBytes < 0 ||
+    value.totalBytes > MAX_DEPLOYMENT_BYTES ||
+    !/^[0-9a-f]{64}$/.test(String(value.membersDigest ?? ""))
+  ) {
+    throw new Error("deployment projection member summary is malformed");
+  }
+}
+
 async function verifyDeploymentManifestReceipt(
   { distDir = "dist", repoRoot = ".." } = {},
   readHooks = {},
 ) {
   const distRoot = resolve(distDir);
+  const initialPhysicalTree = await snapshotDeploymentTree(distRoot);
   const manifestPath = join(distRoot, MANIFEST_NAME);
   const manifestReceipt = await readGzipJsonObject(
     manifestPath,
@@ -976,7 +1105,8 @@ async function verifyDeploymentManifestReceipt(
     privacyContract,
     "deployment-manifest",
   );
-  let declaredTotalBytes = 0;
+  assertProjectionMembersSummaryShape(receipt.projectionMembers);
+  let directTotalBytes = 0;
   for (const member of receipt.members) {
     if (
       !hasExactKeys(member, ["bytes", "path", "sha256"]) ||
@@ -989,29 +1119,64 @@ async function verifyDeploymentManifestReceipt(
     ) {
       throw new Error("deployment manifest members are malformed");
     }
-    declaredTotalBytes += member.bytes;
-    if (!Number.isSafeInteger(declaredTotalBytes) || declaredTotalBytes > MAX_DEPLOYMENT_BYTES) {
+    directTotalBytes += member.bytes;
+    if (!Number.isSafeInteger(directTotalBytes) || directTotalBytes > MAX_DEPLOYMENT_BYTES) {
       throw new Error("deployment member aggregate exceeds the Sites expanded limit");
     }
-  }
-  if (
-    receipt.memberCount !== receipt.members.length ||
-    receipt.totalBytes !== declaredTotalBytes ||
-    declaredTotalBytes + manifestReceipt.representationBytes.byteLength > MAX_DEPLOYMENT_BYTES
-  ) {
-    throw new Error("deployment manifest member aggregate is inconsistent");
   }
   receipt.members.forEach((member, index) => {
     assertGeneratedPathPrivacy(member?.path, privacyContract, "deployment-member", index);
   });
-  const declaredPaths = receipt.members.map((member) => safeMemberPath(member?.path));
+  const directPaths = receipt.members.map((member) => safeMemberPath(member?.path));
   if (
-    declaredPaths.includes(MANIFEST_NAME) ||
-    declaredPaths.includes(MANIFEST_SOURCE_NAME) ||
-    new Set(declaredPaths).size !== declaredPaths.length ||
-    stableJson(declaredPaths) !== stableJson([...declaredPaths].sort(compareText))
+    directPaths.includes(MANIFEST_NAME) ||
+    directPaths.includes(MANIFEST_SOURCE_NAME) ||
+    !directPaths.includes(PROJECTION_MANIFEST_REPRESENTATION) ||
+    !directPaths.includes(PROJECTION_MEMBER_AUTHORITY) ||
+    new Set(directPaths).size !== directPaths.length ||
+    stableJson(directPaths) !== stableJson([...directPaths].sort(compareText))
   ) {
-    throw new Error("deployment manifest member paths violate the non-self-hashed sorted census rule");
+    throw new Error("deployment manifest direct member paths violate the compact sorted census rule");
+  }
+  const source = await readCleanGitSource(repoRoot);
+  const {
+    referenceSource,
+    projectionMemberLedger,
+  } = await readReferenceSource(
+    distRoot,
+    repoRoot,
+    source.commit,
+    readHooks,
+  );
+  assertExactSourceJoin(source, referenceSource);
+  const expectedProjectionMembers = projectionMembersSummary(projectionMemberLedger);
+  if (stableJson(receipt.projectionMembers) !== stableJson(expectedProjectionMembers)) {
+    throw new Error(
+      "deployment projection member summary does not match the fully validated compression manifest",
+    );
+  }
+  const reconstructedMembers = reconstructMembers(
+    receipt.members,
+    projectionMemberLedger,
+  );
+  const reconstructedTotalBytes = reconstructedMembers.reduce(
+    (total, member) => total + member.bytes,
+    0,
+  );
+  if (
+    !Number.isSafeInteger(reconstructedTotalBytes) ||
+    reconstructedTotalBytes > MAX_DEPLOYMENT_BYTES ||
+    receipt.memberCount !== reconstructedMembers.length ||
+    receipt.totalBytes !== reconstructedTotalBytes ||
+    receipt.membersDigest !== sha256(canonicalBytes(reconstructedMembers))
+  ) {
+    throw new Error("deployment manifest reconstructed member aggregate is inconsistent");
+  }
+  if (
+    reconstructedTotalBytes + manifestReceipt.representationBytes.byteLength >
+    MAX_DEPLOYMENT_BYTES
+  ) {
+    throw new Error("deployment bundle exceeds the Sites expanded limit");
   }
   const actualFiles = await walkRegularFiles(distRoot);
   const actualPaths = new Set(
@@ -1028,7 +1193,8 @@ async function verifyDeploymentManifestReceipt(
   [...actualPaths].sort(compareText).forEach((path, index) => {
     assertGeneratedPathPrivacy(path, privacyContract, "deployment-member", index);
   });
-  const censusError = describeCensusDifference(new Set(declaredPaths), actualPaths);
+  const reconstructedPaths = reconstructedMembers.map((member) => member.path);
+  const censusError = describeCensusDifference(new Set(reconstructedPaths), actualPaths);
   if (censusError) throw new Error(censusError);
   await mapBounded(receipt.members, async (member) => {
     if (
@@ -1051,17 +1217,18 @@ async function verifyDeploymentManifestReceipt(
       throw new Error(`deployment member byte/hash mismatch: ${member.path}`);
     }
   });
-  const source = await readCleanGitSource(repoRoot);
-  const referenceSource = await readReferenceSource(
-    distRoot,
-    repoRoot,
-    source.commit,
-    readHooks,
-  );
-  assertExactSourceJoin(source, referenceSource);
-  const expected = createManifest({ source, referenceSource, members: receipt.members });
+  const expected = createManifest({
+    source,
+    referenceSource,
+    members: receipt.members,
+    projectionMemberLedger,
+  });
   if (!canonicalBytes(receipt).equals(canonicalBytes(expected))) {
     throw new Error("deployment manifest does not match its recomputed source-bound receipt");
+  }
+  const finalPhysicalTree = await snapshotDeploymentTree(distRoot);
+  if (stableJson(initialPhysicalTree) !== stableJson(finalPhysicalTree)) {
+    throw new Error("deployment physical tree changed during verification");
   }
   return receipt;
 }
@@ -1211,19 +1378,35 @@ async function buildDeploymentManifestInternal(
     throw new Error(`${MANIFEST_NAME} already exists; refusing to overwrite a prior outer receipt`);
   }
   const source = await readCleanGitSource(repoRoot);
-  const referenceSource = await readReferenceSource(
+  const {
+    referenceSource,
+    projectionMemberLedger,
+  } = await readReferenceSource(
     distRoot,
     repoRoot,
     source.commit,
     hooks.readHooks,
   );
   assertExactSourceJoin(source, referenceSource);
-  const members = await censusMembers(distRoot, repoRoot, hooks.readHooks);
+  const projectionMemberPaths = new Set(
+    projectionMemberLedger.map((member) => member.path),
+  );
+  const members = await censusMembers(
+    distRoot,
+    repoRoot,
+    projectionMemberPaths,
+    hooks.readHooks,
+  );
   const finalSource = await readCleanGitSource(repoRoot);
   if (stableJson(source) !== stableJson(finalSource)) {
     throw new Error("tracked Git source changed while deployment members were being hashed");
   }
-  const receipt = createManifest({ source, referenceSource, members });
+  const receipt = createManifest({
+    source,
+    referenceSource,
+    members,
+    projectionMemberLedger,
+  });
   const receiptBytes = canonicalBytes(receipt);
   const receiptRepresentation = await deterministicGzip(receiptBytes);
   await expandReceiptBoundGzip(receiptRepresentation, {
