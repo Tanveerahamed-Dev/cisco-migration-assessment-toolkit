@@ -91,6 +91,17 @@ separately supplied reviewer public key; it rejoins every row to the immutable c
 It does not write a family member or mutate compiler/release gates. No accepted review envelope is
 currently present, so the bounded reviewed count remains zero and global closure remains false.
 
+The additive `verify-pdf-review` boundary applies the same fail-closed custody model to one immutable
+generated-PDF family without consulting mutable compiler output or current Git state. Its PDF-specific
+schemas require exact manifest, attestation, PDF-gate, source and PDF bindings; a fixed Poppler render
+profile; and one ordered, digest-bound signed row for every page. The external reviewer policy must assert
+independence from both the PDF producer and release builder. Its stdout-only result is explicitly
+nonpromoting: family mutation, current/global gate closure, owner-manifest signature, accessibility,
+binary privacy and publication authority remain false. Prior conversational visual QA is not silently
+converted into signed evidence, and no accepted PDF-review envelope is currently present. The signed PNG
+hashes and render profile are reviewer assertions: v1 does not ingest PNG bytes or independently rerender
+the PDF, so it does not establish PDF-to-PNG provenance.
+
 The 2026-08-09 dependency audit is also an explicit release boundary, not a silent waiver. Nano ID is
 locked to the patched 3.3.18 line through both the Master Reference and AssessHub npm overrides.
 `image-size@2.0.2`, pulled

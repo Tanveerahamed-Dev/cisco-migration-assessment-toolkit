@@ -13,11 +13,14 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import logging
 import os
 import re
 import shutil
 import subprocess
+import threading
 import unicodedata
+import warnings
 from collections import Counter
 from dataclasses import dataclass
 from io import BytesIO
@@ -72,6 +75,7 @@ _RIGHT = 17 * mm
 _TOP = 20 * mm
 _BOTTOM = 17 * mm
 _FRAME_WIDTH = _PAGE_WIDTH - _LEFT - _RIGHT
+_PYPDF_INSPECTION_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -2897,27 +2901,84 @@ def generate_master_reference_pdf(
     )
 
 
-def inspect_pdf_report(
-    pdf_path: Path,
+class _DiscardingPdfLogHandler(logging.Handler):
+    """Record parser warnings without formatting or emitting untrusted text."""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.WARNING)
+        self.seen = False
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.levelno >= logging.WARNING:
+            self.seen = True
+
+
+def inspect_pdf_report_bytes(
+    raw: bytes,
     *,
+    path: Path,
     expected_commit: str,
     expected_tree_digest: str,
 ) -> PdfInspection:
-    """Verify PDF structure, metadata, and exact-source binding with pypdf."""
+    """Verify exact PDF bytes without allowing parser diagnostics to escape."""
 
+    if type(raw) is not bytes or not raw.startswith(b"%PDF-"):
+        raise ValueError("file does not have a PDF header")
     try:
         from pypdf import PdfReader
     except ImportError as exc:  # pragma: no cover - explicit environment error
         raise RuntimeError("pypdf is required to inspect the Master Reference PDF") from exc
 
-    pdf_path = pdf_path.resolve(strict=True)
-    raw = pdf_path.read_bytes()
-    if not raw.startswith(b"%PDF-"):
-        raise ValueError("file does not have a PDF header")
-    reader = PdfReader(BytesIO(raw))
-    if not reader.pages:
-        raise ValueError("PDF has no pages")
-    metadata = reader.metadata or {}
+    logger = logging.getLogger("pypdf")
+    handler = _DiscardingPdfLogHandler()
+    with _PYPDF_INSPECTION_LOCK:
+        previous_global_disable = logger.manager.disable
+        if previous_global_disable >= logging.WARNING:
+            raise ValueError("PDF parser diagnostics are globally disabled")
+        owned_loggers = {"pypdf": logger}
+        owned_loggers.update(
+            {
+                name: value
+                for name, value in logger.manager.loggerDict.items()
+                if name.startswith("pypdf.") and isinstance(value, logging.Logger)
+            }
+        )
+        previous_states = {
+            name: (
+                list(value.handlers),
+                list(value.filters),
+                value.level,
+                value.propagate,
+                value.disabled,
+            )
+            for name, value in owned_loggers.items()
+        }
+        for name, value in owned_loggers.items():
+            value.handlers = [handler] if name == "pypdf" else []
+            value.filters = []
+            value.setLevel(logging.WARNING if name == "pypdf" else logging.NOTSET)
+            value.propagate = name != "pypdf"
+            value.disabled = False
+        try:
+            with warnings.catch_warnings(record=True) as captured_warnings:
+                warnings.simplefilter("always")
+                reader = PdfReader(BytesIO(raw), strict=True)
+                if reader.is_encrypted or not reader.pages:
+                    raise ValueError("PDF has no pages")
+                page_count = len(reader.pages)
+                metadata = reader.metadata or {}
+            if handler.seen or captured_warnings:
+                raise ValueError("PDF parser emitted a diagnostic")
+            if logger.manager.disable != previous_global_disable:
+                raise ValueError("PDF parser logging policy changed")
+        finally:
+            for name, value in owned_loggers.items():
+                handlers, filters, level, propagate, disabled = previous_states[name]
+                value.handlers = handlers
+                value.filters = filters
+                value.setLevel(level)
+                value.propagate = propagate
+                value.disabled = disabled
     title = _plain(metadata.get("/Title", ""))
     author = _plain(metadata.get("/Author", ""))
     subject = _plain(metadata.get("/Subject", ""))
@@ -2931,16 +2992,33 @@ def inspect_pdf_report(
     if not commit_present or not tree_present:
         raise ValueError("PDF metadata is not bound to the expected source")
     return PdfInspection(
-        path=pdf_path,
+        path=Path(path),
         sha256=sha256_bytes(raw),
         bytes=len(raw),
-        page_count=len(reader.pages),
+        page_count=page_count,
         title=title,
         author=author,
         subject=subject,
         keywords=keywords,
         source_commit_present=commit_present,
         source_tree_digest_present=tree_present,
+    )
+
+
+def inspect_pdf_report(
+    pdf_path: Path,
+    *,
+    expected_commit: str,
+    expected_tree_digest: str,
+) -> PdfInspection:
+    """Verify PDF structure, metadata, and exact-source binding with pypdf."""
+
+    pdf_path = pdf_path.resolve(strict=True)
+    return inspect_pdf_report_bytes(
+        pdf_path.read_bytes(),
+        path=pdf_path,
+        expected_commit=expected_commit,
+        expected_tree_digest=expected_tree_digest,
     )
 
 

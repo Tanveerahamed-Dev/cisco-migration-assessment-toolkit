@@ -32,6 +32,14 @@ SCHEMAS = {
     "authenticated-review-result": (
         "master-reference/release/schemas/authenticated-review-result.schema.json"
     ),
+    "pdf-review": "master-reference/release/schemas/pdf-review.schema.json",
+    "pdf-review-signature": (
+        "master-reference/release/schemas/pdf-review-signature.schema.json"
+    ),
+    "pdf-reviewer-key-policy": (
+        "master-reference/release/schemas/pdf-reviewer-key-policy.schema.json"
+    ),
+    "pdf-review-result": "master-reference/release/schemas/pdf-review-result.schema.json",
 }
 
 _MAX_JSON_DEPTH = 64

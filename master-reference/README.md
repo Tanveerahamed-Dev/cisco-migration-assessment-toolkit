@@ -229,9 +229,55 @@ external trust inputs: the verifier proves consistency with that exact policy
 snapshot, but does not discover its authority, freshness, revocation history,
 or custody from the repository or signature envelope.
 
-Verification checks the signature, the independently trusted public-key
-fingerprint, and every artifact byte count/SHA-256 receipt in the manifest; it
-also rejects undeclared sibling files and inventory divergence. It does not
+A generated-PDF family has a separate detached visual-review boundary. Review
+inputs must resolve outside the exact-census family; the CLI enforces that
+structural separation and binds the exact manifest, family-attestation,
+PDF-gate, source-bound PDF bytes, source identities, render profile, and one
+signed row for every PDF page:
+
+```powershell
+python -m cli verify-pdf-review `
+  --repo-root .. `
+  --manifest C:\release\release-manifest.json `
+  --payload D:\review-custody\pdf-review.json `
+  --signature D:\review-custody\pdf-review.sig.json `
+  --trust-policy D:\review-custody\pdf-reviewer-policy.json `
+  --public-key D:\review-custody\independent-pdf-reviewer.pub
+```
+
+`pdf-review/1` accepts only the deterministic
+`generated_visual_review_pending` family shape. Page rows must be ordered
+exactly from 1 through the PDF page count and bind each rendered PNG by byte
+count and SHA-256; aggregate counts alone are not evidence that every distinct
+page was reviewed. Those PNG hashes and the renderer profile are authenticated
+reviewer assertions: v1 does not accept PNG bytes or mechanically rerender the
+PDF, so it does not independently prove PDF-to-PNG provenance. The verifier
+recomputes the render-profile, page-ledger,
+fixed-check, and non-circular review-evidence digests, requires a policy that
+asserts independence from both the PDF producer and release builder, reloads
+the family and all four external inputs after verification, and emits canonical
+`pdf-review-result/1` bytes only to stdout. External signers should compute the
+summary digest with `release.pdf_review.pdf_review_evidence_sha256()` and sign
+the bytes returned by `release.pdf_review.pdf_review_signing_material()`; the
+domain is `ATLAS-PDF-REVIEW\0v1\0`.
+
+Path separation prevents accidentally treating a family sibling as external
+review evidence; it does not prove custody or independence because hardlinks
+and storage administration remain outside the verifier. The caller must still
+authenticate the policy/key source separately.
+
+Even an authenticated all-page PASS reports
+`verified_visual_pass_not_promoted`. Current/global gate promotion, family
+mutation, owner-manifest signature, accessibility review, binary-privacy
+review, and publication authority are all fixed false. A visual reviewer may
+therefore report layout evidence without accidentally claiming assistive
+technology coverage or binary-container privacy. No accepted signed PDF-review
+envelope is currently stored or inferred from prior conversational QA.
+
+Verification checks the signature against the separately supplied public-key
+fingerprint and every artifact byte count/SHA-256 receipt in the manifest; it
+also rejects undeclared siblings, inventory/attestation divergence, and PDF
+metadata that is not bound to the manifest source. It does not
 convert an unsigned or visually unreviewed preview into an approved publication.
 
 Without that signature, the family remains a blocked unsigned preview. Failed

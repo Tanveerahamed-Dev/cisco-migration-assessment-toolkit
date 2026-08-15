@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.local/schema/pdf-review-signature/1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "signature_kind", "purpose", "algorithm", "target_schema_version", "target_sha256", "trust_policy_sha256", "signer_key_fingerprint", "signature_base64"],
+  "properties": {
+    "schema_version": {"const": "pdf-review-signature/1"},
+    "signature_kind": {"const": "detached_ed25519_exact_bytes"},
+    "purpose": {"const": "pdf_visual_review"},
+    "algorithm": {"const": "Ed25519"},
+    "target_schema_version": {"const": "pdf-review/1"},
+    "target_sha256": {"$ref": "#/$defs/digest"},
+    "trust_policy_sha256": {"$ref": "#/$defs/digest"},
+    "signer_key_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "signature_base64": {"type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

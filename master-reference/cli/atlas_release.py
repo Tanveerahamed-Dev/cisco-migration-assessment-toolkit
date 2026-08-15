@@ -16,6 +16,13 @@ from release.authenticated_review import (
 )
 from release.compiler_bundle import load_compiler_bundle
 from release.pipeline import ReleaseError, build_release
+from release.pdf_review import (
+    PdfReviewError,
+    normalize_pdf_review_error,
+    read_pdf_review_evidence_files,
+    verify_pdf_review,
+)
+from release.model import canonical_json
 from release.schema_validation import validate_release_object
 from release.signing import SigningUnavailable, sign_manifest, verify_artifact_family, verify_manifest
 from release.source_binding import validate_exact_source
@@ -71,6 +78,17 @@ def _parser() -> argparse.ArgumentParser:
     verify_claim_review.add_argument("--signature", type=Path, required=True)
     verify_claim_review.add_argument("--trust-policy", type=Path, required=True)
     verify_claim_review.add_argument("--public-key", type=Path, required=True)
+
+    verify_pdf_review = commands.add_parser(
+        "verify-pdf-review",
+        help="verify a detached signed visual review against one immutable generated PDF family",
+    )
+    verify_pdf_review.add_argument("--repo-root", type=Path, required=True)
+    verify_pdf_review.add_argument("--manifest", type=Path, required=True)
+    verify_pdf_review.add_argument("--payload", type=Path, required=True)
+    verify_pdf_review.add_argument("--signature", type=Path, required=True)
+    verify_pdf_review.add_argument("--trust-policy", type=Path, required=True)
+    verify_pdf_review.add_argument("--public-key", type=Path, required=True)
     return parser
 
 
@@ -157,12 +175,50 @@ def main(arguments: Sequence[str] | None = None) -> int:
             )
             if evidence != evidence_after:
                 raise AuthenticatedReviewError("authenticated_review_input_changed")
+        elif args.command == "verify-pdf-review":
+            try:
+                try:
+                    repo_root = args.repo_root.resolve(strict=True)
+                except Exception:
+                    raise PdfReviewError("pdf_review_input_invalid") from None
+                evidence_before = read_pdf_review_evidence_files(
+                    args.payload,
+                    args.signature,
+                    args.trust_policy,
+                    args.public_key,
+                    forbidden_root=args.manifest.absolute().parent,
+                )
+                review = verify_pdf_review(repo_root, args.manifest, evidence_before)
+                result = review.as_dict()
+                try:
+                    validate_release_object(repo_root, "pdf-review-result", result)
+                except Exception:
+                    raise PdfReviewError("pdf_review_result_invalid") from None
+                evidence_after = read_pdf_review_evidence_files(
+                    args.payload,
+                    args.signature,
+                    args.trust_policy,
+                    args.public_key,
+                    forbidden_root=args.manifest.absolute().parent,
+                )
+                if evidence_before != evidence_after:
+                    raise PdfReviewError("pdf_review_input_changed")
+            except PdfReviewError:
+                raise
+            except Exception:
+                raise PdfReviewError("pdf_review_unexpected") from None
+            sys.stdout.write(canonical_json(result).decode("utf-8", errors="strict"))
+            return 0
         else:  # pragma: no cover - argparse owns the command vocabulary
             raise AuthenticatedReviewError("authenticated_review_command_invalid")
         print(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2))
         return 0
     except AuthenticatedReviewError as exc:
         print(json.dumps({"ok": False, "error": exc.code}, sort_keys=True), file=sys.stderr)
+        return 2
+    except PdfReviewError as exc:
+        error = {"error": normalize_pdf_review_error(exc), "ok": False}
+        sys.stderr.write(canonical_json(error).decode("utf-8", errors="strict"))
         return 2
     except (ReleaseError, SigningUnavailable, RuntimeError, OSError, ValueError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, sort_keys=True), file=sys.stderr)

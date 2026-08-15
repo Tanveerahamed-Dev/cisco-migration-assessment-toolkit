@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.local/schema/pdf-review/1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "review_kind", "purpose", "source_commit", "head_tree_oid", "index_digest", "source_tree_digest", "release_manifest_sha256", "family_attestation_sha256", "pdf_gate_sha256", "pdf_path", "pdf_sha256", "pdf_bytes", "pdf_page_count", "pdf_input_digest", "render_profile", "render_profile_digest", "page_reviews", "page_reviews_digest", "rendered_page_count", "reviewed_page_count", "passed_page_count", "blocked_page_count", "checks", "checks_digest", "verdict", "review_evidence_sha256", "accessibility_disposition", "binary_privacy_disposition"],
+  "properties": {
+    "schema_version": {"const": "pdf-review/1"},
+    "review_kind": {"const": "independent_rendered_pdf_visual_review"},
+    "purpose": {"const": "pdf_visual_review"},
+    "source_commit": {"$ref": "#/$defs/gitOid"},
+    "head_tree_oid": {"$ref": "#/$defs/gitOid"},
+    "index_digest": {"$ref": "#/$defs/digest"},
+    "source_tree_digest": {"$ref": "#/$defs/digest"},
+    "release_manifest_sha256": {"$ref": "#/$defs/digest"},
+    "family_attestation_sha256": {"$ref": "#/$defs/digest"},
+    "pdf_gate_sha256": {"$ref": "#/$defs/digest"},
+    "pdf_path": {"const": "master-reference.pdf"},
+    "pdf_sha256": {"$ref": "#/$defs/digest"},
+    "pdf_bytes": {"type": "integer", "minimum": 8, "maximum": 9007199254740991},
+    "pdf_page_count": {"type": "integer", "minimum": 1, "maximum": 10000},
+    "pdf_input_digest": {"$ref": "#/$defs/digest"},
+    "render_profile": {"$ref": "#/$defs/renderProfile"},
+    "render_profile_digest": {"$ref": "#/$defs/digest"},
+    "page_reviews": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10000,
+      "items": {"$ref": "#/$defs/pageReview"}
+    },
+    "page_reviews_digest": {"$ref": "#/$defs/digest"},
+    "rendered_page_count": {"type": "integer", "minimum": 1, "maximum": 10000},
+    "reviewed_page_count": {"type": "integer", "minimum": 0, "maximum": 10000},
+    "passed_page_count": {"type": "integer", "minimum": 0, "maximum": 10000},
+    "blocked_page_count": {"type": "integer", "minimum": 0, "maximum": 10000},
+    "checks": {"$ref": "#/$defs/checks"},
+    "checks_digest": {"$ref": "#/$defs/digest"},
+    "verdict": {"enum": ["PASS", "BLOCK"]},
+    "review_evidence_sha256": {"$ref": "#/$defs/digest"},
+    "accessibility_disposition": {"const": "abstain_not_established"},
+    "binary_privacy_disposition": {"const": "abstain_not_established"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "gitOid": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "renderProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["renderer", "renderer_version", "dpi", "output_format", "page_scope", "color_mode"],
+      "properties": {
+        "renderer": {"const": "pdftoppm"},
+        "renderer_version": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "\\S"},
+        "dpi": {"const": 144},
+        "output_format": {"const": "png"},
+        "page_scope": {"const": "all_pages"},
+        "color_mode": {"const": "default"}
+      }
+    },
+    "pageReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["page_number", "render_sha256", "render_bytes", "review_verdict"],
+      "properties": {
+        "page_number": {"type": "integer", "minimum": 1, "maximum": 10000},
+        "render_sha256": {"$ref": "#/$defs/digest"},
+        "render_bytes": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "review_verdict": {"enum": ["pass", "block", "not_reviewed"]}
+      }
+    },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["all_pages_rendered", "all_pages_reviewed", "no_clipped_or_overflowing_content", "no_overlapping_content", "text_and_glyphs_legible", "tables_and_figures_legible", "headers_footers_and_page_numbers_consistent", "section_transitions_and_visible_content_reconciled"],
+      "properties": {
+        "all_pages_rendered": {"enum": ["pass", "block"]},
+        "all_pages_reviewed": {"enum": ["pass", "block"]},
+        "no_clipped_or_overflowing_content": {"enum": ["pass", "block"]},
+        "no_overlapping_content": {"enum": ["pass", "block"]},
+        "text_and_glyphs_legible": {"enum": ["pass", "block"]},
+        "tables_and_figures_legible": {"enum": ["pass", "block"]},
+        "headers_footers_and_page_numbers_consistent": {"enum": ["pass", "block"]},
+        "section_transitions_and_visible_content_reconciled": {"enum": ["pass", "block"]}
+      }
+    }
+  }
+}

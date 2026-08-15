@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.local/schema/pdf-reviewer-key-policy/1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "policy_kind", "policy_revision", "keys"],
+  "properties": {
+    "schema_version": {"const": "pdf-reviewer-key-policy/1"},
+    "policy_kind": {"const": "external_ed25519_pdf_review_key_allowlist"},
+    "policy_revision": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+    "keys": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/key"}
+    }
+  },
+  "$defs": {
+    "fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["purpose", "target_schema_version", "reviewer_role"],
+      "properties": {
+        "purpose": {"const": "pdf_visual_review"},
+        "target_schema_version": {"const": "pdf-review/1"},
+        "reviewer_role": {"const": "pdf_visual_verifier"}
+      }
+    },
+    "key": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["public_key_fingerprint", "reviewer_kind", "independent_from_proposer", "independent_from_pdf_producer", "independent_from_release_builder", "authorizations"],
+      "properties": {
+        "public_key_fingerprint": {"$ref": "#/$defs/fingerprint"},
+        "reviewer_kind": {"const": "independent_agent"},
+        "independent_from_proposer": {"const": true},
+        "independent_from_pdf_producer": {"const": true},
+        "independent_from_release_builder": {"const": true},
+        "authorizations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/authorization"}
+        }
+      }
+    }
+  }
+}

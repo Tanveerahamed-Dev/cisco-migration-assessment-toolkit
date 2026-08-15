@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import binascii
+import io
 import json
 import os
 import re
@@ -48,6 +49,8 @@ from release.model import (  # noqa: E402
 import release.pipeline as release_pipeline  # noqa: E402
 import release.compiler_bundle as compiler_bundle  # noqa: E402
 from release.pipeline import ReleaseError, build_release  # noqa: E402
+import release.pdf_review as pdf_review_module  # noqa: E402
+from release.pdf_review import PdfReviewError, load_pdf_review_subject  # noqa: E402
 from release.sbom import NPM_LOCKFILES, PYTHON_DECLARATIONS, build_cyclonedx  # noqa: E402
 from release.signing import sign_manifest, verify_artifact_family, verify_manifest  # noqa: E402
 from release.schema_validation import validate_release_object  # noqa: E402
@@ -74,6 +77,55 @@ def _captured_pdf_provenance(gate: dict[str, object]) -> dict[str, object] | Non
     if gate.get("status") != "generated_visual_review_pending":
         return None
     return {field: gate[field] for field in _PDF_PROVENANCE_FIELDS}
+
+
+def _update_family_receipt(rows: object, relative: str, raw: bytes) -> None:
+    assert isinstance(rows, list)
+    matches = [row for row in rows if isinstance(row, dict) and row.get("path") == relative]
+    assert len(matches) == 1
+    matches[0]["bytes"] = len(raw)
+    matches[0]["sha256"] = sha256_bytes(raw)
+
+
+def _rechain_changed_pre_attestation_members(output: Path, changed: tuple[str, ...]) -> None:
+    attestation_path = output / "family-attestation.json"
+    attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+    for relative in changed:
+        _update_family_receipt(
+            attestation["covered_receipts"],
+            relative,
+            (output / relative).read_bytes(),
+        )
+    attestation_raw = canonical_json(attestation)
+    attestation_path.write_bytes(attestation_raw)
+
+    inventory_path = output / "artifact-inventory.json"
+    inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+    for relative in (*changed, "family-attestation.json"):
+        _update_family_receipt(inventory["artifacts"], relative, (output / relative).read_bytes())
+    inventory_raw = canonical_json(inventory)
+    inventory_path.write_bytes(inventory_raw)
+
+    manifest_path = output / "release-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for relative in (*changed, "family-attestation.json", "artifact-inventory.json"):
+        _update_family_receipt(manifest["artifacts"], relative, (output / relative).read_bytes())
+    manifest_path.write_bytes(canonical_json(manifest))
+
+
+def _rechain_changed_attestation(output: Path) -> None:
+    inventory_path = output / "artifact-inventory.json"
+    inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+    attestation_raw = (output / "family-attestation.json").read_bytes()
+    _update_family_receipt(inventory["artifacts"], "family-attestation.json", attestation_raw)
+    inventory_raw = canonical_json(inventory)
+    inventory_path.write_bytes(inventory_raw)
+
+    manifest_path = output / "release-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    _update_family_receipt(manifest["artifacts"], "family-attestation.json", attestation_raw)
+    _update_family_receipt(manifest["artifacts"], "artifact-inventory.json", inventory_raw)
+    manifest_path.write_bytes(canonical_json(manifest))
 
 
 def test_release_schema_boundary_rejects_hostile_non_json_without_echo() -> None:
@@ -3567,7 +3619,6 @@ def test_release_can_generate_source_bound_pdf_but_keeps_review_blocked(tmp_path
     _assert_pdf_gate_receipt_digest_tamper_rejected(repo, gate)
     _assert_pdf_gate_generated_source_oids_pinned(repo, gate)
     _assert_pdf_gate_core_source_oid_tamper_rejected(repo, gate)
-
     provenance_tampers = {
         "sha256": "7" * 64,
         "bytes": gate["bytes"] + 1,
@@ -3700,6 +3751,178 @@ def _assert_generated_pdf_receipts_bound(repo: Path, gate: dict[str, object]) ->
             with pytest.raises(ReleaseInputError) as failure:
                 validate_release_object(repo, "pdf-gate", hostile, pdf_provenance=provenance)
             assert str(failure.value) == "release object fails pdf-gate observed PDF sink receipt binding"
+
+
+def test_detached_pdf_review_subject_binds_generated_family_without_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("reportlab")
+    pytest.importorskip("pypdf")
+    repo, compiler = _fixture_repo(tmp_path)
+    output = tmp_path / "release"
+    manifest = build_release(repo, compiler, output, generate_pdf=True)
+
+    def family_ledger() -> tuple[tuple[str, int, str], ...]:
+        return tuple(
+            sorted(
+                (
+                    path.relative_to(output).as_posix(),
+                    len(raw := path.read_bytes()),
+                    sha256_bytes(raw),
+                )
+                for path in output.iterdir()
+                if path.is_file()
+            )
+        )
+
+    before = family_ledger()
+    subject = load_pdf_review_subject(repo, output / "release-manifest.json")
+    after = family_ledger()
+    gate = json.loads((output / "pdf-gate.json").read_text(encoding="utf-8"))
+
+    assert after == before
+    assert subject.source_commit == manifest["source_binding"]["source_commit"]
+    assert subject.head_tree_oid == manifest["source_binding"]["head_tree_oid"]
+    assert subject.index_digest == manifest["source_binding"]["index_digest"]
+    assert subject.source_tree_digest == manifest["source_binding"]["source_tree_digest"]
+    assert subject.release_manifest_sha256 == sha256_bytes(
+        (output / "release-manifest.json").read_bytes()
+    )
+    assert subject.family_attestation_sha256 == sha256_bytes(
+        (output / "family-attestation.json").read_bytes()
+    )
+    assert subject.pdf_gate_sha256 == sha256_bytes((output / "pdf-gate.json").read_bytes())
+    assert subject.pdf_sha256 == gate["sha256"]
+    assert subject.pdf_bytes == gate["bytes"]
+    assert subject.pdf_page_count == gate["page_count"]
+    assert subject.pdf_input_digest == gate["input_digest"]
+    assert subject.release_status == "unsigned_preview_incomplete"
+    assert subject.publication_status == "not_authorized"
+    assert subject.family_independent_verification_verdict == "BLOCK"
+    assert subject.pdf_gate_status == "generated_visual_review_pending"
+    assert subject.pdf_gate_independent_verification_verdict == "BLOCK"
+
+    link_root = tmp_path / "linked-family"
+    link_root.mkdir()
+    linked_manifest = link_root / "release-manifest.json"
+    try:
+        linked_manifest.symlink_to(output / "release-manifest.json")
+    except OSError:
+        pass
+    else:
+        with pytest.raises(PdfReviewError) as symlinked:
+            load_pdf_review_subject(repo, linked_manifest)
+        assert symlinked.value.code == "pdf_review_family_invalid"
+
+    manifest_path = output / "release-manifest.json"
+    manifest_raw = manifest_path.read_bytes()
+    with monkeypatch.context() as bounded:
+        bounded.setattr(pdf_review_module, "_MAX_FAMILY_JSON_BYTES", len(manifest_raw) - 1)
+        with pytest.raises(PdfReviewError) as oversized_manifest:
+            load_pdf_review_subject(repo, manifest_path)
+    assert oversized_manifest.value.code == "pdf_review_family_invalid"
+    with monkeypatch.context() as bounded:
+        bounded.setattr(pdf_review_module, "_MAX_FAMILY_ARTIFACT_BYTES", 0)
+        with pytest.raises(PdfReviewError) as oversized_artifact:
+            load_pdf_review_subject(repo, manifest_path)
+    assert oversized_artifact.value.code == "pdf_review_family_invalid"
+
+    for field, contradictory in (
+        ("pdf", "generated_visual_review_complete"),
+        ("independent_visual_review", "passed"),
+        ("ed25519_signature", "passed"),
+        ("binary_output_privacy_review", "passed"),
+        ("public_publication_authority", "granted"),
+    ):
+        hostile_manifest = json.loads(manifest_raw.decode("utf-8"))
+        hostile_manifest["gates"][field] = contradictory
+        manifest_path.write_bytes(canonical_json(hostile_manifest))
+        with pytest.raises(PdfReviewError) as contradictory_gate:
+            load_pdf_review_subject(repo, manifest_path)
+        assert contradictory_gate.value.code == "pdf_review_family_invalid"
+        manifest_path.write_bytes(manifest_raw)
+
+    attestation_path = output / "family-attestation.json"
+    inventory_path = output / "artifact-inventory.json"
+    exact_attestation = attestation_path.read_bytes()
+    exact_inventory = inventory_path.read_bytes()
+    attestation = json.loads(exact_attestation.decode("utf-8"))
+    attestation["output_contract"]["expected_members"] = ["master-reference.pdf"]
+    attestation["covered_receipts"] = [
+        row for row in attestation["covered_receipts"] if row["path"] == "master-reference.pdf"
+    ]
+    attestation_path.write_bytes(canonical_json(attestation))
+    _rechain_changed_attestation(output)
+    with pytest.raises(PdfReviewError) as incomplete_attestation:
+        load_pdf_review_subject(repo, manifest_path)
+    assert incomplete_attestation.value.code == "pdf_review_family_invalid"
+    attestation_path.write_bytes(exact_attestation)
+    inventory_path.write_bytes(exact_inventory)
+    manifest_path.write_bytes(manifest_raw)
+
+    pdf_path = output / "master-reference.pdf"
+    exact_pdf = pdf_path.read_bytes()
+    pdf_path.write_bytes(exact_pdf + b"hostile-trailing-byte")
+    with pytest.raises(PdfReviewError) as tampered:
+        load_pdf_review_subject(repo, manifest_path)
+    assert tampered.value.code == "pdf_review_family_invalid"
+    pdf_path.write_bytes(exact_pdf)
+
+    pypdf = pytest.importorskip("pypdf")
+    writer = pypdf.PdfWriter()
+    for _ in range(subject.pdf_page_count):
+        writer.add_blank_page(width=595, height=842)
+    writer.add_metadata(
+        {
+            "/Title": "Unrelated PDF",
+            "/Author": "Untrusted producer",
+            "/Subject": "not source bound",
+        }
+    )
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    unrelated_pdf = buffer.getvalue()
+    pdf_path.write_bytes(unrelated_pdf)
+    gate_path = output / "pdf-gate.json"
+    gate = json.loads(gate_path.read_text(encoding="utf-8"))
+    old_pdf_digest = gate["sha256"]
+    new_pdf_digest = sha256_bytes(unrelated_pdf)
+    gate["sha256"] = new_pdf_digest
+    gate["bytes"] = len(unrelated_pdf)
+    gate["page_count"] = subject.pdf_page_count
+    for verification_name in (
+        "horizon_sink_mechanical_verification",
+        "capability_sink_mechanical_verification",
+        "core_sink_mechanical_verification",
+    ):
+        verification = gate[verification_name]
+        assert verification["pdf_sha256"] == old_pdf_digest
+        verification["pdf_sha256"] = new_pdf_digest
+        material = {
+            "verdict": verification["verdict"],
+            "pdf_sha256": verification["pdf_sha256"],
+            "observation_digest": verification["observation_digest"],
+            "rendered_observation_count": verification["rendered_observation_count"],
+            "safety_observation_count": verification["safety_observation_count"],
+        }
+        verification["verification_digest"] = sha256_bytes(canonical_json(material))
+    gate_path.write_bytes(canonical_json(gate))
+    _rechain_changed_pre_attestation_members(
+        output,
+        ("master-reference.pdf", "pdf-gate.json"),
+    )
+    with monkeypatch.context() as source_check_bypassed:
+        source_check_bypassed.setattr(
+            pdf_review_module,
+            "_inspect_source_bound_pdf",
+            lambda *_args, **_kwargs: SimpleNamespace(page_count=subject.pdf_page_count),
+        )
+        rechained = load_pdf_review_subject(repo, manifest_path)
+    assert rechained.pdf_sha256 == new_pdf_digest
+    with pytest.raises(PdfReviewError) as unrelated:
+        load_pdf_review_subject(repo, manifest_path)
+    assert unrelated.value.code == "pdf_review_family_invalid"
 
 
 def test_release_executes_all_declared_sink_lineages_for_all_pdf_branches(tmp_path: Path) -> None:
