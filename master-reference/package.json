@@ -12,9 +12,9 @@
     "postbuild": "node build/finalize-deployment.mjs",
     "start": "vinext start",
     "test": "npm run typecheck && npm run test:contracts && npm run build && node --test tests/rendered-html.test.mjs",
-    "test:contracts": "node --test tests/content/catalog-validation.test.mjs tests/source/projection.test.mjs tests/source/compress-projection.test.mjs tests/source/deployment-manifest.test.mjs",
+    "test:contracts": "node --test tests/content/catalog-validation.test.mjs tests/source/bounded-image-size.test.mjs tests/source/projection.test.mjs tests/source/compress-projection.test.mjs tests/source/deployment-manifest.test.mjs",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint --deny-warnings --react-plugin --jsx-a11y-plugin --nextjs-plugin --import-plugin --node-plugin app worker build tests vite.config.ts next.config.ts"
+    "lint": "oxlint --deny-warnings --react-plugin --jsx-a11y-plugin --nextjs-plugin --import-plugin --node-plugin app worker build tests vendor vite.config.ts next.config.ts"
   },
   "dependencies": {
     "next": "16.2.12",
@@ -42,6 +42,9 @@
     "next": {
       "postcss": "8.5.25",
       "sharp": "0.35.3"
+    },
+    "vinext@0.0.50": {
+      "image-size": "file:vendor/bounded-image-size"
     }
   },
   "type": "module"

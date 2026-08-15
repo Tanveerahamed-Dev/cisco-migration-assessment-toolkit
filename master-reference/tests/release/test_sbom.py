@@ -286,9 +286,13 @@ def test_local_package_and_link_records_are_separate_from_distribution_bound_row
     sources = _sources(npm_dependency=None)
     sources[NPM_LOCKFILES[0]] = _local_link_lock("first-workspace")
     sources[NPM_LOCKFILES[1]] = _local_link_lock("second-workspace")
+    sources["master-reference/packages/local-library/index.js"] = b"export const local = true;\n"
+    sources["webapp/frontend/packages/local-library/index.js"] = b"export const local = true;\n"
     sbom = build_cyclonedx(sources, "a" * 40, "b" * 64)
     properties = _properties(sbom)
-    kinds = [component_properties["atlas:recordKind"] for _, component_properties in _component_properties(sbom)]
+    component_rows = _component_properties(sbom)
+    kinds = [component_properties["atlas:recordKind"] for _, component_properties in component_rows]
+    local_packages = [row for row in component_rows if row[1]["atlas:recordKind"] == "local-package-record"]
 
     assert kinds.count("local-link-record") == 2
     assert kinds.count("local-package-record") == 2
@@ -298,6 +302,53 @@ def test_local_package_and_link_records_are_separate_from_distribution_bound_row
     assert properties["atlas:npmDistributionBoundThirdPartyRecords"] == "0"
     assert properties["atlas:resolvedThirdPartyComponentDenominator"] == "0"
     assert properties["atlas:componentGraphDisconnected"] == "0"
+    assert len(local_packages) == 2
+    assert all(row[1]["atlas:localPackageSourceFiles"] == "1" for row in local_packages)
+    assert all(row[1]["atlas:localPackageSourceBytes"] == "27" for row in local_packages)
+    assert all(len(row[1]["atlas:localPackageSourceDigest"]) == 64 for row in local_packages)
+
+
+def test_repository_owned_license_ref_is_accepted_only_for_local_npm_packages() -> None:
+    for license_value, expected_status in (
+        ("LicenseRef-Proprietary", "accepted-repository-governed-license-ref"),
+        ("LicenseRef-Untrusted", "rejected-unvalidated-syntax"),
+    ):
+        sources = _sources(npm_dependency=None)
+        lock = json.loads(_local_link_lock("first-workspace"))
+        lock["packages"]["packages/local-library"]["license"] = license_value
+        sources[NPM_LOCKFILES[0]] = json.dumps(lock, sort_keys=True).encode("utf-8")
+        sources["master-reference/packages/local-library/index.js"] = b"export const local = true;\n"
+        sbom = build_cyclonedx(sources, "a" * 40, "b" * 64)
+        target, properties = next(
+            row
+            for row in _component_properties(sbom)
+            if row[1].get("atlas:lockfile") == NPM_LOCKFILES[0]
+            and row[1].get("atlas:recordKind") == "local-package-record"
+        )
+
+        assert properties["atlas:npmLicenseDeclarationStatus"] == expected_status
+        if license_value == "LicenseRef-Proprietary":
+            assert target["licenses"] == [{"expression": "LicenseRef-Proprietary"}]
+        else:
+            assert "licenses" not in target
+
+
+def test_repository_owned_license_ref_is_rejected_without_tracked_local_source() -> None:
+    sources = _sources(npm_dependency=None)
+    lock = json.loads(_local_link_lock("first-workspace"))
+    lock["packages"]["packages/local-library"]["license"] = "LicenseRef-Proprietary"
+    sources[NPM_LOCKFILES[0]] = json.dumps(lock, sort_keys=True).encode("utf-8")
+    sbom = build_cyclonedx(sources, "a" * 40, "b" * 64)
+    target, properties = next(
+        row
+        for row in _component_properties(sbom)
+        if row[1].get("atlas:lockfile") == NPM_LOCKFILES[0]
+        and row[1].get("atlas:recordKind") == "local-package-record"
+    )
+
+    assert properties["atlas:npmLicenseDeclarationStatus"] == "rejected-unvalidated-syntax"
+    assert "atlas:localPackageSourceDigest" not in properties
+    assert "licenses" not in target
 
 
 def test_non_expression_project_license_stays_explicitly_unknown() -> None:

@@ -35,6 +35,26 @@ remains static and dependency-light. Oxlint enforces correctness,
 accessibility, import, Node.js, React, and Next.js rules with warnings treated
 as failures. The audit covers runtime and build-time dependencies.
 
+### Image metadata dependency boundary
+
+Vinext 0.0.50's exact `image-size` edge is overridden to the private, tracked
+`vendor/bounded-image-size` package. Its parser snapshots at most 512 bytes,
+validates bounded PNG IHDR metadata, recognizes only a quote-balanced and
+terminated SVG root marker, and rejects every other image family. Contract
+tests resolve the dependency from Vinext's own module location, bind the exact
+lock and local-package source receipt, exercise real tracked PNG/SVG assets,
+reject static image imports and metadata-route files across the exact Git-owned
+JS/TS path set, and run hostile inputs in watchdog subprocesses.
+
+This is a narrow Vinext-edge replacement, not an advisory waiver. Next 16.2.12
+contains compiled image-parser code that npm overrides cannot replace,
+including an image-size implementation for which exact ICNS and JXL inputs
+demonstrate zero-progress behavior in isolated watchdogs. The related compiled
+detector bundle is present, but this contract does not claim its runtime
+reachability. The release pipeline keeps that residual and the missing
+external source-authenticated applicability/VEX review explicitly blocked even
+when an offline npm audit reports no registry finding.
+
 Production builds also create a lossless Sites packaging profile. The canonical
 projection and compression JSON receipts remain byte-for-byte reconstructable,
 but `dist` stores only their deterministic `.json.gz` representations; the

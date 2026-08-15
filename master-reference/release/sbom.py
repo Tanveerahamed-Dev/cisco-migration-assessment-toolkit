@@ -53,6 +53,31 @@ _NPM_LICENSE_ATOMS = frozenset(
         "MPL-2.0",
     }
 )
+
+
+def _local_package_source_receipt(
+    source_files: Mapping[str, bytes],
+    lockfile: str,
+    node_path: str,
+) -> tuple[str, int, int] | None:
+    lock_parent = PurePosixPath(lockfile).parent
+    package_root = (lock_parent / PurePosixPath(node_path)).as_posix()
+    if package_root.startswith("./"):
+        package_root = package_root[2:]
+    prefix = f"{package_root}/"
+    rows = [
+        {
+            "bytes": len(value),
+            "path": path,
+            "sha256": hashlib.sha256(value).hexdigest(),
+        }
+        for path, value in sorted(source_files.items())
+        if path.startswith(prefix)
+    ]
+    if not rows:
+        return None
+    encoded = json.dumps(rows, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8") + b"\n"
+    return hashlib.sha256(encoded).hexdigest(), len(rows), sum(int(row["bytes"]) for row in rows)
 _NPM_LICENSE_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]*")
 _NPM_SRI = re.compile(
     r"(?:sha256|sha384|sha512)-[A-Za-z0-9+/]+={0,2}"
@@ -316,6 +341,18 @@ def _npm_components(
                 {"name": "atlas:recordKind", "value": record_kind},
                 {"name": "atlas:distributionEvidenceStatus", "value": distribution_evidence},
             ]
+            local_source: tuple[str, int, int] | None = None
+            if record_kind == "local-package-record":
+                local_source = _local_package_source_receipt(source_files, relative, node_path)
+                if local_source is not None:
+                    source_digest, source_count, source_bytes = local_source
+                    properties.extend(
+                        [
+                            {"name": "atlas:localPackageSourceDigest", "value": source_digest},
+                            {"name": "atlas:localPackageSourceFiles", "value": str(source_count)},
+                            {"name": "atlas:localPackageSourceBytes", "value": str(source_bytes)},
+                        ]
+                    )
             if node_path == "":
                 properties.append(
                     {
@@ -334,6 +371,13 @@ def _npm_components(
                 component["version"] = version
                 component["purl"] = _purl_npm(name, version)
             license_expression, license_declaration_status = _npm_license_declaration(item.get("license"))
+            if (
+                record_kind == "local-package-record"
+                and local_source is not None
+                and item.get("license") == PROJECT_LICENSE_EXPRESSION
+            ):
+                license_expression = PROJECT_LICENSE_EXPRESSION
+                license_declaration_status = "accepted-repository-governed-license-ref"
             component["properties"].append(
                 {
                     "name": "atlas:npmLicenseDeclarationStatus",

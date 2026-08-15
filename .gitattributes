@@ -64,6 +64,11 @@ webapp/frontend/index.html text eol=lf
 # Windows and Linux builds feed the same header rules into the Sites archive.
 master-reference/public/_headers text eol=lf
 
+# The bounded image parser is a byte-bound local package. Its SBOM source
+# receipt is computed over selected Git blobs, so every checkout must
+# materialize the same LF bytes for local verification and package tests.
+master-reference/vendor/bounded-image-size/** text eol=lf
+
 # Local source archives are allowlisted for product source, not engagement or
 # operator-state material. This does not rewrite Git history; it prevents
 # accidental inclusion by `git archive` while the tracked corpus is sanitized.

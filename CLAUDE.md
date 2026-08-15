@@ -102,14 +102,17 @@ converted into signed evidence, and no accepted PDF-review envelope is currently
 hashes and render profile are reviewer assertions: v1 does not ingest PNG bytes or independently rerender
 the PDF, so it does not establish PDF-to-PNG provenance.
 
-The 2026-08-09 dependency audit is also an explicit release boundary, not a silent waiver. Nano ID is
-locked to the patched 3.3.18 line through both the Master Reference and AssessHub npm overrides.
-`image-size@2.0.2`, pulled
-only through the Vinext build tool in the current tree, remains affected by `GHSA-5p2g-fcmc-qvqq` and
-`GHSA-w3rx-r6r6-pgpr`; the current npm registry and advisory records expose no patched release. The
-owner-only private preview may be rebuilt from trusted exact-tree inputs while this is visible, but public
-release remains blocked. Do not suppress the audit or downgrade the framework as a substitute for an
-upstream patch, independently verified replacement, and fresh applicability review.
+The dependency audit is also an explicit release boundary, not a silent waiver. Nano ID is locked to the
+patched 3.3.18 line through both the Master Reference and AssessHub npm overrides. Vinext 0.0.50's exact
+`image-size` edge is now scoped to the tracked `@atlas/bounded-image-size` package, whose source-bound
+PNG/SVG-only parser rejects the advisory-named HEIF, JXL and ICNS families and every other unsupported
+format. The source contract rejects static image imports, numbered metadata-route images and `next/image`
+entry points until they have a bounded owner. This removes the affected registry package from that Vinext
+edge, but it is not release closure: Next 16.2.12 independently embeds compiled parser code outside npm
+override resolution, including an image-size implementation for which mutation-effective watchdogs
+preserve the known ICNS/JXL zero-progress finding. The release gate therefore remains blocked pending removal or authoritative assessment of that
+vendored residual plus a fresh source-authenticated applicability/VEX review. A zero-result npm audit does
+not supersede this owner. Do not suppress the gate or downgrade the framework as a substitute for evidence.
 
 ## Shared Git and host operating doctrine
 

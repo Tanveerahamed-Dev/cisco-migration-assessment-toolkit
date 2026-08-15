@@ -71,6 +71,15 @@ MEDIA_TYPES = {
 
 TEXT_SCAN_SUFFIXES = frozenset({".json", ".md", ".html", ".txt"})
 
+_BOUNDED_IMAGE_LOCKFILE = "master-reference/package-lock.json"
+_BOUNDED_IMAGE_MANIFEST = "master-reference/package.json"
+_BOUNDED_IMAGE_TARGET = "vendor/bounded-image-size"
+_BOUNDED_IMAGE_SOURCE_PREFIX = "master-reference/vendor/bounded-image-size/"
+# Updated only after reviewing every tracked file under the source prefix.
+_BOUNDED_IMAGE_PACKAGE_SOURCE_DIGEST = "65078d74a80fed5bc34cace43cbe0fc1103c11abc86cf90a08dcbf9e8d980f7f"
+_BOUNDED_IMAGE_PACKAGE_SOURCE_FILES = "4"
+_BOUNDED_IMAGE_PACKAGE_SOURCE_BYTES = "6787"
+
 PLANNED_ALWAYS_MEMBERS = frozenset(
     {
         "atlas-reference.json",
@@ -161,16 +170,126 @@ def _is_affected_nanoid(value: object) -> bool:
     return before_3_3_17 < 0 or (from_4_0_0 >= 0 and before_5_1_6 < 0)
 
 
+def _sbom_component_properties(component: dict[str, Any]) -> dict[str, str]:
+    properties: dict[str, str] = {}
+    for item in component.get("properties", []):
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        value = item.get("value")
+        if isinstance(name, str) and isinstance(value, str) and name not in properties:
+            properties[name] = value
+    return properties
+
+
+def _verified_bounded_image_replacement_aliases(sbom: dict[str, Any]) -> set[str]:
+    components = {
+        component.get("bom-ref"): component
+        for component in sbom.get("components", [])
+        if isinstance(component, dict) and isinstance(component.get("bom-ref"), str)
+    }
+    dependencies = {
+        row.get("ref"): row.get("dependsOn")
+        for row in sbom.get("dependencies", [])
+        if isinstance(row, dict) and isinstance(row.get("ref"), str) and isinstance(row.get("dependsOn"), list)
+    }
+    inbound: dict[str, set[str]] = {}
+    for source_ref, target_refs in dependencies.items():
+        if not isinstance(target_refs, list):
+            continue
+        for target_ref in target_refs:
+            if isinstance(target_ref, str):
+                inbound.setdefault(target_ref, set()).add(source_ref)
+    verified: set[str] = set()
+    for alias_ref, component in components.items():
+        properties = _sbom_component_properties(component)
+        if not (
+            component.get("name") == "image-size"
+            and "version" not in component
+            and properties.get("atlas:lockfile") == "master-reference/package-lock.json"
+            and properties.get("atlas:lockfilePath") == "node_modules/image-size"
+            and properties.get("atlas:recordKind") == "local-link-record"
+            and properties.get("atlas:resolution") == "lockfile-local-link"
+        ):
+            continue
+        target_refs = dependencies.get(alias_ref)
+        if not isinstance(target_refs, list) or len(target_refs) != 1 or not isinstance(target_refs[0], str):
+            continue
+        target = components.get(target_refs[0])
+        if target is None:
+            continue
+        vinext_refs = {
+            ref
+            for ref, candidate in components.items()
+            if candidate.get("name") == "vinext"
+            and candidate.get("version") == "0.0.50"
+            and candidate.get("externalReferences")
+            == [{"type": "distribution", "url": "https://registry.npmjs.org/vinext/-/vinext-0.0.50.tgz"}]
+            and _sbom_component_properties(candidate).get("atlas:lockfile")
+            == "master-reference/package-lock.json"
+            and _sbom_component_properties(candidate).get("atlas:lockfilePath") == "node_modules/vinext"
+            and _sbom_component_properties(candidate).get("atlas:recordKind")
+            == "resolved-third-party-component"
+            and _sbom_component_properties(candidate).get("atlas:npmIntegrity")
+            == "sha512-uo72YNnq94NtogETWnhMdFSrkMLwWgeXh5PS6qh8ksajuvAaZX50bXYJ4a6dERQ/AnnXAlNByAGHCjjNxQrvig=="
+        }
+        if len(vinext_refs) != 1 or inbound.get(alias_ref, set()) != vinext_refs:
+            continue
+        if inbound.get(target_refs[0], set()) != {alias_ref}:
+            continue
+        target_properties = _sbom_component_properties(target)
+        if not (
+            target.get("group") == "@atlas"
+            and target.get("name") == "bounded-image-size"
+            and target.get("version") == "1.0.0"
+            and target_properties.get("atlas:lockfile") == "master-reference/package-lock.json"
+            and target_properties.get("atlas:lockfilePath") == "vendor/bounded-image-size"
+            and target_properties.get("atlas:recordKind") == "local-package-record"
+            and target_properties.get("atlas:resolution") == "lockfile-local-package"
+            and target_properties.get("atlas:localPackageSourceDigest")
+            == _BOUNDED_IMAGE_PACKAGE_SOURCE_DIGEST
+            and target_properties.get("atlas:localPackageSourceFiles")
+            == _BOUNDED_IMAGE_PACKAGE_SOURCE_FILES
+            and target_properties.get("atlas:localPackageSourceBytes")
+            == _BOUNDED_IMAGE_PACKAGE_SOURCE_BYTES
+            and target.get("licenses") == [{"expression": "LicenseRef-Proprietary"}]
+        ):
+            continue
+        verified.add(alias_ref)
+    return verified if len(verified) == 1 else set()
+
+
 def _dependency_vulnerability_assessment(sbom: dict[str, Any]) -> tuple[str, list[str]]:
     """Describe the tracked dependency state without pretending an SBOM is a VEX."""
 
     components = sbom.get("components", [])
+    bounded_image_aliases = _verified_bounded_image_replacement_aliases(sbom)
+    next_vendored_image_parser = any(
+        isinstance(component, dict)
+        and component.get("name") == "next"
+        and component.get("version") == "16.2.12"
+        and component.get("externalReferences")
+        == [{"type": "distribution", "url": "https://registry.npmjs.org/next/-/next-16.2.12.tgz"}]
+        and _sbom_component_properties(component).get("atlas:lockfile")
+        == "master-reference/package-lock.json"
+        and _sbom_component_properties(component).get("atlas:lockfilePath") == "node_modules/next"
+        and _sbom_component_properties(component).get("atlas:recordKind")
+        == "resolved-third-party-component"
+        and _sbom_component_properties(component).get("atlas:npmIntegrity")
+        == "sha512-iD59eYQWmbFcEbX7v/acG5DRym9iw1DdaPoD0WTA920naWsE25wShzJW4+UvAs8MK9EC2kBfIH6vtto1H1PHGw=="
+        for component in components
+    )
     affected_image_size_versions = sorted(
         {
-            str(component.get("version"))
+            (
+                str(component.get("version"))
+                if component.get("version") is not None
+                else "<unversioned-local-link>"
+            )
             for component in components
             if isinstance(component, dict)
             and component.get("name") == "image-size"
+            and component.get("bom-ref") not in bounded_image_aliases
             and (
                 (comparison := _semver_compare_to_stable(component.get("version"), (2, 0, 2))) is None
                 or comparison <= 0
@@ -206,19 +325,37 @@ def _dependency_vulnerability_assessment(sbom: dict[str, Any]) -> tuple[str, lis
             "Build-time-only reachability does not waive the finding; update every owning lockfile "
             "to a patched version before treating the dependency assessment as current."
         )
+    if bounded_image_aliases:
+        limits.append(
+            "The Vinext image-size dependency edge resolves to the tracked local "
+            "@atlas/bounded-image-size 1.0.0 package. That package bounds its accepted buffer and "
+            "dimensions, validates PNG IHDR metadata, recognizes only a bounded SVG prefix, and "
+            "rejects every other image family. It removes the advisory-named HEIF, JXL and ICNS "
+            "parsers from that Vinext edge; JP2 and JPEG are independently unsupported. The tracked "
+            "source/lock binding and tests exercise the local replacement behavior, but they are not "
+            "an externally source-authenticated current advisory or applicability/VEX review."
+        )
+    if next_vendored_image_parser:
+        limits.append(
+            "Next 16.2.12 contains a separate compiled image-size implementation outside npm override "
+            "resolution, including the zero-progress ICNS parser covered by GHSA-w3rx-r6r6-pgpr. "
+            "Current source contracts reject next/image imports, but reachability is not a vulnerability "
+            "waiver; replace or independently assess "
+            "the vendored parser before release."
+        )
     if affected_image_size_versions and affected_nanoid_versions:
         return "blocked_multiple_unremediated_high_dependency_advisories", limits
     if affected_image_size_versions:
         return "blocked_image_size_unpatched_build_time_high_advisories", limits
     if affected_nanoid_versions:
         return "blocked_nanoid_unremediated_high_advisory", limits
-    return (
-        "blocked_external_current_advisory_applicability_review_required",
-        [
-            "SBOM inventory does not assert vulnerability absence; a current source-authenticated "
-            "advisory and applicability/VEX review is not embedded in this release."
-        ],
+    limits.append(
+        "SBOM inventory does not assert vulnerability absence; a current source-authenticated "
+        "advisory and applicability/VEX review is not embedded in this release."
     )
+    if next_vendored_image_parser:
+        return "blocked_next_vendored_image_parser_and_external_review_required", limits
+    return "blocked_external_current_advisory_applicability_review_required", limits
 
 
 def _artifact(root: Path, relative: str, value: bytes, role: str) -> dict[str, Any]:
@@ -275,10 +412,44 @@ def _validate_output_contract(content: Any, *, pdf_included: bool) -> set[str]:
 
 
 def _dependency_sources(repo_root: Path, bundle: CompilerBundle) -> dict[str, bytes]:
-    return {
+    sources = {
         relative: read_bound_source_blob(repo_root, bundle, relative)
         for relative in sorted(set(NPM_LOCKFILES + PYTHON_DECLARATIONS))
     }
+    try:
+        lock = json.loads(sources[_BOUNDED_IMAGE_LOCKFILE].decode("utf-8", errors="strict"))
+        packages = lock.get("packages") if isinstance(lock, dict) else None
+        alias = packages.get("node_modules/image-size") if isinstance(packages, dict) else None
+    except (KeyError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ReleaseInputError("could not inspect the bounded image replacement lock binding") from exc
+    if isinstance(alias, dict) and alias.get("link") is True and alias.get("resolved") == _BOUNDED_IMAGE_TARGET:
+        manifest_raw = read_bound_source_blob(repo_root, bundle, _BOUNDED_IMAGE_MANIFEST)
+        try:
+            manifest = json.loads(manifest_raw.decode("utf-8", errors="strict"))
+            overrides = manifest.get("overrides") if isinstance(manifest, dict) else None
+            vinext_override = overrides.get("vinext@0.0.50") if isinstance(overrides, dict) else None
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ReleaseInputError("could not inspect the bounded image replacement manifest binding") from exc
+        if not (
+            isinstance(overrides, dict)
+            and isinstance(vinext_override, dict)
+            and vinext_override == {"image-size": "file:vendor/bounded-image-size"}
+            and "image-size" not in overrides
+        ):
+            raise ReleaseInputError("bounded image replacement override is not scoped to exact Vinext 0.0.50")
+        sources[_BOUNDED_IMAGE_MANIFEST] = manifest_raw
+        source_paths = sorted(
+            str(item.get("path"))
+            for item in bundle.records["files"]
+            if isinstance(item, dict)
+            and isinstance(item.get("path"), str)
+            and str(item["path"]).startswith(_BOUNDED_IMAGE_SOURCE_PREFIX)
+        )
+        if not source_paths:
+            raise ReleaseInputError("bounded image replacement has no source-bound package files")
+        for relative in source_paths:
+            sources[relative] = read_bound_source_blob(repo_root, bundle, relative)
+    return sources
 
 
 def _dependency_receipts(source_files: dict[str, bytes]) -> tuple[dict[str, Any], ...]:

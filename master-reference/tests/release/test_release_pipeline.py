@@ -1937,6 +1937,252 @@ def test_dependency_assessment_names_unpatched_image_size_advisories() -> None:
     assert "not a vulnerability waiver" in limits[0]
 
 
+def _bounded_image_replacement_sbom() -> dict[str, object]:
+    alias_ref = "bounded-image-alias"
+    target_ref = "bounded-image-target"
+    return {
+        "components": [
+            {
+                "bom-ref": alias_ref,
+                "group": "",
+                "name": "image-size",
+                "properties": [
+                    {"name": "atlas:lockfile", "value": "master-reference/package-lock.json"},
+                    {"name": "atlas:lockfilePath", "value": "node_modules/image-size"},
+                    {"name": "atlas:recordKind", "value": "local-link-record"},
+                    {"name": "atlas:resolution", "value": "lockfile-local-link"},
+                ],
+            },
+            {
+                "bom-ref": target_ref,
+                "group": "@atlas",
+                "name": "bounded-image-size",
+                "version": "1.0.0",
+                "licenses": [{"expression": "LicenseRef-Proprietary"}],
+                "properties": [
+                    {"name": "atlas:lockfile", "value": "master-reference/package-lock.json"},
+                    {"name": "atlas:lockfilePath", "value": "vendor/bounded-image-size"},
+                    {"name": "atlas:recordKind", "value": "local-package-record"},
+                    {"name": "atlas:resolution", "value": "lockfile-local-package"},
+                    {
+                        "name": "atlas:localPackageSourceDigest",
+                        "value": "65078d74a80fed5bc34cace43cbe0fc1103c11abc86cf90a08dcbf9e8d980f7f",
+                    },
+                    {"name": "atlas:localPackageSourceFiles", "value": "4"},
+                    {"name": "atlas:localPackageSourceBytes", "value": "6787"},
+                ],
+            },
+            {
+                "bom-ref": "vinext",
+                "group": "",
+                "name": "vinext",
+                "version": "0.0.50",
+                "externalReferences": [
+                    {"type": "distribution", "url": "https://registry.npmjs.org/vinext/-/vinext-0.0.50.tgz"}
+                ],
+                "properties": [
+                    {"name": "atlas:lockfile", "value": "master-reference/package-lock.json"},
+                    {"name": "atlas:lockfilePath", "value": "node_modules/vinext"},
+                    {"name": "atlas:recordKind", "value": "resolved-third-party-component"},
+                    {
+                        "name": "atlas:npmIntegrity",
+                        "value": "sha512-uo72YNnq94NtogETWnhMdFSrkMLwWgeXh5PS6qh8ksajuvAaZX50bXYJ4a6dERQ/AnnXAlNByAGHCjjNxQrvig==",
+                    },
+                ],
+            },
+            {"bom-ref": "nanoid", "name": "nanoid", "version": "3.3.18"},
+        ],
+        "dependencies": [
+            {"ref": alias_ref, "dependsOn": [target_ref]},
+            {"ref": target_ref, "dependsOn": []},
+            {"ref": "vinext", "dependsOn": [alias_ref]},
+        ],
+    }
+
+
+def test_dependency_assessment_recognizes_only_the_exact_source_bound_local_replacement() -> None:
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(_bounded_image_replacement_sbom())
+
+    assert gate == "blocked_external_current_advisory_applicability_review_required"
+    assert len(limits) == 2
+    assert "@atlas/bounded-image-size 1.0.0" in limits[0]
+    assert "not an externally source-authenticated" in limits[0]
+    assert "GHSA-5p2g-fcmc-qvqq" not in " ".join(limits)
+    assert "current source-authenticated advisory" in limits[1]
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        ("atlas:lockfilePath", "node_modules/not-image-size"),
+        ("atlas:localPackageSourceDigest", "0" * 64),
+        ("atlas:localPackageSourceFiles", "3"),
+        ("atlas:localPackageSourceBytes", "1"),
+    ),
+)
+def test_dependency_assessment_fails_closed_when_local_replacement_binding_drifts(
+    field: str,
+    replacement: str,
+) -> None:
+    sbom = _bounded_image_replacement_sbom()
+    for component in sbom["components"]:
+        assert isinstance(component, dict)
+        for item in component.get("properties", []):
+            if item["name"] == field:
+                item["value"] = replacement
+
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(sbom)
+
+    assert gate == "blocked_image_size_unpatched_build_time_high_advisories"
+    assert len(limits) == 1
+    assert "GHSA-5p2g-fcmc-qvqq" in limits[0]
+
+
+def test_dependency_assessment_fails_closed_when_local_replacement_edge_drifts() -> None:
+    sbom = _bounded_image_replacement_sbom()
+    sbom["dependencies"][0]["dependsOn"] = []
+
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(sbom)
+
+    assert gate == "blocked_image_size_unpatched_build_time_high_advisories"
+    assert len(limits) == 1
+    assert "GHSA-w3rx-r6r6-pgpr" in limits[0]
+
+
+def test_dependency_assessment_fails_closed_when_vinext_is_not_the_only_alias_consumer() -> None:
+    sbom = _bounded_image_replacement_sbom()
+    sbom["components"].append({"bom-ref": "other", "name": "other", "version": "1.0.0"})
+    sbom["dependencies"].append({"ref": "other", "dependsOn": ["bounded-image-alias"]})
+
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(sbom)
+
+    assert gate == "blocked_image_size_unpatched_build_time_high_advisories"
+    assert len(limits) == 1
+    assert "GHSA-5p2g-fcmc-qvqq" in limits[0]
+
+
+def test_dependency_assessment_preserves_the_next_vendored_parser_block() -> None:
+    sbom = _bounded_image_replacement_sbom()
+    sbom["components"].append(
+        {
+            "bom-ref": "next",
+            "name": "next",
+            "version": "16.2.12",
+            "externalReferences": [
+                {"type": "distribution", "url": "https://registry.npmjs.org/next/-/next-16.2.12.tgz"}
+            ],
+            "properties": [
+                {"name": "atlas:lockfile", "value": "master-reference/package-lock.json"},
+                {"name": "atlas:lockfilePath", "value": "node_modules/next"},
+                {"name": "atlas:recordKind", "value": "resolved-third-party-component"},
+                {
+                    "name": "atlas:npmIntegrity",
+                    "value": "sha512-iD59eYQWmbFcEbX7v/acG5DRym9iw1DdaPoD0WTA920naWsE25wShzJW4+UvAs8MK9EC2kBfIH6vtto1H1PHGw==",
+                },
+            ],
+        }
+    )
+    sbom["dependencies"].append({"ref": "next", "dependsOn": []})
+
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(sbom)
+
+    assert gate == "blocked_next_vendored_image_parser_and_external_review_required"
+    assert len(limits) == 3
+    assert "GHSA-w3rx-r6r6-pgpr" in limits[1]
+    assert "reachability is not a vulnerability waiver" in limits[1]
+    assert "current source-authenticated advisory" in limits[2]
+
+
+def test_tracked_lock_and_local_source_emit_the_exact_vendored_parser_block() -> None:
+    repo = MASTER_REFERENCE.parent
+    sources = {
+        relative: (repo / relative).read_bytes()
+        for relative in (*NPM_LOCKFILES, *PYTHON_DECLARATIONS)
+    }
+    vendor_root = MASTER_REFERENCE / "vendor" / "bounded-image-size"
+    for source_path in sorted(path for path in vendor_root.rglob("*") if path.is_file()):
+        sources[source_path.relative_to(repo).as_posix()] = source_path.read_bytes()
+
+    sbom = build_cyclonedx(sources, "a" * 40, "b" * 64)
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(sbom)
+    component_rows = {
+        component["name"]: (component, release_pipeline._sbom_component_properties(component))
+        for component in sbom["components"]
+        if component.get("name") in {"bounded-image-size", "image-size", "next", "vinext"}
+    }
+
+    assert gate == "blocked_next_vendored_image_parser_and_external_review_required"
+    assert len(limits) == 3
+    assert component_rows["image-size"][0].get("version") is None
+    assert component_rows["bounded-image-size"][0]["licenses"] == [
+        {"expression": "LicenseRef-Proprietary"}
+    ]
+    assert component_rows["bounded-image-size"][1]["atlas:localPackageSourceDigest"] == (
+        release_pipeline._BOUNDED_IMAGE_PACKAGE_SOURCE_DIGEST
+    )
+    assert component_rows["bounded-image-size"][1]["atlas:localPackageSourceFiles"] == "4"
+    assert component_rows["bounded-image-size"][1]["atlas:localPackageSourceBytes"] == (
+        release_pipeline._BOUNDED_IMAGE_PACKAGE_SOURCE_BYTES
+    )
+    assert "GHSA-w3rx-r6r6-pgpr" in limits[1]
+    assert "current source-authenticated advisory" in limits[2]
+
+
+def test_dependency_sources_preserve_the_scoped_override_and_full_local_package(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = MASTER_REFERENCE.parent
+    vendor_paths = sorted(
+        path.relative_to(repo).as_posix()
+        for path in (MASTER_REFERENCE / "vendor" / "bounded-image-size").rglob("*")
+        if path.is_file()
+    )
+    expected = set(NPM_LOCKFILES + PYTHON_DECLARATIONS) | {
+        "master-reference/package.json",
+        *vendor_paths,
+    }
+    bundle = SimpleNamespace(records={"files": [{"path": path} for path in sorted(expected)]})
+
+    def selected_blob(_repo: Path, _bundle: object, relative: str) -> bytes:
+        return (repo / relative).read_bytes()
+
+    monkeypatch.setattr(release_pipeline, "read_bound_source_blob", selected_blob)
+    sources = release_pipeline._dependency_sources(repo, bundle)
+
+    assert set(sources) == expected
+    assert release_pipeline._dependency_receipts(sources) == release_pipeline._dependency_receipts(
+        release_pipeline._dependency_sources(repo, bundle)
+    )
+
+
+def test_dependency_sources_reject_an_unscoped_override_even_when_the_lock_alias_matches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = MASTER_REFERENCE.parent
+    vendor_paths = sorted(
+        path.relative_to(repo).as_posix()
+        for path in (MASTER_REFERENCE / "vendor" / "bounded-image-size").rglob("*")
+        if path.is_file()
+    )
+    source_paths = set(NPM_LOCKFILES + PYTHON_DECLARATIONS) | {
+        "master-reference/package.json",
+        *vendor_paths,
+    }
+    bundle = SimpleNamespace(records={"files": [{"path": path} for path in sorted(source_paths)]})
+
+    def selected_blob(_repo: Path, _bundle: object, relative: str) -> bytes:
+        raw = (repo / relative).read_bytes()
+        if relative != "master-reference/package.json":
+            return raw
+        manifest = json.loads(raw)
+        manifest["overrides"]["image-size"] = "file:vendor/bounded-image-size"
+        return canonical_json(manifest)
+
+    monkeypatch.setattr(release_pipeline, "read_bound_source_blob", selected_blob)
+    with pytest.raises(ReleaseInputError, match="not scoped to exact Vinext 0.0.50"):
+        release_pipeline._dependency_sources(repo, bundle)
+
+
 def test_release_record_field_registry_matches_tracked_schema_owner() -> None:
     schema = json.loads((MASTER_REFERENCE / "schema" / "atlas-records.schema.json").read_text(encoding="utf-8"))
     schema_registry: dict[str, frozenset[str]] = {}
