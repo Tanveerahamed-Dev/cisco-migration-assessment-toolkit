@@ -2,6 +2,7 @@ import capabilityJson from "../../content/capability-catalog.json";
 import coreJson from "../../content/atlas-core.json";
 import deliveryJson from "../../content/delivery-governance.json";
 import horizonJson from "../../content/open-horizon-register.json";
+import protocolDepthJson from "./protocol-depth.json";
 import { buildCapabilityCatalogViewModel } from "./capabilityLineage";
 import { buildCoreOutcomeViewModel } from "./coreOutcomeLineage";
 import { buildHorizonGapsViewModel } from "./horizonLineage";
@@ -10,6 +11,7 @@ import type {
   CapabilityCatalog,
   CapabilityState,
   DeliveryGovernance,
+  ProtocolDepthModel,
 } from "./types";
 
 export const coreOutcomeViewModel = buildCoreOutcomeViewModel(coreJson, {
@@ -26,6 +28,7 @@ export const capabilityCatalog: CapabilityCatalog = capabilityCatalogViewModel.c
 export const deliveryGovernance = deliveryJson as unknown as DeliveryGovernance;
 export const horizonGapsViewModel = buildHorizonGapsViewModel(horizonJson);
 export const horizon = horizonGapsViewModel.horizon;
+export const protocolDepth = protocolDepthJson as unknown as ProtocolDepthModel;
 
 export const capabilities = capabilityCatalog.domains.flatMap((domain) =>
   domain.entries.map((entry) => ({ ...entry, domain_id: domain.id })),

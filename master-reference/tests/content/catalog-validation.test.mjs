@@ -42,6 +42,9 @@ const [core, catalog, governance, horizon, outputContract] = await Promise.all([
   load("open-horizon-register.json"),
   load("output-contract.json"),
 ]);
+const protocolDepth = JSON.parse(
+  await readFile(new URL("../../app/atlas/protocol-depth.json", import.meta.url), "utf8"),
+);
 const capabilityReferences = {
   domain_ids: core.domain_registry.map((domain) => domain.id),
   owner_ids: core.owners.map((owner) => owner.id),
@@ -280,6 +283,200 @@ test("contains all requested domains, six architecture planes, eight traffic pla
   assert.ok(architectureLab.owner_refs.includes("owner.operating.doctrine"));
   assert.match(architectureLab.does_not_prove, /incremental rebuild/i);
   assert.match(architectureLab.does_not_prove, /full Graphify rebuild/i);
+});
+
+test("binds protocol depth to seven health families plus one receipt-owned runtime family", async () => {
+  const stages = [
+    "collection",
+    "parsing",
+    "normalization",
+    "assessment",
+    "design-advice",
+    "simulation",
+    "validation",
+    "output",
+  ];
+  const baseline = core.current_baseline.find(
+    (item) => item.id === protocolDepth.denominator.baseline_ref,
+  );
+  const protocolDomain = catalog.domains.find(
+    (domain) => domain.id === protocolDepth.denominator.catalog_domain_ref,
+  );
+  const capabilityIds = new Set(protocolDomain.entries.map((entry) => entry.id));
+  const witnessById = new Map(protocolDepth.witnesses.map((witness) => [witness.id, witness]));
+  const collectorSource = await readFile(new URL("COLLECT_PARSE_V3_23_0.py", repositoryRoot), "utf8");
+  const commandSet = (assignment) => {
+    const start = collectorSource.indexOf(`${assignment} = [`);
+    const end = collectorSource.indexOf("\n]", start);
+    assert.ok(start >= 0 && end > start, `${assignment} command registry is unavailable`);
+    return new Set(
+      [...collectorSource.slice(start, end).matchAll(/^\s*"([^"]+)"/gm)].map((match) => match[1]),
+    );
+  };
+  const commandsByPlatform = {
+    IOS: commandSet("COMMANDS_IOS"),
+    "NX-OS": commandSet("COMMANDS_NXOS"),
+  };
+
+  assert.equal(protocolDepth.schema_version, "1.0.0");
+  assert.equal(protocolDepth.id, "protocol-depth.eight-family-runtime");
+  assert.equal(protocolDepth.kind, "source-bound-derived-view");
+  assert.match(protocolDepth.authority, /never field evidence|never.*field evidence/i);
+  assert.equal(protocolDomain.entries.length, protocolDepth.denominator.catalog_cell_count);
+  assert.equal(protocolDomain.entries.length - protocolDepth.families.length, 30);
+  assert.equal(protocolDepth.denominator.health_family_count, 7);
+  assert.equal(protocolDepth.denominator.family_count, 8);
+  assert.equal(protocolDepth.denominator.stage_count, 8);
+  assert.equal(protocolDepth.denominator.cell_count, 64);
+  assert.deepEqual(protocolDepth.stages.map((stage) => stage.id), stages);
+  assert.deepEqual(protocolDepth.stages.map((stage) => stage.order), [1, 2, 3, 4, 5, 6, 7, 8]);
+  assert.deepEqual(
+    protocolDepth.families.map((family) => family.health_label),
+    [...baseline.value, "IPv6 Routing"],
+  );
+  assert.equal(new Set(protocolDepth.families.map((family) => family.id)).size, 8);
+  assert.equal(new Set(protocolDepth.families.map((family) => family.capability_ref)).size, 8);
+
+  const routingBaselineWitness = witnessById.get("witness.protocol.routing-baseline");
+  assert.ok(routingBaselineWitness, "routing baseline lacks a direct source/test witness");
+  assert.equal(routingBaselineWitness.path, "cisco_toolkit/analyze.py");
+  assert.deepEqual(
+    routingBaselineWitness.symbols,
+    ["normalize_routing_adjacency_state", "summarize_routing_baseline"],
+  );
+  assert.deepEqual(
+    routingBaselineWitness.test_refs,
+    ["tests/test_routing_cutover_truth.py", "tests/test_routing_nrfu_truth.py"],
+  );
+
+  const currentBaselineGateWitness = witnessById.get("witness.protocol.current-baseline-gate");
+  assert.ok(currentBaselineGateWitness, "current-baseline cutover gate lacks a direct source/test witness");
+  assert.equal(currentBaselineGateWitness.path, "cisco_toolkit/analyze.py");
+  assert.deepEqual(currentBaselineGateWitness.symbols, ["compute_current_baseline_gate"]);
+  assert.deepEqual(
+    currentBaselineGateWitness.test_refs,
+    ["tests/test_current_baseline_gate.py", "tests/test_compare_cutover_gate_cli.py"],
+  );
+
+  const stateCounts = { covered: 0, partial: 0, missing: 0 };
+  for (const family of protocolDepth.families) {
+    assert.ok(capabilityIds.has(family.capability_ref), `${family.id} has no protocol capability`);
+    assert.deepEqual(Object.keys(family.cells), stages, `${family.id} changed the stage denominator`);
+    assert.ok(family.evidence_inputs.length > 0, `${family.id} lacks evidence inputs`);
+    for (const input of family.evidence_inputs) {
+      assert.deepEqual(Object.keys(input), ["command", "platforms"]);
+      assert.ok(input.command.length > 5, `${family.id} has an empty evidence command`);
+      assert.equal(new Set(input.platforms).size, input.platforms.length);
+      assert.ok(input.platforms.length > 0, `${family.id}:${input.command} lacks a platform`);
+      for (const platform of input.platforms) {
+        assert.ok(commandsByPlatform[platform], `${family.id} names unknown platform ${platform}`);
+        assert.ok(
+          commandsByPlatform[platform].has(input.command),
+          `${family.id} claims ${input.command} for ${platform} outside the collector registry`,
+        );
+      }
+    }
+    assert.match(family.assessable_when, /no |missing|empty|at least/i);
+    assert.ok(family.validation_scope.length > 40);
+    assert.ok(family.limitations.length > 0);
+    assert.deepEqual(family.gap_refs, ["gap.protocol-depth"]);
+
+    for (const [stageId, cell] of Object.entries(family.cells)) {
+      assert.ok(Object.hasOwn(stateCounts, cell.state), `${family.id}:${stageId} has bad state`);
+      stateCounts[cell.state] += 1;
+      assert.ok(cell.prerequisite.length > 30, `${family.id}:${stageId} lacks prerequisite`);
+      assert.ok(cell.boundary.length > 30, `${family.id}:${stageId} lacks boundary`);
+      if (cell.state === "missing") {
+        assert.deepEqual(cell.witness_refs, [], `${family.id}:${stageId} claims a missing witness`);
+      } else {
+        assert.ok(cell.witness_refs.length > 0, `${family.id}:${stageId} lacks a witness`);
+      }
+      for (const witnessRef of cell.witness_refs) {
+        assert.ok(witnessById.has(witnessRef), `${family.id}:${stageId} has unknown ${witnessRef}`);
+      }
+    }
+    for (const stageId of ["assessment", "output"]) {
+      if (family.id === "protocol.ipv6-routing") continue;
+      assert.ok(
+        family.cells[stageId].witness_refs.includes("witness.protocol.assessability"),
+        `${family.id}:${stageId} must bind the current-run device × family receipt`,
+      );
+    }
+  }
+  assert.deepEqual(stateCounts, { covered: 24, partial: 32, missing: 8 });
+  assert.deepEqual(
+    protocolDepth.families
+      .filter((family) => family.cells["design-advice"].state === "missing")
+      .map((family) => family.health_label),
+    ["EIGRP", "IPv6 Routing"],
+  );
+  assert.deepEqual(
+    protocolDepth.families
+      .filter((family) => family.cells.simulation.state === "partial")
+      .map((family) => family.health_label),
+    ["STP", "FHRP"],
+  );
+  const stp = protocolDepth.families.find((family) => family.health_label === "STP");
+  assert.deepEqual(
+    stp.evidence_inputs.find((input) => input.command === "show spanning-tree detail").platforms,
+    ["IOS"],
+  );
+  const healthOnlyFamilies = protocolDepth.families.filter(
+    (family) => family.advice_states.length === 0,
+  );
+  assert.deepEqual(
+    healthOnlyFamilies.map((family) => family.health_label),
+    ["EIGRP", "IPv6 Routing"],
+  );
+  assert.ok(
+    healthOnlyFamilies.every(
+      (family) => family.cells.output.witness_refs.includes("witness.protocol.output.runbook"),
+    ),
+    "the runbook must now expose the family receipt even when no advice doctrine exists",
+  );
+
+  for (const protocol of ["OSPF", "BGP", "EIGRP"]) {
+    const validation = protocolDepth.families.find(
+      (family) => family.health_label === protocol,
+    ).cells.validation;
+    assert.ok(
+      validation.witness_refs.includes("witness.protocol.routing-baseline"),
+      `${protocol} validation must bind the single-snapshot routing baseline`,
+    );
+    assert.match(validation.prerequisite, /protocol_assessability\/1 receipt cell is assessed/i);
+    assert.match(validation.prerequisite, /observed routing projection is well-formed and nonempty/i);
+    assert.match(validation.boundary, /PRE-CUTOVER DEGRADED — BLOCKER/);
+    assert.match(validation.boundary, /Review and not-verified evidence abstain/i);
+    assert.match(validation.boundary, /no expected-peer denominator is inferred/i);
+    assert.match(validation.boundary, /projection custody remains embedded_unverified/i);
+    assert.ok(
+      validation.witness_refs.includes("witness.protocol.current-baseline-gate"),
+      `${protocol} validation must bind the current-baseline cutover gate`,
+    );
+  }
+
+  for (const protocol of ["EtherChannel", "FHRP"]) {
+    const validation = protocolDepth.families.find(
+      (family) => family.health_label === protocol,
+    ).cells.validation;
+    assert.ok(
+      validation.witness_refs.includes("witness.protocol.current-baseline-gate"),
+      `${protocol} validation must bind the current-baseline cutover gate`,
+    );
+    assert.match(validation.boundary, /unchanged blocker.*clean delta/i);
+  }
+
+  for (const witness of protocolDepth.witnesses) {
+    assert.match(witness.id, /^witness\.protocol\.[a-z0-9.-]+$/);
+    assert.ok(witness.proves.length > 30);
+    const source = await readFile(new URL(witness.path, repositoryRoot), "utf8");
+    for (const symbol of witness.symbols) {
+      assert.ok(source.includes(symbol), `${witness.id} cannot find symbol ${symbol}`);
+    }
+    for (const testRef of witness.test_refs) {
+      await access(new URL(testRef, repositoryRoot));
+    }
+  }
 });
 
 test("keeps every mandated breadth denominator explicit", () => {

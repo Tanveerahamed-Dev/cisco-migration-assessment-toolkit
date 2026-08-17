@@ -196,7 +196,7 @@ export function CapabilityExplorer({
           </thead>
           <tbody>
             {filtered.map((entry) => (
-              <tr className="capability-row" key={entry.id}>
+              <tr className="capability-row" id={entry.id} key={entry.id}>
                 <th scope="row" aria-label={entry.title}>
                   <span className="capability-identity">
                     <code>{entry.id}</code>

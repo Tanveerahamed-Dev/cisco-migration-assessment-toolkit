@@ -9,7 +9,7 @@ const NAVIGATION = [
   ["trace", "/trace", "Digital thread & trace"],
   ["graph", "/graph", "Complete Graphify map"],
   ["capabilities", "/capabilities", "Capability matrix"],
-  ["protocols", "/capabilities?domain=domain.protocols", "Protocol intelligence"],
+  ["protocols", "/protocols", "Protocol intelligence"],
   ["traffic", "/system#traffic", "Traffic truth"],
   ["designs", "/capabilities?domain=domain.enterprise-design", "Enterprise designs"],
   ["security", "/capabilities?domain=domain.security-privacy", "Security & privacy"],

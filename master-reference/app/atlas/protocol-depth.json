@@ -1,0 +1,492 @@
+{
+  "schema_version": "1.0.0",
+  "id": "protocol-depth.eight-family-runtime",
+  "kind": "source-bound-derived-view",
+  "authority": "This view reconciles live source owners and tests for operator navigation. The cited code, fixtures, and canonical catalog remain authoritative; a matrix state is never field evidence or a protocol-correctness claim.",
+  "denominator": {
+    "baseline_ref": "baseline.protocol.health",
+    "catalog_domain_ref": "domain.protocols",
+    "catalog_cell_count": 38,
+    "health_family_count": 7,
+    "family_count": 8,
+    "stage_count": 8,
+    "cell_count": 64,
+    "scope_rule": "This matrix contains the seven families emitted by compute_protocol_health plus the separately owned IPv6 Routing adjacency receipt. Only the seven health families belong to the protocol_assessability/1 denominator. The remaining protocol catalog cells stay visible in the broader closed catalog and do not silently enter this denominator."
+  },
+  "state_contract": {
+    "covered": "A bounded implementation path and a direct source/test witness exist for this stage. Covered does not mean complete protocol support.",
+    "partial": "A bounded implementation path exists, but the listed behavior, platform, negative-state, policy, scale, or validation dimensions remain incomplete.",
+    "missing": "No owned implementation path exists for this stage in the bounded eight-family runtime slice. Adjacent code or catalog presence is not substituted."
+  },
+  "stages": [
+    {
+      "id": "collection",
+      "order": 1,
+      "label": "Collection",
+      "question": "Which bounded read-only command can supply evidence?",
+      "non_proof": "Command registration does not prove that a command ran, returned usable output, or covered every platform variant."
+    },
+    {
+      "id": "parsing",
+      "order": 2,
+      "label": "Parsing",
+      "question": "Which captured syntax becomes structured protocol data?",
+      "non_proof": "A parser path does not establish release parity or correctness for syntax outside its fixtures."
+    },
+    {
+      "id": "normalization",
+      "order": 3,
+      "label": "Normalization",
+      "question": "Which protocol facts enter stable engine shapes?",
+      "non_proof": "Normalized fields are bounded observations, not an authoritative intended-state model."
+    },
+    {
+      "id": "assessment",
+      "order": 4,
+      "label": "Assessment",
+      "question": "Which observed states receive a health verdict?",
+      "non_proof": "No emitted row can mean not collected; absence never becomes healthy."
+    },
+    {
+      "id": "design-advice",
+      "order": 5,
+      "label": "Design advice",
+      "question": "Which abnormal states receive bounded meaning and remediation?",
+      "non_proof": "Observed state is fact; likely cause and remediation remain advisory and must not be read as root-cause proof."
+    },
+    {
+      "id": "simulation",
+      "order": 6,
+      "label": "Simulation",
+      "question": "Can Atlas model this protocol's state transition or convergence?",
+      "non_proof": "Generic topology or single-failure analysis is not a protocol state-machine or convergence simulation."
+    },
+    {
+      "id": "validation",
+      "order": 7,
+      "label": "Validation",
+      "question": "Which synthetic fixtures or read-only checks challenge the path?",
+      "non_proof": "Offline tests and generated NRFU commands do not establish field behavior or interoperability."
+    },
+    {
+      "id": "output",
+      "order": 8,
+      "label": "Output",
+      "question": "Where can an operator inspect the bounded result?",
+      "non_proof": "A rendered row proves delivery of a computed record, not completeness of the family assessment."
+    }
+  ],
+  "witnesses": [
+    {
+      "id": "witness.protocol.collection",
+      "path": "COLLECT_PARSE_V3_23_0.py",
+      "symbols": ["COMMANDS_IOS", "COMMANDS_NXOS"],
+      "proves": "The primary offline collector registers the bounded IOS and NX-OS read-only command sets used by this slice.",
+      "test_refs": ["tests/test_collect_parse_live_safety.py", "tests/test_collection_parsers.py"]
+    },
+    {
+      "id": "witness.protocol.parser.stp",
+      "path": "cisco_toolkit/parse.py",
+      "symbols": ["parse_spanning_tree_blockedports", "parse_spanning_tree_states", "parse_spanning_tree_root"],
+      "proves": "STP state, blocked/inconsistent ports, and root facts have bounded parser paths.",
+      "test_refs": ["tests/test_parsers.py", "tests/test_compute.py"]
+    },
+    {
+      "id": "witness.protocol.parser.etherchannel",
+      "path": "cisco_toolkit/analyze.py",
+      "symbols": ["_parse_etherchannel_member_states", "_EC_BAD_FLAGS"],
+      "proves": "The health path preserves complete member flag tokens and classifies the bounded non-forwarding alphabet.",
+      "test_refs": ["tests/test_compute.py", "tests/test_protocol_kb.py"]
+    },
+    {
+      "id": "witness.protocol.parser.vtp",
+      "path": "cisco_toolkit/analyze.py",
+      "symbols": ["_parse_vtp_full"],
+      "proves": "The health path extracts VTP mode, domain, and revision from captured status output.",
+      "test_refs": ["tests/test_parsers.py", "tests/test_compute.py"]
+    },
+    {
+      "id": "witness.protocol.vtp-safety",
+      "path": "cisco_toolkit/vtp_safety.py",
+      "symbols": ["compute_vtp_safety_baseline", "validate_vtp_safety_baseline", "embedded_vtp_safety_baseline", "compute_vtp_safety_subject_scope", "scope_vtp_safety_subjects"],
+      "proves": "The typed VTP subject-scope and vtp_safety_baseline/1 owners validate the bounded local show vtp status attempt/subject denominator, reconcile subject-row summary.by_status counts with the producer-owned fleet summary.by_coverage_status census, and bind current-run use to process-local source custody. A VTP Server revision of 100 or higher is a conservative REVIEW heuristic requiring explicit disposition, not proof that overwrite or propagation will occur; matching it is NOT ACCEPTANCE. JSON audit copies are embedded_unverified and cannot authorize a current-run decision.",
+      "test_refs": ["tests/test_vtp_safety_baseline.py", "tests/test_vtp_operator_surfaces.py"]
+    },
+    {
+      "id": "witness.protocol.ipv6-routing-adjacency",
+      "path": "cisco_toolkit/ipv6_routing.py",
+      "symbols": ["compute_ipv6_routing_adjacency_baseline", "validate_ipv6_routing_adjacency_baseline", "embedded_ipv6_routing_adjacency_baseline", "compute_ipv6_routing_subject_scope"],
+      "proves": "The typed ipv6_routing_adjacency_baseline/1 owner reconciles bounded observed default/global OSPFv3 and IPv6-unicast BGP adjacency rows with exactly three route-summary/OSPFv3/BGPv6 coverage cells per inspected host. summary.by_status owns adjacency-row counts; summary.by_coverage_status alone owns the producer fleet census and coverage rows remain host-family/input drilldown. Degraded, review, and not-verified observations are blockers. Current-run decisions require process-local source custody; JSON audit copies are embedded_unverified and a serialized current_run_source_bound claim cannot authorize a decision.",
+      "test_refs": ["tests/test_ipv6_routing_adjacency_baseline.py", "tests/test_ipv6_routing_operator_surfaces.py"]
+    },
+    {
+      "id": "witness.protocol.parser.ipv6-routing",
+      "path": "cisco_toolkit/parse.py",
+      "symbols": ["parse_ipv6_route_summary", "parse_ospfv3_neighbors", "parse_bgp_ipv6_summary"],
+      "proves": "The bounded parsers expose a point-in-time IPv6 route-source census plus exact observed OSPFv3 and IPv6-unicast BGP peer/state rows; route summary is scope evidence, not route-correctness or expected-peer proof.",
+      "test_refs": ["tests/test_parsers.py", "tests/test_ipv6_routing_adjacency_baseline.py"]
+    },
+    {
+      "id": "witness.protocol.parser.ospf",
+      "path": "cisco_toolkit/parse.py",
+      "symbols": ["parse_ospf_neighbors"],
+      "proves": "OSPF neighbor identity, interface, and state have a bounded parser path.",
+      "test_refs": ["tests/test_parsers.py", "tests/test_compute.py"]
+    },
+    {
+      "id": "witness.protocol.parser.bgp",
+      "path": "cisco_toolkit/parse.py",
+      "symbols": ["parse_bgp_summary"],
+      "proves": "BGP peer identity and State/PfxRcd have a bounded summary parser path.",
+      "test_refs": ["tests/test_parsers.py", "tests/test_parser_examples.py"]
+    },
+    {
+      "id": "witness.protocol.bgp-configured-peer",
+      "path": "cisco_toolkit/bgp_intent.py",
+      "symbols": ["compute_bgp_configured_peer_baseline", "validate_bgp_configured_peer_baseline"],
+      "proves": "The typed bgp_configured_peer_baseline/1 API validates and assesses the bounded literal configured-peer denominator for default/global IPv4 unicast. It owns distinct peer-row summary.by_status and fleet host-coverage summary.by_coverage_status censuses, with coverage rows reserved for host detail. A configured-active peer absent from usable summary evidence is a blocker; unsupported or unreconciled evidence remains review or not verified rather than disappearing into observed-peer sparsity.",
+      "test_refs": ["tests/test_bgp_configured_peer_baseline.py"]
+    },
+    {
+      "id": "witness.protocol.parser.eigrp",
+      "path": "cisco_toolkit/parse.py",
+      "symbols": ["parse_eigrp_neighbors"],
+      "proves": "Observed EIGRP neighbor-up rows have a bounded parser path.",
+      "test_refs": ["tests/test_parser_examples.py", "tests/test_parser_contracts.py"]
+    },
+    {
+      "id": "witness.protocol.parser.fhrp",
+      "path": "cisco_toolkit/parse.py",
+      "symbols": ["parse_hsrp_summary", "parse_vrrp_summary", "parse_glbp_summary", "parse_hsrp_detail"],
+      "proves": "HSRP, VRRP, and GLBP summary shapes, plus bounded HSRP detail, have owned parser paths.",
+      "test_refs": ["tests/test_parsers.py", "tests/test_audit5_false_health.py"]
+    },
+    {
+      "id": "witness.protocol.fhrp-configured-group",
+      "path": "cisco_toolkit/fhrp_intent.py",
+      "symbols": ["compute_fhrp_configured_group_baseline", "validate_fhrp_configured_group_baseline"],
+      "proves": "The typed fhrp_configured_group_baseline/1 API validates and assesses the bounded direct-literal local HSRP, VRRP, and GLBP group denominator for default/global IPv4. It keeps concrete group-row summary.by_status counts distinct from the exact three-cells-per-host summary.by_coverage_status census. A configured-active local group absent from usable subtype runtime evidence is a blocker. Across distinct hosts, complete healthy rows sharing exact default/IPv4 + subtype + normalized interface + group + equal configured/runtime VIP identity receive sequential election-consistency review when zero or multiple leaders were observed; every matching existing row becomes review without adding a synthetic peer. This is not proof of simultaneous election health and does not infer expected peers or member count. Unsupported or unreconciled evidence remains review or not verified rather than disappearing into sparse observed-group health.",
+      "test_refs": ["tests/test_fhrp_configured_group_baseline.py", "tests/test_fhrp_election_reconciliation.py", "tests/test_fhrp_decision_consumer_parity.py", "tests/test_fhrp_configured_group_operator_surfaces.py", "tests/test_fhrp_election_operator_surfaces.py"]
+    },
+    {
+      "id": "witness.protocol.fhrp-redundancy-domain",
+      "path": "cisco_toolkit/fhrp_redundancy.py",
+      "symbols": ["compute_fhrp_redundancy_domain_baseline", "validate_fhrp_redundancy_domain_baseline", "embedded_fhrp_redundancy_domain_baseline", "scope_fhrp_redundancy_domains"],
+      "proves": "The typed fhrp_redundancy_domain_baseline/1 owner joins every current normalized SVI member inside the exact VLAN + normalized VRF + observed IPv4 subnet domain to the validated configured-group receipt. Candidate identity is protocol + group + virtual IP. Zero positive participation beside a positive candidate is review because intended membership is unresolved, not a proven unprotected gateway or failure; missing subtype evidence is not verified, while bounded upstream local faults remain degraded. Multiple groups remain assessable only when the participating member candidate sets reconcile. The process-current projection binds the normalized-SVI digest and upstream receipt, while a serialized copy remains embedded_unverified.",
+      "test_refs": ["tests/test_fhrp_redundancy_domain_baseline.py", "tests/test_fhrp_redundancy_domain_engine.py", "tests/test_fhrp_domain_operator_surfaces.py"]
+    },
+    {
+      "id": "witness.protocol.health",
+      "path": "cisco_toolkit/analyze.py",
+      "symbols": ["compute_protocol_health"],
+      "proves": "One source-owned health function emits the exact seven-family denominator when usable evidence exists.",
+      "test_refs": ["tests/test_compute.py"]
+    },
+    {
+      "id": "witness.protocol.assessability",
+      "path": "cisco_toolkit/analyze.py",
+      "symbols": ["PROTOCOL_ASSESSABILITY_FAMILIES", "compute_protocol_assessability"],
+      "proves": "The current-run receipt publishes exactly one evidence-state cell per inventory device and each of the seven health families without inferring health or protocol presence from omission.",
+      "test_refs": ["tests/test_protocol_assessability.py"]
+    },
+    {
+      "id": "witness.protocol.stp-consistency-baseline",
+      "path": "cisco_toolkit/analyze.py",
+      "symbols": ["summarize_stp_consistency_baseline", "compute_migration_readiness", "compute_validation_plan", "compute_current_baseline_gate"],
+      "proves": "The shared stp_consistency_baseline/1 owner conservatively scopes current-run L2/STP subjects and reconciles a validated STP receipt with exactly one matching health row. Assessed or degraded consistency requires usable state and inconsistent_ports inputs; blocked_ports is disclosed independently as observed or not collected, and topology_changes/detail is optional. Positive subjects with missing or contradictory consistency evidence become readiness and Validation blockers that the current-baseline gate retains; clean no-subject hosts are omitted without an applicability or health claim.",
+      "test_refs": ["tests/test_stp_consistency_truth.py", "tests/test_stp_validation_surfaces.py"]
+    },
+    {
+      "id": "witness.protocol.etherchannel-baseline",
+      "path": "cisco_toolkit/analyze.py",
+      "symbols": ["compute_etherchannel_projection", "summarize_etherchannel_baseline"],
+      "proves": "The shared EtherChannel projection joins configured bundle subjects, complete observed member-state tokens, and the exact current-run receipt. Only assessed evidence can authorize an observed baseline; supported non-forwarding states become blockers, ambiguous or missing evidence abstains, and projection custody remains embedded_unverified.",
+      "test_refs": ["tests/test_etherchannel_cutover_truth.py"]
+    },
+    {
+      "id": "witness.protocol.routing-baseline",
+      "path": "cisco_toolkit/analyze.py",
+      "symbols": ["normalize_routing_adjacency_state", "summarize_routing_baseline"],
+      "proves": "The single-snapshot OSPF, BGP, and EIGRP baseline grants assessed or exact-degraded classification only to a protocol_assessability/1 assessed receipt plus a well-formed nonempty observed projection; exact degraded observations are blockers, review and not_verified evidence abstain, no expected-peer denominator is inferred, and projection custody is embedded_unverified.",
+      "test_refs": ["tests/test_routing_cutover_truth.py", "tests/test_routing_nrfu_truth.py"]
+    },
+    {
+      "id": "witness.protocol.adjacency-delta",
+      "path": "cisco_toolkit/html.py",
+      "symbols": ["compute_protocol_adjacency_delta", "compute_snapshot_delta"],
+      "proves": "Before/after comparison preserves baseline-observed OSPF, BGP, and EIGRP peers only across assessed receipt cells, separates parsed degradation from no-longer-observed and coverage-loss states, and discloses the embedded projection-custody limit.",
+      "test_refs": ["tests/test_protocol_adjacency_delta.py"]
+    },
+    {
+      "id": "witness.protocol.current-baseline-gate",
+      "path": "cisco_toolkit/analyze.py",
+      "symbols": ["compute_current_baseline_gate"],
+      "proves": "The current validation-plan owner reconciles its items, wave buckets, and summary before classifying emitted degraded observations as BLOCKED and review or not-verified observations as INDETERMINATE. CLEAR is bounded to emitted validation scope, while absent or empty evidence remains NOT_ASSESSED; an unchanged bad baseline cannot be promoted by a clean before/after delta.",
+      "test_refs": ["tests/test_current_baseline_gate.py", "tests/test_compare_cutover_gate_cli.py"]
+    },
+    {
+      "id": "witness.protocol.intelligence",
+      "path": "cisco_toolkit/analyze.py",
+      "symbols": ["_extract_protocol_states", "compute_protocol_intelligence"],
+      "proves": "Abnormal producer-controlled state tokens join to advice without mutating protocol health, and unsupported FHRP subtypes remain explicit.",
+      "test_refs": ["tests/test_protocol_kb.py", "tests/test_compute.py"]
+    },
+    {
+      "id": "witness.protocol.doctrine",
+      "path": "cisco_toolkit/protocol_kb.py",
+      "symbols": ["_PROTOCOL_STATES", "advise"],
+      "proves": "Selected abnormal states map to bounded meaning, likely cause, remediation, and an inference disclaimer.",
+      "test_refs": ["tests/test_protocol_kb.py"]
+    },
+    {
+      "id": "witness.protocol.nrfu",
+      "path": "cisco_toolkit/nrfu_export.py",
+      "symbols": ["compute_nrfu_commands"],
+      "proves": "Generated, human-executed read-only NRFU cases cover selected protocol observations without executing a change. STP Phase II consumes the shared consistency baseline and preserves its assessed, degraded, review, or not-verified evidence state instead of turning an incomplete current baseline into a clean expectation.",
+      "test_refs": ["tests/test_nrfu_export.py", "tests/test_stp_nrfu_truth.py"]
+    },
+    {
+      "id": "witness.protocol.failover",
+      "path": "cisco_toolkit/failover.py",
+      "symbols": ["compute_stp_failover", "compute_fhrp_failover", "compute_failover_twin"],
+      "proves": "The read-only failover twin models bounded STP root re-election and FHRP forwarding-member takeover for explicit node or site failures, with deterministic abstention when evidence is insufficient.",
+      "test_refs": ["tests/test_failover.py"]
+    },
+    {
+      "id": "witness.protocol.output.excel",
+      "path": "cisco_toolkit/excel.py",
+      "symbols": ["write_protocol_health_sheet", "write_protocol_intelligence_sheet", "write_collection_completeness_sheet", "write_vtp_safety_sheet", "write_ipv6_routing_adjacency_sheet", "write_bgp_configured_peer_sheet", "write_fhrp_configured_group_sheet", "write_fhrp_redundancy_domain_sheet", "write_fhrp_consistency_sheet"],
+      "proves": "Workbook writers expose sparse health and advisory rows beside the exact current-run assessability denominator, the serialized VTP Safety and IPv6 Routing audit receipts, uncapped BGP Peer Intent and FHRP Group Intent projections, and the authoritative uncapped FHRP Domains projection. VTP Safety and IPv6 Routing each retain every blocker plus the first 50 assessed rows, take fleet coverage only from summary.by_coverage_status, and render no raw capture, hash, source locator, or path; IPv6 Routing preserves exact observed peer and state. The legacy FHRP Consistency sheet is only a qualified compatibility view and cannot independently claim clean, unprotected, fake, or complete intent.",
+      "test_refs": ["tests/test_excel.py", "tests/test_protocol_assessability.py", "tests/test_vtp_operator_surfaces.py", "tests/test_ipv6_routing_operator_surfaces.py", "tests/test_bgp_operator_surfaces.py", "tests/test_fhrp_configured_group_operator_surfaces.py", "tests/test_fhrp_domain_operator_surfaces.py"]
+    },
+    {
+      "id": "witness.protocol.output.runbook",
+      "path": "cisco_toolkit/runbook.py",
+      "symbols": ["write_runbook_docx", "protocol_assessability", "vtp_safety_baseline", "ipv6_routing_adjacency_baseline", "bgp_configured_peer_baseline", "fhrp_configured_group_baseline", "fhrp_redundancy_domain_baseline"],
+      "proves": "The runbook renders the seven-family assessability summary, the serialized VTP safety and separately owned IPv6 routing adjacency audit receipts, the configured BGP/FHRP denominators, and the exact FHRP redundancy-domain composition owner. It retains every IPv6 degraded, review, and not-verified adjacency plus the first 50 assessed IPv6 rows, with bounded command/custody and exact observed peer/state, without replacing sparse health or intelligence detail. Configured BGP/FHRP blockers remain outside ordinary protocol caps.",
+      "test_refs": ["tests/test_runbook.py", "tests/test_vtp_operator_surfaces.py", "tests/test_ipv6_routing_operator_surfaces.py", "tests/test_bgp_operator_surfaces.py", "tests/test_fhrp_configured_group_operator_surfaces.py", "tests/test_fhrp_domain_operator_surfaces.py"]
+    },
+    {
+      "id": "witness.protocol.output.explorer",
+      "path": "cisco_toolkit/blast_radius_explorer.html",
+      "symbols": ["protocolAssessability", "protoHealthSection", "protoIntelSection", "vtpSafetyReceiptValid", "vtpSafetySection", "vtpSafetyCoverageStats", "vtpSafetyCoverageRows", "ipv6RoutingAdjacencyReceiptValid", "ipv6RoutingAdjacencySection", "ipv6RoutingAdjacencyCoverageStats", "ipv6RoutingAdjacencyCoverageRows", "bgpConfiguredPeerSection", "bgpConfiguredCoverageStats", "bgpConfiguredPeerCoverageRows", "fhrpConfiguredGroupSection", "fhrpConfiguredGroupCoverageStats", "fhrpConfiguredGroupCoverageRows", "fhrpRedundancyDomainReceiptValid", "fhrpRedundancyDomainBaselineFrom", "fhrpRedundancyDomainSection"],
+      "proves": "The offline Explorer strictly validates only embedded_unverified VTP and IPv6 routing audit receipts, including exact structure, semantic recomputation, coverage and baseline digests, and refuses serialized current_run_source_bound claims. It renders IPv6 fleet coverage only from summary.by_coverage_status, uses coverage for host-family/input drilldown and coverage-only subject host discovery, retains every IPv6 degraded/review/not-verified row plus the first 50 assessed rows, and shows bounded command/custody and exact observed peer/state. Malformed receipts fail closed without reflecting rejected leaves or rendering raw captures, hashes, source locators, or paths.",
+      "test_refs": ["tests/test_explorer_parse_yield.py", "tests/test_vtp_operator_surfaces.py", "tests/test_ipv6_routing_operator_surfaces.py", "tests/test_bgp_operator_surfaces.py", "tests/test_fhrp_configured_group_operator_surfaces.py", "tests/test_fhrp_domain_operator_surfaces.py"]
+    },
+    {
+      "id": "witness.protocol.output.current-baseline-workflow",
+      "path": "cisco_toolkit/mop.py",
+      "symbols": ["write_mop_docx", "_current_baseline_context"],
+      "proves": "The MOP consumes compute_current_baseline_gate once for the whole validation plan, renders HOLD for BLOCKED, INDETERMINATE, and NOT_ASSESSED, retains every blocker that is not bound to a scheduled wave under (unscheduled), and never emits scheduling-clear copy unless the global gate is CLEAR. The Explorer Waves view executes the same canonical semantics and retains the same unbound blocker class.",
+      "test_refs": ["tests/test_mop.py", "tests/test_explorer_parse_yield.py"]
+    }
+  ],
+  "families": [
+    {
+      "id": "protocol.stp",
+      "label": "Spanning Tree Protocol",
+      "health_label": "STP",
+      "capability_ref": "cap.protocol.stp",
+      "evidence_inputs": [
+        {"command": "show spanning-tree", "platforms": ["IOS", "NX-OS"]},
+        {"command": "show spanning-tree blockedports", "platforms": ["IOS", "NX-OS"]},
+        {"command": "show spanning-tree inconsistentports", "platforms": ["IOS", "NX-OS"]},
+        {"command": "show spanning-tree detail", "platforms": ["IOS"]}
+      ],
+      "assessable_when": "Health requires usable show spanning-tree syntax. Cutover consistency additionally requires a validated current-run STP receipt with usable state and inconsistent_ports inputs plus exactly one matching, well-formed STP health row. Missing evidence must not be read as clean.",
+      "advice_states": ["INCONSISTENT"],
+      "validation_scope": "Synthetic fixtures challenge the shared STP consistency baseline, migration-readiness result, typed Cutover Validation blocker, current-baseline HOLD, and human-executed read-only NRFU projection. blocked_ports is disclosed independently as observed or not collected; topology_changes/detail is optional. These are not configured-applicability, complete-instance, timer, field-interoperability, or convergence evidence.",
+      "cells": {
+        "collection": {"state": "covered", "prerequisite": "IOS registers all four inputs; NX-OS registers spanning-tree plus blocked and inconsistent ports, while base spanning-tree output is required for health.", "boundary": "NX-OS has no registered detail command here, so topology-change counts may be unavailable; no complete vendor command parity is claimed.", "witness_refs": ["witness.protocol.collection"]},
+        "parsing": {"state": "covered", "prerequisite": "Captured STP tables match the bounded root, role/state, blocked-port, and inconsistent-port forms.", "boundary": "Malformed or unfamiliar platform syntax can yield no structured fact.", "witness_refs": ["witness.protocol.parser.stp"]},
+        "normalization": {"state": "partial", "prerequisite": "Parsed interfaces and per-VLAN facts resolve to normalized interface names and health inputs.", "boundary": "MST region/digest semantics, timer parity, guard configuration, and full per-instance state are incomplete.", "witness_refs": ["witness.protocol.parser.stp", "witness.protocol.health"]},
+        "assessment": {"state": "partial", "prerequisite": "A usable STP row exists for the host; supplementary capture gaps remain visible as partial in the current-run receipt.", "boundary": "Inconsistency escalates; blocked ports and selected topology-change counts alone do not establish a fault or convergence quality.", "witness_refs": ["witness.protocol.health", "witness.protocol.assessability"]},
+        "design-advice": {"state": "partial", "prerequisite": "The health row contains a positive inconsistent-port count.", "boundary": "Only INCONSISTENT has joined doctrine; root placement and topology-change interpretation remain separate bounded analyses.", "witness_refs": ["witness.protocol.intelligence", "witness.protocol.doctrine"]},
+        "simulation": {"state": "partial", "prerequisite": "A unique observed root, at least one surviving bridge, collected survivor priorities, and an explicit node or site failure are required.", "boundary": "The failover twin selects a bounded root candidate or abstains; it does not model BPDUs, bridge-MAC tiebreaks, exact port transitions, loops, or convergence timing.", "witness_refs": ["witness.protocol.failover"]},
+        "validation": {"state": "partial", "prerequisite": "A conservatively identified L2/STP subject has a validated current-run STP receipt whose state and inconsistent_ports inputs are usable, plus exactly one matching well-formed STP health row. blocked_ports is a separate observed/not-collected disclosure; topology_changes/detail is optional.", "boundary": "A positive subject with incomplete or contradictory consistency evidence becomes review or not verified, prevents a migration-readiness pass, emits a typed Cutover Validation blocker, and keeps the current-baseline workflow on HOLD; an observed inconsistency is degraded and matching it is not acceptance. The current-baseline gate keeps an unchanged blocker from being hidden by a clean delta. Missing blockedports evidence is never rendered as zero blocked. Clean no-subject hosts are omitted without an applicability or health claim. No configured-STP applicability, complete VLAN/MST-instance, timer, convergence, interoperability, failure-injection, or cutover-authorization proof is made.", "witness_refs": ["witness.protocol.parser.stp", "witness.protocol.health", "witness.protocol.assessability", "witness.protocol.stp-consistency-baseline", "witness.protocol.current-baseline-gate", "witness.protocol.nrfu"]},
+        "output": {"state": "covered", "prerequisite": "The shared typed STP consistency state projects through readiness, Cutover Validation, NRFU, the workbook, runbook, Explorer, and AssessHub/current-baseline workflow; blocked_ports availability remains an explicit independent disclosure.", "boundary": "Rendered assessed, degraded, review, or not-verified state proves delivery only within conservatively identified current-run subjects. The device × family receipt does not prove configured STP applicability, complete instance coverage, field behavior, or that missing blocked-port evidence means zero blocked ports.", "witness_refs": ["witness.protocol.assessability", "witness.protocol.stp-consistency-baseline", "witness.protocol.current-baseline-gate", "witness.protocol.nrfu", "witness.protocol.output.excel", "witness.protocol.output.runbook", "witness.protocol.output.explorer", "witness.protocol.output.current-baseline-workflow"]}
+      },
+      "limitations": ["No configured-STP applicability or complete VLAN/MST-instance proof", "No complete MST region, digest, timer, or convergence validation", "Absent or contradictory STP evidence is not healthy", "Missing blockedports evidence is not zero blocked ports"],
+      "gap_refs": ["gap.protocol-depth"]
+    },
+    {
+      "id": "protocol.etherchannel",
+      "label": "EtherChannel, LACP, and PAgP",
+      "health_label": "EtherChannel",
+      "capability_ref": "cap.protocol.etherchannel-lacp-pagp",
+      "evidence_inputs": [
+        {"command": "show etherchannel summary", "platforms": ["IOS", "NX-OS"]},
+        {"command": "show port-channel summary", "platforms": ["NX-OS"]}
+      ],
+      "assessable_when": "A supported IOS or NX-OS bundle summary is captured and contains member rows. No summary or no parsed members emits no EtherChannel health row.",
+      "advice_states": ["s", "I", "D", "w", "H", "M", "m", "N", "f", "u", "r", "b", "d", "p"],
+      "validation_scope": "Synthetic fixtures challenge complete and combined member-flag tokens, receipt/projection contradictions, and degraded or not-verified cutover/NRFU blockers; timer, hashing, and multi-chassis behavior are not validated.",
+      "cells": {
+        "collection": {"state": "covered", "prerequisite": "The platform-specific offline command set includes an EtherChannel or port-channel summary.", "boundary": "Detailed LACP/PAgP neighbor, hashing, counters, and multi-chassis commands are not a complete evidence contract.", "witness_refs": ["witness.protocol.collection"]},
+        "parsing": {"state": "covered", "prerequisite": "A summary row exposes a member interface and its complete parenthesized flag token.", "boundary": "Only the bounded Cisco summary alphabet is classified.", "witness_refs": ["witness.protocol.parser.etherchannel"]},
+        "normalization": {"state": "partial", "prerequisite": "Member names normalize and flags remain untruncated through the health path.", "boundary": "Negotiation mode, partner identity, min-links intent, hashing, and MLAG/vPC state are not normalized end to end.", "witness_refs": ["witness.protocol.parser.etherchannel", "witness.protocol.health"]},
+        "assessment": {"state": "partial", "prerequisite": "At least one member row exists; capture without a parsed member row remains explicit in the current-run receipt.", "boundary": "Selected non-forwarding flags receive High or Medium severity; a complete bundle intent and bandwidth denominator are not established.", "witness_refs": ["witness.protocol.health", "witness.protocol.assessability"]},
+        "design-advice": {"state": "partial", "prerequisite": "A selected abnormal or hot-standby member flag survives the health-to-intelligence join.", "boundary": "Known flags have bounded doctrine; unknown flags remain outside advice and no root-cause proof is claimed.", "witness_refs": ["witness.protocol.intelligence", "witness.protocol.doctrine"]},
+        "simulation": {"state": "missing", "prerequisite": "An owned negotiation, member-loss, hashing, and multi-chassis state model would be required.", "boundary": "Generic link-failure impact is not LACP/PAgP negotiation simulation.", "witness_refs": []},
+        "validation": {"state": "partial", "prerequisite": "A current-run EtherChannel protocol_assessability/1 receipt cell is assessed and the shared configured-subject/member-state projection is well formed and nonempty; synthetic receipt-gating, complete-token, cutover, and read-only NRFU fixtures challenge the result.", "boundary": "Supported non-forwarding group or member states become PRE-CUTOVER DEGRADED — BLOCKER rows and the current-baseline gate prevents an unchanged blocker from being hidden by a clean delta; review and not-verified evidence abstain, matching a degraded baseline is not acceptance, projection custody remains embedded_unverified, and no complete configured-bundle, partner, hashing, bandwidth, multi-chassis, negotiation-timing, or field-interoperability denominator is inferred.", "witness_refs": ["witness.protocol.parser.etherchannel", "witness.protocol.health", "witness.protocol.assessability", "witness.protocol.etherchannel-baseline", "witness.protocol.current-baseline-gate", "witness.protocol.nrfu"]},
+        "output": {"state": "covered", "prerequisite": "The current-run receipt is present; health or intelligence records remain sparse observed-state details.", "boundary": "The receipt exposes capture/parser reachability but does not prove that all configured bundles or members were captured.", "witness_refs": ["witness.protocol.assessability", "witness.protocol.output.excel", "witness.protocol.output.runbook", "witness.protocol.output.explorer"]}
+      },
+      "limitations": ["No multi-chassis/vPC/MLAG state model", "No hashing or traffic-distribution validation", "Absence of a parsed member row is not healthy"],
+      "gap_refs": ["gap.protocol-depth"]
+    },
+    {
+      "id": "protocol.vtp",
+      "label": "VLAN Trunking Protocol",
+      "health_label": "VTP",
+      "capability_ref": "cap.protocol.vtp",
+      "evidence_inputs": [
+        {"command": "show vtp status", "platforms": ["IOS", "NX-OS"]}
+      ],
+      "assessable_when": "The typed vtp_safety_baseline/1 receipt validates one bounded local show vtp status subject with current-run source custody for decisions or embedded_unverified custody for audit output. Missing, duplicate, malformed, or parser-incomplete evidence remains explicit NOT VERIFIED rather than disappearing behind sparse health.",
+      "advice_states": ["HIGH-REVISION"],
+      "validation_scope": "Synthetic owner and operator fixtures challenge capture/parser gaps, exact fields and censuses, digests, casefold collisions, marker loss, malformed and hostile receipts, high-revision REVIEW behavior, NOT_APPLICABLE wording, and blocker/cap retention. No vendor-lab database propagation, version interoperability, pruning, authentication, or revision-reset behavior is proved.",
+      "cells": {
+        "collection": {"state": "covered", "prerequisite": "The offline command set includes show vtp status and the owner receives one unique integrity-ok inspection for a positive subject.", "boundary": "No VTP packet, database file, pruning, authentication, propagation, or simultaneous evidence is collected.", "witness_refs": ["witness.protocol.collection", "witness.protocol.vtp-safety"]},
+        "parsing": {"state": "covered", "prerequisite": "The bounded owner parses explicit local mode plus optional domain, numeric revision, and running version fields; exact disabled/unsupported output may establish only no positive local subject.", "boundary": "A parse-complete local status record is not domain-wide database or propagation evidence. The legacy health parser remains a separate sparse detail path.", "witness_refs": ["witness.protocol.parser.vtp", "witness.protocol.vtp-safety"]},
+        "normalization": {"state": "partial", "prerequisite": "Mode, field-presence flags, bounded domain, numeric revision, observed running version, status, custody, command, and findings enter vtp_safety_baseline/1.", "boundary": "Observed running version is not intended-version or compatibility proof. Primary-server role, database contents/lineage, pruning, authentication, and advertisement reachability are not normalized end to end.", "witness_refs": ["witness.protocol.parser.vtp", "witness.protocol.health", "witness.protocol.vtp-safety"]},
+        "assessment": {"state": "partial", "prerequisite": "The current-run vtp_safety_baseline/1 receipt reconciles each positive local status subject with its exact coverage cell and the producer-owned summary.by_coverage_status census.", "boundary": "A VTP Server revision of 100 or higher is REVIEW requiring explicit disposition. It is a conservative threshold heuristic—not proof that overwrite, database divergence, or propagation failure will occur—and matching it is NOT ACCEPTANCE. Missing capture/parser custody is NOT VERIFIED; NOT_APPLICABLE means no positive local subject was identified, not network absence.", "witness_refs": ["witness.protocol.health", "witness.protocol.assessability", "witness.protocol.vtp-safety"]},
+        "design-advice": {"state": "partial", "prerequisite": "Server mode and revision 100 or higher are both observed in the bounded summary.", "boundary": "Only HIGH-REVISION has doctrine; domain consistency, pruning, password, version, and database authority are not assessed end to end.", "witness_refs": ["witness.protocol.intelligence", "witness.protocol.doctrine"]},
+        "simulation": {"state": "missing", "prerequisite": "An owned revision-election and VLAN-database propagation model would be required.", "boundary": "No VTP advertisement or overwrite simulation exists.", "witness_refs": []},
+        "validation": {"state": "partial", "prerequisite": "A valid process-current vtp_safety_baseline/1 receipt feeds readiness and typed Validation; generic current-baseline consumers retain its REVIEW or NOT VERIFIED blocker without VTP-specific reconstruction. Synthetic fixtures challenge high revision, missing fields, custody loss, digest/census tampering, marker loss, and cap behavior.", "boundary": "REVIEW and NOT VERIFIED prevent a false clear, but there is no vendor-lab proof of VLAN-database equality or contents, advertisement/per-VLAN propagation, version interoperability, pruning, authentication, revision reset, failover, or cutover safety.", "witness_refs": ["witness.protocol.parser.vtp", "witness.protocol.health", "witness.protocol.vtp-safety", "witness.protocol.current-baseline-gate"]},
+        "output": {"state": "covered", "prerequisite": "A validated embedded_unverified vtp_safety_baseline/1 audit receipt is present. Workbook, runbook, and Explorer take fleet coverage only from summary.by_coverage_status, reserve coverage[] for bounded per-host detail, retain every REVIEW and NOT VERIFIED row plus the first 50 assessed rows, and preserve separate protocol-health and intelligence detail.", "boundary": "Serialized output cannot claim current-run authority. Malformed or current_run_source_bound JSON fails closed without reflecting rejected leaves. Raw captures, hashes, source locators, and paths are not rendered. Observed mode/domain/revision/version does not prove propagation, VLAN-database equality or contents, intended version/compatibility, pruning, password/authentication, freshness, revision-reset safety, or cutover authorization. NOT_APPLICABLE is not proof that VTP is absent.", "witness_refs": ["witness.protocol.assessability", "witness.protocol.vtp-safety", "witness.protocol.output.excel", "witness.protocol.output.runbook", "witness.protocol.output.explorer"]}
+      },
+      "limitations": ["Revision 100 is a REVIEW heuristic, not overwrite or propagation proof", "No VLAN-database equality/content, complete version, pruning, password/authentication, or revision-reset assessment", "Missing status evidence is not healthy and NOT_APPLICABLE is not network absence"],
+      "gap_refs": ["gap.protocol-depth"]
+    },
+    {
+      "id": "protocol.ospf",
+      "label": "Open Shortest Path First",
+      "health_label": "OSPF",
+      "capability_ref": "cap.protocol.ospf",
+      "evidence_inputs": [
+        {"command": "show ip ospf neighbor", "platforms": ["IOS", "NX-OS"]}
+      ],
+      "assessable_when": "At least one neighbor row parses from the captured summary. An empty table cannot distinguish no neighbors, no process, no capture, or unsupported syntax.",
+      "advice_states": ["DOWN", "ATTEMPT", "INIT", "2WAY", "EXSTART", "EXCHANGE", "LOADING"],
+      "validation_scope": "Synthetic fixtures challenge Full/2Way and selected stuck states, including point-to-point formatting; LSDB, area design, authentication, timers, scale, and convergence are not validated.",
+      "cells": {
+        "collection": {"state": "covered", "prerequisite": "The offline command set includes show ip ospf neighbor.", "boundary": "No complete process, interface, database, route, authentication, or event-history command set is claimed.", "witness_refs": ["witness.protocol.collection"]},
+        "parsing": {"state": "covered", "prerequisite": "Captured neighbor rows match the bounded numbered or point-to-point forms.", "boundary": "OSPFv3 and unfamiliar release syntax are outside this OSPFv2 health cell.", "witness_refs": ["witness.protocol.parser.ospf"]},
+        "normalization": {"state": "partial", "prerequisite": "Neighbor identity and state enter the shared routing-neighbor shape.", "boundary": "Process, VRF, area, network type, MTU, authentication, and LSDB facts are incomplete or absent.", "witness_refs": ["witness.protocol.parser.ospf", "witness.protocol.health"]},
+        "assessment": {"state": "partial", "prerequisite": "At least one neighbor row exists; usable capture with no parsed neighbor remains a non-health receipt state.", "boundary": "Full and 2Way are accepted; other parsed states escalate, but expected-neighbor and adjacency-intent denominators are not known.", "witness_refs": ["witness.protocol.health", "witness.protocol.assessability"]},
+        "design-advice": {"state": "partial", "prerequisite": "An abnormal neighbor state survives the health-to-intelligence join.", "boundary": "Selected adjacency states have doctrine; LSDB correctness, route policy, area design, convergence, and root cause remain unproved.", "witness_refs": ["witness.protocol.intelligence", "witness.protocol.doctrine"]},
+        "simulation": {"state": "missing", "prerequisite": "An owned OSPF adjacency, SPF, LSDB, and convergence model would be required.", "boundary": "Topology diagrams and generic failure impact are not protocol simulation.", "witness_refs": []},
+        "validation": {"state": "partial", "prerequisite": "A current-run OSPF protocol_assessability/1 receipt cell is assessed and its observed routing projection is well-formed and nonempty; synthetic routing-baseline and NRFU fixtures challenge the result.", "boundary": "An exact observed non-Full/2Way state is a PRE-CUTOVER DEGRADED — BLOCKER, and the current-baseline gate prevents an unchanged blocker from being hidden by a clean delta. Review and not-verified evidence abstain; no expected-peer denominator is inferred, projection custody remains embedded_unverified, and no scale, flooding, failure-timing, multi-vendor, or field interoperability evidence is claimed.", "witness_refs": ["witness.protocol.parser.ospf", "witness.protocol.health", "witness.protocol.routing-baseline", "witness.protocol.current-baseline-gate", "witness.protocol.nrfu"]},
+        "output": {"state": "covered", "prerequisite": "The current-run receipt is present; OSPF health or intelligence records remain sparse observed-peer details.", "boundary": "The receipt exposes capture/parser reachability, not configured or expected neighbors that were absent.", "witness_refs": ["witness.protocol.assessability", "witness.protocol.adjacency-delta", "witness.protocol.output.excel", "witness.protocol.output.runbook", "witness.protocol.output.explorer"]}
+      },
+      "limitations": ["No expected-neighbor denominator", "No LSDB, area-policy, or convergence proof", "Empty or absent neighbor output is not healthy"],
+      "gap_refs": ["gap.protocol-depth"]
+    },
+    {
+      "id": "protocol.bgp",
+      "label": "Border Gateway Protocol",
+      "health_label": "BGP",
+      "capability_ref": "cap.protocol.bgp",
+      "evidence_inputs": [
+        {"command": "show running-config", "platforms": ["IOS", "NX-OS"]},
+        {"command": "show ip bgp summary", "platforms": ["IOS", "NX-OS"]},
+        {"command": "show bgp summary", "platforms": ["NX-OS"]}
+      ],
+      "assessable_when": "The typed bgp_configured_peer_baseline/1 receipt validates a literal default/global IPv4-unicast configured-peer projection against usable summary evidence and reconciles its producer-owned summary.by_coverage_status host census. Missing summary evidence, unsupported constructs, malformed coverage census, and custody gaps remain explicit degraded, review, not-verified, or NOT ASSESSED states.",
+      "advice_states": ["ACTIVE", "CONNECT", "IDLE", "OPENSENT", "OPENCONFIRM"],
+      "validation_scope": "Synthetic fixtures challenge literal IOS/IOS-XE and NX-OS default/global IPv4-unicast peers, activation and shutdown, remote-AS reconciliation, numeric Established state, selected failure states, missing peers, wrapping, and ASDOT syntax. VRFs, IPv6, VPNv4/EVPN, peer groups/templates, dynamic peers, policy, routes, best path, RPKI, scale, security, and convergence remain outside this gate.",
+      "cells": {
+        "collection": {"state": "covered", "prerequisite": "The offline command set captures show running-config plus the platform-specific BGP summary used by the configured-peer receipt; each inspected host contributes a typed coverage cell to the producer-owned summary.by_coverage_status census.", "boundary": "The gate collects only enough evidence for literal default/global IPv4-unicast peers. A coverage cell reports command/capture/parser reachability, not proof that BGP is absent. VRFs, IPv6, VPNv4/EVPN, peer groups/templates, dynamic peers, full policy/RIB/FIB, route-reflector, RPKI, and event history remain outside it.", "witness_refs": ["witness.protocol.collection", "witness.protocol.bgp-configured-peer"]},
+        "parsing": {"state": "covered", "prerequisite": "Peer rows match bounded summary forms, including wrapped and ASDOT cases.", "boundary": "Only selected summary syntax is within this health path.", "witness_refs": ["witness.protocol.parser.bgp"]},
+        "normalization": {"state": "partial", "prerequisite": "Literal configured peer identity, local/configured-remote AS, activation, observed/runtime AS, state, custody, and source locator enter bgp_configured_peer_baseline/1; observed peers still enter the shared routing-neighbor shape.", "boundary": "Normalization is bounded to default/global IPv4 unicast. VRF/IPv6/VPNv4/EVPN scope, peer groups/templates, dynamic peers, policy, prefixes, best path, next hop, RPKI, and complete session configuration remain incomplete.", "witness_refs": ["witness.protocol.parser.bgp", "witness.protocol.health", "witness.protocol.bgp-configured-peer"]},
+        "assessment": {"state": "partial", "prerequisite": "A validated bgp_configured_peer_baseline/1 receipt reconciles each configured-active literal peer with usable default/global IPv4-unicast summary evidence and source custody, and reconciles the closed degraded/review/not_verified/assessed/not_applicable host census in summary.by_coverage_status.", "boundary": "Established is assessed; a configured-active missing or non-Established peer is degraded, while ambiguity or evidence/custody loss remains review or not verified. Peer-row summary.by_status and host-coverage summary.by_coverage_status are distinct denominators. NOT_APPLICABLE means no in-scope literal peer subject was identified; it is not proof that BGP is absent or that configuration coverage is complete. This is a configured-peer denominator only—not policy, route, best-path, RPKI, convergence, freshness, or interoperability proof—and the excluded AF/VRF/template/dynamic constructs keep BGP partial.", "witness_refs": ["witness.protocol.health", "witness.protocol.assessability", "witness.protocol.bgp-configured-peer"]},
+        "design-advice": {"state": "partial", "prerequisite": "A selected non-Established token survives the health-to-intelligence join.", "boundary": "Five session states have doctrine; route policy, best path, security, scale, and precise root cause remain outside the join.", "witness_refs": ["witness.protocol.intelligence", "witness.protocol.doctrine"]},
+        "simulation": {"state": "missing", "prerequisite": "An owned BGP finite-state, policy, path-selection, and convergence model would be required.", "boundary": "Static topology and generic link failure do not simulate BGP propagation or convergence.", "witness_refs": []},
+        "validation": {"state": "partial", "prerequisite": "A current-run BGP protocol_assessability/1 receipt cell is assessed and its observed routing projection is well-formed and nonempty. Separately, bgp_configured_peer_baseline/1 validates and reconciles configured-active literal peers with usable default/global IPv4-unicast summary evidence plus the exact summary.by_coverage_status host census; synthetic core and operator-surface fixtures challenge missing, degraded, review, not-verified, NOT_APPLICABLE, malformed-map, and cap behavior.", "boundary": "An exact observed nonnumeric State/PfxRcd token is a PRE-CUTOVER DEGRADED — BLOCKER; a configured-active literal peer absent from a usable summary or observed non-Established is also a blocker. A missing, extra, boolean, negative, or non-reconciling host-coverage map fails closed as NOT ASSESSED. The current-baseline gate prevents an unchanged blocker from being hidden by a clean delta from the observed-peer-only comparison. Review and not-verified evidence abstain; no expected-peer denominator is inferred by the observed routing baseline, whose projection custody remains embedded_unverified. The separate configured gate is limited to literal default/global IPv4-unicast peers. VRFs, IPv6, VPNv4/EVPN, peer groups/templates, dynamic peers, full-table scale, policy, security, routes, best path, RPKI, convergence, and field interoperability remain unproved.", "witness_refs": ["witness.protocol.parser.bgp", "witness.protocol.health", "witness.protocol.routing-baseline", "witness.protocol.bgp-configured-peer", "witness.protocol.current-baseline-gate", "witness.protocol.nrfu"]},
+        "output": {"state": "covered", "prerequisite": "A validated bgp_configured_peer_baseline/1 receipt is present. Workbook, runbook, and Explorer label peer-row counts separately from the producer-owned summary.by_coverage_status host census; coverage rows are host detail only. The workbook is uncapped, while the runbook and Explorer retain every peer blocker outside ordinary display caps and expose scope/custody copy.", "boundary": "NOT_APPLICABLE means no in-scope literal peer subject was identified; it is not proof that BGP is absent or that configuration coverage is complete. Outputs show only the default/global IPv4-unicast literal-peer gate. They do not expose raw configuration or prove excluded VRF/AF/template/dynamic-peer, policy, route, best-path, RPKI, convergence, freshness, interoperability, or cutover behavior; before/after comparison remains observed-peer-only in this slice.", "witness_refs": ["witness.protocol.assessability", "witness.protocol.adjacency-delta", "witness.protocol.bgp-configured-peer", "witness.protocol.output.excel", "witness.protocol.output.runbook", "witness.protocol.output.explorer"]}
+      },
+      "limitations": ["Configured-peer denominator is limited to literal default/global IPv4-unicast peers", "VRFs, IPv6, VPNv4/EVPN, peer groups/templates, dynamic peers, policy, routes, best path, RPKI, security, scale, and convergence are excluded", "Missing or unreconciled summary evidence is a blocker or abstention, never healthy"],
+      "gap_refs": ["gap.protocol-depth"]
+    },
+    {
+      "id": "protocol.eigrp",
+      "label": "Enhanced Interior Gateway Routing Protocol",
+      "health_label": "EIGRP",
+      "capability_ref": "cap.protocol.eigrp",
+      "evidence_inputs": [
+        {"command": "show ip eigrp neighbors", "platforms": ["IOS", "NX-OS"]}
+      ],
+      "assessable_when": "At least one up-neighbor row parses. An empty table cannot establish whether neighbors were expected, the process was absent, evidence was missing, or syntax was unsupported.",
+      "advice_states": [],
+      "validation_scope": "Synthetic parser fixtures challenge observed up-neighbor shapes only; negative states, expected neighbors, topology/feasibility, stubs, variance, authentication, and convergence are not validated.",
+      "cells": {
+        "collection": {"state": "covered", "prerequisite": "The offline command set includes show ip eigrp neighbors.", "boundary": "Topology, routes, configuration, events, authentication, and per-address-family commands are not a complete evidence set.", "witness_refs": ["witness.protocol.collection"]},
+        "parsing": {"state": "covered", "prerequisite": "At least one supported neighbor row is present.", "boundary": "The parser represents observed neighbors; it does not synthesize missing or down peers.", "witness_refs": ["witness.protocol.parser.eigrp"]},
+        "normalization": {"state": "partial", "prerequisite": "Observed peer identity and interface enter the shared routing-neighbor shape.", "boundary": "AS/VRF scope, expected peer intent, topology, feasible distance, successor state, stubs, and authentication are absent or incomplete.", "witness_refs": ["witness.protocol.parser.eigrp", "witness.protocol.health"]},
+        "assessment": {"state": "partial", "prerequisite": "At least one up-neighbor row exists; usable capture without a parsed neighbor remains explicit rather than healthy.", "boundary": "Atlas reports observed neighbor count as Info; it cannot classify a missing or failed expected neighbor without an intent denominator.", "witness_refs": ["witness.protocol.health", "witness.protocol.assessability"]},
+        "design-advice": {"state": "missing", "prerequisite": "Expected-neighbor/configuration evidence and bounded abnormal-state doctrine would be required.", "boundary": "Absence of a parsed neighbor must not be converted into a failure cause or remediation guess.", "witness_refs": []},
+        "simulation": {"state": "missing", "prerequisite": "An owned DUAL, topology, successor, query, and convergence model would be required.", "boundary": "No EIGRP protocol simulation exists.", "witness_refs": []},
+        "validation": {"state": "partial", "prerequisite": "A current-run EIGRP protocol_assessability/1 receipt cell is assessed and its observed routing projection is well-formed and nonempty; synthetic routing-baseline and NRFU fixtures challenge the result.", "boundary": "Only an exact producer-classified degraded state may become a PRE-CUTOVER DEGRADED — BLOCKER, and the current-baseline gate prevents an unchanged blocker from being hidden by a clean delta; the current presence-only EIGRP projection has no negative-state denominator. Review and not-verified evidence abstain, no expected-peer denominator is inferred, projection custody remains embedded_unverified, and no DUAL, scale, or field interoperability evidence is claimed.", "witness_refs": ["witness.protocol.parser.eigrp", "witness.protocol.health", "witness.protocol.routing-baseline", "witness.protocol.current-baseline-gate", "witness.protocol.nrfu"]},
+        "output": {"state": "covered", "prerequisite": "The current-run receipt is present; a parsed EIGRP neighbor may add a presence-only Info row.", "boundary": "Workbook, Explorer, and runbook expose the EIGRP receipt cell, but none has an expected-neighbor denominator or proves complete EIGRP health.", "witness_refs": ["witness.protocol.assessability", "witness.protocol.adjacency-delta", "witness.protocol.output.excel", "witness.protocol.output.runbook", "witness.protocol.output.explorer"]}
+      },
+      "limitations": ["No expected-neighbor or negative-state denominator", "No abnormal-state advice", "No DUAL, topology, policy, or convergence proof"],
+      "gap_refs": ["gap.protocol-depth"]
+    },
+    {
+      "id": "protocol.fhrp",
+      "label": "First-hop redundancy",
+      "health_label": "FHRP",
+      "capability_ref": "cap.protocol.fhrp",
+      "evidence_inputs": [
+        {"command": "show running-config", "platforms": ["IOS", "NX-OS"]},
+        {"command": "show standby brief", "platforms": ["IOS"]},
+        {"command": "show hsrp brief", "platforms": ["NX-OS"]},
+        {"command": "show standby all", "platforms": ["IOS"]},
+        {"command": "show vrrp brief", "platforms": ["IOS", "NX-OS"]},
+        {"command": "show glbp brief", "platforms": ["IOS", "NX-OS"]}
+      ],
+      "assessable_when": "The typed fhrp_configured_group_baseline/1 receipt validates bounded local group evidence, then fhrp_redundancy_domain_baseline/1 joins every current normalized SVI member inside the exact VLAN + normalized VRF + observed IPv4 subnet domain. Candidate identity is protocol + group + virtual IP. Missing subtype evidence, unsupported constructs, malformed custody, zero-participation intent ambiguity, and disjoint/subset candidate sets remain explicit degraded, review, not-verified, or NOT ASSESSED states.",
+      "advice_states": ["HSRP:INIT", "HSRP:LEARN"],
+      "validation_scope": "Synthetic fixtures challenge HSRP/VRRP/GLBP configuration and summary reconciliation, exact host × subtype coverage, exact VLAN/normalized-VRF/observed-subnet isolation, zero/positive participation composition, missing subtype evidence, multi-group equal/disjoint/subset candidate sets, current/embedded custody, malformed receipt failure, generic blocker-cap retention, and FHRP Init/Learn health. HSRP Init/Learn have owned doctrine; same-spelled VRRP/GLBP roles remain explicitly not assessed rather than borrowing HSRP causes.",
+      "cells": {
+        "collection": {"state": "covered", "prerequisite": "The platform-specific offline command set captures running configuration plus bounded HSRP, VRRP, and GLBP summaries; each inspected host contributes exactly one typed coverage cell per subtype.", "boundary": "The configured gate collects only enough evidence for default/global IPv4 direct-literal local groups. Captures from distinct hosts are sequential observations unless an operator supplies separate simultaneous verification. A coverage cell reports command/capture/parser reachability, not proof that FHRP is absent. VRFs, IPv6, templates/inheritance/dynamic constructs, secondary VIPs, expected peer/member count or identity, simultaneous election health, complete detail, timers, authentication, tracking behavior, and multi-vendor parity remain outside it; NX-OS configured-group parsing is limited to nested HSRP.", "witness_refs": ["witness.protocol.collection", "witness.protocol.fhrp-configured-group"]},
+        "parsing": {"state": "covered", "prerequisite": "A supported group row maps to a VLAN interface with subtype, group, role, and virtual IP context.", "boundary": "Only bounded Cisco HSRP/VRRP/GLBP forms are parsed; HSRP detail is deeper than the other subtypes.", "witness_refs": ["witness.protocol.parser.fhrp"]},
+        "normalization": {"state": "partial", "prerequisite": "Protocol, normalized interface, group, equal configured/runtime VIP, activation, normalized/raw runtime state, scope, custody, and source locator enter fhrp_configured_group_baseline/1. fhrp_redundancy_domain_baseline/1 then binds every current normalized SVI member to exact VLAN + normalized VRF + observed IPv4 subnet identity and protocol + group + virtual-IP candidate identity.", "boundary": "A normalized domain is observed scope, not intended membership. Nonmatching domains or candidates are never force-joined. Expected/off-scan member identity or count, IPv6, inherited configuration, timers, authentication, complete tracking/preemption semantics, simultaneous election health, and full election intent remain incomplete.", "witness_refs": ["witness.protocol.parser.fhrp", "witness.protocol.health", "witness.protocol.fhrp-configured-group", "witness.protocol.fhrp-redundancy-domain"]},
+        "assessment": {"state": "partial", "prerequisite": "Validated fhrp_configured_group_baseline/1 and fhrp_redundancy_domain_baseline/1 receipts reconcile local group evidence, the closed host × subtype summary.by_coverage_status census, every current normalized SVI member inside an exact observed IPv4 domain, and each protocol + group + virtual-IP candidate set.", "boundary": "A bounded upstream local configured/runtime fault is degraded. Missing subtype evidence is not verified. A same-domain SVI with zero positive participation, or disjoint/subset multi-group candidate membership, is review because intended composition is unresolved—not a proven unprotected gateway or failure. The configured-group summary.by_status remains the concrete local-group denominator. Its exact-candidate sequential review retains election_no_leader_observed and election_multiple_leaders_observed findings. Equal member candidate sets may be assessed only as bounded sequential observation. Matching unresolved composition is NOT ACCEPTANCE. Process-current projection custody binds normalized-SVI and upstream-receipt digests; serialized custody is embedded_unverified. NOT_APPLICABLE means no subject was identified, not absence or complete intent. Expected/off-scan members, simultaneity, timers, authentication, tracking, failover, convergence, freshness, and interoperability remain unproved.", "witness_refs": ["witness.protocol.health", "witness.protocol.assessability", "witness.protocol.fhrp-configured-group", "witness.protocol.fhrp-redundancy-domain"]},
+        "design-advice": {"state": "partial", "prerequisite": "An Init/Learn role survives the health-to-intelligence join with its concrete HSRP, VRRP, or GLBP subtype.", "boundary": "HSRP Init/Learn have bounded doctrine. VRRP/GLBP same-spelled roles disclose NOT ASSESSED cause; other election, split-brain, timer, and tracking states are outside this join.", "witness_refs": ["witness.protocol.intelligence", "witness.protocol.doctrine"]},
+        "simulation": {"state": "partial", "prerequisite": "A unique observed Active/Master, compatible multi-member VIP/version evidence, valid priorities, eligible survivors, and an explicit node or site failure are required.", "boundary": "The failover twin models a bounded takeover or abstains; it does not execute protocol elections or model packets, timers, tracking transitions, complete preemption, or failover timing.", "witness_refs": ["witness.protocol.failover"]},
+        "validation": {"state": "partial", "prerequisite": "fhrp_configured_group_baseline/1 validates local group/runtime evidence and its exact three-cells-per-host census; fhrp_redundancy_domain_baseline/1 validates exact observed domain and candidate composition. Synthetic fixtures challenge same-VLAN cross-VRF/subnet isolation, zero participation, missing subtype evidence, multiple-group equal/disjoint/subset candidate sets, custody/digest tampering, malformed receipts, and generic cap behavior.", "boundary": "A configured-active local group absent from usable subtype runtime evidence is a blocker. Degraded is a bounded local fault; zero participation and unresolved candidate composition are INDETERMINATE review, not proven redundancy failure. Zero or multiple leaders in the configured exact-candidate view remain sequential review, not a split-brain diagnosis; candidate scope may be incomplete, and Matching the conflicting or unresolved sequential roles is NOT ACCEPTANCE. Missing evidence is not verified. The current-baseline gate prevents unchanged blockers from being hidden by a clean delta; MOP and Explorer Waves retain unbound blockers as (unscheduled). Matching unresolved composition is NOT ACCEPTANCE. NOT_APPLICABLE means no subject was identified, not absence or complete intent. No expected/off-scan member count, simultaneous state, timers, authentication, tracking, failover, convergence, freshness, interoperability, or cutover authorization is inferred.", "witness_refs": ["witness.protocol.parser.fhrp", "witness.protocol.health", "witness.protocol.intelligence", "witness.protocol.fhrp-configured-group", "witness.protocol.fhrp-redundancy-domain", "witness.protocol.current-baseline-gate", "witness.protocol.output.current-baseline-workflow", "witness.protocol.nrfu"]},
+        "output": {"state": "covered", "prerequisite": "Validated configured-group and redundancy-domain receipts are present; configured coverage rows are host detail only. Existing typed review rows remain visible. Workbook, runbook, and Explorer expose exact VLAN, normalized VRF, observed IPv4 subnet, domain/member identity, participation, candidate identity, status, custody, source, command, and acceptance. Every degraded, review, and not-verified row survives ordinary caps; only the first 50 ordinary rows are shown on capped surfaces.", "boundary": "Malformed or unbound receipts fail closed without reflecting rejected leaves. Serialized custody remains embedded_unverified. For the configured-group owner, NOT_APPLICABLE means no in-scope literal local group subject was identified; it is not proof that FHRP is absent or that configuration coverage is complete. For the redundancy-domain owner, NOT_APPLICABLE means no subject was identified; it is not proof that FHRP is absent or that intended membership is complete. The legacy FHRP Consistency view is qualified compatibility output and cannot independently say clean, unprotected, fake, or complete. VRFs, IPv6, templates/inheritance/dynamic constructs, secondary VIPs, expected peer/member count or identity, timers, authentication, preemption, tracking behavior, simultaneous election health, split brain, failover, convergence, freshness, interoperability, and cutover authorization remain unproved.", "witness_refs": ["witness.protocol.assessability", "witness.protocol.fhrp-configured-group", "witness.protocol.fhrp-redundancy-domain", "witness.protocol.output.excel", "witness.protocol.output.runbook", "witness.protocol.output.explorer"]}
+      },
+      "limitations": ["Redundancy-domain identity is exact VLAN + normalized VRF + observed IPv4 subnet", "Zero positive participation is intent-unresolved review, not proven failure", "Expected/off-scan member count or identity and complete election intent are not modeled", "Sequential candidate review is not proof of simultaneous election health or split brain", "HSRP advice is limited to Init/Learn", "VRRP/GLBP Init/Learn causes remain explicitly not assessed", "No complete election, timer, authentication, tracking, failover, or convergence proof"],
+      "gap_refs": ["gap.protocol-depth"]
+    },
+    {
+      "id": "protocol.ipv6-routing",
+      "label": "IPv6 Routing Adjacencies",
+      "health_label": "IPv6 Routing",
+      "capability_ref": "cap.protocol.ipv6-nd-routing",
+      "evidence_inputs": [
+        {"command": "show ipv6 route summary", "platforms": ["IOS", "NX-OS"]},
+        {"command": "show ipv6 ospfv3 neighbors", "platforms": ["NX-OS"]},
+        {"command": "show ipv6 ospf neighbor", "platforms": ["IOS"]},
+        {"command": "show bgp ipv6 unicast summary", "platforms": ["IOS", "NX-OS"]}
+      ],
+      "assessable_when": "The separately owned ipv6_routing_adjacency_baseline/1 receipt validates a bounded current-run source-bound projection of observed default/global OSPFv3 and IPv6-unicast BGP adjacencies and reconciles exactly three route-summary/OSPFv3/BGPv6 coverage cells per inspected host. Missing, malformed, ambiguous, or custody-lost evidence remains degraded, review, not verified, or not applicable rather than disappearing into sparse legacy output.",
+      "advice_states": [],
+      "validation_scope": "Synthetic owner and operator fixtures challenge healthy and broken OSPFv3/BGPv6 observations, exact row/coverage/fleet censuses, current and embedded custody, malformed/tampered receipts, blocker caps, privacy, coverage-only subject hosts, and Python/Explorer semantic parity. No configured or expected-peer, VRF/other-AF, route/prefix correctness, RIB/FIB/path selection, policy/best-path, convergence, freshness, simultaneity, interoperability, or cutover-authorization proof is claimed.",
+      "cells": {
+        "collection": {"state": "covered", "prerequisite": "The offline command set captures an IPv6 route summary, a platform-appropriate OSPFv3 neighbor table, and an IPv6-unicast BGP summary; every inspected host contributes exactly three typed coverage cells.", "boundary": "A coverage cell proves only bounded command/capture/parser reachability. Empty or NOT_APPLICABLE evidence is not proof that IPv6 routing, a process, or an expected adjacency is absent; captures from distinct hosts are not simultaneous.", "witness_refs": ["witness.protocol.collection", "witness.protocol.ipv6-routing-adjacency"]},
+        "parsing": {"state": "covered", "prerequisite": "Supported route-summary, OSPFv3-neighbor, and BGP IPv6-unicast summary syntax yields bounded structured facts.", "boundary": "Route summary is a point-in-time source census. Unfamiliar syntax, VRFs, other address families, full route tables, policy, and event history remain outside the parser contract.", "witness_refs": ["witness.protocol.parser.ipv6-routing", "witness.protocol.ipv6-routing-adjacency"]},
+        "normalization": {"state": "partial", "prerequisite": "Protocol, default routing instance, process, exact observed peer/interface/remote-AS/role/state, informational prefix count, command, custody, status, and findings enter ipv6_routing_adjacency_baseline/1.", "boundary": "Peer identity is observed runtime identity, not configured intent. OSPF process/VRF/network-type completeness and BGP policy/VRF/other-AF completeness are not normalized end to end; prefix counts are informational and not pinned acceptance targets.", "witness_refs": ["witness.protocol.parser.ipv6-routing", "witness.protocol.ipv6-routing-adjacency"]},
+        "assessment": {"state": "partial", "prerequisite": "The current-run source-bound receipt reconciles each observed adjacency row with its protocol coverage cell, the closed three-cells-per-host census, summary.by_status, and producer-owned summary.by_coverage_status.", "boundary": "OSPFv3 FULL/2WAY and BGPv6 Established are bounded observed states. Other exact observed states are degraded; ambiguity is review and evidence loss is not verified. No configured/expected-peer denominator is inferred, empty or NOT_APPLICABLE evidence is not absence, route summary is only a point-in-time census, and matching a degraded state is NOT ACCEPTANCE.", "witness_refs": ["witness.protocol.ipv6-routing-adjacency"]},
+        "design-advice": {"state": "missing", "prerequisite": "A separately owned OSPFv3/BGPv6 state-to-cause doctrine join would be required.", "boundary": "The typed acceptance and findings identify bounded observed disposition; they do not assert root cause, protocol design correctness, or remediation doctrine.", "witness_refs": []},
+        "simulation": {"state": "missing", "prerequisite": "Owned OSPFv3 and BGPv6 state-machine, route-propagation, policy, path-selection, and convergence models would be required.", "boundary": "Static topology and current adjacency observation are not IPv6 routing or convergence simulation.", "witness_refs": []},
+        "validation": {"state": "partial", "prerequisite": "A valid current-run ipv6_routing_adjacency_baseline/1 receipt feeds typed Validation and the shared current-baseline owner; synthetic fixtures challenge broken and healthy states, missing evidence, custody/digest/census tampering, caps, privacy, and coverage-only subjects.", "boundary": "Every degraded, review, and not-verified row blocks or abstains and survives generic Validation/current-baseline consumers; the current-baseline gate prevents an unchanged blocker from being hidden by a clean delta or becoming acceptance. No configured/expected peers, VRF/other-AF completeness, route/prefix correctness, RIB/FIB/path selection, policy/best path, convergence, freshness, simultaneity, interoperability, or cutover authorization is inferred. The before/after protocol_adjacency_delta/1 owner remains IPv4 OSPF/BGP/EIGRP-only in this minimum slice.", "witness_refs": ["witness.protocol.ipv6-routing-adjacency", "witness.protocol.current-baseline-gate", "witness.protocol.output.current-baseline-workflow"]},
+        "output": {"state": "covered", "prerequisite": "A structurally valid embedded_unverified ipv6_routing_adjacency_baseline/1 audit receipt is present. Workbook, runbook, and Explorer take fleet coverage only from summary.by_coverage_status, reserve coverage[] for host-family/input drilldown, retain every degraded, review, and not-verified row plus the first 50 assessed rows, and render bounded command/custody with exact observed peer/state.", "boundary": "Malformed or serialized current_run_source_bound receipts fail closed without reflecting rejected leaves. Raw captures, SHA values, source locators, and filesystem paths are not rendered. Direct output proves no configured/expected peers, complete processes/VRFs/address families, route or prefix correctness, RIB/FIB/path selection, policy/best path, convergence, freshness, simultaneity, interoperability, or cutover authorization; prefix counts remain informational.", "witness_refs": ["witness.protocol.ipv6-routing-adjacency", "witness.protocol.output.excel", "witness.protocol.output.runbook", "witness.protocol.output.explorer", "witness.protocol.output.current-baseline-workflow"]}
+      },
+      "limitations": ["Observed default/global runtime adjacency denominator only", "No configured or expected-peer denominator", "Empty or NOT_APPLICABLE evidence is not proof of absence", "Route summary is a point-in-time scope census and prefix counts are informational", "No complete VRF/other-AF, route/prefix, policy/path, convergence, freshness, simultaneity, interoperability, or cutover-authorization proof", "Before/after protocol_adjacency_delta/1 remains IPv4 OSPF/BGP/EIGRP-only"],
+      "gap_refs": ["gap.protocol-depth"]
+    }
+  ]
+}

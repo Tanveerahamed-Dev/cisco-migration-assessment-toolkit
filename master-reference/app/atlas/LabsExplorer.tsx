@@ -214,6 +214,8 @@ export function LabsExplorer({ labs, owners, initialLab, initialStep }: LabsExpl
               <button disabled={step === 0} onClick={() => moveTo(step - 1)} type="button">← Previous</button>
               {step < walkthrough.length - 1 ? (
                 <button onClick={() => moveTo(step + 1)} type="button">Next boundary →</button>
+              ) : selected.id === "lab.03-protocol-intelligence" ? (
+                <a href="/protocols">Open the protocol stage matrix →</a>
               ) : (
                 <a href={`/ask?q=${encodeURIComponent(selected.title)}`}>Resolve related records →</a>
               )}

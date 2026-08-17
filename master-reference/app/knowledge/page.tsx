@@ -123,7 +123,7 @@ export default function KnowledgePage() {
             <ul className={styles.tagList}>
               {Object.entries(protocolStates).map(([state, count]) => <li key={state}>{state}: {count}</li>)}
             </ul>
-            <a href="/capabilities?domain=domain.protocols">Inspect every protocol cell</a>
+            <a href="/protocols">Inspect the seven-family stage matrix</a>
           </article>
           <article className={styles.card}>
             <h3>Enterprise designs</h3>

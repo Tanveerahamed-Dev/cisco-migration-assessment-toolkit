@@ -48,12 +48,12 @@ const INERT_TEXT_TAGS = new Set([
   "xmp",
 ]);
 const CORE_OUTCOME_STYLESHEET = Object.freeze({
-  href: "/assets/index-DJZ4gasp.css",
-  sha256: "e4bc80765bd0993ad5cb6afa1b0f8dd69ef487df8c1b74fff91312589e1e4f0d",
+  href: "/assets/index-C_Gl0jrw.css",
+  sha256: "f88fab14575c38c41f55e35991159acb78d7c48cc01fd904e8f6bc938eb538d2",
   attributes: Object.freeze({
     "data-precedence": "vite-rsc/importer-resources",
-    "data-rsc-css-href": "/assets/index-DJZ4gasp.css",
-    href: "/assets/index-DJZ4gasp.css",
+    "data-rsc-css-href": "/assets/index-C_Gl0jrw.css",
+    href: "/assets/index-C_Gl0jrw.css",
     rel: "stylesheet",
   }),
 });
@@ -1135,6 +1135,7 @@ test("server-renders every owner workspace with its proof boundary", async () =>
     ["/trace?stage=not-real", ["Trace abstained: unknown stage", "No substitute relationship was inferred", "Ordered source-bound thread"]],
     ["/graph", ["Complete static graph", "Keep every safe node and edge", "Loading bounded graph overview"]],
     ["/capabilities", ["Every declared capability has a state", "capability records", "Current bounded scope"]],
+    ["/protocols", ["Protocol depth, family by family", "Eight runtime families × eight lifecycle stages", "Source coverage, not a field-behavior claim"]],
     ["/gaps", ["Choose with the uncertainty visible", "Owner decision queue", "Open Horizon Register"]],
     ["/labs", ["Learn the boundary without crossing it", "Fourteen deterministic labs", "Never mutates truth"]],
     ["/knowledge", ["Knowledge may advise Atlas", "Source-of-truth and code-graph owners", "Vault and private-evidence boundary"]],
@@ -1561,9 +1562,109 @@ test("server-renders the source-derived Horizon safety boundary and deterministi
 test("exposes every dedicated owner workspace in shell navigation", async () => {
   const response = await render();
   const html = await response.text();
-  for (const href of ["/product", "/trace", "/knowledge", "/progress"]) {
+  for (const href of ["/product", "/trace", "/protocols", "/knowledge", "/progress"]) {
     assert.match(html, new RegExp(`href="${href}"`), `navigation is missing ${href}`);
   }
+});
+
+test("renders the complete protocol stage matrix and coverage-honest family dossiers", async () => {
+  const model = JSON.parse(
+    await readFile(new URL("app/atlas/protocol-depth.json", root), "utf8"),
+  );
+  const response = await render("/protocols");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.equal((html.match(/data-protocol-cell="[^"]+"/g) ?? []).length, 64);
+  assert.ok(html.includes('data-selected-protocol="protocol.stp"'));
+  assert.ok(html.includes('action="/protocols#protocol-family-detail"'));
+  assert.ok(html.includes("data-runtime-assessability-contract"));
+  assert.ok(html.includes("Runtime assessability contract"));
+  assert.ok(html.includes("analysis-unavailable states"));
+  assert.ok(html.includes("data-runtime-etherchannel-baseline-contract"));
+  assert.ok(html.includes("Single-snapshot EtherChannel baseline contract"));
+  assert.ok(html.includes("matching a degraded baseline is not acceptance"));
+  assert.ok(html.includes("no complete configured-bundle or partner denominator is inferred"));
+  assert.ok(html.includes("data-runtime-routing-baseline-contract"));
+  assert.ok(html.includes("Single-snapshot routing baseline contract"));
+  assert.ok(html.includes("well-formed, nonempty observed projection"));
+  assert.ok(html.includes("no expected-peer denominator is inferred"));
+  assert.ok(html.includes("projection custody remains embedded_unverified"));
+  assert.ok(html.includes("data-runtime-adjacency-change-contract"));
+  assert.ok(html.includes("Before/after adjacency change contract"));
+  assert.ok(html.includes("data-runtime-current-baseline-gate-contract"));
+  assert.ok(html.includes("Current-baseline cutover gate"));
+  assert.match(html, /degraded baseline is BLOCKED even when it is unchanged/);
+  assert.match(html, /CLEAR means\s+only that no blocker was emitted/);
+  assert.ok(html.includes("embedded projection custody remains explicitly unverified"));
+  for (const family of model.families) assert.ok(html.includes(family.label));
+  for (const stage of model.stages) assert.ok(html.includes(stage.label));
+  assert.ok(html.includes("No emitted family row means"));
+  const visible = normalizedVisibleText(html);
+  assert.ok(visible.includes("31 adjacent or"));
+  assert.match(visible, /current\s*:\s*0/);
+  assert.match(visible, /partial\s*:\s*21/);
+  assert.match(visible, /missing\s*:\s*17/);
+  assert.ok(visible.includes("IOS / NX-OS"));
+  assert.ok(visible.includes("show spanning-tree detail"));
+
+  const ospfResponse = await render("/protocols?family=protocol.ospf");
+  assert.equal(ospfResponse.status, 200);
+  const ospfHtml = await ospfResponse.text();
+  assert.ok(ospfHtml.includes('data-selected-protocol="protocol.ospf"'));
+  assert.ok(ospfHtml.includes("summarize_routing_baseline"));
+  assert.ok(ospfHtml.includes("tests/test_routing_cutover_truth.py"));
+  assert.ok(ospfHtml.includes("tests/test_routing_nrfu_truth.py"));
+  assert.ok(ospfHtml.includes("PRE-CUTOVER DEGRADED — BLOCKER"));
+  assert.ok(ospfHtml.includes("projection custody remains embedded_unverified"));
+
+  const etherchannelResponse = await render("/protocols?family=protocol.etherchannel");
+  assert.equal(etherchannelResponse.status, 200);
+  const etherchannelHtml = await etherchannelResponse.text();
+  assert.ok(etherchannelHtml.includes('data-selected-protocol="protocol.etherchannel"'));
+  assert.ok(etherchannelHtml.includes("compute_etherchannel_projection"));
+  assert.ok(etherchannelHtml.includes("summarize_etherchannel_baseline"));
+  assert.ok(etherchannelHtml.includes("tests/test_etherchannel_cutover_truth.py"));
+  assert.ok(etherchannelHtml.includes("PRE-CUTOVER DEGRADED — BLOCKER"));
+  assert.ok(etherchannelHtml.includes("review and not-verified evidence abstain"));
+  assert.ok(etherchannelHtml.includes("projection custody remains embedded_unverified"));
+
+  const fhrpResponse = await render("/protocols?family=protocol.fhrp");
+  assert.equal(fhrpResponse.status, 200);
+  const fhrpHtml = await fhrpResponse.text();
+  assert.ok(fhrpHtml.includes('data-selected-protocol="protocol.fhrp"'));
+  assert.ok(fhrpHtml.includes("HSRP:INIT"));
+  assert.ok(fhrpHtml.includes("HSRP:LEARN"));
+  assert.ok(fhrpHtml.includes("VRRP/GLBP same-spelled roles disclose NOT ASSESSED cause"));
+  assert.ok(fhrpHtml.includes("tests/test_protocol_kb.py"));
+
+  const invalidResponse = await render("/protocols?family=protocol.not-real");
+  assert.equal(invalidResponse.status, 200);
+  const invalidHtml = await invalidResponse.text();
+  assert.ok(invalidHtml.includes("Protocol selection not recognized"));
+  assert.ok(invalidHtml.includes("No substitute family was inferred"));
+  assert.doesNotMatch(invalidHtml, /data-selected-protocol=/);
+
+  for (const path of [
+    "/protocols?family=",
+    "/protocols?family=protocol.bgp&family=protocol.ospf",
+  ]) {
+    const malformedResponse = await render(path);
+    assert.equal(malformedResponse.status, 200);
+    const malformedHtml = await malformedResponse.text();
+    assert.ok(malformedHtml.includes("must contain exactly one non-empty protocol ID"));
+    assert.ok(malformedHtml.includes("No substitute family was inferred"));
+    assert.doesNotMatch(malformedHtml, /data-selected-protocol=/);
+  }
+
+  const capabilityResponse = await render(
+    "/capabilities?domain=domain.protocols&q=cap.protocol.fhrp",
+  );
+  assert.equal(capabilityResponse.status, 200);
+  assert.ok((await capabilityResponse.text()).includes('id="cap.protocol.fhrp"'));
+
+  const labResponse = await render("/labs?lab=lab.03-protocol-intelligence&step=4");
+  assert.equal(labResponse.status, 200);
+  assert.ok((await labResponse.text()).includes('href="/protocols"'));
 });
 
 test("renders the exact canonical output denominator as artifact dossiers", async () => {

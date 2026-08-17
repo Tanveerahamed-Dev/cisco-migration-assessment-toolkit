@@ -60,6 +60,79 @@ export type CapabilityCatalog = {
   domains: CapabilityDomain[];
 };
 
+export type ProtocolDepthState = "covered" | "partial" | "missing";
+
+export type ProtocolDepthStageId =
+  | "collection"
+  | "parsing"
+  | "normalization"
+  | "assessment"
+  | "design-advice"
+  | "simulation"
+  | "validation"
+  | "output";
+
+export type ProtocolDepthCell = {
+  state: ProtocolDepthState;
+  prerequisite: string;
+  boundary: string;
+  witness_refs: string[];
+};
+
+export type ProtocolDepthStage = {
+  id: ProtocolDepthStageId;
+  order: number;
+  label: string;
+  question: string;
+  non_proof: string;
+};
+
+export type ProtocolDepthWitness = {
+  id: string;
+  path: string;
+  symbols: string[];
+  proves: string;
+  test_refs: string[];
+};
+
+export type ProtocolDepthFamily = {
+  id: string;
+  label: string;
+  health_label: string;
+  capability_ref: string;
+  evidence_inputs: Array<{
+    command: string;
+    platforms: Array<"IOS" | "NX-OS">;
+  }>;
+  assessable_when: string;
+  advice_states: string[];
+  validation_scope: string;
+  cells: Record<ProtocolDepthStageId, ProtocolDepthCell>;
+  limitations: string[];
+  gap_refs: string[];
+};
+
+export type ProtocolDepthModel = {
+  schema_version: "1.0.0";
+  id: "protocol-depth.eight-family-runtime";
+  kind: "source-bound-derived-view";
+  authority: string;
+  denominator: {
+    baseline_ref: "baseline.protocol.health";
+    catalog_domain_ref: "domain.protocols";
+    catalog_cell_count: number;
+    health_family_count: 7;
+    family_count: 8;
+    stage_count: 8;
+    cell_count: 64;
+    scope_rule: string;
+  };
+  state_contract: Record<ProtocolDepthState, string>;
+  stages: ProtocolDepthStage[];
+  witnesses: ProtocolDepthWitness[];
+  families: ProtocolDepthFamily[];
+};
+
 export type Gap = {
   id: string;
   title: string;
