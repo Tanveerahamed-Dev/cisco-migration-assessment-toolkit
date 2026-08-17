@@ -585,11 +585,18 @@ def _valid_bgp_up_down(value: str) -> bool:
     )
     if not compact:
         return False
-    _first, first_unit, _second, second_unit = compact.groups()
+    _first, first_unit, second, second_unit = compact.groups()
     if not second_unit:
         return True
-    unit_rank = {"y": 5, "w": 4, "d": 3, "h": 2, "m": 1, "s": 0}
-    return unit_rank[first_unit.casefold()] > unit_rank[second_unit.casefold()]
+    subordinate = {
+        "y": ("w", 52), "w": ("d", 6), "d": ("h", 23),
+        "h": ("m", 59), "m": ("s", 59),
+    }
+    expected = subordinate.get(first_unit.casefold())
+    return bool(
+        expected and second_unit.casefold() == expected[0]
+        and second is not None and int(second) <= expected[1]
+    )
 
 
 def _canonical_bgp_state(value: str) -> str:
@@ -760,7 +767,11 @@ def _parse_bgpv6(body: str) -> dict:
         re.IGNORECASE,
     )
     nx_contexts = []
+    nx_context_lines = 0
     for line in lines:
+        if re.match(r"^\s*BGP summary information for VRF\b", line,
+                    re.IGNORECASE):
+            nx_context_lines += 1
         match = nx_context_re.fullmatch(line)
         if match:
             vrf = match.group("vrf").strip("\"'").casefold()
@@ -768,6 +779,7 @@ def _parse_bgpv6(body: str) -> dict:
             nx_contexts.append((vrf, af))
     context_review = bool(
         header_count > 1
+        or nx_context_lines != len(nx_contexts)
         or len(process_matches) != len(processes)
         or len(set(processes)) > 1
         or len(nx_contexts) > 1
@@ -886,6 +898,7 @@ def _parse_bgpv6(body: str) -> dict:
     if malformed or (rows and not header):
         codes.append("bgpv6_candidate_rejected")
     parser_status = (
+        "review" if context_review and (header_count or nx_contexts) else
         "review" if rows and review else
         "complete" if rows else
         "rejected" if rejected_count else

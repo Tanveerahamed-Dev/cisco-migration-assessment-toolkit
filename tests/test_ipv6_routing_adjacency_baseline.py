@@ -447,6 +447,10 @@ def test_ospf_rows_without_the_exact_header_cannot_clear(tmp_path):
     _bgp_line(version="999"),
     _bgp_line(counters=("garbage",) * 5),
     _bgp_line(up_down="tomorrow"),
+    _bgp_line(up_down="1d99h"),
+    _bgp_line(up_down="1h99m"),
+    _bgp_line(up_down="1m99s"),
+    _bgp_line(up_down="999y99w"),
     _bgp_line(state="Banana"),
     _bgp_line(counters=("18446744073709551616", "11", "15", "0", "0")),
     _bgp_line(state="4294967296"),
@@ -542,6 +546,24 @@ def test_nxos_bgp_summary_context_is_explicitly_scoped(
     assert cell["parser_status"] == expected_status
     assert baseline["verdict"] == (
         "CLEAR" if expected_status == "complete" else "INDETERMINATE")
+    assert validate_ipv6_routing_adjacency_baseline(
+        baseline, require_current_run=True)["valid"] is True
+
+
+def test_nxos_wrong_address_family_is_review_even_without_ipv6_rows(tmp_path):
+    body = (
+        "BGP summary information for VRF default, address family IPv4 Unicast\n"
+        + _bgp() + _bgp_line(peer="192.0.2.1", state="7") + "\n"
+    )
+    _paths, baseline = _owner(tmp_path, {
+        "show ipv6 route summary": _route(ospf=0, bgp=1),
+        "show bgp ipv6 unicast summary": body,
+    }, platform="nxos")
+    cell = next(item for item in baseline["coverage"]
+                if item["input"] == "bgp_ipv6_neighbors")
+    assert cell["parser_status"] == "review"
+    assert baseline["verdict"] == "INDETERMINATE"
+    assert baseline["rows"][0]["peer_key"] == ""
     assert validate_ipv6_routing_adjacency_baseline(
         baseline, require_current_run=True)["valid"] is True
 
