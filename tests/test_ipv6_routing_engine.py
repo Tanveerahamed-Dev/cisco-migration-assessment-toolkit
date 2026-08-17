@@ -88,6 +88,20 @@ def _owner(
     return baseline, scope
 
 
+def _owner_from_bodies(tmp_path, bodies: dict[str, str]):
+    paths = {"sw1": {}}
+    for command, body in bodies.items():
+        capture = tmp_path / (command.replace(" ", "_") + ".txt")
+        capture.write_text(body, encoding="utf-8")
+        paths["sw1"][command] = str(capture)
+    devices = {"sw1": {"platform": "ios"}}
+    baseline = compute_ipv6_routing_adjacency_baseline(
+        paths, compute_capture_integrity_from_paths(paths), devices=devices,
+    )
+    scope = compute_ipv6_routing_subject_scope(paths, devices=devices)
+    return baseline, scope
+
+
 def _dep_map():
     return {
         "single_fiber": [], "errdis": [], "halfdup_up": [], "sole_gw": {},
@@ -169,6 +183,52 @@ def test_exstart_and_active_close_ready_clear_and_zero_nrfu_false_clear(tmp_path
     assert len(ipv6_punch) == 2
     assert {row["severity"] for row in ipv6_punch} == {"High"}
     assert all(row["remediation"] == "" for row in ipv6_punch)
+
+
+@pytest.mark.parametrize("bodies", [
+    {
+        "show ipv6 route summary": """\
+IPv6 Routing Table - default - 8 entries
+Codes: C - connected, L - local, O - OSPF intra
+C 2001:db8:10::/64 [0/0]
+ via Vlan10, directly connected
+O 2001:db8:20::/64 [110/20]
+ via fe80::1, Vlan10
+""",
+        "show ospfv3 neighbor": _ospfv3(
+            ("10.0.0.1", "FULL/DR", "Vlan10")),
+    },
+    {
+        "show ipv6 route summary": ROUTE_SUMMARY,
+        "show bgp ipv6 unicast summary": (
+            _bgpv6() + "2001:db8::1 4 65001 0\n"),
+    },
+    {
+        "show ipv6 route summary": ROUTE_SUMMARY,
+        "show ospfv3 neighbor": _ospfv3(
+            ("10.0.0.1", "FULL/DR", "Vlan10")
+        ).replace("00:00:37    16", "garbage garbage"),
+    },
+])
+def test_rejected_parser_denominator_never_reaches_ready_clear_or_zero_blockers(
+        bodies, tmp_path):
+    baseline, scope = _owner_from_bodies(tmp_path, bodies)
+    assert scope["valid"] is False
+    assert scope["attempted"] is True
+    assert scope["reason"] == "scope_evidence_rejected"
+    assert validate_ipv6_routing_adjacency_baseline(baseline)["valid"] is False
+
+    readiness, plan, nrfu, cases, punchlist = _surfaces(
+        baseline, scope=scope)
+    assert readiness["readiness"] == "CAUTION"
+    assert _ipv6_check(readiness)["status"] == "warn"
+    assert compute_current_baseline_gate(plan)["verdict"] == "INDETERMINATE"
+    assert len(_ipv6_items(plan)) == len(cases) == 1
+    assert cases[0]["evidence_state"] == "not_verified"
+    assert nrfu["summary"]["n_ipv6_routing_blockers"] == 1
+    assert len([
+        row for row in punchlist if row["category"] == "IPv6 Routing"
+    ]) == 1
 
 
 def test_full_2way_and_established_are_bounded_clear(tmp_path):
