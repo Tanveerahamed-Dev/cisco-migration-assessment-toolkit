@@ -35,6 +35,20 @@ compute_campaign_trend = _html.compute_campaign_trend
 redact_snapshot = _html.redact_snapshot
 
 
+def compute_current_baseline_gate(validation_plan: Any) -> Dict[str, Any]:
+    """Return the engine-owned current-baseline cutover verdict for a validation plan.
+
+    Keeping this call behind the adapter gives every AssessHub projection the same owner as the CLI,
+    workbook, and explorer instead of teaching the web layer its own verdict vocabulary.
+    """
+    return _analyze.compute_current_baseline_gate(validation_plan)
+
+
+def classify_current_baseline_item(item: Any) -> str:
+    """Expose the engine's total typed-state/exact-marker classifier to AssessHub."""
+    return _analyze.classify_current_baseline_item(item)
+
+
 def render_explorer_html(snapshot: Dict[str, Any], label: str) -> str:
     """Render the self-contained Blast-Radius Explorer for a stored snapshot, returned as a string.
 

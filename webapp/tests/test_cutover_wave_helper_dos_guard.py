@@ -166,14 +166,22 @@ def test_cutover_survives_deep_field_poison(client, snap):
 def test_cutover_wellformed_still_produces_coherent_plan(client):
     """Non-vacuity anchor: a well-formed snapshot yields 200 with a coherent, POPULATED plan -- proving the
     guards degrade only garbage, and the wave helpers still run on good input."""
+    validation = {"device": "sw1", "platform": "ios", "wave": "W1", "category": "Reachability",
+                  "severity": "High", "check": "reachability", "command": "ping",
+                  "expect": "Success rate is 100 percent", "why": "Proves post-cut reachability",
+                  "evidence_state": "assessed", "projection_custody": "embedded_unverified",
+                  "source_key": "validation.sw1"}
     snap = {
         "devices": {"sw1": {}, "sw2": {}},
         "wave_sequencing": [{"group": "W1", "hard_cutover": ["sw1"], "make_before_break": ["sw2"],
                              "hard_cutover_endpoints": 4}],
         "migration_readiness": [{"group": "W1", "readiness": "READY", "n_fail": 0, "n_warn": 0}],
         "remediation_plan": {"by_device": {"sw1": [{"title": "Add redundant uplink", "severity": "High"}]}},
-        "validation_plan": {"by_wave": {"W1": [{"check": "reachability", "severity": "High",
-                                                "command": "ping"}]}},
+        "validation_plan": {
+            "items": [validation], "by_wave": {"W1": [validation]},
+            "summary": {"n_items": 1, "n_waves": 1,
+                        "by_category": {"Reachability": 1}, "n_high": 1},
+        },
     }
     r = _get_cutover(client, snap)
     assert r.status_code == 200, r.text

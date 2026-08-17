@@ -188,13 +188,13 @@ def test_recommended_decision_detail_discloses_the_decisions_it_did_not_detail(t
 
 
 def test_punchlist_fallback_discloses_on_the_real_golden_snapshot(tmp_path):
-    """UNMODIFIED real producer artifact: 37 punch-list items, no design blueprint — so §4 IS the
+    """UNMODIFIED real producer artifact: 39 punch-list items, no design blueprint — so §4 IS the
     punch-list table, and the 12-row cap is hit by the golden fleet itself."""
     snap = _golden()
-    assert not snap.get("design_blueprint") and len(snap["punchlist"]) == 37   # pin the preconditions
+    assert not snap.get("design_blueprint") and len(snap["punchlist"]) == 39   # pin the preconditions
     disc = _find(_render(write_design_doc_docx, snap, tmp_path, "fallback"), "further punch-list item(s)")
-    assert disc, "§4 rendered 12 of 37 punch-list items as the whole target-state section, undisclosed"
-    assert "…and 25 further" in disc[0] and "(37 in total)" in disc[0], disc[0]
+    assert disc, "§4 rendered 12 of 39 punch-list items as the whole target-state section, undisclosed"
+    assert "…and 27 further" in disc[0] and "(39 in total)" in disc[0], disc[0]
 
 
 # --------------------------------------------------------------------------------------------------
@@ -219,9 +219,9 @@ def test_endpoint_class_table_discloses_the_classes_it_dropped(tmp_path):
 def test_crd_known_issues_disclose_the_punchlist_on_the_real_golden_snapshot(tmp_path):
     snap = _golden()
     disc = _find(_render(write_crd_docx, snap, tmp_path, "crd"), "further punch-list item(s)")
-    assert disc, ("the CRD's function is 'take a position on' these issues; 8 of 37 rendered with no "
+    assert disc, ("the CRD's function is 'take a position on' these issues; 8 of 39 rendered with no "
                   "total anywhere in §2 reads as the complete known-issue set")
-    assert "…and 29 further" in disc[0] and "(37 in total)" in disc[0], disc[0]
+    assert "…and 31 further" in disc[0] and "(39 in total)" in disc[0], disc[0]
 
 
 # --------------------------------------------------------------------------------------------------

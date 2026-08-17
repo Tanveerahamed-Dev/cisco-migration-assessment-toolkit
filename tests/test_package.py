@@ -54,6 +54,7 @@ def test_parse_module_reexported_and_functional(cp):
                  "_parse_poe_watts", "parse_show_interface_counters"):
         assert hasattr(parse, name) and not hasattr(cp, name)
     assert parse._parse_fhrp("HSRP grp 1 Active VIP 10.0.10.1") == ("HSRP", "Active", "10.0.10.1", "1")
+    assert parse._parse_fhrp("HSRP grp1 active vIP 10.0.10.1") == ("HSRP", "Active", "10.0.10.1", "1")
     assert parse._is_physical_port("Gi1/0/1") is True and parse._is_physical_port("Vlan10") is False
     assert parse._classify_media("media type is 10/100/1000BaseTX") == "copper"
     phy = parse.parse_interface_phy(

@@ -71,13 +71,16 @@ def test_campaign_workbook_sheets(tmp_path):
     out = tmp_path / "trend.xlsx"
     write_campaign_workbook([C1, C2, C3], str(out))
     wb = load_workbook(str(out))
-    assert wb.sheetnames == ["Campaign Summary", "Timeline", "Burndown"]
+    assert wb.sheetnames == ["Campaign Summary", "Timeline", "Burndown", "Protocol Adjacencies"]
     summ = wb["Campaign Summary"]
     assert summ.cell(2, 1).value == "CAMPAIGN VERDICT" and summ.cell(2, 2).value == "IMPROVING"
     tl = wb["Timeline"]
     assert tl.cell(1, 1).value == "Collection" and tl.max_row == 4    # header + 3 collections
     bd = wb["Burndown"]
     assert bd.cell(1, 1).value == "Step" and bd.max_row == 3          # header + 2 steps
+    pa = wb["Protocol Adjacencies"]
+    assert pa.cell(1, 1).value == "Step" and pa.cell(1, 2).value == "Gate"
+    assert pa.max_row == 3                                             # one receipt-gated row per step
 
 
 def test_campaign_trend_not_improving_when_a_device_goes_dark():

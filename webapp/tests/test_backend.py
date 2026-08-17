@@ -423,6 +423,8 @@ def test_cable_map_endpoint(client):
 
 
 def test_cutover_plan(client):
+    from backend import cutover
+
     snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
     r = client.get(f"/api/snapshots/{snap_id}/cutover")
     assert r.status_code == 200, r.text
@@ -453,9 +455,11 @@ def test_cutover_plan(client):
         # every wave carries a PPDIOO run-of-show ending at the rollback gate
         phases = [step["phase"] for step in w["run_of_show"]]
         assert phases[0] == "Baseline capture" and phases[-1] == "Rollback gate"
-        # a NO-GO wave is gated by a failing readiness check or a Critical cross-layer hit
+        # a NO-GO wave is gated by readiness, cross-layer, or the shared current-baseline gate
         if w["gate"] == "NO-GO":
-            assert w["n_fail"] > 0 or w["critical_crosslayer"]
+            assert (w["n_fail"] > 0 or w["critical_crosslayer"]
+                    or w["current_baseline"]["n_blockers"] > 0
+                    or w["current_baseline"]["verdict"] == cutover.BASELINE_BLOCKED)
 
     assert client.get("/api/snapshots/999999/cutover").status_code == 404
 
@@ -489,6 +493,13 @@ def test_cutover_blind_devices_block_go_and_are_disclosed():
     confident make-before-break / window posture over them (a blind subsystem must not read like an assessed one)."""
     from backend import cutover
 
+    clear_validation = {
+        "device": "sw1", "platform": "ios", "wave": "G1", "category": "Routing",
+        "severity": "High", "check": "Observed adjacency stable", "command": "show ip ospf neighbor",
+        "expect": "Observed peer remains FULL", "why": "Detect adjacency regression",
+        "evidence_state": "assessed", "projection_custody": "embedded_unverified",
+        "source_key": "routing_neighbors.sw1",
+    }
     base = {
         "devices": {"sw1": {}, "sw2": {}},
         "wave_sequencing": [{"group": "G1", "make_before_break": ["sw1", "sw2"],
@@ -496,6 +507,10 @@ def test_cutover_blind_devices_block_go_and_are_disclosed():
         "migration_readiness": [{"group": "G1", "switches": ["sw1", "sw2"], "readiness": "READY",
                                  "n_fail": 0, "n_warn": 0, "checks": []}],
         "move_groups": [{"switches": ["sw1", "sw2"], "endpoints": 10}],
+        "validation_plan": {
+            "items": [clear_validation], "by_wave": {"G1": [clear_validation]},
+            "summary": {"n_items": 1, "n_waves": 1, "by_category": {"Routing": 1}, "n_high": 1},
+        },
     }
     # sw2 was never collected -> banded 'Insufficient Data', data_quality 0.
     blind = dict(base, health_scores=[{"switch": "sw1", "band": "Good", "score": 80, "data_quality": 1.0},
@@ -1314,7 +1329,37 @@ def test_execution_run_lifecycle(client):
 def test_execution_outcome_vocabulary(client):
     """Outcome derivation follows the PIR vocabulary: a clean run is SUCCESSFUL, a rolled-back wave
     dominates, and an abort is ABORTED regardless of progress."""
-    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    import json
+
+    # Use an explicitly CLEAR current baseline. The demo snapshot intentionally carries a degraded
+    # OSPF baseline and therefore cannot exercise the clean-success branch anymore.
+    row = {
+        "device": "sw1", "platform": "ios", "wave": "G1", "category": "Routing",
+        "severity": "High", "check": "Observed adjacency stable", "command": "show ip ospf neighbor",
+        "expect": "Observed peer remains FULL", "why": "Detect adjacency regression",
+        "evidence_state": "assessed", "projection_custody": "embedded_unverified",
+        "source_key": "routing_neighbors.sw1",
+    }
+    snap = {
+        "devices": {"sw1": {"platform": "ios"}},
+        "wave_sequencing": [{"group": "G1", "make_before_break": ["sw1"],
+                             "hard_cutover": [], "hard_cutover_endpoints": 0}],
+        "migration_readiness": [{"group": "G1", "switches": ["sw1"], "readiness": "READY",
+                                  "n_fail": 0, "n_warn": 0, "checks": []}],
+        "move_groups": [{"group": "G1", "switches": ["sw1"], "endpoints": 1}],
+        "validation_plan": {
+            "items": [row], "by_wave": {"G1": [row]},
+            "summary": {"n_items": 1, "n_waves": 1, "by_category": {"Routing": 1}, "n_high": 1},
+        },
+    }
+    cid = client.post("/api/campaigns", json={"name": "clear execution"}).json()["id"]
+    upload = client.post(
+        f"/api/campaigns/{cid}/snapshots",
+        files={"file": ("clear.json", json.dumps(snap).encode(), "application/json")},
+        data={"label": "clear"},
+    )
+    assert upload.status_code == 201, upload.text
+    snap_id = upload.json()["id"]
 
     def run():
         return client.post(f"/api/snapshots/{snap_id}/executions", json={}).json()
@@ -1414,9 +1459,14 @@ def test_execution_pir_report(client):
                      json={"label": "Window 7", "operator": "tanveer"}).json()
     eid = ex["id"]
     g = ex["waves"][0]["group"]
+    passable_check = next(
+        index for index, check in enumerate(ex["waves"][0]["checks"])
+        if not check.get("baseline_blocker")
+    )
     client.post(f"/api/executions/{eid}/step", json={"wave": g, "index": 0, "status": "done",
                                                      "operator": "tanveer"})
-    client.post(f"/api/executions/{eid}/check", json={"wave": g, "index": 0, "result": "pass",
+    client.post(f"/api/executions/{eid}/check", json={"wave": g, "index": passable_check,
+                                                      "result": "pass",
                                                       "operator": "tanveer"})
     client.post(f"/api/executions/{eid}/event",
                 json={"kind": "deviation", "text": "uplink LED amber, re-seated SFP", "wave": g})

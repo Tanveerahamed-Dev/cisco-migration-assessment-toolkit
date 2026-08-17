@@ -8,27 +8,49 @@ The `compute_*` functions themselves follow in later steps (they entangle with t
 `_load_cmd_output` I/O helper that still lives in the monolith). The Excel
 fill-colour maps (`_READY_FILL`/`_STATUS_FILL`) and sheet-name constants stay
 behind too - they belong to the excel layer, not the data analysis."""
+import ipaddress
 import re
 from functools import lru_cache
 from dataclasses import dataclass, field as _dcfield   # aliased: 'field' is a common loop var elsewhere (avoids F402 shadowing)
 from typing import Any, Dict, List, Optional, Tuple
 
 from cisco_toolkit import portdb, protocol_kb
+from cisco_toolkit.bgp_intent import validate_bgp_configured_peer_baseline
+from cisco_toolkit.fhrp_intent import validate_fhrp_configured_group_baseline
+from cisco_toolkit.fhrp_redundancy import (
+    scope_fhrp_redundancy_domains,
+    validate_fhrp_redundancy_domain_baseline,
+)
+from cisco_toolkit.vtp_safety import validate_vtp_safety_baseline
+from cisco_toolkit.ipv6_routing import validate_ipv6_routing_adjacency_baseline
 from cisco_toolkit.cmdio import TRUNK_TABLE_CMD_VARIANTS, _load_cmd_output, cmd_capture_state
 from cisco_toolkit.model import DevicePhysical, InterfaceData
 from cisco_toolkit.parse import (
     _parse_fhrp, _is_physical_port, parse_spanning_tree_blockedports,
-    parse_etherchannel_summary_members, parse_ospf_neighbors, parse_bgp_summary,
+    parse_spanning_tree_root, parse_spanning_tree_states,
+    parse_ospf_neighbors, parse_bgp_summary,
     parse_eigrp_neighbors, parse_syslog_events, parse_qos_config,
 )
 from cisco_toolkit.textutils import (
     NATIVE1_CFG_BASIS, NATIVE1_CFG_UNIT, NATIVE1_OPS_BASIS, NATIVE1_OPS_SWITCH_UNIT, NATIVE1_OPS_UNIT,
-    _as_num, _split_macs, is_finite_num, is_live_trunk_status, normalize_ifname)
+    PHYSICAL_IFACE_RE, _as_num, _split_macs, is_finite_num, is_live_trunk_status, is_trunk_mode,
+    normalize_ifname)
 
 
 # score band -> (label, fill)
 _HEALTH_BANDS = [(90, "Excellent", "36E08A"), (75, "Good", "7ADB8F"),
                  (60, "Fair", "FFE566"), (40, "Poor", "FF9F45"), (0, "Critical", "FF5775")]
+
+# Default/global IPv4-unicast only.  The two explicit NX-OS forms precede the
+# historic generic fallbacks so a multi-AF ``show bgp summary`` cannot silently
+# authorize an IPv4 peer.  ``_load_cmd_output`` skips captured CLI errors and
+# selects the first usable variant.
+BGP_IPV4_SUMMARY_COMMANDS = (
+    "show bgp ipv4 unicast summary",
+    "show bgp ip unicast summary",
+    "show ip bgp summary",
+    "show bgp summary",
+)
 
 
 @dataclass(frozen=True)
@@ -1978,6 +2000,296 @@ def compute_calibration_report(health_scores: List[dict],
             "modal_band": modal_band, "modal_pct": modal_pct, "discrimination": disc,
             "discrimination_quality": quality, "suggested_bands": suggested, "note": note}
 
+_FHRP_PROTOCOL_ORDER = {"HSRP": 0, "VRRP": 1, "GLBP": 2}
+_FHRP_VALIDATION = {
+    "HSRP": {
+        "command": "show standby brief",
+        "leader_roles": ("Active",),
+        "backup_roles": ("Standby", "Listen", "Speak"),
+        "degraded_roles": ("Init", "Learn"),
+    },
+    "VRRP": {
+        "command": "show vrrp brief",
+        "leader_roles": ("Master",),
+        "backup_roles": ("Backup",),
+        "degraded_roles": ("Init",),
+    },
+    "GLBP": {
+        "command": "show glbp brief",
+        "leader_roles": ("Active",),
+        "backup_roles": ("Standby", "Listen", "Speak"),
+        "degraded_roles": ("Disabled", "Init", "Learn"),
+    },
+}
+
+
+def summarize_fhrp_elections(all_interfaces: Any) -> List[dict]:
+    """Return deterministic, evidence-bounded FHRP election summaries per L3 domain.
+
+    The input may contain live ``InterfaceData`` objects or the dictionary records
+    serialized into a snapshot.  ``hsrp_behavior`` carries only one projected group
+    per SVI, and device captures are not simultaneous, so identity differences and
+    cross-member role views are REVIEW evidence rather than proof of a broken pair.
+    Only an unambiguously faulted local role is ``degraded``.  A single observed
+    backup is healthy bounded evidence; no expected member count is invented.
+    """
+    if not isinstance(all_interfaces, dict):
+        return []
+
+    def _field(record: Any, name: str) -> Any:
+        return record.get(name) if isinstance(record, dict) else getattr(record, name, "")
+
+    by_domain: Dict[tuple, List[dict]] = {}
+    for host_value, ifaces in all_interfaces.items():
+        if not isinstance(ifaces, dict):
+            continue
+        host = str(host_value or "").strip()
+        if not host:
+            continue
+        for interface_value, record in ifaces.items():
+            interface = normalize_ifname(str(interface_value or "").strip())
+            match = re.match(r"^Vlan(\d+)$", interface, re.IGNORECASE)
+            if not match:
+                continue
+            behavior = _field(record, "hsrp_behavior")
+            if not isinstance(behavior, str) or not behavior.strip():
+                continue
+            protocol, role, vip, group = _parse_fhrp(behavior)
+            if protocol not in _FHRP_VALIDATION:
+                continue
+            vlan = int(match.group(1))
+            raw_vrf = str(_field(record, "vrf") or "").strip().lower()
+            vrf = "" if raw_vrf in ("", "default", "global") else raw_vrf
+            svi_ip = str(_field(record, "svi_ip") or "").strip()
+            subnet = _svi_network(svi_ip) or "(subnet-unobserved)"
+            by_domain.setdefault((vlan, vrf, subnet), []).append({
+                "host": host,
+                "interface": interface,
+                "protocol": protocol,
+                "role": role,
+                "group": group,
+                "vip": vip,
+            })
+
+    rows: List[dict] = []
+    for vlan, vrf, subnet in sorted(by_domain):
+        members = sorted(
+            by_domain[(vlan, vrf, subnet)],
+            key=lambda member: (
+                _FHRP_PROTOCOL_ORDER[member["protocol"]],
+                int(member["group"]) if str(member["group"]).isdigit() else 10**9,
+                str(member["group"]), str(member["vip"]),
+                str(member["host"]).casefold(), str(member["host"]),
+                str(member["interface"]).casefold(), str(member["role"]).casefold(),
+            ),
+        )
+        protocols = sorted({member["protocol"] for member in members},
+                           key=lambda protocol: _FHRP_PROTOCOL_ORDER[protocol])
+        issues: List[str] = []
+        findings: List[dict] = []
+        has_degraded = False
+        has_review = False
+        scope = f"VLAN {vlan}, VRF {vrf or 'global'}, subnet {subnet}"
+
+        def add_degraded(issue: str, finding_protocols, finding_hosts) -> None:
+            nonlocal has_degraded
+            has_degraded = True
+            issues.append(issue)
+            findings.append({"kind": "degraded", "issue": issue,
+                             "protocols": sorted(set(finding_protocols),
+                                                 key=lambda value: _FHRP_PROTOCOL_ORDER[value]),
+                             "hosts": sorted(set(finding_hosts), key=lambda value: (value.casefold(), value))})
+
+        def add_review(issue: str, finding_protocols, finding_hosts) -> None:
+            nonlocal has_review
+            has_review = True
+            issues.append(issue)
+            findings.append({"kind": "review", "issue": issue,
+                             "protocols": sorted(set(finding_protocols),
+                                                 key=lambda value: _FHRP_PROTOCOL_ORDER[value]),
+                             "hosts": sorted(set(finding_hosts), key=lambda value: (value.casefold(), value))})
+
+        if len(protocols) > 1:
+            add_review(
+                f"mixed FHRP protocols observed in {scope}: {', '.join(protocols)}; the one-record-per-SVI "
+                "projection cannot distinguish independent elections from a mismatched pair — review required",
+                protocols, [member["host"] for member in members],
+            )
+
+        for protocol in protocols:
+            metadata = _FHRP_VALIDATION[protocol]
+            protocol_members = [member for member in members if member["protocol"] == protocol]
+            groups = sorted({member["group"] for member in protocol_members if member["group"]},
+                            key=lambda value: (int(value) if value.isdigit() else 10**9, value))
+            if len(groups) > 1:
+                add_review(
+                    f"{protocol} observed groups differ in {scope}: {', '.join(groups)}; the one-record-per-SVI "
+                    "projection cannot distinguish independent elections from a mismatched pair — review required",
+                    [protocol], [member["host"] for member in protocol_members],
+                )
+            vips = sorted({member["vip"] for member in protocol_members if member["vip"]})
+            if len(vips) > 1:
+                add_review(
+                    f"{protocol} observed VIPs differ in {scope}: {', '.join(vips)}; the one-record-per-SVI "
+                    "projection cannot distinguish independent elections from a mismatched pair — review required",
+                    [protocol], [member["host"] for member in protocol_members],
+                )
+            elif len(protocol_members) > 1 and any(not member["vip"] for member in protocol_members):
+                add_review(
+                    f"{protocol} observed VIP evidence is incomplete in {scope} — live verification required",
+                    [protocol], [member["host"] for member in protocol_members],
+                )
+
+            accepted = {
+                role.casefold()
+                for role in (*metadata["leader_roles"], *metadata["backup_roles"])
+            }
+            degraded = {role.casefold() for role in metadata["degraded_roles"]}
+            for member in protocol_members:
+                election = f"{protocol} group {member['group'] or '?'}"
+                if member["vip"]:
+                    election += f" VIP {member['vip']}"
+                role_key = str(member["role"]).casefold()
+                if role_key in degraded:
+                    add_degraded(
+                        f"{election} on {member['host']} {member['interface']} observed degraded "
+                        f"role {member['role']}", [protocol], [member["host"]],
+                    )
+                elif role_key not in accepted:
+                    add_review(
+                        f"{election} on {member['host']} {member['interface']} observed unclassified "
+                        f"role {member['role'] or '<missing>'} — live verification required",
+                        [protocol], [member["host"]],
+                    )
+
+            elections: Dict[tuple, List[dict]] = {}
+            for member in protocol_members:
+                elections.setdefault((member["group"], member["vip"]), []).append(member)
+            leader_roles = {role.casefold() for role in metadata["leader_roles"]}
+            leader_label = "/".join(metadata["leader_roles"])
+            for (group, vip), election_members in sorted(elections.items()):
+                if len(election_members) < 2:
+                    continue
+                leaders = sum(
+                    1 for member in election_members
+                    if str(member["role"]).casefold() in leader_roles
+                )
+                identity = f"{protocol} group {group or '?'}"
+                if vip:
+                    identity += f" VIP {vip}"
+                if leaders == 0:
+                    add_review(
+                        f"{identity} has no observed {leader_label} role across "
+                        f"{len(election_members)} sequentially captured members; scope may be incomplete — "
+                        "live simultaneous verification required",
+                        [protocol], [member["host"] for member in election_members],
+                    )
+                elif leaders > 1:
+                    add_review(
+                        f"{identity} has {leaders} observed {leader_label} roles across "
+                        f"{len(election_members)} sequentially captured members; capture timing may show election "
+                        "churn — live simultaneous verification required",
+                        [protocol], [member["host"] for member in election_members],
+                    )
+
+        for member in members:
+            applicable = [finding for finding in findings
+                          if member["protocol"] in finding["protocols"]
+                          and member["host"] in finding["hosts"]]
+            member["status"] = (
+                "degraded" if any(finding["kind"] == "degraded" for finding in applicable)
+                else ("review" if applicable else "healthy")
+            )
+            member["issues"] = [finding["issue"] for finding in applicable]
+
+        validation = []
+        for protocol in protocols:
+            metadata = _FHRP_VALIDATION[protocol]
+            validation.append({
+                "protocol": protocol,
+                "command": metadata["command"],
+                "leader_roles": list(metadata["leader_roles"]),
+                "backup_roles": list(metadata["backup_roles"]),
+                "degraded_roles": list(metadata["degraded_roles"]),
+            })
+        rows.append({
+            "vlan": vlan,
+            "vrf": vrf,
+            "subnet": subnet,
+            "status": "degraded" if has_degraded else ("review" if has_review else "healthy"),
+            "issues": issues,
+            "findings": findings,
+            "members": members,
+            "validation": validation,
+        })
+    return rows
+
+
+_FHRP_CONFIGURED_BLOCKER_STATES = frozenset({"degraded", "review", "not_verified"})
+
+
+def _fhrp_projection_identity(record: Any) -> Optional[Tuple[str, str, str, str]]:
+    """Return the exact local member identity shared by the two FHRP owners.
+
+    The configured-group owner names a device with ``switch`` while the observed-election
+    owner uses ``host``.  VIP is deliberately not part of this identity: a configured/runtime
+    VIP disagreement is itself blocker evidence for the same local protocol/interface/group
+    subject and must not cause a duplicate legacy row.
+    """
+    if not isinstance(record, dict):
+        return None
+    host = _strict_protocol_text(record.get("switch") or record.get("host"))
+    protocol = _strict_protocol_text(record.get("protocol")).upper()
+    interface = normalize_ifname(_strict_protocol_text(record.get("interface")))
+    group = _strict_protocol_text(record.get("group"))
+    if not host or protocol not in _FHRP_VALIDATION or not interface or not group:
+        return None
+    return (host.casefold(), protocol, interface.casefold(), group)
+
+
+def _uncovered_fhrp_election_blockers(
+        elections: Any, configured_rows: Any) -> List[Tuple[dict, dict]]:
+    """Return observed election blocker members not owned by an exact configured row.
+
+    Configured FHRP reconciliation and the compatibility one-record-per-SVI election view
+    answer overlapping but non-identical questions.  A validated current-run configured
+    blocker suppresses only its exact local member duplicate.  Mixed protocol/group/VIP and
+    broader domain findings therefore remain additive, while healthy legacy members never
+    duplicate configured acceptance rows.
+    """
+    rows = configured_rows if isinstance(configured_rows, list) else []
+    covered: set[Tuple[str, str, str, str]] = set()
+    for row in rows:
+        if (
+            not isinstance(row, dict)
+            or _strict_protocol_text(row.get("status")).lower()
+            not in _FHRP_CONFIGURED_BLOCKER_STATES
+            or _strict_protocol_text(row.get("projection_custody"))
+            != "current_run_source_bound"
+        ):
+            continue
+        identity = _fhrp_projection_identity(row)
+        if identity is not None:
+            covered.add(identity)
+
+    uncovered: List[Tuple[dict, dict]] = []
+    safe_elections = elections if isinstance(elections, list) else []
+    for election in safe_elections:
+        if not isinstance(election, dict):
+            continue
+        members = election.get("members")
+        for member in members if isinstance(members, list) else []:
+            if not isinstance(member, dict):
+                continue
+            if _strict_protocol_text(member.get("status")).lower() not in {"degraded", "review"}:
+                continue
+            identity = _fhrp_projection_identity(member)
+            # An unkeyable observed blocker cannot be proven covered, so retain it fail-closed.
+            if identity is None or identity not in covered:
+                uncovered.append((election, member))
+    return uncovered
+
+
 # Pre-migration checks; each returns (status, note). status in pass/warn/fail/info.
 # Each check is mapped to a recognized migration-runbook phase (Inventory ->
 # Baseline capture -> Dependency mapping -> Pilot/cutover -> Rollback) so the
@@ -1990,6 +2302,7 @@ _READINESS_PHASES = {
     "STP consistency": "Dependency mapping",
     "Port-channels healthy": "Baseline capture",
     "Routing adjacencies up": "Baseline capture",
+    "IPv6 routing adjacencies": "Baseline capture",
     "No orphan VLANs": "Inventory",
     "Clean uplinks (no half-duplex)": "Baseline capture",
     "Device health floor": "Pilot/cutover",
@@ -1998,10 +2311,499 @@ _READINESS_PHASES = {
     "Rollback plan documented": "Rollback",
 }
 
+
+# ``None`` is a meaningful, explicitly supplied failed receipt.  A private
+# sentinel keeps older direct callers on the historical sparse-health path
+# while allowing current callers to fail closed when the receipt is absent.
+_PROTOCOL_ASSESSABILITY_UNSET = object()
+
+_FHRP_REDUNDANCY_DOMAIN_NOT_VERIFIED = (
+    "FHRP REDUNDANCY DOMAIN NOT VERIFIED — BLOCKER:"
+)
+
+
+def _static_fhrp_redundancy_domain_rows(
+        all_interfaces: Any, fhrp_configured_group_baseline: Any) -> List[dict]:
+    """Return one safe, static abstention row per currently scoped SVI member.
+
+    The domain receipt itself is deliberately not accepted here.  Identity comes only from the
+    producer-owned scope helper over current interfaces plus the separately validated configured-group
+    source; no rejected domain leaf can reach a decision surface.
+    """
+    rows: List[dict] = []
+    for member in scope_fhrp_redundancy_domains(
+            all_interfaces, fhrp_configured_group_baseline):
+        if not isinstance(member, dict):
+            continue
+        host = member.get("switch") if isinstance(member.get("switch"), str) else ""
+        interface = member.get("interface") if isinstance(member.get("interface"), str) else ""
+        domain_key = member.get("domain_key") if isinstance(member.get("domain_key"), str) else ""
+        if not host or not interface or not domain_key:
+            continue
+        vlan_value = member.get("vlan")
+        vlan = vlan_value if type(vlan_value) is int else 0
+        vrf = member.get("vrf") if isinstance(member.get("vrf"), str) else ""
+        subnet = member.get("subnet") if isinstance(member.get("subnet"), str) else ""
+        svi_ip = member.get("svi_ip") if isinstance(member.get("svi_ip"), str) else ""
+        command_interface = interface if re.fullmatch(r"[A-Za-z][A-Za-z0-9./:-]{0,79}", interface) else ""
+        command = (
+            f"show running-config interface {command_interface}"
+            if command_interface else "show ip interface brief"
+        )
+        rows.append({
+            "switch": host,
+            "interface": interface,
+            "svi_ip": svi_ip,
+            "vlan": vlan,
+            "vrf": vrf,
+            "subnet": subnet,
+            "domain_key": domain_key,
+            "candidate_key": "",
+            "participation": "not_verified",
+            "protocol": "",
+            "group": "",
+            "virtual_ip": "",
+            "role": "",
+            "status": "not_verified",
+            "check": "FHRP redundancy-domain baseline not verified",
+            "command": command,
+            "acceptance": (
+                f"{_FHRP_REDUNDANCY_DOMAIN_NOT_VERIFIED} No validated, source-bound "
+                "current-run domain receipt authorizes a positive acceptance target for this "
+                "scoped SVI member. Recompute the redundancy-domain baseline from current interfaces "
+                "and the configured-group receipt before cutover."
+            ),
+            "why": (
+                "The authoritative domain receipt was unavailable, embedded, malformed, or phase-failed; "
+                "intended cross-switch FHRP membership and election composition remain unresolved."
+            ),
+            "source_key": "fhrp_redundancy_domain_baseline",
+            "projection_custody": "embedded_unverified",
+            "findings": [],
+        })
+    return rows
+
+
+def _fhrp_redundancy_domain_consumer_view(
+        value: Any, all_interfaces: Any, fhrp_configured_group_baseline: Any) -> dict:
+    """Resolve authoritative current rows or a scope-only static abstention projection."""
+    view = validate_fhrp_redundancy_domain_baseline(value, require_current_run=True)
+    authorized = view.get("valid") is True and view.get("source_bound") is True
+    return {
+        "valid": authorized,
+        "rows": (
+            list(view.get("rows") or [])
+            if authorized else
+            _static_fhrp_redundancy_domain_rows(
+                all_interfaces, fhrp_configured_group_baseline)
+        ),
+    }
+
+
+_VTP_SCOPE_ABSTENTION_HOST = "(VTP subject scope not verified)"
+_VTP_SCOPE_REJECTION_REASONS = {
+    "scope_input_invalid", "scope_identity_invalid", "scope_host_cap_exceeded",
+    "scope_identity_collision",
+}
+
+
+def _vtp_safety_scope_hosts(value: Any) -> set[str]:
+    """Validate the path-free output of ``scope_vtp_safety_subjects``.
+
+    The scope can only add static blockers; it never authorizes a positive row.  Reject the whole
+    list on malformed, duplicate, or case-fold-colliding identities so hostile persisted data is
+    neither echoed nor partially interpreted.
+    """
+    if value is None:
+        return set()
+    if (not isinstance(value, dict)
+            or set(value) != {"schema", "valid", "attempted", "reason", "rows"}
+            or value.get("schema") != "vtp_safety_subject_scope/1"
+            or type(value.get("valid")) is not bool
+            or type(value.get("attempted")) is not bool
+            or not isinstance(value.get("reason"), str)
+            or not value["reason"] or value["reason"] != value["reason"].strip()
+            or len(value["reason"]) > 80
+            or any(ord(char) < 32 or ord(char) == 127 for char in value["reason"])
+            or not isinstance(value.get("rows"), list)):
+        return {_VTP_SCOPE_ABSTENTION_HOST}
+    if value["valid"] is False:
+        return {_VTP_SCOPE_ABSTENTION_HOST}
+    if value["reason"] != "ok":
+        return {_VTP_SCOPE_ABSTENTION_HOST}
+    if value["attempted"] is False and value["rows"] == []:
+        return set()
+    if value["attempted"] is not True or not value["rows"]:
+        return {_VTP_SCOPE_ABSTENTION_HOST}
+    value = value["rows"]
+    if len(value) > 4096:
+        return {_VTP_SCOPE_ABSTENTION_HOST}
+    hosts: set[str] = set()
+    folded: set[str] = set()
+    for row in value:
+        if not isinstance(row, dict) or set(row) != {"switch", "platform", "command"}:
+            return {_VTP_SCOPE_ABSTENTION_HOST}
+        host = row.get("switch")
+        platform = row.get("platform")
+        command = row.get("command")
+        if (not isinstance(host, str) or not host or host != host.strip() or len(host) > 128
+                or any(ord(char) < 32 or ord(char) == 127 for char in host)
+                or not isinstance(platform, str) or platform != platform.strip()
+                or len(platform) > 80
+                or any(ord(char) < 32 or ord(char) == 127 for char in platform)
+                or command != "show vtp status"):
+            return {_VTP_SCOPE_ABSTENTION_HOST}
+        identity = host.casefold()
+        if identity in folded:
+            return {_VTP_SCOPE_ABSTENTION_HOST}
+        folded.add(identity)
+        hosts.add(host)
+    return hosts
+
+
+def _vtp_safety_scope_reason(value: Any) -> str:
+    """Return only producer-owned scope reason tokens; malformed values get static copy."""
+    if value is None:
+        return ""
+    if (isinstance(value, dict)
+            and value.get("schema") == "vtp_safety_subject_scope/1"
+            and value.get("valid") is False
+            and value.get("reason") in _VTP_SCOPE_REJECTION_REASONS):
+        return value["reason"]
+    if _vtp_safety_scope_hosts(value) == {_VTP_SCOPE_ABSTENTION_HOST}:
+        return "scope_contract_invalid"
+    return ""
+
+
+def _vtp_safety_subject_hosts(protocol_health: Any, protocol_assessability: Any,
+                              vtp_safety_subject_scope: Any = None) -> set[str]:
+    """Return only independently evidenced VTP subjects for a static abstention row.
+
+    Rejected VTP receipts contribute no leaves.  A sparse VTP health row, or a validated seven-family
+    receipt proving the exact status command was attempted (usable/empty/error), is sufficient to
+    scope a host but never to authorize mode/domain/revision acceptance text.
+    """
+    hosts = _vtp_safety_scope_hosts(vtp_safety_subject_scope)
+    if isinstance(protocol_health, list):
+        for row in protocol_health:
+            if not isinstance(row, dict):
+                continue
+            host = _strict_protocol_text(row.get("switch"))
+            if host and _strict_protocol_text(row.get("protocol")) == "VTP":
+                hosts.add(host)
+    receipt = _validate_protocol_assessability_receipt(protocol_assessability)
+    if receipt.get("valid") is True:
+        subjects = {
+            (host, protocol)
+            for (host, protocol), row in (receipt.get("index") or {}).items()
+            if isinstance(row, dict) and (
+                row.get("health_row_emitted") is True
+                or (protocol == "VTP"
+                    and isinstance(row.get("input_states"), dict)
+                    and row["input_states"].get("status") in {"usable", "empty", "error"})
+            )
+        }
+    else:
+        subjects = set(receipt.get("claimed_subjects") or set())
+    hosts.update(host for host, protocol in subjects if protocol == "VTP" and host)
+    return hosts
+
+
+def _static_vtp_safety_rows(hosts: Any, reason: str = "") -> List[dict]:
+    rows: List[dict] = []
+    safe_reason = _strict_protocol_text(reason)[:180]
+    for host in sorted(
+            {_strict_protocol_text(value) for value in (hosts or set())
+             if _strict_protocol_text(value)},
+            key=lambda value: (value.casefold(), value)):
+        scope_abstention = host == _VTP_SCOPE_ABSTENTION_HOST
+        rows.append({
+            "switch": host,
+            "platform": "",
+            "mode": "unknown",
+            "mode_present": False,
+            "domain": "",
+            "domain_present": False,
+            "revision": 0,
+            "revision_present": False,
+            "version": "",
+            "version_present": False,
+            "status": "not_verified",
+            "command": "show vtp status",
+            "acceptance": (
+                "VTP SAFETY BASELINE NOT VERIFIED — BLOCKER: No validated, source-bound "
+                "current-run VTP safety baseline authorizes a positive cutover acceptance target. "
+                "Re-collect show vtp status and explicitly disposition VTP domain/revision risk "
+                "before the window."
+            ),
+            "why": (
+                "The VTP safety analysis failed closed"
+                + (f": {safe_reason}" if safe_reason else ".")
+            ),
+            "source_key": (
+                "vtp_safety_subject_scope.valid/attempted/reason + vtp_safety_baseline"
+                if scope_abstention else
+                f"vtp_safety_subject_scope[{host}] + "
+                f"protocol_assessability.rows[{host},VTP] + "
+                f"protocol_health[{host},VTP] + vtp_safety_baseline"
+            )[:300],
+            "projection_custody": "embedded_unverified",
+            "findings": [],
+        })
+    return rows
+
+
+def _vtp_safety_consumer_view(value: Any, protocol_health: Any,
+                              protocol_assessability: Any,
+                              vtp_safety_subject_scope: Any = None) -> dict:
+    """Resolve current-run owner rows or a subject-scoped static abstention projection."""
+    view = validate_vtp_safety_baseline(value, require_current_run=True)
+    authorized = view.get("valid") is True and view.get("source_bound") is True
+    if not authorized:
+        scope_reason = _vtp_safety_scope_reason(vtp_safety_subject_scope)
+        baseline_reason = _strict_protocol_text(view.get("reason"))
+        return {
+            "valid": False,
+            "rows": _static_vtp_safety_rows(
+                _vtp_safety_subject_hosts(
+                    protocol_health, protocol_assessability, vtp_safety_subject_scope),
+                "; ".join(reason for reason in (scope_reason, baseline_reason) if reason),
+            ),
+        }
+
+    baseline = view.get("baseline") if isinstance(view.get("baseline"), dict) else {}
+    rows = [dict(row) for row in (view.get("rows") or []) if isinstance(row, dict)]
+    attributed = {_strict_protocol_text(row.get("switch")) for row in rows}
+    fallback_hosts = {
+        _strict_protocol_text(cell.get("switch"))
+        for cell in (baseline.get("coverage") or [])
+        if isinstance(cell, dict) and cell.get("subject") is True
+        and _strict_protocol_text(cell.get("status")) in {"review", "not_verified"}
+        and _strict_protocol_text(cell.get("switch")) not in attributed
+    }
+    if fallback_hosts:
+        rows.extend(_static_vtp_safety_rows(
+            fallback_hosts,
+            "the source-bound VTP receipt has blocking coverage without an attributable row",
+        ))
+    return {"valid": True, "rows": rows}
+
+
+def _vtp_safety_finding_codes(row: Any) -> set[str]:
+    if not isinstance(row, dict) or not isinstance(row.get("findings"), list):
+        return set()
+    return {
+        code
+        for finding in row["findings"]
+        if isinstance(finding, dict)
+        for code in [_strict_protocol_text(finding.get("code"))]
+        if code
+    }
+
+
+_IPV6_ROUTING_PROTOCOLS = ("OSPFv3", "BGPv6")
+_IPV6_ROUTING_PROTOCOL_ORDER = {
+    protocol: index for index, protocol in enumerate(_IPV6_ROUTING_PROTOCOLS)
+}
+_IPV6_ROUTING_SCOPE_ABSTENTION_HOST = "(IPv6 routing subject scope not verified)"
+_IPV6_ROUTING_SCOPE_REASONS = {
+    "scope_input_invalid",
+    "scope_identity_invalid",
+    "scope_identity_collision",
+    "scope_host_cap_exceeded",
+    "scope_evidence_rejected",
+}
+
+
+def _ipv6_routing_scope_text(value: Any, limit: int, *, required: bool) -> bool:
+    """Return whether a scope identity leaf is bounded, one-line UTF-8 text."""
+    if (not isinstance(value, str) or len(value) > limit
+            or value != value.strip() or (required and not value)
+            or any(ord(char) < 32 or ord(char) == 127 for char in value)):
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _ipv6_routing_scope_subjects(value: Any) -> set[tuple[str, str, str]]:
+    """Strictly consume the path-free, blocker-only IPv6 subject scope.
+
+    A valid scope row can only scope a static NOT VERIFIED blocker. It never
+    authorizes a peer/state acceptance target. Malformed, rejected, colliding,
+    missing, or over-cap scope produces one fixed unattributed blocker without
+    echoing any caller-controlled leaf. Direct-call compatibility is retained
+    because callers that omit the baseline argument never invoke this helper.
+    """
+    global_blocker = {
+        (_IPV6_ROUTING_SCOPE_ABSTENTION_HOST, "", "IPv6 Routing")
+    }
+    if value is None:
+        return global_blocker
+    if (not isinstance(value, dict)
+            or set(value) != {"schema", "valid", "attempted", "reason", "rows"}
+            or value.get("schema") != "ipv6_routing_subject_scope/1"
+            or type(value.get("valid")) is not bool
+            or type(value.get("attempted")) is not bool
+            or not _ipv6_routing_scope_text(value.get("reason"), 80, required=True)
+            or not isinstance(value.get("rows"), list)):
+        return global_blocker
+    if value["valid"] is False:
+        if value["reason"] not in _IPV6_ROUTING_SCOPE_REASONS or value["rows"]:
+            return global_blocker
+        # A producer-owned invalid receipt scopes a blocker only when a
+        # recognized IPv6 command was actually attempted.  A malformed scope
+        # above cannot make that bounded claim and therefore fails closed to
+        # one global blocker; an exact invalid/unattempted receipt is neutral.
+        return global_blocker if value["attempted"] else set()
+    if value["reason"] != "ok" or len(value["rows"]) > 4096:
+        return global_blocker
+    if not value["rows"]:
+        # Both a recognized attempt with no positive bounded subject and no
+        # recognized attempt are deliberately neutral. Neither proves absence.
+        return set()
+    if value["attempted"] is not True:
+        return global_blocker
+
+    subjects: set[tuple[str, str, str]] = set()
+    folded_hosts: set[str] = set()
+    for row in value["rows"]:
+        if not isinstance(row, dict) or set(row) != {"switch", "platform", "protocols"}:
+            return global_blocker
+        host = row.get("switch")
+        platform = row.get("platform")
+        protocols = row.get("protocols")
+        if (not _ipv6_routing_scope_text(host, 128, required=True)
+                or host == _IPV6_ROUTING_SCOPE_ABSTENTION_HOST
+                or not _ipv6_routing_scope_text(platform, 80, required=False)
+                or not isinstance(protocols, list) or not protocols):
+            return global_blocker
+        canonical = [protocol for protocol in _IPV6_ROUTING_PROTOCOLS if protocol in protocols]
+        if protocols != canonical:
+            return global_blocker
+        folded = host.casefold()
+        if folded in folded_hosts:
+            return global_blocker
+        folded_hosts.add(folded)
+        subjects.update((host, platform, protocol) for protocol in protocols)
+    return subjects
+
+
+def _static_ipv6_routing_rows(subjects: Any, reason: str = "") -> List[dict]:
+    """Build fixed, leaf-free NOT VERIFIED rows from validated scope only."""
+    del reason  # reasons are intentionally not reflected into decision rows
+    rows: List[dict] = []
+    for host, platform, protocol in sorted(
+            subjects or set(),
+            key=lambda item: (
+                item[0].casefold(), item[0],
+                _IPV6_ROUTING_PROTOCOL_ORDER.get(item[2], len(_IPV6_ROUTING_PROTOCOLS)),
+            )):
+        global_blocker = host == _IPV6_ROUTING_SCOPE_ABSTENTION_HOST
+        if protocol == "OSPFv3":
+            command = (
+                "show ipv6 ospfv3 neighbors"
+                if platform.casefold() in {"nxos", "nx-os", "nexus", "n9k"}
+                else "show ospfv3 neighbor"
+            )
+        elif protocol == "BGPv6":
+            command = "show bgp ipv6 unicast summary"
+        else:
+            protocol = "IPv6 Routing"
+            command = "show ipv6 route summary"
+        rows.append({
+            "switch": host,
+            "platform": platform,
+            "protocol": protocol,
+            "routing_instance": "default",
+            "process": "",
+            "peer": "",
+            "peer_key": "",
+            "interface": "",
+            "remote_as": "",
+            "role": "",
+            "state_raw": "",
+            "state": "NOT_VERIFIED",
+            "prefix_count": 0,
+            "prefix_count_present": False,
+            "status": "not_verified",
+            "command": command,
+            "acceptance": (
+                "IPV6 ROUTING BASELINE NOT VERIFIED — BLOCKER: No validated, source-bound "
+                "current-run IPv6 routing adjacency baseline authorizes a positive acceptance "
+                "target. Re-collect the scoped OSPFv3 and IPv6-unicast BGP evidence before cutover."
+            ),
+            "source_key": (
+                "ipv6_routing_subject_scope.valid/attempted/reason + "
+                "ipv6_routing_adjacency_baseline"
+                if global_blocker else
+                f"ipv6_routing_subject_scope[{host},{protocol}] + "
+                "ipv6_routing_adjacency_baseline"
+            ),
+            "projection_custody": "embedded_unverified",
+            "findings": [],
+        })
+    return rows
+
+
+def _ipv6_routing_consumer_view(
+        value: Any, ipv6_routing_subject_scope: Any = None) -> dict:
+    """Resolve source-bound owner rows or strict subject-scope abstentions."""
+    view = validate_ipv6_routing_adjacency_baseline(value, require_current_run=True)
+    authorized = view.get("valid") is True and view.get("source_bound") is True
+    if not authorized:
+        subjects = _ipv6_routing_scope_subjects(ipv6_routing_subject_scope)
+        reason = ""
+        if subjects == {
+                (_IPV6_ROUTING_SCOPE_ABSTENTION_HOST, "", "IPv6 Routing")}:
+            raw_reason = (
+                ipv6_routing_subject_scope.get("reason")
+                if isinstance(ipv6_routing_subject_scope, dict) else ""
+            )
+            reason = raw_reason if raw_reason in _IPV6_ROUTING_SCOPE_REASONS else ""
+        return {
+            "valid": False,
+            "rows": _static_ipv6_routing_rows(subjects, reason),
+        }
+
+    baseline = view.get("baseline") if isinstance(view.get("baseline"), dict) else {}
+    rows = [dict(row) for row in (view.get("rows") or []) if isinstance(row, dict)]
+    attributed = {
+        (_strict_protocol_text(row.get("switch")), _strict_protocol_text(row.get("protocol")))
+        for row in rows
+    }
+    fallback_subjects = {
+        (
+            _strict_protocol_text(cell.get("switch")),
+            _strict_protocol_text(cell.get("platform")),
+            _strict_protocol_text(cell.get("protocol")),
+        )
+        for cell in (baseline.get("coverage") or [])
+        if isinstance(cell, dict) and cell.get("subject") is True
+        and _strict_protocol_text(cell.get("protocol")) in _IPV6_ROUTING_PROTOCOLS
+        and _strict_protocol_text(cell.get("status")) in {"review", "not_verified"}
+        and (_strict_protocol_text(cell.get("switch")),
+             _strict_protocol_text(cell.get("protocol"))) not in attributed
+    }
+    if fallback_subjects:
+        rows.extend(_static_ipv6_routing_rows(fallback_subjects))
+    return {"valid": True, "rows": rows}
+
 def compute_migration_readiness(all_interfaces, move_groups, health_scores,
                                 physical_health, l3_forwarding, cross_layer,
                                 protocol_health, dep_map,
-                                config: ScoringConfig = SCORING) -> List[dict]:
+                                config: ScoringConfig = SCORING,
+                                bgp_configured_peer_baseline: Optional[dict] = None,
+                                fhrp_configured_group_baseline: Optional[dict] = None,
+                                protocol_assessability: Any = _PROTOCOL_ASSESSABILITY_UNSET,
+                                stp_roots: Any = _PROTOCOL_ASSESSABILITY_UNSET,
+                                fhrp_redundancy_domain_baseline: Optional[dict] = None,
+                                vtp_safety_baseline: Optional[dict] = None,
+                                vtp_safety_subject_scope: Any = None,
+                                ipv6_routing_adjacency_baseline: Optional[dict] = None,
+                                ipv6_routing_subject_scope: Any = None) -> List[dict]:
     """Per move-group READY/CAUTION/NOT READY from a pre-migration checklist.
     Each check carries a runbook `phase` (Inventory / Baseline capture /
     Dependency mapping / Pilot/cutover / Rollback) so the list is auditable
@@ -2017,7 +2819,9 @@ def compute_migration_readiness(all_interfaces, move_groups, health_scores,
     sole_gw_hosts = set(dep_map["sole_gw"].values())
     band_by_host = {r["switch"]: r["band"] for r in health_scores}
     proto_high: Dict = {}                            # host -> set(protocols at High)
+    fhrp_health_severity: Dict[str, str] = {}         # host -> worst observed Medium/High FHRP row
     routing_collected: set = set()                   # hosts with ANY OSPF/BGP row = routing was collected+parsed
+    ospf_collected: set = set()                      # BGP has a configured-peer owner when supplied
     # Same coverage idiom for the two checks below (#12). compute_protocol_health emits an STP row
     # for EVERY host whose `show spanning-tree` returned usable output, so an STP row is an exact
     # "spanning tree was observed here" witness; and it emits an EtherChannel row for every host
@@ -2025,15 +2829,28 @@ def compute_migration_readiness(all_interfaces, move_groups, health_scores,
     # can score data_quality 1.0 with zero STP/port-channel evidence.
     stp_collected: set = set()
     ec_collected: set = set()
-    for rec in (protocol_health or []):
-        if rec.get("severity") == "High":
-            proto_high.setdefault(rec["switch"], set()).add(rec["protocol"])
-        if rec.get("protocol") in ("OSPF", "BGP"):
-            routing_collected.add(rec.get("switch"))
-        if rec.get("protocol") == "STP":
-            stp_collected.add(rec.get("switch"))
-        if rec.get("protocol") == "EtherChannel":
-            ec_collected.add(rec.get("switch"))
+    # Keep the legacy indexes total for direct callers and hostile/foreign snapshots.  The original
+    # value is still passed untouched to the strict STP owner below, where a malformed root/row cannot
+    # become healthy and yields an attributable review blocker when a positive subject exists.
+    protocol_health_rows = protocol_health if isinstance(protocol_health, list) else []
+    for rec in protocol_health_rows:
+        if not isinstance(rec, dict):
+            continue
+        rec_host = _strict_protocol_text(rec.get("switch"))
+        rec_protocol = _strict_protocol_text(rec.get("protocol"))
+        if rec.get("severity") == "High" and rec_host and rec_protocol:
+            proto_high.setdefault(rec_host, set()).add(rec_protocol)
+        if rec_protocol == "FHRP" and rec_host and rec.get("severity") in ("Medium", "High"):
+            if rec.get("severity") == "High" or rec_host not in fhrp_health_severity:
+                fhrp_health_severity[rec_host] = rec.get("severity")
+        if rec_protocol in ("OSPF", "BGP") and rec_host:
+            routing_collected.add(rec_host)
+        if rec_protocol == "OSPF" and rec_host:
+            ospf_collected.add(rec_host)
+        if rec_protocol == "STP" and rec_host:
+            stp_collected.add(rec_host)
+        if rec_protocol == "EtherChannel" and rec_host:
+            ec_collected.add(rec_host)
     # Hosts whose interface data evidences port-channel MEMBERSHIP (from the trunk table /
     # running-config, not only from the bundle summary). Without this, "no EtherChannel row" would
     # conflate "never collected" with the legitimate "this box bundles nothing" and the check below
@@ -2041,6 +2858,7 @@ def compute_migration_readiness(all_interfaces, move_groups, health_scores,
     pc_hosts = {h for h, ifs in (all_interfaces or {}).items()
                 if any(str(getattr(d, "port_channel", "") or "").strip()
                        for d in (ifs or {}).values())}
+    fhrp_elections = summarize_fhrp_elections(all_interfaces)
     xl_crit_hosts = {h for f in (cross_layer or []) if f.get("severity") == "Critical" for h in f.get("hosts", [])}
     # orphan VLAN -> its access switches
     orphan_hosts = set()
@@ -2050,6 +2868,161 @@ def compute_migration_readiness(all_interfaces, move_groups, health_scores,
     model = dep_map.get("model") or {}
     topo_hosts = set(model.get("hosts", []) if isinstance(model, dict) else [])
     baseline_hosts = {rec.get("switch") for rec in (physical_health or [])}
+
+    # Current pipeline callers supply the source-bound configured-peer baseline.
+    # ``None`` is the deliberate compatibility boundary for older direct callers:
+    # only that path retains the historical observed-only BGP readiness behaviour.
+    bgp_contract_supplied = bgp_configured_peer_baseline is not None
+    bgp_contract_view: dict = {}
+    bgp_contract: dict = {}
+    bgp_rows_by_host: Dict[str, List[dict]] = {}
+    bgp_subject_coverage_hosts: set[str] = set()
+    bgp_coverage_status_by_host: Dict[str, str] = {}
+    if bgp_contract_supplied:
+        bgp_contract_view = validate_bgp_configured_peer_baseline(
+            bgp_configured_peer_baseline, require_current_run=True)
+        if bgp_contract_view.get("valid") is True and bgp_contract_view.get("source_bound") is True:
+            bgp_contract = bgp_contract_view.get("baseline") or {}
+            for row in bgp_contract_view.get("rows") or []:
+                if not isinstance(row, dict):
+                    continue
+                host = _strict_protocol_text(row.get("switch"))
+                if host:
+                    bgp_rows_by_host.setdefault(host, []).append(row)
+            for row in bgp_contract.get("coverage") or []:
+                if not isinstance(row, dict) or row.get("subject") is not True:
+                    continue
+                host = _strict_protocol_text(row.get("switch"))
+                if host:
+                    bgp_subject_coverage_hosts.add(host)
+                    bgp_coverage_status_by_host[host] = _strict_protocol_text(
+                        row.get("status")).lower()
+
+    # The configured-group denominator is authoritative only while its process-local current-run
+    # marker is present. ``None`` deliberately retains the historical observed-election path for
+    # direct callers; an explicitly supplied failed/serialized artifact is an abstention, not
+    # feature absence and never a positive FHRP assertion.
+    fhrp_contract_supplied = fhrp_configured_group_baseline is not None
+    fhrp_contract_view: dict = {}
+    fhrp_contract: dict = {}
+    fhrp_rows_by_host: Dict[str, List[dict]] = {}
+    fhrp_blocking_coverage_by_host: Dict[str, set[str]] = {}
+    if fhrp_contract_supplied:
+        fhrp_contract_view = validate_fhrp_configured_group_baseline(
+            fhrp_configured_group_baseline, require_current_run=True)
+        if (fhrp_contract_view.get("valid") is True
+                and fhrp_contract_view.get("source_bound") is True):
+            fhrp_contract = fhrp_contract_view.get("baseline") or {}
+            for row in fhrp_contract_view.get("rows") or []:
+                if not isinstance(row, dict):
+                    continue
+                host = _strict_protocol_text(row.get("switch"))
+                if host:
+                    fhrp_rows_by_host.setdefault(host, []).append(row)
+            for row in fhrp_contract.get("coverage") or []:
+                if not isinstance(row, dict):
+                    continue
+                host = _strict_protocol_text(row.get("switch"))
+                status = _strict_protocol_text(row.get("status")).lower()
+                # Coverage failures are attributable even before the parser can prove a group
+                # subject.  Incomplete/missing configuration is exactly why subject=False may be
+                # all the producer can assert.  Complete no-subject cells are ``not_applicable``
+                # and deliberately remain neutral.
+                if host and status in {"degraded", "review", "not_verified"}:
+                    fhrp_blocking_coverage_by_host.setdefault(host, set()).add(status)
+
+    # Keep the broader observed-election owner additive when the configured contract is present,
+    # but remove only exact local blocker duplicates.  The configured owner can reconcile an exact
+    # candidate set; it does not replace mixed protocol/group/VIP or wider L3-domain review.
+    fhrp_uncovered_by_election: Dict[int, List[dict]] = {}
+    if fhrp_contract_supplied:
+        configured_rows = [
+            row for rows in fhrp_rows_by_host.values() for row in rows
+            if isinstance(row, dict)
+        ]
+        for election, member in _uncovered_fhrp_election_blockers(
+                fhrp_elections, configured_rows):
+            fhrp_uncovered_by_election.setdefault(id(election), []).append(member)
+
+    # Exact cross-switch domain composition is an additive owner.  Omission retains the historical
+    # readiness path; an explicitly supplied invalid/embedded/phase-failed receipt is scoped only from
+    # current interfaces plus the configured-group source and becomes static NOT VERIFIED evidence.
+    fhrp_domain_supplied = fhrp_redundancy_domain_baseline is not None
+    fhrp_domain_rows_by_host: Dict[str, List[dict]] = {}
+    if fhrp_domain_supplied:
+        fhrp_domain_view = _fhrp_redundancy_domain_consumer_view(
+            fhrp_redundancy_domain_baseline,
+            all_interfaces,
+            fhrp_configured_group_baseline,
+        )
+        for row in fhrp_domain_view["rows"]:
+            if not isinstance(row, dict):
+                continue
+            host = row.get("switch") if isinstance(row.get("switch"), str) else ""
+            if host:
+                fhrp_domain_rows_by_host.setdefault(host, []).append(row)
+
+    # Current callers opt into the shared claim-specific STP owner.  Omission alone retains the
+    # historical sparse protocol-health behavior for backward compatibility; an explicitly supplied
+    # missing/malformed receipt is evidence failure, not an instruction to fall back to prose.
+    stp_contract_supplied = (
+        protocol_assessability is not _PROTOCOL_ASSESSABILITY_UNSET
+        or stp_roots is not _PROTOCOL_ASSESSABILITY_UNSET
+    )
+    stp_consistency_by_host: Dict[str, dict] = {}
+    if stp_contract_supplied:
+        stp_consistency = summarize_stp_consistency_baseline(
+            protocol_health,
+            None if protocol_assessability is _PROTOCOL_ASSESSABILITY_UNSET
+            else protocol_assessability,
+            all_interfaces=all_interfaces,
+            stp_roots=None if stp_roots is _PROTOCOL_ASSESSABILITY_UNSET else stp_roots,
+        )
+        stp_consistency_by_host = {
+            row["switch"]: row for row in stp_consistency["rows"]
+            if isinstance(row, dict) and _strict_protocol_text(row.get("switch"))
+        }
+
+    # VTP cutover safety is a separate bounded claim from sparse protocol health/intelligence.
+    # Omission preserves direct-caller compatibility.  A supplied but unbound/failed receipt uses
+    # only independently evidenced VTP subjects and static NOT VERIFIED copy.
+    vtp_contract_supplied = vtp_safety_baseline is not None
+    vtp_rows_by_host: Dict[str, List[dict]] = {}
+    vtp_global_rows: List[dict] = []
+    if vtp_contract_supplied:
+        vtp_view = _vtp_safety_consumer_view(
+            vtp_safety_baseline,
+            protocol_health,
+            None if protocol_assessability is _PROTOCOL_ASSESSABILITY_UNSET
+            else protocol_assessability,
+            vtp_safety_subject_scope,
+        )
+        for row in vtp_view["rows"]:
+            if not isinstance(row, dict):
+                continue
+            host = _strict_protocol_text(row.get("switch"))
+            if host:
+                vtp_rows_by_host.setdefault(host, []).append(row)
+                if host == _VTP_SCOPE_ABSTENTION_HOST:
+                    vtp_global_rows.append(row)
+
+    # IPv6 routing adjacency truth is independent from the legacy OSPFv2/BGPv4/EIGRP
+    # projection. Omission preserves direct-caller compatibility; a supplied but
+    # unauthorized receipt can contribute only strict scope-owned static blockers.
+    ipv6_routing_contract_supplied = ipv6_routing_adjacency_baseline is not None
+    ipv6_routing_rows_by_host: Dict[str, List[dict]] = {}
+    ipv6_routing_global_rows: List[dict] = []
+    if ipv6_routing_contract_supplied:
+        ipv6_view = _ipv6_routing_consumer_view(
+            ipv6_routing_adjacency_baseline, ipv6_routing_subject_scope)
+        for row in ipv6_view["rows"]:
+            if not isinstance(row, dict):
+                continue
+            host = _strict_protocol_text(row.get("switch"))
+            if host:
+                ipv6_routing_rows_by_host.setdefault(host, []).append(row)
+                if host == _IPV6_ROUTING_SCOPE_ABSTENTION_HOST:
+                    ipv6_routing_global_rows.append(row)
 
     out: List[dict] = []
     for gi, g in enumerate(move_groups, 1):
@@ -2063,10 +3036,190 @@ def compute_migration_readiness(all_interfaces, move_groups, health_scores,
         hit = any_in(sf_hosts)
         checks.append(("Redundant uplinks", R["redundant_uplinks"] if hit else "pass",
                        f"single-fiber uplink on {', '.join(hit)}" if hit else "no single-homed switch"))
-        # 2 gateway redundancy (FHRP)
-        hit = any_in(sole_gw_hosts)
-        checks.append(("Gateway redundancy", R["gateway_redundancy"] if hit else "pass",
-                       f"sole gateway on {', '.join(hit)} (no FHRP)" if hit else "gateways redundant / none in group"))
+        # 2 gateway redundancy (FHRP).  The sole-gateway topology signal and the observed election
+        # state answer different questions, so preserve both.  In particular, protocol_health rates
+        # Init/Learn Medium and the election summary catches cross-device split-brain/group/VIP/no-leader
+        # evidence that no per-device health row can see.  A single observed Standby/Backup remains
+        # allowed: without a second member in scope it is not evidence that the election lacks a leader.
+        sole = any_in(sole_gw_hosts)
+        health_hosts = sorted(gset & set(fhrp_health_severity))
+        high_health = [host for host in health_hosts if fhrp_health_severity[host] == "High"]
+        if fhrp_contract_supplied:
+            fhrp_gate_rows = []
+            for row in fhrp_elections:
+                uncovered_members = fhrp_uncovered_by_election.get(id(row), [])
+                relevant_members = [
+                    member for member in uncovered_members if member.get("host") in gset
+                ]
+                if not relevant_members:
+                    continue
+                issues = list(dict.fromkeys(
+                    issue
+                    for member in relevant_members
+                    for issue in (member.get("issues") or [])
+                    if isinstance(issue, str) and issue.strip()
+                ))
+                fhrp_gate_rows.append({
+                    "vlan": row.get("vlan"),
+                    "status": (
+                        "degraded"
+                        if any(member.get("status") == "degraded"
+                               for member in relevant_members)
+                        else "review"
+                    ),
+                    "issues": issues or list(row.get("issues") or []),
+                    "members": relevant_members,
+                })
+        else:
+            fhrp_gate_rows = [
+                row for row in fhrp_elections
+                if row["status"] in ("review", "degraded")
+                and gset & {member["host"] for member in row["members"]}
+            ]
+        gateway_statuses: List[str] = []
+        gateway_notes: List[str] = []
+        if sole:
+            gateway_statuses.append(R["gateway_redundancy"])
+            gateway_notes.append(f"sole gateway on {', '.join(sole)} (no FHRP)")
+        if health_hosts:
+            gateway_statuses.append("fail" if high_health else "warn")
+            gateway_notes.append(
+                "observed degraded FHRP health on "
+                + ", ".join(
+                    f"{host} ({fhrp_health_severity[host]})" for host in health_hosts
+                )
+            )
+        if fhrp_gate_rows:
+            gateway_statuses.append("warn")
+            gateway_notes.extend(
+                f"VLAN {row['vlan']} ({row['status'].upper()}): {'; '.join(row['issues'])}"
+                for row in fhrp_gate_rows
+            )
+        if fhrp_contract_supplied:
+            group_fhrp_rows = [
+                row for host in sorted(gset) for row in fhrp_rows_by_host.get(host, [])
+            ]
+            degraded_groups = [row for row in group_fhrp_rows
+                               if row.get("status") == "degraded"]
+            indeterminate_groups = [row for row in group_fhrp_rows
+                                    if row.get("status") in {"review", "not_verified"}]
+            assessed_groups = [row for row in group_fhrp_rows
+                               if row.get("status") == "assessed"]
+            disabled_groups = [row for row in group_fhrp_rows
+                               if row.get("status") == "administratively_disabled"]
+            contract_valid = (
+                fhrp_contract_view.get("valid") is True
+                and fhrp_contract_view.get("source_bound") is True
+            )
+            contract_verdict = _strict_protocol_text(fhrp_contract.get("verdict")).upper()
+            all_contract_blockers = [
+                row for rows in fhrp_rows_by_host.values() for row in rows
+                if row.get("status") in {"degraded", "review", "not_verified"}
+            ]
+            group_coverage_states = {
+                state for host in gset
+                for state in fhrp_blocking_coverage_by_host.get(host, set())
+            }
+
+            if degraded_groups:
+                gateway_statuses.append("fail")
+                gateway_notes.append(
+                    "configured FHRP group blocker(s): "
+                    + ", ".join(
+                        f"{row.get('switch')} {row.get('protocol')} "
+                        f"{row.get('interface')} group {row.get('group')}"
+                        for row in degraded_groups
+                    )
+                )
+            elif indeterminate_groups:
+                gateway_statuses.append("warn")
+                gateway_notes.append(
+                    "configured FHRP group subject is INDETERMINATE: "
+                    + ", ".join(
+                        f"{row.get('switch')} {row.get('protocol')} "
+                        f"{row.get('interface')} group {row.get('group')} "
+                        f"({row.get('status')})"
+                        for row in indeterminate_groups
+                    )
+                    + "; re-collect running-config and the matching protocol summary"
+                )
+            elif not contract_valid:
+                gateway_statuses.append("warn")
+                gateway_notes.append(
+                    "configured FHRP group baseline is not a validated current-run artifact — "
+                    "gateway redundancy is not assessable"
+                )
+            elif (contract_verdict == "BLOCKED" and not all_contract_blockers
+                  and group_coverage_states):
+                gateway_statuses.append("fail")
+                gateway_notes.append(
+                    "configured FHRP group baseline is BLOCKED but exposes no attributable "
+                    "group row; re-run the bounded local group/VIP/state assessment"
+                )
+            elif (contract_verdict == "INDETERMINATE"
+                  and group_coverage_states & {"degraded", "review", "not_verified"}):
+                gateway_statuses.append("warn")
+                gateway_notes.append(
+                    "configured FHRP group subject is INDETERMINATE — re-collect running-config "
+                    "and the matching protocol summary"
+                )
+            elif assessed_groups:
+                gateway_statuses.append("pass")
+                gateway_notes.append(
+                    f"{len(assessed_groups)} configured FHRP group(s) assessed in the bounded "
+                    "default IPv4 direct-literal local group/VIP/state scope; no peer or election "
+                    "health was inferred"
+                )
+            elif disabled_groups or contract_verdict == "NOT_APPLICABLE":
+                gateway_statuses.append("info")
+                gateway_notes.append(
+                    "FHRP is neutral in the bounded configured local-group scope "
+                    "(not applicable or administratively disabled); this is not FHRP health"
+                )
+            else:
+                gateway_statuses.append("info")
+                gateway_notes.append(
+                    "no active bounded configured FHRP group subject for this group; "
+                    "no gateway-redundancy health claim is made"
+                )
+        if fhrp_domain_supplied:
+            domain_rows = [
+                row for host in sorted(gset)
+                for row in fhrp_domain_rows_by_host.get(host, [])
+            ]
+            degraded_domains = [row for row in domain_rows if row.get("status") == "degraded"]
+            uncertain_domains = [
+                row for row in domain_rows if row.get("status") in {"review", "not_verified"}
+            ]
+            assessed_domains = [row for row in domain_rows if row.get("status") == "assessed"]
+            if degraded_domains:
+                gateway_statuses.append("fail")
+                gateway_notes.append(
+                    "FHRP redundancy-domain blocker(s): "
+                    + "; ".join(str(row.get("why") or row.get("check") or "")
+                                for row in degraded_domains)
+                )
+            elif uncertain_domains:
+                gateway_statuses.append("warn")
+                gateway_notes.append(
+                    "FHRP redundancy-domain composition is INDETERMINATE: "
+                    + "; ".join(str(row.get("why") or row.get("check") or "")
+                                for row in uncertain_domains)
+                )
+            elif assessed_domains:
+                gateway_statuses.append("pass")
+                gateway_notes.append(
+                    f"{len(assessed_domains)} FHRP redundancy-domain member row(s) boundedly "
+                    "assessed from the current-run exact domain/candidate projection"
+                )
+        if gateway_statuses:
+            status_rank = {"pass": 0, "info": 0, "warn": 1, "fail": 2}
+            status = max(gateway_statuses, key=lambda value: status_rank.get(value, 1))
+            note = "; ".join(dict.fromkeys(gateway_notes))
+        else:
+            status = "pass"
+            note = "no sole gateway or degraded observed FHRP election evidence"
+        checks.append(("Gateway redundancy", status, note))
         # 3 no cross-layer Critical
         hit = any_in(xl_crit_hosts)
         checks.append(("No cross-layer Critical", R["no_xl_critical"] if hit else "pass",
@@ -2082,30 +3235,176 @@ def compute_migration_readiness(all_interfaces, move_groups, health_scores,
         # (or erroring), so the check is NOT assessable there -> 'warn', never a silent 'pass' that reads
         # identical to a verified-consistent group. The `if stp_collected` guard keeps a run that
         # collected STP NOWHERE from crying wolf on every group (mirrors checks 7/12).  (#12)
-        hit = sorted({h for h in gset if "STP" in proto_high.get(h, set())})
-        missing_stp = sorted(gset - stp_collected) if stp_collected else []
-        if hit:
-            checks.append(("STP consistency", R["stp_consistency"], f"inconsistent STP on {', '.join(hit)}"))
-        elif missing_stp:
-            checks.append(("STP consistency", "warn",
-                           f"no spanning-tree evidence for {', '.join(missing_stp)} — "
-                           "STP consistency not assessable"))
-        elif not stp_collected:
-            # Nothing to compare anywhere in the run. #12 disclosed this honestly in the NOTE but
-            # left the status 'pass', and excel.py:3589 paints the Status cell green from
-            # _STATUS_FILL — so the Migration Readiness sheet showed a green PASS for an axis that
-            # was never observed, with the caveat one column to the right. A colour is a claim
-            # (the same rule this review applied to the Capacity sheet's amber fills), and the
-            # Status column is precisely what a reader scans. 'info' keeps #12's no-cry-wolf
-            # property intact — the verdict inspects only fail/warn — while withdrawing the health
-            # claim. Now identical to its two siblings (checks 11 and 12) rather than a third
-            # spelling of the same situation.
-            checks.append(("STP consistency", "info",
-                           "NOT ASSESSABLE — spanning tree was not collected anywhere in this run, "
-                           "so consistency could not be compared. This is an ABSENCE of evidence, "
-                           "not a clean spanning tree."))
+        if stp_contract_supplied:
+            group_stp_rows = [stp_consistency_by_host[host] for host in sorted(gset)
+                              if host in stp_consistency_by_host]
+            degraded_stp = [row for row in group_stp_rows if row.get("status") == "degraded"]
+            uncertain_stp = [row for row in group_stp_rows
+                             if row.get("status") in {"review", "not_verified"}]
+            if degraded_stp or uncertain_stp:
+                statuses = ([R["stp_consistency"]] if degraded_stp else [])
+                statuses += (["warn"] if uncertain_stp else [])
+                status_rank = {"pass": 0, "info": 0, "warn": 1, "fail": 2}
+                status = max(statuses, key=lambda value: status_rank.get(value, 1))
+                notes = []
+                if degraded_stp:
+                    notes.append(
+                        "bounded current-run STP inconsistency on "
+                        + ", ".join(row["switch"] for row in degraded_stp)
+                    )
+                if uncertain_stp:
+                    notes.append(
+                        "STP consistency baseline not verified on "
+                        + ", ".join(f"{row['switch']} ({row['status']})" for row in uncertain_stp)
+                        + "; re-collect show spanning-tree and show spanning-tree inconsistentports"
+                    )
+                checks.append(("STP consistency", status, "; ".join(notes)))
+            elif group_stp_rows:
+                checks.append((
+                    "STP consistency", "pass",
+                    "bounded current-run state and inconsistent-port evidence assessed on "
+                    + ", ".join(row["switch"] for row in group_stp_rows)
+                    + "; blocked-port and topology-change evidence are disclosed separately",
+                ))
+            else:
+                checks.append((
+                    "STP consistency", "info",
+                    "no positive STP/L2 subject for this group; no STP consistency health claim is made",
+                ))
         else:
-            checks.append(("STP consistency", "pass", "no inconsistent ports"))
+            hit = sorted({h for h in gset if "STP" in proto_high.get(h, set())})
+            missing_stp = sorted(gset - stp_collected) if stp_collected else []
+            if hit:
+                checks.append(("STP consistency", R["stp_consistency"],
+                               f"inconsistent STP on {', '.join(hit)}"))
+            elif missing_stp:
+                checks.append(("STP consistency", "warn",
+                               f"no spanning-tree evidence for {', '.join(missing_stp)} — "
+                               "STP consistency not assessable"))
+            elif not stp_collected:
+                # Nothing to compare anywhere in the run. #12 disclosed this honestly in the NOTE but
+                # left the status 'pass', and excel.py:3589 paints the Status cell green from
+                # _STATUS_FILL — so the Migration Readiness sheet showed a green PASS for an axis that
+                # was never observed, with the caveat one column to the right. A colour is a claim
+                # (the same rule this review applied to the Capacity sheet's amber fills), and the
+                # Status column is precisely what a reader scans. 'info' keeps #12's no-cry-wolf
+                # property intact — the verdict inspects only fail/warn — while withdrawing the health
+                # claim. Now identical to its two siblings (checks 11 and 12) rather than a third
+                # spelling of the same situation.
+                checks.append(("STP consistency", "info",
+                               "NOT ASSESSABLE — spanning tree was not collected anywhere in this run, "
+                               "so consistency could not be compared. This is an ABSENCE of evidence, "
+                               "not a clean spanning tree."))
+            else:
+                checks.append(("STP consistency", "pass", "no inconsistent ports"))
+
+        # VTP safety is a pre-cutover review claim, not a health score.  A high observed server
+        # revision is one bounded heuristic; other owned findings (for example an explicit empty
+        # active-mode domain) also withhold an all-clear without being called a present outage.
+        if vtp_contract_supplied:
+            group_vtp_rows = [
+                row for host in sorted(gset) for row in vtp_rows_by_host.get(host, [])
+            ] + vtp_global_rows
+            vtp_review = [row for row in group_vtp_rows if row.get("status") == "review"]
+            vtp_not_verified = [
+                row for row in group_vtp_rows if row.get("status") == "not_verified"
+            ]
+            if vtp_review or vtp_not_verified:
+                notes = []
+                if vtp_review:
+                    notes.append(
+                        "VTP safety REVIEW on "
+                        + ", ".join(
+                            f"{row.get('switch')} ({row.get('mode') or 'unknown'}"
+                            + (f", revision {row.get('revision')}"
+                               if row.get("revision_present") is True else "")
+                            + ")"
+                            for row in vtp_review
+                        )
+                        + "; resolve or explicitly disposition the local VTP safety finding before the window"
+                    )
+                if vtp_not_verified:
+                    notes.append(
+                        "VTP safety baseline NOT VERIFIED on "
+                        + ", ".join(str(row.get("switch") or "") for row in vtp_not_verified)
+                        + "; re-collect show vtp status before acceptance"
+                    )
+                checks.append(("VTP cutover safety", "warn", "; ".join(notes)))
+            elif group_vtp_rows:
+                checks.append((
+                    "VTP cutover safety",
+                    "pass",
+                    "bounded current-run local VTP mode/domain/revision observation assessed on "
+                    + ", ".join(str(row.get("switch") or "") for row in group_vtp_rows)
+                    + "; this does not prove database authority, synchronization, authentication, "
+                      "pruning, propagation, or overwrite safety",
+                ))
+
+        if ipv6_routing_contract_supplied:
+            group_ipv6_rows = [
+                row
+                for host in sorted(gset)
+                for row in ipv6_routing_rows_by_host.get(host, [])
+            ] + ipv6_routing_global_rows
+            ipv6_degraded = [
+                row for row in group_ipv6_rows if row.get("status") == "degraded"
+            ]
+            ipv6_indeterminate = [
+                row for row in group_ipv6_rows
+                if row.get("status") in {"review", "not_verified"}
+            ]
+
+            def ipv6_subject(row: dict) -> str:
+                protocol = _strict_protocol_text(row.get("protocol")) or "IPv6 routing"
+                peer = _strict_protocol_text(row.get("peer"))
+                state = _strict_protocol_text(row.get("state_raw")) or _strict_protocol_text(
+                    row.get("state"))
+                detail = f"{protocol} {peer or 'subject'}"
+                return detail + (f" ({state})" if state else "")
+
+            def ipv6_subject_summary(rows: List[dict]) -> str:
+                # Readiness is a fleet-level synopsis, while Validation/NRFU retain every
+                # individual blocker.  Bound this note so a valid high-cardinality receipt
+                # cannot overrun an Excel cell or turn a decision banner into a multi-megabyte
+                # string; disclose the exact omitted count and its authoritative sink.
+                subjects = [ipv6_subject(row) for row in rows]
+                shown = ", ".join(subjects[:8])
+                if len(subjects) > 8:
+                    shown += (
+                        f"; +{len(subjects) - 8} additional blocker row(s) retained in "
+                        "Cutover Validation and NRFU"
+                    )
+                return shown
+
+            if ipv6_degraded:
+                checks.append((
+                    "IPv6 routing adjacencies",
+                    R["routing_adjacencies"],
+                    "degraded observed IPv6 adjacency: "
+                    + ipv6_subject_summary(ipv6_degraded)
+                    + (
+                        f"; additionally, {len(ipv6_indeterminate)} REVIEW/NOT VERIFIED "
+                        "blocker row(s) are retained in Cutover Validation and NRFU"
+                        if ipv6_indeterminate else ""
+                    )
+                    + "; matching a degraded state after cutover is NOT ACCEPTANCE",
+                ))
+            elif ipv6_indeterminate:
+                checks.append((
+                    "IPv6 routing adjacencies",
+                    "warn",
+                    "IPv6 routing adjacency baseline requires review or is NOT VERIFIED: "
+                    + ipv6_subject_summary(ipv6_indeterminate)
+                    + "; re-collect the scoped OSPFv3/IPv6-unicast BGP evidence before acceptance",
+                ))
+            elif group_ipv6_rows:
+                checks.append((
+                    "IPv6 routing adjacencies",
+                    "pass",
+                    f"{len(group_ipv6_rows)} bounded observed OSPFv3/IPv6-unicast BGP "
+                    "adjacency row(s) assessed; no expected-peer denominator, route-policy, "
+                    "route-propagation, convergence, or freshness claim is made",
+                ))
         # 6 port-channels healthy -- same treatment, but the coverage set has to be joined against
         # interface-evidenced port-channel MEMBERSHIP: a missing EtherChannel row means "bundle state
         # never observed" only for a switch that has members, and means "nothing to assess" for one
@@ -2128,21 +3427,111 @@ def compute_migration_readiness(all_interfaces, move_groups, health_scores,
         # OSPF/BGP row was COLLECTED. With no routing evidence for ANY switch in the group the adjacency status is
         # NOT assessable -> 'warn', never a silent 'pass' that reads identical to a verified-up group (the bare
         # 'show logging'-on-NX-OS false-health class at the cutover gate; audit-4 #7).
-        hit = sorted({h for h in gset if proto_high.get(h, set()) & {"OSPF", "BGP"}})
-        if hit:
-            checks.append(("Routing adjacencies up", R["routing_adjacencies"],
-                           f"down OSPF/BGP neighbor on {', '.join(hit)}"))
-        elif gset & routing_collected:
-            checks.append(("Routing adjacencies up", "pass", "all neighbors up"))
-        elif routing_collected:
-            # routing WAS collected this run but for NO switch in this group -> the fail-gate cannot certify this
-            # group's adjacencies, so 'warn' rather than a silent 'pass' that reads identical to a verified-up
-            # group. Mirrors the Baseline-capture coverage pattern (`gset - baseline_hosts if baseline_hosts`),
-            # so a pure-L2 run with no routing anywhere does not cry wolf on every group (audit-4 #7).
-            checks.append(("Routing adjacencies up", "warn",
-                           "routing not collected for this group — adjacency status not assessable"))
+        if not bgp_contract_supplied:
+            # Backward-compatible observed-only behaviour for callers predating the configured-peer owner.
+            hit = sorted({h for h in gset if proto_high.get(h, set()) & {"OSPF", "BGP"}})
+            if hit:
+                checks.append(("Routing adjacencies up", R["routing_adjacencies"],
+                               f"down OSPF/BGP neighbor on {', '.join(hit)}"))
+            elif gset & routing_collected:
+                checks.append(("Routing adjacencies up", "pass", "all neighbors up"))
+            elif routing_collected:
+                checks.append(("Routing adjacencies up", "warn",
+                               "routing not collected for this group — adjacency status not assessable"))
+            else:
+                checks.append(("Routing adjacencies up", "pass", "all neighbors up / none"))
         else:
-            checks.append(("Routing adjacencies up", "pass", "all neighbors up / none"))
+            ospf_hit = sorted({h for h in gset if "OSPF" in proto_high.get(h, set())})
+            group_bgp_rows = [
+                row for host in sorted(gset) for row in bgp_rows_by_host.get(host, [])
+            ]
+            bgp_degraded = [
+                row for row in group_bgp_rows
+                if row.get("status") == "degraded"
+            ]
+            bgp_indeterminate = [
+                row for row in group_bgp_rows
+                if row.get("status") in {"review", "not_verified"}
+            ]
+            bgp_assessed = [row for row in group_bgp_rows if row.get("status") == "assessed"]
+            bgp_disabled = [
+                row for row in group_bgp_rows
+                if row.get("status") == "administratively_disabled"
+            ]
+            contract_valid = (
+                bgp_contract_view.get("valid") is True
+                and bgp_contract_view.get("source_bound") is True
+            )
+            contract_verdict = _strict_protocol_text(bgp_contract.get("verdict")).upper()
+            all_bgp_blockers = [
+                row for rows in bgp_rows_by_host.values() for row in rows
+                if row.get("status") in {"degraded", "review", "not_verified"}
+            ]
+
+            if ospf_hit or bgp_degraded:
+                details: List[str] = []
+                if ospf_hit:
+                    details.append(f"down OSPF neighbor on {', '.join(ospf_hit)}")
+                if bgp_degraded:
+                    details.append(
+                        "configured BGP default/global IPv4 peer blocker(s): "
+                        + ", ".join(
+                            f"{row.get('switch')} {row.get('peer')} ({row.get('status')})"
+                            for row in bgp_degraded
+                        )
+                    )
+                checks.append(("Routing adjacencies up", R["routing_adjacencies"], "; ".join(details)))
+            elif bgp_indeterminate:
+                checks.append((
+                    "Routing adjacencies up", "warn",
+                    "configured BGP default/global IPv4 peer subject is INDETERMINATE: "
+                    + ", ".join(
+                        f"{row.get('switch')} {row.get('peer')} ({row.get('status')})"
+                        for row in bgp_indeterminate
+                    )
+                    + "; re-collect running-config and scoped IPv4 summary evidence",
+                ))
+            elif not contract_valid:
+                # An explicitly supplied but failed/tampered phase is not equivalent to feature absence.
+                checks.append(("Routing adjacencies up", "warn",
+                               "configured BGP default/global IPv4 peer baseline is not a validated "
+                               "current-run artifact — routing acceptance is not assessable"))
+            elif contract_verdict == "BLOCKED" and not all_bgp_blockers and (
+                    gset & bgp_subject_coverage_hosts):
+                # Defensive reconciliation: a BLOCKED owner verdict must never collapse to READY even if a
+                # malformed future producer omits its blocker row.
+                checks.append(("Routing adjacencies up", R["routing_adjacencies"],
+                               "configured BGP peer baseline is BLOCKED but exposes no attributable blocker "
+                               "row; re-run the bounded default/global IPv4 assessment"))
+            elif contract_verdict == "INDETERMINATE" and (
+                    any(bgp_coverage_status_by_host.get(host) in {"review", "not_verified"}
+                        for host in gset)):
+                checks.append(("Routing adjacencies up", "warn",
+                               "configured BGP default/global IPv4 peer subject is INDETERMINATE — "
+                               "re-collect running-config and scoped IPv4 summary evidence"))
+            elif bgp_assessed:
+                note = (
+                    f"{len(bgp_assessed)} configured literal BGP peer(s) assessed in the bounded "
+                    "default/global IPv4-unicast scope"
+                )
+                if gset & ospf_collected:
+                    note += "; observed OSPF neighbors are up"
+                checks.append(("Routing adjacencies up", "pass", note))
+            elif gset & ospf_collected:
+                checks.append(("Routing adjacencies up", "pass", "observed OSPF neighbors are up; "
+                               "no active in-scope configured BGP peer was asserted for this group"))
+            elif ospf_collected:
+                checks.append(("Routing adjacencies up", "warn",
+                               "OSPF was collected elsewhere but not for this group; the configured BGP "
+                               "baseline is neutral here — routing status is not assessable"))
+            elif bgp_disabled or contract_verdict == "NOT_APPLICABLE":
+                checks.append(("Routing adjacencies up", "info",
+                               "BGP is neutral in the bounded default/global IPv4 literal-peer scope "
+                               "(not applicable or administratively disabled); this is not BGP health"))
+            else:
+                checks.append(("Routing adjacencies up", "info",
+                               "no assessed OSPF or active bounded default/global IPv4 BGP subject for this "
+                               "group; no routing-health claim is made"))
         # 8 no orphan VLANs
         hit = any_in(orphan_hosts)
         checks.append(("No orphan VLANs", R["no_orphan_vlans"] if hit else "pass",
@@ -2249,30 +3638,455 @@ def _parse_stp_tcn(detail_output: str):
         return (None, None)
     return (max(counts), sum(counts))
 
-# EtherChannel member status flags that mean NOT FORWARDING (Cisco `show etherchannel/port-channel
-# summary`): s suspended, D down, I stand-alone, w waiting, M minimum-links-not-met, f failed to
-# allocate aggregator. _EC_HARD is the subset that is down NOW ('w' is a soft/transient state).
-# ONE source of truth: compute_protocol_health rates severity from these AND _extract_protocol_states
-# joins the advisory KB from them. They used to be written out twice with DIFFERENT alphabets, so the
-# states rated High ('M'/'f', and any combined token like 'RM') produced no advisory at all (#52).
-_EC_BAD_FLAGS = "sDIwMf"
-_EC_HARD_FLAGS = "sDIMf"
-# 'H' (LACP hot-standby) is not a fault but IS carried into the advisory join (the KB rates it Info).
-_EC_ADVISORY_FLAGS = _EC_BAD_FLAGS + "H"
+# EtherChannel's producer vocabulary is deliberately closed and case-sensitive.  These are LOCAL
+# observations from ``show etherchannel/port-channel summary`` -- never configured-member, partner,
+# hashing, bandwidth, persistence, or multi-chassis intent.  P and NX-OS delay-LACP p are forwarding;
+# H is a legitimate LACP hot standby.  D/s/I/f/M/m/u/r are definite local non-forwarding faults.
+# Waiting (w) and BFD-wait (b), plus the platform-dependent d token, require live persistence/intent
+# review rather than an asserted fault.  Group D/M/N are definite local bundle faults.
+_EC_COMMANDS = ("show etherchannel summary", "show port-channel summary")
+_EC_GROUP_DEGRADED_FLAGS = frozenset("DMN")
+_EC_GROUP_CONTEXT_FLAGS = frozenset("SRUA")
+_EC_MEMBER_FORWARDING_FLAGS = frozenset(("P", "p"))
+_EC_MEMBER_STANDBY_FLAGS = frozenset(("H",))
+_EC_MEMBER_DEGRADED_FLAGS = frozenset(("D", "s", "I", "f", "M", "m", "u", "r"))
+_EC_MEMBER_REVIEW_FLAGS = frozenset(("w", "b", "d"))
+_EC_MEMBER_KNOWN_FLAGS = (
+    _EC_MEMBER_FORWARDING_FLAGS | _EC_MEMBER_STANDBY_FLAGS
+    | _EC_MEMBER_DEGRADED_FLAGS | _EC_MEMBER_REVIEW_FLAGS
+)
+# Backward-compatible intelligence joins derive from the same alphabet -- no second classifier.
+_EC_BAD_FLAGS = "".join(sorted(_EC_MEMBER_DEGRADED_FLAGS | _EC_MEMBER_REVIEW_FLAGS))
+_EC_HARD_FLAGS = "".join(sorted(_EC_MEMBER_DEGRADED_FLAGS))
+_EC_ADVISORY_FLAGS = "".join(sorted(
+    _EC_MEMBER_DEGRADED_FLAGS | _EC_MEMBER_REVIEW_FLAGS | _EC_MEMBER_STANDBY_FLAGS
+    | {"N", "p"}
+))
+_EC_MEMBER_TOKEN_RE = re.compile(
+    r"(?<![\w-])([A-Za-z][A-Za-z-]*\d+(?:/\d+){1,2})\s*\(([A-Za-z]+)\)"
+)
+_EC_GROUP_ROW_RE = re.compile(
+    r"^\s*(\d+)\s+((?:Po|Port-channel)\d+)\s*\(([A-Za-z]+)\)\s+(.+?)\s*$",
+    re.IGNORECASE,
+)
+_EC_GROUP_CANDIDATE_RE = re.compile(
+    r"^\s*\d+\s+(?:Po|Port-channel)\d+\b", re.IGNORECASE
+)
+
+
+def _ec_finding(kind: str, code: str, issue: str) -> dict:
+    return {"kind": kind, "code": code, "issue": issue}
+
+
+def _canonical_port_channel(value: Any) -> str:
+    text = value.strip() if isinstance(value, str) else ""
+    m = re.fullmatch(r"(?:Po|Port-channel)0*(\d+)", text, re.IGNORECASE)
+    return f"Po{int(m.group(1))}" if m else ""
+
+
+def _canonical_physical_interface(value: Any) -> str:
+    text = normalize_ifname(value.strip()) if isinstance(value, str) else ""
+    if not text or not PHYSICAL_IFACE_RE.fullmatch(text) or re.match(r"^Po\d+$", text, re.IGNORECASE):
+        return ""
+    m = re.fullmatch(r"([A-Za-z]+)(\d+(?:/\d+){1,2})", text)
+    if not m:
+        return ""
+    prefixes = {
+        "eth": "Eth", "gi": "Gi", "te": "Te", "tw": "Tw", "twe": "Twe",
+        "fif": "Fif", "fi": "Fi", "ap": "Ap", "app": "Ap", "fo": "Fo",
+        "hu": "Hu", "fa": "Fa",
+    }
+    prefix = prefixes.get(m.group(1).lower())
+    if not prefix:
+        return ""
+    return prefix + "/".join(str(int(part)) for part in m.group(2).split("/"))
+
+
+def _classify_etherchannel_member_flags(flags: Any, protocol: Any) -> Tuple[str, str, List[dict]]:
+    token = flags if isinstance(flags, str) else ""
+    proto = protocol.upper() if isinstance(protocol, str) else ""
+    findings: List[dict] = []
+    if not token or not token.isalpha():
+        return "review", "unclassified", [
+            _ec_finding("review", "member_flags_malformed",
+                        "Member flags are missing or malformed; live verification is required.")
+        ]
+    unknown = sorted(set(token) - _EC_MEMBER_KNOWN_FLAGS)
+    definite = sorted(set(token) & _EC_MEMBER_DEGRADED_FLAGS)
+    forwarding = sorted(set(token) & _EC_MEMBER_FORWARDING_FLAGS)
+    standby = "H" in token
+    waiting = sorted(set(token) & _EC_MEMBER_REVIEW_FLAGS)
+
+    # A positive forwarding/standby token combined with another state is contradictory.  A definite
+    # fault still wins over an unrelated annotation/unknown token (e.g. the real-world RM token), but
+    # never over a contradictory P/p/H claim in the same leaf.
+    if (forwarding or standby) and (definite or waiting or unknown or len(set(token)) != 1):
+        findings.append(_ec_finding(
+            "review", "member_flags_contradictory",
+            f"Member flag token {token} combines mutually incompatible observed states."
+        ))
+        return "review", "contradictory", findings
+    if definite:
+        findings.append(_ec_finding(
+            "degraded", "member_non_forwarding",
+            f"Member flag token {token} includes supported non-forwarding flag(s) {''.join(definite)}."
+        ))
+        return "degraded", "non_forwarding_observed", findings
+    if forwarding:
+        if len(token) != 1:
+            return "review", "contradictory", [_ec_finding(
+                "review", "member_flags_contradictory",
+                f"Member flag token {token} does not describe one bounded forwarding state."
+            )]
+        return ("assessed", "delay_lacp_up", findings) if token == "p" else (
+            "assessed", "forwarding_observed", findings
+        )
+    if standby:
+        if proto != "LACP":
+            findings.append(_ec_finding(
+                "review", "standby_protocol_mismatch",
+                f"Hot-standby flag H is only bounded for LACP, not protocol {proto or '?'}.",
+            ))
+            return "review", "standby_unverified", findings
+        return "assessed", "hot_standby", findings
+    if waiting:
+        names = {"w": "LACP waiting", "b": "BFD session wait", "d": "platform-dependent delay/default"}
+        findings.append(_ec_finding(
+            "review", "member_wait_requires_review",
+            "Member flag token " + token + " reports " + ", ".join(names[item] for item in waiting)
+            + "; persistence and intent are not present in this snapshot.",
+        ))
+        return "review", "waiting_unverified", findings
+    findings.append(_ec_finding(
+        "review", "member_flags_unclassified",
+        f"Member flag token {token} is outside the bounded producer vocabulary."
+    ))
+    return "review", "unclassified", findings
+
+
+def _classify_etherchannel_group_flags(flags: Any) -> Tuple[str, str, List[dict]]:
+    token = flags if isinstance(flags, str) else ""
+    if not token or not token.isalpha():
+        return "review", "unclassified", [_ec_finding(
+            "review", "group_flags_malformed",
+            "Port-channel group flags are missing or malformed; live verification is required.",
+        )]
+    definite = sorted(set(token) & _EC_GROUP_DEGRADED_FLAGS)
+    unknown = sorted(set(token) - _EC_GROUP_DEGRADED_FLAGS - _EC_GROUP_CONTEXT_FLAGS)
+    if definite:
+        return "degraded", "down", [_ec_finding(
+            "degraded", "group_non_forwarding",
+            f"Group flag token {token} includes supported down/min-links flag(s) {''.join(definite)}.",
+        )]
+    switched = "S" in token
+    routed = "R" in token
+    if (switched == routed) or "U" not in token or unknown or len(token) != len(set(token)):
+        detail = f"Group flag token {token} is not one bounded S/R plus U operational state"
+        if unknown:
+            detail += f"; unknown flag(s) {''.join(unknown)} are present"
+        return "review", "unclassified", [_ec_finding(
+            "review", "group_flags_unclassified", detail + ".",
+        )]
+    return "assessed", "up", []
+
+
+def _parse_etherchannel_projection_body(output: Any) -> dict:
+    """Parse one supported summary body without collapsing group/member identity or flag tokens."""
+    text = output if isinstance(output, str) else ""
+    groups: List[dict] = []
+    findings: List[dict] = []
+    rejected = 0
+    declared_match = re.search(r"Number of channel-groups in use\s*:\s*(\d+)", text, re.IGNORECASE)
+    declared_count = int(declared_match.group(1)) if declared_match else None
+    by_group: Dict[str, dict] = {}
+    by_id: Dict[str, str] = {}
+    member_owner: Dict[str, str] = {}
+    current: Optional[dict] = None
+
+    def add_finding(target: List[dict], item: dict) -> None:
+        if not any(old["code"] == item["code"] and old["issue"] == item["issue"] for old in target):
+            target.append(item)
+
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        match = _EC_GROUP_ROW_RE.match(line)
+        if match:
+            group_id_raw, group_raw, group_flags, tail = match.groups()
+            group_id = str(int(group_id_raw))
+            group = _canonical_port_channel(group_raw)
+            proto_match = re.search(r"(?:^|\s)(LACP|PAgP|NONE|-)(?=\s|$)", tail, re.IGNORECASE)
+            protocol_raw = proto_match.group(1) if proto_match else ""
+            protocol = "NONE" if protocol_raw == "-" else protocol_raw.upper()
+            if group in by_group or group_id in by_id:
+                rejected += 1
+                add_finding(findings, _ec_finding(
+                    "review", "duplicate_group_identity",
+                    f"A colliding EtherChannel group identity was observed for group {group_id}/{group or group_raw}.",
+                ))
+                current = None
+                continue
+            flag_status, operational_state, group_findings = _classify_etherchannel_group_flags(group_flags)
+            current = {
+                "group_id": group_id,
+                "group": group,
+                "group_flags": group_flags,
+                "protocol": protocol,
+                "protocol_raw": protocol_raw,
+                "status": flag_status,
+                "operational_state": operational_state,
+                "members": [],
+                "findings": group_findings,
+            }
+            if not group or int(re.sub(r"\D", "", group) or -1) != int(group_id):
+                add_finding(current["findings"], _ec_finding(
+                    "review", "group_identity_mismatch",
+                    f"Summary group {group_id} does not reconcile to port-channel {group or group_raw}.",
+                ))
+            if not protocol:
+                add_finding(current["findings"], _ec_finding(
+                    "review", "protocol_unclassified",
+                    f"No bounded aggregation protocol token was parsed for {group or group_raw}.",
+                ))
+            groups.append(current)
+            by_group[group] = current
+            by_id[group_id] = group
+        elif _EC_GROUP_CANDIDATE_RE.match(line):
+            rejected += 1
+            current = None
+            add_finding(findings, _ec_finding(
+                "review", "group_row_malformed",
+                "An EtherChannel group row could not be normalized without guessing its flags or columns.",
+            ))
+            continue
+        elif (not line.strip() or re.match(r"^\s*(?:[-+]{3,}|Group\b|Channel\b|Flags?:\b|Number\b)",
+                                           line, re.IGNORECASE)):
+            if not line.strip() or re.match(r"^\s*(?:Group\b|Flags?:\b|Number\b)", line, re.IGNORECASE):
+                current = None
+
+        member_matches = list(_EC_MEMBER_TOKEN_RE.finditer(line))
+        if member_matches and current is None:
+            rejected += len(member_matches)
+            add_finding(findings, _ec_finding(
+                "review", "orphan_member_row",
+                "One or more EtherChannel member tokens were not attached to a trustworthy group row.",
+            ))
+            continue
+        for member_match in member_matches:
+            interface_raw, flags = member_match.groups()
+            interface = _canonical_physical_interface(interface_raw)
+            if not interface:
+                rejected += 1
+                add_finding(current["findings"], _ec_finding(
+                    "review", "member_identity_malformed",
+                    f"Member identity {interface_raw} is outside the bounded physical-interface grammar.",
+                ))
+                continue
+            if interface in member_owner:
+                rejected += 1
+                add_finding(findings, _ec_finding(
+                    "review", "duplicate_member_identity",
+                    f"Member {interface} appears more than once across group rows ({member_owner[interface]} and "
+                    f"{current['group']}); no ownership is inferred.",
+                ))
+                continue
+            member_owner[interface] = current["group"]
+            member_status, member_state, member_findings = _classify_etherchannel_member_flags(
+                flags, current["protocol"]
+            )
+            current["members"].append({
+                "interface": interface,
+                "flags": flags,
+                "status": member_status,
+                "state": member_state,
+                "findings": member_findings,
+            })
+
+    for group in groups:
+        group["members"].sort(key=lambda item: (item["interface"].casefold(), item["interface"]))
+        if not group["members"] and group["operational_state"] == "up":
+            add_finding(group["findings"], _ec_finding(
+                "review", "up_group_without_members",
+                f"{group['group']} is flagged up but has zero observed members.",
+            ))
+        if (group["status"] == "degraded"
+                or any(item["status"] == "degraded" for item in group["members"])):
+            group["status"] = "degraded"
+        elif (any(item["status"] == "review" for item in group["members"])
+              or any(item["kind"] == "review" for item in group["findings"])):
+            group["status"] = "review"
+        else:
+            group["status"] = "assessed"
+        group["findings"] = sorted(group["findings"], key=lambda item: (item["code"], item["issue"]))
+
+    if declared_count is not None and declared_count != len(groups):
+        add_finding(findings, _ec_finding(
+            "review", "declared_group_count_mismatch",
+            f"The summary declares {declared_count} channel-group(s) but {len(groups)} unique group row(s) parsed.",
+        ))
+    if text.strip() and not groups and declared_count != 0:
+        add_finding(findings, _ec_finding(
+            "review", "summary_unrecognized",
+            "Usable EtherChannel summary text contained no trustworthy group row or explicit zero-group result.",
+        ))
+    return {
+        "groups": sorted(groups, key=lambda item: (int(item["group_id"]), item["group"])),
+        "findings": sorted(findings, key=lambda item: (item["code"], item["issue"])),
+        "rejected_line_count": rejected,
+        "declared_group_count": declared_count,
+    }
 
 
 def _parse_etherchannel_member_states(output: str) -> Dict[str, str]:
-    """'show etherchannel/port-channel summary' -> {member_port: flag_token} (the member's status flags:
-    P bundled, s suspended, D down, I stand-alone, w waiting, H hot-standby, M minimum-links-not-met,
-    f failed-to-allocate-aggregator). The FULL flag token is kept (not just its first letter) so a combined
-    flag like 'RM' cannot mask the non-forwarding 'M'."""
-    res: Dict[str, str] = {}
-    for line in (output or "").splitlines():
-        for m in re.finditer(r"\b([A-Za-z]{2,}[\d/]+)\(([A-Za-z]+)\)", line):
-            nm = normalize_ifname(m.group(1))
-            if not nm.startswith("Po"):
-                res[nm] = m.group(2)
-    return res
+    """Backward-compatible member->flag view backed by the structured, collision-aware parser."""
+    result: Dict[str, str] = {}
+    for group in _parse_etherchannel_projection_body(output)["groups"]:
+        for member in group["members"]:
+            result[member["interface"]] = member["flags"]
+    return result
+
+
+def _interface_leaf_value(leaf: Any, name: str) -> Any:
+    return leaf.get(name) if isinstance(leaf, dict) else getattr(leaf, name, "")
+
+
+def _etherchannel_associations(ifaces: Any) -> Tuple[List[dict], List[dict]]:
+    if not isinstance(ifaces, dict):
+        return [], [_ec_finding(
+            "review", "association_projection_malformed",
+            "Interface/config association projection has an unusable host shape.",
+        )]
+    associations: Dict[str, dict] = {}
+    findings: List[dict] = []
+    for port_key, leaf in ifaces.items():
+        if not isinstance(leaf, (dict, InterfaceData)):
+            if _canonical_physical_interface(port_key):
+                findings.append(_ec_finding(
+                    "review", "association_projection_malformed",
+                    "A physical-interface association leaf has an unusable shape.",
+                ))
+            continue
+        group_raw = _interface_leaf_value(leaf, "port_channel")
+        if not isinstance(group_raw, str):
+            if group_raw not in (None, ""):
+                findings.append(_ec_finding(
+                    "review", "association_identity_malformed",
+                    "A port-channel association has a non-text group identity.",
+                ))
+            continue
+        if not group_raw.strip():
+            continue
+        port_raw = port_key if isinstance(port_key, str) else _interface_leaf_value(leaf, "port")
+        # build_interfaces intentionally gives the logical bundle record a self-reference
+        # (Po1.port_channel == Po1).  That is group metadata, not a physical-member association;
+        # omitting it must not contaminate an otherwise healthy raw summary with a false REVIEW.
+        if _canonical_port_channel(port_raw):
+            continue
+        interface = _canonical_physical_interface(port_raw)
+        group = _canonical_port_channel(group_raw)
+        if not interface or not group:
+            findings.append(_ec_finding(
+                "review", "association_identity_malformed",
+                "A port-channel association has an invalid physical-interface or group identity.",
+            ))
+            continue
+        prior = associations.get(interface)
+        if prior:
+            code = "association_group_conflict" if prior["group"] != group else "duplicate_association_identity"
+            findings.append(_ec_finding(
+                "review", code,
+                f"Interface association {interface} is duplicated"
+                + (f" across {prior['group']} and {group}" if prior["group"] != group else "") + ".",
+            ))
+            continue
+        associations[interface] = {"interface": interface, "group": group}
+    return (
+        sorted(associations.values(), key=lambda item: (item["interface"].casefold(), item["interface"])),
+        sorted(findings, key=lambda item: (item["code"], item["issue"])),
+    )
+
+
+def compute_etherchannel_projection(all_interfaces: Any, all_cmd_to_files: Any) -> dict:
+    """Return a deterministic, fail-closed current-run EtherChannel projection.
+
+    Raw summary groups and their exact flags stay separate from interface/config/trunk associations.
+    Associations establish a validation subject only; they never become an operational-state claim.
+    """
+    interface_root = all_interfaces if isinstance(all_interfaces, dict) else {}
+    command_root = all_cmd_to_files if isinstance(all_cmd_to_files, dict) else {}
+    hosts = sorted(
+        {host.strip() for root in (interface_root, command_root) for host in root
+         if isinstance(host, str) and host.strip()},
+        key=lambda item: (item.casefold(), item),
+    )
+    rows: List[dict] = []
+    capture_states = ("usable", "empty", "error", "missing")
+    for host in hosts:
+        c2f = command_root.get(host, {})
+        host_findings: List[dict] = []
+        if not isinstance(c2f, dict):
+            c2f = {}
+            host_findings.append(_ec_finding(
+                "review", "command_projection_malformed",
+                "Command-capture projection has an unusable host shape.",
+            ))
+        capture_state = cmd_capture_state(c2f, *_EC_COMMANDS)
+        source_command = ""
+        output = ""
+        for command in _EC_COMMANDS:
+            if cmd_capture_state(c2f, command) == capture_state and capture_state != "missing":
+                source_command = command
+                if capture_state == "usable":
+                    output = _load_cmd_output(c2f, command)
+                break
+        if capture_state == "missing" and any(command in c2f for command in _EC_COMMANDS):
+            host_findings.append(_ec_finding(
+                "review", "capture_reference_unusable",
+                "A recognized EtherChannel command key exists but its capture reference is unusable.",
+            ))
+        parsed = _parse_etherchannel_projection_body(output) if capture_state == "usable" else {
+            "groups": [], "findings": [], "rejected_line_count": 0, "declared_group_count": None,
+        }
+        associations, association_findings = _etherchannel_associations(interface_root.get(host, {}))
+        host_findings.extend(parsed["findings"])
+        host_findings.extend(association_findings)
+        deduped_findings = {
+            (item["kind"], item["code"], item["issue"]): item for item in host_findings
+        }
+        rows.append({
+            "switch": host,
+            "source_command": source_command,
+            "capture_state": capture_state,
+            "declared_group_count": parsed["declared_group_count"],
+            "groups": parsed["groups"],
+            "associations": associations,
+            "findings": sorted(deduped_findings.values(), key=lambda item: (item["code"], item["issue"])),
+            "rejected_line_count": parsed["rejected_line_count"],
+        })
+    by_capture_state = {state: sum(row["capture_state"] == state for row in rows)
+                        for state in capture_states}
+    return {
+        "schema": "etherchannel_projection/1",
+        "rows": rows,
+        "summary": {
+            "n_devices": len(rows),
+            "n_subject_devices": sum(bool(row["groups"] or row["associations"] or row["findings"])
+                                     for row in rows),
+            "n_groups": sum(len(row["groups"]) for row in rows),
+            "n_members": sum(len(group["members"]) for row in rows for group in row["groups"]),
+            "n_associations": sum(len(row["associations"]) for row in rows),
+            "n_degraded_groups": sum(group["status"] == "degraded"
+                                     for row in rows for group in row["groups"]),
+            "n_review_groups": sum(group["status"] == "review"
+                                   for row in rows for group in row["groups"]),
+            "n_rejected_lines": sum(row["rejected_line_count"] for row in rows),
+            "by_capture_state": by_capture_state,
+        },
+        "limitations": [
+            "Group/member flags are one current-run local summary projection, not configured or partner intent.",
+            "Interface/config/trunk associations are subject evidence only and carry no operational state.",
+            "Waiting/BFD-wait flags require live persistence and intent verification.",
+        ],
+    }
 
 def _parse_vtp_full(output: str) -> dict:
     mode = domain = ""
@@ -2291,10 +4105,20 @@ def _parse_vtp_full(output: str) -> dict:
     return {"mode": mode, "domain": domain, "revision": rev}
 
 def compute_protocol_health(all_interfaces: Dict[str, Dict[str, InterfaceData]],
-                            all_cmd_to_files: Dict[str, Dict[str, str]]) -> List[dict]:
+                            all_cmd_to_files: Dict[str, Dict[str, str]],
+                            etherchannel_projection: Any = None) -> List[dict]:
     """Per-(switch, protocol) health rows. Severity: High (down/inconsistent), Medium
     (waiting / soft), Info (healthy / present). Returns records for sheet + snapshot."""
     records: List[dict] = []
+    if etherchannel_projection is None:
+        resolved_etherchannel_projection = compute_etherchannel_projection(all_interfaces, all_cmd_to_files)
+    else:
+        supplied_projection = _validate_etherchannel_projection(etherchannel_projection)
+        resolved_etherchannel_projection = (
+            etherchannel_projection if supplied_projection["valid"]
+            else compute_etherchannel_projection(all_interfaces, all_cmd_to_files)
+        )
+    etherchannel_by_host = {row["switch"]: row for row in resolved_etherchannel_projection["rows"]}
 
     def add(host, proto, sev, summary, detail=""):
         records.append({"switch": host, "protocol": proto, "severity": sev,
@@ -2305,10 +4129,22 @@ def compute_protocol_health(all_interfaces: Dict[str, Dict[str, InterfaceData]],
 
         # ---- STP ----
         stp_out = _load_cmd_output(c2f, "show spanning-tree")
-        if stp_out:
+        mode = _parse_stp_mode(stp_out)
+        stp_states = parse_spanning_tree_states(stp_out)
+        stp_roots = parse_spanning_tree_root(stp_out)
+        # ``parse_spanning_tree_root`` deliberately preserves a bare VLAN/MST header as a
+        # partial record for its own consumers.  That header alone is not a health-state
+        # witness: require an actual mode, port state, or root/bridge fact before emitting.
+        stp_root_observed = any(
+            rec.get("root_priority") is not None
+            or bool(rec.get("root_address"))
+            or rec.get("bridge_priority") is not None
+            or bool(rec.get("is_root"))
+            for rec in stp_roots.values()
+        )
+        if mode or stp_states or stp_root_observed:
             blocked = parse_spanning_tree_blockedports(_load_cmd_output(c2f, "show spanning-tree blockedports"))
             incons = parse_spanning_tree_blockedports(_load_cmd_output(c2f, "show spanning-tree inconsistentports"))
-            mode = _parse_stp_mode(stp_out)
             maxt, _tot = _parse_stp_tcn(_load_cmd_output(c2f, "show spanning-tree detail"))
             nblk, ninc = len(blocked), len(incons)
             sev = "High" if ninc else "Info"
@@ -2319,21 +4155,39 @@ def compute_protocol_health(all_interfaces: Dict[str, Dict[str, InterfaceData]],
             add(host, "STP", sev, summary, detail)
 
         # ---- EtherChannel ----
-        ec_out = _load_cmd_output(c2f, "show etherchannel summary", "show port-channel summary")
-        if ec_out:
-            states = _parse_etherchannel_member_states(ec_out)
-            if states:
-                # 'M' (not in use, minimum links not met) and 'f' (failed to allocate aggregator) are
-                # NON-FORWARDING member states -- a min-links-failed bundle is DOWN. Omitting them read a
-                # broken LACP bundle as healthy Info (false-health). Scan the WHOLE flag token (the parser keeps
-                # it) so a combined flag like 'RM' cannot mask the 'M'. 'w' (waiting) stays a soft/Medium state.
-                bad = {m: f for m, f in states.items() if any(ch in _EC_BAD_FLAGS for ch in f)}
-                npo = len({po for po in parse_etherchannel_summary_members(ec_out).values()})
-                hard = any(any(ch in _EC_HARD_FLAGS for ch in f) for f in bad.values())
-                sev = "High" if hard else ("Medium" if bad else "Info")
-                summary = f"{npo} bundle(s), {len(states)} member(s)" + (f"; {len(bad)} not bundled" if bad else "")
-                detail = ("; ".join(f"{m}({f})" for m, f in sorted(bad.items()))) if bad else ""
-                add(host, "EtherChannel", sev, summary, detail)
+        # The health sheet and cutover baseline deliberately consume the SAME structured projection and
+        # closed flag classifier.  This preserves down zero-member groups, group-level D/M/N, NX-OS p/b/r,
+        # IOS m/u, hot standby H, duplicates, and malformed rows instead of reducing them to an all-P count.
+        ec_row = etherchannel_by_host.get(host, {})
+        ec_groups = ec_row.get("groups", [])
+        if ec_groups:
+            degraded = [group for group in ec_groups if group["status"] == "degraded"]
+            review = [group for group in ec_groups if group["status"] == "review"]
+            structural_review = bool(ec_row.get("findings") or ec_row.get("rejected_line_count"))
+            sev = "High" if degraded else ("Medium" if review or structural_review else "Info")
+            members = [member for group in ec_groups for member in group["members"]]
+            non_forwarding = [member for member in members if member["status"] == "degraded"]
+            summary = f"{len(ec_groups)} bundle(s), {len(members)} member(s)"
+            if non_forwarding:
+                summary += f"; {len(non_forwarding)} not bundled"
+            if degraded:
+                summary += f"; {len(degraded)} degraded bundle(s)"
+            if review or structural_review:
+                summary += "; snapshot review required"
+            detail_parts: List[str] = []
+            for group in ec_groups:
+                if group["operational_state"] != "up" or group["findings"]:
+                    detail_parts.append(f"{group['group']}({group['group_flags']})")
+                detail_parts.extend(
+                    f"{member['interface']}({member['flags']})"
+                    for member in group["members"]
+                    if (member["status"] != "assessed"
+                        or any(flag in _EC_ADVISORY_FLAGS for flag in member["flags"]))
+                )
+            detail_parts.extend(
+                f"projection[{item['code']}]" for item in ec_row.get("findings", [])
+            )
+            add(host, "EtherChannel", sev, summary, "; ".join(dict.fromkeys(detail_parts)))
 
         # ---- VTP ----
         vtp_out = _load_cmd_output(c2f, "show vtp status")
@@ -2354,7 +4208,7 @@ def compute_protocol_health(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                 ("; ".join(f"{n['neighbor']} {n['state']}" for n in bad)) if bad else "")
 
         # ---- BGP ----
-        bgp = parse_bgp_summary(_load_cmd_output(c2f, "show ip bgp summary", "show bgp summary"))
+        bgp = parse_bgp_summary(_load_cmd_output(c2f, *BGP_IPV4_SUMMARY_COMMANDS))
         if bgp:
             bad = [p for p in bgp if not re.match(r"^\d+$", p["state"])]
             sev = "High" if bad else "Info"
@@ -2388,6 +4242,1597 @@ def compute_protocol_health(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                 + (f"; {len(stuck)} stuck (Init/Learn)" if stuck else ""), detail)
 
     return records
+
+
+# Runtime protocol assessability is deliberately a SIBLING of protocol_health,
+# not extra pseudo-health rows.  Several consumers use the presence of a health
+# row as a parsed-evidence witness; inserting NOT ASSESSED rows into that list
+# would silently turn missing evidence into "collected" in readiness/scoring.
+PROTOCOL_ASSESSABILITY_STATES = (
+    "assessed",
+    "partial",
+    "captured_no_record",
+    "captured_empty",
+    "capture_error",
+    "not_collected",
+    "analysis_unavailable",
+)
+
+PROTOCOL_ASSESSABILITY_FAMILIES = (
+    {
+        "protocol": "STP",
+        "inputs": (
+            {"id": "state", "commands": ("show spanning-tree",), "required": True},
+            {"id": "blocked_ports", "commands": ("show spanning-tree blockedports",), "required": True},
+            {"id": "inconsistent_ports", "commands": ("show spanning-tree inconsistentports",), "required": True},
+            {"id": "topology_changes", "commands": ("show spanning-tree detail",), "required": False},
+        ),
+        "boundary": ("Observed mode/state and blocked/inconsistent ports require usable captures; "
+                     "topology-change counts are optional and reported only when detail evidence parses."),
+        "recollect": ("Re-run show spanning-tree plus blockedports and inconsistentports; add detail where "
+                      "the platform supports it."),
+    },
+    {
+        "protocol": "EtherChannel",
+        "inputs": (
+            {"id": "membership", "commands": ("show etherchannel summary", "show port-channel summary"),
+             "required": True},
+        ),
+        "boundary": ("Observed member flags only; no configured-bundle, partner, hashing, bandwidth, or "
+                     "multi-chassis denominator."),
+        "recollect": "Re-run the platform's EtherChannel or port-channel summary command.",
+    },
+    {
+        "protocol": "VTP",
+        "inputs": (
+            {"id": "status", "commands": ("show vtp status",), "required": True},
+        ),
+        "boundary": "Observed mode, domain, and revision only; no database-propagation proof.",
+        "recollect": "Re-run show vtp status.",
+    },
+    {
+        "protocol": "OSPF",
+        "inputs": (
+            {"id": "neighbors", "commands": ("show ip ospf neighbor",), "required": True},
+        ),
+        "boundary": ("Observed OSPFv2 neighbors only; configured or expected neighbors that are absent from "
+                     "the table are not known."),
+        "recollect": "Re-run show ip ospf neighbor and validate the expected-neighbor set separately.",
+    },
+    {
+        "protocol": "BGP",
+        "inputs": (
+            {"id": "peers", "commands": BGP_IPV4_SUMMARY_COMMANDS, "required": True},
+        ),
+        "boundary": ("Observed default/global IPv4-unicast summary peers only. Configured-peer intent is "
+                     "assessed by the separate bounded literal-peer baseline; other VRFs/address families "
+                     "and route-policy correctness remain outside this runtime receipt."),
+        "recollect": ("Re-run show ip bgp summary on IOS/IOS-XE or an explicitly IPv4-unicast BGP summary "
+                      "on NX-OS, plus show running-config for configured-peer reconciliation."),
+    },
+    {
+        "protocol": "EIGRP",
+        "inputs": (
+            {"id": "neighbors", "commands": ("show ip eigrp neighbors",), "required": True},
+        ),
+        "boundary": ("Presence-only observed IPv4 neighbors; missing expected neighbors and negative protocol "
+                     "states cannot be inferred from an empty table."),
+        "recollect": "Re-run show ip eigrp neighbors and supply an explicit expected-neighbor baseline.",
+    },
+    {
+        "protocol": "FHRP",
+        "inputs": (
+            {"id": "hsrp_groups", "commands": (
+                "show standby brief", "show standby all", "show hsrp brief", "show hsrp all"),
+             "required": True},
+            {"id": "vrrp_groups", "commands": ("show vrrp brief",), "required": True},
+            {"id": "glbp_groups", "commands": ("show glbp brief",), "required": True},
+        ),
+        "boundary": ("Observed local HSRP, VRRP, and GLBP groups only; peer intent, timers, authentication, "
+                     "tracking, and complete election state remain outside this receipt."),
+        "recollect": "Re-run the supported HSRP, VRRP, and GLBP summary commands for this platform.",
+    },
+)
+
+
+def compute_protocol_assessability(inventory_hosts: List[str],
+                                   all_interfaces: Dict[str, Dict[str, InterfaceData]],
+                                   all_cmd_to_files: Dict[str, Dict[str, str]],
+                                   protocol_health: List[dict],
+                                   *, analysis_available: bool = True) -> dict:
+    """Return an exact per-device x seven-family runtime evidence receipt.
+
+    ``protocol_health`` intentionally stays sparse: a row means the engine parsed a
+    bounded state.  This receipt supplies the missing denominator without inventing
+    protocol presence or health.  It retains command-capture state (usable / empty /
+    error / missing), whether a health row was emitted, partial multi-input coverage,
+    and a closed abstention reason.  No raw body or filesystem path is published.
+    """
+    host_names: set[str] = set()
+
+    def _add_host(value: object) -> None:
+        if isinstance(value, str) and value.strip():
+            host_names.add(value.strip())
+
+    for host in (inventory_hosts if isinstance(inventory_hosts, (list, tuple)) else []):
+        _add_host(host)
+    for source in (all_interfaces, all_cmd_to_files):
+        if isinstance(source, dict):
+            for host in source:
+                _add_host(host)
+
+    emitted: set[Tuple[str, str]] = set()
+    for record in (protocol_health if isinstance(protocol_health, list) else []):
+        if not isinstance(record, dict):
+            continue
+        host, protocol = record.get("switch"), record.get("protocol")
+        if isinstance(host, str) and isinstance(protocol, str):
+            _add_host(host)
+            emitted.add((host.strip(), protocol))
+
+    hosts = sorted(host_names, key=lambda value: (value.casefold(), value))
+    family_contracts = [
+        {
+            "protocol": family["protocol"],
+            "inputs": [
+                {"id": item["id"], "commands": list(item["commands"]),
+                 "required": item["required"]}
+                for item in family["inputs"]
+            ],
+            "boundary": family["boundary"],
+            "recollect": family["recollect"],
+        }
+        for family in PROTOCOL_ASSESSABILITY_FAMILIES
+    ]
+    by_state = {state: 0 for state in PROTOCOL_ASSESSABILITY_STATES}
+    rows: List[dict] = []
+
+    for host in hosts:
+        c2f = all_cmd_to_files.get(host, {}) if isinstance(all_cmd_to_files, dict) else {}
+        if not isinstance(c2f, dict):
+            c2f = {}
+        for family in PROTOCOL_ASSESSABILITY_FAMILIES:
+            protocol = family["protocol"]
+            input_states = {
+                item["id"]: cmd_capture_state(c2f, *item["commands"])
+                for item in family["inputs"]
+            }
+            required_input_states = {
+                item["id"]: input_states[item["id"]]
+                for item in family["inputs"] if item["required"]
+            }
+            # cmd_capture_state's usable > empty > error > missing precedence is correct WITHIN
+            # one input group's alternative command spellings.  Across independent input groups,
+            # an empty secondary must not hide a failed row-gating command.  Preserve usable as the
+            # aggregate when any group is usable (the cell will be partial if another group is not);
+            # otherwise fail closed in error > empty > missing order.
+            input_values = tuple(required_input_states.values())
+            if "usable" in input_values:
+                capture_state = "usable"
+            elif "error" in input_values:
+                capture_state = "error"
+            elif "empty" in input_values:
+                capture_state = "empty"
+            else:
+                capture_state = "missing"
+            health_row_emitted = (host, protocol) in emitted
+            incomplete = [name for name, value in required_input_states.items()
+                          if value != "usable"]
+
+            if not analysis_available:
+                state = "analysis_unavailable"
+                reason = ("Protocol-health analysis was unavailable for this run. Captures are disclosed, "
+                          "but no health conclusion is asserted.")
+            elif health_row_emitted:
+                if incomplete or "usable" not in required_input_states.values():
+                    state = "partial"
+                    detail = ", ".join(incomplete) if incomplete else "current-run source capture"
+                    reason = (f"A health row was emitted, but {detail} evidence was not usable "
+                              "(missing, empty, or errored). "
+                              "Treat the observed result as partial, not a complete protocol verdict.")
+                else:
+                    state = "assessed"
+                    reason = ("A bounded health row was emitted from usable current-run evidence. The family "
+                              "boundary still applies; this is not protocol-completeness proof.")
+            elif capture_state == "usable" and incomplete:
+                state = "partial"
+                reason = ("Usable evidence exists for part of this family, but "
+                          f"{', '.join(incomplete)} evidence was not usable (missing, empty, or errored) "
+                          "and no health row "
+                          "was emitted. No complete protocol verdict is asserted.")
+            elif capture_state == "usable":
+                state = "captured_no_record"
+                reason = ("Usable command output was captured, but no assessable protocol state was parsed. "
+                          "This is not proof that the protocol is absent or healthy.")
+            elif capture_state == "empty":
+                state = "captured_empty"
+                reason = ("A recognized command capture was empty. No protocol state was observed and no "
+                          "health conclusion is made.")
+            elif capture_state == "error":
+                state = "capture_error"
+                reason = ("Recognized command variants returned an error. Re-collect with a supported command "
+                          "before drawing a protocol health conclusion.")
+            else:
+                state = "not_collected"
+                reason = ("No recognized command capture is present. Re-collect before drawing a protocol "
+                          "health conclusion.")
+
+            by_state[state] += 1
+            rows.append({
+                "switch": host,
+                "protocol": protocol,
+                "input_states": input_states,
+                "capture_state": capture_state,
+                "health_row_emitted": health_row_emitted,
+                "state": state,
+                "reason": reason,
+            })
+
+    complete_devices = sum(
+        1 for host in hosts
+        if all(row["state"] == "assessed" for row in rows if row["switch"] == host)
+    )
+    return {
+        "schema": "protocol_assessability/1",
+        "families": family_contracts,
+        "rows": rows,
+        "summary": {
+            "n_devices": len(hosts),
+            "n_families": len(PROTOCOL_ASSESSABILITY_FAMILIES),
+            "n_cells": len(rows),
+            "n_health_rows": sum(1 for row in rows if row["health_row_emitted"]),
+            "n_complete_devices": complete_devices,
+            "by_state": by_state,
+        },
+        "limitations": [
+            "A missing health row never proves that a protocol is absent or healthy.",
+            "Observed routing neighbors are not an expected-neighbor or configuration denominator.",
+            "The receipt reports current-run capture and parser reachability; it is not live field validation.",
+        ],
+    }
+
+
+_ROUTING_BASELINE_PROTOCOLS = ("OSPF", "BGP", "EIGRP")
+_ROUTING_BASELINE_COMMANDS = {
+    "OSPF": "show ip ospf neighbor",
+    "BGP": "show ip bgp summary",
+    "EIGRP": "show ip eigrp neighbors",
+}
+_ROUTING_BASELINE_INPUTS = {"OSPF": "neighbors", "BGP": "peers", "EIGRP": "neighbors"}
+_PROTOCOL_CAPTURE_STATES = {"usable", "empty", "error", "missing"}
+
+
+def _strict_protocol_text(value: Any) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _validate_protocol_assessability_receipt(value: Any) -> dict:
+    """Strictly reconcile a public ``protocol_assessability/1`` receipt.
+
+    The returned index is safe for receipt-gated feature helpers only when ``valid`` is true.
+    ``claimed_subjects`` is deliberately retained on failure solely to scope a blocker row; it does
+    not make any capture or health claim trustworthy.  Routing and EtherChannel share this exact
+    validator so neither feature can relax the seven-family / one-cell-per-family denominator.
+    """
+    present = value is not None
+    family_names = tuple(family["protocol"] for family in PROTOCOL_ASSESSABILITY_FAMILIES)
+    family_inputs = {
+        family["protocol"]: tuple(item["id"] for item in family["inputs"])
+        for family in PROTOCOL_ASSESSABILITY_FAMILIES
+    }
+    required_inputs = {
+        family["protocol"]: tuple(item["id"] for item in family["inputs"] if item["required"])
+        for family in PROTOCOL_ASSESSABILITY_FAMILIES
+    }
+
+    def invalid(reason: str, claimed=()) -> dict:
+        return {
+            "present": present, "valid": False, "reason": reason, "index": {},
+            "claimed_subjects": set(claimed),
+        }
+
+    if not isinstance(value, dict):
+        return invalid("protocol assessability receipt is missing" if not present else
+                       "protocol assessability receipt has an unusable shape")
+
+    rows = value.get("rows")
+    safely_claimed = set()
+    if isinstance(rows, list):
+        for row in rows:
+            if not isinstance(row, dict) or row.get("health_row_emitted") is not True:
+                continue
+            host = _strict_protocol_text(row.get("switch"))
+            protocol = _strict_protocol_text(row.get("protocol"))
+            if host and protocol in family_names:
+                safely_claimed.add((host, protocol))
+    if value.get("schema") != "protocol_assessability/1":
+        return invalid("protocol assessability receipt schema is not protocol_assessability/1",
+                       safely_claimed)
+    families = value.get("families")
+    summary = value.get("summary")
+    observed_family_names = tuple(
+        _strict_protocol_text(item.get("protocol")) for item in families if isinstance(item, dict)
+    ) if isinstance(families, list) else ()
+    if observed_family_names != family_names:
+        return invalid("protocol assessability family denominator is incomplete or reordered",
+                       safely_claimed)
+    if not isinstance(rows, list) or not isinstance(summary, dict):
+        return invalid("protocol assessability rows or summary have an unusable shape", safely_claimed)
+
+    integer_fields = ("n_devices", "n_families", "n_cells", "n_health_rows", "n_complete_devices")
+    if any(not isinstance(summary.get(name), int) or isinstance(summary.get(name), bool)
+           or summary.get(name) < 0 for name in integer_fields):
+        return invalid("protocol assessability summary contains an invalid count", safely_claimed)
+    n_devices = summary["n_devices"]
+    if (summary["n_families"] != len(family_names)
+            or summary["n_cells"] != len(rows)
+            or len(rows) != n_devices * len(family_names)):
+        return invalid("protocol assessability summary does not reconcile to its exact denominator",
+                       safely_claimed)
+
+    index: Dict[tuple, dict] = {}
+    hosts: set[str] = set()
+    actual_by_state = {state: 0 for state in PROTOCOL_ASSESSABILITY_STATES}
+    for row in rows:
+        if not isinstance(row, dict):
+            return invalid("protocol assessability contains a malformed row", safely_claimed)
+        host = _strict_protocol_text(row.get("switch"))
+        protocol = _strict_protocol_text(row.get("protocol"))
+        state = _strict_protocol_text(row.get("state"))
+        capture_state = _strict_protocol_text(row.get("capture_state"))
+        emitted = row.get("health_row_emitted")
+        input_states = row.get("input_states")
+        if (not host or protocol not in family_names or state not in PROTOCOL_ASSESSABILITY_STATES
+                or capture_state not in _PROTOCOL_CAPTURE_STATES or not isinstance(emitted, bool)
+                or not isinstance(input_states, dict)):
+            return invalid("protocol assessability contains an invalid switch, family, state, or leaf",
+                           safely_claimed)
+        if set(input_states) != set(family_inputs[protocol]) or any(
+                state_value not in _PROTOCOL_CAPTURE_STATES for state_value in input_states.values()):
+            return invalid("protocol assessability input-state denominator is malformed", safely_claimed)
+
+        required_values = tuple(input_states[name] for name in required_inputs[protocol])
+        expected_capture = (
+            "usable" if "usable" in required_values else
+            "error" if "error" in required_values else
+            "empty" if "empty" in required_values else "missing"
+        )
+        incomplete = any(state_value != "usable" for state_value in required_values)
+        if capture_state != expected_capture:
+            return invalid("protocol assessability capture state does not reconcile to its inputs",
+                           safely_claimed)
+        state_consistent = (
+            state == "analysis_unavailable"
+            or (state == "assessed" and emitted and not incomplete)
+            or (state == "partial" and incomplete and (emitted or capture_state == "usable"))
+            or (state == "captured_no_record" and not emitted and not incomplete
+                and capture_state == "usable")
+            or (state == "captured_empty" and not emitted and capture_state == "empty")
+            or (state == "capture_error" and not emitted and capture_state == "error")
+            or (state == "not_collected" and not emitted and capture_state == "missing")
+        )
+        if not state_consistent:
+            return invalid("protocol assessability row state contradicts capture and health-row evidence",
+                           safely_claimed)
+        key = (host, protocol)
+        if key in index:
+            return invalid("protocol assessability contains a duplicate switch-family cell",
+                           safely_claimed)
+        index[key] = row
+        hosts.add(host)
+        actual_by_state[state] += 1
+
+    complete_devices = sum(
+        1 for host in hosts
+        if all(index.get((host, protocol), {}).get("state") == "assessed"
+               for protocol in family_names)
+    )
+    by_state = summary.get("by_state")
+    by_state_valid = (
+        isinstance(by_state, dict)
+        and set(by_state) == set(PROTOCOL_ASSESSABILITY_STATES)
+        and all(isinstance(count, int) and not isinstance(count, bool) and count >= 0
+                for count in by_state.values())
+    )
+    if (len(hosts) != n_devices or len(index) != len(rows)
+            or summary["n_health_rows"] != sum(row["health_row_emitted"] for row in rows)
+            or summary["n_complete_devices"] != complete_devices
+            or not by_state_valid or by_state != actual_by_state):
+        return invalid("protocol assessability rows do not reconcile to the summary", safely_claimed)
+    return {
+        "present": True, "valid": True, "reason": "", "index": index,
+        "claimed_subjects": safely_claimed,
+    }
+
+
+def summarize_stp_consistency_baseline(
+        protocol_health: Any, protocol_assessability: Any, *,
+        all_interfaces: Any = None, stp_roots: Any = None) -> dict:
+    """Return the one receipt-gated owner of a bounded STP-consistency claim.
+
+    A subject is established only by positive STP/L2 evidence: a matching STP health row, an
+    emitted STP receipt cell, normalized Access/Trunk or live-trunk/per-VLAN STP interface evidence,
+    or a non-empty per-device STP-root projection.  Bare inventory, move-group membership, CDP,
+    port-channel association, SVI presence, and inferred role are deliberately not subjects.
+
+    The claim has only two evidence prerequisites: usable current-run ``state`` and
+    ``inconsistent_ports`` captures.  ``blocked_ports`` remains disclosed but does not gate this
+    consistency claim, and ``topology_changes`` is optional.  Exactly one well-formed producer STP
+    health row must reconcile to every emitted claim.  Summary/detail prose is never interpreted.
+    """
+    receipt = _validate_protocol_assessability_receipt(protocol_assessability)
+    stp_claims = {
+        host for host, protocol in receipt["claimed_subjects"] if protocol == "STP"
+    }
+    health_by_host: Dict[str, List[dict]] = {}
+    health_subjects: set[str] = set()
+    health_shape_valid = isinstance(protocol_health, list)
+    if health_shape_valid:
+        for record in protocol_health:
+            if not isinstance(record, dict) or record.get("protocol") != "STP":
+                continue
+            host = _strict_protocol_text(record.get("switch"))
+            if not host:
+                continue
+            health_subjects.add(host)
+            health_by_host.setdefault(host, []).append(record)
+
+    def interface_leaf(record: Any, name: str) -> Any:
+        return record.get(name) if isinstance(record, dict) else getattr(record, name, "")
+
+    interface_subjects: set[str] = set()
+    if isinstance(all_interfaces, dict):
+        for host_value, ifaces in all_interfaces.items():
+            host = _strict_protocol_text(host_value)
+            if not host or not isinstance(ifaces, dict):
+                continue
+            for data in ifaces.values():
+                mode = _strict_protocol_text(interface_leaf(data, "switchport_mode"))
+                has_stp_state = any(
+                    bool(_strict_protocol_text(interface_leaf(data, field)))
+                    for field in ("stp_fwd_vlans", "stp_blk_vlans", "stp_other_vlans")
+                )
+                if (mode.casefold() == "access" or is_trunk_mode(mode)
+                        or is_live_trunk_status(interface_leaf(data, "trunk_status"))
+                        or has_stp_state):
+                    interface_subjects.add(host)
+                    break
+
+    root_subjects: set[str] = set()
+    if isinstance(stp_roots, dict):
+        for host_value, roots in stp_roots.items():
+            host = _strict_protocol_text(host_value)
+            if host and isinstance(roots, dict) and bool(roots):
+                root_subjects.add(host)
+
+    subject_hosts = sorted(
+        health_subjects | stp_claims | interface_subjects | root_subjects,
+        key=lambda value: (value.casefold(), value),
+    )
+    evidence_order = {
+        "protocol_health": 0,
+        "protocol_assessability.health_row_emitted": 1,
+        "interfaces.positive_l2": 2,
+        "stp_roots": 3,
+    }
+    disclosure_labels = {
+        "usable": "observed",
+        "missing": "not collected",
+        "empty": "captured empty",
+        "error": "capture error",
+    }
+    rows: List[dict] = []
+    for host in subject_hosts:
+        findings: List[dict] = []
+
+        def finding(kind: str, code: str, issue: str) -> None:
+            if not any(item["code"] == code and item["issue"] == issue for item in findings):
+                findings.append({"kind": kind, "code": code, "issue": issue})
+
+        evidence = []
+        if host in health_subjects:
+            evidence.append("protocol_health")
+        if host in stp_claims:
+            evidence.append("protocol_assessability.health_row_emitted")
+        if host in interface_subjects:
+            evidence.append("interfaces.positive_l2")
+        if host in root_subjects:
+            evidence.append("stp_roots")
+        evidence.sort(key=evidence_order.__getitem__)
+
+        receipt_row = receipt["index"].get((host, "STP")) if receipt["valid"] else None
+        if not receipt["present"]:
+            finding("not_verified", "receipt_missing",
+                    "Current-run protocol assessability receipt is missing.")
+        elif not receipt["valid"]:
+            finding("review", "receipt_invalid", receipt["reason"] + ".")
+        elif receipt_row is None:
+            finding("review", "subject_receipt_missing",
+                    "The positive STP subject is absent from the validated receipt denominator.")
+
+        candidates = health_by_host.get(host, [])
+
+        def well_formed(record: Any) -> bool:
+            severity = record.get("severity") if isinstance(record, dict) else None
+            detail = record.get("detail") if isinstance(record, dict) else None
+            return (
+                isinstance(record, dict)
+                and record.get("switch") == host
+                and record.get("protocol") == "STP"
+                and severity in {"Info", "High"}
+                and bool(_strict_protocol_text(record.get("summary")))
+                and isinstance(detail, str)
+                and ((severity == "Info" and detail == "")
+                     or (severity == "High" and bool(_strict_protocol_text(detail))))
+            )
+
+        valid_health = [record for record in candidates if well_formed(record)]
+        if not health_shape_valid:
+            finding("not_verified" if protocol_health is None else "review",
+                    "health_missing" if protocol_health is None else "health_shape_invalid",
+                    "The current-run protocol-health projection is missing." if protocol_health is None else
+                    "The current-run protocol-health projection has an unusable shape.")
+        if candidates and len(valid_health) != len(candidates):
+            finding("review", "health_row_malformed",
+                    "At least one matching STP health row is not a well-formed producer row.")
+        if len(candidates) > 1:
+            finding("review", "duplicate_health_rows",
+                    "More than one matching STP health row exists for this switch.")
+
+        receipt_state = _strict_protocol_text(receipt_row.get("state")) if receipt_row else (
+            "invalid" if receipt["present"] else "missing"
+        )
+        capture_state = _strict_protocol_text(receipt_row.get("capture_state")) if receipt_row else ""
+        emitted = receipt_row.get("health_row_emitted") if receipt_row else (
+            True if host in stp_claims else None
+        )
+        input_states = dict(receipt_row.get("input_states")) if receipt_row else {}
+        claim_prerequisites_usable = (
+            input_states.get("state") == "usable"
+            and input_states.get("inconsistent_ports") == "usable"
+        )
+        blocked_ports_state = input_states.get("blocked_ports", "not_verified")
+        topology_changes_state = input_states.get("topology_changes", "not_verified")
+        blocked_label = disclosure_labels.get(blocked_ports_state, "not verified")
+        topology_label = disclosure_labels.get(topology_changes_state, "not verified")
+        availability_disclosure = (
+            f"Blocked-port capture: {blocked_label}; no blocked-port count is claimed. "
+            f"Optional topology-change capture: {topology_label}; no topology-change count is claimed."
+        )
+
+        if receipt_row is not None:
+            if emitted is True and len(candidates) != 1:
+                finding("review", "emitted_health_reconciliation",
+                        "The receipt declares an emitted STP health row, but exactly one matching row is not present.")
+            elif emitted is False and candidates:
+                finding("review", "emitted_health_reconciliation",
+                        "A matching STP health row exists although the receipt says none was emitted.")
+
+            if receipt_state == "partial" and not claim_prerequisites_usable:
+                finding("review", "claim_prerequisite_partial",
+                        "Usable current-run state and inconsistent-port captures are both required for this claim.")
+            elif receipt_state in {
+                    "captured_no_record", "captured_empty", "capture_error",
+                    "not_collected", "analysis_unavailable"}:
+                finding("not_verified", "receipt_not_assessed",
+                        "The current-run receipt does not authorize an STP consistency conclusion.")
+            elif receipt_state not in {"assessed", "partial"}:
+                finding("review", "receipt_state_unusable",
+                        "The STP receipt state is outside the bounded consistency-owner contract.")
+
+        health_severity = valid_health[0]["severity"] if len(candidates) == 1 and len(valid_health) == 1 else ""
+        if (receipt_row is not None and emitted is True and len(candidates) == 1
+                and len(valid_health) == 1 and claim_prerequisites_usable
+                and receipt_state in {"assessed", "partial"} and health_severity == "High"):
+            finding("degraded", "inconsistent_ports_observed",
+                    "The reconciled STP health row reports a High inconsistent-port condition.")
+
+        if any(item["kind"] == "review" for item in findings):
+            status = "review"
+        elif any(item["kind"] == "not_verified" for item in findings):
+            status = "not_verified"
+        elif any(item["kind"] == "degraded" for item in findings):
+            status = "degraded"
+        elif (receipt_row is not None and emitted is True and len(candidates) == 1
+              and len(valid_health) == 1 and claim_prerequisites_usable
+              and receipt_state in {"assessed", "partial"} and health_severity == "Info"):
+            status = "assessed"
+        else:
+            status = "not_verified"
+            finding("not_verified", "consistency_not_verified",
+                    "The bounded STP consistency prerequisites did not reconcile to an assessed claim.")
+
+        issue = "; ".join(item["issue"] for item in findings)
+        if status == "assessed":
+            baseline = ("Usable current-run STP state and inconsistent-port evidence reconciles to exactly "
+                        "one clean Info health row.")
+            acceptance = (
+                f"Observed bounded STP consistency baseline for {host}. Re-run show spanning-tree and "
+                "show spanning-tree inconsistentports; accept only if STP state remains observable and no "
+                "inconsistent ports are reported. Blocked-port and topology-change evidence are disclosed "
+                "boundaries, not prerequisites for this claim."
+            )
+            note = "Bounded current-run STP consistency claim; not proof of intended topology or root placement."
+        elif status == "degraded":
+            baseline = ("Usable current-run STP state and inconsistent-port evidence reconciles to exactly "
+                        "one High health row.")
+            acceptance = (
+                "PRE-CUTOVER DEGRADED — BLOCKER: a reconciled current-run STP High condition exists. "
+                "Matching this degraded state after cutover is NOT ACCEPTANCE; resolve it and re-collect "
+                "show spanning-tree plus show spanning-tree inconsistentports before the window."
+            )
+            note = "Definite bounded STP consistency degradation; no intended-topology denominator was inferred."
+        elif status == "review":
+            baseline = "The current-run STP consistency evidence is ambiguous or contradictory."
+            acceptance = (
+                f"PRE-CUTOVER REVIEW — BLOCKER: {issue} Re-collect show spanning-tree plus "
+                "show spanning-tree inconsistentports and reconcile exactly one STP health row before acceptance."
+            )
+            note = "STP consistency evidence requires review; no health conclusion is asserted."
+        else:
+            baseline = "No receipt-verified current-run STP consistency baseline is available."
+            acceptance = (
+                "STP CONSISTENCY BASELINE NOT VERIFIED — BLOCKER: current-run STP state and "
+                "inconsistent-port evidence are unavailable or not receipt-verified. Re-collect show spanning-tree "
+                "plus show spanning-tree inconsistentports before acceptance."
+            )
+            note = "STP consistency is not verified; no health conclusion is asserted."
+
+        acceptance = f"{acceptance} {availability_disclosure}"
+        note = f"{note} {availability_disclosure}"
+
+        source_parts = [
+            f"protocol_health[{host},STP]",
+            f"protocol_assessability.rows[{host},STP]",
+        ]
+        if host in interface_subjects:
+            source_parts.append(f"interfaces.{host}")
+        if host in root_subjects:
+            source_parts.append(f"stp_roots.{host}")
+        rows.append({
+            "switch": host,
+            "status": status,
+            "receipt_state": receipt_state,
+            "capture_state": capture_state,
+            "health_row_emitted": emitted,
+            "health_severity": health_severity,
+            "input_states": input_states,
+            "blocked_ports_state": blocked_ports_state,
+            "topology_changes_state": topology_changes_state,
+            "availability_disclosure": availability_disclosure,
+            "subject_evidence": evidence,
+            "findings": sorted(findings, key=lambda item: (item["code"], item["issue"])),
+            "command": "show spanning-tree inconsistentports",
+            "baseline": baseline,
+            "acceptance": acceptance,
+            "issue": issue,
+            "note": note,
+            "source_key": " + ".join(source_parts),
+            "projection_custody": "embedded_unverified",
+        })
+
+    by_status = {state: sum(row["status"] == state for row in rows)
+                 for state in ("assessed", "degraded", "review", "not_verified")}
+    if by_status["degraded"]:
+        overall = "degraded"
+    elif by_status["review"]:
+        overall = "review"
+    elif by_status["not_verified"] or not rows:
+        overall = "not_verified"
+    else:
+        overall = "assessed"
+    return {
+        "schema": "stp_consistency_baseline/1",
+        "scope": "bounded_current_run_state_and_inconsistent_ports",
+        "status": overall,
+        "assessed": bool(rows) and all(row["status"] in {"assessed", "degraded"} for row in rows),
+        "projection_custody": "embedded_unverified",
+        "receipt": {
+            "present": receipt["present"],
+            "valid": receipt["valid"],
+            "reason": receipt["reason"],
+        },
+        "rows": rows,
+        "summary": {"n_subjects": len(rows), "by_status": by_status},
+        "limitations": [
+            "The claim requires usable current-run state and inconsistent-port captures only.",
+            "Blocked-port evidence is disclosed but is not a prerequisite; topology-change evidence is optional.",
+            "The baseline is not an intended-topology, root-placement, loop-freedom, or change-persistence proof.",
+            "The embedded receipt does not cryptographically bind protocol_health to raw captures.",
+        ],
+    }
+
+
+def _valid_etherchannel_findings(value: Any) -> bool:
+    return isinstance(value, list) and all(
+        isinstance(item, dict)
+        and set(item) == {"kind", "code", "issue"}
+        and item.get("kind") in ("degraded", "review")
+        and bool(_strict_protocol_text(item.get("code")))
+        and bool(_strict_protocol_text(item.get("issue")))
+        for item in value
+    )
+
+
+def _validate_etherchannel_projection(value: Any) -> dict:
+    """Strict structural/reconciliation view of ``etherchannel_projection/1``."""
+    present = value is not None
+    claimed_subjects: set[str] = set()
+    raw_rows = value.get("rows") if isinstance(value, dict) else None
+    if isinstance(raw_rows, list):
+        for raw_row in raw_rows:
+            if not isinstance(raw_row, dict):
+                continue
+            host = _strict_protocol_text(raw_row.get("switch"))
+            if not host:
+                continue
+            if (raw_row.get("groups") or raw_row.get("associations") or raw_row.get("findings")
+                    or raw_row.get("rejected_line_count")):
+                claimed_subjects.add(host)
+
+    def invalid(reason: str, *, scoped_host: str = "") -> dict:
+        if scoped_host:
+            claimed_subjects.add(scoped_host)
+        return {
+            "present": present, "valid": False, "reason": reason, "index": {},
+            "claimed_subjects": claimed_subjects,
+        }
+
+    if not isinstance(value, dict):
+        return invalid("EtherChannel projection is missing" if not present else
+                       "EtherChannel projection has an unusable root shape")
+    if value.get("schema") != "etherchannel_projection/1":
+        return invalid("EtherChannel projection schema is not etherchannel_projection/1")
+    summary = value.get("summary")
+    if not isinstance(raw_rows, list) or not isinstance(summary, dict):
+        return invalid("EtherChannel projection rows or summary have an unusable shape")
+
+    index: Dict[str, dict] = {}
+    seen_members: Dict[Tuple[str, str], str] = {}
+    for raw_row in raw_rows:
+        if not isinstance(raw_row, dict):
+            return invalid("EtherChannel projection contains a malformed device row")
+        host = _strict_protocol_text(raw_row.get("switch"))
+        if not host:
+            return invalid("EtherChannel projection contains an invalid switch identity")
+        if host in index:
+            return invalid("EtherChannel projection contains a duplicate switch row", scoped_host=host)
+        source_command = _strict_protocol_text(raw_row.get("source_command"))
+        capture_state = _strict_protocol_text(raw_row.get("capture_state"))
+        groups = raw_row.get("groups")
+        associations = raw_row.get("associations")
+        findings = raw_row.get("findings")
+        rejected = raw_row.get("rejected_line_count")
+        declared = raw_row.get("declared_group_count")
+        if (source_command not in ("", *_EC_COMMANDS)
+                or capture_state not in _PROTOCOL_CAPTURE_STATES
+                or not isinstance(groups, list) or not isinstance(associations, list)
+                or not _valid_etherchannel_findings(findings)
+                or not isinstance(rejected, int) or isinstance(rejected, bool) or rejected < 0
+                or (declared is not None and (not isinstance(declared, int)
+                                              or isinstance(declared, bool) or declared < 0))):
+            return invalid("EtherChannel projection contains an invalid device leaf", scoped_host=host)
+        if capture_state == "usable" and not source_command:
+            return invalid("Usable EtherChannel projection is missing its source command", scoped_host=host)
+        if capture_state == "missing" and source_command:
+            return invalid("Missing EtherChannel projection contradicts its source command", scoped_host=host)
+
+        # Host-level findings retain parser facts that cannot be reconstructed from the surviving
+        # normalized groups (a rejected duplicate row is deliberately not copied into ``groups``).
+        # Reconcile every derivable invariant and require at least one owned rejection breadcrumb
+        # whenever ``rejected_line_count`` is non-zero.  Otherwise stripping only the finding could
+        # promote a duplicate/malformed raw summary from REVIEW to assessed while its rejected count
+        # remained in plain sight.
+        host_finding_codes = {
+            "duplicate_group_identity", "group_row_malformed", "orphan_member_row",
+            "duplicate_member_identity", "declared_group_count_mismatch", "summary_unrecognized",
+            "association_projection_malformed", "association_identity_malformed",
+            "association_group_conflict", "duplicate_association_identity",
+            "command_projection_malformed", "capture_reference_unusable",
+        }
+        if (findings != sorted(findings, key=lambda item: (item["code"], item["issue"]))
+                or len({(item["code"], item["issue"]) for item in findings}) != len(findings)
+                or any(item["kind"] != "review" or item["code"] not in host_finding_codes
+                       for item in findings)):
+            return invalid("EtherChannel host findings are not canonical", scoped_host=host)
+        rejection_codes = {
+            "duplicate_group_identity", "group_row_malformed", "orphan_member_row",
+            "duplicate_member_identity",
+        }
+        has_host_rejection_finding = any(item["code"] in rejection_codes for item in findings)
+        expected_count_finding = _ec_finding(
+            "review", "declared_group_count_mismatch",
+            f"The summary declares {declared} channel-group(s) but {len(groups)} unique group row(s) parsed.",
+        ) if declared is not None and declared != len(groups) else None
+        count_findings = [item for item in findings if item["code"] == "declared_group_count_mismatch"]
+        if count_findings != ([expected_count_finding] if expected_count_finding else []):
+            return invalid("EtherChannel declared group count does not reconcile to its finding",
+                           scoped_host=host)
+        expected_empty_finding = _ec_finding(
+            "review", "summary_unrecognized",
+            "Usable EtherChannel summary text contained no trustworthy group row or explicit zero-group result.",
+        ) if capture_state == "usable" and not groups and declared != 0 else None
+        empty_findings = [item for item in findings if item["code"] == "summary_unrecognized"]
+        if empty_findings != ([expected_empty_finding] if expected_empty_finding else []):
+            return invalid("EtherChannel zero-group result does not reconcile to its finding",
+                           scoped_host=host)
+
+        seen_groups: set[str] = set()
+        seen_ids: set[str] = set()
+        has_nested_rejection_finding = False
+        for group in groups:
+            if not isinstance(group, dict):
+                return invalid("EtherChannel projection contains a malformed group record", scoped_host=host)
+            group_id = _strict_protocol_text(group.get("group_id"))
+            group_name = _strict_protocol_text(group.get("group"))
+            group_flags = group.get("group_flags")
+            protocol = _strict_protocol_text(group.get("protocol"))
+            protocol_raw = _strict_protocol_text(group.get("protocol_raw"))
+            status = _strict_protocol_text(group.get("status"))
+            operational_state = _strict_protocol_text(group.get("operational_state"))
+            members = group.get("members")
+            group_findings = group.get("findings")
+            expected_protocol = "NONE" if protocol_raw == "-" else protocol_raw.upper()
+            protocol_missing = not protocol and not protocol_raw
+            if (not group_id.isdigit() or not group_name
+                    or _canonical_port_channel(group_name) != group_name
+                    or not isinstance(group_flags, str) or not group_flags.isalpha()
+                    or (not protocol_missing and protocol not in ("LACP", "PAGP", "NONE"))
+                    or (not protocol_missing and expected_protocol != protocol)
+                    or status not in ("assessed", "degraded", "review")
+                    or operational_state not in ("up", "down", "unclassified")
+                    or not isinstance(members, list)
+                    or not _valid_etherchannel_findings(group_findings)):
+                return invalid("EtherChannel projection contains an invalid group leaf", scoped_host=host)
+            if group_name in seen_groups or group_id in seen_ids:
+                return invalid("EtherChannel projection contains a duplicate group identity", scoped_host=host)
+            seen_groups.add(group_name)
+            seen_ids.add(group_id)
+            base_status, base_state, expected_group_findings = _classify_etherchannel_group_flags(group_flags)
+            if base_state != operational_state:
+                return invalid("EtherChannel group state does not reconcile to its exact flags", scoped_host=host)
+            if protocol_missing:
+                expected_group_findings.append(_ec_finding(
+                    "review", "protocol_unclassified",
+                    f"No bounded aggregation protocol token was parsed for {group_name}.",
+                ))
+            if int(group_id) != int(re.sub(r"\D", "", group_name)):
+                expected_group_findings.append(_ec_finding(
+                    "review", "group_identity_mismatch",
+                    f"Summary group {group_id} does not reconcile to port-channel {group_name}.",
+                ))
+
+            member_statuses: List[str] = []
+            seen_group_members: set[str] = set()
+            for member in members:
+                if not isinstance(member, dict):
+                    return invalid("EtherChannel projection contains a malformed member record", scoped_host=host)
+                interface = _strict_protocol_text(member.get("interface"))
+                flags = member.get("flags")
+                member_status = _strict_protocol_text(member.get("status"))
+                member_state = _strict_protocol_text(member.get("state"))
+                member_findings = member.get("findings")
+                expected_status, expected_state, expected_member_findings = _classify_etherchannel_member_flags(
+                    flags, protocol
+                )
+                if (_canonical_physical_interface(interface) != interface
+                        or not isinstance(flags, str) or not flags.isalpha()
+                        or member_status != expected_status or member_state != expected_state
+                        or not _valid_etherchannel_findings(member_findings)
+                        or member_findings != expected_member_findings):
+                    return invalid("EtherChannel projection contains an invalid member leaf", scoped_host=host)
+                if interface in seen_group_members or (host, interface) in seen_members:
+                    return invalid("EtherChannel projection contains a duplicate member identity", scoped_host=host)
+                seen_group_members.add(interface)
+                seen_members[(host, interface)] = group_name
+                member_statuses.append(member_status)
+            if not members and base_state == "up":
+                expected_group_findings.append(_ec_finding(
+                    "review", "up_group_without_members",
+                    f"{group_name} is flagged up but has zero observed members.",
+                ))
+            # The raw member-token grammar is intentionally wider than the canonical physical-interface
+            # grammar so a logical/malformed token such as Vlan1/1(P) is disclosed rather than silently
+            # skipped.  Its identity no longer exists in ``members`` after rejection, so this one exact,
+            # bounded parser-owned finding is the only permissible non-classifier nested addition.
+            malformed_identity_re = re.compile(
+                r"^Member identity ([A-Za-z][A-Za-z-]*\d+(?:/\d+){1,2}) is outside the bounded "
+                r"physical-interface grammar\.$"
+            )
+            parser_member_findings = []
+            for item in group_findings:
+                if item["code"] != "member_identity_malformed":
+                    continue
+                match = malformed_identity_re.fullmatch(item["issue"])
+                if (item["kind"] != "review" or not match
+                        or _canonical_physical_interface(match.group(1))):
+                    return invalid("EtherChannel malformed-member finding is not canonical",
+                                   scoped_host=host)
+                parser_member_findings.append(item)
+            if len({item["issue"] for item in parser_member_findings}) != len(parser_member_findings):
+                return invalid("EtherChannel malformed-member findings contain a duplicate",
+                               scoped_host=host)
+            expected_group_findings.extend(parser_member_findings)
+            has_nested_rejection_finding = has_nested_rejection_finding or bool(parser_member_findings)
+            expected_group_findings = sorted(
+                expected_group_findings, key=lambda item: (item["code"], item["issue"])
+            )
+            if group_findings != expected_group_findings:
+                return invalid("EtherChannel group findings do not reconcile to exact flags and identity",
+                               scoped_host=host)
+            finding_kinds = {item["kind"] for item in expected_group_findings}
+            expected_group_status = (
+                "degraded" if base_status == "degraded" or "degraded" in member_statuses
+                or "degraded" in finding_kinds else
+                "review" if base_status == "review" or "review" in member_statuses
+                or "review" in finding_kinds else "assessed"
+            )
+            if status != expected_group_status:
+                return invalid("EtherChannel group status does not reconcile to group/member evidence",
+                               scoped_host=host)
+
+        if bool(rejected) != (has_host_rejection_finding or has_nested_rejection_finding):
+            return invalid("EtherChannel rejected-line count lacks its parser finding", scoped_host=host)
+
+        seen_associations: set[str] = set()
+        for association in associations:
+            if not isinstance(association, dict):
+                return invalid("EtherChannel projection contains a malformed association", scoped_host=host)
+            interface = _strict_protocol_text(association.get("interface"))
+            group_name = _strict_protocol_text(association.get("group"))
+            if (_canonical_physical_interface(interface) != interface
+                    or _canonical_port_channel(group_name) != group_name
+                    or interface in seen_associations):
+                return invalid("EtherChannel projection contains an invalid or duplicate association",
+                               scoped_host=host)
+            seen_associations.add(interface)
+        index[host] = raw_row
+
+    expected_summary = {
+        "n_devices": len(raw_rows),
+        "n_subject_devices": sum(bool(row["groups"] or row["associations"] or row["findings"])
+                                 for row in raw_rows),
+        "n_groups": sum(len(row["groups"]) for row in raw_rows),
+        "n_members": sum(len(group["members"]) for row in raw_rows for group in row["groups"]),
+        "n_associations": sum(len(row["associations"]) for row in raw_rows),
+        "n_degraded_groups": sum(group["status"] == "degraded"
+                                 for row in raw_rows for group in row["groups"]),
+        "n_review_groups": sum(group["status"] == "review"
+                               for row in raw_rows for group in row["groups"]),
+        "n_rejected_lines": sum(row["rejected_line_count"] for row in raw_rows),
+        "by_capture_state": {
+            state: sum(row["capture_state"] == state for row in raw_rows)
+            for state in ("usable", "empty", "error", "missing")
+        },
+    }
+    if summary != expected_summary:
+        return invalid("EtherChannel projection rows do not reconcile to the exact summary")
+    return {
+        "present": True, "valid": True, "reason": "", "index": index,
+        "claimed_subjects": claimed_subjects,
+    }
+
+
+def summarize_etherchannel_baseline(projection: Any,
+                                    protocol_assessability: Any,
+                                    devices: Any = None) -> dict:
+    """Return a receipt-gated observed EtherChannel cutover baseline.
+
+    A row needs a positive subject: observed/malformed group evidence, an interface/config/trunk
+    association, or a receipt-owned EtherChannel health row.  Clean empty non-assessed cells are
+    omitted.  No configured-member, partner, persistence, bandwidth, or multi-chassis denominator
+    is inferred, and the embedded receipt/projection custody remains explicitly unverified.
+    """
+    projection_view = _validate_etherchannel_projection(projection)
+    receipt = _validate_protocol_assessability_receipt(protocol_assessability)
+    receipt_subjects = {
+        host for host, protocol in receipt["claimed_subjects"] if protocol == "EtherChannel"
+    }
+    subject_hosts = sorted(
+        projection_view["claimed_subjects"] | receipt_subjects,
+        key=lambda item: (item.casefold(), item),
+    )
+    device_root = devices if isinstance(devices, dict) else {}
+    rows: List[dict] = []
+
+    for host in subject_hosts:
+        findings: List[dict] = []
+
+        def finding(kind: str, code: str, issue: str) -> None:
+            item = _ec_finding(kind, code, issue)
+            if not any(old["code"] == code and old["issue"] == issue for old in findings):
+                findings.append(item)
+
+        receipt_row = receipt["index"].get((host, "EtherChannel")) if receipt["valid"] else None
+        projection_row = projection_view["index"].get(host) if projection_view["valid"] else None
+        if not receipt["present"]:
+            finding("not_verified", "receipt_missing",
+                    "Current-run protocol assessability receipt is missing; EtherChannel state is not verified.")
+        elif not receipt["valid"]:
+            finding("review", "receipt_invalid", receipt["reason"] + ".")
+        elif receipt_row is None:
+            finding("review", "projection_receipt_contradiction",
+                    "EtherChannel subject is absent from the exact protocol receipt denominator.")
+
+        if not projection_view["present"]:
+            finding("not_verified", "projection_missing",
+                    "Current-run structured EtherChannel projection is missing.")
+        elif not projection_view["valid"]:
+            finding("review", "projection_invalid", projection_view["reason"] + ".")
+        elif projection_row is None:
+            finding("review", "projection_receipt_contradiction",
+                    "Receipt-declared EtherChannel subject has no structured projection row.")
+
+        receipt_state = _strict_protocol_text(receipt_row.get("state")) if receipt_row else (
+            "invalid" if receipt["present"] else "missing"
+        )
+        emitted = receipt_row.get("health_row_emitted") if receipt_row else (
+            True if host in receipt_subjects else None
+        )
+        capture_state = _strict_protocol_text(projection_row.get("capture_state")) if projection_row else ""
+        groups = projection_row.get("groups", []) if projection_row else []
+        associations = projection_row.get("associations", []) if projection_row else []
+        rejected = projection_row.get("rejected_line_count", 0) if projection_row else 0
+
+        if receipt_row is not None:
+            receipt_capture = receipt_row["input_states"]["membership"]
+            if projection_row is not None and capture_state != receipt_capture:
+                finding("review", "projection_receipt_contradiction",
+                        "Structured projection capture state does not reconcile to the receipt membership input.")
+            if receipt_state != "assessed":
+                if groups and receipt_state in {
+                        "captured_no_record", "captured_empty", "capture_error", "not_collected"}:
+                    finding("review", "projection_receipt_contradiction",
+                            "Observed group rows exist even though the receipt says no EtherChannel health row was emitted.")
+                else:
+                    finding("not_verified", "receipt_not_assessed",
+                            f"Protocol receipt state is {receipt_state}; EtherChannel is not fully assessed.")
+            elif not groups:
+                finding("review", "assessed_zero_projection",
+                        "Receipt says assessed with an emitted health row, but the structured projection has zero groups.")
+
+        if projection_row is not None:
+            for item in projection_row["findings"]:
+                finding("review", item["code"], item["issue"])
+            raw_members: Dict[str, str] = {}
+            for group in groups:
+                for item in group["findings"]:
+                    finding(item["kind"], item["code"], f"{group['group']}: {item['issue']}")
+                for member in group["members"]:
+                    raw_members[member["interface"]] = group["group"]
+                    for item in member["findings"]:
+                        finding(item["kind"], item["code"],
+                                f"{group['group']} member {member['interface']}({member['flags']}): {item['issue']}")
+            for association in associations:
+                observed_group = raw_members.get(association["interface"])
+                if groups and observed_group is None:
+                    finding("review", "association_not_observed",
+                            f"Association {association['interface']} -> {association['group']} has no operational "
+                            "member row in the captured summary.")
+                elif observed_group is not None and observed_group != association["group"]:
+                    finding("review", "association_group_mismatch",
+                            f"Association {association['interface']} -> {association['group']} conflicts with "
+                            f"observed membership in {observed_group}.")
+
+        if any(item["kind"] == "review" for item in findings):
+            status = "review"
+        elif any(item["kind"] == "not_verified" for item in findings):
+            status = "not_verified"
+        elif any(item["kind"] == "degraded" for item in findings):
+            status = "degraded"
+        else:
+            status = "assessed"
+
+        group_descriptions = []
+        for group in groups:
+            member_descriptions = []
+            for member in group["members"]:
+                label = {
+                    "forwarding_observed": "forwarding observed",
+                    "delay_lacp_up": "forwarding observed (delay-LACP)",
+                    "hot_standby": "hot standby",
+                    "non_forwarding_observed": "non-forwarding observed",
+                    "waiting_unverified": "waiting; persistence unverified",
+                    "standby_unverified": "standby unverified",
+                    "contradictory": "contradictory flags",
+                    "unclassified": "unclassified",
+                }.get(member["state"], member["state"].replace("_", " "))
+                member_descriptions.append(f"{member['interface']}({member['flags']}) {label}")
+            member_text = ", ".join(member_descriptions) if member_descriptions else "zero observed members"
+            group_descriptions.append(
+                f"{group['group']} group {group['group_id']}({group['group_flags']}) "
+                f"{group['protocol']}: {member_text}"
+            )
+        association_text = ", ".join(
+            f"{item['interface']} -> {item['group']}" for item in associations
+        )
+        if group_descriptions:
+            body = "; ".join(group_descriptions)
+            if association_text:
+                body += f". Separate association projection: {association_text}"
+        elif association_text:
+            body = (f"association-only evidence {association_text}; no operational member state is asserted")
+        else:
+            body = "no trustworthy group/member state could be normalized"
+        prefix = ("Embedded/apparent unverified EtherChannel projection" if status in ("review", "not_verified")
+                  else "Observed EtherChannel baseline")
+        baseline = f"{prefix} for {host}: {body}"
+        issue = "; ".join(item["issue"] for item in sorted(
+            findings, key=lambda item: (item["code"], item["issue"])
+        ))
+        if status == "degraded":
+            acceptance = (f"PRE-CUTOVER DEGRADED — BLOCKER: {baseline}. {issue} Matching this degraded "
+                          "state after cutover is NOT ACCEPTANCE; resolve or explicitly disposition it before "
+                          "the window.")
+            note = ("Definite local group/member degradation; no configured-member, partner, persistence, "
+                    "bandwidth, or multi-chassis denominator was inferred.")
+        elif status == "review":
+            acceptance = (f"PRE-CUTOVER REVIEW — BLOCKER: {baseline}. {issue} Re-collect and verify exact group, "
+                          "protocol, member flags, partner state, and intended membership live before acceptance.")
+            note = "EtherChannel evidence is ambiguous; no health conclusion is asserted."
+        elif status == "not_verified":
+            acceptance = (f"ETHERCHANNEL BASELINE NOT VERIFIED — BLOCKER: {baseline}. {issue} Re-collect and "
+                          "verify exact group, protocol, member flags, partner state, and intended membership "
+                          "live before acceptance.")
+            note = "EtherChannel evidence is not receipt-verified; no health conclusion is asserted."
+        else:
+            acceptance = (f"{baseline}. Preserve each observed group identity, protocol, exact group flag state, "
+                          "and per-member forwarding/hot-standby flag state; explain changes. No configured-member "
+                          "or partner denominator was inferred.")
+            note = ("Bounded observed local summary baseline; not proof that configured membership, partner state, "
+                    "or multi-chassis intent is complete.")
+
+        source_command = _strict_protocol_text(projection_row.get("source_command")) if projection_row else ""
+        if source_command:
+            command = source_command
+        else:
+            device = device_root.get(host, {})
+            platform = _strict_protocol_text(device.get("platform")) if isinstance(device, dict) else ""
+            command = "show port-channel summary" if "nx" in platform.casefold() else "show etherchannel summary"
+        rows.append({
+            "switch": host,
+            "status": status,
+            "receipt_state": receipt_state,
+            "capture_state": capture_state,
+            "health_row_emitted": emitted,
+            "group_count": len(groups),
+            "member_count": sum(len(group["members"]) for group in groups),
+            "groups": groups,
+            "associations": associations,
+            "findings": sorted(findings, key=lambda item: (item["code"], item["issue"])),
+            "rejected_line_count": rejected,
+            "command": command,
+            "baseline": baseline,
+            "acceptance": acceptance,
+            "issue": issue,
+            "note": note,
+            "source_key": (f"etherchannel_projection.rows[{host}] + "
+                           f"protocol_assessability.rows[{host},EtherChannel]"),
+            "projection_custody": "embedded_unverified",
+        })
+
+    by_status = {state: sum(row["status"] == state for row in rows)
+                 for state in ("assessed", "degraded", "review", "not_verified")}
+    if by_status["degraded"]:
+        overall = "degraded"
+    elif by_status["review"] or (projection_view["present"] and not projection_view["valid"]):
+        overall = "review"
+    elif by_status["not_verified"] or not rows:
+        overall = "not_verified"
+    else:
+        overall = "assessed"
+    return {
+        "schema": "etherchannel_baseline/1",
+        "scope": "baseline_observed",
+        "status": overall,
+        "assessed": bool(rows) and all(row["status"] in ("assessed", "degraded") for row in rows),
+        "projection_custody": "embedded_unverified",
+        "projection": {
+            "present": projection_view["present"],
+            "valid": projection_view["valid"],
+            "reason": projection_view["reason"],
+        },
+        "receipt": {
+            "present": receipt["present"], "valid": receipt["valid"], "reason": receipt["reason"],
+        },
+        "rows": rows,
+        "summary": {
+            "n_subject_devices": len(rows),
+            "n_groups": sum(row["group_count"] for row in rows),
+            "n_members": sum(row["member_count"] for row in rows),
+            "n_associations": sum(len(row["associations"]) for row in rows),
+            "n_degraded_groups": sum(group["status"] == "degraded"
+                                     for row in rows for group in row["groups"]),
+            "n_review_groups": sum(group["status"] == "review"
+                                   for row in rows for group in row["groups"]),
+            "n_rejected_lines": sum(row["rejected_line_count"] for row in rows),
+            "by_status": by_status,
+        },
+        "limitations": [
+            "The baseline covers observed local summary rows; it is not a configured-member or partner denominator.",
+            "Association-only evidence carries no operational state and requires a current summary capture.",
+            "A single snapshot cannot establish waiting persistence, hashing, capacity, or multi-chassis consistency.",
+            "The embedded receipt does not cryptographically bind the projection to raw captures.",
+        ],
+    }
+
+
+_ETHERCHANNEL_BASELINE_UNSET = object()
+
+
+def validate_etherchannel_baseline(
+        value: Any, *, projection: Any = _ETHERCHANNEL_BASELINE_UNSET,
+        protocol_assessability: Any = _ETHERCHANNEL_BASELINE_UNSET,
+        devices: Any = None) -> dict:
+    """Authorize only an exact producer-owned ``etherchannel_baseline/1`` value.
+
+    A baseline is an acceptance artifact, not an independently trustworthy assertion.  Both source
+    inputs are therefore required together: the validator recomputes the public owner from the exact
+    structured projection and protocol receipt and requires whole-object equality.  This prevents a
+    snapshot edit from relabelling an ``SD``/``D`` group as assessed or replacing blocker copy with a
+    fabricated healthy expectation.  Invalid input never returns caller-controlled rows or leaves.
+    """
+    present = value is not None
+
+    def invalid(reason: str) -> dict:
+        return {
+            "present": present,
+            "valid": False,
+            "reason": reason,
+            "source_bound": False,
+            "rows": [],
+            "index": {},
+        }
+
+    if not isinstance(value, dict):
+        return invalid("EtherChannel baseline is missing" if not present else
+                       "EtherChannel baseline has an unusable root shape")
+    if value.get("schema") != "etherchannel_baseline/1" or not isinstance(value.get("rows"), list):
+        return invalid("EtherChannel baseline schema or rows are invalid")
+    has_projection = projection is not _ETHERCHANNEL_BASELINE_UNSET
+    has_receipt = protocol_assessability is not _ETHERCHANNEL_BASELINE_UNSET
+    if has_projection != has_receipt:
+        return invalid("EtherChannel baseline source inputs are incomplete")
+    if not has_projection:
+        return invalid("EtherChannel baseline requires its projection and protocol receipt sources")
+
+    expected = summarize_etherchannel_baseline(projection, protocol_assessability, devices=devices)
+    if value != expected:
+        return invalid("EtherChannel baseline does not reconcile to its exact projection and receipt sources")
+    index: Dict[str, dict] = {}
+    for row in expected["rows"]:
+        host = _strict_protocol_text(row.get("switch")) if isinstance(row, dict) else ""
+        if not host or host in index:
+            return invalid("EtherChannel baseline contains an invalid or duplicate switch row")
+        index[host] = row
+    return {
+        "present": True,
+        "valid": True,
+        "reason": "",
+        "source_bound": True,
+        "rows": expected["rows"],
+        "index": index,
+    }
+
+
+def normalize_routing_adjacency_state(protocol: Any, raw_state: Any) -> Tuple[str, Optional[bool]]:
+    """Return ``(stable_state, acceptable)`` for one projected routing adjacency.
+
+    ``acceptable`` is ``None`` when the current producer has no bounded classification for the token.
+    BGP prefix-count churn, EIGRP uptime, and OSPF DR/BDR role suffixes are deliberately normalized away.
+    The EIGRP grammar is anchored: the producer can emit only ``up <uptime>`` and cannot evidence a
+    negative neighbor state from the presence-only neighbor table.
+    """
+    proto = protocol.strip().upper() if isinstance(protocol, str) else ""
+    text = raw_state.strip() if isinstance(raw_state, str) else ""
+    if not text:
+        return "", None
+    if proto == "BGP":
+        return ("ESTABLISHED", True) if text.isdigit() else (text.upper(), False)
+    if proto == "EIGRP":
+        return ("UP", True) if re.fullmatch(r"up(?:\s+\S+)?", text, re.IGNORECASE) else (text.upper(), None)
+    if proto == "OSPF":
+        compact = re.sub(r"\s+", "", text.upper())
+        base = compact.split("/", 1)[0]
+        return base, base in ("FULL", "2WAY")
+    return text.upper(), None
+
+
+def summarize_routing_baseline(routing_neighbors: Any,
+                               protocol_assessability: Any) -> dict:
+    """Return a total, receipt-gated baseline for observed OSPF/BGP/EIGRP peer cells.
+
+    Rows are emitted only for a positive subject: a non-empty or malformed routing projection, or a safely
+    scoped receipt row claiming that a protocol-health row was emitted.  A clean empty projection with no
+    emitted health row is omitted, so a pure-L2 device is neutral rather than falsely healthy or cautionary.
+    The embedded ``protocol_assessability/1`` receipt does not cryptographically bind ``routing_neighbors``;
+    that custody limitation remains explicit even for structurally assessed rows.
+    """
+    receipt = _validate_protocol_assessability_receipt(protocol_assessability)
+    receipt = dict(receipt)
+    receipt["claimed_subjects"] = {
+        pair for pair in receipt["claimed_subjects"] if pair[1] in _ROUTING_BASELINE_PROTOCOLS
+    }
+    projection_root = routing_neighbors if isinstance(routing_neighbors, dict) else None
+    projection_pairs: Dict[tuple, dict] = {}
+    projection_subjects: set[tuple] = set()
+
+    def pair_view(host: str, protocol: str, raw_value: Any, *, explicitly_present: bool) -> dict:
+        result = {"records": {}, "findings": [], "rejected": 0, "available": True}
+
+        def reject(code: str, issue: str) -> None:
+            result["rejected"] += 1
+            if not any(finding["code"] == code and finding["issue"] == issue
+                       for finding in result["findings"]):
+                result["findings"].append({"kind": "review", "code": code, "issue": issue})
+
+        if not isinstance(raw_value, list):
+            if explicitly_present:
+                result["available"] = False
+                reject("projection_malformed", "Routing-neighbor projection has an unusable pair shape.")
+            return result
+        for item in raw_value:
+            if not isinstance(item, dict):
+                reject("projection_malformed", "Routing-neighbor projection contains a malformed peer record.")
+                continue
+            peer = _strict_protocol_text(item.get("neighbor"))
+            state_raw = _strict_protocol_text(item.get("state"))
+            try:
+                address = ipaddress.ip_address(peer)
+            except ValueError:
+                address = None
+            if (not peer or not state_raw or address is None
+                    or (protocol in ("OSPF", "EIGRP") and address.version != 4)):
+                reject("projection_malformed", "Routing-neighbor projection contains an invalid peer identity or state.")
+                continue
+            interface = _strict_protocol_text(item.get("interface"))
+            neighbor_address = _strict_protocol_text(item.get("address"))
+            remote_as = _strict_protocol_text(item.get("as"))
+            metadata_valid = (
+                (protocol == "OSPF" and bool(interface) and bool(neighbor_address))
+                or (protocol == "BGP" and bool(re.fullmatch(r"\d+(?:\.\d+)?", remote_as)))
+                or (protocol == "EIGRP" and bool(interface))
+            )
+            if not metadata_valid:
+                reject("projection_malformed", "Routing-neighbor projection contains malformed required metadata.")
+            if protocol == "OSPF" and neighbor_address:
+                try:
+                    if ipaddress.ip_address(neighbor_address).version != 4:
+                        raise ValueError
+                except ValueError:
+                    reject("projection_malformed", "OSPF projection contains an invalid neighbor address.")
+            peer_key = address.exploded.casefold()
+            if peer_key in result["records"]:
+                reject(
+                    "duplicate_peer_identity",
+                    "Routing-neighbor projection contains a colliding peer identity; VRF, process, or address-family "
+                    "scope is not available, so live review is required.",
+                )
+                continue
+            state, acceptable = normalize_routing_adjacency_state(protocol, state_raw)
+            result["records"][peer_key] = {
+                "peer": peer,
+                "peer_key": peer_key,
+                "state_raw": state_raw,
+                "state": state,
+                "status": "assessed" if acceptable is True else
+                          ("degraded" if acceptable is False else "review"),
+                "interface": interface,
+                "address": neighbor_address,
+                "remote_as": remote_as,
+            }
+        return result
+
+    if projection_root is not None:
+        for host_value, protocols in projection_root.items():
+            host = _strict_protocol_text(host_value)
+            if not host:
+                continue
+            if not isinstance(protocols, dict):
+                for protocol in _ROUTING_BASELINE_PROTOCOLS:
+                    projection_subjects.add((host, protocol))
+                    projection_pairs[(host, protocol)] = {
+                        "records": {},
+                        "findings": [{
+                            "kind": "review",
+                            "code": "projection_malformed",
+                            "issue": "Routing-neighbor projection has an unusable host shape.",
+                        }],
+                        "rejected": 1,
+                        "available": False,
+                    }
+                continue
+            for protocol in _ROUTING_BASELINE_PROTOCOLS:
+                key = protocol.lower()
+                explicitly_present = key in protocols
+                raw_value = protocols.get(key, [])
+                if explicitly_present and (not isinstance(raw_value, list) or bool(raw_value)):
+                    projection_subjects.add((host, protocol))
+                projection_pairs[(host, protocol)] = pair_view(
+                    host, protocol, raw_value, explicitly_present=explicitly_present
+                )
+
+    subject_pairs = sorted(
+        projection_subjects | receipt["claimed_subjects"],
+        key=lambda pair: (pair[0].casefold(), pair[0], _ROUTING_BASELINE_PROTOCOLS.index(pair[1])),
+    )
+    rows: List[dict] = []
+    for host, protocol in subject_pairs:
+        findings: List[dict] = []
+
+        def finding(kind: str, code: str, issue: str) -> None:
+            if not any(existing["code"] == code and existing["issue"] == issue for existing in findings):
+                findings.append({"kind": kind, "code": code, "issue": issue})
+
+        receipt_row = receipt["index"].get((host, protocol)) if receipt["valid"] else None
+        if not receipt["present"]:
+            finding("not_verified", "receipt_missing",
+                    "Current-run protocol assessability receipt is missing; the observed peers are not verified.")
+        elif not receipt["valid"]:
+            finding("review", "receipt_invalid", receipt["reason"] + ".")
+        elif receipt_row is None:
+            finding("review", "projection_receipt_contradiction",
+                    "Routing-neighbor subject is absent from the exact protocol receipt denominator.")
+
+        pair = projection_pairs.get((host, protocol))
+        if pair is None:
+            pair = {"records": {}, "findings": [], "rejected": 0, "available": False}
+            finding("review", "projection_missing",
+                    "Routing-neighbor projection is missing for a receipt-declared protocol subject.")
+        for item in pair["findings"]:
+            finding(item["kind"], item["code"], item["issue"])
+
+        receipt_state = _strict_protocol_text(receipt_row.get("state")) if receipt_row else (
+            "invalid" if receipt["present"] else "missing"
+        )
+        capture_state = _strict_protocol_text(receipt_row.get("capture_state")) if receipt_row else ""
+        emitted = receipt_row.get("health_row_emitted") if receipt_row else (
+            True if (host, protocol) in receipt["claimed_subjects"] else None
+        )
+        if receipt_row is not None and receipt_state != "assessed":
+            if pair["records"] and receipt_state in {
+                    "captured_no_record", "captured_empty", "capture_error", "not_collected"}:
+                finding("review", "projection_receipt_contradiction",
+                        "Routing peers are present even though the receipt says no assessable peer record was emitted.")
+            else:
+                finding("not_verified", "receipt_not_assessed",
+                        f"Protocol receipt state is {receipt_state}; this subject is not fully assessed.")
+        if receipt_row is not None and receipt_state == "assessed" and not pair["records"]:
+            finding("review", "assessed_zero_projection",
+                    "Receipt says assessed with an emitted health row, but the routing-neighbor projection has zero peers.")
+
+        for peer in pair["records"].values():
+            if peer["status"] == "degraded":
+                code = "ospf_unacceptable_state" if protocol == "OSPF" else "bgp_not_established"
+                finding("degraded", code,
+                        f"{protocol} peer {peer['peer']} is observed in {peer['state_raw']} state.")
+            elif peer["status"] == "review":
+                finding("review", "unclassified_state",
+                        f"{protocol} peer {peer['peer']} has a state outside the bounded producer vocabulary.")
+
+        if any(item["kind"] == "review" for item in findings):
+            status = "review"
+        elif any(item["kind"] == "not_verified" for item in findings):
+            status = "not_verified"
+        elif any(item["kind"] == "degraded" for item in findings):
+            status = "degraded"
+        else:
+            status = "assessed"
+
+        peers = sorted(pair["records"].values(), key=lambda item: item["peer_key"])
+        if status in ("review", "not_verified"):
+            for peer in peers:
+                peer["status"] = status
+        observed = []
+        for peer in peers:
+            if protocol == "BGP" and peer["state"] == "ESTABLISHED":
+                detail = (f"{peer['peer']} Established (observed prefix count {peer['state_raw']}; "
+                          "prefix count is informational and not pinned)")
+            elif protocol == "EIGRP" and peer["state"] == "UP":
+                parts = peer["state_raw"].split(None, 1)
+                detail = f"{peer['peer']} UP/present"
+                if len(parts) == 2:
+                    detail += f" (observed uptime {parts[1]}; uptime is informational and not pinned)"
+            else:
+                detail = f"{peer['peer']} state {peer['state_raw']}"
+            if protocol == "OSPF":
+                detail += f" via {peer['interface']} address {peer['address']}"
+            elif protocol == "BGP":
+                detail += f" remote AS {peer['remote_as']}"
+            else:
+                detail += f" via {peer['interface']}"
+            observed.append(detail)
+        if observed:
+            prefix = ("Embedded/apparent unverified projection" if status in ("review", "not_verified")
+                      else "Observed baseline")
+            baseline = f"{prefix} for {protocol} on {host}: " + "; ".join(observed)
+        else:
+            baseline = f"No trustworthy {protocol} peer baseline could be normalized for {host}."
+        issue = "; ".join(item["issue"] for item in findings)
+        if status == "degraded":
+            acceptance = (f"PRE-CUTOVER DEGRADED — BLOCKER: {baseline}. {issue} Matching this degraded state "
+                          "after cutover is NOT ACCEPTANCE; resolve or explicitly disposition it before the window.")
+            note = "Definite observed routing degradation; no expected-peer denominator was inferred."
+        elif status == "review":
+            acceptance = (f"PRE-CUTOVER REVIEW — BLOCKER: {baseline}. {issue} Re-collect and verify the intended "
+                          "peer set live before acceptance; do not substitute an ideal healthy count.")
+            note = "Routing evidence is ambiguous; no health conclusion is asserted."
+        elif status == "not_verified":
+            acceptance = (f"ROUTING BASELINE NOT VERIFIED — BLOCKER: {baseline}. {issue} Re-collect and verify "
+                          "the intended peer set live before acceptance; do not substitute an ideal healthy count.")
+            note = "Routing evidence is not receipt-verified; no health conclusion is asserted."
+        else:
+            if protocol == "BGP":
+                preserve = ("Preserve each observed peer identity in Established state; prefix-count change is "
+                            "informational and is not pinned")
+            elif protocol == "EIGRP":
+                preserve = ("Preserve each observed peer identity as present/UP; uptime change is informational "
+                            "and is not pinned")
+            else:
+                preserve = "Preserve each observed peer identity and acceptable normalized state"
+            acceptance = (f"{baseline}. {preserve}, and explain any peer or metadata change; no expected-peer "
+                          "count was inferred.")
+            note = "Bounded observed adjacency baseline; not proof that the configured peer set is complete."
+
+        rows.append({
+            "switch": host,
+            "protocol": protocol,
+            "status": status,
+            "receipt_state": receipt_state,
+            "capture_state": capture_state,
+            "health_row_emitted": emitted,
+            "peer_count": len(peers),
+            "rejected_record_count": pair["rejected"],
+            "peers": peers,
+            "findings": sorted(findings, key=lambda item: (item["code"], item["issue"])),
+            "command": _ROUTING_BASELINE_COMMANDS[protocol],
+            "baseline": baseline,
+            "acceptance": acceptance,
+            "issue": issue,
+            "note": note,
+            "source_key": (f"routing_neighbors.{host}.{protocol.lower()} + "
+                           f"protocol_assessability.rows[{host},{protocol}]"),
+        })
+
+    by_status = {state: sum(row["status"] == state for row in rows)
+                 for state in ("assessed", "degraded", "review", "not_verified")}
+    if by_status["degraded"]:
+        overall = "degraded"
+    elif by_status["review"]:
+        overall = "review"
+    elif by_status["not_verified"] or not rows:
+        overall = "not_verified"
+    else:
+        overall = "assessed"
+    return {
+        "schema": "routing_adjacency_baseline/1",
+        "scope": "baseline_observed",
+        "status": overall,
+        "assessed": bool(rows) and all(row["status"] in ("assessed", "degraded") for row in rows),
+        "projection_custody": "embedded_unverified",
+        "receipt": {
+            "present": receipt["present"],
+            "valid": receipt["valid"],
+            "reason": receipt["reason"],
+        },
+        "rows": rows,
+        "summary": {
+            "n_subject_cells": len(rows),
+            "n_peers": sum(row["peer_count"] for row in rows),
+            "n_degraded_peers": sum(
+                peer["status"] == "degraded" for row in rows for peer in row["peers"]
+            ),
+            "n_rejected_records": sum(row["rejected_record_count"] for row in rows),
+            "by_status": by_status,
+        },
+        "limitations": [
+            "The baseline covers observed peers; it is not a configured or expected-neighbor denominator.",
+            "An empty or disappearing table is not proof that a protocol or expected peer is absent.",
+            "The embedded receipt does not cryptographically bind routing_neighbors to the raw captures.",
+            "OSPF 2WAY is context-bounded acceptable evidence, not proof every intended adjacency is Full.",
+            "EIGRP neighbor evidence is positive-presence only; the current projection has no negative state model.",
+        ],
+    }
 
 
 # =============================================================================
@@ -2431,6 +5876,18 @@ def _extract_protocol_states(proto: str, summary: str, detail: str) -> List[str]
     if proto == "STP":                               # summary: 'mode rstp; 2 blocked, 1 inconsistent'
         m = re.search(r"(\d+)\s+inconsistent", summary)
         return ["INCONSISTENT"] if (m and int(m.group(1)) > 0) else []
+    if proto == "FHRP":                              # detail: 'Vlan10 HSRP Init; Vlan20 VRRP Init'
+        # Keep the concrete protocol subtype. HSRP Init/Learn have owned doctrine, while a VRRP/GLBP
+        # state with the same spelling must not silently inherit HSRP semantics. Unknown subtypes still
+        # reach compute_protocol_intelligence's explicit NOT ASSESSED fallback instead of disappearing.
+        out = set()
+        for seg in detail.split(";"):
+            parts = seg.strip().split()
+            if len(parts) >= 3 and parts[-2].upper() in {"HSRP", "VRRP", "GLBP"}:
+                role = parts[-1].upper()
+                if role in {"INIT", "LEARN"}:
+                    out.add(f"{parts[-2].upper()}:{role}")
+        return sorted(out)
     return []
 
 
@@ -2462,6 +5919,19 @@ def compute_protocol_intelligence(protocol_health: List[dict]) -> List[dict]:
                             "remediation": "Read the member's full flag token in `show etherchannel "
                                            "summary` (and `lacp min-links` / the peer's bundle "
                                            "config) before the window.",
+                            "confidence": "observed state = fact; cause NOT assessed (no doctrine entry)"})
+            elif proto == "FHRP" and tok.rsplit(":", 1)[-1] in {"INIT", "LEARN"}:
+                # The health owner already classified the producer-controlled role as stuck. Preserve
+                # that observed fault even when protocol_kb deliberately has no subtype-specific doctrine
+                # (for example VRRP:INIT) rather than borrowing HSRP causes or dropping the row.
+                subtype, role = tok.split(":", 1)
+                out.append({"switch": host, "protocol": proto, "state": tok,
+                            "severity": "Medium",
+                            "meaning": f"{subtype} group is in the non-forwarding {role} state.",
+                            "likely_cause": "NOT ASSESSED -- this subtype/state has no entry in the "
+                                            "offline protocol-state doctrine (protocol_kb).",
+                            "remediation": f"Inspect the full {subtype} group state, interface status, "
+                                           "peer view, and protocol-specific configuration before cutover.",
                             "confidence": "observed state = fact; cause NOT assessed (no doctrine entry)"})
     out.sort(key=lambda r: (_SEV_RANK.get(r["severity"], 9), r["switch"], r["protocol"], r["state"]))
     return out
@@ -4191,7 +7661,12 @@ def compute_migration_punchlist(cross_layer: List[dict],
                                 qos_audit: Optional[dict] = None,
                                 software_risk: Optional[dict] = None,
                                 platform_health: Optional[dict] = None,
-                                device_dossiers: Optional[dict] = None) -> List[dict]:
+                                device_dossiers: Optional[dict] = None,
+                                protocol_assessability: Any = None,
+                                vtp_safety_baseline: Optional[dict] = None,
+                                vtp_safety_subject_scope: Any = None,
+                                ipv6_routing_adjacency_baseline: Optional[dict] = None,
+                                ipv6_routing_subject_scope: Any = None) -> List[dict]:
     """NEW-V3.23.63: the consolidated, severity-ranked migration PUNCH-LIST -- one prioritized,
     de-duplicated, per-device, per-wave table that rolls up EVERY actionable finding the run
     produced (cross-layer SPOFs, security gaps, config hygiene, L1/L3 risks, protocol health,
@@ -4294,6 +7769,74 @@ def compute_migration_punchlist(cross_layer: List[dict],
             add(r["severity"], "Protocol", [r.get("switch")],
                 f"{r.get('protocol', '')} {r['severity'].lower()}", r.get("detail", ""), "")
 
+    # VTP's sparse protocol-health row is intentionally Info: a high revision is an exposure, not a
+    # present outage.  Fold the separate source-bound safety owner so that distinction does not erase
+    # the pre-cutover review from the consolidated Punch-List.  This produces no configuration patch.
+    if vtp_safety_baseline is not None:
+        vtp_view = _vtp_safety_consumer_view(
+            vtp_safety_baseline, protocol_health, protocol_assessability,
+            vtp_safety_subject_scope)
+        for row in vtp_view["rows"]:
+            if not isinstance(row, dict) or row.get("status") not in {"review", "not_verified"}:
+                continue
+            host = _strict_protocol_text(row.get("switch"))
+            if not host:
+                continue
+            status = _strict_protocol_text(row.get("status"))
+            high_revision = "high_revision_server" in _vtp_safety_finding_codes(row)
+            add(
+                "Medium",
+                "VTP",
+                [host],
+                ("VTP high-revision cutover exposure"
+                 if status == "review" and high_revision
+                 else "VTP cutover safety review"
+                 if status == "review"
+                 else "VTP safety baseline not verified"),
+                _strict_protocol_text(row.get("acceptance")),
+                ("Re-run show vtp status, back up the VLAN database, and explicitly disposition "
+                 "the candidate switch's domain/version/revision exposure before connection."),
+            )
+
+    # The IPv6 routing owner is blocker-only in the consolidated punch-list:
+    # healthy observed adjacencies need no action, while degraded, ambiguous,
+    # and unverified evidence must be resolved or dispositioned.  Deliberately
+    # leave remediation empty; adjacency observations do not authorize an
+    # inferred neighbor configuration or any automatic change.
+    if ipv6_routing_adjacency_baseline is not None:
+        ipv6_view = _ipv6_routing_consumer_view(
+            ipv6_routing_adjacency_baseline, ipv6_routing_subject_scope)
+        for row in ipv6_view["rows"]:
+            if not isinstance(row, dict):
+                continue
+            host = _strict_protocol_text(row.get("switch"))
+            protocol = _strict_protocol_text(row.get("protocol")) or "IPv6 Routing"
+            peer = _strict_protocol_text(row.get("peer"))
+            state = (
+                _strict_protocol_text(row.get("state_raw"))
+                or _strict_protocol_text(row.get("state"))
+            )
+            status = _strict_protocol_text(row.get("status"))
+            acceptance = _strict_protocol_text(row.get("acceptance"))
+            if (not host or status not in {"degraded", "review", "not_verified"}
+                    or not acceptance):
+                continue
+            identity = f"{protocol} {peer or 'subject'}"
+            if state:
+                identity += f" state {state}"
+            add(
+                "High" if status == "degraded" else "Medium",
+                "IPv6 Routing",
+                [host],
+                {
+                    "degraded": f"{identity} degraded before cutover",
+                    "review": f"{identity} requires pre-cutover review",
+                    "not_verified": f"{identity} baseline not verified",
+                }[status],
+                acceptance,
+                "",
+            )
+
     sf = stp_findings or {}
     for m in sf.get("misaligned", []):
         add("Medium", "STP", [m.get("root")] + list(m.get("gateways", [])),
@@ -4327,10 +7870,36 @@ def compute_migration_punchlist(cross_layer: List[dict],
             f"One subnet sits behind multiple VLANs{vrf} -- ambiguous routing.",
             "Consolidate or re-subnet before cutover.")
     for fr in (ll.get("fhrp") or []):
-        add("High", "FHRP", [m.get("host") for m in fr.get("members", [])],
-            f"Fake FHRP redundancy (VLAN {fr.get('vid')})",
-            "; ".join(fr.get("issues", [])),
-            "Standardize the FHRP protocol / group / virtual IP across the VLAN's gateways.")
+        state = fr.get("status")
+        hosts = [m.get("host") for m in fr.get("members", [])]
+        issues = "; ".join(fr.get("issues", []))
+        if state == "review":
+            add(
+                "Medium", "FHRP", hosts,
+                f"FHRP domain composition review (VLAN {fr.get('vid')})",
+                "Intended FHRP membership is unresolved. " + issues,
+                "Verify intended members and simultaneous roles, then explicitly disposition the "
+                "domain-composition review before cutover; do not auto-configure gateways from this evidence.",
+            )
+        elif state == "not_verified":
+            add(
+                "Medium", "FHRP", hosts,
+                f"FHRP redundancy domain not verified (VLAN {fr.get('vid')})",
+                issues or "The authoritative FHRP redundancy-domain receipt was not verified.",
+                "Re-collect and validate the domain receipt before deciding intended membership or remediation.",
+            )
+        elif state == "degraded":
+            add(
+                "High", "FHRP", hosts,
+                f"FHRP redundancy degraded (VLAN {fr.get('vid')})",
+                issues,
+                "Restore or explicitly disposition the definite source-bound local FHRP fault before cutover.",
+            )
+        else:
+            # Backward compatibility for direct callers still carrying the pre-typed legacy row shape.
+            add("High", "FHRP", hosts,
+                f"Fake FHRP redundancy (VLAN {fr.get('vid')})", issues,
+                "Standardize the FHRP protocol / group / virtual IP across the VLAN's gateways.")
     for t in (ll.get("trunk_native") or []):
         add("Medium", "Trunk", [t.get("a_host"), t.get("b_host")],
             f"Native-VLAN mismatch ({t.get('a_native')} vs {t.get('b_native')})",
@@ -5094,6 +8663,12 @@ def compute_remediation_plan(devices: Optional[dict] = None,
                 "CIS hardening — confirm the control suits this device's role before applying.", "cis-security")
 
     for fr in (l2.get("fhrp") or []):                                     # FHRP fake redundancy (templated)
+        # Cross-switch domain composition never authorizes generated configuration: its worst status is
+        # deliberately propagated to every member and cannot identify the local fault owner.  In
+        # particular, zero participation is not permission to add HSRP everywhere.  Legacy untyped rows
+        # retain the existing compatibility remediation path.
+        if fr.get("authoritative") is True or fr.get("status") in {"review", "not_verified"}:
+            continue
         vid = fr.get("vid")
         members = [m.get("host") for m in (fr.get("members") or []) if m.get("host")]
         why = f"VLAN {vid}: " + "; ".join(fr.get("issues", []))
@@ -5138,8 +8713,22 @@ def compute_remediation_plan(devices: Optional[dict] = None,
 # generator's structure. Returns {items, by_wave, summary, banner}.
 # =============================================================================
 _VALIDATION_RANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
-_VALIDATION_BANNER = ("Run these AFTER each wave's cutover to confirm it succeeded. 'Expect' is the known-good "
-                      "result captured from the pre-cutover state -- a deviation is a regression to investigate.")
+_VALIDATION_BANNER = ("Run these AFTER each wave's cutover. The 'Observed baseline / acceptance' column "
+                      "preserves what was actually observed and never invents a healthy count. Rows beginning "
+                      "'PRE-CUTOVER DEGRADED — BLOCKER:' or 'PRE-CUTOVER REVIEW — BLOCKER:' are blockers: "
+                      "matching a faulted observation is NOT ACCEPTANCE, and identity/timing ambiguity requires "
+                      "live verification. 'BGP CONFIGURED PEER NOT VERIFIED — BLOCKER:', 'ROUTING BASELINE "
+                      "NOT VERIFIED — BLOCKER:', 'ETHERCHANNEL BASELINE NOT VERIFIED — BLOCKER:', and "
+                      "'VTP SAFETY BASELINE NOT VERIFIED — BLOCKER:' mean "
+                      "the current-run receipt cannot authorize the "
+                      "corresponding observed baseline and require re-collection. Evidence-backed rows disclose "
+                      "projection custody; BGP configured-peer rows cover only direct static literal peers in the "
+                      "default/global IPv4-unicast scope, OSPF/EIGRP remain observed-peer scope, and EtherChannel "
+                      "is observed local group/member scope rather "
+                      "than configured or partner intent. VTP safety is a local mode/domain/revision exposure "
+                      "review, not database authority or propagation proof. Resolve or explicitly disposition "
+                      "every blocker and "
+                      "investigate every baseline deviation before acceptance.")
 
 
 def _validation_wave_key(w: str):
@@ -5148,19 +8737,119 @@ def _validation_wave_key(w: str):
     return (0, int(m.group(1))) if m else (1, w or "")
 
 
+def _bgp_configured_peer_acceptance(row: Any) -> str:
+    """Return the one acceptance sentence shared by Validation and NRFU.
+
+    The configured-peer owner supplies normalized facts and a source-bound prose
+    explanation.  This projector owns the exact cutover blocker prefixes and the
+    deliberately narrow positive-acceptance boundary.
+    """
+    record = row if isinstance(row, dict) else {}
+    status = _strict_protocol_text(record.get("status"))
+    supplied = _strict_protocol_text(record.get("acceptance"))
+    peer = _strict_protocol_text(record.get("peer")) or "<configured-peer>"
+    state = _strict_protocol_text(record.get("runtime_state_raw")) or "not observed"
+    scope = _strict_protocol_text(record.get("scope")) or "default/global IPv4-unicast"
+    fallback = f"Configured peer {peer}; runtime state {state}; scope {scope}."
+    detail = supplied or fallback
+    markers = {
+        "degraded": "PRE-CUTOVER DEGRADED — BLOCKER:",
+        "review": "PRE-CUTOVER REVIEW — BLOCKER:",
+        "not_verified": "BGP CONFIGURED PEER NOT VERIFIED — BLOCKER:",
+    }
+    marker = markers.get(status)
+    if marker:
+        if detail.startswith(marker):
+            return detail
+        return f"{marker} {detail}"
+    if status == "assessed":
+        boundary = (
+            "Acceptance is limited to the bounded default/global IPv4 literal-peer scope; "
+            "it does not prove VRFs, other address families, inherited/dynamic peers, policy, "
+            "RIB/FIB correctness, convergence, or capture simultaneity."
+        )
+        return detail if boundary in detail else f"{detail} {boundary}"
+    if status == "administratively_disabled":
+        return (
+            f"{detail} Administratively disabled is neutral in the bounded default/global IPv4 "
+            "literal-peer scope and is not evidence of BGP health."
+        )
+    return (
+        "BGP CONFIGURED PEER NOT VERIFIED — BLOCKER: The configured-peer row has an unsupported "
+        "status; re-run the bounded default/global IPv4 assessment before acceptance."
+    )
+
+
+def _fhrp_configured_group_acceptance(row: Any) -> str:
+    """Return the shared Validation/NRFU acceptance for one configured FHRP group."""
+    record = row if isinstance(row, dict) else {}
+    status = _strict_protocol_text(record.get("status"))
+    supplied = _strict_protocol_text(record.get("acceptance"))
+    protocol = _strict_protocol_text(record.get("protocol")) or "FHRP"
+    interface = _strict_protocol_text(record.get("interface")) or "<interface>"
+    group = _strict_protocol_text(record.get("group")) or "<group>"
+    detail = supplied or f"{protocol} {interface} group {group}."
+    markers = {
+        "degraded": "PRE-CUTOVER DEGRADED — BLOCKER:",
+        "review": "PRE-CUTOVER REVIEW — BLOCKER:",
+        "not_verified": "FHRP CONFIGURED GROUP NOT VERIFIED — BLOCKER:",
+    }
+    marker = markers.get(status)
+    if marker:
+        return detail if detail.startswith(marker) else f"{marker} {detail}"
+    if status == "assessed":
+        boundary = (
+            "Acceptance is limited to the configured local group/VIP/runtime-state projection; "
+            "it does not prove a peer, intended member count, election health, failover, tracking, "
+            "authentication, convergence, or capture simultaneity."
+        )
+        return supplied or f"{detail} {boundary}"
+    if status == "administratively_disabled":
+        if supplied:
+            return supplied
+        return (
+            f"{detail} Administratively disabled is neutral in the bounded configured local-group "
+            "scope and is not evidence of FHRP health."
+        )
+    return (
+        "FHRP CONFIGURED GROUP NOT VERIFIED — BLOCKER: The configured-group row has an "
+        "unsupported status; re-run the bounded local group/VIP/state assessment before acceptance."
+    )
+
+
+def _fhrp_configured_group_command(protocol: str, nxos: bool) -> str:
+    """Return the read-only runtime command for a normalized FHRP subtype."""
+    kind = _strict_protocol_text(protocol).upper()
+    if kind == "VRRP":
+        return "show vrrp brief"
+    if kind == "GLBP":
+        return "show glbp brief"
+    return "show hsrp brief" if nxos else "show standby brief"
+
+
 def compute_validation_plan(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                             move_groups: Optional[list] = None,
                             routing_neighbors: Optional[dict] = None,
                             stp_roots: Optional[dict] = None,
                             devices: Optional[dict] = None,
-                            protocol_health: Optional[list] = None) -> dict:
+                            protocol_health: Optional[list] = None,
+                            protocol_assessability: Optional[dict] = None,
+                            etherchannel_baseline: Optional[dict] = None,
+                            etherchannel_projection: Any = _ETHERCHANNEL_BASELINE_UNSET,
+                            bgp_configured_peer_baseline: Optional[dict] = None,
+                            fhrp_configured_group_baseline: Optional[dict] = None,
+                            fhrp_redundancy_domain_baseline: Optional[dict] = None,
+                            vtp_safety_baseline: Optional[dict] = None,
+                            vtp_safety_subject_scope: Any = None,
+                            ipv6_routing_adjacency_baseline: Optional[dict] = None,
+                            ipv6_routing_subject_scope: Any = None) -> dict:
     """NEW-V3.23.143: per-wave post-cutover validation checklist generated from the current-state topology.
-    Each item names the device + the command to run + the EXPECTED good result (captured from the pre-cutover
-    state) + why it matters + the severity if it fails. Read-only synthesis; no new collection. Returns
+    Each item names the device + the command to run + the observed pre-cutover baseline to compare + why it
+    matters + the severity if it fails. A degraded observation remains explicitly degraded rather than being
+    rewritten as an ideal good state. Read-only synthesis; no new collection. Returns
     {items, by_wave, summary, banner}."""
     from collections import Counter, defaultdict
     devs = devices or {}
-    rn = routing_neighbors or {}
     stp = stp_roots or {}
     groups = list(move_groups or [])
 
@@ -5177,11 +8866,51 @@ def compute_validation_plan(all_interfaces: Dict[str, Dict[str, InterfaceData]],
     model = build_network_model(all_interfaces)
     items: List[dict] = []
 
-    def add(device, category, severity, check, command, expect, why):
-        items.append({"device": device, "platform": _plat(device),
-                      "wave": wave_of.get(device, "(unscheduled)"),
-                      "category": category, "severity": severity, "check": check,
-                      "command": command, "expect": expect, "why": (why or "")[:300]})
+    def add(device, category, severity, check, command, expect, why, *,
+            evidence_state="", projection_custody="", source_key="",
+            bgp_metadata: Optional[dict] = None,
+            fhrp_metadata: Optional[dict] = None):
+        item = {"device": device, "platform": _plat(device),
+                "wave": wave_of.get(device, "(unscheduled)"),
+                "category": category, "severity": severity, "check": check,
+                "command": command, "expect": expect, "why": (why or "")[:300]}
+        if evidence_state:
+            item.update({
+                "evidence_state": evidence_state,
+                "projection_custody": projection_custody,
+                "source_key": source_key,
+            })
+        if bgp_metadata is not None:
+            item.update({
+                "peer": _strict_protocol_text(bgp_metadata.get("peer")),
+                "peer_key": _strict_protocol_text(bgp_metadata.get("peer_key")),
+                "local_as": _strict_protocol_text(bgp_metadata.get("local_as")),
+                "configured_remote_as": _strict_protocol_text(
+                    bgp_metadata.get("configured_remote_as")),
+                "activation": _strict_protocol_text(bgp_metadata.get("activation")),
+                "runtime_observed": bgp_metadata.get("runtime_observed") is True,
+                "runtime_remote_as": _strict_protocol_text(bgp_metadata.get("runtime_remote_as")),
+                "runtime_state_raw": _strict_protocol_text(bgp_metadata.get("runtime_state_raw")),
+                "runtime_state": _strict_protocol_text(bgp_metadata.get("runtime_state")),
+                "scope": _strict_protocol_text(bgp_metadata.get("scope")),
+            })
+        if fhrp_metadata is not None:
+            item.update({
+                "protocol": _strict_protocol_text(fhrp_metadata.get("protocol")),
+                "interface": _strict_protocol_text(fhrp_metadata.get("interface")),
+                "group": _strict_protocol_text(fhrp_metadata.get("group")),
+                "group_key": _strict_protocol_text(fhrp_metadata.get("group_key")),
+                "configured": fhrp_metadata.get("configured") is True,
+                "configured_vip": _strict_protocol_text(fhrp_metadata.get("configured_vip")),
+                "activation": _strict_protocol_text(fhrp_metadata.get("activation")),
+                "runtime_observed": fhrp_metadata.get("runtime_observed") is True,
+                "runtime_vip": _strict_protocol_text(fhrp_metadata.get("runtime_vip")),
+                "runtime_state_raw": _strict_protocol_text(
+                    fhrp_metadata.get("runtime_state_raw")),
+                "runtime_state": _strict_protocol_text(fhrp_metadata.get("runtime_state")),
+                "scope": _strict_protocol_text(fhrp_metadata.get("scope")),
+            })
+        items.append(item)
 
     # ---- Gateway SVI + first-hop redundancy. Read the SVI IP / FHRP string straight from the interfaces
     #      (the model only carries the FHRP bool). ----
@@ -5193,23 +8922,328 @@ def compute_validation_plan(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                 svi[(host, int(m.group(1)))] = {"ip": (d.svi_ip or "").strip(),
                                                 "fhrp": (d.hsrp_behavior or "").strip()}
     for (host, vid), info in sorted(svi.items()):
-        redundant = len({g["host"] for g in model["gw"].get(vid, [])}) >= 2
         ip = info["ip"].split()[0] if info["ip"] else ""
         add(host, "Gateway", "High",
             f"Default gateway for VLAN {vid} is up",
             f"show ip interface brief | include Vlan{vid}",
             f"Vlan{vid} {ip or '<svi-ip>'} up/up (line protocol up)",
             f"VLAN {vid} endpoints lose their default gateway if this SVI is down after cutover.")
-        if redundant and info["fhrp"]:
-            cmd = "show hsrp brief" if _plat(host) == "nxos" else "show standby brief"
-            peers = sorted({g["host"] for g in model["gw"].get(vid, []) if g["host"] != host})
-            add(host, "FHRP", "High",
-                f"First-hop redundancy healthy for VLAN {vid}",
-                cmd,
-                f"VLAN {vid} shows exactly one Active + one Standby across {host}"
-                f"{' + ' + ', '.join(peers) if peers else ''} (same virtual IP)",
-                f"VLAN {vid} has a redundant gateway; a broken FHRP pair means no failover or a "
-                "duplicate-active split-brain.")
+
+    # ---- FHRP observed election baseline.  Without a configured contract, preserve every observed
+    # member (including a single local backup) as the compatibility baseline.  With the configured
+    # contract, retain only uncovered observed blockers: an exact source-bound configured blocker owns
+    # its local duplicate, while mixed protocol/group/VIP and broader domain findings stay additive.
+    fhrp_contract_supplied = fhrp_configured_group_baseline is not None
+    fhrp_view: dict = {}
+    fhrp_valid = False
+    fhrp_contract: dict = {}
+    fhrp_rows: List[dict] = []
+    if fhrp_contract_supplied:
+        fhrp_view = validate_fhrp_configured_group_baseline(
+            fhrp_configured_group_baseline, require_current_run=True)
+        fhrp_valid = (
+            fhrp_view.get("valid") is True and fhrp_view.get("source_bound") is True
+        )
+        fhrp_contract = fhrp_view.get("baseline") or {}
+        fhrp_rows = list(fhrp_view.get("rows") or []) if fhrp_valid else []
+    fhrp_elections = summarize_fhrp_elections(all_interfaces)
+    fhrp_uncovered_by_election: Dict[int, List[dict]] = {}
+    if fhrp_contract_supplied:
+        for election, member in _uncovered_fhrp_election_blockers(
+                fhrp_elections, fhrp_rows):
+            fhrp_uncovered_by_election.setdefault(id(election), []).append(member)
+    for election in fhrp_elections:
+        metadata_by_protocol = {
+            item["protocol"]: item for item in election["validation"]
+        }
+        projected_members = (
+            fhrp_uncovered_by_election.get(id(election), [])
+            if fhrp_contract_supplied else election["members"]
+        )
+        for member in projected_members:
+            protocol = member["protocol"]
+            metadata = metadata_by_protocol[protocol]
+            command = metadata["command"]
+            # Preserve the already-supported NX-OS dialect while keeping the subtype owner canonical:
+            # both commands retrieve HSRP brief state; VRRP/GLBP never inherit an HSRP spelling.
+            if protocol == "HSRP" and _is_nxos(_plat(member["host"])):
+                command = "show hsrp brief"
+            leader_text = "/".join(metadata["leader_roles"])
+            backup_text = "/".join(metadata["backup_roles"])
+            identity = f"{member['interface']} {protocol} group {member['group'] or '?'}"
+            if member["vip"]:
+                identity += f" VIP {member['vip']}"
+            observed = f"Observed local baseline: {identity} is {member['role']}"
+            vocabulary = (f"{protocol} role vocabulary: leader {leader_text}; accepted observed "
+                          f"non-leader {backup_text}")
+            member_status = member.get("status", "healthy")
+            issue_text = "; ".join(member.get("issues") or [])
+            if member_status == "degraded":
+                check = f"First-hop redundancy degraded baseline for VLAN {election['vlan']}"
+                expect = (f"PRE-CUTOVER DEGRADED — BLOCKER: {observed}. Observed election issue(s): "
+                          f"{issue_text}. Matching this degraded observation after cutover is NOT ACCEPTANCE; "
+                          "resolve or explicitly disposition the blocker. Do NOT substitute an ideal healthy "
+                          f"role/count. {vocabulary}.")
+                why = (f"VLAN {election['vlan']} already has observed FHRP election degradation. It must be "
+                        "resolved or explicitly accepted before cutover, and must not worsen afterward.")
+            elif member_status == "review":
+                check = f"First-hop redundancy evidence review for VLAN {election['vlan']}"
+                expect = (f"PRE-CUTOVER REVIEW — BLOCKER: {observed}. Observed evidence issue(s): {issue_text}. "
+                          "The one-record-per-SVI, sequential-capture projection cannot prove a broken pair or "
+                          "a healthy independent election. Verify all intended members simultaneously before "
+                          f"acceptance. {vocabulary}.")
+                why = (f"VLAN {election['vlan']} carries identity, coverage, or capture-timing ambiguity. Live "
+                       "simultaneous verification must establish the intended election before cutover.")
+            else:
+                check = f"First-hop redundancy observed baseline for VLAN {election['vlan']}"
+                expect = (f"{observed}. Preserve or explain any role/VIP/group change; no expected peer "
+                          f"count was inferred. {vocabulary}.")
+                why = (f"A change from the observed {protocol} role/group/VIP on VLAN {election['vlan']} "
+                       "can indicate election churn, lost failover, or split-brain. A single observed "
+                       "backup-only member is not by itself classified as degraded.")
+            # Publish the typed evidence state and exact source leaf alongside the human-readable
+            # acceptance marker.  The marker remains a compatibility fallback for older snapshots;
+            # current decision surfaces must not have to reverse-parse prose to find an FHRP blocker.
+            evidence_state = {
+                "healthy": "assessed",
+                "degraded": "degraded",
+                "review": "review",
+            }.get(member_status, "review")
+            host_key = _strict_protocol_text(member.get("host"))[:120]
+            interface_key = _strict_protocol_text(member.get("interface"))[:80]
+            source_key = f"interfaces.{host_key}.{interface_key}.hsrp_behavior"
+            add(
+                member["host"], "FHRP", "High", check, command, expect, why,
+                evidence_state=evidence_state,
+                projection_custody="embedded_unverified",
+                source_key=source_key[:300],
+            )
+
+    if fhrp_contract_supplied:
+        blocker_states = {"degraded", "review", "not_verified"}
+        for row in fhrp_rows:
+            if not isinstance(row, dict):
+                continue
+            host = _strict_protocol_text(row.get("switch"))
+            protocol = _strict_protocol_text(row.get("protocol")).upper()
+            interface = _strict_protocol_text(row.get("interface")) or "<interface>"
+            group = _strict_protocol_text(row.get("group")) or "<group>"
+            status = _strict_protocol_text(row.get("status"))
+            if not host or protocol not in {"HSRP", "VRRP", "GLBP"} or status not in {
+                    "assessed", "degraded", "review", "not_verified",
+                    "administratively_disabled"}:
+                continue
+            check = {
+                "assessed": f"{protocol} configured group {group} bounded baseline",
+                "degraded": f"{protocol} configured group {group} degraded baseline",
+                "review": f"{protocol} configured group {group} evidence review",
+                "not_verified": f"{protocol} configured group {group} not verified",
+                "administratively_disabled": (
+                    f"{protocol} configured group {group} administratively disabled"
+                ),
+            }[status]
+            add(
+                host,
+                "FHRP",
+                "Info" if status == "administratively_disabled" else "High",
+                check,
+                _strict_protocol_text(row.get("command")) or _fhrp_configured_group_command(
+                    protocol, _is_nxos(_plat(host))),
+                _fhrp_configured_group_acceptance(row),
+                (f"Configured-group reconciliation is bounded to {protocol} {interface} group "
+                 f"{group} in the default IPv4 direct-literal local scope; it does not infer a "
+                 "peer, intended member count, or election health."),
+                evidence_state=status,
+                projection_custody=_strict_protocol_text(row.get("projection_custody")),
+                source_key=_strict_protocol_text(row.get("source_key")),
+                fhrp_metadata=row,
+            )
+
+        fhrp_verdict = _strict_protocol_text(fhrp_contract.get("verdict")).upper()
+        has_blocker_row = any(
+            isinstance(row, dict) and row.get("status") in blocker_states
+            for row in fhrp_rows
+        )
+        needs_fallback = (
+            not fhrp_valid
+            or (fhrp_verdict in {"BLOCKED", "INDETERMINATE"} and not has_blocker_row)
+        )
+        fallback_subjects: set[tuple[str, str]] = set()
+        if needs_fallback and fhrp_valid:
+            fallback_subjects = {
+                (_strict_protocol_text(row.get("switch")),
+                 _strict_protocol_text(row.get("protocol")).upper())
+                for row in (fhrp_contract.get("coverage") or [])
+                if isinstance(row, dict)
+                and _strict_protocol_text(row.get("status")).lower() in {
+                    "degraded", "review", "not_verified"}
+                and _strict_protocol_text(row.get("switch"))
+                and _strict_protocol_text(row.get("protocol")).upper() in {
+                    "HSRP", "VRRP", "GLBP"}
+            }
+        elif needs_fallback:
+            fallback_subjects = {
+                (_strict_protocol_text(host), "FHRP")
+                for host in set(devs) | set(all_interfaces)
+                if _strict_protocol_text(host)
+            }
+            if not fallback_subjects and isinstance(fhrp_configured_group_baseline, dict):
+                fallback_subjects = {
+                    (_strict_protocol_text(row.get("switch")), "FHRP")
+                    for row in (fhrp_configured_group_baseline.get("rows") or [])
+                    if isinstance(row, dict) and _strict_protocol_text(row.get("switch"))
+                }
+        if fhrp_valid:
+            reason = (
+                f"configured-group owner verdict {fhrp_verdict or 'INDETERMINATE'} has no "
+                "attributable group row; host/subtype coverage is incomplete"
+            )
+        else:
+            reason = _strict_protocol_text(fhrp_view.get("reason")) or (
+                "the configured-group artifact is not a validated current-run receipt"
+            )
+        for host, protocol in sorted(
+                fallback_subjects, key=lambda value: (value[0].casefold(), value[0], value[1])):
+            placeholder = {
+                "switch": host, "protocol": protocol, "interface": "", "group": "",
+                "group_key": "", "configured": False, "configured_vip": "",
+                "activation": "not_verified", "runtime_observed": False,
+                "runtime_vip": "", "runtime_state_raw": "",
+                "runtime_state": "NOT_VERIFIED",
+                "scope": "default IPv4 direct-literal local configured group",
+                "status": "not_verified",
+            }
+            command_protocol = protocol if protocol in {"HSRP", "VRRP", "GLBP"} else "HSRP"
+            add(
+                host, "FHRP", "High", "FHRP configured-group baseline not verified",
+                _fhrp_configured_group_command(command_protocol, _is_nxos(_plat(host))),
+                "FHRP CONFIGURED GROUP NOT VERIFIED — BLOCKER: No validated, source-bound "
+                "current-run configured-group baseline authorizes a positive FHRP acceptance "
+                "target. Re-collect running-config and the matching HSRP/VRRP/GLBP summary "
+                "before cutover.",
+                f"The FHRP configured-group analysis failed closed: {reason}.",
+                evidence_state="not_verified", projection_custody="embedded_unverified",
+                source_key="fhrp_configured_group_baseline", fhrp_metadata=placeholder,
+            )
+
+    # The cross-switch redundancy-domain owner is strictly additive to local configured-group and
+    # compatibility-election rows.  Its flat owner row is retained verbatim, with the validation-plan
+    # envelope adding only device/wave/category/severity and the typed gate aliases.
+    if fhrp_redundancy_domain_baseline is not None:
+        domain_view = _fhrp_redundancy_domain_consumer_view(
+            fhrp_redundancy_domain_baseline,
+            all_interfaces,
+            fhrp_configured_group_baseline,
+        )
+        for owner_row in domain_view["rows"]:
+            if not isinstance(owner_row, dict):
+                continue
+            host = owner_row.get("switch") if isinstance(owner_row.get("switch"), str) else ""
+            status = owner_row.get("status") if isinstance(owner_row.get("status"), str) else ""
+            if not host or status not in {"assessed", "degraded", "review", "not_verified"}:
+                continue
+            item = dict(owner_row)
+            item.update({
+                "device": host,
+                "platform": _plat(host),
+                "wave": wave_of.get(host, "(unscheduled)"),
+                "category": "FHRP",
+                "severity": "High",
+                "expect": owner_row["acceptance"],
+                "evidence_state": status,
+            })
+            items.append(item)
+
+    # VTP safety remains additive to protocol health/intelligence.  Preserve every validated owner
+    # leaf used for execution (command/acceptance/source/custody/status); the envelope supplies only
+    # wave, category, severity, and the generic current-baseline aliases.
+    if vtp_safety_baseline is not None:
+        vtp_view = _vtp_safety_consumer_view(
+            vtp_safety_baseline, protocol_health, protocol_assessability,
+            vtp_safety_subject_scope)
+        for owner_row in vtp_view["rows"]:
+            if not isinstance(owner_row, dict):
+                continue
+            host = _strict_protocol_text(owner_row.get("switch"))
+            status = _strict_protocol_text(owner_row.get("status"))
+            acceptance = _strict_protocol_text(owner_row.get("acceptance"))
+            if (not host or status not in {"assessed", "review", "not_verified"}
+                    or not acceptance):
+                continue
+            high_revision = "high_revision_server" in _vtp_safety_finding_codes(owner_row)
+            owner_why = _strict_protocol_text(owner_row.get("why"))
+            check = {
+                "assessed": "VTP bounded local safety baseline",
+                "review": (
+                    "VTP high-revision cutover exposure review"
+                    if high_revision else "VTP cutover safety review"
+                ),
+                "not_verified": "VTP safety baseline not verified",
+            }[status]
+            item = dict(owner_row)
+            item.update({
+                "device": host,
+                "platform": _plat(host),
+                "wave": wave_of.get(host, "(unscheduled)"),
+                "category": "VTP",
+                "severity": "Medium" if status == "assessed" else "High",
+                "check": check,
+                "expect": acceptance,
+                "why": (
+                    "Local VTP mode, domain, and revision evidence is a bounded pre-cutover safety "
+                    "observation; a high-revision server is one review heuristic. The observation "
+                    "does not prove database authority, synchronization, pruning, authentication, "
+                    "propagation, or overwrite safety."
+                    + (f" Owner evidence: {owner_why}" if owner_why else "")
+                ),
+                "evidence_state": status,
+            })
+            items.append(item)
+
+    # OSPFv3 and IPv6-unicast BGP are a separate, source-bound adjacency owner.
+    # Keep the validation contract generic so every existing current-baseline
+    # consumer receives the typed blocker without learning a second metadata schema.
+    if ipv6_routing_adjacency_baseline is not None:
+        ipv6_view = _ipv6_routing_consumer_view(
+            ipv6_routing_adjacency_baseline, ipv6_routing_subject_scope)
+        for owner_row in ipv6_view["rows"]:
+            if not isinstance(owner_row, dict):
+                continue
+            host = _strict_protocol_text(owner_row.get("switch"))
+            protocol = _strict_protocol_text(owner_row.get("protocol")) or "IPv6 Routing"
+            peer = _strict_protocol_text(owner_row.get("peer"))
+            state_raw = _strict_protocol_text(owner_row.get("state_raw"))
+            state = state_raw or _strict_protocol_text(owner_row.get("state"))
+            status = _strict_protocol_text(owner_row.get("status"))
+            acceptance = _strict_protocol_text(owner_row.get("acceptance"))
+            if (not host or status not in {
+                    "assessed", "degraded", "review", "not_verified"}
+                    or not acceptance):
+                continue
+            identity = f"{protocol} {peer or 'subject'}"
+            if state:
+                identity += f" state {state}"
+            check = {
+                "assessed": f"{identity} observed baseline",
+                "degraded": f"{identity} degraded baseline",
+                "review": f"{identity} evidence review",
+                "not_verified": f"{identity} baseline not verified",
+            }[status]
+            add(
+                host,
+                "IPv6 Routing",
+                "High" if status == "degraded" else "Medium",
+                check,
+                _strict_protocol_text(owner_row.get("command")),
+                acceptance,
+                ("Observed OSPFv3/IPv6-unicast BGP adjacency evidence is bounded to the "
+                 "default routing instance and does not infer an expected-peer set, route "
+                 "propagation, policy correctness, convergence, simultaneous sampling, or freshness."),
+                evidence_state=status,
+                projection_custody=_strict_protocol_text(
+                    owner_row.get("projection_custody")),
+                source_key=_strict_protocol_text(owner_row.get("source_key")),
+            )
 
     # ---- Endpoint -> gateway reachability: one representative ping per VLAN that has BOTH a gateway and a
     #      client edge switch (an access switch carrying endpoints that is not itself the gateway). ----
@@ -5233,19 +9267,169 @@ def compute_validation_plan(all_interfaces: Dict[str, Dict[str, InterfaceData]],
             "Success rate is 100 percent",
             f"Proves a VLAN {vid} client edge ({edges[0]}) still reaches its default gateway after cutover.")
 
-    # ---- Routing adjacencies must re-establish (a dropped adjacency black-holes the routes it learned). ----
-    for host in sorted(rn):
-        nb = rn.get(host) or {}
-        for proto, cmd, verb in (("ospf", "show ip ospf neighbor", "in FULL"),
-                                 ("eigrp", "show ip eigrp neighbors", "present"),
-                                 ("bgp", "show ip bgp summary", "Established")):
-            peers = sorted({n.get("neighbor") for n in (nb.get(proto) or []) if n.get("neighbor")})
-            if peers:
-                add(host, "Routing", "High",
-                    f"{proto.upper()} adjacencies re-established",
-                    cmd,
-                    f"{len(peers)} neighbor(s) {verb}: {', '.join(peers)}",
-                    f"A dropped {proto.upper()} adjacency black-holes the routes it should exchange.")
+    # ---- Receipt-gated observed routing baseline.  OSPF/EIGRP retain their observed-peer owner.  When the
+    #      configured BGP denominator is supplied, it replaces every observed-only BGP row so a missing
+    #      configured peer cannot disappear from the validation plan.
+    bgp_contract_supplied = bgp_configured_peer_baseline is not None
+    bgp_contract_view: dict = {}
+    if bgp_contract_supplied:
+        bgp_contract_view = validate_bgp_configured_peer_baseline(
+            bgp_configured_peer_baseline, require_current_run=True)
+    routing_baseline = summarize_routing_baseline(routing_neighbors, protocol_assessability)
+    for row in routing_baseline["rows"]:
+        if bgp_contract_supplied and row.get("protocol") == "BGP":
+            continue
+        status = row["status"]
+        if status == "degraded":
+            check = f"{row['protocol']} degraded adjacency baseline"
+        elif status == "review":
+            check = f"{row['protocol']} adjacency evidence review"
+        elif status == "not_verified":
+            check = f"{row['protocol']} adjacency baseline not verified"
+        else:
+            check = f"{row['protocol']} observed adjacency baseline"
+        add(
+            row["switch"], "Routing", "High", check, row["command"], row["acceptance"], row["note"],
+            evidence_state=status,
+            projection_custody=routing_baseline["projection_custody"],
+            source_key=row["source_key"],
+        )
+
+    if bgp_contract_supplied:
+        contract_valid = (
+            bgp_contract_view.get("valid") is True
+            and bgp_contract_view.get("source_bound") is True
+        )
+        contract = bgp_contract_view.get("baseline") or {}
+        contract_rows = list(bgp_contract_view.get("rows") or []) if contract_valid else []
+        blocker_states = {"degraded", "review", "not_verified"}
+
+        for row in contract_rows:
+            if not isinstance(row, dict):
+                continue
+            host = _strict_protocol_text(row.get("switch"))
+            peer = _strict_protocol_text(row.get("peer")) or "<configured-peer>"
+            status = _strict_protocol_text(row.get("status"))
+            if not host or status not in {
+                    "assessed", "degraded", "review", "not_verified",
+                    "administratively_disabled"}:
+                continue
+            check = {
+                "assessed": f"BGP configured peer {peer} bounded IPv4 baseline",
+                "degraded": f"BGP configured peer {peer} degraded baseline",
+                "review": f"BGP configured peer {peer} evidence review",
+                "not_verified": f"BGP configured peer {peer} not verified",
+                "administratively_disabled": f"BGP configured peer {peer} administratively disabled",
+            }[status]
+            command = _strict_protocol_text(row.get("command")) or (
+                "show bgp ipv4 unicast summary" if _is_nxos(_plat(host))
+                else "show ip bgp summary"
+            )
+            add(
+                host,
+                "Routing",
+                "Info" if status == "administratively_disabled" else "High",
+                check,
+                command,
+                _bgp_configured_peer_acceptance(row),
+                ("Configured-peer reconciliation is bounded to a literal IPv4 peer in the default/global "
+                 "IPv4-unicast scope; every active configured peer must be accounted for at runtime."),
+                evidence_state=status,
+                projection_custody=_strict_protocol_text(row.get("projection_custody")),
+                source_key=_strict_protocol_text(row.get("source_key")),
+                bgp_metadata=row,
+            )
+
+        verdict = _strict_protocol_text(contract.get("verdict")).upper()
+        has_blocker_row = any(
+            isinstance(row, dict) and row.get("status") in blocker_states
+            for row in contract_rows
+        )
+        # A failed/tampered phase, or an INDETERMINATE/BLOCKED receipt that cannot attribute its
+        # verdict to a denominator row, must still keep the current baseline gate non-CLEAR.  Scope the
+        # abstention to known devices without copying any unvalidated peer/config leaf.
+        needs_fallback = (
+            not contract_valid
+            or (verdict in {"BLOCKED", "INDETERMINATE"} and not has_blocker_row)
+        )
+        if needs_fallback:
+            if contract_valid:
+                fallback_hosts = {
+                    _strict_protocol_text(row.get("switch"))
+                    for row in (contract.get("coverage") or [])
+                    if isinstance(row, dict) and row.get("subject") is True
+                    and _strict_protocol_text(row.get("status")).lower() in {
+                        "degraded", "review", "not_verified"}
+                    and _strict_protocol_text(row.get("switch"))
+                }
+            else:
+                fallback_hosts = {
+                    _strict_protocol_text(host) for host in set(devs) | set(all_interfaces)
+                    if _strict_protocol_text(host)
+                }
+            if not fallback_hosts and isinstance(bgp_configured_peer_baseline, dict):
+                # Only an invalid/tampered contract needs this last-resort scoping.  A valid global
+                # INDETERMINATE with no subject coverage is neutral and must not become fleet-wide.
+                if not contract_valid:
+                    fallback_hosts = {
+                        _strict_protocol_text(row.get("switch"))
+                        for row in (bgp_configured_peer_baseline.get("rows") or [])
+                        if isinstance(row, dict) and _strict_protocol_text(row.get("switch"))
+                    }
+            for host in sorted(fallback_hosts, key=lambda value: (value.casefold(), value)):
+                placeholder = {
+                    "switch": host,
+                    "peer": "",
+                    "peer_key": "",
+                    "local_as": "",
+                    "configured_remote_as": "",
+                    "activation": "not_verified",
+                    "runtime_observed": False,
+                    "runtime_remote_as": "",
+                    "runtime_state_raw": "",
+                    "runtime_state": "NOT_VERIFIED",
+                    "scope": "default/global IPv4-unicast literal-peer",
+                    "status": "not_verified",
+                }
+                reason = _strict_protocol_text(bgp_contract_view.get("reason")) or (
+                    f"configured-peer owner verdict {verdict or 'INDETERMINATE'} has no attributable blocker row"
+                )
+                add(
+                    host, "Routing", "High", "BGP configured-peer baseline not verified",
+                    "show bgp ipv4 unicast summary" if _is_nxos(_plat(host)) else "show ip bgp summary",
+                    "BGP CONFIGURED PEER NOT VERIFIED — BLOCKER: No validated, source-bound current-run "
+                    "configured-peer baseline authorizes a positive BGP acceptance target. Re-collect the "
+                    "running-config and scoped default/global IPv4 summary before cutover.",
+                    f"The BGP configured-peer analysis failed closed: {reason}.",
+                    evidence_state="not_verified",
+                    projection_custody="embedded_unverified",
+                    source_key="bgp_configured_peer_baseline",
+                    bgp_metadata=placeholder,
+                )
+
+    # ---- Shared receipt-gated STP consistency owner.  Root placement remains a separate claim: a
+    #      clean inconsistent-port baseline does not prove that an intended root stayed in place. ----
+    stp_consistency = summarize_stp_consistency_baseline(
+        protocol_health,
+        protocol_assessability,
+        all_interfaces=all_interfaces,
+        stp_roots=stp,
+    )
+    for row in stp_consistency["rows"]:
+        status = row["status"]
+        check = {
+            "assessed": "STP observed consistency baseline",
+            "degraded": "STP degraded consistency baseline",
+            "review": "STP consistency evidence review",
+            "not_verified": "STP consistency baseline not verified",
+        }[status]
+        add(
+            row["switch"], "STP", "Medium" if status == "assessed" else "High",
+            check, row["command"], row["acceptance"], row["note"],
+            evidence_state=status,
+            projection_custody=row["projection_custody"],
+            source_key=row["source_key"],
+        )
 
     # ---- STP root placement unchanged (a moved root reconverges L2 and shifts forwarding paths). ----
     for host in sorted(stp):
@@ -5257,67 +9441,72 @@ def compute_validation_plan(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                     f"{host} reports 'This bridge is the root' for VLAN {vlan}",
                     "If the root moves on cutover, the L2 topology reconverges and forwarding paths change.")
 
-    # ---- Port-channel / bundle health (a member that doesn't re-bundle drops or halves the uplink). ----
-    # audit-5 NRFU #18: the EXPECTED good state must reflect the REAL pre-cutover bundle, not an idealized
-    # all-(P). compute_protocol_health is the EtherChannel SSOT; a non-Info record means the host ALREADY has a
-    # suspended/down member, so a blanket 'all members (P)' assertion would certify a degraded bundle as healthy
-    # at the post-cutover ATP. Disclose the bad member(s) and raise the check to High.
-    # ...and the same SSOT answers the prior question: was the bundle state OBSERVED AT ALL? A host whose
-    # `show etherchannel/port-channel summary` was never captured emits NO EtherChannel row, so it is
-    # neither in `ec_bad` nor verified -- and it fell into the else-arm below, which BAKES "all members in
-    # (P)/bundled state" into the plan as the pre-cutover known-good baseline (the banner promises exactly
-    # that: "'Expect' is the known-good result captured from the pre-cutover state"). That is a baseline
-    # fabricated from missing evidence, and it certifies at the post-cutover ATP: a member that was already
-    # out of the bundle before the window matches "a deviation is a regression" for nobody. Same coverage
-    # idiom as compute_migration_readiness check 6 (`(gset & pc_hosts) - ec_collected`). `_ph_supplied`
-    # keeps an older caller that passes no protocol_health on the previous behaviour (nothing to join on).
-    _ph_supplied = isinstance(protocol_health, list)
-    _ph = protocol_health if _ph_supplied else []
-    ec_bad: Dict[str, dict] = {}
-    ec_seen: set = set()
-    for r in _ph:
-        if isinstance(r, dict) and r.get("protocol") == "EtherChannel":
-            h = r.get("switch", "")
-            if not h:
-                continue
-            ec_seen.add(h)
-            if str(r.get("severity", "")).strip() in ("High", "Medium") and h not in ec_bad:
-                ec_bad[h] = r
-    pc_hosts: Dict[str, set] = defaultdict(set)
-    for host, ifaces in all_interfaces.items():
-        for port, d in ifaces.items():
-            pc = (getattr(d, "port_channel", "") or "").strip()
-            if pc:
-                pc_hosts[host].add(pc)
-    for host in sorted(pc_hosts):
-        bundles = sorted(pc_hosts[host])
-        cmd = "show port-channel summary" if _plat(host) == "nxos" else "show etherchannel summary"
-        bad = ec_bad.get(host)
-        if bad:
-            _det = str(bad.get("detail") or "").strip()
-            add(host, "Link", "High",
-                "Port-channel members — confirm pre-existing non-bundled member(s)",
-                cmd,
-                f"{len(bundles)} bundle(s) ({', '.join(bundles)}); {bad.get('summary') or 'a member is NOT bundled'}"
-                + (f" — pre-existing: {_det}" if _det else "")
-                + ". Baseline already degraded — do NOT expect all-(P); re-bundle or document the exception before accepting.",
-                "A member already out of the bundle pre-cutover would be silently certified healthy by an 'all members (P)' assertion.")
-        elif _ph_supplied and host not in ec_seen:
-            add(host, "Link", "High",
-                "Port-channel members — pre-cutover bundle state NOT OBSERVED",
-                cmd,
-                f"{len(bundles)} bundle(s) ({', '.join(bundles)}) present in the interface data, but the "
-                "bundle summary was never captured for this device — there is NO pre-cutover baseline to "
-                "compare against. Capture it BEFORE the window and record the real member states; do NOT "
-                "assume all-(P).",
-                "With no observed baseline an 'all members (P)' expectation would certify a member that was "
-                "already suspended/down before the change as a healthy re-bundle.")
-        else:
-            add(host, "Link", "Medium",
-                "Port-channel uplinks bundled",
-                cmd,
-                f"{len(bundles)} bundle(s) ({', '.join(bundles)}) show all members in (P)/bundled state",
-                "A member that doesn't re-bundle after cutover halves uplink capacity or drops the path.")
+    # ---- Receipt-gated observed EtherChannel baseline.  The old path reconstructed an operational
+    #      all-(P) claim from ``interfaces.*.port_channel`` associations, even though that projection
+    #      intentionally drops member flags and can come from configuration alone.  Consume the shared
+    #      group/member owner verbatim.  For older direct callers without a precomputed baseline, build an
+    #      association-only/missing-capture projection so the result fails closed as REVIEW/NOT VERIFIED.
+    baseline_view = validate_etherchannel_baseline(
+        etherchannel_baseline,
+        projection=etherchannel_projection,
+        protocol_assessability=protocol_assessability,
+        devices=devs,
+    ) if etherchannel_projection is not _ETHERCHANNEL_BASELINE_UNSET else (
+        validate_etherchannel_baseline(etherchannel_baseline)
+    )
+    if baseline_view["valid"]:
+        resolved_etherchannel_baseline = etherchannel_baseline
+    elif etherchannel_projection is not _ETHERCHANNEL_BASELINE_UNSET:
+        # The caller supplied the exact current-run source but the carried baseline failed its
+        # source-bound equality check. Recompute from that source so a forged/stale acceptance row
+        # cannot both survive and erase a real SD/D blocker merely because interfaces has no Po leaf.
+        resolved_etherchannel_baseline = summarize_etherchannel_baseline(
+            etherchannel_projection,
+            protocol_assessability,
+            devs,
+        )
+    else:
+        # Legacy direct callers have no raw summary projection. Preserve association-only subject
+        # evidence, but never promote it to an operational member-state baseline.
+        resolved_etherchannel_baseline = summarize_etherchannel_baseline(
+            compute_etherchannel_projection(all_interfaces, {}),
+            protocol_assessability,
+            devs,
+        )
+    for row in resolved_etherchannel_baseline["rows"]:
+        if not isinstance(row, dict):
+            continue
+        host = _strict_protocol_text(row.get("switch"))
+        status = _strict_protocol_text(row.get("status"))
+        if not host or status not in {"assessed", "degraded", "review", "not_verified"}:
+            continue
+        check = {
+            "assessed": "Port-channel observed group/member baseline",
+            "degraded": "Port-channel degraded group/member baseline",
+            "review": "Port-channel group/member evidence review",
+            "not_verified": "Port-channel group/member baseline not verified",
+        }[status]
+        acceptance = _strict_protocol_text(row.get("acceptance"))
+        if not acceptance:
+            status = "not_verified"
+            check = "Port-channel group/member baseline not verified"
+            acceptance = (
+                "ETHERCHANNEL BASELINE NOT VERIFIED — BLOCKER: the shared baseline row is malformed. "
+                "Re-collect the platform EtherChannel summary and verify exact group/member flags before acceptance."
+            )
+        command = _strict_protocol_text(row.get("command")) or (
+            "show port-channel summary" if _is_nxos(_plat(host)) else "show etherchannel summary"
+        )
+        add(
+            host, "Link", "Medium" if status == "assessed" else "High", check,
+            command, acceptance,
+            _strict_protocol_text(row.get("note")) or
+            "Association-only evidence is not an operational member-state baseline.",
+            evidence_state=status,
+            projection_custody=_strict_protocol_text(row.get("projection_custody")) or
+                               resolved_etherchannel_baseline.get("projection_custody", ""),
+            source_key=_strict_protocol_text(row.get("source_key")),
+        )
 
     items.sort(key=lambda it: (_validation_wave_key(it["wave"]), _VALIDATION_RANK.get(it["severity"], 9),
                                it["category"], str(it["device"]), it["check"]))
@@ -5328,6 +9517,290 @@ def compute_validation_plan(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                "by_category": dict(Counter(it["category"] for it in items)),
                "n_high": sum(1 for it in items if it["severity"] in ("Critical", "High"))}
     return {"items": items, "by_wave": dict(by_wave), "summary": summary, "banner": _VALIDATION_BANNER}
+
+
+_CURRENT_BASELINE_MARKERS = {
+    "PRE-CUTOVER DEGRADED — BLOCKER:": "degraded",
+    "PRE-CUTOVER REVIEW — BLOCKER:": "review",
+    "BGP CONFIGURED PEER NOT VERIFIED — BLOCKER:": "not_verified",
+    "FHRP CONFIGURED GROUP NOT VERIFIED — BLOCKER:": "not_verified",
+    "FHRP REDUNDANCY DOMAIN NOT VERIFIED — BLOCKER:": "not_verified",
+    "ROUTING BASELINE NOT VERIFIED — BLOCKER:": "not_verified",
+    "ETHERCHANNEL BASELINE NOT VERIFIED — BLOCKER:": "not_verified",
+    "STP CONSISTENCY BASELINE NOT VERIFIED — BLOCKER:": "not_verified",
+    "VTP SAFETY BASELINE NOT VERIFIED — BLOCKER:": "not_verified",
+    "IPV6 ROUTING BASELINE NOT VERIFIED — BLOCKER:": "not_verified",
+}
+_CURRENT_BASELINE_STATES = {
+    "assessed", "degraded", "review", "not_verified", "administratively_disabled"
+}
+_CURRENT_BASELINE_ROW_LIMIT = 50
+
+
+def classify_current_baseline_item(item: Any) -> str:
+    """Classify one cutover-validation row without interpreting arbitrary prose.
+
+    Current producers publish ``evidence_state``.  The exact acceptance prefixes are retained
+    only for legacy validation plans (notably pre-typed FHRP rows).  A typed state that contradicts
+    a legacy marker is invalid rather than being reconciled optimistically.  The function is total,
+    returns only a bounded vocabulary, and never echoes device-controlled input.
+    """
+    if not isinstance(item, dict):
+        return "invalid"
+    raw_state = item.get("evidence_state", "")
+    if raw_state is None:
+        raw_state = ""
+    if not isinstance(raw_state, str):
+        return "invalid"
+    state = raw_state.strip().casefold()
+    if state and state not in _CURRENT_BASELINE_STATES:
+        return "invalid"
+
+    expect = item.get("expect", "")
+    if not isinstance(expect, str):
+        return "invalid"
+    marker_states = [marker_state for marker, marker_state in _CURRENT_BASELINE_MARKERS.items()
+                     if expect.startswith(marker)]
+    if len(marker_states) > 1:
+        return "invalid"
+    marker_state = marker_states[0] if marker_states else ""
+
+    if state:
+        classified = "clear" if state in {"assessed", "administratively_disabled"} else state
+        if marker_state and marker_state != classified:
+            return "invalid"
+        return classified
+    return marker_state or "clear"
+
+
+def compute_current_baseline_gate(validation_plan: Any) -> dict:
+    """Return the acceptance gate for the *current* snapshot's validation baseline.
+
+    This complements the before/after delta: an unchanged degraded baseline is still a cutover
+    blocker.  The receipt reconciles ``items``, ``by_wave``, and ``summary`` before consuming any
+    row.  Invalid structures therefore abstain with no copied blocker rows or positive counts.
+    """
+    from collections import Counter, defaultdict
+
+    limitations = [
+        "The gate classifies the bounded validation-plan projection; it is not an expected-protocol denominator.",
+        "Marker classification is compatibility-only; current producers should publish typed evidence_state.",
+        f"At most {_CURRENT_BASELINE_ROW_LIMIT} blocker rows are returned; summary counts cover all valid rows.",
+    ]
+
+    def receipt(verdict: str, note: str, *, assessed: bool = False,
+                blockers: Optional[List[dict]] = None, counts: Optional[dict] = None,
+                failures: Optional[List[str]] = None, n_items: int = 0) -> dict:
+        rows = blockers or []
+        by_state = dict((counts or {}).get("by_state") or {
+            "degraded": 0, "review": 0, "not_verified": 0,
+        })
+        by_wave = dict((counts or {}).get("by_wave") or {})
+        n_blockers = sum(by_state.values())
+        return {
+            "schema": "current_baseline_gate/1",
+            "verdict": verdict,
+            "assessed": assessed,
+            "note": note,
+            "summary": {
+                "n_items": n_items,
+                "n_blockers": n_blockers,
+                "n_blockers_returned": len(rows),
+                "blockers_capped": n_blockers > len(rows),
+                "by_state": by_state,
+                "by_wave": by_wave,
+            },
+            "blockers": rows,
+            "integrity": {"valid": not failures, "failures": list(failures or [])[:20]},
+            "limitations": limitations,
+        }
+
+    if validation_plan is None or validation_plan == {}:
+        return receipt(
+            "NOT_ASSESSED",
+            "Current validation baseline was not assessed: no validation plan was present. "
+            "This is not evidence that the current snapshot has no cutover blockers.",
+        )
+    if not isinstance(validation_plan, dict):
+        return receipt(
+            "INDETERMINATE",
+            "Current validation baseline is indeterminate: the validation-plan contract is malformed. "
+            "No malformed row was interpreted as a blocker or an all-clear.",
+            failures=["validation_plan is not an object"],
+        )
+
+    items = validation_plan.get("items")
+    by_wave = validation_plan.get("by_wave")
+    summary = validation_plan.get("summary")
+    failures: List[str] = []
+    if not isinstance(items, list):
+        failures.append("items is not a list")
+    if not isinstance(by_wave, dict):
+        failures.append("by_wave is not an object")
+    if not isinstance(summary, dict):
+        failures.append("summary is not an object")
+    if failures:
+        return receipt(
+            "INDETERMINATE",
+            "Current validation baseline is indeterminate: required plan sections are missing or malformed. "
+            "No malformed row was interpreted as a blocker or an all-clear.",
+            failures=failures,
+        )
+
+    def valid_count(value: Any) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+    required_text = ("device", "platform", "wave", "category", "severity", "check", "command", "expect", "why")
+    optional_text = (
+        "evidence_state", "projection_custody", "source_key",
+        "peer", "peer_key", "local_as", "configured_remote_as", "activation",
+        "runtime_remote_as", "runtime_state_raw", "runtime_state", "scope",
+        "protocol", "interface", "group", "group_key", "configured_vip", "runtime_vip",
+    )
+    optional_bool = ("runtime_observed", "configured")
+
+    def signature(row: Any, where: str) -> Optional[tuple]:
+        if not isinstance(row, dict):
+            failures.append(f"{where} contains a non-object row")
+            return None
+        for key in required_text:
+            if not isinstance(row.get(key), str):
+                failures.append(f"{where} row has a non-text {key}")
+                return None
+        if not all(row[key].strip() for key in ("device", "wave", "category", "severity", "check")):
+            failures.append(f"{where} row is missing a required identity field")
+            return None
+        if row["severity"] not in _VALIDATION_RANK:
+            failures.append(f"{where} row has an unknown severity")
+            return None
+        for key in optional_text:
+            if key in row and row[key] is not None and not isinstance(row[key], str):
+                failures.append(f"{where} row has a non-text {key}")
+                return None
+        for key in optional_bool:
+            if key in row and not isinstance(row[key], bool):
+                failures.append(f"{where} row has a non-boolean {key}")
+                return None
+        classification = classify_current_baseline_item(row)
+        if classification == "invalid":
+            failures.append(f"{where} row has conflicting or invalid evidence state")
+            return None
+        return (
+            tuple(row.get(key, "") or "" for key in (*required_text, *optional_text))
+            + tuple(row.get(key) if key in row else None for key in optional_bool)
+        )
+
+    item_signatures = [signature(row, "items") for row in items]
+    if any(value is None for value in item_signatures):
+        item_counter = Counter()
+    else:
+        item_counter = Counter(item_signatures)
+
+    wave_counter: Counter = Counter()
+    if isinstance(by_wave, dict):
+        for wave, rows in by_wave.items():
+            if not isinstance(wave, str) or not wave.strip():
+                failures.append("by_wave contains an invalid wave key")
+                continue
+            if not isinstance(rows, list):
+                failures.append("by_wave contains a non-list bucket")
+                continue
+            for row in rows:
+                sig = signature(row, "by_wave")
+                if sig is not None:
+                    if row.get("wave") != wave:
+                        failures.append("by_wave row does not match its wave bucket")
+                    wave_counter[sig] += 1
+    if item_counter != wave_counter:
+        failures.append("items and by_wave do not reconcile")
+
+    # Only already-validated text can reach Counter: an unhashable malformed category (list/dict)
+    # must produce an abstaining receipt, not raise while building the reconciliation view.
+    expected_category = Counter(
+        row.get("category") for row in items
+        if isinstance(row, dict) and isinstance(row.get("category"), str)
+    )
+    raw_by_category = summary.get("by_category")
+    if not valid_count(summary.get("n_items")) or summary.get("n_items") != len(items):
+        failures.append("summary.n_items does not reconcile")
+    if not valid_count(summary.get("n_waves")) or summary.get("n_waves") != len(by_wave):
+        failures.append("summary.n_waves does not reconcile")
+    if not valid_count(summary.get("n_high")) or summary.get("n_high") != sum(
+            isinstance(row, dict) and row.get("severity") in ("Critical", "High") for row in items):
+        failures.append("summary.n_high does not reconcile")
+    if (not isinstance(raw_by_category, dict)
+            or any(not isinstance(key, str) or not valid_count(value)
+                   for key, value in raw_by_category.items())
+            or Counter(raw_by_category) != expected_category):
+        failures.append("summary.by_category does not reconcile")
+
+    if failures:
+        # Do not return any copied row/count from an invalid plan: callers receive an abstention,
+        # not an attacker-controlled apparent blocker and never a hostile apparent all-clear.
+        return receipt(
+            "INDETERMINATE",
+            "Current validation baseline is indeterminate: plan items, waves, and summary did not reconcile. "
+            "No malformed row was interpreted as a blocker or an all-clear.",
+            failures=failures,
+        )
+
+    if not items:
+        return receipt(
+            "NOT_ASSESSED",
+            "Current validation baseline was not assessed: the reconciled validation plan contains no subjects. "
+            "This is not evidence that the current snapshot has no cutover blockers.",
+        )
+
+    classified = []
+    counts_by_state = {"degraded": 0, "review": 0, "not_verified": 0}
+    counts_by_wave: Dict[str, int] = defaultdict(int)
+
+    def bounded(value: Any, limit: int) -> str:
+        text = value.strip() if isinstance(value, str) else ""
+        if len(text) <= limit:
+            return text
+        return text[:max(0, limit - 3)] + "..."
+
+    for row in items:
+        state = classify_current_baseline_item(row)
+        if state == "clear":
+            continue
+        counts_by_state[state] += 1
+        counts_by_wave[bounded(row["wave"], 120)] += 1
+        if len(classified) < _CURRENT_BASELINE_ROW_LIMIT:
+            classified.append({
+                "device": bounded(row["device"], 120),
+                "wave": bounded(row["wave"], 120),
+                "category": bounded(row["category"], 80),
+                "severity": bounded(row["severity"], 20),
+                "check": bounded(row["check"], 240),
+                "evidence_state": state,
+                "expect": bounded(row["expect"], 600),
+                "projection_custody": bounded(row.get("projection_custody"), 120),
+                "source_key": bounded(row.get("source_key"), 300),
+            })
+
+    counts = {
+        "by_state": counts_by_state,
+        "by_wave": dict(sorted(counts_by_wave.items(), key=lambda item: _validation_wave_key(item[0]))),
+    }
+    if counts_by_state["degraded"]:
+        verdict = "BLOCKED"
+        note = (f"Current validation baseline BLOCKED: {counts_by_state['degraded']} definite degraded "
+                f"baseline row(s) and {counts_by_state['review'] + counts_by_state['not_verified']} "
+                "review/not-verified row(s) require disposition before cutover acceptance.")
+    elif counts_by_state["review"] or counts_by_state["not_verified"]:
+        verdict = "INDETERMINATE"
+        note = ("Current validation baseline is indeterminate: "
+                f"{counts_by_state['review']} review row(s) and "
+                f"{counts_by_state['not_verified']} not-verified row(s) withhold acceptance.")
+    else:
+        verdict = "CLEAR"
+        note = (f"Current validation baseline CLEAR: all {len(items)} reconciled validation row(s) are free "
+                "of typed or legacy-marker blockers within the bounded validation-plan scope.")
+    return receipt(
+        verdict, note, assessed=True, blockers=classified, counts=counts, n_items=len(items),
+    )
 
 
 # =============================================================================

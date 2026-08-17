@@ -159,7 +159,15 @@ def _join_group_records(gnames, wave_switches, readiness_by_group, seq_by_group,
         # a truthy int OR a plain string, both of which the old `isinstance` branch let through into
         # the list -- crashed the render two sections later.
         for v in _as_dicts(val_by_wave.get(g)):
-            key = (v.get("device"), v.get("command"))
+            # A command is a capture action, not a validation-check identity.  FHRP deliberately emits
+            # one semantic check per VLAN while reusing a single `show standby brief` capture; collapsing
+            # on (device, command) silently removed every VLAN after the first from the §x.6 gate.  Keep
+            # exact semantic duplicates out when groups are joined, but retain distinct VLAN/subtype/check
+            # and acceptance rows.  repr() keeps malformed JSON-like leaves hashable so this join remains
+            # total; all downstream rendering still applies the existing defensive coercion.
+            key = tuple(repr(v.get(field)) for field in (
+                "device", "category", "subtype", "vlan", "check", "command", "expect", "severity",
+            ))
             if key not in seen:
                 seen.add(key)
                 val_items.append(v)
@@ -220,6 +228,44 @@ def _worst_readiness(waves, readiness_by_group, seq_by_group, scen_by_group, val
     return worst
 
 
+def _current_baseline_context(validation_plan, waves):
+    """Return the canonical current-baseline gate plus every unbound blocker.
+
+    The gate owner first reconciles ``items`` / ``by_wave`` / ``summary``. Only after that
+    integrity check succeeds may this document project rows from the plan. A row is bound to a
+    scheduled wave by its declared validation-group label or by device membership; anything else
+    remains an explicit fleet-level blocker instead of disappearing from a per-wave MOP.
+    """
+    from cisco_toolkit.analyze import classify_current_baseline_item, compute_current_baseline_gate
+
+    gate = compute_current_baseline_gate(validation_plan)
+    if _as_dict(gate.get("integrity")).get("valid") is not True:
+        return gate, [], []
+
+    blockers = []
+    for raw in _as_list(_as_dict(validation_plan).get("items")):
+        if not isinstance(raw, dict):
+            continue
+        state = classify_current_baseline_item(raw)
+        if state not in {"degraded", "review", "not_verified"}:
+            continue
+        blockers.append({**raw, "_baseline_state": state})
+
+    scheduled = [
+        (set(_as_strs(switches)), set(_as_strs(group_names)))
+        for _name, switches, _kind, group_names in waves
+    ]
+    unbound = [
+        row for row in blockers
+        if not any(
+            (str(row.get("wave") or "") in groups)
+            or (str(row.get("device") or "") in switches)
+            for switches, groups in scheduled
+        )
+    ]
+    return gate, blockers, unbound
+
+
 def _window_estimate(n_waves: int) -> str:
     """A DERIVED planning figure for the per-window duration — NOT a collected fact, so it is always
     labelled an estimate to confirm with the change owner (coverage-honesty: a planning heuristic must
@@ -264,7 +310,8 @@ def _oob_evidence_for(switches, ifaces_all):
 
 
 def _write_bluf(doc, waves, readiness_by_group, seq_by_group, scen_by_group, val_by_wave,
-                snap, NAVY, RED, _label_run, table, blockers_for=None):
+                snap, NAVY, RED, _label_run, table, blockers_for=None,
+                current_baseline=None, unbound_baseline_blockers=None):
     """Render the Bottom-Line-Up-Front executive summary (unnumbered H1 so the numbered sections are
     untouched). Answer-first decision facts, all snapshot-grounded and coverage-honest.
 
@@ -277,6 +324,11 @@ def _write_bluf(doc, waves, readiness_by_group, seq_by_group, scen_by_group, val
     decision view contradicted the section it sent them to. Both are reported now, each named."""
     n_waves = len(waves)
     gate = _worst_readiness(waves, readiness_by_group, seq_by_group, scen_by_group, val_by_wave)
+    current = _as_dict(current_baseline)
+    current_verdict = str(current.get("verdict") or "NOT_ASSESSED").upper()
+    current_summary = _as_dict(current.get("summary"))
+    n_current_blockers = int(_as_num(current_summary.get("n_blockers")))
+    unbound = _as_dicts(unbound_baseline_blockers)
     fleet_rec = _as_dict(snap.get("migration_scenarios")).get("fleet_recommendation")
     gating = _as_list(_as_dict(snap.get("executive_brief")).get("top_gating"))
     n_fail_checks = sum(1 for _n, sw, _k, gn in waves
@@ -300,15 +352,42 @@ def _write_bluf(doc, waves, readiness_by_group, seq_by_group, scen_by_group, val
     def _v(x):
         return x if x not in (None, "", "—") else "[NOT OBSERVED]"
 
+    if current_verdict == "CLEAR":
+        current_detail = (
+            "CLEAR within the bounded validation-plan scope; this is not cutover authorization. "
+            "Per-wave readiness still applies."
+        )
+        combined_gate = (
+            f"{gate} — the current baseline is CLEAR within its bounded scope; "
+            "do NOT open a window whose wave is NOT READY until its blockers are cleared or risk-accepted."
+            if gate else
+            "HOLD — no per-wave readiness verdict was published; treat every wave as no-go until readiness is assessed."
+        )
+    elif current_verdict == "BLOCKED":
+        current_detail = (
+            f"HOLD — current baseline BLOCKED: {n_current_blockers} degraded/review/not-verified "
+            "validation row(s) require resolution or explicit disposition before any window. "
+            f"{len(unbound)} blocker(s) are not bound to a scheduled wave"
+            + ("; see Unscheduled current-baseline blockers." if unbound else ".")
+        )
+        combined_gate = current_detail
+    else:
+        current_detail = (
+            f"HOLD — current baseline {current_verdict}; the validation-plan contract does not authorize "
+            "an all-clear. Recollect or reconcile before any window."
+        )
+        combined_gate = current_detail
+
     rows = [
         ("What this MOP does",
          f"Cuts the migration over in {n_waves} candidate wave(s), each in its own maintenance window "
          "(clear blockers → baseline → procedure → validate → proceed or roll back)."),
-        ("Go / no-go gate (worst readiness across the waves)",
-         (f"{gate} — do NOT open a window whose wave is NOT READY until its blockers are cleared or "
-          "risk-accepted." if gate
-          else "[NOT OBSERVED] — no per-wave readiness verdict was published; treat every wave as "
-               "no-go until readiness is assessed.")),
+        ("Per-wave worst readiness (scheduled waves)",
+         (str(gate) if gate else
+          "[NOT OBSERVED] — no per-wave readiness verdict was published; treat every wave as no-go "
+          "until readiness is assessed.")),
+        ("Current baseline gate (all validation groups)", current_detail),
+        ("Go / no-go gate", combined_gate),
         ("Open blockers gating the change",
          ((f"{n_blockers} Critical/High blocker(s) (remediation + punch-list) attributed across the "
            "waves — the same set §1's Blockers column totals and each wave's Blockers-to-clear "
@@ -330,10 +409,33 @@ def _write_bluf(doc, waves, readiness_by_group, seq_by_group, scen_by_group, val
     table(["Bottom line", "Detail"], rows, widths=[2.4, 4.3])
     # the go/no-go gate restated as a red one-liner so it cannot be missed
     _label_run(doc.add_paragraph(), "GO/NO-GO:",
-               (f"the change's overall readiness gate is {gate}."
-                if gate else "readiness NOT assessed — treat as no-go.")
+               combined_gate
                + " No window opens without CAB approval, a tested rollback, and the wave's blockers "
                  "cleared or explicitly risk-accepted.", RED)
+
+    if unbound:
+        doc.add_heading("Unscheduled current-baseline blockers", level=2)
+        doc.add_paragraph(
+            f"{len(unbound)} validated current-baseline blocker(s) are not bound to any scheduled wave. "
+            "They remain fleet-level HOLD conditions: re-plan them into scope, resolve them, or explicitly "
+            "disposition them before opening any window. Every row is retained below.")
+        table(
+            ["State", "Validation group", "Device", "Check", "Command", "Acceptance / evidence"],
+            [
+                (
+                    row.get("_baseline_state") or "review",
+                    row.get("wave") or "(unscheduled)",
+                    row.get("device") or "—",
+                    row.get("check") or "Current baseline blocker",
+                    row.get("command") or "—",
+                    str(row.get("expect") or "")
+                    + f"\nCustody: {row.get('projection_custody') or '—'}"
+                    + f" | Source: {row.get('source_key') or '—'}",
+                )
+                for row in unbound
+            ],
+            widths=[0.7, 1.1, 1.0, 1.5, 1.3, 1.8],
+        )
 
 
 def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
@@ -400,9 +502,35 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
     scen_by_group = {d.get("group"): d
                      for d in (_as_dict(r) for r in _as_list(_as_dict(snap.get("migration_scenarios")).get("per_group")))}
     val_by_wave = _as_dict(_as_dict(snap.get("validation_plan")).get("by_wave"))
+    current_baseline, _all_baseline_blockers, unbound_baseline_blockers = _current_baseline_context(
+        snap.get("validation_plan"), waves)
+    current_baseline_verdict = str(current_baseline.get("verdict") or "NOT_ASSESSED").upper()
     fi_by_host = {d.get("host"): d for d in (_as_dict(r) for r in _as_list(snap.get("failure_impact")))}
     rem_items = [_as_dict(r) for r in _as_list(_as_dict(snap.get("remediation_plan")).get("items"))]
     punchlist = [_as_dict(r) for r in _as_list(snap.get("punchlist"))]
+
+    def _validation_blocker(it):
+        state = str(it.get("evidence_state") or "").strip().lower()
+        expected = str(it.get("expect") or "").strip().upper()
+        return state in {"degraded", "review", "not_verified"} or expected.startswith(
+            ("PRE-CUTOVER DEGRADED — BLOCKER:", "PRE-CUTOVER REVIEW — BLOCKER:",
+             "FHRP CONFIGURED GROUP NOT VERIFIED — BLOCKER:",
+             "ROUTING BASELINE NOT VERIFIED — BLOCKER:",
+             "ETHERCHANNEL BASELINE NOT VERIFIED — BLOCKER:")
+        )
+
+    def _validation_acceptance(it):
+        acceptance = str(it.get("expect") or "")
+        state = str(it.get("evidence_state") or "").strip()
+        custody = str(it.get("projection_custody") or "").strip()
+        source = str(it.get("source_key") or "").strip()
+        if not (state or custody or source):
+            return acceptance
+        if custody == "embedded_unverified":
+            custody = "embedded_unverified (embedded projection; integrity unverified)"
+        evidence = (f"Evidence state: {state or '—'} | Projection custody: {custody or '—'} | "
+                    f"Source: {source or '—'}")
+        return acceptance + ("\n" if acceptance else "") + evidence
 
     def _blockers_for(switches):
         sw = set(switches)
@@ -451,7 +579,9 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
     # one source of truth), the recommendation + top-gating are the engine's. A fact the snapshot did not
     # publish reads "[NOT OBSERVED]", never a fabricated value (coverage-honesty).
     _write_bluf(doc, waves, readiness_by_group, seq_by_group, scen_by_group, val_by_wave,
-                snap, NAVY, RED, _label_run, table, blockers_for=_blockers_for)
+                snap, NAVY, RED, _label_run, table, blockers_for=_blockers_for,
+                current_baseline=current_baseline,
+                unbound_baseline_blockers=unbound_baseline_blockers)
     doc.add_page_break()
 
     # ---- document control (AS-style front matter; unnumbered so the wave sections are untouched) ----
@@ -687,6 +817,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
             ("Devices in scope", ", ".join(switches) or "—"),
             ("Endpoint MACs (apportioned)", r.get("endpoints", "—")),
             ("Readiness verdict", verdict),
+            ("Fleet current baseline verdict", current_baseline_verdict),
             ("Blocking / warning checks", f"{r.get('n_fail', 0)} / {r.get('n_warn', 0)}"),
             ("Cutover strategy", strat_cell),
             ("Max blast radius (endpoints stranded if a device is lost mid-move)",
@@ -753,7 +884,13 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
              (f"readiness {verdict}; {len(pl)} Critical/High punch-list + {len(rem)} remediation item(s) "
               "attributed (see §blockers) — clear or risk-accept before proceeding")
              if high_risk else
-             f"readiness {verdict}; no Critical/High blocker attributed to this wave's devices."),
+              f"readiness {verdict}; no Critical/High blocker attributed to this wave's devices."),
+            ("Current baseline gate across every validation group", "Evidence",
+             ("CLEAR within the bounded validation-plan scope; this is not cutover authorization. "
+              "Per-wave readiness still applies."
+              if current_baseline_verdict == "CLEAR" else
+              f"HOLD — current baseline {current_baseline_verdict}; do not open this or any other window "
+              "until the validation-plan gate is reconciled and every blocker is resolved or dispositioned.")),
         ]
         if high_risk:
             chk_rows.append((
@@ -802,8 +939,9 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         # 2.x.3 pre-cutover baseline capture
         doc.add_heading(f"{wi}.3 Pre-cutover baseline capture", level=2)
         doc.add_paragraph(
-            "Capture and SAVE the output of these commands before any change, so 'good' is defined by "
-            "the pre-change state and the post-cutover checks have a baseline to compare against.")
+            "Capture and SAVE the output of these commands before any change, so the pre-change state is "
+            "recorded and each post-cutover check can be evaluated against its stated acceptance criterion. "
+            "A captured degraded state is evidence to resolve or disposition, not a definition of 'good'.")
         # The CONFIGURATION capture is unconditional, and must stay that way: §x.7's rollback says
         # "re-apply the pre-change configuration captured in §x.3". Before this, that artifact only
         # existed on the FALLBACK branch below -- when the snapshot carried a validation plan (the
@@ -827,17 +965,27 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         if cap_cmds:
             doc.add_paragraph("State baseline for the post-cutover comparison in "
                               f"§{wi}.6 (in addition to the configuration backup above):")
-            shown = cap_cmds[:20]
+            blocker_capture_keys = {
+                (it.get("device"), it.get("command")) for it in val_items
+                if _validation_blocker(it) and it.get("command")
+            }
+            blocker_captures = [row for row in cap_cmds if row in blocker_capture_keys]
+            ordinary_captures = [row for row in cap_cmds if row not in blocker_capture_keys]
+            # An evidence-state blocker without its pre-change command capture cannot be dispositioned. Retain
+            # every such capture outside the ordinary 20-command display allowance.
+            shown = blocker_captures + ordinary_captures[:20]
             table(["Device", "Command to capture"], shown, widths=[1.8, 4.6])
             # Disclose the cap. §x.6 renders up to 40 checks and tells the engineer every one must
             # match "its captured baseline"; silently listing 20 baselines against 40 checks makes the
             # surplus either a guess or an unresolvable comparison. Every other capped table in this
             # writer discloses its overflow; this one did not.
-            if len(cap_cmds) > len(shown):
+            omitted_captures = len(ordinary_captures) - min(len(ordinary_captures), 20)
+            if omitted_captures:
                 doc.add_paragraph(
-                    f"…and {len(cap_cmds) - len(shown)} further device/command pair(s) not listed "
+                    f"…and {omitted_captures} further ordinary device/command pair(s) not listed "
                     f"here — capture the full validation-plan set for this wave, not only the "
-                    f"{len(shown)} shown, or the §{wi}.6 checks beyond that point have no baseline.")
+                    f"{len(shown)} shown, or the §{wi}.6 checks beyond that point have no baseline. "
+                    "Every evidence-state blocker capture is retained above.")
         else:
             steps([f"On each of {', '.join(switches) or 'the wave devices'}: also capture "
                    "'show ip interface brief', 'show cdp neighbors', "
@@ -977,7 +1125,8 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                          "in-window checks match the §" + f"{wi}.3 baseline."))
         proc.append(("[POST] Run §" + f"{wi}.6 post-cutover validation in full before declaring the wave "
                      "complete.",
-                     "every check matches its captured baseline."))
+                     "every check meets its stated acceptance criterion; reproducing a degraded baseline "
+                     "or leaving an evidence gap unresolved is not acceptance."))
         if pure_mbb:
             # Ordered strictly AFTER the §x.6 gate: until §x.6 passes, the legacy path IS the rollback,
             # and §x.7's non-disruptive fail-back is only true while it is still standing.
@@ -993,20 +1142,39 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         # 2.x.6 post-cutover validation (reuse the existing validation plan)
         doc.add_heading(f"{wi}.6 Post-cutover validation (go/no-go)", level=2)
         if val_items:
-            doc.add_paragraph("Every check must pass. A failure that cannot be corrected in-window "
-                              "triggers the rollback in §" + f"{wi}.7.")
-            # surface the severity already on each validation item and order High-first, so the
-            # most critical go/no-go checks survive the 40-row display cap (the rationale `why` and
-            # the full set remain in the Cutover Validation workbook sheet).
+            doc.add_paragraph("Every acceptance condition must pass. A PRE-CUTOVER DEGRADED row is a blocker "
+                              "to resolve or explicitly risk-accept before the window; matching that degraded "
+                              "state after cutover is not success. A PRE-CUTOVER REVIEW row is also a blocker "
+                              "and requires live simultaneous verification. Any BASELINE NOT VERIFIED row is "
+                              "a blocker, not an acceptance target: re-collect the protocol evidence or explicitly "
+                              "disposition the gap before the window. Evidence-bearing rows disclose evidence state, "
+                              "embedded-projection custody, and source. A failure that cannot be corrected "
+                              "in-window triggers the rollback in §" + f"{wi}.7.")
+            # Every FHRP row is a VLAN-specific cutover gate and must remain executable in the MOP;
+            # a shared summary command is only a capture optimization, not permission to omit a VLAN.
+            # Keep those rows outside the bounded allowance for the other categories, then order the
+            # combined set High-first.  The rationale `why` and any omitted non-FHRP rows remain in the
+            # Cutover Validation workbook sheet.
             _vr = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
-            vshow = sorted(val_items, key=lambda it: _vr.get(it.get("severity"), 5))[:40]
-            table(["Sev", "Category", "Device", "Check", "Command", "Expected (good) result"],
+            _ranked = sorted(val_items, key=lambda it: _vr.get(it.get("severity"), 5))
+            _fhrp_rows = [it for it in _ranked if str(it.get("category") or "").upper() == "FHRP"]
+            _other_rows = [it for it in _ranked if str(it.get("category") or "").upper() != "FHRP"]
+            _evidence_blockers = [it for it in _other_rows if _validation_blocker(it)]
+            _generic_rows = [it for it in _other_rows if not _validation_blocker(it)]
+            _non_fhrp_cap = 40
+            vshow = sorted(
+                _fhrp_rows + _evidence_blockers + _generic_rows[:_non_fhrp_cap],
+                key=lambda it: _vr.get(it.get("severity"), 5),
+            )
+            table(["Sev", "Category", "Device", "Check", "Command", "Observed baseline / acceptance"],
                   [(it.get("severity") or "—", it.get("category"), it.get("device"), it.get("check"),
-                    it.get("command"), it.get("expect")) for it in vshow],
+                    it.get("command"), _validation_acceptance(it)) for it in vshow],
                   widths=[0.5, 0.9, 0.9, 1.6, 1.4, 1.5])
-            if len(val_items) > 40:
-                doc.add_paragraph(f"… and {len(val_items) - 40} more check(s); full set in the Cutover "
-                                  "Validation workbook sheet.")
+            _n_omitted = len(_generic_rows) - min(len(_generic_rows), _non_fhrp_cap)
+            if _n_omitted:
+                doc.add_paragraph(f"… and {_n_omitted} more ordinary non-FHRP check(s); full set in the "
+                                  "Cutover Validation workbook sheet. Every FHRP VLAN gate and evidence-state "
+                                  "blocker is retained above.")
         else:
             doc.add_paragraph("No machine-generated validation checks for this wave. As a minimum, verify "
                               "gateway reachability (ping the SVI/HSRP vIP), FHRP roles, routing "

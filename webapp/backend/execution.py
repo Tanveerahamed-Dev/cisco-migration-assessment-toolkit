@@ -83,6 +83,24 @@ def _unique_groups(plan_waves: List[Dict[str, Any]]) -> List[str]:
 def start_run(snap: Dict[str, Any], label: str, operator: str) -> Dict[str, Any]:
     """Materialize the snapshot's cutover plan into a frozen, executable run state."""
     plan = cutover.build_plan(snap)
+    raw_plan_blockers = [
+        row for row in plan.get("baseline_blockers", []) if isinstance(row, dict)
+    ]
+    # The plan deliberately shares each bound row object between the fleet list and its wave view.
+    # Resolve that occurrence binding before the JSON-backed execution state copies the rows (where
+    # object identity is lost). A blocker omitted from every scheduled wave remains a fleet-level
+    # acceptance blocker and must survive the execution/PIR chain in full, outside diagnostic caps.
+    bound_blocker_ids = {
+        id(row)
+        for wave in plan.get("waves", [])
+        if isinstance(wave, dict)
+        for row in wave.get("baseline_blockers", [])
+        if isinstance(row, dict)
+    }
+    frozen_plan_blockers = [dict(row) for row in raw_plan_blockers]
+    frozen_unbound_blockers = [
+        dict(row) for row in raw_plan_blockers if id(row) not in bound_blocker_ids
+    ]
     group_names = _unique_groups(plan["waves"])
     waves: List[Dict[str, Any]] = []
     for w, group_name in zip(plan["waves"], group_names):
@@ -98,13 +116,24 @@ def start_run(snap: Dict[str, Any], label: str, operator: str) -> Dict[str, Any]
             "est_window_minutes": w["est_window_minutes"],
             "est_window_label": w["est_window_label"],
             "blockers": w["blockers"],
+            "current_baseline": w.get("current_baseline", {}),
+            "baseline_blockers": w.get("baseline_blockers", []),
             "steps": [{
                 "phase": s["phase"], "action": s["action"],
                 "status": "pending", "at": None, "by": "", "note": "",
             } for s in w["run_of_show"]],
             "checks": [{
+                "device": c.get("device", ""), "wave": c.get("wave", group_name),
                 "category": c["category"], "severity": c["severity"], "check": c["check"],
                 "command": c["command"], "expect": c["expect"],
+                # Freeze the start-snapshot authority alongside the observed check. A later
+                # upload/recollection must start a new run; it cannot silently rewrite this record.
+                "evidence_state": c.get("evidence_state", ""),
+                "projection_custody": c.get("projection_custody", ""),
+                "source_key": c.get("source_key", ""),
+                "why": c.get("why", ""),
+                "baseline_state": c.get("baseline_state", ""),
+                "baseline_blocker": bool(c.get("baseline_blocker")),
                 "result": "pending", "observed": "", "at": None, "by": "",
             } for c in w["validation"]],
             "closeout": {"decision": None, "at": None, "by": "", "note": ""},
@@ -117,6 +146,8 @@ def start_run(snap: Dict[str, Any], label: str, operator: str) -> Dict[str, Any]
         "started_at": _now(),
         "ended_at": None,
         "plan_summary": plan["summary"],
+        "baseline_blockers": frozen_plan_blockers,
+        "unbound_baseline_blockers": frozen_unbound_blockers,
         "waves": waves,
         "events": [],
     }
@@ -181,6 +212,11 @@ def apply_check(state: Dict[str, Any], group: str, index: int, result: str,
     if result not in CHECK_RESULTS:
         raise ValueError(f"result must be one of {CHECK_RESULTS}")
     check = _item(_live_wave(state, group)["checks"], index)
+    if result == "pass" and check.get("baseline_blocker"):
+        raise ValueError(
+            "This check was a current-baseline blocker when the run started and cannot be recorded "
+            "as a plain PASS. Re-collect a clear snapshot and start a new execution run."
+        )
     check["result"] = result
     check["observed"] = observed.strip()
     check["at"] = _now() if result != "pending" else None
@@ -224,6 +260,14 @@ def _derive_outcome(state: Dict[str, Any], status: str) -> str:
     # requires positive evidence; this one required none. Nothing was implemented, so the honest outcome
     # is PARTIALLY IMPLEMENTED — the same verdict as a run whose waves did not all close COMPLETE.
     if not decisions or any(d != "COMPLETE" for d in decisions):
+        return OUTCOME_PARTIAL
+    # New execution records freeze the shared current-baseline verdict in plan_summary. CLEAR is the
+    # only state that can authorize a clean-success outcome; BLOCKED, INDETERMINATE, and NOT_ASSESSED
+    # all require a fresh/recollected snapshot and a new run. Legacy records have no such field and
+    # retain their historical outcome rules for backward compatibility.
+    current_baseline = state.get("plan_summary", {}).get("current_baseline") \
+        if isinstance(state.get("plan_summary"), dict) else None
+    if isinstance(current_baseline, dict) and current_baseline.get("verdict") != "CLEAR":
         return OUTCOME_PARTIAL
     # A signed closeout is not evidence that the frozen run-of-show and validations actually
     # happened. Every wave needs positive required work, and every item must be actioned, before

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
-import { api, ExecCheck, ExecStep, ExecutionState, ExecWave, gateColor, SnapshotMeta } from "../api";
+import { api, CurrentBaselineBlocker, CurrentBaselineGate, ExecCheck, ExecStep, ExecutionState, ExecWave, gateColor, SnapshotMeta } from "../api";
 import { CountUp, ErrorBox, Loading, SevChip, useAsync, useToast } from "../components/ui";
 
 /* The cutover execution console (war room): the snapshot's gated run-of-show, made live.
@@ -24,6 +24,161 @@ const EVENT_KIND_COLOR: Record<string, string> = {
   deviation: "var(--crit)", finish: "var(--accent)", run: "var(--accent)",
   gate: "var(--ok)", check: "var(--ok)", step: "var(--text-dim)", note: "var(--watch)",
 };
+
+const BASELINE_COLOR: Record<string, string> = {
+  BLOCKED: "var(--crit)", INDETERMINATE: "var(--watch)",
+  NOT_ASSESSED: "var(--text-faint)", CLEAR: "var(--ok)",
+};
+
+function FrozenBaselineGate({ gate, blockerCount, scope }: {
+  gate?: CurrentBaselineGate;
+  blockerCount?: number;
+  scope: string;
+}) {
+  if (!gate) return null; // Legacy execution records pre-date this frozen receipt.
+  const verdict = gate.verdict || "NOT_ASSESSED";
+  const color = BASELINE_COLOR[verdict] || "var(--text-dim)";
+  const n = blockerCount ?? gate.n_blockers ?? gate.summary?.n_blockers ?? 0;
+  return (
+    <div role="status" data-testid={`execution-baseline-${scope}`}
+      style={{ border: `1px solid ${color}`, borderRadius: 8, padding: "8px 10px", marginTop: 10, background: verdict === "BLOCKED" ? "var(--crit-soft)" : verdict === "INDETERMINATE" ? "var(--watch-soft)" : undefined }}>
+      <div className="spread" style={{ gap: 8 }}>
+        <div>
+          <b>Start-snapshot baseline · {scope}</b>
+          <div className="faint" style={{ fontSize: 10.5, marginTop: 2 }}>Frozen when this execution record was created</div>
+        </div>
+        <span className="chip" data-testid={`execution-baseline-verdict-${scope}`} style={{ color, borderColor: color }}>
+          <span className="dot" /> {verdict.replaceAll("_", " ")}
+        </span>
+      </div>
+      {gate.note && <div className="dim" style={{ fontSize: 11.5, marginTop: 5 }}>{gate.note}</div>}
+      {verdict === "CLEAR" ? (
+        <div className="faint" style={{ fontSize: 10.5, marginTop: 4 }}>CLEAR is bounded to the frozen validation evidence; it is not authorization by itself.</div>
+      ) : (
+        <div style={{ color, fontSize: 11.5, marginTop: 4 }}>
+          {n} blocker(s). This run cannot turn a non-clear start snapshot into a plain successful acceptance; re-collect and start a new run.
+        </div>
+      )}
+    </div>
+  );
+}
+
+type BaselineReceiptRow = {
+  device?: string;
+  wave?: string;
+  category?: string;
+  check?: string;
+  expect?: string;
+  source_key?: string;
+  evidence_state?: string;
+  baseline_state?: string;
+  baseline_blocker?: boolean;
+};
+
+function baselineReceiptKey(row: BaselineReceiptRow): string {
+  return [row.device, row.wave, row.category, row.check, row.source_key, row.expect]
+    .map((part) => String(part || "").trim())
+    .join("\u0000");
+}
+
+function checkIsBaselineBlocker(row: BaselineReceiptRow): boolean {
+  const state = String(row.baseline_state || row.evidence_state || "").trim().toLowerCase();
+  return row.baseline_blocker === true || ["degraded", "review", "not_verified"].includes(state);
+}
+
+function boundExecutionBlockers(wave: ExecWave): BaselineReceiptRow[] {
+  if (Array.isArray(wave.baseline_blockers)) return wave.baseline_blockers;
+  if (Array.isArray(wave.current_baseline?.blockers)) return wave.current_baseline.blockers;
+  return wave.checks.filter(checkIsBaselineBlocker);
+}
+
+function frozenUnboundBlockers(ex: ExecutionState): CurrentBaselineBlocker[] {
+  // New records freeze an explicit occurrence-preserving subset. Multiset subtraction is the
+  // compatibility path for records that froze only the full plan-level list.
+  if (Array.isArray(ex.unbound_baseline_blockers)) return ex.unbound_baseline_blockers;
+  const allRows = Array.isArray(ex.baseline_blockers)
+    ? ex.baseline_blockers
+    : Array.isArray(ex.plan_summary?.current_baseline?.blockers)
+      ? ex.plan_summary.current_baseline.blockers : [];
+  const boundCounts = new Map<string, number>();
+  ex.waves.forEach((wave) => boundExecutionBlockers(wave).forEach((row) => {
+    const key = baselineReceiptKey(row);
+    boundCounts.set(key, (boundCounts.get(key) || 0) + 1);
+  }));
+  return allRows.filter((row) => {
+    const key = baselineReceiptKey(row);
+    const remaining = boundCounts.get(key) || 0;
+    if (!remaining) return true;
+    boundCounts.set(key, remaining - 1);
+    return false;
+  });
+}
+
+function FrozenUnboundBaselineReceipt({ blockers, reportedCount, diagnosticCapped }: {
+  blockers: CurrentBaselineBlocker[];
+  reportedCount?: number;
+  diagnosticCapped?: boolean;
+}) {
+  const reported = typeof reportedCount === "number" ? reportedCount : blockers.length;
+  if (!blockers.length && !reported) return null;
+  return (
+    <section aria-label="Frozen unbound start-snapshot blockers" data-testid="execution-unbound-baseline-receipt"
+      style={{ border: "1px solid var(--watch)", borderRadius: 8, marginTop: 10, overflow: "hidden" }}>
+      <div className="spread" style={{ gap: 8, padding: "8px 10px", background: "var(--watch-soft)" }}>
+        <div>
+          <b>Unbound start-snapshot blockers</b>
+          <div className="faint" style={{ fontSize: 10.5, marginTop: 2 }}>
+            Frozen at run creation · outside scheduled execution waves
+          </div>
+        </div>
+        <span className="chip" style={{ color: "var(--watch)", borderColor: "var(--watch)" }}>
+          {Math.max(reported, blockers.length)} UNBOUND
+        </span>
+      </div>
+      <div className="dim" style={{ fontSize: 11.5, padding: "8px 10px" }}>
+        These rows could not be assigned to an execution wave, so they are not actionable wave checks.
+        They remain fleet acceptance blockers. REVIEW and NOT VERIFIED withhold acceptance without asserting a definite fault.
+      </div>
+      {blockers.map((row, index) => {
+        const state = String(row.baseline_state || row.evidence_state || "review").trim().toLowerCase();
+        const tone = state === "degraded" ? "var(--crit)" : "var(--watch)";
+        return (
+          <div data-testid="execution-unbound-baseline-blocker"
+            key={`${baselineReceiptKey(row)}\u0000${index}`}
+            style={{ borderTop: "1px solid var(--border-faint)", borderLeft: `3px solid ${tone}`, padding: "9px 10px" }}>
+            <div className="row-flex" style={{ gap: 7, alignItems: "baseline", flexWrap: "wrap" }}>
+              <span className="chip" style={{ color: tone, borderColor: tone }}>{state.replaceAll("_", " ").toUpperCase()}</span>
+              {row.device && <span className="chip mono">{row.device}</span>}
+              {row.category && <span className="faint" style={{ fontSize: 11 }}>{row.category}</span>}
+              <b style={{ fontSize: 12.5 }}>{row.check || "Current baseline blocker"}</b>
+            </div>
+            {row.command && <div className="cmd" style={{ marginTop: 5 }}>{row.command}</div>}
+            {row.expect && (
+              <div className="dim" style={{ fontSize: 11.5, marginTop: 4 }}>
+                <b style={{ color: "var(--text-dim)" }}>Observed baseline / acceptance:</b> {row.expect}
+              </div>
+            )}
+            {row.why && <div className="dim" style={{ fontSize: 11.5, marginTop: 3 }}>{row.why}</div>}
+            <div className="faint" style={{ fontSize: 10.5, marginTop: 5 }}>
+              Evidence: <span className="mono">{state}</span>
+              {row.projection_custody && <> · custody: <span className="mono">{row.projection_custody}</span></>}
+              {row.source_key && <> · source: <span className="mono">{row.source_key}</span></>}
+            </div>
+          </div>
+        );
+      })}
+      {reported > blockers.length ? (
+        <div style={{ color: "var(--crit)", fontSize: 11.5, padding: "8px 10px", borderTop: "1px solid var(--border-faint)" }}>
+          The frozen summary reports {reported} unbound blocker(s), but only {blockers.length} row(s) are present. Do not interpret omitted detail as clear evidence.
+        </div>
+      ) : diagnosticCapped ? (
+        <div className="faint" style={{ fontSize: 10.5, padding: "7px 10px", borderTop: "1px solid var(--border-faint)" }}>
+          The diagnostic gate sample was capped; this execution receipt retains all {blockers.length} unbound operational row(s).
+        </div>
+      ) : null}
+    </section>
+  );
+}
 
 export function fmtClock(totalSeconds: number): string {
   const h = Math.floor(totalSeconds / 3600);
@@ -103,16 +258,34 @@ function CheckRow({ c, i, live, onSet }:
   { c: ExecCheck; i: number; live: boolean; onSet: (index: number, result: string, observed: string) => void }) {
   const [editing, setEditing] = useState(false);
   const [observed, setObserved] = useState(c.observed);
+  const baselineState = String(c.baseline_state || c.evidence_state || "").trim().toLowerCase();
+  const baselineBlocker = c.baseline_blocker === true
+    || ["degraded", "review", "not_verified"].includes(baselineState);
   const resColor = c.result === "pass" ? "var(--ok)" : c.result === "fail" ? "var(--crit)" : "var(--text-faint)";
   return (
-    <div className="checkrow">
+    <div className="checkrow" data-testid={baselineBlocker ? "execution-baseline-blocker" : undefined}
+      style={baselineBlocker ? { borderLeft: `3px solid ${baselineState === "degraded" ? "var(--crit)" : "var(--watch)"}`, paddingLeft: 8, background: baselineState === "degraded" ? "var(--crit-soft)" : "var(--watch-soft)" } : undefined}>
       <SevChip sev={c.severity} />
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 12.5 }}><b>{c.check}</b></div>
+        <div className="row-flex" style={{ gap: 6, flexWrap: "wrap" }}>
+          <b style={{ fontSize: 12.5 }}>{c.check}</b>
+          {baselineBlocker && (
+            <span className="chip" style={{ color: baselineState === "degraded" ? "var(--crit)" : "var(--watch)" }}>
+              START-SNAPSHOT {baselineState.replaceAll("_", " ").toUpperCase()} BLOCKER
+            </span>
+          )}
+        </div>
         <div className="cmd" style={{ marginTop: 4 }}>{c.command}</div>
         <div className="dim" style={{ fontSize: 11, marginTop: 3 }}>
-          <b style={{ color: "var(--text-dim)" }}>expect:</b> {c.expect}
+          <b style={{ color: "var(--text-dim)" }}>{baselineBlocker ? "observed baseline / acceptance:" : "expect:"}</b> {c.expect}
         </div>
+        {baselineBlocker && (
+          <div className="faint" style={{ fontSize: 10.5, marginTop: 4 }}>
+            Evidence: <span className="mono">{baselineState}</span>
+            {c.projection_custody && <> · custody: <span className="mono">{c.projection_custody}</span></>}
+            {c.source_key && <> · source: <span className="mono">{c.source_key}</span></>}
+          </div>
+        )}
         {c.result !== "pending" && !editing && (
           <div className="meta" style={{ marginTop: 4 }}>
             <b style={{ color: resColor, textTransform: "uppercase" }}>{c.result}</b>
@@ -135,7 +308,10 @@ function CheckRow({ c, i, live, onSet }:
       </div>
       {live && !editing && (
         <div className="row-flex" style={{ gap: 5, flex: "none" }}>
-          <button className={`vbtn pass ${c.result === "pass" ? "on" : ""}`} onClick={() => onSet(i, "pass", "")}>PASS</button>
+          <button className={`vbtn pass ${c.result === "pass" ? "on" : ""}`}
+            disabled={baselineBlocker}
+            title={baselineBlocker ? "A start-snapshot blocker cannot be recorded as plain PASS; re-collect a clear snapshot and start a new run" : undefined}
+            onClick={() => onSet(i, "pass", "")}>{baselineBlocker ? "PASS BLOCKED" : "PASS"}</button>
           <button className={`vbtn fail ${c.result === "fail" ? "on" : ""}`}
             onClick={() => { setObserved(c.observed); setEditing(true); }}>FAIL</button>
           <button className={`vbtn na ${c.result === "na" ? "on" : ""}`} onClick={() => onSet(i, "na", "")}>N/A</button>
@@ -192,9 +368,11 @@ function WaveRunCard({ w, waveState, live, act }: {
       {w.gate === "NO-GO" && !closed && (
         <div className="nogowarn ros-reveal">
           The plan gated this wave <b>NO-GO</b> ({w.blockers.filter((b) => b.status === "fail").length} failing
-          check(s)). Executing it anyway is an override — confirm the blockers are cleared and scribe why.
+          readiness check(s) · {w.baseline_blockers?.length || 0} start-snapshot baseline blocker(s)). Executing it anyway is an override — confirm the blockers are cleared and scribe why.
         </div>
       )}
+
+      <FrozenBaselineGate gate={w.current_baseline} blockerCount={w.baseline_blockers?.length} scope={w.group} />
 
       <div className="exec-steps" style={{ marginTop: 10 }}>
         {w.steps.map((s, i) => (
@@ -307,6 +485,7 @@ export default function ExecutionPage() {
   if (loading && !ex) return <div className="container"><Loading label="Opening the war room…" /></div>;
   if (error && !ex) return <div className="container"><ErrorBox msg={error} /></div>;
   if (!ex) return null;
+  const unboundBaselineBlockers = frozenUnboundBlockers(ex);
 
   // Mutations are serialized through one promise chain: rapid clicks otherwise race on separate
   // connections, and an out-of-order response would setEx an older state (reverting ticks and
@@ -342,11 +521,15 @@ export default function ExecutionPage() {
     // PIR reads PARTIALLY IMPLEMENTED. Count every wave that will NOT satisfy the backend's
     // COMPLETE test, not just the un-closed ones.
     const notComplete = ex.waves.filter((w) => w.closeout.decision !== "COMPLETE").length;
+    const frozenBaseline = ex.plan_summary?.current_baseline;
+    const baselineForcesPartial = !!frozenBaseline && frozenBaseline.verdict !== "CLEAR";
     const msg = status === "aborted"
       ? "Abort this run? The record is kept and the PIR will show ABORTED."
       : open ? `${open} wave(s) are not closed out — finishing now derives a ${predicted} outcome. Finish anyway?`
         : notComplete
           ? `${notComplete} wave(s) closed out as something other than COMPLETE — finishing now derives a ${predicted} outcome. Finish anyway?`
+          : baselineForcesPartial
+            ? `The start-snapshot current-baseline gate is ${frozenBaseline.verdict}. Finishing now derives a PARTIALLY IMPLEMENTED outcome; re-collect a CLEAR snapshot and start a new run for successful acceptance. Finish anyway?`
           : "Finish this run? It becomes read-only and the outcome is derived for the PIR.";
     if (!window.confirm(msg)) return;
     apply(() => api.execFinish(eid, status, "", operator));
@@ -387,6 +570,14 @@ export default function ExecutionPage() {
         )}
       </div>
 
+      <FrozenBaselineGate gate={ex.plan_summary?.current_baseline}
+        blockerCount={ex.plan_summary?.n_baseline_blockers} scope="run" />
+      <FrozenUnboundBaselineReceipt
+        blockers={unboundBaselineBlockers}
+        reportedCount={ex.plan_summary?.n_unbound_baseline_blockers}
+        diagnosticCapped={ex.plan_summary?.baseline_blockers_capped}
+      />
+
       {/* console strip: clock + progress + actions */}
       <div className="panel execbar">
         <div>
@@ -419,7 +610,12 @@ export default function ExecutionPage() {
         </a>
         {live && (
           <>
-            <button className="btn primary" onClick={() => finish("completed")}>■ Finish run</button>
+            <button className="btn primary" onClick={() => finish("completed")}
+              title={ex.plan_summary?.current_baseline && ex.plan_summary.current_baseline.verdict !== "CLEAR"
+                ? "Finishing this frozen non-clear baseline can only derive PARTIALLY IMPLEMENTED"
+                : undefined}>
+              ■ Finish run{ex.plan_summary?.current_baseline && ex.plan_summary.current_baseline.verdict !== "CLEAR" ? " · partial" : ""}
+            </button>
             <button className="btn danger" onClick={() => finish("aborted")}>Abort</button>
           </>
         )}

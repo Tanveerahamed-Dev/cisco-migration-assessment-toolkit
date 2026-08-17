@@ -6,10 +6,12 @@ intelligence: what it means, the most likely cause, and the remediation. The obs
 field experience -- not a guarantee). `compute_protocol_intelligence` (analyze.py) joins the
 per-(switch,protocol) `protocol_health` rows against this table.
 
-Grounding (research, 2026-06): OSPF EXSTART/EXCHANGE -> interface MTU mismatch (Cisco doc 13684-12);
-EtherChannel member flags s/D/I/w/H (Cisco `show etherchannel summary`); VTP higher-revision overwrite
-of the VLAN DB (Cisco VTP guide); BGP Active/Connect = TCP/L3 to :179, OpenSent/OpenConfirm = ASN/auth
-(Cisco Press BGP Fundamentals)."""
+Grounding (research, 2026-06; HSRP state refresh 2026-08): OSPF EXSTART/EXCHANGE -> interface MTU
+mismatch (Cisco doc 13684-12); EtherChannel member flags s/D/I/w/H (Cisco `show etherchannel
+summary`); VTP higher-revision overwrite of the VLAN DB (Cisco VTP guide); BGP Active/Connect =
+TCP/L3 to :179, OpenSent/OpenConfirm = ASN/auth (Cisco Press BGP Fundamentals); HSRP Init/Learn
+semantics -> Cisco IOS XE Network Services Configuration Guide, "Configuring HSRP"
+(https://www.cisco.com/c/en/us/td/docs/routers/ios-xe/network-services/network-services/m_fhp-hsrp-0.html)."""
 from typing import Optional
 
 # severity here is the *advisory* severity (how much the operator should care), independent of the
@@ -57,7 +59,7 @@ _PROTOCOL_STATES = {
         "meaning": "Requesting/loading LSAs -- normally transient; persistent = a problem.",
         "likely_cause": "If stuck: retransmitting LSA requests (MTU) or a malformed/corrupt LSA.",
         "remediation": "If persistent, check MTU and look for a malformed LSA in the area."},
-    # ---- EtherChannel member flags (show etherchannel summary) ----
+# ---- EtherChannel bundle/member flags (show etherchannel / port-channel summary) ----
     ("EtherChannel", "s"): {
         "severity": "High",
         "meaning": "Member is suspended -- it is NOT forwarding traffic.",
@@ -87,6 +89,57 @@ _PROTOCOL_STATES = {
         "meaning": "LACP hot-standby member (max-bundle exceeded) -- standby, not a fault.",
         "likely_cause": "By design: more members than `lacp max-bundle` allows; extras are hot-standby.",
         "remediation": "No action unless you expected this member to be active."},
+    ("EtherChannel", "M"): {
+        "severity": "High",
+        "meaning": "The bundle is not in use because its minimum-links requirement is not met.",
+        "likely_cause": "Too few eligible member links are bundled, or the configured min-links threshold "
+                        "exceeds the currently available members.",
+        "remediation": "Restore and re-bundle the missing members; then reconcile `port-channel min-links` "
+                       "with the intended failure tolerance before acceptance."},
+    ("EtherChannel", "m"): {
+        "severity": "High",
+        "meaning": "This member is not aggregated because the bundle's minimum-links requirement is not met.",
+        "likely_cause": "The channel lacks enough eligible links to activate the aggregator.",
+        "remediation": "Restore the failed or incompatible members and verify the min-links policy on both ends."},
+    ("EtherChannel", "N"): {
+        "severity": "High",
+        "meaning": "The port-channel is not in use and no aggregation is active.",
+        "likely_cause": "No member has successfully joined the aggregator, or the channel is administratively "
+                        "or operationally unavailable.",
+        "remediation": "Inspect every member state and the channel protocol; restore at least the intended "
+                       "eligible members before accepting the bundle."},
+    ("EtherChannel", "f"): {
+        "severity": "High",
+        "meaning": "The member failed to allocate an aggregator and is not bundled.",
+        "likely_cause": "The local channel cannot place the link into a compatible aggregator, commonly because "
+                        "of member configuration or partner negotiation differences.",
+        "remediation": "Compare the member and port-channel configuration, then verify the LACP/PAgP partner view."},
+    ("EtherChannel", "u"): {
+        "severity": "High",
+        "meaning": "The member is unsuitable for bundling and is not part of the forwarding channel.",
+        "likely_cause": "A member attribute differs from the aggregator, such as switchport mode, VLAN, speed, "
+                        "duplex, or channel protocol parameters.",
+        "remediation": "Reconcile the member's operational and configured attributes with the port-channel and peer."},
+    ("EtherChannel", "r"): {
+        "severity": "High",
+        "meaning": "The NX-OS member's module is removed, so the link cannot forward in the port-channel.",
+        "likely_cause": "The line card or fabric extender that owns the member is absent or unavailable.",
+        "remediation": "Restore the owning hardware and confirm the member returns to the intended bundled state."},
+    ("EtherChannel", "b"): {
+        "severity": "Medium",
+        "meaning": "The NX-OS member is waiting for its BFD session and is not yet a proven active member.",
+        "likely_cause": "BFD-assisted LACP convergence is incomplete or the BFD session is not establishing.",
+        "remediation": "Verify BFD and LACP state on both ends; treat a persistent wait as a cutover blocker."},
+    ("EtherChannel", "d"): {
+        "severity": "Medium",
+        "meaning": "The member remains in the default state; the summary does not prove it is bundled.",
+        "likely_cause": "Negotiation or member initialization has not produced a forwarding channel state.",
+        "remediation": "Inspect the detailed channel state and peer negotiation before accepting this member."},
+    ("EtherChannel", "p"): {
+        "severity": "Info",
+        "meaning": "The NX-OS member is up in delay-LACP mode.",
+        "likely_cause": "Delay-LACP is active by design for this member.",
+        "remediation": "Preserve the observed mode; investigate only if ordinary active bundling was intended."},
     # ---- BGP neighbor states ----
     ("BGP", "ACTIVE"): {
         "severity": "High",
@@ -134,6 +187,22 @@ _PROTOCOL_STATES = {
                         "mismatch on a trunk.",
         "remediation": "Identify the neighbor sending the offending BPDU and the VLAN involved; fix the "
                        "trunk/STP mismatch. The port stays blocked until the inconsistency clears."},
+    # ---- First-hop redundancy (subtype retained so HSRP doctrine is not generalized to VRRP/GLBP) ----
+    ("FHRP", "HSRP:INIT"): {
+        "severity": "Medium",
+        "meaning": "The HSRP group is not ready or able to participate in gateway redundancy.",
+        "likely_cause": "The associated interface is not up, the group has no usable interface IP, or "
+                        "the state is transient immediately after configuration or interface bring-up.",
+        "remediation": "Verify the SVI/interface and line protocol are up, confirm a usable primary IP "
+                       "and the HSRP group configuration, then re-check that the group leaves Init."},
+    ("FHRP", "HSRP:LEARN"): {
+        "severity": "Medium",
+        "meaning": "The HSRP router is waiting to learn the virtual IP and has not heard an "
+                   "authenticated hello from the active router.",
+        "likely_cause": "The active peer is absent or its hellos are not being accepted because of an "
+                        "authentication, VLAN/L2 reachability, group, or version mismatch.",
+        "remediation": "Confirm the virtual IP/group/version/authentication on both peers, verify the "
+                       "shared VLAN can carry HSRP hellos, and inspect the active peer before cutover."},
 }
 
 # OSPF composite states like '2WAY/DROTHER' or 'FULL/BDR' -> take the leading token.

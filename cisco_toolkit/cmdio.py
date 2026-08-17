@@ -154,6 +154,8 @@ PARSER_CONTRACTS = {
     "show ipv6 interface": ("parse_ipv6_interface_addrs",),
     "show ipv6 route summary": ("parse_ipv6_route_summary",),
     "show ospfv3 neighbor": ("parse_ospfv3_neighbors",),
+    "show ospfv3 neighbors": ("parse_ospfv3_neighbors",),
+    "show ipv6 ospfv3 neighbors": ("parse_ospfv3_neighbors",),
     "show ipv6 ospf neighbor": ("parse_ospfv3_neighbors",),
     "show bgp ipv6 unicast summary": ("parse_bgp_ipv6_summary",),
     "show ipv6 nd raguard policy": ("parse_ipv6_raguard_policy",),

@@ -56,6 +56,7 @@ def write_cutover_docx(output_path: str, snap_dict: Dict[str, Any], label: str) 
     plan = cutover.build_plan(snap_dict)
     summary = plan["summary"]
     waves: List[Dict[str, Any]] = plan["waves"]
+    baseline_blockers: List[Dict[str, Any]] = plan.get("baseline_blockers", [])
 
     doc = new_document()
 
@@ -99,13 +100,6 @@ def write_cutover_docx(output_path: str, snap_dict: Dict[str, Any], label: str) 
                  "the migration windows.",
         exclude=("cutover",))
 
-    if not waves:
-        doc.add_paragraph("No migration waves were derived from this snapshot.")
-        # Furniture stays complete even for the degenerate document: close with the acceptance gate.
-        add_acceptance(doc, scope_note=_ACCEPTANCE_NOTE)
-        doc.save(output_path)
-        return
-
     # ---- 1. Executive summary ----
     doc.add_heading("1. Executive summary", level=1)
     doc.add_paragraph(summary["statement"])
@@ -118,6 +112,8 @@ def write_cutover_docx(output_path: str, snap_dict: Dict[str, Any], label: str) 
             ["Hard-cutover switches (need a window)", summary["n_hard_cutover"]],
             ["Endpoints cut in a window", summary["hard_cutover_endpoints"]],
             ["Estimated total maintenance window", summary["est_window_label"]],
+            ["Current-baseline gate", summary.get("current_baseline", {}).get("verdict", "NOT_ASSESSED")],
+            ["Current-baseline blockers", summary.get("n_baseline_blockers", 0)],
             ["Gate distribution",
              " · ".join(f"{n} {g}" for g, n in summary["gates"].items() if n)],
         ],
@@ -135,12 +131,45 @@ def write_cutover_docx(output_path: str, snap_dict: Dict[str, Any], label: str) 
         for item in methodology:
             doc.add_paragraph(item, style="List Bullet")
 
+    # This is an acceptance gate, not an appendix sample: every validation-plan blocker is rendered
+    # outside the ordinary 30-row post-cutover table cap, including its evidence authority.
+    current_baseline = summary.get("current_baseline", {})
+    doc.add_heading("Current-baseline acceptance gate", level=2)
+    p = doc.add_paragraph()
+    kv(p, "Verdict:", current_baseline.get("verdict", "NOT_ASSESSED"))
+    if current_baseline.get("note"):
+        doc.add_paragraph(current_baseline["note"])
+    if baseline_blockers:
+        table(
+            ["Wave / device", "Category / severity", "Blocker / observed acceptance",
+             "Evidence authority", "Why"],
+            [[
+                f"{b.get('wave', '')}\n{b.get('device', '')}",
+                f"{b.get('category', '')}\n{b.get('severity', '')}",
+                f"{b.get('check', '')}\nCommand: {b.get('command') or 'not published'}\n"
+                f"{b.get('expect', '')}",
+                f"state: {b.get('evidence_state') or b.get('baseline_state', '')}\n"
+                f"custody: {b.get('projection_custody') or 'not published'}\n"
+                f"source: {b.get('source_key') or 'not published'}",
+                b.get("why", ""),
+            ] for b in baseline_blockers],
+            widths=[1.0, 1.0, 2.1, 1.6, 1.3],
+        )
+
+    if not waves:
+        doc.add_paragraph("No migration waves were derived from this snapshot.")
+        # Furniture stays complete even for the degenerate document: close with the acceptance gate.
+        add_acceptance(doc, scope_note=_ACCEPTANCE_NOTE)
+        doc.save(output_path)
+        return
+
     # ---- 2. Wave sequence overview ----
     doc.add_heading("2. Recommended wave sequence", level=1)
     table(
-        ["#", "Wave", "Gate", "Strategy", "Switches", "Endpoints", "Est. window", "Failing checks"],
+        ["#", "Wave", "Gate", "Strategy", "Switches", "Endpoints", "Est. window", "Gating rows"],
         [[w["order"], w["group"], w["gate"], w["strategy"], w["n_switches"], w["endpoints"],
-          w["est_window_label"], w["n_fail"]] for w in waves],
+          w["est_window_label"],
+          f"{w['n_fail']} readiness · {len(w.get('baseline_blockers', []))} baseline"] for w in waves],
         widths=[0.4, 1.0, 1.1, 1.4, 0.8, 0.9, 1.0, 0.9],
     )
 
@@ -178,6 +207,18 @@ def write_cutover_docx(output_path: str, snap_dict: Dict[str, Any], label: str) 
         # Gating checks
         gating_rows: List[List[Any]] = [[b["status"].upper(), b["check"], b["phase"], b["note"]]
                                         for b in w.get("blockers", [])]
+        for b in w.get("baseline_blockers", []):
+            authority = (f"Command: {b.get('command') or 'not published'}. {b.get('expect', '')} "
+                         f"Evidence state: "
+                         f"{b.get('evidence_state') or b.get('baseline_state', '')}; custody: "
+                         f"{b.get('projection_custody') or 'not published'}; source: "
+                         f"{b.get('source_key') or 'not published'}.")
+            gating_rows.append([
+                f"BASELINE {str(b.get('baseline_state', '')).upper()}",
+                b.get("check", ""),
+                f"{b.get('wave', '')} / {b.get('device', '')}",
+                authority,
+            ])
         for cl in w.get("critical_crosslayer", []):
             gating_rows.append(["CRITICAL", f"{cl['title']} ({cl['layers']})", cl["id"],
                                 cl["recommendation"]])
@@ -215,15 +256,18 @@ def write_cutover_docx(output_path: str, snap_dict: Dict[str, Any], label: str) 
 
         # Post-cutover validation
         val = w.get("validation", [])
-        if val:
-            doc.add_heading(f"Post-cutover validation ({len(val)})", level=3)
+        ordinary_val = [v for v in val if not v.get("baseline_blocker")]
+        if ordinary_val:
+            doc.add_heading(f"Post-cutover validation ({len(ordinary_val)} ordinary; "
+                            f"{len(w.get('baseline_blockers', []))} gated above)", level=3)
             doc.add_paragraph("Run after the cut; a deviation from the expected baseline is a "
                               "regression to investigate before sign-off.")
             table(["Severity", "Check", "Command", "Expect"],
-                  [[v["severity"], v["check"], v["command"], v["expect"]] for v in val[:30]],
+                  [[v["severity"], v["check"], v["command"], v["expect"]] for v in ordinary_val[:30]],
                   widths=[0.8, 1.8, 1.6, 2.3])
-            if len(val) > 30:
-                doc.add_paragraph(f"… {len(val) - 30} more in the Validation-plan section.")
+            if len(ordinary_val) > 30:
+                doc.add_paragraph(f"… {len(ordinary_val) - 30} more ordinary checks in the "
+                                  "Validation-plan section; baseline blockers are never capped above.")
 
     # ---- closing acceptance gate (AS-style back matter) ----
     add_acceptance(doc, scope_note=_ACCEPTANCE_NOTE)

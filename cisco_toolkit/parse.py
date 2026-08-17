@@ -5564,7 +5564,9 @@ def _parse_fhrp(behavior: str):
     protocol-health analyzer and the monolith's L3-forwarding sheet."""
     if not behavior:
         return ("", "", "", "")
-    m = re.match(r"(HSRP|VRRP|GLBP)\s+grp\s+(\d+)\s+(\w+)(?:\s+VIP\s+(\S+))?", behavior.strip(), re.IGNORECASE)
+    # Accept both the canonical producer spelling (``grp 10``) and the compact
+    # compatibility spelling (``grp10``) carried by older snapshots/demo data.
+    m = re.match(r"(HSRP|VRRP|GLBP)\s+grp\s*(\d+)\s+(\w+)(?:\s+VIP\s+(\S+))?", behavior.strip(), re.IGNORECASE)
     if m:
         return (m.group(1).upper(), m.group(3).capitalize(), m.group(4) or "", m.group(2))
     return ("", "", "", "")

@@ -538,6 +538,11 @@ def test_protocol_health_fhrp_stuck_init_is_not_healthy(cp):
     init = {"R1": {"Vlan10": InterfaceData(port="Vlan10", hsrp_behavior="HSRP grp 1 Init VIP 10.0.10.1")}}
     f1 = [r for r in cp.compute_protocol_health(init, {"R1": {}}) if r["protocol"] == "FHRP"]
     assert f1 and f1[0]["severity"] == "Medium", f1
+    intel = cp.compute_protocol_intelligence(f1)
+    assert len(intel) == 1
+    assert intel[0]["state"] == "HSRP:INIT"
+    assert intel[0]["severity"] == "Medium"
+    assert "interface" in intel[0]["likely_cause"].lower()
     standby = {"R2": {"Vlan10": InterfaceData(port="Vlan10", hsrp_behavior="HSRP grp 1 Standby VIP 10.0.10.1")}}
     f2 = [r for r in cp.compute_protocol_health(standby, {"R2": {}}) if r["protocol"] == "FHRP"]
     assert f2 and f2[0]["severity"] == "Info", f2

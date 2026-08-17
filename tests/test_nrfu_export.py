@@ -9,6 +9,11 @@ import os
 import re
 
 from cisco_toolkit.attestation import is_read_only_command as _is_read_only_command
+from cisco_toolkit.analyze import (
+    PROTOCOL_ASSESSABILITY_FAMILIES,
+    PROTOCOL_ASSESSABILITY_STATES,
+    summarize_etherchannel_baseline,
+)
 from cisco_toolkit.excel import NRFU_COMMANDS_SHEET_NAME, write_nrfu_commands_sheet
 from cisco_toolkit.nrfu_export import (
     NOT_OBSERVED,
@@ -45,19 +50,125 @@ _CASE_ID = re.compile(r"^NRFU-W\d+-P[1-4]-\d{3}$")
 
 
 # ---------------------------------------------------------------- synthetic snapshot fixture ---
+def _protocol_receipt() -> dict:
+    """Exact three-device x seven-family receipt for this synthetic snapshot."""
+    rows = []
+    by_state = {state: 0 for state in PROTOCOL_ASSESSABILITY_STATES}
+    for host in ("acc1", "dist1", "dist2"):
+        for family in PROTOCOL_ASSESSABILITY_FAMILIES:
+            protocol = family["protocol"]
+            state = "assessed" if (
+                (host == "dist1" and protocol in ("EtherChannel", "OSPF", "BGP"))
+                or (host == "dist2" and protocol == "EtherChannel")
+            ) else "not_collected"
+            input_value = "usable" if state == "assessed" else "missing"
+            input_states = {item["id"]: input_value for item in family["inputs"]}
+            rows.append({
+                "switch": host,
+                "protocol": protocol,
+                "input_states": input_states,
+                "capture_state": input_value,
+                "health_row_emitted": state == "assessed",
+                "state": state,
+                "reason": f"fixture: {state}",
+            })
+            by_state[state] += 1
+    return {
+        "schema": "protocol_assessability/1",
+        "families": [{"protocol": family["protocol"]}
+                     for family in PROTOCOL_ASSESSABILITY_FAMILIES],
+        "rows": rows,
+        "summary": {
+            "n_devices": 3,
+            "n_families": len(PROTOCOL_ASSESSABILITY_FAMILIES),
+            "n_cells": len(rows),
+            "n_health_rows": sum(row["health_row_emitted"] for row in rows),
+            "n_complete_devices": 0,
+            "by_state": by_state,
+        },
+        "limitations": ["fixture"],
+    }
+
+
+def _etherchannel_projection() -> dict:
+    def group(interface_names: tuple[str, ...]) -> dict:
+        return {
+            "group_id": "1",
+            "group": "Po1",
+            "group_flags": "SU",
+            "protocol": "LACP",
+            "protocol_raw": "LACP",
+            "status": "assessed",
+            "operational_state": "up",
+            "members": [{
+                "interface": interface,
+                "flags": "P",
+                "status": "assessed",
+                "state": "forwarding_observed",
+                "findings": [],
+            } for interface in interface_names],
+            "findings": [],
+        }
+
+    rows = [{
+        "switch": "acc1",
+        "source_command": "",
+        "capture_state": "missing",
+        "declared_group_count": None,
+        "groups": [],
+        "associations": [],
+        "findings": [],
+        "rejected_line_count": 0,
+    }]
+    for host, command, members, declared in (
+        ("dist1", "show etherchannel summary", ("Gi1/0/1", "Gi1/0/2"), 1),
+        ("dist2", "show port-channel summary", ("Eth1/1",), None),
+    ):
+        rows.append({
+            "switch": host,
+            "source_command": command,
+            "capture_state": "usable",
+            "declared_group_count": declared,
+            "groups": [group(members)],
+            "associations": [{"interface": interface, "group": "Po1"}
+                             for interface in members],
+            "findings": [],
+            "rejected_line_count": 0,
+        })
+    return {
+        "schema": "etherchannel_projection/1",
+        "rows": rows,
+        "summary": {
+            "n_devices": 3,
+            "n_subject_devices": 2,
+            "n_groups": 2,
+            "n_members": 3,
+            "n_associations": 3,
+            "n_degraded_groups": 0,
+            "n_review_groups": 0,
+            "n_rejected_lines": 0,
+            "by_capture_state": {"usable": 2, "empty": 0, "error": 0, "missing": 1},
+        },
+        "limitations": ["fixture"],
+    }
+
+
 def _snap():
     """A snap-shaped fixture: an IOS dist (full evidence), an NX-OS dist (partial evidence), and an
     UNSCHEDULED IOS access switch with almost no evidence (exercises the abstention paths)."""
+    devices = {
+        "dist1": {"platform": "ios", "model": "WS-C3850-24T", "serial_number": "FCW111",
+                  "sw_version": "16.12.4", "ps_status": "OK", "fan_status": "OK",
+                  "temperature_status": "GREEN"},
+        "dist2": {"platform": "nxos", "model": "N9K-C93180YC-EX", "serial_number": "FDO222",
+                  "sw_version": "9.3(8)"},
+        "acc1": {"platform": "ios", "model": "WS-C2960X-48", "serial_number": "FOC333",
+                 "sw_version": ""},
+    }
+    receipt = _protocol_receipt()
+    etherchannel_projection = _etherchannel_projection()
     return {
-        "devices": {
-            "dist1": {"platform": "ios", "model": "WS-C3850-24T", "serial_number": "FCW111",
-                      "sw_version": "16.12.4", "ps_status": "OK", "fan_status": "OK",
-                      "temperature_status": "GREEN"},
-            "dist2": {"platform": "nxos", "model": "N9K-C93180YC-EX", "serial_number": "FDO222",
-                      "sw_version": "9.3(8)"},
-            "acc1": {"platform": "ios", "model": "WS-C2960X-48", "serial_number": "FOC333",
-                     "sw_version": ""},
-        },
+        "devices": devices,
         "interfaces": {
             "dist1": {
                 "Vlan10": {"port": "Vlan10", "status": "connected", "svi_ip": "10.0.10.2",
@@ -86,9 +197,15 @@ def _snap():
             "dist2": {"10": {"is_root": False, "root_priority": None, "root_address": ""}},
         },
         "routing_neighbors": {
-            "dist1": {"ospf": [{"neighbor": "10.0.99.2", "state": "FULL/DR"}], "eigrp": [],
-                      "bgp": [{"neighbor": "10.0.99.9"}]},
+            "dist1": {"ospf": [{"neighbor": "10.0.99.2", "state": "FULL/DR",
+                                  "address": "10.0.99.2", "interface": "Po1"}], "eigrp": [],
+                      "bgp": [{"neighbor": "10.0.99.9", "state": "12", "as": "65009"}]},
         },
+        "protocol_assessability": receipt,
+        "etherchannel_projection": etherchannel_projection,
+        "etherchannel_baseline": summarize_etherchannel_baseline(
+            etherchannel_projection, receipt, devices,
+        ),
         "fhrp_detail": {
             "dist1": [{"ifname": "Vlan10", "group": "10", "state": "Active", "vip": "10.0.10.1",
                        "standby_ip": "10.0.10.3"}],
@@ -182,9 +299,17 @@ def test_expected_prefill_stp_root_hsrp_active_and_neighbor_sets():
     assert hs[0]["source_key"] == "fhrp_detail.dist1"
     # routing-neighbor sets: OSPF and BGP peers pre-filled
     ospf = _cases_of(out, "dist1", command="show ip ospf neighbor")
-    assert ospf and "10.0.99.2" in ospf[0]["expected"] and ospf[0]["source_key"] == "routing_neighbors.dist1.ospf"
+    assert ospf and "10.0.99.2" in ospf[0]["expected"]
+    assert ospf[0]["source_key"] == (
+        "routing_neighbors.dist1.ospf + protocol_assessability.rows[dist1,OSPF]"
+    )
+    assert ospf[0]["evidence_state"] == "assessed"
+    assert ospf[0]["projection_custody"] == "embedded_unverified"
     bgp = _cases_of(out, "dist1", command="show ip bgp summary")
-    assert bgp and "10.0.99.9" in bgp[0]["expected"] and "Established" in bgp[0]["expected"]
+    assert bgp and "10.0.99.9" in bgp[0]["expected"]
+    assert bgp[0]["expected"].startswith("BGP CONFIGURED PEER NOT VERIFIED — BLOCKER:")
+    assert "do not infer Established from a numeric summary token" in bgp[0]["expected"]
+    assert bgp[0]["evidence_state"] == "not_verified"
     # CDP adjacency set from the collected neighbors
     cdp = _cases_of(out, "dist1", command="show cdp neighbors")
     assert cdp and "dist2" in cdp[0]["expected"] and "Gi1/0/1" in cdp[0]["expected"]
@@ -193,10 +318,16 @@ def test_expected_prefill_stp_root_hsrp_active_and_neighbor_sets():
     assert up and "Gi1/0/1" in up[0]["expected"] and "Gi1/0/3" not in up[0]["expected"]
     # port-channel member count
     pc = _cases_of(out, "dist1", command="show etherchannel summary")
-    assert pc and "Po1" in pc[0]["expected"] and "2 member(s)" in pc[0]["expected"]
+    assert pc and "Po1" in pc[0]["expected"]
+    assert "Gi1/0/1(P) forwarding observed" in pc[0]["expected"]
+    assert "Gi1/0/2(P) forwarding observed" in pc[0]["expected"]
+    assert pc[0]["evidence_family"] == "EtherChannel"
+    assert pc[0]["evidence_state"] == "assessed"
+    assert pc[0]["projection_custody"] == "embedded_unverified"
     # the logical Po1 interface record must not inflate the member count (dist2: 1 real member)
     pc2 = _cases_of(out, "dist2", command="show port-channel summary")
-    assert pc2 and "Po1: 1 member(s)" in pc2[0]["expected"]
+    assert pc2 and "Eth1/1(P) forwarding observed" in pc2[0]["expected"]
+    assert pc2[0]["expected"].count("Eth1/1(P)") == 1
 
 
 def test_gateway_svi_ping_and_traceroute_within_move_group():

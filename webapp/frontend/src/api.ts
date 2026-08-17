@@ -147,6 +147,58 @@ export interface Meta {
   app: AppIdentity;
 }
 
+export interface CurrentBaselineBlocker {
+  device: string;
+  wave: string;
+  category: string;
+  severity: string;
+  check: string;
+  command?: string;
+  expect: string;
+  why?: string;
+  evidence_state: string;
+  projection_custody: string;
+  source_key: string;
+  baseline_state?: string;
+  baseline_blocker?: boolean;
+}
+
+export interface CurrentBaselineGate {
+  schema: string;
+  verdict: "BLOCKED" | "INDETERMINATE" | "CLEAR" | "NOT_ASSESSED" | string;
+  assessed?: boolean;
+  note: string;
+  n_blockers?: number;
+  fleet_n_blockers?: number;
+  summary?: {
+    n_items?: number;
+    n_blockers?: number;
+    n_blockers_returned?: number;
+    blockers_capped?: boolean;
+    by_state?: Partial<Record<"degraded" | "review" | "not_verified", number>>;
+    by_wave?: Record<string, number>;
+  };
+  blockers?: CurrentBaselineBlocker[];
+  integrity?: { valid?: boolean; failures?: string[] };
+  limitations?: string[];
+}
+
+export interface ValidationCheck {
+  device?: string;
+  wave?: string;
+  category: string;
+  severity: string;
+  check: string;
+  command: string;
+  expect: string;
+  why?: string;
+  evidence_state?: string;
+  projection_custody?: string;
+  source_key?: string;
+  baseline_state?: string;
+  baseline_blocker?: boolean;
+}
+
 export interface CutoverWave {
   group: string;
   order: number;
@@ -169,9 +221,11 @@ export interface CutoverWave {
   n_fail: number;
   n_warn: number;
   blockers: Array<{ check: string; status: string; note: string; phase: string }>;
+  current_baseline?: CurrentBaselineGate;
+  baseline_blockers?: CurrentBaselineBlocker[];
   critical_crosslayer: Array<{ id: string; title: string; layers: string; recommendation: string }>;
   remediation: Array<{ device: string; title: string; category: string; severity: string; why: string }>;
-  validation: Array<{ category: string; severity: string; check: string; command: string; expect: string }>;
+  validation: ValidationCheck[];
   run_of_show: Array<{ phase: string; action: string }>;
 }
 
@@ -185,11 +239,19 @@ export interface ExecStep {
 }
 
 export interface ExecCheck {
+  device?: string;
+  wave?: string;
   category: string;
   severity: string;
   check: string;
   command: string;
   expect: string;
+  why?: string;
+  evidence_state?: string;
+  projection_custody?: string;
+  source_key?: string;
+  baseline_state?: string;
+  baseline_blocker?: boolean;
   result: "pending" | "pass" | "fail" | "na";
   observed: string;
   at: string | null;
@@ -208,6 +270,8 @@ export interface ExecWave {
   est_window_minutes: number;
   est_window_label: string;
   blockers: Array<{ check: string; status: string; note: string; phase: string }>;
+  current_baseline?: CurrentBaselineGate;
+  baseline_blockers?: CurrentBaselineBlocker[];
   steps: ExecStep[];
   checks: ExecCheck[];
   closeout: { decision: string | null; at: string | null; by: string; note: string };
@@ -223,6 +287,10 @@ export interface ExecutionState {
   started_at: string;
   ended_at: string | null;
   plan_summary: CutoverPlan["summary"];
+  /** Full start-snapshot blocker receipt frozen when the execution record is created. */
+  baseline_blockers?: CurrentBaselineBlocker[];
+  /** Explicit occurrence-preserving subset that could not be assigned to an execution wave. */
+  unbound_baseline_blockers?: CurrentBaselineBlocker[];
   waves: ExecWave[];
   events: Array<{ at: string; kind: string; wave: string; text: string; by: string }>;
   progress: {
@@ -292,8 +360,13 @@ export interface CutoverPlan {
     gates: Record<string, number>;
     statement: string;
     methodology?: string[];
+    current_baseline?: CurrentBaselineGate;
+    n_baseline_blockers?: number;
+    n_unbound_baseline_blockers?: number;
+    baseline_blockers_capped?: boolean;
   };
   waves: CutoverWave[];
+  baseline_blockers?: CurrentBaselineBlocker[];
 }
 
 // V3.23.163: the senior-engineer design review (engine compute_architecture_review — the same

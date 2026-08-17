@@ -519,7 +519,9 @@ def build_ipv6_routing(cmd_to_file: Dict[str, str]) -> dict:
     rsum = _safe_parse(parse_ipv6_route_summary,
                        _load_cmd_output(cmd_to_file, "show ipv6 route summary")) or {}
     ospfv3 = _safe_parse(parse_ospfv3_neighbors,
-                         _load_cmd_output(cmd_to_file, "show ospfv3 neighbor", "show ipv6 ospf neighbor")) or []
+                         _load_cmd_output(cmd_to_file, "show ipv6 ospfv3 neighbors",
+                                          "show ospfv3 neighbors", "show ospfv3 neighbor",
+                                          "show ipv6 ospf neighbor")) or []
     bgp6 = _safe_parse(parse_bgp_ipv6_summary,
                        _load_cmd_output(cmd_to_file, "show bgp ipv6 unicast summary")) or []
     out = {}

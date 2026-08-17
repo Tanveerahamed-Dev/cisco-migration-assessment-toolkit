@@ -78,6 +78,25 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
 
     cp.main()   # the actual console entry point — exercises build/excel/html/runbook in-process
 
+    # Capture-integrity custody is computed exactly once before the protocol denominator and every
+    # readiness consumer; its workbook sheet may remain later without recomputing the evidence.
+    timings = json.loads((tmp_path / "out.phase_timings.json").read_text(encoding="utf-8"))
+    phase_names = [row["phase"] for row in timings["phases"]]
+    assert phase_names.count("Capture integrity") == 1
+    assert phase_names.index("Capture integrity") < phase_names.index("Protocol Health")
+    assert phase_names.index("Protocol assessability") < phase_names.index(
+        "BGP configured-peer baseline") < phase_names.index("Migration Readiness")
+    assert phase_names.index("Protocol assessability") < phase_names.index(
+        "VTP safety subject scope") < phase_names.index(
+        "VTP safety baseline") < phase_names.index("Migration Readiness")
+    assert phase_names.index("Protocol assessability") < phase_names.index(
+        "IPv6 routing subject scope") < phase_names.index(
+        "IPv6 routing adjacency baseline") < phase_names.index("Migration Readiness")
+    assert phase_names.index("Protocol assessability") < phase_names.index(
+        "FHRP configured-group baseline") < phase_names.index("Migration Readiness")
+    assert phase_names.index("FHRP configured-group baseline") < phase_names.index(
+        "FHRP redundancy-domain baseline") < phase_names.index("Migration Readiness")
+
     # ---- workbook ----
     assert out_xlsx.is_file(), "workbook was not written"
     wb = load_workbook(str(out_xlsx), read_only=True)
@@ -85,6 +104,11 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     wb.close()
     assert "Executive Summary" in sheets, f"Executive Summary sheet missing; got {sheets[:5]}…"
     assert "Traffic Assurance" in sheets, "canonical traffic assurance projection sheet missing"
+    assert "VTP Safety" in sheets, "bounded local VTP safety receipt sheet missing"
+    assert "IPv6 Routing" in sheets, "bounded observed OSPFv3/BGPv6 receipt sheet missing"
+    assert "BGP Peer Intent" in sheets, "configured default/global IPv4 BGP denominator sheet missing"
+    assert "FHRP Group Intent" in sheets, "configured default/global IPv4 FHRP denominator sheet missing"
+    assert "FHRP Domains" in sheets, "authoritative cross-switch FHRP domain sheet missing"
     assert len(sheets) >= 20, f"expected the full multi-sheet workbook, got only {len(sheets)} sheets"
 
     # ---- snapshot (the data contract) ----
@@ -92,8 +116,310 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     assert os.path.isfile(snap_path), "snapshot.json was not written"
     snap = json.loads(open(snap_path, encoding="utf-8").read())
     for key in ("devices", "interfaces", "health_scores", "punchlist", "causality", "executive_brief",
-                "parse_yield", "unknown_evidence"):   # parser detail + governed aggregate ship together
+                "parse_yield", "unknown_evidence", "protocol_assessability",
+                "bgp_configured_peer_baseline", "fhrp_configured_group_baseline",
+                "fhrp_redundancy_domain_baseline", "vtp_safety_baseline",
+                "ipv6_routing_adjacency_baseline"):
+        # parser detail, governed aggregate, and the protocol coverage denominator ship together
         assert key in snap, f"snapshot missing computed key {key!r}"
+    protocol_receipt = snap["protocol_assessability"]
+    assert protocol_receipt["schema"] == "protocol_assessability/1"
+    assert protocol_receipt["summary"]["n_families"] == 7
+    assert protocol_receipt["summary"]["n_cells"] == 7 * protocol_receipt["summary"]["n_devices"]
+    assert len(protocol_receipt["rows"]) == protocol_receipt["summary"]["n_cells"]
+    assert {row["protocol"] for row in protocol_receipt["rows"]} == {
+        "STP", "EtherChannel", "VTP", "OSPF", "BGP", "EIGRP", "FHRP"
+    }
+    # The canonical fixture does not collect show vtp status, so the strict owner is neutral rather
+    # than inventing a fleet-wide blocker.  Publication still carries a validator-valid embedded
+    # receipt and the direct workbook section, while current-run acceptance rows remain empty.
+    from cisco_toolkit.vtp_safety import validate_vtp_safety_baseline
+    vtp_baseline = snap["vtp_safety_baseline"]
+    assert vtp_baseline["schema"] == "vtp_safety_baseline/1"
+    assert vtp_baseline["projection_custody"] == "embedded_unverified"
+    assert vtp_baseline["verdict"] == "NOT_APPLICABLE"
+    assert vtp_baseline["rows"] == []
+    assert validate_vtp_safety_baseline(vtp_baseline)["valid"] is True
+    assert validate_vtp_safety_baseline(
+        vtp_baseline, require_current_run=True)["valid"] is False
+    assert [row for row in snap["validation_plan"]["items"]
+            if row.get("category") == "VTP"] == []
+    assert snap["nrfu_commands"]["summary"]["n_vtp_safety_cases"] == 0
+    assert snap["nrfu_commands"]["summary"]["n_vtp_safety_blockers"] == 0
+    # The same in-process run contains five observed IPv6 routing adjacencies.  Two are
+    # definitely degraded (OSPFv3 EXSTART and BGPv6 Active), so the source-bound owner must
+    # block readiness and project every row verbatim into Validation and NRFU.  Only the
+    # serialized snapshot copy loses operational authority.
+    from cisco_toolkit.ipv6_routing import validate_ipv6_routing_adjacency_baseline
+    ipv6_baseline = snap["ipv6_routing_adjacency_baseline"]
+    assert ipv6_baseline["schema"] == "ipv6_routing_adjacency_baseline/1"
+    assert ipv6_baseline["projection_custody"] == "embedded_unverified"
+    assert ipv6_baseline["verdict"] == "BLOCKED"
+    assert len(ipv6_baseline["rows"]) == 5
+    assert len(ipv6_baseline["coverage"]) == 9
+    assert ipv6_baseline["summary"]["by_status"] == {
+        "degraded": 2, "review": 0, "not_verified": 0, "assessed": 3,
+    }
+    assert validate_ipv6_routing_adjacency_baseline(ipv6_baseline)["valid"] is True
+    assert validate_ipv6_routing_adjacency_baseline(
+        ipv6_baseline, require_current_run=True)["valid"] is False
+
+    ipv6_validation = [
+        row for row in snap["validation_plan"]["items"]
+        if row.get("category") == "IPv6 Routing"
+    ]
+    ipv6_nrfu = [
+        case
+        for wave in snap["nrfu_commands"]["waves"]
+        for device in wave["devices"]
+        for case in device["cases"]
+        if case.get("evidence_family") == "IPv6 Routing"
+    ]
+    owner_projection = sorted(
+        (
+            row["command"], row["acceptance"], row["source_key"], row["status"],
+            "current_run_source_bound",
+        )
+        for row in ipv6_baseline["rows"]
+    )
+    assert sorted(
+        (
+            row["command"], row["expect"], row["source_key"], row["evidence_state"],
+            row["projection_custody"],
+        )
+        for row in ipv6_validation
+    ) == owner_projection
+    assert sorted(
+        (
+            case["command"], case["expected"], case["source_key"],
+            case["evidence_state"], case["projection_custody"],
+        )
+        for case in ipv6_nrfu
+    ) == owner_projection
+    assert snap["nrfu_commands"]["summary"]["n_ipv6_routing_cases"] == 5
+    assert snap["nrfu_commands"]["summary"]["n_ipv6_routing_blockers"] == 2
+    assert len([row for row in snap["punchlist"]
+                if row.get("category") == "IPv6 Routing"]) == 2
+    ipv6_readiness = [
+        (group["readiness"], check["status"])
+        for group in snap["migration_readiness"]
+        for check in group["checks"]
+        if check["check"] == "IPv6 routing adjacencies"
+    ]
+    assert ipv6_readiness == [("NOT READY", "fail")]
+    # STP consistency has one shared, claim-specific owner across readiness, Validation and NRFU.
+    # NRFU receives the published health/receipt plus positive L2/root subject evidence; it must
+    # project the owner's acceptance row exactly and never recover a zero from health summary prose.
+    from cisco_toolkit.analyze import summarize_stp_consistency_baseline
+    stp_consistency = summarize_stp_consistency_baseline(
+        snap["protocol_health"], protocol_receipt,
+        all_interfaces=snap["interfaces"], stp_roots=snap["stp_roots"],
+    )
+    stp_owner = {row["source_key"]: row for row in stp_consistency["rows"]}
+    stp_validation = {
+        row["source_key"]: row
+        for row in snap["validation_plan"]["items"]
+        if row.get("category") == "STP" and row.get("source_key") in stp_owner
+    }
+    stp_nrfu = {
+        case["source_key"]: case
+        for wave in snap["nrfu_commands"]["waves"]
+        for device in wave["devices"]
+        for case in device["cases"]
+        if case.get("evidence_family") == "STP"
+    }
+    assert stp_owner and set(stp_validation) == set(stp_nrfu) == set(stp_owner)
+    for source_key, owner_row in stp_owner.items():
+        validation_row = stp_validation[source_key]
+        nrfu_case = stp_nrfu[source_key]
+        assert validation_row["evidence_state"] == nrfu_case["evidence_state"] == (
+            owner_row["status"]
+        )
+        assert validation_row["expect"] == nrfu_case["expected"] == owner_row["acceptance"]
+        assert validation_row["command"] == nrfu_case["command"] == owner_row["command"]
+        assert validation_row["projection_custody"] == nrfu_case["projection_custody"] == (
+            owner_row["projection_custody"]
+        )
+    stp_summary = snap["nrfu_commands"]["summary"]
+    assert stp_summary["n_stp_consistency_cases"] == len(stp_owner)
+    assert stp_summary["n_stp_consistency_blockers"] == sum(
+        row["status"] != "assessed" for row in stp_owner.values()
+    )
+    bgp_baseline = snap["bgp_configured_peer_baseline"]
+    assert bgp_baseline["schema"] == "bgp_configured_peer_baseline/1"
+    assert bgp_baseline["projection_custody"] == "embedded_unverified"
+    assert all(row["projection_custody"] == "embedded_unverified"
+               for row in bgp_baseline["rows"])
+    fhrp_baseline = snap["fhrp_configured_group_baseline"]
+    assert fhrp_baseline["schema"] == "fhrp_configured_group_baseline/1"
+    assert fhrp_baseline["projection_custody"] == "embedded_unverified"
+    assert fhrp_baseline["rows"]
+    assert all(row["projection_custody"] == "embedded_unverified"
+               for row in fhrp_baseline["rows"])
+    fhrp_domain_baseline = snap["fhrp_redundancy_domain_baseline"]
+    assert fhrp_domain_baseline["schema"] == "fhrp_redundancy_domain_baseline/1"
+    assert fhrp_domain_baseline["projection_custody"] == "embedded_unverified"
+    assert fhrp_domain_baseline["rows"]
+    assert all(row["projection_custody"] == "embedded_unverified"
+               for row in fhrp_domain_baseline["rows"])
+    fhrp_by_identity = {
+        (row["switch"], row["protocol"], row["interface"], row["group"]): row
+        for row in fhrp_baseline["rows"]
+    }
+    fhrp_validation = {
+        (row["device"], row["protocol"], row["interface"], row["group"]): row
+        for row in snap["validation_plan"]["items"]
+        if row.get("category") == "FHRP" and row.get("group_key")
+    }
+    fhrp_nrfu = {
+        (device["host"], case["protocol"], case["interface"], case["group"]): case
+        for wave in snap["nrfu_commands"]["waves"]
+        for device in wave["devices"] for case in device["cases"]
+        if case.get("evidence_family") == "FHRP" and case.get("group_key")
+    }
+    assert set(fhrp_validation) == set(fhrp_nrfu) == set(fhrp_by_identity)
+    for identity, baseline_row in fhrp_by_identity.items():
+        validation_row = fhrp_validation[identity]
+        nrfu_case = fhrp_nrfu[identity]
+        assert validation_row["expect"] == nrfu_case["expected"] == baseline_row["acceptance"]
+        assert validation_row["source_key"] == nrfu_case["source_key"] == baseline_row["source_key"]
+        assert validation_row["projection_custody"] == nrfu_case["projection_custody"] == (
+            "current_run_source_bound"
+        )
+
+    # EtherChannel has a producer-owned, lossless current-summary projection and a separate
+    # receipt-gated cutover baseline.  The generic interface model only carries associations;
+    # it must never be used to recreate operational member flags or an all-(P) claim.
+    etherchannel_projection = snap["etherchannel_projection"]
+    etherchannel_baseline = snap["etherchannel_baseline"]
+    assert etherchannel_projection["schema"] == "etherchannel_projection/1"
+    assert etherchannel_projection["summary"] == {
+        "n_devices": 3,
+        "n_subject_devices": 2,
+        "n_groups": 2,
+        "n_members": 4,
+        "n_associations": 4,
+        "n_degraded_groups": 0,
+        "n_review_groups": 0,
+        "n_rejected_lines": 0,
+        "by_capture_state": {"usable": 2, "empty": 0, "error": 0, "missing": 1},
+    }
+    projection_by_host = {row["switch"]: row for row in etherchannel_projection["rows"]}
+    expected_members = {
+        "core1": [("Gi1/0/1", "P", "assessed", "forwarding_observed"),
+                  ("Gi1/0/2", "P", "assessed", "forwarding_observed")],
+        "core2": [("Eth1/1", "P", "assessed", "forwarding_observed"),
+                  ("Eth1/2", "P", "assessed", "forwarding_observed")],
+    }
+    expected_commands = {
+        "core1": "show etherchannel summary",
+        "core2": "show port-channel summary",
+    }
+    for host in ("core1", "core2"):
+        projection_row = projection_by_host[host]
+        assert projection_row["source_command"] == expected_commands[host]
+        assert projection_row["capture_state"] == "usable"
+        assert projection_row["findings"] == [] and projection_row["rejected_line_count"] == 0
+        assert [(association["interface"], association["group"])
+                for association in projection_row["associations"]] == [
+            (interface, "Po1") for interface, *_ in expected_members[host]
+        ]
+        assert len(projection_row["groups"]) == 1
+        group = projection_row["groups"][0]
+        assert (group["group_id"], group["group"], group["group_flags"], group["protocol"],
+                group["status"], group["operational_state"]) == (
+            "1", "Po1", "SU", "LACP", "assessed", "up"
+        )
+        assert [(member["interface"], member["flags"], member["status"], member["state"])
+                for member in group["members"]] == expected_members[host]
+        assert group["findings"] == []
+
+    assert etherchannel_baseline["schema"] == "etherchannel_baseline/1"
+    assert etherchannel_baseline["scope"] == "baseline_observed"
+    assert etherchannel_baseline["status"] == "assessed"
+    assert etherchannel_baseline["assessed"] is True
+    assert etherchannel_baseline["projection_custody"] == "embedded_unverified"
+    assert etherchannel_baseline["projection"] == {"present": True, "valid": True, "reason": ""}
+    assert etherchannel_baseline["receipt"] == {"present": True, "valid": True, "reason": ""}
+    baseline_by_host = {row["switch"]: row for row in etherchannel_baseline["rows"]}
+    assert set(baseline_by_host) == {"core1", "core2"}
+    for host in ("core1", "core2"):
+        baseline_row = baseline_by_host[host]
+        assert baseline_row["status"] == "assessed"
+        assert baseline_row["receipt_state"] == "assessed"
+        assert baseline_row["capture_state"] == "usable"
+        assert baseline_row["health_row_emitted"] is True
+        assert baseline_row["group_count"] == 1 and baseline_row["member_count"] == 2
+        assert baseline_row["groups"] == projection_by_host[host]["groups"]
+        assert baseline_row["command"] == expected_commands[host]
+        assert baseline_row["source_key"] == (
+            f"etherchannel_projection.rows[{host}] + "
+            f"protocol_assessability.rows[{host},EtherChannel]"
+        )
+        assert baseline_row["projection_custody"] == "embedded_unverified"
+
+    # Both operator workflows consume the same baseline row verbatim, including its exact source
+    # locator and custody disclosure.  Neither is allowed to independently idealize the bundle.
+    etherchannel_validation = {
+        row["device"]: row for row in snap["validation_plan"]["items"]
+        if row.get("category") == "Link"
+        and str(row.get("source_key") or "").startswith("etherchannel_projection.rows[")
+    }
+    etherchannel_nrfu = {
+        device["host"]: case
+        for wave in snap["nrfu_commands"]["waves"]
+        for device in wave["devices"]
+        for case in device["cases"]
+        if case.get("evidence_family") == "EtherChannel"
+    }
+    assert set(etherchannel_validation) == set(etherchannel_nrfu) == {"core1", "core2"}
+    for host in ("core1", "core2"):
+        baseline_row = baseline_by_host[host]
+        validation_row = etherchannel_validation[host]
+        nrfu_case = etherchannel_nrfu[host]
+        assert validation_row["evidence_state"] == nrfu_case["evidence_state"] == "assessed"
+        assert validation_row["expect"] == nrfu_case["expected"] == baseline_row["acceptance"]
+        assert validation_row["command"] == nrfu_case["command"] == baseline_row["command"]
+        assert validation_row["source_key"] == nrfu_case["source_key"] == baseline_row["source_key"]
+        assert validation_row["projection_custody"] == nrfu_case["projection_custody"] == (
+            "embedded_unverified"
+        )
+        assert "all-(P)" not in baseline_row["acceptance"]
+    assert snap["nrfu_commands"]["summary"]["n_etherchannel_cases"] == 2
+    assert snap["nrfu_commands"]["summary"]["n_etherchannel_blockers"] == 0
+    assert snap["nrfu_commands"]["summary"]["etherchannel_by_evidence_state"] == {"assessed": 2}
+    assert snap["nrfu_commands"]["summary"]["etherchannel_by_projection_custody"] == {
+        "embedded_unverified": 2
+    }
+
+    # The synthetic fleet deliberately carries one OSPF peer stuck in EXSTART.  Validation and NRFU must
+    # project the same receipt-gated observed baseline; neither may rewrite every peer as FULL.
+    ospf_health = [row for row in snap["protocol_health"]
+                   if row.get("switch") == "core1" and row.get("protocol") == "OSPF"]
+    assert ospf_health and ospf_health[0]["severity"] == "High"
+    assert "EXSTART" in ospf_health[0]["detail"]
+    routing_validation = [row for row in snap["validation_plan"]["items"]
+                          if row.get("device") == "core1" and row.get("category") == "Routing"]
+    assert len(routing_validation) == 1
+    assert routing_validation[0]["evidence_state"] == "degraded"
+    assert routing_validation[0]["expect"].startswith("PRE-CUTOVER DEGRADED — BLOCKER:")
+    assert "EXSTART" in routing_validation[0]["expect"] and "2 neighbor(s) in FULL" not in routing_validation[0]["expect"]
+    nrfu_routing = [case for wave in snap["nrfu_commands"]["waves"]
+                    for device in wave["devices"] if device.get("host") == "core1"
+                    for case in device["cases"] if case.get("command") == "show ip ospf neighbor"]
+    assert len(nrfu_routing) == 1
+    assert nrfu_routing[0]["evidence_state"] == "degraded"
+    assert nrfu_routing[0]["expected"] == routing_validation[0]["expect"]
+    assert nrfu_routing[0]["projection_custody"] == "embedded_unverified"
+    _pa_wb = load_workbook(str(out_xlsx), read_only=True)
+    _pa_text = "\n".join(
+        str(cell.value or "")
+        for row in _pa_wb["Collection Completeness"].iter_rows()
+        for cell in row
+    )
+    _pa_wb.close()
+    assert "Protocol assessability — runtime family × device receipt" in _pa_text
+    assert f"of {protocol_receipt['summary']['n_cells']} host-family cells" in _pa_text
     assurance = snap.get("traffic_assurance")
     assert assurance and assurance["schema"] == "traffic_assurance_set/1"
     assert assurance["owner"] == "cisco_toolkit.traffic_assurance.assess_flow"
@@ -602,3 +928,443 @@ def test_gate_refusal_exit_code_reaches_the_bare_script_door(tmp_path):
     assert proc.returncode == 2, (
         f"the bare-script door swallowed main()'s returned exit code (got {proc.returncode})\n"
         f"STDOUT\n{proc.stdout[-2000:]}\nSTDERR\n{proc.stderr[-2000:]}")
+
+
+def test_pipeline_protocol_health_failure_publishes_analysis_unavailable_receipt(tmp_path, monkeypatch):
+    """The real call site must carry a failed health phase into every protocol surface.
+
+    Direct writer tests were insufficient: the old pipeline always passed ``[]`` and never set the
+    writers' unavailable flag, making a compute failure look identical to no findings.
+    """
+    collection = fx.write_collection(str(tmp_path / "failed-protocol-collection"))
+    devices = tmp_path / "failed-protocol-devices.json"
+    devices.write_text(json.dumps(fx.DEVICES), encoding="utf-8")
+    template = tmp_path / "failed-protocol-template.xlsx"
+    _make_template(str(template))
+    out_xlsx = tmp_path / "failed-protocol-health.xlsx"
+
+    def _fail_protocol_health(*_args, **_kwargs):
+        raise RuntimeError("synthetic protocol-health failure")
+
+    monkeypatch.setattr(cp, "compute_protocol_health", _fail_protocol_health)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", [
+        "cisco-assess", "--no-collect", "--collection-dir", collection,
+        "--devices-file", str(devices), "--template", str(template),
+        "--output", str(out_xlsx), "--workers", "1",
+        "--no-html", "--no-docx", "--no-pptx", "--no-design", "--no-mop",
+        "--no-crd", "--no-engagement", "--no-opshandbook", "--no-archreview",
+    ])
+
+    cp.main()
+
+    snap = json.loads((tmp_path / "failed-protocol-health.snapshot.json").read_text(encoding="utf-8"))
+    receipt = snap["protocol_assessability"]
+    assert snap["protocol_health"] == [] and snap["protocol_intelligence"] == []
+    assert receipt["schema"] == "protocol_assessability/1"
+    assert receipt["summary"]["n_cells"] == len(fx.DEVICES) * 7
+    assert receipt["summary"]["by_state"]["analysis_unavailable"] == len(fx.DEVICES) * 7
+    assert {row["state"] for row in receipt["rows"]} == {"analysis_unavailable"}
+    assert "Protocol Health" in set(snap["assessment_integrity"]["failed_phases"])
+
+    # The raw summary projection remains available, but the failed health phase makes its exact
+    # device-family receipt non-assessed.  The shared baseline must therefore fail closed rather than
+    # turning association or raw (P) tokens into an accepted operational target.
+    assert snap["etherchannel_projection"]["schema"] == "etherchannel_projection/1"
+    failed_etherchannel = snap["etherchannel_baseline"]
+    assert failed_etherchannel["schema"] == "etherchannel_baseline/1"
+    assert failed_etherchannel["projection_custody"] == "embedded_unverified"
+    failed_baseline_by_host = {row["switch"]: row for row in failed_etherchannel["rows"]}
+    assert set(failed_baseline_by_host) == {"core1", "core2"}
+    assert failed_etherchannel["status"] == "not_verified"
+    assert failed_etherchannel["assessed"] is False
+    assert failed_etherchannel["summary"]["by_status"] == {
+        "assessed": 0, "degraded": 0, "review": 0, "not_verified": 2,
+    }
+    for host, baseline_row in failed_baseline_by_host.items():
+        assert baseline_row["status"] == "not_verified"
+        assert baseline_row["receipt_state"] == "analysis_unavailable"
+        assert baseline_row["capture_state"] == "usable"
+        assert baseline_row["group_count"] == 1 and baseline_row["member_count"] == 2
+        assert baseline_row["acceptance"].startswith(
+            "ETHERCHANNEL BASELINE NOT VERIFIED — BLOCKER:"
+        )
+        assert baseline_row["source_key"] == (
+            f"etherchannel_projection.rows[{host}] + "
+            f"protocol_assessability.rows[{host},EtherChannel]"
+        )
+        assert "all-(P)" not in baseline_row["acceptance"]
+        assert "all physical members are in (P)/bundled state" not in baseline_row["acceptance"]
+
+    # A failed health phase cannot leave the independently parsed peer projection looking like an accepted
+    # baseline.  Both operator workflows must emit the same explicit recapture blocker.
+    routing_validation = [row for row in snap["validation_plan"]["items"]
+                          if row.get("category") == "Routing"]
+    assert routing_validation
+    assert {row["evidence_state"] for row in routing_validation} == {"not_verified"}
+    assert all(row["expect"].startswith("ROUTING BASELINE NOT VERIFIED — BLOCKER:")
+               for row in routing_validation)
+    nrfu_routing = [case for wave in snap["nrfu_commands"]["waves"]
+                    for device in wave["devices"] for case in device["cases"]
+                    if case.get("evidence_family") in {"OSPF", "BGP", "EIGRP"}]
+    assert nrfu_routing
+    assert {case["evidence_state"] for case in nrfu_routing} == {"not_verified"}
+    assert all(case["expected"].startswith("ROUTING BASELINE NOT VERIFIED — BLOCKER:")
+               for case in nrfu_routing)
+
+    etherchannel_validation = {
+        row["device"]: row for row in snap["validation_plan"]["items"]
+        if row.get("category") == "Link"
+        and str(row.get("source_key") or "").startswith("etherchannel_projection.rows[")
+    }
+    etherchannel_nrfu = {
+        device["host"]: case
+        for wave in snap["nrfu_commands"]["waves"]
+        for device in wave["devices"]
+        for case in device["cases"]
+        if case.get("evidence_family") == "EtherChannel"
+    }
+    assert set(etherchannel_validation) == set(etherchannel_nrfu) == {"core1", "core2"}
+    for host in ("core1", "core2"):
+        baseline_row = failed_baseline_by_host[host]
+        validation_row = etherchannel_validation[host]
+        nrfu_case = etherchannel_nrfu[host]
+        assert validation_row["evidence_state"] == nrfu_case["evidence_state"] == "not_verified"
+        assert validation_row["expect"] == nrfu_case["expected"] == baseline_row["acceptance"]
+        assert validation_row["command"] == nrfu_case["command"] == baseline_row["command"]
+        assert validation_row["source_key"] == nrfu_case["source_key"] == baseline_row["source_key"]
+        assert validation_row["projection_custody"] == nrfu_case["projection_custody"] == (
+            "embedded_unverified"
+        )
+        assert "all-(P)" not in validation_row["expect"]
+        assert "all physical members are in (P)/bundled state" not in nrfu_case["expected"]
+    assert snap["nrfu_commands"]["summary"]["n_etherchannel_cases"] == 2
+    assert snap["nrfu_commands"]["summary"]["n_etherchannel_blockers"] == 2
+    assert snap["nrfu_commands"]["summary"]["etherchannel_by_evidence_state"] == {
+        "not_verified": 2
+    }
+
+    wb = load_workbook(str(out_xlsx), read_only=True)
+    assert "UNVERIFIED" in str(wb["Protocol Health"]["A2"].value)
+    assert "UNVERIFIED" in str(wb["Protocol Intelligence"]["A2"].value)
+    cc_text = "\n".join(
+        str(cell.value or "") for row in wb["Collection Completeness"].iter_rows() for cell in row
+    )
+    wb.close()
+    assert "ANALYSIS UNAVAILABLE" in cc_text
+    assert "no health conclusion is asserted" in cc_text
+
+
+def test_pipeline_bgp_denominator_phase_failure_fails_closed_every_consumer(
+        tmp_path, monkeypatch):
+    """A crashed configured-peer owner is not serialized as feature absence or healthy BGP."""
+    from cisco_toolkit.analyze import compute_current_baseline_gate
+
+    collection = fx.write_collection(str(tmp_path / "failed-bgp-collection"))
+    devices = tmp_path / "failed-bgp-devices.json"
+    devices.write_text(json.dumps(fx.DEVICES), encoding="utf-8")
+    template = tmp_path / "failed-bgp-template.xlsx"
+    _make_template(str(template))
+    out_xlsx = tmp_path / "failed-bgp.xlsx"
+
+    def _fail_bgp_denominator(*_args, **_kwargs):
+        raise RuntimeError("synthetic configured-BGP phase failure")
+
+    monkeypatch.setattr(cp, "compute_bgp_configured_peer_baseline", _fail_bgp_denominator)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", [
+        "cisco-assess", "--no-collect", "--collection-dir", collection,
+        "--devices-file", str(devices), "--template", str(template),
+        "--output", str(out_xlsx), "--workers", "1",
+        "--no-html", "--no-docx", "--no-pptx", "--no-design", "--no-mop",
+        "--no-crd", "--no-engagement", "--no-opshandbook", "--no-archreview",
+    ])
+
+    cp.main()
+    snap = json.loads((tmp_path / "failed-bgp.snapshot.json").read_text(encoding="utf-8"))
+    assert snap["bgp_configured_peer_baseline"]["verdict"] == "INDETERMINATE"
+    assert snap["bgp_configured_peer_baseline"]["projection_custody"] == "embedded_unverified"
+    assert "BGP configured-peer baseline" in set(
+        snap["assessment_integrity"]["failed_phases"])
+
+    assert all(group["readiness"] != "READY" for group in snap["migration_readiness"])
+    routing_checks = [
+        check for group in snap["migration_readiness"] for check in group["checks"]
+        if check["check"] == "Routing adjacencies up"
+    ]
+    assert routing_checks and all(check["status"] in {"warn", "fail"}
+                                  for check in routing_checks)
+
+    bgp_validation = [
+        row for row in snap["validation_plan"]["items"]
+        if row.get("evidence_state") == "not_verified"
+        and row["expect"].startswith("BGP CONFIGURED PEER NOT VERIFIED — BLOCKER:")
+    ]
+    assert bgp_validation
+    assert compute_current_baseline_gate(snap["validation_plan"])["verdict"] != "CLEAR"
+
+    bgp_nrfu = [
+        case for wave in snap["nrfu_commands"]["waves"]
+        for device in wave["devices"] for case in device["cases"]
+        if case.get("evidence_family") == "BGP"
+    ]
+    assert bgp_nrfu and all(case["evidence_state"] == "not_verified"
+                            for case in bgp_nrfu)
+    assert snap["nrfu_commands"]["summary"]["n_routing_blockers"] >= len(bgp_nrfu)
+
+
+def test_pipeline_fhrp_denominator_phase_failure_fails_closed_every_consumer(
+        tmp_path, monkeypatch):
+    """A crashed configured-group owner is not serialized as feature absence or healthy FHRP."""
+    from cisco_toolkit.analyze import compute_current_baseline_gate
+
+    collection = fx.write_collection(str(tmp_path / "failed-fhrp-collection"))
+    devices = tmp_path / "failed-fhrp-devices.json"
+    devices.write_text(json.dumps(fx.DEVICES), encoding="utf-8")
+    template = tmp_path / "failed-fhrp-template.xlsx"
+    _make_template(str(template))
+    out_xlsx = tmp_path / "failed-fhrp.xlsx"
+
+    def _fail_fhrp_denominator(*_args, **_kwargs):
+        raise RuntimeError("synthetic configured-FHRP phase failure")
+
+    monkeypatch.setattr(cp, "compute_fhrp_configured_group_baseline", _fail_fhrp_denominator)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", [
+        "cisco-assess", "--no-collect", "--collection-dir", collection,
+        "--devices-file", str(devices), "--template", str(template),
+        "--output", str(out_xlsx), "--workers", "1",
+        "--no-html", "--no-docx", "--no-pptx", "--no-design", "--no-mop",
+        "--no-crd", "--no-engagement", "--no-opshandbook", "--no-archreview",
+    ])
+
+    cp.main()
+    snap = json.loads((tmp_path / "failed-fhrp.snapshot.json").read_text(encoding="utf-8"))
+    baseline = snap["fhrp_configured_group_baseline"]
+    assert baseline["verdict"] == "INDETERMINATE"
+    assert baseline["projection_custody"] == "embedded_unverified"
+    assert "FHRP configured-group baseline" in set(
+        snap["assessment_integrity"]["failed_phases"])
+
+    assert all(group["readiness"] != "READY" for group in snap["migration_readiness"])
+    gateway_checks = [
+        check for group in snap["migration_readiness"] for check in group["checks"]
+        if check["check"] == "Gateway redundancy"
+    ]
+    assert gateway_checks and all(check["status"] in {"warn", "fail"}
+                                  for check in gateway_checks)
+
+    fhrp_validation = [
+        row for row in snap["validation_plan"]["items"]
+        if row.get("evidence_state") == "not_verified"
+        and row["expect"].startswith("FHRP CONFIGURED GROUP NOT VERIFIED — BLOCKER:")
+    ]
+    assert fhrp_validation
+    assert compute_current_baseline_gate(snap["validation_plan"])["verdict"] != "CLEAR"
+
+    fhrp_nrfu = [
+        case for wave in snap["nrfu_commands"]["waves"]
+        for device in wave["devices"] for case in device["cases"]
+        if case.get("evidence_family") == "FHRP"
+    ]
+    assert fhrp_nrfu and all(case["evidence_state"] == "not_verified"
+                            for case in fhrp_nrfu)
+    assert snap["nrfu_commands"]["summary"]["n_fhrp_blockers"] == len(fhrp_nrfu)
+
+
+def test_pipeline_fhrp_domain_phase_failure_publishes_static_blockers(
+        tmp_path, monkeypatch):
+    """A crashed cross-switch owner publishes an abstention and every safe scoped SVI survives."""
+    from cisco_toolkit.analyze import compute_current_baseline_gate
+
+    collection = fx.write_collection(str(tmp_path / "failed-fhrp-domain-collection"))
+    devices = tmp_path / "failed-fhrp-domain-devices.json"
+    devices.write_text(json.dumps(fx.DEVICES), encoding="utf-8")
+    template = tmp_path / "failed-fhrp-domain-template.xlsx"
+    _make_template(str(template))
+    out_xlsx = tmp_path / "failed-fhrp-domain.xlsx"
+
+    def _fail_fhrp_domain(*_args, **_kwargs):
+        raise RuntimeError("synthetic FHRP redundancy-domain phase failure")
+
+    monkeypatch.setattr(cp, "compute_fhrp_redundancy_domain_baseline", _fail_fhrp_domain)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", [
+        "cisco-assess", "--no-collect", "--collection-dir", collection,
+        "--devices-file", str(devices), "--template", str(template),
+        "--output", str(out_xlsx), "--workers", "1",
+        "--no-html", "--no-docx", "--no-pptx", "--no-design", "--no-mop",
+        "--no-crd", "--no-engagement", "--no-opshandbook", "--no-archreview",
+    ])
+
+    cp.main()
+    snap = json.loads(
+        (tmp_path / "failed-fhrp-domain.snapshot.json").read_text(encoding="utf-8"))
+    published = snap["fhrp_redundancy_domain_baseline"]
+    assert published["schema"] == "fhrp_redundancy_domain_baseline/1"
+    assert published["verdict"] == "INDETERMINATE"
+    assert published["projection_custody"] == "embedded_unverified"
+    assert published["rows"] == []
+    assert "FHRP redundancy-domain baseline" in set(
+        snap["assessment_integrity"]["failed_phases"])
+
+    validation = [
+        row for row in snap["validation_plan"]["items"]
+        if row.get("source_key") == "fhrp_redundancy_domain_baseline"
+    ]
+    cases = [
+        case for wave in snap["nrfu_commands"]["waves"]
+        for device in wave["devices"] for case in device["cases"]
+        if case.get("evidence_family") == "FHRP Domain"
+    ]
+    assert validation and len(validation) == len(cases)
+    assert {row["evidence_state"] for row in validation} == {"not_verified"}
+    assert {case["evidence_state"] for case in cases} == {"not_verified"}
+    assert all(row["expect"].startswith(
+        "FHRP REDUNDANCY DOMAIN NOT VERIFIED — BLOCKER:") for row in validation)
+    assert all(case["expected"].startswith(
+        "FHRP REDUNDANCY DOMAIN NOT VERIFIED — BLOCKER:") for case in cases)
+    assert compute_current_baseline_gate(snap["validation_plan"])["verdict"] != "CLEAR"
+    summary = snap["nrfu_commands"]["summary"]
+    assert summary["n_fhrp_domain_cases"] == len(cases)
+    assert summary["n_fhrp_domain_blockers"] == len(cases)
+    assert summary["fhrp_domain_by_evidence_state"] == {"not_verified": len(cases)}
+
+
+def test_pipeline_vtp_safety_phase_failure_publishes_subject_scoped_blocker(
+        tmp_path, monkeypatch):
+    """A crashed VTP owner cannot erase an independently parsed local VTP subject."""
+    from cisco_toolkit.analyze import compute_current_baseline_gate
+
+    collection = fx.write_collection(str(tmp_path / "failed-vtp-collection"))
+    vtp_capture = tmp_path / "failed-vtp-collection" / "core1" / fx.cmd_filename(
+        "show vtp status")
+    vtp_capture.write_text(
+        "VTP Version capable             : 1 to 3\n"
+        "VTP version running             : 2\n"
+        "VTP Domain Name                 : CAMPUS\n"
+        "VTP Operating Mode              : Server\n"
+        "Configuration Revision          : 150\n",
+        encoding="utf-8",
+    )
+    devices = tmp_path / "failed-vtp-devices.json"
+    devices.write_text(json.dumps(fx.DEVICES), encoding="utf-8")
+    template = tmp_path / "failed-vtp-template.xlsx"
+    _make_template(str(template))
+    out_xlsx = tmp_path / "failed-vtp.xlsx"
+
+    def _fail_vtp_owner(*_args, **_kwargs):
+        raise RuntimeError("synthetic VTP safety phase failure")
+
+    monkeypatch.setattr(cp, "compute_vtp_safety_baseline", _fail_vtp_owner)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", [
+        "cisco-assess", "--no-collect", "--collection-dir", collection,
+        "--devices-file", str(devices), "--template", str(template),
+        "--output", str(out_xlsx), "--workers", "1",
+        "--no-html", "--no-docx", "--no-pptx", "--no-design", "--no-mop",
+        "--no-crd", "--no-engagement", "--no-opshandbook", "--no-archreview",
+    ])
+
+    cp.main()
+    snap = json.loads((tmp_path / "failed-vtp.snapshot.json").read_text(encoding="utf-8"))
+    published = snap["vtp_safety_baseline"]
+    assert published["schema"] == "vtp_safety_baseline/1"
+    assert published["verdict"] == "INDETERMINATE"
+    assert published["projection_custody"] == "embedded_unverified"
+    assert published["rows"] == []
+    assert "VTP safety baseline" in set(snap["assessment_integrity"]["failed_phases"])
+    assert any(row.get("switch") == "core1" and row.get("protocol") == "VTP"
+               for row in snap["protocol_health"])
+
+    validation = [
+        row for row in snap["validation_plan"]["items"]
+        if row.get("category") == "VTP"
+    ]
+    cases = [
+        case for wave in snap["nrfu_commands"]["waves"]
+        for device in wave["devices"] for case in device["cases"]
+        if case.get("evidence_family") == "VTP"
+    ]
+    assert len(validation) == len(cases) == 1
+    assert validation[0]["device"] == "core1"
+    assert validation[0]["evidence_state"] == cases[0]["evidence_state"] == "not_verified"
+    assert validation[0]["expect"].startswith(
+        "VTP SAFETY BASELINE NOT VERIFIED — BLOCKER:")
+    assert cases[0]["expected"] == validation[0]["expect"]
+    assert compute_current_baseline_gate(snap["validation_plan"])["verdict"] != "CLEAR"
+    assert snap["nrfu_commands"]["summary"]["n_vtp_safety_cases"] == 1
+    assert snap["nrfu_commands"]["summary"]["n_vtp_safety_blockers"] == 1
+    assert any(row.get("category") == "VTP" for row in snap["punchlist"])
+    vtp_checks = [
+        check for group in snap["migration_readiness"] for check in group["checks"]
+        if check["check"] == "VTP cutover safety"
+    ]
+    assert vtp_checks and any(check["status"] == "warn" for check in vtp_checks)
+
+
+def test_pipeline_ipv6_routing_phase_failure_publishes_subject_scoped_blockers(
+        tmp_path, monkeypatch):
+    """A crashed IPv6 owner cannot erase independently scoped OSPFv3/BGPv6 subjects."""
+    from cisco_toolkit.analyze import compute_current_baseline_gate
+
+    collection = fx.write_collection(str(tmp_path / "failed-ipv6-collection"))
+    devices = tmp_path / "failed-ipv6-devices.json"
+    devices.write_text(json.dumps(fx.DEVICES), encoding="utf-8")
+    template = tmp_path / "failed-ipv6-template.xlsx"
+    _make_template(str(template))
+    out_xlsx = tmp_path / "failed-ipv6.xlsx"
+
+    def _fail_ipv6_owner(*_args, **_kwargs):
+        raise RuntimeError("synthetic IPv6 routing owner phase failure")
+
+    monkeypatch.setattr(
+        cp, "compute_ipv6_routing_adjacency_baseline", _fail_ipv6_owner)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", [
+        "cisco-assess", "--no-collect", "--collection-dir", collection,
+        "--devices-file", str(devices), "--template", str(template),
+        "--output", str(out_xlsx), "--workers", "1",
+        "--no-html", "--no-docx", "--no-pptx", "--no-design", "--no-mop",
+        "--no-crd", "--no-engagement", "--no-opshandbook", "--no-archreview",
+    ])
+
+    cp.main()
+    snap = json.loads((tmp_path / "failed-ipv6.snapshot.json").read_text(
+        encoding="utf-8"))
+    published = snap["ipv6_routing_adjacency_baseline"]
+    assert published["schema"] == "ipv6_routing_adjacency_baseline/1"
+    assert published["verdict"] == "INDETERMINATE"
+    assert published["projection_custody"] == "embedded_unverified"
+    assert published["rows"] == []
+    assert "IPv6 routing adjacency baseline" in set(
+        snap["assessment_integrity"]["failed_phases"])
+
+    validation = [
+        row for row in snap["validation_plan"]["items"]
+        if row.get("category") == "IPv6 Routing"
+    ]
+    cases = [
+        case for wave in snap["nrfu_commands"]["waves"]
+        for device in wave["devices"] for case in device["cases"]
+        if case.get("evidence_family") == "IPv6 Routing"
+    ]
+    assert len(validation) == len(cases) == 2
+    assert {row["device"] for row in validation} == {"access1"}
+    assert {row["evidence_state"] for row in validation} == {"not_verified"}
+    assert {case["evidence_state"] for case in cases} == {"not_verified"}
+    assert all(row["expect"].startswith(
+        "IPV6 ROUTING BASELINE NOT VERIFIED — BLOCKER:") for row in validation)
+    assert all(case["expected"].startswith(
+        "IPV6 ROUTING BASELINE NOT VERIFIED — BLOCKER:") for case in cases)
+    assert compute_current_baseline_gate(snap["validation_plan"])["verdict"] != "CLEAR"
+    summary = snap["nrfu_commands"]["summary"]
+    assert summary["n_ipv6_routing_cases"] == 2
+    assert summary["n_ipv6_routing_blockers"] == 2
+    assert len([row for row in snap["punchlist"]
+                if row.get("category") == "IPv6 Routing"]) == 2
+    ipv6_checks = [
+        check for group in snap["migration_readiness"] for check in group["checks"]
+        if check["check"] == "IPv6 routing adjacencies"
+    ]
+    assert ipv6_checks and any(check["status"] == "warn" for check in ipv6_checks)

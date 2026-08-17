@@ -874,6 +874,1583 @@
    "detail": ""
   }
  ],
+ "protocol_assessability": {
+  "schema": "protocol_assessability/1",
+  "families": [
+   {
+    "protocol": "STP",
+    "inputs": [
+     {
+      "id": "state",
+      "commands": [
+       "show spanning-tree"
+      ],
+      "required": true
+     },
+     {
+      "id": "blocked_ports",
+      "commands": [
+       "show spanning-tree blockedports"
+      ],
+      "required": true
+     },
+     {
+      "id": "inconsistent_ports",
+      "commands": [
+       "show spanning-tree inconsistentports"
+      ],
+      "required": true
+     },
+     {
+      "id": "topology_changes",
+      "commands": [
+       "show spanning-tree detail"
+      ],
+      "required": false
+     }
+    ],
+    "boundary": "Observed mode/state and blocked/inconsistent ports require usable captures; topology-change counts are optional and reported only when detail evidence parses.",
+    "recollect": "Re-run show spanning-tree plus blockedports and inconsistentports; add detail where the platform supports it."
+   },
+   {
+    "protocol": "EtherChannel",
+    "inputs": [
+     {
+      "id": "membership",
+      "commands": [
+       "show etherchannel summary",
+       "show port-channel summary"
+      ],
+      "required": true
+     }
+    ],
+    "boundary": "Observed member flags only; no configured-bundle, partner, hashing, bandwidth, or multi-chassis denominator.",
+    "recollect": "Re-run the platform's EtherChannel or port-channel summary command."
+   },
+   {
+    "protocol": "VTP",
+    "inputs": [
+     {
+      "id": "status",
+      "commands": [
+       "show vtp status"
+      ],
+      "required": true
+     }
+    ],
+    "boundary": "Observed mode, domain, and revision only; no database-propagation proof.",
+    "recollect": "Re-run show vtp status."
+   },
+   {
+    "protocol": "OSPF",
+    "inputs": [
+     {
+      "id": "neighbors",
+      "commands": [
+       "show ip ospf neighbor"
+      ],
+      "required": true
+     }
+    ],
+    "boundary": "Observed OSPFv2 neighbors only; configured or expected neighbors that are absent from the table are not known.",
+    "recollect": "Re-run show ip ospf neighbor and validate the expected-neighbor set separately."
+   },
+   {
+    "protocol": "BGP",
+    "inputs": [
+     {
+      "id": "peers",
+      "commands": [
+       "show bgp ipv4 unicast summary",
+       "show bgp ip unicast summary",
+       "show ip bgp summary",
+       "show bgp summary"
+      ],
+      "required": true
+     }
+    ],
+    "boundary": "Observed default/global IPv4-unicast summary peers only. Configured-peer intent is assessed by the separate bounded literal-peer baseline; other VRFs/address families and route-policy correctness remain outside this runtime receipt.",
+    "recollect": "Re-run show ip bgp summary on IOS/IOS-XE or an explicitly IPv4-unicast BGP summary on NX-OS, plus show running-config for configured-peer reconciliation."
+   },
+   {
+    "protocol": "EIGRP",
+    "inputs": [
+     {
+      "id": "neighbors",
+      "commands": [
+       "show ip eigrp neighbors"
+      ],
+      "required": true
+     }
+    ],
+    "boundary": "Presence-only observed IPv4 neighbors; missing expected neighbors and negative protocol states cannot be inferred from an empty table.",
+    "recollect": "Re-run show ip eigrp neighbors and supply an explicit expected-neighbor baseline."
+   },
+   {
+    "protocol": "FHRP",
+    "inputs": [
+     {
+      "id": "hsrp_groups",
+      "commands": [
+       "show standby brief",
+       "show standby all",
+       "show hsrp brief",
+       "show hsrp all"
+      ],
+      "required": true
+     },
+     {
+      "id": "vrrp_groups",
+      "commands": [
+       "show vrrp brief"
+      ],
+      "required": true
+     },
+     {
+      "id": "glbp_groups",
+      "commands": [
+       "show glbp brief"
+      ],
+      "required": true
+     }
+    ],
+    "boundary": "Observed local HSRP, VRRP, and GLBP groups only; peer intent, timers, authentication, tracking, and complete election state remain outside this receipt.",
+    "recollect": "Re-run the supported HSRP, VRRP, and GLBP summary commands for this platform."
+   }
+  ],
+  "rows": [
+   {
+    "switch": "access1",
+    "protocol": "STP",
+    "input_states": {
+     "state": "usable",
+     "blocked_ports": "missing",
+     "inconsistent_ports": "missing",
+     "topology_changes": "missing"
+    },
+    "capture_state": "usable",
+    "health_row_emitted": true,
+    "state": "partial",
+    "reason": "A health row was emitted, but blocked_ports, inconsistent_ports evidence was not usable (missing, empty, or errored). Treat the observed result as partial, not a complete protocol verdict."
+   },
+   {
+    "switch": "access1",
+    "protocol": "EtherChannel",
+    "input_states": {
+     "membership": "missing"
+    },
+    "capture_state": "missing",
+    "health_row_emitted": false,
+    "state": "not_collected",
+    "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion."
+   },
+   {
+    "switch": "access1",
+    "protocol": "VTP",
+    "input_states": {
+     "status": "missing"
+    },
+    "capture_state": "missing",
+    "health_row_emitted": false,
+    "state": "not_collected",
+    "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion."
+   },
+   {
+    "switch": "access1",
+    "protocol": "OSPF",
+    "input_states": {
+     "neighbors": "missing"
+    },
+    "capture_state": "missing",
+    "health_row_emitted": false,
+    "state": "not_collected",
+    "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion."
+   },
+   {
+    "switch": "access1",
+    "protocol": "BGP",
+    "input_states": {
+     "peers": "missing"
+    },
+    "capture_state": "missing",
+    "health_row_emitted": false,
+    "state": "not_collected",
+    "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion."
+   },
+   {
+    "switch": "access1",
+    "protocol": "EIGRP",
+    "input_states": {
+     "neighbors": "missing"
+    },
+    "capture_state": "missing",
+    "health_row_emitted": false,
+    "state": "not_collected",
+    "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion."
+   },
+   {
+    "switch": "access1",
+    "protocol": "FHRP",
+    "input_states": {
+     "hsrp_groups": "missing",
+     "vrrp_groups": "missing",
+     "glbp_groups": "missing"
+    },
+    "capture_state": "missing",
+    "health_row_emitted": false,
+    "state": "not_collected",
+    "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion."
+   },
+   {
+    "switch": "core1",
+    "protocol": "STP",
+    "input_states": {
+     "state": "usable",
+     "blocked_ports": "missing",
+     "inconsistent_ports": "missing",
+     "topology_changes": "missing"
+    },
+    "capture_state": "usable",
+    "health_row_emitted": true,
+    "state": "partial",
+    "reason": "A health row was emitted, but blocked_ports, inconsistent_ports evidence was not usable (missing, empty, or errored). Treat the observed result as partial, not a complete protocol verdict."
+   },
+   {
+    "switch": "core1",
+    "protocol": "EtherChannel",
+    "input_states": {
+     "membership": "usable"
+    },
+    "capture_state": "usable",
+    "health_row_emitted": true,
+    "state": "assessed",
+    "reason": "A bounded health row was emitted from usable current-run evidence. The family boundary still applies; this is not protocol-completeness proof."
+   },
+   {
+    "switch": "core1",
+    "protocol": "VTP",
+    "input_states": {
+     "status": "missing"
+    },
+    "capture_state": "missing",
+    "health_row_emitted": false,
+    "state": "not_collected",
+    "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion."
+   },
+   {
+    "switch": "core1",
+    "protocol": "OSPF",
+    "input_states": {
+     "neighbors": "usable"
+    },
+    "capture_state": "usable",
+    "health_row_emitted": true,
+    "state": "assessed",
+    "reason": "A bounded health row was emitted from usable current-run evidence. The family boundary still applies; this is not protocol-completeness proof."
+   },
+   {
+    "switch": "core1",
+    "protocol": "BGP",
+    "input_states": {
+     "peers": "missing"
+    },
+    "capture_state": "missing",
+    "health_row_emitted": false,
+    "state": "not_collected",
+    "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion."
+   },
+   {
+    "switch": "core1",
+    "protocol": "EIGRP",
+    "input_states": {
+     "neighbors": "missing"
+    },
+    "capture_state": "missing",
+    "health_row_emitted": false,
+    "state": "not_collected",
+    "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion."
+   },
+   {
+    "switch": "core1",
+    "protocol": "FHRP",
+    "input_states": {
+     "hsrp_groups": "usable",
+     "vrrp_groups": "missing",
+     "glbp_groups": "missing"
+    },
+    "capture_state": "usable",
+    "health_row_emitted": true,
+    "state": "partial",
+    "reason": "A health row was emitted, but vrrp_groups, glbp_groups evidence was not usable (missing, empty, or errored). Treat the observed result as partial, not a complete protocol verdict."
+   },
+   {
+    "switch": "core2",
+    "protocol": "STP",
+    "input_states": {
+     "state": "usable",
+     "blocked_ports": "missing",
+     "inconsistent_ports": "missing",
+     "topology_changes": "missing"
+    },
+    "capture_state": "usable",
+    "health_row_emitted": true,
+    "state": "partial",
+    "reason": "A health row was emitted, but blocked_ports, inconsistent_ports evidence was not usable (missing, empty, or errored). Treat the observed result as partial, not a complete protocol verdict."
+   },
+   {
+    "switch": "core2",
+    "protocol": "EtherChannel",
+    "input_states": {
+     "membership": "usable"
+    },
+    "capture_state": "usable",
+    "health_row_emitted": true,
+    "state": "assessed",
+    "reason": "A bounded health row was emitted from usable current-run evidence. The family boundary still applies; this is not protocol-completeness proof."
+   },
+   {
+    "switch": "core2",
+    "protocol": "VTP",
+    "input_states": {
+     "status": "missing"
+    },
+    "capture_state": "missing",
+    "health_row_emitted": false,
+    "state": "not_collected",
+    "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion."
+   },
+   {
+    "switch": "core2",
+    "protocol": "OSPF",
+    "input_states": {
+     "neighbors": "missing"
+    },
+    "capture_state": "missing",
+    "health_row_emitted": false,
+    "state": "not_collected",
+    "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion."
+   },
+   {
+    "switch": "core2",
+    "protocol": "BGP",
+    "input_states": {
+     "peers": "missing"
+    },
+    "capture_state": "missing",
+    "health_row_emitted": false,
+    "state": "not_collected",
+    "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion."
+   },
+   {
+    "switch": "core2",
+    "protocol": "EIGRP",
+    "input_states": {
+     "neighbors": "missing"
+    },
+    "capture_state": "missing",
+    "health_row_emitted": false,
+    "state": "not_collected",
+    "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion."
+   },
+   {
+    "switch": "core2",
+    "protocol": "FHRP",
+    "input_states": {
+     "hsrp_groups": "usable",
+     "vrrp_groups": "missing",
+     "glbp_groups": "missing"
+    },
+    "capture_state": "usable",
+    "health_row_emitted": true,
+    "state": "partial",
+    "reason": "A health row was emitted, but vrrp_groups, glbp_groups evidence was not usable (missing, empty, or errored). Treat the observed result as partial, not a complete protocol verdict."
+   }
+  ],
+  "summary": {
+   "n_devices": 3,
+   "n_families": 7,
+   "n_cells": 21,
+   "n_health_rows": 8,
+   "n_complete_devices": 0,
+   "by_state": {
+    "assessed": 3,
+    "partial": 5,
+    "captured_no_record": 0,
+    "captured_empty": 0,
+    "capture_error": 0,
+    "not_collected": 13,
+    "analysis_unavailable": 0
+   }
+  },
+  "limitations": [
+   "A missing health row never proves that a protocol is absent or healthy.",
+   "Observed routing neighbors are not an expected-neighbor or configuration denominator.",
+   "The receipt reports current-run capture and parser reachability; it is not live field validation."
+  ]
+ },
+ "bgp_configured_peer_baseline": {
+  "schema": "bgp_configured_peer_baseline/1",
+  "scope": {
+   "routing_instance": "default",
+   "afi": "ipv4",
+   "safi": "unicast",
+   "peer_kind": "direct_static_literal"
+  },
+  "verdict": "NOT_APPLICABLE",
+  "assessed": false,
+  "projection_custody": "embedded_unverified",
+  "rows": [],
+  "coverage": [
+   {
+    "switch": "access1",
+    "platform": "ios",
+    "subject": false,
+    "status": "not_verified",
+    "config_command": "show running-config",
+    "config_capture_status": "incomplete",
+    "config_parser_status": "not_verified",
+    "runtime_command": "",
+    "runtime_capture_status": "not_observed",
+    "runtime_parser_status": "not_verified",
+    "bgp_stanza_count": 0,
+    "neighbor_candidate_count": 0,
+    "supported_peer_count": 0,
+    "rejected_candidate_count": 0,
+    "excluded_scope_count": 0,
+    "unsupported_relevant_count": 0,
+    "runtime_candidate_count": 0,
+    "runtime_parsed_count": 0,
+    "runtime_rejected_count": 0,
+    "runtime_local_as": "",
+    "config_sha256": "d09fde28df359a810df146aedfb94b5446d313c3e5247bc5a3a070dc01a9fd16",
+    "runtime_sha256": "",
+    "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
+    "finding_codes": []
+   },
+   {
+    "switch": "core1",
+    "platform": "ios",
+    "subject": false,
+    "status": "not_verified",
+    "config_command": "show running-config",
+    "config_capture_status": "incomplete",
+    "config_parser_status": "not_verified",
+    "runtime_command": "",
+    "runtime_capture_status": "not_observed",
+    "runtime_parser_status": "not_verified",
+    "bgp_stanza_count": 0,
+    "neighbor_candidate_count": 0,
+    "supported_peer_count": 0,
+    "rejected_candidate_count": 0,
+    "excluded_scope_count": 0,
+    "unsupported_relevant_count": 0,
+    "runtime_candidate_count": 0,
+    "runtime_parsed_count": 0,
+    "runtime_rejected_count": 0,
+    "runtime_local_as": "",
+    "config_sha256": "19381bd4cdd336c0b3ffbb5073f65a75f651c6158bf3c276e9b63bdd13eba8b6",
+    "runtime_sha256": "",
+    "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
+    "finding_codes": []
+   },
+   {
+    "switch": "core2",
+    "platform": "nxos",
+    "subject": false,
+    "status": "not_verified",
+    "config_command": "show running-config",
+    "config_capture_status": "inspection_missing",
+    "config_parser_status": "not_verified",
+    "runtime_command": "",
+    "runtime_capture_status": "not_observed",
+    "runtime_parser_status": "not_verified",
+    "bgp_stanza_count": 0,
+    "neighbor_candidate_count": 0,
+    "supported_peer_count": 0,
+    "rejected_candidate_count": 0,
+    "excluded_scope_count": 0,
+    "unsupported_relevant_count": 0,
+    "runtime_candidate_count": 0,
+    "runtime_parsed_count": 0,
+    "runtime_rejected_count": 0,
+    "runtime_local_as": "",
+    "config_sha256": "",
+    "runtime_sha256": "",
+    "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
+    "finding_codes": []
+   }
+  ],
+  "findings": [],
+  "summary": {
+   "n_hosts": 3,
+   "n_subject_hosts": 0,
+   "n_configured_peers": 0,
+   "n_active_peers": 0,
+   "n_established": 0,
+   "n_degraded": 0,
+   "n_review": 0,
+   "n_not_verified": 0,
+   "n_disabled": 0,
+   "by_status": {
+    "degraded": 0,
+    "review": 0,
+    "not_verified": 0,
+    "assessed": 0,
+    "administratively_disabled": 0
+   },
+   "by_coverage_status": {
+    "degraded": 0,
+    "review": 0,
+    "not_verified": 3,
+    "assessed": 0,
+    "not_applicable": 0
+   },
+   "baseline_sha256": "5bb6e296ce5b5201c71459f8daa727b6beac053ae9a0cf583f13627eb5c36289"
+  },
+  "limitations": [
+   "Scope is default/global IPv4 unicast and direct static literal IPv4 peers only.",
+   "VRFs, IPv6, VPNv4/VPNv6, EVPN, multicast, flowspec, templates, peer-groups, dynamic/listen peers, and interface peers are not validated.",
+   "Established peer state does not prove policy, route propagation, best path, RPKI, convergence, simultaneous sampling, or freshness.",
+   "A configured peer missing from a complete usable summary is reported as not observed; it is not asserted administratively or physically down."
+  ]
+ },
+ "fhrp_configured_group_baseline": {
+  "schema": "fhrp_configured_group_baseline/1",
+  "scope": {
+   "routing_instance": "default",
+   "afi": "ipv4",
+   "group_kind": "direct_literal_local"
+  },
+  "verdict": "CLEAR",
+  "assessed": true,
+  "projection_custody": "embedded_unverified",
+  "rows": [
+   {
+    "switch": "core1",
+    "protocol": "HSRP",
+    "interface": "Vlan10",
+    "group": "10",
+    "group_key": "HSRP:Vlan10:10",
+    "scope": "default/ipv4",
+    "configured": true,
+    "configured_vip": "10.0.10.1",
+    "activation": "active",
+    "runtime_observed": true,
+    "runtime_vip": "10.0.10.1",
+    "runtime_state_raw": "Active",
+    "runtime_state": "ACTIVE",
+    "status": "assessed",
+    "command": "show standby brief",
+    "acceptance": "Require configured-active HSRP Vlan10 group 10 VIP 10.0.10.1 to preserve local state ACTIVE. This is a local group-state check only; no expected member count, simultaneous election, failover, or convergence claim is made.",
+    "source_key": "show running-config | section ^interface#line:29 + show standby brief",
+    "projection_custody": "embedded_unverified",
+    "findings": []
+   },
+   {
+    "switch": "core1",
+    "protocol": "HSRP",
+    "interface": "Vlan20",
+    "group": "20",
+    "group_key": "HSRP:Vlan20:20",
+    "scope": "default/ipv4",
+    "configured": true,
+    "configured_vip": "10.0.20.1",
+    "activation": "active",
+    "runtime_observed": true,
+    "runtime_vip": "10.0.20.1",
+    "runtime_state_raw": "Standby",
+    "runtime_state": "STANDBY",
+    "status": "assessed",
+    "command": "show standby brief",
+    "acceptance": "Require configured-active HSRP Vlan20 group 20 VIP 10.0.20.1 to preserve local state STANDBY. This is a local group-state check only; no expected member count, simultaneous election, failover, or convergence claim is made.",
+    "source_key": "show running-config | section ^interface#line:35 + show standby brief",
+    "projection_custody": "embedded_unverified",
+    "findings": []
+   },
+   {
+    "switch": "core2",
+    "protocol": "HSRP",
+    "interface": "Vlan10",
+    "group": "10",
+    "group_key": "HSRP:Vlan10:10",
+    "scope": "default/ipv4",
+    "configured": true,
+    "configured_vip": "10.0.10.1",
+    "activation": "active",
+    "runtime_observed": true,
+    "runtime_vip": "10.0.10.1",
+    "runtime_state_raw": "Standby",
+    "runtime_state": "STANDBY",
+    "status": "assessed",
+    "command": "show hsrp brief",
+    "acceptance": "Require configured-active HSRP Vlan10 group 10 VIP 10.0.10.1 to preserve local state STANDBY. This is a local group-state check only; no expected member count, simultaneous election, failover, or convergence claim is made.",
+    "source_key": "show running-config interface#line:15 + show hsrp brief",
+    "projection_custody": "embedded_unverified",
+    "findings": []
+   },
+   {
+    "switch": "core2",
+    "protocol": "HSRP",
+    "interface": "Vlan20",
+    "group": "20",
+    "group_key": "HSRP:Vlan20:20",
+    "scope": "default/ipv4",
+    "configured": true,
+    "configured_vip": "10.0.20.1",
+    "activation": "active",
+    "runtime_observed": true,
+    "runtime_vip": "10.0.20.1",
+    "runtime_state_raw": "Active",
+    "runtime_state": "ACTIVE",
+    "status": "assessed",
+    "command": "show hsrp brief",
+    "acceptance": "Require configured-active HSRP Vlan20 group 20 VIP 10.0.20.1 to preserve local state ACTIVE. This is a local group-state check only; no expected member count, simultaneous election, failover, or convergence claim is made.",
+    "source_key": "show running-config interface#line:20 + show hsrp brief",
+    "projection_custody": "embedded_unverified",
+    "findings": []
+   }
+  ],
+  "coverage": [
+   {
+    "switch": "access1",
+    "protocol": "HSRP",
+    "platform": "ios",
+    "subject": false,
+    "status": "not_applicable",
+    "config_command": "show running-config | section ^interface",
+    "config_capture_status": "ok",
+    "config_parser_status": "complete",
+    "runtime_command": "show standby brief",
+    "runtime_capture_status": "inspection_missing",
+    "runtime_parser_status": "not_verified",
+    "config_candidate_count": 0,
+    "configured_group_count": 0,
+    "config_rejected_count": 0,
+    "excluded_scope_count": 0,
+    "unsupported_relevant_count": 0,
+    "runtime_candidate_count": 0,
+    "runtime_parsed_count": 0,
+    "runtime_rejected_count": 0,
+    "config_sha256": "fa021af908c7a0bdc493ee1338b8e42cdffd90aa30a76f0432d111fde8db87dd",
+    "runtime_sha256": "bc66c257ef93341bc53e1fc71f2d52945d8f39718520637ee26e2bbde4f6783c",
+    "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
+    "finding_codes": []
+   },
+   {
+    "switch": "access1",
+    "protocol": "VRRP",
+    "platform": "ios",
+    "subject": false,
+    "status": "not_applicable",
+    "config_command": "show running-config | section ^interface",
+    "config_capture_status": "ok",
+    "config_parser_status": "complete",
+    "runtime_command": "show vrrp brief",
+    "runtime_capture_status": "inspection_missing",
+    "runtime_parser_status": "not_verified",
+    "config_candidate_count": 0,
+    "configured_group_count": 0,
+    "config_rejected_count": 0,
+    "excluded_scope_count": 0,
+    "unsupported_relevant_count": 0,
+    "runtime_candidate_count": 0,
+    "runtime_parsed_count": 0,
+    "runtime_rejected_count": 0,
+    "config_sha256": "c3b5a963272b2041c9bc4f0fddb0ad92dbc71297595669d90c40047f22cacde6",
+    "runtime_sha256": "f32cb0ced92dec13784eae2f92731742be383cd7ed0f072f9ee847ac547c9c43",
+    "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
+    "finding_codes": []
+   },
+   {
+    "switch": "access1",
+    "protocol": "GLBP",
+    "platform": "ios",
+    "subject": false,
+    "status": "not_applicable",
+    "config_command": "show running-config | section ^interface",
+    "config_capture_status": "ok",
+    "config_parser_status": "complete",
+    "runtime_command": "show glbp brief",
+    "runtime_capture_status": "inspection_missing",
+    "runtime_parser_status": "not_verified",
+    "config_candidate_count": 0,
+    "configured_group_count": 0,
+    "config_rejected_count": 0,
+    "excluded_scope_count": 0,
+    "unsupported_relevant_count": 0,
+    "runtime_candidate_count": 0,
+    "runtime_parsed_count": 0,
+    "runtime_rejected_count": 0,
+    "config_sha256": "e802ff3c7e086b0ee4ed494df02b975d498a57d37b5fa058355942fb549cca70",
+    "runtime_sha256": "365daef714c63c429da53d44da5b7c027aff8b4ca50a2b7efb1d9ba09ad67928",
+    "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
+    "finding_codes": []
+   },
+   {
+    "switch": "core1",
+    "protocol": "HSRP",
+    "platform": "ios",
+    "subject": true,
+    "status": "assessed",
+    "config_command": "show running-config | section ^interface",
+    "config_capture_status": "ok",
+    "config_parser_status": "complete",
+    "runtime_command": "show standby brief",
+    "runtime_capture_status": "ok",
+    "runtime_parser_status": "complete",
+    "config_candidate_count": 2,
+    "configured_group_count": 2,
+    "config_rejected_count": 0,
+    "excluded_scope_count": 0,
+    "unsupported_relevant_count": 0,
+    "runtime_candidate_count": 2,
+    "runtime_parsed_count": 2,
+    "runtime_rejected_count": 0,
+    "config_sha256": "0b05fd0a2d9eaad9848967c9d683c0b5171074ccff259df6a3f86995e1d19c73",
+    "runtime_sha256": "262897e35d7991978650e86222fd8248dcdc271016de85a889e147cbd14ccd4f",
+    "projection_sha256": "c5d0a7ac492d7f2574eba7bd5c3d568feab13b9278b372390604e6d213967af4",
+    "finding_codes": []
+   },
+   {
+    "switch": "core1",
+    "protocol": "VRRP",
+    "platform": "ios",
+    "subject": false,
+    "status": "not_applicable",
+    "config_command": "show running-config | section ^interface",
+    "config_capture_status": "ok",
+    "config_parser_status": "complete",
+    "runtime_command": "show vrrp brief",
+    "runtime_capture_status": "inspection_missing",
+    "runtime_parser_status": "not_verified",
+    "config_candidate_count": 0,
+    "configured_group_count": 0,
+    "config_rejected_count": 0,
+    "excluded_scope_count": 0,
+    "unsupported_relevant_count": 0,
+    "runtime_candidate_count": 0,
+    "runtime_parsed_count": 0,
+    "runtime_rejected_count": 0,
+    "config_sha256": "c3b5a963272b2041c9bc4f0fddb0ad92dbc71297595669d90c40047f22cacde6",
+    "runtime_sha256": "f32cb0ced92dec13784eae2f92731742be383cd7ed0f072f9ee847ac547c9c43",
+    "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
+    "finding_codes": []
+   },
+   {
+    "switch": "core1",
+    "protocol": "GLBP",
+    "platform": "ios",
+    "subject": false,
+    "status": "not_applicable",
+    "config_command": "show running-config | section ^interface",
+    "config_capture_status": "ok",
+    "config_parser_status": "complete",
+    "runtime_command": "show glbp brief",
+    "runtime_capture_status": "inspection_missing",
+    "runtime_parser_status": "not_verified",
+    "config_candidate_count": 0,
+    "configured_group_count": 0,
+    "config_rejected_count": 0,
+    "excluded_scope_count": 0,
+    "unsupported_relevant_count": 0,
+    "runtime_candidate_count": 0,
+    "runtime_parsed_count": 0,
+    "runtime_rejected_count": 0,
+    "config_sha256": "e802ff3c7e086b0ee4ed494df02b975d498a57d37b5fa058355942fb549cca70",
+    "runtime_sha256": "365daef714c63c429da53d44da5b7c027aff8b4ca50a2b7efb1d9ba09ad67928",
+    "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
+    "finding_codes": []
+   },
+   {
+    "switch": "core2",
+    "protocol": "HSRP",
+    "platform": "nxos",
+    "subject": true,
+    "status": "assessed",
+    "config_command": "show running-config interface",
+    "config_capture_status": "ok",
+    "config_parser_status": "complete",
+    "runtime_command": "show hsrp brief",
+    "runtime_capture_status": "ok",
+    "runtime_parser_status": "complete",
+    "config_candidate_count": 2,
+    "configured_group_count": 2,
+    "config_rejected_count": 0,
+    "excluded_scope_count": 0,
+    "unsupported_relevant_count": 0,
+    "runtime_candidate_count": 2,
+    "runtime_parsed_count": 2,
+    "runtime_rejected_count": 0,
+    "config_sha256": "cd72a1c9058c6fd67d0e7bceb491979e65ee35374f23ca4c947cfd3b36ceacf7",
+    "runtime_sha256": "3b17f66601b5f37392e9c65251f470808241341d1431a50da9a36aed817e45f9",
+    "projection_sha256": "6c818b6a2f919ba97003124d9ff1ca766e840caf62cf74003ea46f01946a72d3",
+    "finding_codes": []
+   },
+   {
+    "switch": "core2",
+    "protocol": "VRRP",
+    "platform": "nxos",
+    "subject": false,
+    "status": "not_applicable",
+    "config_command": "show running-config interface",
+    "config_capture_status": "ok",
+    "config_parser_status": "complete",
+    "runtime_command": "show vrrp brief",
+    "runtime_capture_status": "inspection_missing",
+    "runtime_parser_status": "not_verified",
+    "config_candidate_count": 0,
+    "configured_group_count": 0,
+    "config_rejected_count": 0,
+    "excluded_scope_count": 0,
+    "unsupported_relevant_count": 0,
+    "runtime_candidate_count": 0,
+    "runtime_parsed_count": 0,
+    "runtime_rejected_count": 0,
+    "config_sha256": "95e571ef9ef519badfa2c7c2410f091deafd48da418f00d6118d5de07089db5b",
+    "runtime_sha256": "f32cb0ced92dec13784eae2f92731742be383cd7ed0f072f9ee847ac547c9c43",
+    "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
+    "finding_codes": []
+   },
+   {
+    "switch": "core2",
+    "protocol": "GLBP",
+    "platform": "nxos",
+    "subject": false,
+    "status": "not_applicable",
+    "config_command": "show running-config interface",
+    "config_capture_status": "ok",
+    "config_parser_status": "complete",
+    "runtime_command": "show glbp brief",
+    "runtime_capture_status": "inspection_missing",
+    "runtime_parser_status": "not_verified",
+    "config_candidate_count": 0,
+    "configured_group_count": 0,
+    "config_rejected_count": 0,
+    "excluded_scope_count": 0,
+    "unsupported_relevant_count": 0,
+    "runtime_candidate_count": 0,
+    "runtime_parsed_count": 0,
+    "runtime_rejected_count": 0,
+    "config_sha256": "cddf1d24024884063c30f925f98b1e2253d5502be2de7d6062a40194b869a3a3",
+    "runtime_sha256": "365daef714c63c429da53d44da5b7c027aff8b4ca50a2b7efb1d9ba09ad67928",
+    "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
+    "finding_codes": []
+   }
+  ],
+  "findings": [],
+  "summary": {
+   "n_hosts": 3,
+   "n_coverage_cells": 9,
+   "n_subject_hosts": 2,
+   "n_subject_cells": 2,
+   "n_configured_groups": 4,
+   "n_active_groups": 4,
+   "n_runtime_groups": 4,
+   "n_assessed": 4,
+   "n_degraded": 0,
+   "n_review": 0,
+   "n_not_verified": 0,
+   "n_disabled": 0,
+   "by_status": {
+    "degraded": 0,
+    "review": 0,
+    "not_verified": 0,
+    "assessed": 4,
+    "administratively_disabled": 0
+   },
+   "by_coverage_status": {
+    "degraded": 0,
+    "review": 0,
+    "not_verified": 0,
+    "assessed": 2,
+    "not_applicable": 7
+   },
+   "baseline_sha256": "dd9eae3398e8632ff7b1270899dd44131674812ab4f0ddcc4910245673966cae"
+  },
+  "limitations": [
+   "Scope is direct literal local HSRP, VRRP, and GLBP groups in default/global IPv4 only.",
+   "IOS/IOS-XE flat interface syntax and NX-OS nested HSRP are the supported configuration forms; VRFs, IPv6, templates, and inherited or dynamic constructs are excluded.",
+   "Sequential exact-candidate role consistency is reviewed across distinct hosts; capture timing is not simultaneous election evidence. Timers, authentication, preemption, tracking behavior, secondary VIPs, expected member count, simultaneous election state, failover, convergence, freshness, and interoperability are not validated.",
+   "A configured-active group missing from a complete applicable summary is reported as not observed; it is not asserted administratively or physically down.",
+   "NOT_APPLICABLE means no in-scope literal local group subject was identified; it is not proof that FHRP is absent or that configuration coverage is complete."
+  ]
+ },
+ "fhrp_redundancy_domain_baseline": {
+  "schema": "fhrp_redundancy_domain_baseline/1",
+  "scope": {
+   "domain_identity": "vlan/normalized-vrf/observed-ipv4-subnet",
+   "candidate_identity": "protocol/group/virtual-ip",
+   "upstream_schema": "fhrp_configured_group_baseline/1"
+  },
+  "verdict": "INDETERMINATE",
+  "assessed": false,
+  "projection_custody": "embedded_unverified",
+  "source_receipt": {
+   "schema": "fhrp_configured_group_baseline/1",
+   "valid": true,
+   "source_bound": false,
+   "configured_baseline_sha256": "72ceeb7ac7d049a5738c5386828b51eacadf69d6fe8e24ec0a4bf141695724e6",
+   "svi_projection_sha256": "7c28339ac17ccb725a78c24654b29587d621ac5831a6dfa3f1b39cc83fcf7c66"
+  },
+  "rows": [
+   {
+    "switch": "core1",
+    "interface": "Vlan10",
+    "svi_ip": "10.0.10.2/24",
+    "vlan": 10,
+    "vrf": "global",
+    "subnet": "10.0.10.0/24",
+    "domain_key": "vlan=10|vrf=global|subnet=10.0.10.0/24",
+    "candidate_key": "HSRP:10:10.0.10.1",
+    "participation": "positive",
+    "protocol": "HSRP",
+    "group": "10",
+    "virtual_ip": "10.0.10.1",
+    "role": "ACTIVE",
+    "status": "not_verified",
+    "check": "FHRP redundancy-domain composition \u2014 VLAN 10 / global / 10.0.10.0/24",
+    "command": "show standby brief",
+    "acceptance": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 10 / VRF global / observed IPv4 subnet 10.0.10.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+    "why": "A local configured/runtime FHRP group could not be verified.",
+    "source_key": "fhrp_configured_group_baseline.rows[core1,HSRP,Vlan10,10] + interfaces[core1,Vlan10].svi_ip/vrf",
+    "projection_custody": "embedded_unverified",
+    "findings": [
+     {
+      "kind": "not_verified",
+      "code": "local_group_not_verified",
+      "issue": "A local configured/runtime FHRP group could not be verified."
+     }
+    ]
+   },
+   {
+    "switch": "core2",
+    "interface": "Vlan10",
+    "svi_ip": "10.0.10.3/24",
+    "vlan": 10,
+    "vrf": "global",
+    "subnet": "10.0.10.0/24",
+    "domain_key": "vlan=10|vrf=global|subnet=10.0.10.0/24",
+    "candidate_key": "HSRP:10:10.0.10.1",
+    "participation": "positive",
+    "protocol": "HSRP",
+    "group": "10",
+    "virtual_ip": "10.0.10.1",
+    "role": "STANDBY",
+    "status": "not_verified",
+    "check": "FHRP redundancy-domain composition \u2014 VLAN 10 / global / 10.0.10.0/24",
+    "command": "show hsrp brief",
+    "acceptance": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 10 / VRF global / observed IPv4 subnet 10.0.10.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+    "why": "A local configured/runtime FHRP group could not be verified.",
+    "source_key": "fhrp_configured_group_baseline.rows[core2,HSRP,Vlan10,10] + interfaces[core2,Vlan10].svi_ip/vrf",
+    "projection_custody": "embedded_unverified",
+    "findings": [
+     {
+      "kind": "not_verified",
+      "code": "local_group_not_verified",
+      "issue": "A local configured/runtime FHRP group could not be verified."
+     }
+    ]
+   },
+   {
+    "switch": "core1",
+    "interface": "Vlan20",
+    "svi_ip": "10.0.20.2/24",
+    "vlan": 20,
+    "vrf": "global",
+    "subnet": "10.0.20.0/24",
+    "domain_key": "vlan=20|vrf=global|subnet=10.0.20.0/24",
+    "candidate_key": "HSRP:20:10.0.20.1",
+    "participation": "positive",
+    "protocol": "HSRP",
+    "group": "20",
+    "virtual_ip": "10.0.20.1",
+    "role": "STANDBY",
+    "status": "not_verified",
+    "check": "FHRP redundancy-domain composition \u2014 VLAN 20 / global / 10.0.20.0/24",
+    "command": "show standby brief",
+    "acceptance": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 20 / VRF global / observed IPv4 subnet 10.0.20.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+    "why": "A local configured/runtime FHRP group could not be verified.",
+    "source_key": "fhrp_configured_group_baseline.rows[core1,HSRP,Vlan20,20] + interfaces[core1,Vlan20].svi_ip/vrf",
+    "projection_custody": "embedded_unverified",
+    "findings": [
+     {
+      "kind": "not_verified",
+      "code": "local_group_not_verified",
+      "issue": "A local configured/runtime FHRP group could not be verified."
+     }
+    ]
+   },
+   {
+    "switch": "core2",
+    "interface": "Vlan20",
+    "svi_ip": "10.0.20.3/24",
+    "vlan": 20,
+    "vrf": "global",
+    "subnet": "10.0.20.0/24",
+    "domain_key": "vlan=20|vrf=global|subnet=10.0.20.0/24",
+    "candidate_key": "HSRP:20:10.0.20.1",
+    "participation": "positive",
+    "protocol": "HSRP",
+    "group": "20",
+    "virtual_ip": "10.0.20.1",
+    "role": "ACTIVE",
+    "status": "not_verified",
+    "check": "FHRP redundancy-domain composition \u2014 VLAN 20 / global / 10.0.20.0/24",
+    "command": "show hsrp brief",
+    "acceptance": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 20 / VRF global / observed IPv4 subnet 10.0.20.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+    "why": "A local configured/runtime FHRP group could not be verified.",
+    "source_key": "fhrp_configured_group_baseline.rows[core2,HSRP,Vlan20,20] + interfaces[core2,Vlan20].svi_ip/vrf",
+    "projection_custody": "embedded_unverified",
+    "findings": [
+     {
+      "kind": "not_verified",
+      "code": "local_group_not_verified",
+      "issue": "A local configured/runtime FHRP group could not be verified."
+     }
+    ]
+   }
+  ],
+  "domains": [
+   {
+    "vlan": 10,
+    "vrf": "global",
+    "subnet": "10.0.10.0/24",
+    "domain_key": "vlan=10|vrf=global|subnet=10.0.10.0/24",
+    "status": "not_verified",
+    "assessed": false,
+    "member_count": 2,
+    "participant_count": 2,
+    "leader_count": 1,
+    "backup_count": 1,
+    "protocol": "HSRP",
+    "group": "10",
+    "virtual_ip": "10.0.10.1",
+    "members": [
+     {
+      "group": "10",
+      "protocol": "HSRP",
+      "svi_ip": "10.0.10.2/24",
+      "participation": "positive",
+      "role": "ACTIVE",
+      "interface": "Vlan10",
+      "findings": [
+       {
+        "kind": "not_verified",
+        "code": "local_group_not_verified",
+        "issue": "A local configured/runtime FHRP group could not be verified."
+       }
+      ],
+      "virtual_ip": "10.0.10.1",
+      "local_status": "not_verified",
+      "projection_custody": "embedded_unverified",
+      "switch": "core1",
+      "source_group_key": "HSRP:Vlan10:10"
+     },
+     {
+      "group": "10",
+      "protocol": "HSRP",
+      "svi_ip": "10.0.10.3/24",
+      "participation": "positive",
+      "role": "STANDBY",
+      "interface": "Vlan10",
+      "findings": [
+       {
+        "kind": "not_verified",
+        "code": "local_group_not_verified",
+        "issue": "A local configured/runtime FHRP group could not be verified."
+       }
+      ],
+      "virtual_ip": "10.0.10.1",
+      "local_status": "not_verified",
+      "projection_custody": "embedded_unverified",
+      "switch": "core2",
+      "source_group_key": "HSRP:Vlan10:10"
+     }
+    ],
+    "findings": [
+     {
+      "kind": "not_verified",
+      "code": "local_group_not_verified",
+      "issue": "A local configured/runtime FHRP group could not be verified."
+     }
+    ],
+    "acceptance": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 10 / VRF global / observed IPv4 subnet 10.0.10.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made."
+   },
+   {
+    "vlan": 20,
+    "vrf": "global",
+    "subnet": "10.0.20.0/24",
+    "domain_key": "vlan=20|vrf=global|subnet=10.0.20.0/24",
+    "status": "not_verified",
+    "assessed": false,
+    "member_count": 2,
+    "participant_count": 2,
+    "leader_count": 1,
+    "backup_count": 1,
+    "protocol": "HSRP",
+    "group": "20",
+    "virtual_ip": "10.0.20.1",
+    "members": [
+     {
+      "group": "20",
+      "protocol": "HSRP",
+      "svi_ip": "10.0.20.2/24",
+      "participation": "positive",
+      "role": "STANDBY",
+      "interface": "Vlan20",
+      "findings": [
+       {
+        "kind": "not_verified",
+        "code": "local_group_not_verified",
+        "issue": "A local configured/runtime FHRP group could not be verified."
+       }
+      ],
+      "virtual_ip": "10.0.20.1",
+      "local_status": "not_verified",
+      "projection_custody": "embedded_unverified",
+      "switch": "core1",
+      "source_group_key": "HSRP:Vlan20:20"
+     },
+     {
+      "group": "20",
+      "protocol": "HSRP",
+      "svi_ip": "10.0.20.3/24",
+      "participation": "positive",
+      "role": "ACTIVE",
+      "interface": "Vlan20",
+      "findings": [
+       {
+        "kind": "not_verified",
+        "code": "local_group_not_verified",
+        "issue": "A local configured/runtime FHRP group could not be verified."
+       }
+      ],
+      "virtual_ip": "10.0.20.1",
+      "local_status": "not_verified",
+      "projection_custody": "embedded_unverified",
+      "switch": "core2",
+      "source_group_key": "HSRP:Vlan20:20"
+     }
+    ],
+    "findings": [
+     {
+      "kind": "not_verified",
+      "code": "local_group_not_verified",
+      "issue": "A local configured/runtime FHRP group could not be verified."
+     }
+    ],
+    "acceptance": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 20 / VRF global / observed IPv4 subnet 10.0.20.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made."
+   }
+  ],
+  "findings": [
+   {
+    "kind": "not_verified",
+    "code": "local_group_not_verified",
+    "issue": "A local configured/runtime FHRP group could not be verified.",
+    "domain_key": "vlan=10|vrf=global|subnet=10.0.10.0/24"
+   },
+   {
+    "kind": "not_verified",
+    "code": "local_group_not_verified",
+    "issue": "A local configured/runtime FHRP group could not be verified.",
+    "domain_key": "vlan=20|vrf=global|subnet=10.0.20.0/24"
+   }
+  ],
+  "summary": {
+   "n_domains": 2,
+   "n_rows": 4,
+   "n_members": 4,
+   "n_participants": 4,
+   "n_assessed": 0,
+   "n_degraded": 0,
+   "n_review": 0,
+   "n_not_verified": 2,
+   "by_status": {
+    "degraded": 0,
+    "review": 0,
+    "not_verified": 2,
+    "assessed": 0
+   },
+   "baseline_sha256": "566951784c7e048b34bb6edf27a8b783b4fb7e283e89ed914713ce24e64c186c"
+  },
+  "limitations": [
+   "Subjects are exact observed VLAN + normalized VRF + observed IPv4 subnet domains with at least two in-scope gateway SVIs and at least one positive FHRP participant.",
+   "A same-domain SVI with zero FHRP participation is a review of unresolved intent, not proof that the SVI is misconfigured or should join the group.",
+   "Sequential captures are not simultaneous split-brain, failover, or convergence evidence.",
+   "No off-scan peer, intended member count, timer, authentication, tracking, preemption, policy, or convergence claim is made.",
+   "current_run_projection_bound binds the normalized in-process SVI projection and the validated configured-group receipt; it is not raw-capture cryptographic custody."
+  ]
+ },
+ "vtp_safety_baseline": {
+  "schema": "vtp_safety_baseline/1",
+  "scope": {
+   "command": "show vtp status",
+   "subject": "observed_local_vtp_status",
+   "high_revision_threshold": 100
+  },
+  "verdict": "NOT_APPLICABLE",
+  "assessed": false,
+  "projection_custody": "embedded_unverified",
+  "rows": [],
+  "coverage": [
+   {
+    "switch": "access1",
+    "platform": "ios",
+    "subject": false,
+    "status": "not_applicable",
+    "command": "show vtp status",
+    "capture_status": "not_observed",
+    "parser_status": "not_verified",
+    "candidate_count": 0,
+    "parsed_count": 0,
+    "rejected_count": 0,
+    "explicit_no_subject": false,
+    "source_sha256": "14c972545b5765265e3aab004046efa3d8290c79b5aa4cdcaef5ea32f525c84c",
+    "projection_sha256": "f869a4a56a81f7586d90b4d37c5518083890665e2eb69c425d28733355432234",
+    "finding_codes": []
+   },
+   {
+    "switch": "core1",
+    "platform": "ios",
+    "subject": false,
+    "status": "not_applicable",
+    "command": "show vtp status",
+    "capture_status": "not_observed",
+    "parser_status": "not_verified",
+    "candidate_count": 0,
+    "parsed_count": 0,
+    "rejected_count": 0,
+    "explicit_no_subject": false,
+    "source_sha256": "14c972545b5765265e3aab004046efa3d8290c79b5aa4cdcaef5ea32f525c84c",
+    "projection_sha256": "046f315a5b9d88a04d7004682ea268a5c5926c83794d7aa28a2d32c0936b7015",
+    "finding_codes": []
+   },
+   {
+    "switch": "core2",
+    "platform": "nxos",
+    "subject": false,
+    "status": "not_applicable",
+    "command": "show vtp status",
+    "capture_status": "not_observed",
+    "parser_status": "not_verified",
+    "candidate_count": 0,
+    "parsed_count": 0,
+    "rejected_count": 0,
+    "explicit_no_subject": false,
+    "source_sha256": "14c972545b5765265e3aab004046efa3d8290c79b5aa4cdcaef5ea32f525c84c",
+    "projection_sha256": "aea0e8c946400d5578aee09eaf1e7a9230bf22a57d27372e31b41f0d549856c5",
+    "finding_codes": []
+   }
+  ],
+  "findings": [],
+  "summary": {
+   "n_hosts": 3,
+   "n_subject_hosts": 0,
+   "n_rows": 0,
+   "n_assessed": 0,
+   "n_review": 0,
+   "n_not_verified": 0,
+   "n_high_revision_servers": 0,
+   "by_status": {
+    "review": 0,
+    "not_verified": 0,
+    "assessed": 0
+   },
+   "by_coverage_status": {
+    "review": 0,
+    "not_verified": 0,
+    "assessed": 0,
+    "not_applicable": 3
+   },
+   "baseline_sha256": "f1f6df0b43a09ad7b8a25d6860210fad632148f38a81c89fa7db0536c3ab654a"
+  },
+  "limitations": [
+   "The baseline covers one local show vtp status observation per host; it does not prove domain-wide VLAN-database equality or advertisement reachability.",
+   "A configuration revision is an observed counter, not a freshness, correctness, or safe-to-match target; matching a high revision is not acceptance.",
+   "VTP passwords, database contents, pruning behavior, per-VLAN propagation, simultaneous state, failover, and cutover authorization remain outside this receipt.",
+   "NOT_APPLICABLE means no positive local VTP-status subject was identified in the bounded input; it is not proof that VTP is absent from the platform or network."
+  ]
+ },
+ "etherchannel_projection": {
+  "schema": "etherchannel_projection/1",
+  "rows": [
+   {
+    "switch": "access1",
+    "source_command": "",
+    "capture_state": "missing",
+    "declared_group_count": null,
+    "groups": [],
+    "associations": [],
+    "findings": [],
+    "rejected_line_count": 0
+   },
+   {
+    "switch": "core1",
+    "source_command": "show etherchannel summary",
+    "capture_state": "usable",
+    "declared_group_count": 1,
+    "groups": [
+     {
+      "group_id": "1",
+      "group": "Po1",
+      "group_flags": "SU",
+      "protocol": "LACP",
+      "protocol_raw": "LACP",
+      "status": "assessed",
+      "operational_state": "up",
+      "members": [
+       {
+        "interface": "Gi1/0/1",
+        "flags": "P",
+        "status": "assessed",
+        "state": "forwarding_observed",
+        "findings": []
+       },
+       {
+        "interface": "Gi1/0/2",
+        "flags": "P",
+        "status": "assessed",
+        "state": "forwarding_observed",
+        "findings": []
+       }
+      ],
+      "findings": []
+     }
+    ],
+    "associations": [
+     {
+      "interface": "Gi1/0/1",
+      "group": "Po1"
+     },
+     {
+      "interface": "Gi1/0/2",
+      "group": "Po1"
+     }
+    ],
+    "findings": [],
+    "rejected_line_count": 0
+   },
+   {
+    "switch": "core2",
+    "source_command": "show port-channel summary",
+    "capture_state": "usable",
+    "declared_group_count": null,
+    "groups": [
+     {
+      "group_id": "1",
+      "group": "Po1",
+      "group_flags": "SU",
+      "protocol": "LACP",
+      "protocol_raw": "LACP",
+      "status": "assessed",
+      "operational_state": "up",
+      "members": [
+       {
+        "interface": "Eth1/1",
+        "flags": "P",
+        "status": "assessed",
+        "state": "forwarding_observed",
+        "findings": []
+       },
+       {
+        "interface": "Eth1/2",
+        "flags": "P",
+        "status": "assessed",
+        "state": "forwarding_observed",
+        "findings": []
+       }
+      ],
+      "findings": []
+     }
+    ],
+    "associations": [
+     {
+      "interface": "Eth1/1",
+      "group": "Po1"
+     },
+     {
+      "interface": "Eth1/2",
+      "group": "Po1"
+     }
+    ],
+    "findings": [],
+    "rejected_line_count": 0
+   }
+  ],
+  "summary": {
+   "n_devices": 3,
+   "n_subject_devices": 2,
+   "n_groups": 2,
+   "n_members": 4,
+   "n_associations": 4,
+   "n_degraded_groups": 0,
+   "n_review_groups": 0,
+   "n_rejected_lines": 0,
+   "by_capture_state": {
+    "usable": 2,
+    "empty": 0,
+    "error": 0,
+    "missing": 1
+   }
+  },
+  "limitations": [
+   "Group/member flags are one current-run local summary projection, not configured or partner intent.",
+   "Interface/config/trunk associations are subject evidence only and carry no operational state.",
+   "Waiting/BFD-wait flags require live persistence and intent verification."
+  ]
+ },
+ "etherchannel_baseline": {
+  "schema": "etherchannel_baseline/1",
+  "scope": "baseline_observed",
+  "status": "assessed",
+  "assessed": true,
+  "projection_custody": "embedded_unverified",
+  "projection": {
+   "present": true,
+   "valid": true,
+   "reason": ""
+  },
+  "receipt": {
+   "present": true,
+   "valid": true,
+   "reason": ""
+  },
+  "rows": [
+   {
+    "switch": "core1",
+    "status": "assessed",
+    "receipt_state": "assessed",
+    "capture_state": "usable",
+    "health_row_emitted": true,
+    "group_count": 1,
+    "member_count": 2,
+    "groups": [
+     {
+      "group_id": "1",
+      "group": "Po1",
+      "group_flags": "SU",
+      "protocol": "LACP",
+      "protocol_raw": "LACP",
+      "status": "assessed",
+      "operational_state": "up",
+      "members": [
+       {
+        "interface": "Gi1/0/1",
+        "flags": "P",
+        "status": "assessed",
+        "state": "forwarding_observed",
+        "findings": []
+       },
+       {
+        "interface": "Gi1/0/2",
+        "flags": "P",
+        "status": "assessed",
+        "state": "forwarding_observed",
+        "findings": []
+       }
+      ],
+      "findings": []
+     }
+    ],
+    "associations": [
+     {
+      "interface": "Gi1/0/1",
+      "group": "Po1"
+     },
+     {
+      "interface": "Gi1/0/2",
+      "group": "Po1"
+     }
+    ],
+    "findings": [],
+    "rejected_line_count": 0,
+    "command": "show etherchannel summary",
+    "baseline": "Observed EtherChannel baseline for core1: Po1 group 1(SU) LACP: Gi1/0/1(P) forwarding observed, Gi1/0/2(P) forwarding observed. Separate association projection: Gi1/0/1 -> Po1, Gi1/0/2 -> Po1",
+    "acceptance": "Observed EtherChannel baseline for core1: Po1 group 1(SU) LACP: Gi1/0/1(P) forwarding observed, Gi1/0/2(P) forwarding observed. Separate association projection: Gi1/0/1 -> Po1, Gi1/0/2 -> Po1. Preserve each observed group identity, protocol, exact group flag state, and per-member forwarding/hot-standby flag state; explain changes. No configured-member or partner denominator was inferred.",
+    "issue": "",
+    "note": "Bounded observed local summary baseline; not proof that configured membership, partner state, or multi-chassis intent is complete.",
+    "source_key": "etherchannel_projection.rows[core1] + protocol_assessability.rows[core1,EtherChannel]",
+    "projection_custody": "embedded_unverified"
+   },
+   {
+    "switch": "core2",
+    "status": "assessed",
+    "receipt_state": "assessed",
+    "capture_state": "usable",
+    "health_row_emitted": true,
+    "group_count": 1,
+    "member_count": 2,
+    "groups": [
+     {
+      "group_id": "1",
+      "group": "Po1",
+      "group_flags": "SU",
+      "protocol": "LACP",
+      "protocol_raw": "LACP",
+      "status": "assessed",
+      "operational_state": "up",
+      "members": [
+       {
+        "interface": "Eth1/1",
+        "flags": "P",
+        "status": "assessed",
+        "state": "forwarding_observed",
+        "findings": []
+       },
+       {
+        "interface": "Eth1/2",
+        "flags": "P",
+        "status": "assessed",
+        "state": "forwarding_observed",
+        "findings": []
+       }
+      ],
+      "findings": []
+     }
+    ],
+    "associations": [
+     {
+      "interface": "Eth1/1",
+      "group": "Po1"
+     },
+     {
+      "interface": "Eth1/2",
+      "group": "Po1"
+     }
+    ],
+    "findings": [],
+    "rejected_line_count": 0,
+    "command": "show port-channel summary",
+    "baseline": "Observed EtherChannel baseline for core2: Po1 group 1(SU) LACP: Eth1/1(P) forwarding observed, Eth1/2(P) forwarding observed. Separate association projection: Eth1/1 -> Po1, Eth1/2 -> Po1",
+    "acceptance": "Observed EtherChannel baseline for core2: Po1 group 1(SU) LACP: Eth1/1(P) forwarding observed, Eth1/2(P) forwarding observed. Separate association projection: Eth1/1 -> Po1, Eth1/2 -> Po1. Preserve each observed group identity, protocol, exact group flag state, and per-member forwarding/hot-standby flag state; explain changes. No configured-member or partner denominator was inferred.",
+    "issue": "",
+    "note": "Bounded observed local summary baseline; not proof that configured membership, partner state, or multi-chassis intent is complete.",
+    "source_key": "etherchannel_projection.rows[core2] + protocol_assessability.rows[core2,EtherChannel]",
+    "projection_custody": "embedded_unverified"
+   }
+  ],
+  "summary": {
+   "n_subject_devices": 2,
+   "n_groups": 2,
+   "n_members": 4,
+   "n_associations": 4,
+   "n_degraded_groups": 0,
+   "n_review_groups": 0,
+   "n_rejected_lines": 0,
+   "by_status": {
+    "assessed": 2,
+    "degraded": 0,
+    "review": 0,
+    "not_verified": 0
+   }
+  },
+  "limitations": [
+   "The baseline covers observed local summary rows; it is not a configured-member or partner denominator.",
+   "Association-only evidence carries no operational state and requires a current summary capture.",
+   "A single snapshot cannot establish waiting persistence, hashing, capacity, or multi-chassis consistency.",
+   "The embedded receipt does not cryptographically bind the projection to raw captures."
+  ]
+ },
  "protocol_intelligence": [
   {
    "switch": "core1",
@@ -1553,15 +3130,76 @@
  "validation_plan": {
   "items": [
    {
+    "switch": "core1",
+    "interface": "Vlan10",
+    "svi_ip": "10.0.10.2/24",
+    "vlan": 10,
+    "vrf": "global",
+    "subnet": "10.0.10.0/24",
+    "domain_key": "vlan=10|vrf=global|subnet=10.0.10.0/24",
+    "candidate_key": "HSRP:10:10.0.10.1",
+    "participation": "positive",
+    "protocol": "HSRP",
+    "group": "10",
+    "virtual_ip": "10.0.10.1",
+    "role": "ACTIVE",
+    "status": "not_verified",
+    "check": "FHRP redundancy-domain composition \u2014 VLAN 10 / global / 10.0.10.0/24",
+    "command": "show standby brief",
+    "acceptance": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 10 / VRF global / observed IPv4 subnet 10.0.10.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+    "why": "A local configured/runtime FHRP group could not be verified.",
+    "source_key": "fhrp_configured_group_baseline.rows[core1,HSRP,Vlan10,10] + interfaces[core1,Vlan10].svi_ip/vrf",
+    "projection_custody": "current_run_projection_bound",
+    "findings": [
+     {
+      "kind": "not_verified",
+      "code": "local_group_not_verified",
+      "issue": "A local configured/runtime FHRP group could not be verified."
+     }
+    ],
     "device": "core1",
     "platform": "ios",
     "wave": "Group 1",
     "category": "FHRP",
     "severity": "High",
-    "check": "First-hop redundancy healthy for VLAN 10",
+    "expect": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 10 / VRF global / observed IPv4 subnet 10.0.10.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+    "evidence_state": "not_verified"
+   },
+   {
+    "switch": "core1",
+    "interface": "Vlan20",
+    "svi_ip": "10.0.20.2/24",
+    "vlan": 20,
+    "vrf": "global",
+    "subnet": "10.0.20.0/24",
+    "domain_key": "vlan=20|vrf=global|subnet=10.0.20.0/24",
+    "candidate_key": "HSRP:20:10.0.20.1",
+    "participation": "positive",
+    "protocol": "HSRP",
+    "group": "20",
+    "virtual_ip": "10.0.20.1",
+    "role": "STANDBY",
+    "status": "not_verified",
+    "check": "FHRP redundancy-domain composition \u2014 VLAN 20 / global / 10.0.20.0/24",
     "command": "show standby brief",
-    "expect": "VLAN 10 shows exactly one Active + one Standby across core1 + core2 (same virtual IP)",
-    "why": "VLAN 10 has a redundant gateway; a broken FHRP pair means no failover or a duplicate-active split-brain."
+    "acceptance": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 20 / VRF global / observed IPv4 subnet 10.0.20.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+    "why": "A local configured/runtime FHRP group could not be verified.",
+    "source_key": "fhrp_configured_group_baseline.rows[core1,HSRP,Vlan20,20] + interfaces[core1,Vlan20].svi_ip/vrf",
+    "projection_custody": "current_run_projection_bound",
+    "findings": [
+     {
+      "kind": "not_verified",
+      "code": "local_group_not_verified",
+      "issue": "A local configured/runtime FHRP group could not be verified."
+     }
+    ],
+    "device": "core1",
+    "platform": "ios",
+    "wave": "Group 1",
+    "category": "FHRP",
+    "severity": "High",
+    "expect": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 20 / VRF global / observed IPv4 subnet 10.0.20.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+    "evidence_state": "not_verified"
    },
    {
     "device": "core1",
@@ -1569,10 +3207,123 @@
     "wave": "Group 1",
     "category": "FHRP",
     "severity": "High",
-    "check": "First-hop redundancy healthy for VLAN 20",
+    "check": "HSRP configured group 10 bounded baseline",
     "command": "show standby brief",
-    "expect": "VLAN 20 shows exactly one Active + one Standby across core1 + core2 (same virtual IP)",
-    "why": "VLAN 20 has a redundant gateway; a broken FHRP pair means no failover or a duplicate-active split-brain."
+    "expect": "Require configured-active HSRP Vlan10 group 10 VIP 10.0.10.1 to preserve local state ACTIVE. This is a local group-state check only; no expected member count, simultaneous election, failover, or convergence claim is made.",
+    "why": "Configured-group reconciliation is bounded to HSRP Vlan10 group 10 in the default IPv4 direct-literal local scope; it does not infer a peer, intended member count, or election health.",
+    "evidence_state": "assessed",
+    "projection_custody": "current_run_source_bound",
+    "source_key": "show running-config | section ^interface#line:29 + show standby brief",
+    "protocol": "HSRP",
+    "interface": "Vlan10",
+    "group": "10",
+    "group_key": "HSRP:Vlan10:10",
+    "configured": true,
+    "configured_vip": "10.0.10.1",
+    "activation": "active",
+    "runtime_observed": true,
+    "runtime_vip": "10.0.10.1",
+    "runtime_state_raw": "Active",
+    "runtime_state": "ACTIVE",
+    "scope": "default/ipv4"
+   },
+   {
+    "device": "core1",
+    "platform": "ios",
+    "wave": "Group 1",
+    "category": "FHRP",
+    "severity": "High",
+    "check": "HSRP configured group 20 bounded baseline",
+    "command": "show standby brief",
+    "expect": "Require configured-active HSRP Vlan20 group 20 VIP 10.0.20.1 to preserve local state STANDBY. This is a local group-state check only; no expected member count, simultaneous election, failover, or convergence claim is made.",
+    "why": "Configured-group reconciliation is bounded to HSRP Vlan20 group 20 in the default IPv4 direct-literal local scope; it does not infer a peer, intended member count, or election health.",
+    "evidence_state": "assessed",
+    "projection_custody": "current_run_source_bound",
+    "source_key": "show running-config | section ^interface#line:35 + show standby brief",
+    "protocol": "HSRP",
+    "interface": "Vlan20",
+    "group": "20",
+    "group_key": "HSRP:Vlan20:20",
+    "configured": true,
+    "configured_vip": "10.0.20.1",
+    "activation": "active",
+    "runtime_observed": true,
+    "runtime_vip": "10.0.20.1",
+    "runtime_state_raw": "Standby",
+    "runtime_state": "STANDBY",
+    "scope": "default/ipv4"
+   },
+   {
+    "switch": "core2",
+    "interface": "Vlan10",
+    "svi_ip": "10.0.10.3/24",
+    "vlan": 10,
+    "vrf": "global",
+    "subnet": "10.0.10.0/24",
+    "domain_key": "vlan=10|vrf=global|subnet=10.0.10.0/24",
+    "candidate_key": "HSRP:10:10.0.10.1",
+    "participation": "positive",
+    "protocol": "HSRP",
+    "group": "10",
+    "virtual_ip": "10.0.10.1",
+    "role": "STANDBY",
+    "status": "not_verified",
+    "check": "FHRP redundancy-domain composition \u2014 VLAN 10 / global / 10.0.10.0/24",
+    "command": "show hsrp brief",
+    "acceptance": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 10 / VRF global / observed IPv4 subnet 10.0.10.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+    "why": "A local configured/runtime FHRP group could not be verified.",
+    "source_key": "fhrp_configured_group_baseline.rows[core2,HSRP,Vlan10,10] + interfaces[core2,Vlan10].svi_ip/vrf",
+    "projection_custody": "current_run_projection_bound",
+    "findings": [
+     {
+      "kind": "not_verified",
+      "code": "local_group_not_verified",
+      "issue": "A local configured/runtime FHRP group could not be verified."
+     }
+    ],
+    "device": "core2",
+    "platform": "nxos",
+    "wave": "Group 1",
+    "category": "FHRP",
+    "severity": "High",
+    "expect": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 10 / VRF global / observed IPv4 subnet 10.0.10.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+    "evidence_state": "not_verified"
+   },
+   {
+    "switch": "core2",
+    "interface": "Vlan20",
+    "svi_ip": "10.0.20.3/24",
+    "vlan": 20,
+    "vrf": "global",
+    "subnet": "10.0.20.0/24",
+    "domain_key": "vlan=20|vrf=global|subnet=10.0.20.0/24",
+    "candidate_key": "HSRP:20:10.0.20.1",
+    "participation": "positive",
+    "protocol": "HSRP",
+    "group": "20",
+    "virtual_ip": "10.0.20.1",
+    "role": "ACTIVE",
+    "status": "not_verified",
+    "check": "FHRP redundancy-domain composition \u2014 VLAN 20 / global / 10.0.20.0/24",
+    "command": "show hsrp brief",
+    "acceptance": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 20 / VRF global / observed IPv4 subnet 10.0.20.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+    "why": "A local configured/runtime FHRP group could not be verified.",
+    "source_key": "fhrp_configured_group_baseline.rows[core2,HSRP,Vlan20,20] + interfaces[core2,Vlan20].svi_ip/vrf",
+    "projection_custody": "current_run_projection_bound",
+    "findings": [
+     {
+      "kind": "not_verified",
+      "code": "local_group_not_verified",
+      "issue": "A local configured/runtime FHRP group could not be verified."
+     }
+    ],
+    "device": "core2",
+    "platform": "nxos",
+    "wave": "Group 1",
+    "category": "FHRP",
+    "severity": "High",
+    "expect": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 20 / VRF global / observed IPv4 subnet 10.0.20.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+    "evidence_state": "not_verified"
    },
    {
     "device": "core2",
@@ -1580,10 +3331,25 @@
     "wave": "Group 1",
     "category": "FHRP",
     "severity": "High",
-    "check": "First-hop redundancy healthy for VLAN 10",
+    "check": "HSRP configured group 10 bounded baseline",
     "command": "show hsrp brief",
-    "expect": "VLAN 10 shows exactly one Active + one Standby across core2 + core1 (same virtual IP)",
-    "why": "VLAN 10 has a redundant gateway; a broken FHRP pair means no failover or a duplicate-active split-brain."
+    "expect": "Require configured-active HSRP Vlan10 group 10 VIP 10.0.10.1 to preserve local state STANDBY. This is a local group-state check only; no expected member count, simultaneous election, failover, or convergence claim is made.",
+    "why": "Configured-group reconciliation is bounded to HSRP Vlan10 group 10 in the default IPv4 direct-literal local scope; it does not infer a peer, intended member count, or election health.",
+    "evidence_state": "assessed",
+    "projection_custody": "current_run_source_bound",
+    "source_key": "show running-config interface#line:15 + show hsrp brief",
+    "protocol": "HSRP",
+    "interface": "Vlan10",
+    "group": "10",
+    "group_key": "HSRP:Vlan10:10",
+    "configured": true,
+    "configured_vip": "10.0.10.1",
+    "activation": "active",
+    "runtime_observed": true,
+    "runtime_vip": "10.0.10.1",
+    "runtime_state_raw": "Standby",
+    "runtime_state": "STANDBY",
+    "scope": "default/ipv4"
    },
    {
     "device": "core2",
@@ -1591,10 +3357,25 @@
     "wave": "Group 1",
     "category": "FHRP",
     "severity": "High",
-    "check": "First-hop redundancy healthy for VLAN 20",
+    "check": "HSRP configured group 20 bounded baseline",
     "command": "show hsrp brief",
-    "expect": "VLAN 20 shows exactly one Active + one Standby across core2 + core1 (same virtual IP)",
-    "why": "VLAN 20 has a redundant gateway; a broken FHRP pair means no failover or a duplicate-active split-brain."
+    "expect": "Require configured-active HSRP Vlan20 group 20 VIP 10.0.20.1 to preserve local state ACTIVE. This is a local group-state check only; no expected member count, simultaneous election, failover, or convergence claim is made.",
+    "why": "Configured-group reconciliation is bounded to HSRP Vlan20 group 20 in the default IPv4 direct-literal local scope; it does not infer a peer, intended member count, or election health.",
+    "evidence_state": "assessed",
+    "projection_custody": "current_run_source_bound",
+    "source_key": "show running-config interface#line:20 + show hsrp brief",
+    "protocol": "HSRP",
+    "interface": "Vlan20",
+    "group": "20",
+    "group_key": "HSRP:Vlan20:20",
+    "configured": true,
+    "configured_vip": "10.0.20.1",
+    "activation": "active",
+    "runtime_observed": true,
+    "runtime_vip": "10.0.20.1",
+    "runtime_state_raw": "Active",
+    "runtime_state": "ACTIVE",
+    "scope": "default/ipv4"
    },
    {
     "device": "core1",
@@ -1679,10 +3460,55 @@
     "wave": "Group 1",
     "category": "Routing",
     "severity": "High",
-    "check": "OSPF adjacencies re-established",
+    "check": "OSPF degraded adjacency baseline",
     "command": "show ip ospf neighbor",
-    "expect": "2 neighbor(s) in FULL: 10.0.99.2, 10.0.99.9",
-    "why": "A dropped OSPF adjacency black-holes the routes it should exchange."
+    "expect": "PRE-CUTOVER DEGRADED \u2014 BLOCKER: Observed baseline for OSPF on core1: 10.0.99.2 state FULL/DR via Po1 address 10.0.99.2; 10.0.99.9 state EXSTART/DROTHER via Vlan40 address 10.0.40.9. OSPF peer 10.0.99.9 is observed in EXSTART/DROTHER state. Matching this degraded state after cutover is NOT ACCEPTANCE; resolve or explicitly disposition it before the window.",
+    "why": "Definite observed routing degradation; no expected-peer denominator was inferred.",
+    "evidence_state": "degraded",
+    "projection_custody": "embedded_unverified",
+    "source_key": "routing_neighbors.core1.ospf + protocol_assessability.rows[core1,OSPF]"
+   },
+   {
+    "device": "access1",
+    "platform": "ios",
+    "wave": "Group 1",
+    "category": "STP",
+    "severity": "High",
+    "check": "STP consistency evidence review",
+    "command": "show spanning-tree inconsistentports",
+    "expect": "PRE-CUTOVER REVIEW \u2014 BLOCKER: Usable current-run state and inconsistent-port captures are both required for this claim. Re-collect show spanning-tree plus show spanning-tree inconsistentports and reconcile exactly one STP health row before acceptance. Blocked-port capture: not collected; no blocked-port count is claimed. Optional topology-change capture: not collected; no topology-change count is claimed.",
+    "why": "STP consistency evidence requires review; no health conclusion is asserted. Blocked-port capture: not collected; no blocked-port count is claimed. Optional topology-change capture: not collected; no topology-change count is claimed.",
+    "evidence_state": "review",
+    "projection_custody": "embedded_unverified",
+    "source_key": "protocol_health[access1,STP] + protocol_assessability.rows[access1,STP] + interfaces.access1 + stp_roots.access1"
+   },
+   {
+    "device": "core1",
+    "platform": "ios",
+    "wave": "Group 1",
+    "category": "STP",
+    "severity": "High",
+    "check": "STP consistency evidence review",
+    "command": "show spanning-tree inconsistentports",
+    "expect": "PRE-CUTOVER REVIEW \u2014 BLOCKER: Usable current-run state and inconsistent-port captures are both required for this claim. Re-collect show spanning-tree plus show spanning-tree inconsistentports and reconcile exactly one STP health row before acceptance. Blocked-port capture: not collected; no blocked-port count is claimed. Optional topology-change capture: not collected; no topology-change count is claimed.",
+    "why": "STP consistency evidence requires review; no health conclusion is asserted. Blocked-port capture: not collected; no blocked-port count is claimed. Optional topology-change capture: not collected; no topology-change count is claimed.",
+    "evidence_state": "review",
+    "projection_custody": "embedded_unverified",
+    "source_key": "protocol_health[core1,STP] + protocol_assessability.rows[core1,STP] + interfaces.core1 + stp_roots.core1"
+   },
+   {
+    "device": "core2",
+    "platform": "nxos",
+    "wave": "Group 1",
+    "category": "STP",
+    "severity": "High",
+    "check": "STP consistency evidence review",
+    "command": "show spanning-tree inconsistentports",
+    "expect": "PRE-CUTOVER REVIEW \u2014 BLOCKER: Usable current-run state and inconsistent-port captures are both required for this claim. Re-collect show spanning-tree plus show spanning-tree inconsistentports and reconcile exactly one STP health row before acceptance. Blocked-port capture: not collected; no blocked-port count is claimed. Optional topology-change capture: not collected; no topology-change count is claimed.",
+    "why": "STP consistency evidence requires review; no health conclusion is asserted. Blocked-port capture: not collected; no blocked-port count is claimed. Optional topology-change capture: not collected; no topology-change count is claimed.",
+    "evidence_state": "review",
+    "projection_custody": "embedded_unverified",
+    "source_key": "protocol_health[core2,STP] + protocol_assessability.rows[core2,STP] + interfaces.core2 + stp_roots.core2"
    },
    {
     "device": "core1",
@@ -1690,10 +3516,13 @@
     "wave": "Group 1",
     "category": "Link",
     "severity": "Medium",
-    "check": "Port-channel uplinks bundled",
+    "check": "Port-channel observed group/member baseline",
     "command": "show etherchannel summary",
-    "expect": "1 bundle(s) (Po1) show all members in (P)/bundled state",
-    "why": "A member that doesn't re-bundle after cutover halves uplink capacity or drops the path."
+    "expect": "Observed EtherChannel baseline for core1: Po1 group 1(SU) LACP: Gi1/0/1(P) forwarding observed, Gi1/0/2(P) forwarding observed. Separate association projection: Gi1/0/1 -> Po1, Gi1/0/2 -> Po1. Preserve each observed group identity, protocol, exact group flag state, and per-member forwarding/hot-standby flag state; explain changes. No configured-member or partner denominator was inferred.",
+    "why": "Bounded observed local summary baseline; not proof that configured membership, partner state, or multi-chassis intent is complete.",
+    "evidence_state": "assessed",
+    "projection_custody": "embedded_unverified",
+    "source_key": "etherchannel_projection.rows[core1] + protocol_assessability.rows[core1,EtherChannel]"
    },
    {
     "device": "core2",
@@ -1701,10 +3530,13 @@
     "wave": "Group 1",
     "category": "Link",
     "severity": "Medium",
-    "check": "Port-channel uplinks bundled",
+    "check": "Port-channel observed group/member baseline",
     "command": "show port-channel summary",
-    "expect": "1 bundle(s) (Po1) show all members in (P)/bundled state",
-    "why": "A member that doesn't re-bundle after cutover halves uplink capacity or drops the path."
+    "expect": "Observed EtherChannel baseline for core2: Po1 group 1(SU) LACP: Eth1/1(P) forwarding observed, Eth1/2(P) forwarding observed. Separate association projection: Eth1/1 -> Po1, Eth1/2 -> Po1. Preserve each observed group identity, protocol, exact group flag state, and per-member forwarding/hot-standby flag state; explain changes. No configured-member or partner denominator was inferred.",
+    "why": "Bounded observed local summary baseline; not proof that configured membership, partner state, or multi-chassis intent is complete.",
+    "evidence_state": "assessed",
+    "projection_custody": "embedded_unverified",
+    "source_key": "etherchannel_projection.rows[core2] + protocol_assessability.rows[core2,EtherChannel]"
    },
    {
     "device": "access1",
@@ -1732,15 +3564,76 @@
   "by_wave": {
    "Group 1": [
     {
+     "switch": "core1",
+     "interface": "Vlan10",
+     "svi_ip": "10.0.10.2/24",
+     "vlan": 10,
+     "vrf": "global",
+     "subnet": "10.0.10.0/24",
+     "domain_key": "vlan=10|vrf=global|subnet=10.0.10.0/24",
+     "candidate_key": "HSRP:10:10.0.10.1",
+     "participation": "positive",
+     "protocol": "HSRP",
+     "group": "10",
+     "virtual_ip": "10.0.10.1",
+     "role": "ACTIVE",
+     "status": "not_verified",
+     "check": "FHRP redundancy-domain composition \u2014 VLAN 10 / global / 10.0.10.0/24",
+     "command": "show standby brief",
+     "acceptance": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 10 / VRF global / observed IPv4 subnet 10.0.10.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+     "why": "A local configured/runtime FHRP group could not be verified.",
+     "source_key": "fhrp_configured_group_baseline.rows[core1,HSRP,Vlan10,10] + interfaces[core1,Vlan10].svi_ip/vrf",
+     "projection_custody": "current_run_projection_bound",
+     "findings": [
+      {
+       "kind": "not_verified",
+       "code": "local_group_not_verified",
+       "issue": "A local configured/runtime FHRP group could not be verified."
+      }
+     ],
      "device": "core1",
      "platform": "ios",
      "wave": "Group 1",
      "category": "FHRP",
      "severity": "High",
-     "check": "First-hop redundancy healthy for VLAN 10",
+     "expect": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 10 / VRF global / observed IPv4 subnet 10.0.10.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+     "evidence_state": "not_verified"
+    },
+    {
+     "switch": "core1",
+     "interface": "Vlan20",
+     "svi_ip": "10.0.20.2/24",
+     "vlan": 20,
+     "vrf": "global",
+     "subnet": "10.0.20.0/24",
+     "domain_key": "vlan=20|vrf=global|subnet=10.0.20.0/24",
+     "candidate_key": "HSRP:20:10.0.20.1",
+     "participation": "positive",
+     "protocol": "HSRP",
+     "group": "20",
+     "virtual_ip": "10.0.20.1",
+     "role": "STANDBY",
+     "status": "not_verified",
+     "check": "FHRP redundancy-domain composition \u2014 VLAN 20 / global / 10.0.20.0/24",
      "command": "show standby brief",
-     "expect": "VLAN 10 shows exactly one Active + one Standby across core1 + core2 (same virtual IP)",
-     "why": "VLAN 10 has a redundant gateway; a broken FHRP pair means no failover or a duplicate-active split-brain."
+     "acceptance": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 20 / VRF global / observed IPv4 subnet 10.0.20.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+     "why": "A local configured/runtime FHRP group could not be verified.",
+     "source_key": "fhrp_configured_group_baseline.rows[core1,HSRP,Vlan20,20] + interfaces[core1,Vlan20].svi_ip/vrf",
+     "projection_custody": "current_run_projection_bound",
+     "findings": [
+      {
+       "kind": "not_verified",
+       "code": "local_group_not_verified",
+       "issue": "A local configured/runtime FHRP group could not be verified."
+      }
+     ],
+     "device": "core1",
+     "platform": "ios",
+     "wave": "Group 1",
+     "category": "FHRP",
+     "severity": "High",
+     "expect": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 20 / VRF global / observed IPv4 subnet 10.0.20.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+     "evidence_state": "not_verified"
     },
     {
      "device": "core1",
@@ -1748,10 +3641,123 @@
      "wave": "Group 1",
      "category": "FHRP",
      "severity": "High",
-     "check": "First-hop redundancy healthy for VLAN 20",
+     "check": "HSRP configured group 10 bounded baseline",
      "command": "show standby brief",
-     "expect": "VLAN 20 shows exactly one Active + one Standby across core1 + core2 (same virtual IP)",
-     "why": "VLAN 20 has a redundant gateway; a broken FHRP pair means no failover or a duplicate-active split-brain."
+     "expect": "Require configured-active HSRP Vlan10 group 10 VIP 10.0.10.1 to preserve local state ACTIVE. This is a local group-state check only; no expected member count, simultaneous election, failover, or convergence claim is made.",
+     "why": "Configured-group reconciliation is bounded to HSRP Vlan10 group 10 in the default IPv4 direct-literal local scope; it does not infer a peer, intended member count, or election health.",
+     "evidence_state": "assessed",
+     "projection_custody": "current_run_source_bound",
+     "source_key": "show running-config | section ^interface#line:29 + show standby brief",
+     "protocol": "HSRP",
+     "interface": "Vlan10",
+     "group": "10",
+     "group_key": "HSRP:Vlan10:10",
+     "configured": true,
+     "configured_vip": "10.0.10.1",
+     "activation": "active",
+     "runtime_observed": true,
+     "runtime_vip": "10.0.10.1",
+     "runtime_state_raw": "Active",
+     "runtime_state": "ACTIVE",
+     "scope": "default/ipv4"
+    },
+    {
+     "device": "core1",
+     "platform": "ios",
+     "wave": "Group 1",
+     "category": "FHRP",
+     "severity": "High",
+     "check": "HSRP configured group 20 bounded baseline",
+     "command": "show standby brief",
+     "expect": "Require configured-active HSRP Vlan20 group 20 VIP 10.0.20.1 to preserve local state STANDBY. This is a local group-state check only; no expected member count, simultaneous election, failover, or convergence claim is made.",
+     "why": "Configured-group reconciliation is bounded to HSRP Vlan20 group 20 in the default IPv4 direct-literal local scope; it does not infer a peer, intended member count, or election health.",
+     "evidence_state": "assessed",
+     "projection_custody": "current_run_source_bound",
+     "source_key": "show running-config | section ^interface#line:35 + show standby brief",
+     "protocol": "HSRP",
+     "interface": "Vlan20",
+     "group": "20",
+     "group_key": "HSRP:Vlan20:20",
+     "configured": true,
+     "configured_vip": "10.0.20.1",
+     "activation": "active",
+     "runtime_observed": true,
+     "runtime_vip": "10.0.20.1",
+     "runtime_state_raw": "Standby",
+     "runtime_state": "STANDBY",
+     "scope": "default/ipv4"
+    },
+    {
+     "switch": "core2",
+     "interface": "Vlan10",
+     "svi_ip": "10.0.10.3/24",
+     "vlan": 10,
+     "vrf": "global",
+     "subnet": "10.0.10.0/24",
+     "domain_key": "vlan=10|vrf=global|subnet=10.0.10.0/24",
+     "candidate_key": "HSRP:10:10.0.10.1",
+     "participation": "positive",
+     "protocol": "HSRP",
+     "group": "10",
+     "virtual_ip": "10.0.10.1",
+     "role": "STANDBY",
+     "status": "not_verified",
+     "check": "FHRP redundancy-domain composition \u2014 VLAN 10 / global / 10.0.10.0/24",
+     "command": "show hsrp brief",
+     "acceptance": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 10 / VRF global / observed IPv4 subnet 10.0.10.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+     "why": "A local configured/runtime FHRP group could not be verified.",
+     "source_key": "fhrp_configured_group_baseline.rows[core2,HSRP,Vlan10,10] + interfaces[core2,Vlan10].svi_ip/vrf",
+     "projection_custody": "current_run_projection_bound",
+     "findings": [
+      {
+       "kind": "not_verified",
+       "code": "local_group_not_verified",
+       "issue": "A local configured/runtime FHRP group could not be verified."
+      }
+     ],
+     "device": "core2",
+     "platform": "nxos",
+     "wave": "Group 1",
+     "category": "FHRP",
+     "severity": "High",
+     "expect": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 10 / VRF global / observed IPv4 subnet 10.0.10.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+     "evidence_state": "not_verified"
+    },
+    {
+     "switch": "core2",
+     "interface": "Vlan20",
+     "svi_ip": "10.0.20.3/24",
+     "vlan": 20,
+     "vrf": "global",
+     "subnet": "10.0.20.0/24",
+     "domain_key": "vlan=20|vrf=global|subnet=10.0.20.0/24",
+     "candidate_key": "HSRP:20:10.0.20.1",
+     "participation": "positive",
+     "protocol": "HSRP",
+     "group": "20",
+     "virtual_ip": "10.0.20.1",
+     "role": "ACTIVE",
+     "status": "not_verified",
+     "check": "FHRP redundancy-domain composition \u2014 VLAN 20 / global / 10.0.20.0/24",
+     "command": "show hsrp brief",
+     "acceptance": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 20 / VRF global / observed IPv4 subnet 10.0.20.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+     "why": "A local configured/runtime FHRP group could not be verified.",
+     "source_key": "fhrp_configured_group_baseline.rows[core2,HSRP,Vlan20,20] + interfaces[core2,Vlan20].svi_ip/vrf",
+     "projection_custody": "current_run_projection_bound",
+     "findings": [
+      {
+       "kind": "not_verified",
+       "code": "local_group_not_verified",
+       "issue": "A local configured/runtime FHRP group could not be verified."
+      }
+     ],
+     "device": "core2",
+     "platform": "nxos",
+     "wave": "Group 1",
+     "category": "FHRP",
+     "severity": "High",
+     "expect": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 20 / VRF global / observed IPv4 subnet 10.0.20.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+     "evidence_state": "not_verified"
     },
     {
      "device": "core2",
@@ -1759,10 +3765,25 @@
      "wave": "Group 1",
      "category": "FHRP",
      "severity": "High",
-     "check": "First-hop redundancy healthy for VLAN 10",
+     "check": "HSRP configured group 10 bounded baseline",
      "command": "show hsrp brief",
-     "expect": "VLAN 10 shows exactly one Active + one Standby across core2 + core1 (same virtual IP)",
-     "why": "VLAN 10 has a redundant gateway; a broken FHRP pair means no failover or a duplicate-active split-brain."
+     "expect": "Require configured-active HSRP Vlan10 group 10 VIP 10.0.10.1 to preserve local state STANDBY. This is a local group-state check only; no expected member count, simultaneous election, failover, or convergence claim is made.",
+     "why": "Configured-group reconciliation is bounded to HSRP Vlan10 group 10 in the default IPv4 direct-literal local scope; it does not infer a peer, intended member count, or election health.",
+     "evidence_state": "assessed",
+     "projection_custody": "current_run_source_bound",
+     "source_key": "show running-config interface#line:15 + show hsrp brief",
+     "protocol": "HSRP",
+     "interface": "Vlan10",
+     "group": "10",
+     "group_key": "HSRP:Vlan10:10",
+     "configured": true,
+     "configured_vip": "10.0.10.1",
+     "activation": "active",
+     "runtime_observed": true,
+     "runtime_vip": "10.0.10.1",
+     "runtime_state_raw": "Standby",
+     "runtime_state": "STANDBY",
+     "scope": "default/ipv4"
     },
     {
      "device": "core2",
@@ -1770,10 +3791,25 @@
      "wave": "Group 1",
      "category": "FHRP",
      "severity": "High",
-     "check": "First-hop redundancy healthy for VLAN 20",
+     "check": "HSRP configured group 20 bounded baseline",
      "command": "show hsrp brief",
-     "expect": "VLAN 20 shows exactly one Active + one Standby across core2 + core1 (same virtual IP)",
-     "why": "VLAN 20 has a redundant gateway; a broken FHRP pair means no failover or a duplicate-active split-brain."
+     "expect": "Require configured-active HSRP Vlan20 group 20 VIP 10.0.20.1 to preserve local state ACTIVE. This is a local group-state check only; no expected member count, simultaneous election, failover, or convergence claim is made.",
+     "why": "Configured-group reconciliation is bounded to HSRP Vlan20 group 20 in the default IPv4 direct-literal local scope; it does not infer a peer, intended member count, or election health.",
+     "evidence_state": "assessed",
+     "projection_custody": "current_run_source_bound",
+     "source_key": "show running-config interface#line:20 + show hsrp brief",
+     "protocol": "HSRP",
+     "interface": "Vlan20",
+     "group": "20",
+     "group_key": "HSRP:Vlan20:20",
+     "configured": true,
+     "configured_vip": "10.0.20.1",
+     "activation": "active",
+     "runtime_observed": true,
+     "runtime_vip": "10.0.20.1",
+     "runtime_state_raw": "Active",
+     "runtime_state": "ACTIVE",
+     "scope": "default/ipv4"
     },
     {
      "device": "core1",
@@ -1858,10 +3894,55 @@
      "wave": "Group 1",
      "category": "Routing",
      "severity": "High",
-     "check": "OSPF adjacencies re-established",
+     "check": "OSPF degraded adjacency baseline",
      "command": "show ip ospf neighbor",
-     "expect": "2 neighbor(s) in FULL: 10.0.99.2, 10.0.99.9",
-     "why": "A dropped OSPF adjacency black-holes the routes it should exchange."
+     "expect": "PRE-CUTOVER DEGRADED \u2014 BLOCKER: Observed baseline for OSPF on core1: 10.0.99.2 state FULL/DR via Po1 address 10.0.99.2; 10.0.99.9 state EXSTART/DROTHER via Vlan40 address 10.0.40.9. OSPF peer 10.0.99.9 is observed in EXSTART/DROTHER state. Matching this degraded state after cutover is NOT ACCEPTANCE; resolve or explicitly disposition it before the window.",
+     "why": "Definite observed routing degradation; no expected-peer denominator was inferred.",
+     "evidence_state": "degraded",
+     "projection_custody": "embedded_unverified",
+     "source_key": "routing_neighbors.core1.ospf + protocol_assessability.rows[core1,OSPF]"
+    },
+    {
+     "device": "access1",
+     "platform": "ios",
+     "wave": "Group 1",
+     "category": "STP",
+     "severity": "High",
+     "check": "STP consistency evidence review",
+     "command": "show spanning-tree inconsistentports",
+     "expect": "PRE-CUTOVER REVIEW \u2014 BLOCKER: Usable current-run state and inconsistent-port captures are both required for this claim. Re-collect show spanning-tree plus show spanning-tree inconsistentports and reconcile exactly one STP health row before acceptance. Blocked-port capture: not collected; no blocked-port count is claimed. Optional topology-change capture: not collected; no topology-change count is claimed.",
+     "why": "STP consistency evidence requires review; no health conclusion is asserted. Blocked-port capture: not collected; no blocked-port count is claimed. Optional topology-change capture: not collected; no topology-change count is claimed.",
+     "evidence_state": "review",
+     "projection_custody": "embedded_unverified",
+     "source_key": "protocol_health[access1,STP] + protocol_assessability.rows[access1,STP] + interfaces.access1 + stp_roots.access1"
+    },
+    {
+     "device": "core1",
+     "platform": "ios",
+     "wave": "Group 1",
+     "category": "STP",
+     "severity": "High",
+     "check": "STP consistency evidence review",
+     "command": "show spanning-tree inconsistentports",
+     "expect": "PRE-CUTOVER REVIEW \u2014 BLOCKER: Usable current-run state and inconsistent-port captures are both required for this claim. Re-collect show spanning-tree plus show spanning-tree inconsistentports and reconcile exactly one STP health row before acceptance. Blocked-port capture: not collected; no blocked-port count is claimed. Optional topology-change capture: not collected; no topology-change count is claimed.",
+     "why": "STP consistency evidence requires review; no health conclusion is asserted. Blocked-port capture: not collected; no blocked-port count is claimed. Optional topology-change capture: not collected; no topology-change count is claimed.",
+     "evidence_state": "review",
+     "projection_custody": "embedded_unverified",
+     "source_key": "protocol_health[core1,STP] + protocol_assessability.rows[core1,STP] + interfaces.core1 + stp_roots.core1"
+    },
+    {
+     "device": "core2",
+     "platform": "nxos",
+     "wave": "Group 1",
+     "category": "STP",
+     "severity": "High",
+     "check": "STP consistency evidence review",
+     "command": "show spanning-tree inconsistentports",
+     "expect": "PRE-CUTOVER REVIEW \u2014 BLOCKER: Usable current-run state and inconsistent-port captures are both required for this claim. Re-collect show spanning-tree plus show spanning-tree inconsistentports and reconcile exactly one STP health row before acceptance. Blocked-port capture: not collected; no blocked-port count is claimed. Optional topology-change capture: not collected; no topology-change count is claimed.",
+     "why": "STP consistency evidence requires review; no health conclusion is asserted. Blocked-port capture: not collected; no blocked-port count is claimed. Optional topology-change capture: not collected; no topology-change count is claimed.",
+     "evidence_state": "review",
+     "projection_custody": "embedded_unverified",
+     "source_key": "protocol_health[core2,STP] + protocol_assessability.rows[core2,STP] + interfaces.core2 + stp_roots.core2"
     },
     {
      "device": "core1",
@@ -1869,10 +3950,13 @@
      "wave": "Group 1",
      "category": "Link",
      "severity": "Medium",
-     "check": "Port-channel uplinks bundled",
+     "check": "Port-channel observed group/member baseline",
      "command": "show etherchannel summary",
-     "expect": "1 bundle(s) (Po1) show all members in (P)/bundled state",
-     "why": "A member that doesn't re-bundle after cutover halves uplink capacity or drops the path."
+     "expect": "Observed EtherChannel baseline for core1: Po1 group 1(SU) LACP: Gi1/0/1(P) forwarding observed, Gi1/0/2(P) forwarding observed. Separate association projection: Gi1/0/1 -> Po1, Gi1/0/2 -> Po1. Preserve each observed group identity, protocol, exact group flag state, and per-member forwarding/hot-standby flag state; explain changes. No configured-member or partner denominator was inferred.",
+     "why": "Bounded observed local summary baseline; not proof that configured membership, partner state, or multi-chassis intent is complete.",
+     "evidence_state": "assessed",
+     "projection_custody": "embedded_unverified",
+     "source_key": "etherchannel_projection.rows[core1] + protocol_assessability.rows[core1,EtherChannel]"
     },
     {
      "device": "core2",
@@ -1880,10 +3964,13 @@
      "wave": "Group 1",
      "category": "Link",
      "severity": "Medium",
-     "check": "Port-channel uplinks bundled",
+     "check": "Port-channel observed group/member baseline",
      "command": "show port-channel summary",
-     "expect": "1 bundle(s) (Po1) show all members in (P)/bundled state",
-     "why": "A member that doesn't re-bundle after cutover halves uplink capacity or drops the path."
+     "expect": "Observed EtherChannel baseline for core2: Po1 group 1(SU) LACP: Eth1/1(P) forwarding observed, Eth1/2(P) forwarding observed. Separate association projection: Eth1/1 -> Po1, Eth1/2 -> Po1. Preserve each observed group identity, protocol, exact group flag state, and per-member forwarding/hot-standby flag state; explain changes. No configured-member or partner denominator was inferred.",
+     "why": "Bounded observed local summary baseline; not proof that configured membership, partner state, or multi-chassis intent is complete.",
+     "evidence_state": "assessed",
+     "projection_custody": "embedded_unverified",
+     "source_key": "etherchannel_projection.rows[core2] + protocol_assessability.rows[core2,EtherChannel]"
     },
     {
      "device": "access1",
@@ -1910,23 +3997,23 @@
    ]
   },
   "summary": {
-   "n_items": 16,
+   "n_items": 23,
    "n_waves": 1,
    "by_category": {
-    "FHRP": 4,
+    "FHRP": 8,
     "Gateway": 5,
     "Reachability": 2,
     "Routing": 1,
-    "Link": 2,
-    "STP": 2
+    "STP": 5,
+    "Link": 2
    },
-   "n_high": 12
+   "n_high": 19
   },
-  "banner": "Run these AFTER each wave's cutover to confirm it succeeded. 'Expect' is the known-good result captured from the pre-cutover state -- a deviation is a regression to investigate."
+  "banner": "Run these AFTER each wave's cutover. The 'Observed baseline / acceptance' column preserves what was actually observed and never invents a healthy count. Rows beginning 'PRE-CUTOVER DEGRADED \u2014 BLOCKER:' or 'PRE-CUTOVER REVIEW \u2014 BLOCKER:' are blockers: matching a faulted observation is NOT ACCEPTANCE, and identity/timing ambiguity requires live verification. 'BGP CONFIGURED PEER NOT VERIFIED \u2014 BLOCKER:', 'ROUTING BASELINE NOT VERIFIED \u2014 BLOCKER:', 'ETHERCHANNEL BASELINE NOT VERIFIED \u2014 BLOCKER:', and 'VTP SAFETY BASELINE NOT VERIFIED \u2014 BLOCKER:' mean the current-run receipt cannot authorize the corresponding observed baseline and require re-collection. Evidence-backed rows disclose projection custody; BGP configured-peer rows cover only direct static literal peers in the default/global IPv4-unicast scope, OSPF/EIGRP remain observed-peer scope, and EtherChannel is observed local group/member scope rather than configured or partner intent. VTP safety is a local mode/domain/revision exposure review, not database authority or propagation proof. Resolve or explicitly disposition every blocker and investigate every baseline deviation before acceptance."
  },
  "nrfu_commands": {
   "schema": "nrfu_commands/1",
-  "banner": "Four-phase NRFU certification pack: run each READ-ONLY command and confirm the output MATCHES the pre-filled EXPECTED value (captured from the pre-cutover snapshot; the source key cites the evidence). A deviation is a regression to investigate before sign-off. '[NOT OBSERVED \u2026]' rows are honest abstentions \u2014 record the baseline at execution. Phase IV rows are HUMAN-EXECUTED with the application owner.",
+  "banner": "Four-phase NRFU certification pack: run each READ-ONLY command and evaluate the output against the pre-filled observed baseline / acceptance text; the source key cites the embedded snapshot evidence. An unexplained deviation is a regression to investigate before sign-off. A PRE-CUTOVER DEGRADED, PRE-CUTOVER REVIEW, BGP CONFIGURED PEER NOT VERIFIED, or FHRP CONFIGURED GROUP NOT VERIFIED, or an FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: marker is a blocker to resolve or explicitly disposition before the window; reproducing a degraded state is not acceptance, and a review row requires live simultaneous verification. A ROUTING BASELINE NOT VERIFIED, ETHERCHANNEL BASELINE NOT VERIFIED, or VTP SAFETY BASELINE NOT VERIFIED row requires re-collection before an exact observed baseline can be accepted. An STP CONSISTENCY BASELINE NOT VERIFIED row requires re-collection before an exact observed baseline can be accepted. STP consistency, Routing, FHRP, EtherChannel, and VTP cases carry evidence_family, evidence_state, and projection_custody; embedded_unverified means the published receipt does not cryptographically bind projected peers, FHRP groups, EtherChannel member-state projections, or STP health projections to raw captures. '[NOT OBSERVED \u2026]' rows are honest abstentions \u2014 record the baseline at execution. Phase IV rows are HUMAN-EXECUTED with the application owner.",
   "waves": [
    {
     "wave_id": "Group 1",
@@ -1971,12 +4058,23 @@
         "id": "NRFU-W1-P2-005",
         "phase": 2,
         "scope": "per-site",
+        "command": "show spanning-tree inconsistentports",
+        "expected": "PRE-CUTOVER REVIEW \u2014 BLOCKER: Usable current-run state and inconsistent-port captures are both required for this claim. Re-collect show spanning-tree plus show spanning-tree inconsistentports and reconcile exactly one STP health row before acceptance. Blocked-port capture: not collected; no blocked-port count is claimed. Optional topology-change capture: not collected; no topology-change count is claimed.",
+        "source_key": "protocol_health[access1,STP] + protocol_assessability.rows[access1,STP] + interfaces.access1 + stp_roots.access1",
+        "evidence_family": "STP",
+        "evidence_state": "review",
+        "projection_custody": "embedded_unverified"
+       },
+       {
+        "id": "NRFU-W1-P2-006",
+        "phase": 2,
+        "scope": "per-site",
         "command": "show spanning-tree vlan 10",
         "expected": "Root bridge aaaa.0001.0001 for VLAN 10 (priority 24586) \u2014 unchanged",
         "source_key": "stp_roots.access1.10"
        },
        {
-        "id": "NRFU-W1-P2-006",
+        "id": "NRFU-W1-P2-007",
         "phase": 2,
         "scope": "per-site",
         "command": "show spanning-tree vlan 30",
@@ -1984,7 +4082,7 @@
         "source_key": "stp_roots.access1.30"
        },
        {
-        "id": "NRFU-W1-P2-007",
+        "id": "NRFU-W1-P2-008",
         "phase": 2,
         "scope": "per-site",
         "command": "show cdp neighbors",
@@ -1992,7 +4090,7 @@
         "source_key": "interfaces.access1.*.cdp_neighbor"
        },
        {
-        "id": "NRFU-W1-P3-008",
+        "id": "NRFU-W1-P3-009",
         "phase": 3,
         "scope": "per-site",
         "command": "show ip dhcp snooping binding",
@@ -2000,7 +4098,7 @@
         "source_key": "dhcp_snooping.access1"
        },
        {
-        "id": "NRFU-W1-P4-034",
+        "id": "NRFU-W1-P4-043",
         "phase": 4,
         "scope": "end-to-end",
         "command": "ping <representative 'General / Back-office (unclassified)' application endpoint>",
@@ -2014,7 +4112,7 @@
       "platform_dialect": "ios",
       "cases": [
        {
-        "id": "NRFU-W1-P1-009",
+        "id": "NRFU-W1-P1-010",
         "phase": 1,
         "scope": "per-site",
         "command": "show version",
@@ -2022,7 +4120,7 @@
         "source_key": "devices.core1.sw_version"
        },
        {
-        "id": "NRFU-W1-P1-010",
+        "id": "NRFU-W1-P1-011",
         "phase": 1,
         "scope": "per-site",
         "command": "show inventory",
@@ -2030,7 +4128,7 @@
         "source_key": "devices.core1.model"
        },
        {
-        "id": "NRFU-W1-P1-011",
+        "id": "NRFU-W1-P1-012",
         "phase": 1,
         "scope": "per-site",
         "command": "show environment all",
@@ -2038,7 +4136,7 @@
         "source_key": "devices.core1.ps_status"
        },
        {
-        "id": "NRFU-W1-P2-012",
+        "id": "NRFU-W1-P2-013",
         "phase": 2,
         "scope": "per-site",
         "command": "show interface status",
@@ -2046,15 +4144,29 @@
         "source_key": "interfaces.core1"
        },
        {
-        "id": "NRFU-W1-P2-013",
+        "id": "NRFU-W1-P2-014",
         "phase": 2,
         "scope": "per-site",
         "command": "show etherchannel summary",
-        "expected": "Po1: 2 member(s) bundled (P)",
-        "source_key": "interfaces.core1.*.port_channel"
+        "expected": "Observed EtherChannel baseline for core1: Po1 group 1(SU) LACP: Gi1/0/1(P) forwarding observed, Gi1/0/2(P) forwarding observed. Separate association projection: Gi1/0/1 -> Po1, Gi1/0/2 -> Po1. Preserve each observed group identity, protocol, exact group flag state, and per-member forwarding/hot-standby flag state; explain changes. No configured-member or partner denominator was inferred.",
+        "source_key": "etherchannel_projection.rows[core1] + protocol_assessability.rows[core1,EtherChannel]",
+        "evidence_family": "EtherChannel",
+        "evidence_state": "assessed",
+        "projection_custody": "embedded_unverified"
        },
        {
-        "id": "NRFU-W1-P2-014",
+        "id": "NRFU-W1-P2-015",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show spanning-tree inconsistentports",
+        "expected": "PRE-CUTOVER REVIEW \u2014 BLOCKER: Usable current-run state and inconsistent-port captures are both required for this claim. Re-collect show spanning-tree plus show spanning-tree inconsistentports and reconcile exactly one STP health row before acceptance. Blocked-port capture: not collected; no blocked-port count is claimed. Optional topology-change capture: not collected; no topology-change count is claimed.",
+        "source_key": "protocol_health[core1,STP] + protocol_assessability.rows[core1,STP] + interfaces.core1 + stp_roots.core1",
+        "evidence_family": "STP",
+        "evidence_state": "review",
+        "projection_custody": "embedded_unverified"
+       },
+       {
+        "id": "NRFU-W1-P2-016",
         "phase": 2,
         "scope": "per-site",
         "command": "show spanning-tree vlan 10",
@@ -2062,7 +4174,7 @@
         "source_key": "stp_roots.core1.10"
        },
        {
-        "id": "NRFU-W1-P2-015",
+        "id": "NRFU-W1-P2-017",
         "phase": 2,
         "scope": "per-site",
         "command": "show spanning-tree vlan 30",
@@ -2070,23 +4182,134 @@
         "source_key": "stp_roots.core1.30"
        },
        {
-        "id": "NRFU-W1-P2-016",
+        "id": "NRFU-W1-P2-018",
         "phase": 2,
         "scope": "per-site",
         "command": "show standby brief",
-        "expected": "Vlan10 grp 10 Active (VIP 10.0.10.1); Vlan20 grp 20 Standby (VIP 10.0.20.1)",
-        "source_key": "fhrp_detail.core1"
+        "expected": "Require configured-active HSRP Vlan10 group 10 VIP 10.0.10.1 to preserve local state ACTIVE. This is a local group-state check only; no expected member count, simultaneous election, failover, or convergence claim is made.",
+        "source_key": "show running-config | section ^interface#line:29 + show standby brief",
+        "evidence_family": "FHRP",
+        "evidence_state": "assessed",
+        "projection_custody": "current_run_source_bound",
+        "protocol": "HSRP",
+        "interface": "Vlan10",
+        "group": "10",
+        "group_key": "HSRP:Vlan10:10",
+        "configured": true,
+        "configured_vip": "10.0.10.1",
+        "activation": "active",
+        "runtime_observed": true,
+        "runtime_vip": "10.0.10.1",
+        "runtime_state_raw": "Active",
+        "runtime_state": "ACTIVE",
+        "fhrp_scope": "default/ipv4"
        },
        {
-        "id": "NRFU-W1-P2-017",
+        "id": "NRFU-W1-P2-019",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show standby brief",
+        "expected": "Require configured-active HSRP Vlan20 group 20 VIP 10.0.20.1 to preserve local state STANDBY. This is a local group-state check only; no expected member count, simultaneous election, failover, or convergence claim is made.",
+        "source_key": "show running-config | section ^interface#line:35 + show standby brief",
+        "evidence_family": "FHRP",
+        "evidence_state": "assessed",
+        "projection_custody": "current_run_source_bound",
+        "protocol": "HSRP",
+        "interface": "Vlan20",
+        "group": "20",
+        "group_key": "HSRP:Vlan20:20",
+        "configured": true,
+        "configured_vip": "10.0.20.1",
+        "activation": "active",
+        "runtime_observed": true,
+        "runtime_vip": "10.0.20.1",
+        "runtime_state_raw": "Standby",
+        "runtime_state": "STANDBY",
+        "fhrp_scope": "default/ipv4"
+       },
+       {
+        "id": "NRFU-W1-P2-020",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show standby brief",
+        "expected": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 10 / VRF global / observed IPv4 subnet 10.0.10.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+        "source_key": "fhrp_configured_group_baseline.rows[core1,HSRP,Vlan10,10] + interfaces[core1,Vlan10].svi_ip/vrf",
+        "evidence_family": "FHRP Domain",
+        "evidence_state": "not_verified",
+        "projection_custody": "current_run_projection_bound",
+        "switch": "core1",
+        "interface": "Vlan10",
+        "svi_ip": "10.0.10.2/24",
+        "vlan": 10,
+        "vrf": "global",
+        "subnet": "10.0.10.0/24",
+        "domain_key": "vlan=10|vrf=global|subnet=10.0.10.0/24",
+        "candidate_key": "HSRP:10:10.0.10.1",
+        "participation": "positive",
+        "protocol": "HSRP",
+        "group": "10",
+        "virtual_ip": "10.0.10.1",
+        "role": "ACTIVE",
+        "status": "not_verified",
+        "check": "FHRP redundancy-domain composition \u2014 VLAN 10 / global / 10.0.10.0/24",
+        "acceptance": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 10 / VRF global / observed IPv4 subnet 10.0.10.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+        "why": "A local configured/runtime FHRP group could not be verified.",
+        "findings": [
+         {
+          "kind": "not_verified",
+          "code": "local_group_not_verified",
+          "issue": "A local configured/runtime FHRP group could not be verified."
+         }
+        ]
+       },
+       {
+        "id": "NRFU-W1-P2-021",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show standby brief",
+        "expected": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 20 / VRF global / observed IPv4 subnet 10.0.20.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+        "source_key": "fhrp_configured_group_baseline.rows[core1,HSRP,Vlan20,20] + interfaces[core1,Vlan20].svi_ip/vrf",
+        "evidence_family": "FHRP Domain",
+        "evidence_state": "not_verified",
+        "projection_custody": "current_run_projection_bound",
+        "switch": "core1",
+        "interface": "Vlan20",
+        "svi_ip": "10.0.20.2/24",
+        "vlan": 20,
+        "vrf": "global",
+        "subnet": "10.0.20.0/24",
+        "domain_key": "vlan=20|vrf=global|subnet=10.0.20.0/24",
+        "candidate_key": "HSRP:20:10.0.20.1",
+        "participation": "positive",
+        "protocol": "HSRP",
+        "group": "20",
+        "virtual_ip": "10.0.20.1",
+        "role": "STANDBY",
+        "status": "not_verified",
+        "check": "FHRP redundancy-domain composition \u2014 VLAN 20 / global / 10.0.20.0/24",
+        "acceptance": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 20 / VRF global / observed IPv4 subnet 10.0.20.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+        "why": "A local configured/runtime FHRP group could not be verified.",
+        "findings": [
+         {
+          "kind": "not_verified",
+          "code": "local_group_not_verified",
+          "issue": "A local configured/runtime FHRP group could not be verified."
+         }
+        ]
+       },
+       {
+        "id": "NRFU-W1-P2-022",
         "phase": 2,
         "scope": "per-site",
         "command": "show ip ospf neighbor",
-        "expected": "2 OSPF neighbor(s) in FULL: 10.0.99.2, 10.0.99.9",
-        "source_key": "routing_neighbors.core1.ospf"
+        "expected": "PRE-CUTOVER DEGRADED \u2014 BLOCKER: Observed baseline for OSPF on core1: 10.0.99.2 state FULL/DR via Po1 address 10.0.99.2; 10.0.99.9 state EXSTART/DROTHER via Vlan40 address 10.0.40.9. OSPF peer 10.0.99.9 is observed in EXSTART/DROTHER state. Matching this degraded state after cutover is NOT ACCEPTANCE; resolve or explicitly disposition it before the window.",
+        "source_key": "routing_neighbors.core1.ospf + protocol_assessability.rows[core1,OSPF]",
+        "evidence_family": "OSPF",
+        "evidence_state": "degraded",
+        "projection_custody": "embedded_unverified"
        },
        {
-        "id": "NRFU-W1-P2-018",
+        "id": "NRFU-W1-P2-023",
         "phase": 2,
         "scope": "per-site",
         "command": "show cdp neighbors",
@@ -2094,7 +4317,7 @@
         "source_key": "interfaces.core1.*.cdp_neighbor"
        },
        {
-        "id": "NRFU-W1-P3-019",
+        "id": "NRFU-W1-P3-024",
         "phase": 3,
         "scope": "per-site",
         "command": "show ip dhcp snooping binding",
@@ -2102,7 +4325,7 @@
         "source_key": "dhcp_snooping.core1"
        },
        {
-        "id": "NRFU-W1-P3-029",
+        "id": "NRFU-W1-P3-038",
         "phase": 3,
         "scope": "end-to-end",
         "command": "ping 10.0.10.2",
@@ -2110,7 +4333,7 @@
         "source_key": "interfaces.core1.Vlan10.svi_ip"
        },
        {
-        "id": "NRFU-W1-P3-030",
+        "id": "NRFU-W1-P3-039",
         "phase": 3,
         "scope": "end-to-end",
         "command": "ping 10.0.10.2",
@@ -2118,7 +4341,7 @@
         "source_key": "interfaces.core1.Vlan10.svi_ip"
        },
        {
-        "id": "NRFU-W1-P4-035",
+        "id": "NRFU-W1-P4-044",
         "phase": 4,
         "scope": "end-to-end",
         "command": "ping <representative 'Compute / Virtualization' application endpoint>",
@@ -2132,7 +4355,7 @@
       "platform_dialect": "nxos",
       "cases": [
        {
-        "id": "NRFU-W1-P1-020",
+        "id": "NRFU-W1-P1-025",
         "phase": 1,
         "scope": "per-site",
         "command": "show version",
@@ -2140,7 +4363,7 @@
         "source_key": "devices.core2.sw_version"
        },
        {
-        "id": "NRFU-W1-P1-021",
+        "id": "NRFU-W1-P1-026",
         "phase": 1,
         "scope": "per-site",
         "command": "show module",
@@ -2148,7 +4371,7 @@
         "source_key": "devices.core2.model"
        },
        {
-        "id": "NRFU-W1-P1-022",
+        "id": "NRFU-W1-P1-027",
         "phase": 1,
         "scope": "per-site",
         "command": "show environment",
@@ -2156,7 +4379,7 @@
         "source_key": "devices.core2.ps_status"
        },
        {
-        "id": "NRFU-W1-P2-023",
+        "id": "NRFU-W1-P2-028",
         "phase": 2,
         "scope": "per-site",
         "command": "show interface status",
@@ -2164,15 +4387,29 @@
         "source_key": "interfaces.core2"
        },
        {
-        "id": "NRFU-W1-P2-024",
+        "id": "NRFU-W1-P2-029",
         "phase": 2,
         "scope": "per-site",
         "command": "show port-channel summary",
-        "expected": "Po1: 2 member(s) bundled (P)",
-        "source_key": "interfaces.core2.*.port_channel"
+        "expected": "Observed EtherChannel baseline for core2: Po1 group 1(SU) LACP: Eth1/1(P) forwarding observed, Eth1/2(P) forwarding observed. Separate association projection: Eth1/1 -> Po1, Eth1/2 -> Po1. Preserve each observed group identity, protocol, exact group flag state, and per-member forwarding/hot-standby flag state; explain changes. No configured-member or partner denominator was inferred.",
+        "source_key": "etherchannel_projection.rows[core2] + protocol_assessability.rows[core2,EtherChannel]",
+        "evidence_family": "EtherChannel",
+        "evidence_state": "assessed",
+        "projection_custody": "embedded_unverified"
        },
        {
-        "id": "NRFU-W1-P2-025",
+        "id": "NRFU-W1-P2-030",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show spanning-tree inconsistentports",
+        "expected": "PRE-CUTOVER REVIEW \u2014 BLOCKER: Usable current-run state and inconsistent-port captures are both required for this claim. Re-collect show spanning-tree plus show spanning-tree inconsistentports and reconcile exactly one STP health row before acceptance. Blocked-port capture: not collected; no blocked-port count is claimed. Optional topology-change capture: not collected; no topology-change count is claimed.",
+        "source_key": "protocol_health[core2,STP] + protocol_assessability.rows[core2,STP] + interfaces.core2 + stp_roots.core2",
+        "evidence_family": "STP",
+        "evidence_state": "review",
+        "projection_custody": "embedded_unverified"
+       },
+       {
+        "id": "NRFU-W1-P2-031",
         "phase": 2,
         "scope": "per-site",
         "command": "show spanning-tree vlan 10",
@@ -2180,7 +4417,7 @@
         "source_key": "stp_roots.core2.10"
        },
        {
-        "id": "NRFU-W1-P2-026",
+        "id": "NRFU-W1-P2-032",
         "phase": 2,
         "scope": "per-site",
         "command": "show spanning-tree vlan 20",
@@ -2188,15 +4425,123 @@
         "source_key": "stp_roots.core2.20"
        },
        {
-        "id": "NRFU-W1-P2-027",
+        "id": "NRFU-W1-P2-033",
         "phase": 2,
         "scope": "per-site",
         "command": "show hsrp brief",
-        "expected": "Vlan10: HSRP grp 10 Standby VIP 10.0.10.1; Vlan20: HSRP grp 20 Active VIP 10.0.20.1",
-        "source_key": "interfaces.core2.*.hsrp_behavior"
+        "expected": "Require configured-active HSRP Vlan10 group 10 VIP 10.0.10.1 to preserve local state STANDBY. This is a local group-state check only; no expected member count, simultaneous election, failover, or convergence claim is made.",
+        "source_key": "show running-config interface#line:15 + show hsrp brief",
+        "evidence_family": "FHRP",
+        "evidence_state": "assessed",
+        "projection_custody": "current_run_source_bound",
+        "protocol": "HSRP",
+        "interface": "Vlan10",
+        "group": "10",
+        "group_key": "HSRP:Vlan10:10",
+        "configured": true,
+        "configured_vip": "10.0.10.1",
+        "activation": "active",
+        "runtime_observed": true,
+        "runtime_vip": "10.0.10.1",
+        "runtime_state_raw": "Standby",
+        "runtime_state": "STANDBY",
+        "fhrp_scope": "default/ipv4"
        },
        {
-        "id": "NRFU-W1-P2-028",
+        "id": "NRFU-W1-P2-034",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show hsrp brief",
+        "expected": "Require configured-active HSRP Vlan20 group 20 VIP 10.0.20.1 to preserve local state ACTIVE. This is a local group-state check only; no expected member count, simultaneous election, failover, or convergence claim is made.",
+        "source_key": "show running-config interface#line:20 + show hsrp brief",
+        "evidence_family": "FHRP",
+        "evidence_state": "assessed",
+        "projection_custody": "current_run_source_bound",
+        "protocol": "HSRP",
+        "interface": "Vlan20",
+        "group": "20",
+        "group_key": "HSRP:Vlan20:20",
+        "configured": true,
+        "configured_vip": "10.0.20.1",
+        "activation": "active",
+        "runtime_observed": true,
+        "runtime_vip": "10.0.20.1",
+        "runtime_state_raw": "Active",
+        "runtime_state": "ACTIVE",
+        "fhrp_scope": "default/ipv4"
+       },
+       {
+        "id": "NRFU-W1-P2-035",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show hsrp brief",
+        "expected": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 10 / VRF global / observed IPv4 subnet 10.0.10.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+        "source_key": "fhrp_configured_group_baseline.rows[core2,HSRP,Vlan10,10] + interfaces[core2,Vlan10].svi_ip/vrf",
+        "evidence_family": "FHRP Domain",
+        "evidence_state": "not_verified",
+        "projection_custody": "current_run_projection_bound",
+        "switch": "core2",
+        "interface": "Vlan10",
+        "svi_ip": "10.0.10.3/24",
+        "vlan": 10,
+        "vrf": "global",
+        "subnet": "10.0.10.0/24",
+        "domain_key": "vlan=10|vrf=global|subnet=10.0.10.0/24",
+        "candidate_key": "HSRP:10:10.0.10.1",
+        "participation": "positive",
+        "protocol": "HSRP",
+        "group": "10",
+        "virtual_ip": "10.0.10.1",
+        "role": "STANDBY",
+        "status": "not_verified",
+        "check": "FHRP redundancy-domain composition \u2014 VLAN 10 / global / 10.0.10.0/24",
+        "acceptance": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 10 / VRF global / observed IPv4 subnet 10.0.10.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+        "why": "A local configured/runtime FHRP group could not be verified.",
+        "findings": [
+         {
+          "kind": "not_verified",
+          "code": "local_group_not_verified",
+          "issue": "A local configured/runtime FHRP group could not be verified."
+         }
+        ]
+       },
+       {
+        "id": "NRFU-W1-P2-036",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show hsrp brief",
+        "expected": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 20 / VRF global / observed IPv4 subnet 10.0.20.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+        "source_key": "fhrp_configured_group_baseline.rows[core2,HSRP,Vlan20,20] + interfaces[core2,Vlan20].svi_ip/vrf",
+        "evidence_family": "FHRP Domain",
+        "evidence_state": "not_verified",
+        "projection_custody": "current_run_projection_bound",
+        "switch": "core2",
+        "interface": "Vlan20",
+        "svi_ip": "10.0.20.3/24",
+        "vlan": 20,
+        "vrf": "global",
+        "subnet": "10.0.20.0/24",
+        "domain_key": "vlan=20|vrf=global|subnet=10.0.20.0/24",
+        "candidate_key": "HSRP:20:10.0.20.1",
+        "participation": "positive",
+        "protocol": "HSRP",
+        "group": "20",
+        "virtual_ip": "10.0.20.1",
+        "role": "ACTIVE",
+        "status": "not_verified",
+        "check": "FHRP redundancy-domain composition \u2014 VLAN 20 / global / 10.0.20.0/24",
+        "acceptance": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: VLAN 20 / VRF global / observed IPv4 subnet 10.0.20.0/24 could not be reconciled from complete source-bound subtype evidence. Re-collect configuration and all applicable FHRP summaries before acceptance. Sequential captures are not simultaneous election evidence. No off-scan or intended peer count, timer, authentication, tracking, preemption, failover, or convergence claim is made.",
+        "why": "A local configured/runtime FHRP group could not be verified.",
+        "findings": [
+         {
+          "kind": "not_verified",
+          "code": "local_group_not_verified",
+          "issue": "A local configured/runtime FHRP group could not be verified."
+         }
+        ]
+       },
+       {
+        "id": "NRFU-W1-P2-037",
         "phase": 2,
         "scope": "per-site",
         "command": "show cdp neighbors",
@@ -2204,7 +4549,7 @@
         "source_key": "interfaces.core2.*.cdp_neighbor"
        },
        {
-        "id": "NRFU-W1-P3-031",
+        "id": "NRFU-W1-P3-040",
         "phase": 3,
         "scope": "end-to-end",
         "command": "ping 10.0.10.2",
@@ -2212,7 +4557,7 @@
         "source_key": "interfaces.core1.Vlan10.svi_ip"
        },
        {
-        "id": "NRFU-W1-P3-032",
+        "id": "NRFU-W1-P3-041",
         "phase": 3,
         "scope": "end-to-end",
         "command": "traceroute 10.0.10.2",
@@ -2220,7 +4565,7 @@
         "source_key": "interfaces.core1.Vlan10.svi_ip"
        },
        {
-        "id": "NRFU-W1-P3-033",
+        "id": "NRFU-W1-P3-042",
         "phase": 3,
         "scope": "end-to-end",
         "command": "ping 10.0.10.2",
@@ -2235,15 +4580,59 @@
   "summary": {
    "n_waves": 1,
    "n_devices": 3,
-   "n_cases": 35,
+   "n_cases": 44,
    "by_phase": {
     "1": 9,
-    "2": 17,
+    "2": 26,
     "3": 7,
     "4": 2
    },
    "n_not_observed": 8,
-   "n_human_executed": 2
+   "n_human_executed": 2,
+   "n_routing_cases": 1,
+   "n_routing_blockers": 1,
+   "routing_by_evidence_state": {
+    "degraded": 1
+   },
+   "routing_by_projection_custody": {
+    "embedded_unverified": 1
+   },
+   "n_fhrp_cases": 4,
+   "n_fhrp_blockers": 0,
+   "fhrp_by_evidence_state": {
+    "assessed": 4
+   },
+   "fhrp_by_projection_custody": {
+    "current_run_source_bound": 4
+   },
+   "n_fhrp_domain_cases": 4,
+   "n_fhrp_domain_blockers": 4,
+   "fhrp_domain_by_evidence_state": {
+    "not_verified": 4
+   },
+   "fhrp_domain_by_projection_custody": {
+    "current_run_projection_bound": 4
+   },
+   "n_etherchannel_cases": 2,
+   "n_etherchannel_blockers": 0,
+   "etherchannel_by_evidence_state": {
+    "assessed": 2
+   },
+   "etherchannel_by_projection_custody": {
+    "embedded_unverified": 2
+   },
+   "n_stp_consistency_cases": 3,
+   "n_stp_consistency_blockers": 3,
+   "stp_consistency_by_evidence_state": {
+    "review": 3
+   },
+   "stp_consistency_by_projection_custody": {
+    "embedded_unverified": 3
+   },
+   "n_vtp_safety_cases": 0,
+   "n_vtp_safety_blockers": 0,
+   "vtp_safety_by_evidence_state": {},
+   "vtp_safety_by_projection_custody": {}
   }
  },
  "golden_drift": {
@@ -3046,7 +5435,7 @@
    "endpoints": 5,
    "readiness": "NOT READY",
    "n_fail": 4,
-   "n_warn": 2,
+   "n_warn": 3,
    "checks": [
     {
      "check": "Redundant uplinks",
@@ -3057,7 +5446,7 @@
     {
      "check": "Gateway redundancy",
      "status": "fail",
-     "note": "sole gateway on core1 (no FHRP)",
+     "note": "sole gateway on core1 (no FHRP); 4 configured FHRP group(s) assessed in the bounded default IPv4 direct-literal local group/VIP/state scope; no peer or election health was inferred; FHRP redundancy-domain composition is INDETERMINATE: A local configured/runtime FHRP group could not be verified.; A local configured/runtime FHRP group could not be verified.; A local configured/runtime FHRP group could not be verified.; A local configured/runtime FHRP group could not be verified.",
      "phase": "Pilot/cutover"
     },
     {
@@ -3074,8 +5463,8 @@
     },
     {
      "check": "STP consistency",
-     "status": "pass",
-     "note": "no inconsistent ports",
+     "status": "warn",
+     "note": "STP consistency baseline not verified on access1 (review), core1 (review), core2 (review); re-collect show spanning-tree and show spanning-tree inconsistentports",
      "phase": "Dependency mapping"
     },
     {
@@ -3087,7 +5476,7 @@
     {
      "check": "Routing adjacencies up",
      "status": "fail",
-     "note": "down OSPF/BGP neighbor on core1",
+     "note": "down OSPF neighbor on core1",
      "phase": "Baseline capture"
     },
     {
@@ -5960,6 +8349,36 @@
   {
    "severity": "Medium",
    "rank": 2,
+   "category": "FHRP",
+   "devices": [
+    "core1",
+    "core2"
+   ],
+   "wave": "",
+   "title": "FHRP redundancy domain not verified (VLAN 10)",
+   "detail": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: source or domain evidence could not be verified. Re-collect before acceptance.",
+   "remediation": "Re-collect and validate the domain receipt before deciding intended membership or remediation.",
+   "source_command": "show standby brief",
+   "priority": 22
+  },
+  {
+   "severity": "Medium",
+   "rank": 2,
+   "category": "FHRP",
+   "devices": [
+    "core1",
+    "core2"
+   ],
+   "wave": "",
+   "title": "FHRP redundancy domain not verified (VLAN 20)",
+   "detail": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: source or domain evidence could not be verified. Re-collect before acceptance.",
+   "remediation": "Re-collect and validate the domain receipt before deciding intended membership or remediation.",
+   "source_command": "show standby brief",
+   "priority": 23
+  },
+  {
+   "severity": "Medium",
+   "rank": 2,
    "category": "L1",
    "devices": [
     "access1"
@@ -5969,7 +8388,7 @@
    "detail": "L1 risk 'single-fiber-uplink' on 1 switch(es).",
    "remediation": "",
    "source_command": "show interface status",
-   "priority": 22
+   "priority": 24
   },
   {
    "severity": "Medium",
@@ -5983,7 +8402,7 @@
    "detail": "1 event(s) in the collected log window.",
    "remediation": "CDP detected a duplex mismatch with the neighbor. Set both ends to auto (or pin both); late collisions silently throttle throughput.",
    "source_command": "show logging",
-   "priority": 23
+   "priority": 25
   },
   {
    "severity": "Medium",
@@ -5997,7 +8416,7 @@
    "detail": "1 interface(s) with >= 3 down transitions: GigabitEthernet1/0/9 (3x).",
    "remediation": "Repeated up/down transitions point at physical-layer instability (cable / optic / negotiation). Fix the media -- flapping links invalidate pre-cutover baselines.",
    "source_command": "show logging",
-   "priority": 24
+   "priority": 26
   },
   {
    "severity": "Medium",
@@ -6011,7 +8430,7 @@
    "detail": "6 failed login(s) in the collected log window.",
    "remediation": "Multiple failed logins recorded. Confirm AAA health and check for unauthorized access attempts before the migration window.",
    "source_command": "show logging",
-   "priority": 25
+   "priority": 27
   },
   {
    "severity": "Medium",
@@ -6024,7 +8443,7 @@
    "title": "Control-plane CPU elevated",
    "detail": "CPU 63% (show processes cpu (5-min avg)).",
    "remediation": "A 5-minute CPU at/above 60% is workable but worth explaining before the cutover adds protocol churn. Identify the top processes and confirm the level is expected for this role.",
-   "priority": 26
+   "priority": 28
   },
   {
    "severity": "Medium",
@@ -6039,7 +8458,7 @@
    "detail": "The spanning-tree root is not on the VLAN's gateway switch -- traffic to the default gateway hairpins.",
    "remediation": "Align the STP root priority with the active gateway switch.",
    "source_command": "show spanning-tree",
-   "priority": 27
+   "priority": 29
   },
   {
    "severity": "Medium",
@@ -6053,7 +8472,7 @@
    "detail": "no central AAA ('aaa new-model' / 'aaa authentication login default group') -- authentication is local-only / line-based.",
    "remediation": "Enable 'aaa new-model' for centralized authentication / authorization / accounting.",
    "source_command": "show running-config",
-   "priority": 28
+   "priority": 30
   },
   {
    "severity": "Medium",
@@ -6067,7 +8486,7 @@
    "detail": "no 'service password-encryption' -- passwords can be stored in cleartext (Type-0).",
    "remediation": "Configure 'service password-encryption' and migrate Type-7 secrets to Type-8/9.",
    "source_command": "show running-config",
-   "priority": 29
+   "priority": 31
   },
   {
    "severity": "Medium",
@@ -6081,7 +8500,7 @@
    "detail": "enabled: HTTP server (cleartext).",
    "remediation": "Disable HTTP server, Smart Install, source-route, bootp, finger and 'service config'.",
    "source_command": "show running-config",
-   "priority": 30
+   "priority": 32
   },
   {
    "severity": "Medium",
@@ -6096,7 +8515,7 @@
    "detail": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 / 0 0).",
    "remediation": "Apply an 'access-class' ACL and a non-zero 'exec-timeout' on every VTY line.",
    "source_command": "show running-config",
-   "priority": 31
+   "priority": 33
   },
   {
    "severity": "Low",
@@ -6111,7 +8530,7 @@
    "title": "Native VLAN 1 on 4 operationally-trunking port(s)",
    "detail": "4 operationally-trunking port(s) (live trunk status) across 3 live-trunking switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure. (The design gap counts trunk-mode port(s) -- switchport-mode basis, administrative or negotiated -- so the two figures can differ.)",
    "remediation": "Set a dedicated, unused native VLAN on every 802.1Q trunk.",
-   "priority": 32
+   "priority": 34
   },
   {
    "severity": "Low",
@@ -6123,7 +8542,7 @@
    "detail": "None of the 2 assessable device(s) has any active QoS configuration (policies attached, trust, or auto-QoS).",
    "remediation": "The whole assessable fleet runs best-effort. Acceptable for pure data; a documented risk if voice/video/storage rides this network. Record the customer's stance as a CRD requirement before the migration.",
    "source_command": "show policy-map interface",
-   "priority": 33
+   "priority": 35
   },
   {
    "severity": "Low",
@@ -6137,7 +8556,7 @@
    "detail": "Rooted on the default priority -- elected on a MAC tiebreak, so it can move on a cutover.",
    "remediation": "Set a deliberate root-bridge priority on the intended switch.",
    "source_command": "show spanning-tree",
-   "priority": 34
+   "priority": 36
   },
   {
    "severity": "Low",
@@ -6151,7 +8570,7 @@
    "detail": "no syslog / buffered logging -- no audit trail across the migration.",
    "remediation": "Configure 'logging host' / 'logging buffered' to retain an audit trail.",
    "source_command": "show running-config",
-   "priority": 35
+   "priority": 37
   },
   {
    "severity": "Low",
@@ -6166,7 +8585,7 @@
    "detail": "no login / MOTD legal-notice banner.",
    "remediation": "Configure a 'banner login' / 'banner motd' legal-notice banner.",
    "source_command": "show running-config",
-   "priority": 36
+   "priority": 38
   },
   {
    "severity": "Low",
@@ -6180,7 +8599,7 @@
    "detail": "no NTP server -- clock drift makes logs and certificate validity untrustworthy.",
    "remediation": "Configure an authenticated 'ntp server' so logs and certificate validity are trustworthy.",
    "source_command": "show running-config",
-   "priority": 37
+   "priority": 39
   }
  ],
  "operational_drift": [
@@ -7089,13 +9508,13 @@
     "id": "read_only_command_surface",
     "method": "re-derive over every COMMANDS_* registry of the collector: the WHOLE of each command must be read-only \u2014 a read verb (show/display/get/dir/ping/moquery | aws ec2 describe- | api|ers|dataservice REST GET paths) AND no way to chain, redirect or substitute a second command out of it (no CR/LF ; & ` $ > < \\, and every pipe stage an output filter, never redirect/tee/append or a URL sink)",
     "result": "HOLDS",
-    "detail": "all 285 registry commands across 7 COMMANDS_* registries match the read-only grammar"
+    "detail": "all 289 registry commands across 7 COMMANDS_* registries match the read-only grammar"
    },
    {
     "id": "no_egress_import_graph",
     "method": "RECURSIVE AST import-walk (every subpackage, any nesting depth, lazy imports included) over the analysis package for network libraries; charter exclusion(s): rest_collect.py (the opt-in REST collector is covered by its own GET-only claim); documented exception(s), subtracted AFTER the scan and named in the result: none \u2014 the package is clean without subtracting anything",
     "result": "HOLDS",
-    "detail": "0 unexplained network-library imports across 74 analysis modules (recursive walk; excluded by charter: rest_collect.py; no documented exception was needed)"
+    "detail": "0 unexplained network-library imports across 78 analysis modules (recursive walk; excluded by charter: rest_collect.py; no documented exception was needed)"
    },
    {
     "id": "rest_collect_get_only",
@@ -7107,7 +9526,7 @@
     "id": "no_llm_runtime",
     "method": "AST import-walk over the analysis package (rest_collect.py included) + the collector entry module for LLM/GenAI SDK imports \u2014 the pipeline is deterministic and air-gapped, no model call at runtime",
     "result": "HOLDS",
-    "detail": "0 LLM/GenAI SDK imports across 76 modules (analysis package + collector entry)"
+    "detail": "0 LLM/GenAI SDK imports across 80 modules (analysis package + collector entry)"
    }
   ]
  },
@@ -9148,7 +11567,88 @@
   "dup_ip": [],
   "dup_subnet": []
  },
- "fhrp": [],
+ "fhrp": [
+  {
+   "vid": 10,
+   "vrf": "global",
+   "subnet": "10.0.10.0/24",
+   "domain_key": "vlan=10|vrf=global|subnet=10.0.10.0/24",
+   "status": "not_verified",
+   "authoritative": true,
+   "projection_custody": "current_run_projection_bound",
+   "issues": [
+    "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: source or domain evidence could not be verified. Re-collect before acceptance."
+   ],
+   "members": [
+    {
+     "host": "core1",
+     "interface": "Vlan10",
+     "svi_ip": "10.0.10.2/24",
+     "proto": "HSRP",
+     "group": "10",
+     "vip": "10.0.10.1",
+     "role": "ACTIVE",
+     "fhrp": true,
+     "participation": "positive",
+     "candidate_key": "HSRP:10:10.0.10.1",
+     "status": "not_verified"
+    },
+    {
+     "host": "core2",
+     "interface": "Vlan10",
+     "svi_ip": "10.0.10.3/24",
+     "proto": "HSRP",
+     "group": "10",
+     "vip": "10.0.10.1",
+     "role": "STANDBY",
+     "fhrp": true,
+     "participation": "positive",
+     "candidate_key": "HSRP:10:10.0.10.1",
+     "status": "not_verified"
+    }
+   ]
+  },
+  {
+   "vid": 20,
+   "vrf": "global",
+   "subnet": "10.0.20.0/24",
+   "domain_key": "vlan=20|vrf=global|subnet=10.0.20.0/24",
+   "status": "not_verified",
+   "authoritative": true,
+   "projection_custody": "current_run_projection_bound",
+   "issues": [
+    "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: source or domain evidence could not be verified. Re-collect before acceptance."
+   ],
+   "members": [
+    {
+     "host": "core1",
+     "interface": "Vlan20",
+     "svi_ip": "10.0.20.2/24",
+     "proto": "HSRP",
+     "group": "20",
+     "vip": "10.0.20.1",
+     "role": "STANDBY",
+     "fhrp": true,
+     "participation": "positive",
+     "candidate_key": "HSRP:20:10.0.20.1",
+     "status": "not_verified"
+    },
+    {
+     "host": "core2",
+     "interface": "Vlan20",
+     "svi_ip": "10.0.20.3/24",
+     "proto": "HSRP",
+     "group": "20",
+     "vip": "10.0.20.1",
+     "role": "ACTIVE",
+     "fhrp": true,
+     "participation": "positive",
+     "candidate_key": "HSRP:20:10.0.20.1",
+     "status": "not_verified"
+    }
+   ]
+  }
+ ],
  "trunk_native": [],
  "link_phy": [],
  "move_groups": [
@@ -9998,7 +12498,7 @@
     "domain": "Resiliency & availability",
     "title": "First-hop redundancy on every gateway",
     "verdict": "critical",
-    "observed": "VLAN(s) 30 are served by a SINGLE gateway with no FHRP peer.",
+    "observed": "VLAN(s) 30 are served by a SINGLE gateway with no FHRP peer; 2 FHRP group(s) also carry consistency issues.",
     "implication": "Losing that one gateway device black-holes every endpoint on the VLAN \u2014 the highest-impact availability exposure a campus carries, and a migration-readiness FAIL.",
     "recommendation": "Add an FHRP peer (or move the VLAN behind a redundant gateway pair) BEFORE any migration wave touches these VLANs.",
     "reference": "Cisco campus HA design \u2014 FHRP (HSRP/VRRP/GLBP) on every shared gateway",
@@ -10496,6 +12996,55 @@
     "note": "seen \u2014 collected and non-empty"
    },
    {
+    "key": "protocol_assessability",
+    "state": "published",
+    "count": 5,
+    "kind": "dict",
+    "note": "seen \u2014 collected and non-empty"
+   },
+   {
+    "key": "bgp_configured_peer_baseline",
+    "state": "published",
+    "count": 10,
+    "kind": "dict",
+    "note": "seen \u2014 collected and non-empty"
+   },
+   {
+    "key": "fhrp_configured_group_baseline",
+    "state": "published",
+    "count": 10,
+    "kind": "dict",
+    "note": "seen \u2014 collected and non-empty"
+   },
+   {
+    "key": "fhrp_redundancy_domain_baseline",
+    "state": "published",
+    "count": 11,
+    "kind": "dict",
+    "note": "seen \u2014 collected and non-empty"
+   },
+   {
+    "key": "vtp_safety_baseline",
+    "state": "published",
+    "count": 10,
+    "kind": "dict",
+    "note": "seen \u2014 collected and non-empty"
+   },
+   {
+    "key": "etherchannel_projection",
+    "state": "published",
+    "count": 4,
+    "kind": "dict",
+    "note": "seen \u2014 collected and non-empty"
+   },
+   {
+    "key": "etherchannel_baseline",
+    "state": "published",
+    "count": 10,
+    "kind": "dict",
+    "note": "seen \u2014 collected and non-empty"
+   },
+   {
     "key": "protocol_intelligence",
     "state": "published",
     "count": 1,
@@ -10862,7 +13411,7 @@
    {
     "key": "punchlist",
     "state": "published",
-    "count": 37,
+    "count": 39,
     "kind": "list",
     "note": "seen \u2014 collected and non-empty"
    },
@@ -10994,10 +13543,10 @@
    },
    {
     "key": "fhrp",
-    "state": "collected_but_empty",
-    "count": 0,
+    "state": "published",
+    "count": 2,
     "kind": "list",
-    "note": "collected, nothing of this kind found (not a blind spot)"
+    "note": "seen \u2014 collected and non-empty"
    },
    {
     "key": "trunk_native",
@@ -11155,10 +13704,10 @@
    }
   ],
   "summary": {
-   "n_published": 96,
-   "n_collected_but_empty": 8,
+   "n_published": 104,
+   "n_collected_but_empty": 7,
    "n_not_collected": 0,
-   "n_sections": 104
+   "n_sections": 111
   }
  }
 }

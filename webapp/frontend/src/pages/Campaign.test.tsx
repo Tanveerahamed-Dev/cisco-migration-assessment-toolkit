@@ -24,13 +24,14 @@ describe("NEXT_DECISION", () => {
 
 describe("VERDICT_COLOR", () => {
   it("colours the snapshot-delta verdicts (audit-5 CA#5 — these keys once fell through to a flat chip)", () => {
-    for (const k of ["CLEAN", "REVIEW", "REGRESSED"]) {
+    for (const k of ["CLEAN", "REVIEW", "REGRESSED", "INDETERMINATE"]) {
       expect(VERDICT_COLOR[k], `${k} must be coloured`).toBeTruthy();
     }
     // distinct semantics, not a single fallback colour
     expect(VERDICT_COLOR.CLEAN).toBe("var(--ok)");
     expect(VERDICT_COLOR.REGRESSED).toBe("var(--crit)");
     expect(VERDICT_COLOR.REVIEW).toBe("var(--watch)");
+    expect(VERDICT_COLOR.INDETERMINATE).toBe("var(--text-faint)");
   });
 
   it("also colours the campaign-trend verdicts", () => {
@@ -112,9 +113,21 @@ describe("CampaignPage", () => {
     vi.spyOn(api, "getCampaign").mockResolvedValue(campaign({ snapshots: [snap(1), snap(2)] }));
     vi.spyOn(api, "getGates").mockResolvedValue(emptyGates);
     vi.spyOn(api, "trend").mockResolvedValue({
-      verdict: "IMPROVING",
-      verdict_note: "health rising",
+      verdict: "MIXED",
+      verdict_note: "health rising, but protocol evidence needs review",
       trajectory: [],
+      protocol_adjacencies: {
+        gate: "REVIEW",
+        assessed: false,
+        projection_custody: "source_bound_embedded_unverified",
+        summary: {
+          n_baseline_peers: 2,
+          n_scoped_cells: 1,
+          n_comparable_cells: 0,
+          n_coverage_gaps: 1,
+        },
+        note: "Endpoint protocol evidence is incomplete.",
+      },
     });
     renderCampaign();
 
@@ -124,6 +137,45 @@ describe("CampaignPage", () => {
     expect(screen.getByText("C2")).toBeInTheDocument();
     expect(await screen.findByText("Campaign trajectory")).toBeInTheDocument();
     expect(screen.getByText("Compare two waves")).toBeInTheDocument();
+    expect(screen.getByTestId("protocol-gate-verdict")).toHaveTextContent("REVIEW");
+    expect(screen.getByTestId("protocol-gate-custody")).toHaveTextContent("source_bound_embedded_unverified");
+    expect(screen.getByTestId("protocol-gate-custody")).toHaveTextContent("do not independently bind");
+  });
+
+  it("lets a blocked final baseline dominate an otherwise IMPROVING campaign trend", async () => {
+    vi.spyOn(api, "getCampaign").mockResolvedValue(campaign({ snapshots: [snap(1), snap(2)] }));
+    vi.spyOn(api, "getGates").mockResolvedValue(emptyGates);
+    vi.spyOn(api, "trend").mockResolvedValue({
+      verdict: "IMPROVING",
+      verdict_note: "Aggregate health scores rose across the campaign.",
+      trajectory: [],
+      current_baseline: {
+        schema: "current_baseline_gate/1", verdict: "BLOCKED", assessed: true,
+        note: "The final snapshot still has an OSPF baseline blocker.",
+        summary: {
+          n_items: 7, n_blockers: 1, n_blockers_returned: 1, blockers_capped: false,
+          by_state: { degraded: 1, review: 0, not_verified: 0 }, by_wave: { "Group 2": 1 },
+        },
+        blockers: [{
+          device: "DIST-1", wave: "Group 2", category: "Routing", severity: "High",
+          check: "Final OSPF neighbor remains EXSTART", evidence_state: "degraded",
+          expect: "PRE-CUTOVER DEGRADED — BLOCKER: EXSTART remains present.",
+          projection_custody: "source_bound_embedded_unverified",
+          source_key: "routing_neighbors.DIST-1.ospf",
+        }],
+        integrity: { valid: true, failures: [] },
+      },
+    });
+    renderCampaign();
+
+    const trend = await screen.findByTestId("trend-verdict");
+    expect(trend).toHaveTextContent("IMPROVING");
+    expect(trend.style.color).not.toBe("var(--ok)");
+    expect(trend).toHaveAttribute("title", expect.stringContaining("not CLEAR"));
+    const baseline = screen.getByTestId("compare-current-baseline-verdict");
+    expect(baseline).toHaveTextContent("BLOCKED");
+    expect(baseline.style.color).toBe("var(--crit)");
+    expect(screen.getByText("Final OSPF neighbor remains EXSTART")).toBeInTheDocument();
   });
 
   it("surfaces a failed trend fetch as an error panel instead of silently vanishing", async () => {
@@ -306,6 +358,187 @@ describe("CampaignPage · coverage honesty and stale state", () => {
       return c;
     });
     expect(cell.style.color).toBe("var(--ok)");
+  });
+
+  it("keeps an unchanged OSPF EXSTART baseline red even when the delta itself is CLEAN", async () => {
+    const { container } = mountTwoWaves();
+    vi.spyOn(api, "compare").mockResolvedValue({
+      verdict: "CLEAN",
+      verdict_note: "No new before-to-after regression was observed.",
+      findings: {}, health: {}, cabling: { assessed: true, summary: { n_went_down: 0 } },
+      current_baseline: {
+        schema: "current_baseline_gate/1", verdict: "BLOCKED", assessed: true,
+        note: "Current baseline BLOCKED: one degraded validation observation remains.",
+        summary: {
+          n_items: 12, n_blockers: 1, n_blockers_returned: 1, blockers_capped: false,
+          by_state: { degraded: 1, review: 0, not_verified: 0 }, by_wave: { "Group 1": 1 },
+        },
+        blockers: [{
+          device: "DIST-1", wave: "Group 1", category: "Routing", severity: "High",
+          check: "OSPF observed adjacency baseline is degraded",
+          evidence_state: "degraded",
+          expect: "PRE-CUTOVER DEGRADED — BLOCKER: 10.0.0.2 EXSTART/DR → 10.0.0.2 EXSTART/DR; matching it is NOT ACCEPTANCE.",
+          projection_custody: "source_bound_embedded_unverified",
+          source_key: "routing_neighbors.DIST-1.ospf",
+        }],
+        integrity: { valid: true, failures: [] },
+      },
+    });
+    await screen.findByText("Compare two waves");
+    fireEvent.change(container.querySelectorAll("select")[0], { target: { value: "1" } });
+    fireEvent.change(container.querySelectorAll("select")[1], { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+
+    const baseline = await screen.findByTestId("compare-current-baseline-verdict");
+    expect(baseline).toHaveTextContent("BLOCKED");
+    expect(baseline.style.color).toBe("var(--crit)");
+    const delta = screen.getByTestId("compare-delta-verdict");
+    expect(delta).toHaveTextContent("CLEAN");
+    expect(delta.style.color).not.toBe("var(--ok)");
+    expect(screen.getByText(/unchanged blocker is still a blocker/i)).toBeInTheDocument();
+    expect(screen.getByText(/EXSTART\/DR → .*EXSTART\/DR/)).toBeInTheDocument();
+    expect(screen.getByText(/source_bound_embedded_unverified/)).toBeInTheDocument();
+    expect(screen.getByText(/routing_neighbors\.DIST-1\.ospf/)).toBeInTheDocument();
+  });
+
+  it("states the bounded meaning of CLEAR before showing a green clean delta", async () => {
+    const { container } = mountTwoWaves();
+    vi.spyOn(api, "compare").mockResolvedValue({
+      verdict: "CLEAN", findings: {}, health: {}, cabling: { assessed: true, summary: {} },
+      current_baseline: {
+        schema: "current_baseline_gate/1", verdict: "CLEAR", assessed: true,
+        note: "No producer-declared blocker is present in observed validation scope.",
+        summary: { n_items: 4, n_blockers: 0, n_blockers_returned: 0, blockers_capped: false, by_state: {} },
+        blockers: [], integrity: { valid: true, failures: [] },
+      },
+    });
+    await screen.findByText("Compare two waves");
+    fireEvent.change(container.querySelectorAll("select")[0], { target: { value: "1" } });
+    fireEvent.change(container.querySelectorAll("select")[1], { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+
+    expect(await screen.findByTestId("compare-current-baseline-verdict")).toHaveTextContent("CLEAR");
+    expect(screen.getByTestId("compare-current-baseline-clear-boundary")).toHaveTextContent(/not cutover authorization/i);
+    expect(screen.getByTestId("compare-delta-verdict").style.color).toBe("var(--ok)");
+  });
+
+  it("projects the receipt-gated protocol adjacency result and its exact compare notes", async () => {
+    const { container } = mountTwoWaves();
+    vi.spyOn(api, "compare").mockResolvedValue({
+      verdict: "REVIEW",
+      verdict_note: "Overall cutover review remains open.",
+      findings: {}, health: {}, cabling: { assessed: true, summary: {} },
+      protocol_adjacencies: {
+        schema: "protocol_adjacency_delta/1",
+        gate: "REGRESSED",
+        assessed: true,
+        scope: "baseline_observed",
+        projection_custody: "source_bound_embedded_unverified",
+        summary: {
+          n_baseline_peers: 9,
+          n_scoped_cells: 4,
+          n_comparable_cells: 4,
+          n_preserved: 5,
+          n_state_regressed: 1,
+          n_recovered: 1,
+          n_no_longer_observed: 2,
+          n_added: 3,
+          n_metadata_changed: 0,
+          n_coverage_gaps: 1,
+        },
+        changes: [],
+        coverage_gaps: [],
+        note: "Two baseline peers disappeared; investigate before proceeding.",
+        limitations: ["Observed baseline only."],
+      },
+    });
+    await screen.findByText("Compare two waves");
+    fireEvent.change(container.querySelectorAll("select")[0], { target: { value: "1" } });
+    fireEvent.change(container.querySelectorAll("select")[1], { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+
+    expect(await screen.findByTestId("protocol-adjacency-gate")).toBeInTheDocument();
+    expect(screen.getByTestId("protocol-gate-verdict")).toHaveTextContent("REGRESSED");
+    expect(screen.getByTestId("protocol-gate-verdict").style.color).toBe("var(--crit)");
+    expect(screen.getByTestId("protocol-preserved")).toHaveTextContent("5");
+    expect(screen.getByTestId("protocol-state-regressed")).toHaveTextContent("1");
+    expect(screen.getByTestId("protocol-no-longer-observed")).toHaveTextContent("2");
+    expect(screen.getByTestId("protocol-recovered")).toHaveTextContent("1");
+    expect(screen.getByTestId("protocol-added")).toHaveTextContent("3");
+    expect(screen.getByTestId("protocol-coverage-gaps")).toHaveTextContent("1");
+    expect(screen.getByTestId("compare-verdict-note")).toHaveTextContent("Overall cutover review remains open.");
+    expect(screen.getByTestId("protocol-gate-note")).toHaveTextContent("Two baseline peers disappeared");
+    expect(screen.getByText(/not an expected-peer completeness check/i)).toBeInTheDocument();
+    expect(screen.getByTestId("protocol-gate-scope")).toHaveTextContent("9 baseline peer(s)");
+    expect(screen.getByTestId("protocol-gate-scope")).toHaveTextContent("4 of 4 device-family cell(s) comparable");
+    expect(screen.getByTestId("protocol-gate-custody")).toHaveTextContent("source_bound_embedded_unverified");
+  });
+
+  it("keeps a gap-bearing REVIEW gate amber while neutralising its unassessed outcome counts", async () => {
+    const { container } = mountTwoWaves();
+    vi.spyOn(api, "compare").mockResolvedValue({
+      verdict: "INDETERMINATE",
+      verdict_note: "Comparison certification withheld.",
+      findings: {}, health: {}, cabling: { assessed: false, summary: {} },
+      protocol_adjacencies: {
+        schema: "protocol_adjacency_delta/1",
+        gate: "REVIEW",
+        assessed: false,
+        scope: "baseline_observed",
+        summary: {
+          n_preserved: 0,
+          n_state_regressed: 1,
+          n_recovered: 0,
+          n_no_longer_observed: 0,
+          n_added: 4,
+          n_coverage_gaps: 2,
+        },
+        note: "Current-run evidence gaps prevent a protocol preservation verdict.",
+      },
+    });
+    await screen.findByText("Compare two waves");
+    fireEvent.change(container.querySelectorAll("select")[0], { target: { value: "1" } });
+    fireEvent.change(container.querySelectorAll("select")[1], { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+
+    const gate = await screen.findByTestId("protocol-gate-verdict");
+    expect(gate).toHaveTextContent("REVIEW");
+    expect(gate.style.color).toBe("var(--watch)");
+    for (const id of ["protocol-preserved", "protocol-no-longer-observed", "protocol-recovered"]) {
+      const value = screen.getByTestId(id);
+      expect(value).toHaveTextContent("—");
+      expect(value.style.color).toBe("var(--text-faint)");
+    }
+    expect(screen.getByTestId("protocol-state-regressed")).toHaveTextContent("1");
+    expect(screen.getByTestId("protocol-state-regressed").style.color).toBe("var(--crit)");
+    expect(screen.getByTestId("protocol-added")).toHaveTextContent("4");
+    expect(screen.getByTestId("protocol-added").style.color).toBe("var(--watch)");
+    expect(screen.getByTestId("protocol-coverage-gaps")).toHaveTextContent("2");
+    expect(screen.getByText("INDETERMINATE").style.color).toBe("var(--text-faint)");
+    expect(screen.getByTestId("compare-verdict-note")).toHaveTextContent("Comparison certification withheld.");
+    expect(screen.getByTestId("protocol-gate-note")).toHaveTextContent("evidence gaps");
+  });
+
+  it("keeps a legacy or no-baseline NOT_ASSESSED gate neutral", async () => {
+    const { container } = mountTwoWaves();
+    vi.spyOn(api, "compare").mockResolvedValue({
+      verdict: "INDETERMINATE",
+      findings: {}, health: {}, cabling: { assessed: false, summary: {} },
+      protocol_adjacencies: {
+        gate: "NOT_ASSESSED",
+        assessed: false,
+        summary: { n_coverage_gaps: 1 },
+        note: "Legacy snapshot pair.",
+      },
+    });
+    await screen.findByText("Compare two waves");
+    fireEvent.change(container.querySelectorAll("select")[0], { target: { value: "1" } });
+    fireEvent.change(container.querySelectorAll("select")[1], { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+
+    const gate = await screen.findByTestId("protocol-gate-verdict");
+    expect(gate).toHaveTextContent("NOT ASSESSED");
+    expect(gate.style.color).toBe("var(--text-faint)");
   });
 
   // FE-6: Number("") === 0, so the placeholder option defeated the `cmpA === ""` guard and the app

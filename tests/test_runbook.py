@@ -234,6 +234,7 @@ def test_runbook_is_evidence_disciplined(tmp_path):
     assert "gateway-active is not service proof" in text
     # §6.5 protocol behaviour: the abnormal state's cause + remediation are present, evidence-framed
     assert "Protocol behaviour & remediation" in text
+    assert "Runtime protocol assessability receipt unavailable" in text
     assert "verify LACP on the peer" in text
     # §2.1 collection completeness: blind-spot devices are made explicit (not-collected listed)
     assert "Collection completeness" in text
@@ -262,6 +263,73 @@ def test_runbook_is_evidence_disciplined(tmp_path):
     # migration scenario framework (§3 recommendation + §11.2 playbook)
     assert "GREENFIELD rebuild" in text and "parallel-run" in text
     assert "Cutover playbook by scenario" in text
+
+
+def test_runbook_renders_seven_family_runtime_protocol_receipt_before_advice(tmp_path):
+    snap = _snap()
+    families = ["STP", "EtherChannel", "VTP", "OSPF", "BGP", "EIGRP", "FHRP"]
+    rows = [{
+        "switch": "sw1",
+        "protocol": protocol,
+        "input_states": {"primary": "usable" if protocol == "EIGRP" else "missing"},
+        "capture_state": "usable" if protocol == "EIGRP" else "missing",
+        "health_row_emitted": protocol == "EIGRP",
+        "state": "assessed" if protocol == "EIGRP" else "not_collected",
+        "reason": "Bounded current-run state." if protocol == "EIGRP" else "No recognized capture.",
+    } for protocol in families]
+    snap["protocol_assessability"] = {
+        "schema": "protocol_assessability/1",
+        "families": [{"protocol": protocol} for protocol in families],
+        "rows": rows,
+        "summary": {"n_devices": 1, "n_families": 7, "n_cells": 7,
+                    "n_health_rows": 1, "by_state": {"assessed": 1, "not_collected": 6}},
+    }
+    snap["protocol_health"] = [{
+        "switch": "sw1", "protocol": "EIGRP", "severity": "Info",
+        "summary": "1 neighbor(s) up", "detail": "Gi1/0/1",
+    }]
+    snap["protocol_intelligence"] = []
+
+    out = str(tmp_path / "rb_protocol_receipt.docx")
+    write_runbook_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "Runtime assessability: 1 of 7 device × protocol-family cells" in text
+    assert "1 assessed, 0 partial, and 6 not assessable" in text
+    assert all(protocol in text for protocol in families)
+    assert "EIGRP\n1\n0\n0\n1" in text
+    assert "Missing rows are never interpreted as healthy" in text
+    assert "Runtime protocol assessability receipt unavailable" not in text
+    assert "Observed protocol health: 1 current-run row(s) across 1 observed family" in text
+    assert "Info\nsw1\nEIGRP\n1 neighbor(s) up\nGi1/0/1" in text
+    assert "not fleet-wide protocol health" in text
+
+
+def test_runbook_protocol_health_cap_preserves_each_family_before_intelligence(tmp_path):
+    snap = _snap()
+    snap["protocol_health"] = [
+        {"switch": f"stp-{index:02d}", "protocol": "STP", "severity": "High",
+         "summary": f"STP issue {index}", "detail": "inconsistent port"}
+        for index in range(22)
+    ] + [
+        {"switch": "eigrp-edge", "protocol": "EIGRP", "severity": "Info",
+         "summary": "eigrp-visible-presence", "detail": "Gi1/0/48"},
+        {"switch": "bgp-edge", "protocol": "BGP", "severity": "Info",
+         "summary": "bgp-visible-presence", "detail": "192.0.2.1"},
+    ]
+
+    out = str(tmp_path / "rb_protocol_health_cap.docx")
+    write_runbook_docx(out, snap, "Unit Test Fleet")
+    doc = Document(out)
+    text = _all_text(doc)
+    assert "eigrp-visible-presence" in text
+    assert "bgp-visible-presence" in text
+    assert "…and 6 further observed protocol-health row(s) not shown (18 of 24 rendered)" in text
+    paragraphs = [paragraph.text for paragraph in doc.paragraphs]
+    observed_index = next(index for index, value in enumerate(paragraphs)
+                          if value.startswith("Observed protocol health:"))
+    intelligence_index = next(index for index, value in enumerate(paragraphs)
+                              if "abnormal control-plane state(s)" in value)
+    assert observed_index < intelligence_index
 
 
 def test_runbook_validation_section_uses_validation_group_noun(tmp_path):

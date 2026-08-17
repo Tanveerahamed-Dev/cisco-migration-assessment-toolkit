@@ -111,12 +111,7 @@ _SAMPLE_FLEET = os.path.join(ROOT, "webapp", "sample_data", "sample_fleet.snapsh
 # fleet never collected/populated that section -- coverage-honest signal_absent, NOT a bug. PINNED so a
 # newly-unresolved field (a real regression) OR a newly-populated one (progress) trips the test and gets
 # reconciled consciously, never silently absorbed (doctrine 3: "not observed" != "healthy").
-_SIGNAL_ABSENT_IN_FLEET = {
-    # no multi-gateway-VLAN FHRP-inconsistency row in the sample fleet -> snap['fhrp'] == []
-    ("fhrp-fake-redundancy", "fhrp[].vid"),
-    ("fhrp-fake-redundancy", "fhrp[].issues"),
-    ("fhrp-fake-redundancy", "fhrp[].members"),
-}
+_SIGNAL_ABSENT_IN_FLEET = set()
 
 
 def _tokenize_cited_field(field):

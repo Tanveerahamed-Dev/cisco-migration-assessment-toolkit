@@ -152,6 +152,9 @@ python COLLECT_PARSE_V3_23_0.py \
 # Diff two previously saved snapshots into a change workbook (no SSH, no template)
 python COLLECT_PARSE_V3_23_0.py --compare old_snapshot.json new_snapshot.json
 
+# CI/change-pipeline mode: write the same artifacts, then exit 2 unless the combined cutover gate passes
+python COLLECT_PARSE_V3_23_0.py --compare old_snapshot.json new_snapshot.json --fail-on-compare-gate
+
 # Trend a SERIES of snapshots across the migration into a campaign workbook (oldest first)
 python COLLECT_PARSE_V3_23_0.py --trend wave0.snapshot.json wave1.snapshot.json wave2.snapshot.json
 
@@ -170,6 +173,10 @@ python -m cisco_toolkit.manifest verify path/to/run.run_manifest.json
 # Inspect only a deliberately separated manifest; this explicitly skips artifact bytes
 python -m cisco_toolkit.manifest verify path/to/run.run_manifest.json --metadata-only
 ```
+
+`--compare` reports one combined cutover gate across the observed snapshot delta and the bounded
+FIB/path-intent Pre-Change Certificate. The certificate verdict never overrides a protocol or other
+observed regression; use `--fail-on-compare-gate` when automation must stop on any non-`PASS` result.
 
 Useful flags: `--workers N` (parallel SSH workers, default 5; `1` = sequential),
 `--no-html` / `--no-docx` / `--no-pptx` / `--no-design` / `--no-mop` / `--no-crd` /
