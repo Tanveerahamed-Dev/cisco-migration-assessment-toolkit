@@ -442,6 +442,42 @@ def test_ospf_rows_without_the_exact_header_cannot_clear(tmp_path):
         baseline, require_current_run=True)["valid"] is True
 
 
+def test_canonical_ospfv3_router_banner_uses_process_id_not_router_word(tmp_path):
+    body = _ospf(("10.0.0.1", "FULL/DR", "Vlan10")).replace(
+        "OSPFv3 1 address-family ipv6 (router-id 10.0.0.4)",
+        "OSPFv3 Router with ID (42.1.1.1) (Process ID 42)",
+    )
+    _paths, baseline = _owner(tmp_path, {
+        "show ipv6 route summary": _route(ospf=1, bgp=0),
+        "show ospfv3 neighbor": body,
+    })
+    row = baseline["rows"][0]
+    assert row["process"] == "42"
+    assert row["peer_key"] == "ospfv3|default|42|10.0.0.1|vlan10"
+    assert baseline["verdict"] == "CLEAR"
+    assert validate_ipv6_routing_adjacency_baseline(
+        baseline, require_current_run=True)["valid"] is True
+
+
+def test_multiple_canonical_ospfv3_process_banners_are_review(tmp_path):
+    body = _ospf(("10.0.0.1", "FULL/DR", "Vlan10")).replace(
+        "OSPFv3 1 address-family ipv6 (router-id 10.0.0.4)",
+        "OSPFv3 Router with ID (42.1.1.1) (Process ID 42)\n"
+        "OSPFv3 Router with ID (43.1.1.1) (Process ID 43)",
+    )
+    _paths, baseline = _owner(tmp_path, {
+        "show ipv6 route summary": _route(ospf=1, bgp=0),
+        "show ospfv3 neighbor": body,
+    })
+    cell = next(item for item in baseline["coverage"]
+                if item["input"] == "ospfv3_neighbors")
+    assert cell["parser_status"] == "review"
+    assert "ospfv3_context_review" in cell["finding_codes"]
+    assert baseline["verdict"] == "INDETERMINATE"
+    assert validate_ipv6_routing_adjacency_baseline(
+        baseline, require_current_run=True)["valid"] is True
+
+
 @pytest.mark.parametrize("bad_row", [
     "2001:db8::1 4 65001 0",
     _bgp_line(version="999"),

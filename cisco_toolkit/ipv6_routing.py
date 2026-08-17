@@ -538,16 +538,18 @@ def _ospf_process_context(body: str) -> Tuple[str, bool, bool]:
     named_context = False
     non_ipv6_af = False
     patterns = (
-        re.compile(r"\bOSPFv3\s+(?:Process\s+ID\s+)?([A-Za-z0-9_.-]+)", re.I),
+        re.compile(r"\bProcess\s+ID\s+([A-Za-z0-9_.-]+)", re.I),
+        re.compile(
+            r"^\s*OSPFv3\s+([A-Za-z0-9_.-]+)\s+address-family\b",
+            re.I,
+        ),
         re.compile(r"\bRouting Process\s+\"?ospfv3\s+([A-Za-z0-9_.-]+)", re.I),
     )
     for line in body.splitlines():
         for pattern in patterns:
             match = pattern.search(line)
             if match:
-                token = match.group(1)
-                if token.casefold() not in {"neighbor", "neighbors"}:
-                    processes.add(token)
+                processes.add(match.group(1))
                 break
         vrf = re.search(r"\bVRF\s+[\"']?([A-Za-z0-9_.-]+)", line, re.I)
         if vrf and vrf.group(1).casefold() not in {"default", "global"}:
@@ -1798,6 +1800,19 @@ def _structural_validation_impl(value: Any) -> Tuple[bool, str]:
     if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest) \
             or digest != _sha(_baseline_payload(value)):
         return False, "baseline_digest_mismatch"
+
+    # Diagnose canonical host-spelling collisions before per-row ASCII checks.
+    # A lone Unicode identity remains invalid text; two spellings with one
+    # Python-casefold identity retain the stricter collision boundary.
+    row_host_spellings: Dict[str, str] = {}
+    for candidate in rows:
+        host = candidate.get("switch") if isinstance(candidate, dict) else None
+        if not isinstance(host, str):
+            continue
+        folded = host.casefold()
+        if folded in row_host_spellings and row_host_spellings[folded] != host:
+            return False, "baseline_row_identity_collision"
+        row_host_spellings[folded] = host
 
     row_identities = set()
     rows_by_family: Dict[Tuple[str, str], List[dict]] = {}
