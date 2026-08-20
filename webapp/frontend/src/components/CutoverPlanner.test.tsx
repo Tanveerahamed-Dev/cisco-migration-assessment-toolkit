@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import CutoverPlanner from "./CutoverPlanner";
 import { api } from "../api";
@@ -344,7 +344,7 @@ describe("CutoverPlanner (render)", () => {
     renderPlanner();
 
     expect(await screen.findByTestId("cutover-execution-41")).toHaveTextContent(
-      /post-change NOT VERIFIED — open run to bind/,
+      /post-change NOT VERIFIED/,
     );
     expect(screen.getByTestId("cutover-execution-42")).toHaveTextContent(
       /post-change PASS · after snapshot 9/,
@@ -352,6 +352,133 @@ describe("CutoverPlanner (render)", () => {
     expect(screen.getByTestId("cutover-execution-43")).toHaveTextContent(
       /legacy · no canonical receipt/,
     );
+  });
+
+  it("binds a same-campaign snapshot to a live execution and renders the returned canonical receipt", async () => {
+    const sourceBinding = {
+      source: "persisted snapshots.snapshot_json blob",
+      sha256: `sha256:${"1".repeat(64)}`,
+      bytes: 1234,
+      snapshot_id: 1,
+      campaign_id: 73,
+      engagement_id: "eng-east",
+      label: "Baseline",
+      script_version: "3.30.0",
+    };
+    const initialExecution = {
+      id: 41, snapshot_id: 1, label: "Cutover run 1", operator: "", status: "in_progress",
+      outcome: null, started_at: "2026-08-20T00:00:00Z", ended_at: null,
+      execution_schema: "cutover_execution/2",
+      comparison_policy: {
+        schema: "execution_comparison_policy/1",
+        canonical_gate_required: true,
+        before_snapshot: sourceBinding,
+      },
+      comparison_receipts: [],
+    };
+    const comparison = {
+      comparison_schema: "source_bound_cutover_comparison/1",
+      verdict: "CLEAN",
+      cutover_gate: {
+        schema: "cutover_gate/1", verdict: "PASS",
+        note: "Comparison admission: ADMITTED. All canonical inputs pass.",
+        operator_note: "Overall before/after cutover decision: PASS.",
+        delta_verdict: "CLEAN", delta_display: "CLEAN", delta_note: "No new regression.",
+        certificate_verdict: "PASS", certificate_note: "Service paths passed.",
+        protocol_gate: "PASS", protocol_baseline_peers: 2,
+        protocol_regressions: 0, protocol_coverage_gaps: 0,
+        comparison_admission_status: "admitted",
+        comparison_admission_note: "Frozen sources admitted.",
+      },
+    };
+    const updatedExecution = {
+      ...initialExecution,
+      latest_comparison: {
+        schema: "execution_latest_comparison/1", receipt_id: 91,
+        receipt_sha256: `sha256:${"a".repeat(64)}`,
+        before_snapshot_id: 1, after_snapshot_id: 2,
+        cutover_gate: comparison.cutover_gate,
+      },
+      comparison_receipts: [{
+        id: 91, execution_id: 41, before_snapshot_id: 1, after_snapshot_id: 2,
+        receipt_sha256: `sha256:${"a".repeat(64)}`, cutover_verdict: "PASS",
+        created_at: "2026-08-20T01:00:00Z",
+        receipt: {
+          schema: "execution_comparison_receipt/1",
+          before_snapshot_id: 1, after_snapshot_id: 2,
+          comparison, receipt_sha256: `sha256:${"a".repeat(64)}`,
+        },
+      }],
+    };
+    vi.spyOn(api, "cutover").mockResolvedValue(cutover as never);
+    vi.spyOn(api, "meta").mockResolvedValue({ deliverables: [] } as never);
+    vi.spyOn(api, "listExecutions").mockResolvedValue([{
+      id: 41, snapshot_id: 1, label: "Cutover run 1", status: "in_progress",
+      started_at: "2026-08-20T00:00:00Z", ended_at: null, comparison_required: true,
+    }] as never);
+    vi.spyOn(api, "getExecution").mockResolvedValue(initialExecution as never);
+    const getCampaign = vi.spyOn(api, "getCampaign").mockResolvedValue({
+      id: 73, name: "DC East", description: "", created_at: "2026-08-19T00:00:00Z",
+      snapshots: [
+        { id: 1, campaign_id: 73, label: "Baseline" },
+        { id: 2, campaign_id: 73, label: "Post-change" },
+      ],
+    } as never);
+    const compare = vi.spyOn(api, "compareExecution").mockResolvedValue(updatedExecution as never);
+    renderPlanner();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open post-change evidence for Cutover run 1" }));
+    expect(await screen.findByTestId("cutover-execution-gate-missing-41")).toHaveTextContent("NOT VERIFIED");
+    expect(getCampaign).toHaveBeenCalledWith(73);
+    const after = screen.getByLabelText("After snapshot for Cutover run 1");
+    expect(within(after).queryByRole("option", { name: /Baseline/ })).toBeNull();
+    expect(within(after).getByRole("option", { name: /Post-change · snapshot 2/ })).toBeInTheDocument();
+    fireEvent.change(after, { target: { value: "2" } });
+    const intent = {
+      expected_changes: [{
+        family: "fhrp_redundancy_domain", transitions: ["intent_changed"],
+        subjects: [], reason: "planned active role move",
+      }],
+      note: "CAB-1234",
+    };
+    fireEvent.change(screen.getByLabelText("Expected family changes for Cutover run 1"), {
+      target: { value: JSON.stringify(intent) },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Bind and compare Cutover run 1" }));
+
+    await waitFor(() => expect(compare).toHaveBeenCalledWith(41, 2, intent));
+    expect(await screen.findByTestId("canonical-cutover-verdict")).toHaveTextContent("PASS");
+    expect(screen.getByTestId("canonical-cutover-operator-note")).toHaveTextContent(
+      "Overall before/after cutover decision: PASS.",
+    );
+    expect(screen.getByText(/appended as an immutable canonical comparison receipt/i)).toBeInTheDocument();
+    expect(screen.getByTestId("cutover-execution-evidence-41")).toHaveTextContent(
+      /1 immutable comparison receipt.*latest receipt 91/i,
+    );
+  });
+
+  it("keeps a legacy planner execution read-only with no comparison backfill control", async () => {
+    vi.spyOn(api, "cutover").mockResolvedValue(cutover as never);
+    vi.spyOn(api, "meta").mockResolvedValue({ deliverables: [] } as never);
+    vi.spyOn(api, "listExecutions").mockResolvedValue([{
+      id: 43, snapshot_id: 1, label: "Legacy run", status: "completed",
+      started_at: "2026-08-19T01:00:00Z", ended_at: "2026-08-19T02:00:00Z",
+    }] as never);
+    vi.spyOn(api, "getExecution").mockResolvedValue({
+      id: 43, snapshot_id: 1, label: "Legacy run", status: "completed",
+      comparison_receipts: [],
+    } as never);
+    const getCampaign = vi.spyOn(api, "getCampaign");
+    const compare = vi.spyOn(api, "compareExecution");
+    renderPlanner();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open post-change evidence for Legacy run" }));
+    expect(await screen.findByTestId("cutover-execution-legacy-43")).toHaveTextContent(
+      /cannot be reinterpreted or backfilled/i,
+    );
+    expect(screen.queryByLabelText("After snapshot for Legacy run")).toBeNull();
+    expect(getCampaign).not.toHaveBeenCalled();
+    expect(compare).not.toHaveBeenCalled();
   });
 
   it("flips aria-expanded on the wave's run-of-show toggle as it opens/closes", async () => {

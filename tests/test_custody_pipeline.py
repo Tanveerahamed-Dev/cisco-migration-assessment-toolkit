@@ -216,7 +216,7 @@ def test_supplied_invalid_optional_inputs_fail_closed(tmp_path, field, content):
     ["--compare", "old.json", "new.json"],
     ["--trend", "old.json", "new.json"],
 ])
-def test_traffic_intents_refuse_modes_that_do_not_publish_them(monkeypatch, capsys, mode_args):
+def test_traffic_intents_refuse_compare_trend_path_engine_reruns(monkeypatch, capsys, mode_args):
     monkeypatch.setattr(sys, "argv", [
         "cisco-assess", *mode_args, "--traffic-intents", "must-not-be-read.json",
     ])
@@ -225,7 +225,9 @@ def test_traffic_intents_refuse_modes_that_do_not_publish_them(monkeypatch, caps
         cp.main()
 
     assert exc.value.code == 2
-    assert "do not evaluate or publish Traffic Assurance" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "project any stored traffic_assurance receipt" in error
+    assert "never rerun the path engine with a new intent catalog" in error
 
 
 def test_assert_pack_preserves_and_validates_complete_object_grammar(tmp_path):
@@ -530,36 +532,71 @@ def test_no_collect_refuses_absent_evidence_source(
     assert not missing.exists(), "offline mode must not synthesize an empty evidence source"
 
 
-def test_compare_cli_wires_exact_hashes_and_schema_override(tmp_path, monkeypatch):
+def test_compare_cli_wires_exact_file_bindings_and_explicit_identity_context(
+        tmp_path, monkeypatch):
     old = tmp_path / "old.json"
     new = tmp_path / "new.json"
     old.write_text('{"script_version":"V1","devices":{}}', encoding="utf-8")
     new.write_text('{"script_version":"V2","devices":{}}', encoding="utf-8")
+    context = tmp_path / "context.json"
+    context.write_text(json.dumps({
+        "schema": "offline_comparison_context/1",
+        "engagement_id": "ENG-CUSTODY",
+        "campaign_id": 9,
+        "before_snapshot_id": 90,
+        "after_snapshot_id": 91,
+        "change_intent": {"expected_changes": [], "note": "custody test"},
+    }), encoding="utf-8")
     captured = {}
 
-    def fake_precert(before, after, **kwargs):
-        captured["precert"] = kwargs
-        return {"verdict": "INDETERMINATE"}
+    fake_comparison = {
+        "precert": {"verdict": "INDETERMINATE"},
+        "cutover_gate": {"verdict": "INDETERMINATE", "note": "schema mismatch"},
+    }
+
+    def fake_compare(before, after, **kwargs):
+        captured["compare"] = kwargs
+        return fake_comparison
 
     def fake_diff(before, after, output, **kwargs):
         captured["diff"] = kwargs
 
-    monkeypatch.setattr(cp, "compute_precert", fake_precert)
+    monkeypatch.setattr(cp, "compare_bound_pair", fake_compare)
     monkeypatch.setattr(cp, "write_diff_workbook", fake_diff)
     monkeypatch.setattr(sys, "argv", [
         "cisco-assess", "--compare", str(old), str(new),
-        "--allow-schema-mismatch", "--output", str(tmp_path / "diff.xlsx"),
+        "--comparison-context", str(context), "--allow-schema-mismatch",
+        "--output", str(tmp_path / "diff.xlsx"),
     ])
 
     cp.main()
 
-    binding = {"before": cp.file_sha256(str(old)), "after": cp.file_sha256(str(new))}
-    assert captured["precert"]["source_hashes"] == binding
-    assert captured["diff"]["source_binding"] == binding
-    for call in captured.values():
-        assert call["schema_status"]["status"] == "mismatch"
-        assert call["schema_status"]["override"] is True
-        assert "DIFFERENT" in call["schema_status"]["message"]
+    before_binding = captured["compare"]["before_binding"]
+    after_binding = captured["compare"]["after_binding"]
+    assert before_binding == {
+        "source": cp.OFFLINE_FILE_SOURCE,
+        "sha256": "sha256:" + cp.file_sha256(str(old)),
+        "bytes": old.stat().st_size,
+        "snapshot_id": 90,
+        "campaign_id": 9,
+        "engagement_id": "ENG-CUSTODY",
+        "label": old.name,
+        "script_version": "V1",
+    }
+    assert after_binding == {
+        "source": cp.OFFLINE_FILE_SOURCE,
+        "sha256": "sha256:" + cp.file_sha256(str(new)),
+        "bytes": new.stat().st_size,
+        "snapshot_id": 91,
+        "campaign_id": 9,
+        "engagement_id": "ENG-CUSTODY",
+        "label": new.name,
+        "script_version": "V2",
+    }
+    assert captured["compare"]["change_intent"] == {
+        "expected_changes": [], "note": "custody test",
+    }
+    assert captured["diff"]["comparison"] is fake_comparison
 
 
 def test_compare_rejects_source_mutation_between_parse_and_publication(

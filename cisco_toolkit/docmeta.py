@@ -19,7 +19,7 @@ from datetime import datetime
 import json
 import os
 import zipfile
-from typing import Iterable
+from typing import Any, Iterable, Mapping
 from xml.etree import ElementTree
 
 from cisco_toolkit.textutils import xml_safe   # shared XML-illegal-char sanitizer (every cell text routes through it)
@@ -41,6 +41,9 @@ ASSESSHUB_EXECUTION_PRODUCER = "assesshub-execution"
 SNAPSHOT_DOWNLOAD = "snapshot-download"
 SNAPSHOT_EXPLORER = "snapshot-explorer"
 EXECUTION_REPORT = "execution-report"
+
+_PROTOCOL_RECEIPT_SCHEMA = "protocol_single_snapshot_receipt/1"
+_PROTOCOL_EXPORT_SCHEMA = "protocol_single_snapshot_export/1"
 
 
 @dataclass(frozen=True)
@@ -454,6 +457,261 @@ def related_rows(exclude=()):
     ex = {exclude} if isinstance(exclude, str) else set(exclude)
     return [(name, role + (WEB_ONLY_ROLE_NOTE if key in WEB_ONLY_KINDS else ""))
             for key, name, role in FAMILY if key not in ex]
+
+
+def _protocol_receipt_invalid(reason: str) -> dict:
+    return {
+        "valid": False,
+        "reason": reason,
+        "families": [],
+        "subject_totals": {"total": 0, "rendered": 0, "omitted": 0},
+    }
+
+
+def _protocol_receipt_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def protocol_assurance_receipt_view(bundle: Any) -> dict:
+    """Validate and normalize a portfolio-owner sidecar for portable renderers.
+
+    The document writers cannot bind a parsed snapshot back to source bytes.  They therefore consume
+    only the receipt + complete-export pair emitted by the existing Protocol Assurance portfolio
+    owner.  This validator checks both detached hashes, their duplicated custody fields, and every
+    rendered/total/omitted counter before any source claim reaches an operator surface.  It never
+    builds a receipt, hashes a snapshot, or upgrades evidence state.
+    """
+    if not isinstance(bundle, Mapping):
+        return _protocol_receipt_invalid("source-bound sidecar not supplied")
+    receipt = bundle.get("receipt")
+    complete = bundle.get("complete_export")
+    if not isinstance(receipt, dict) or not isinstance(complete, dict):
+        return _protocol_receipt_invalid("receipt or complete export is missing")
+    if receipt.get("schema") != _PROTOCOL_RECEIPT_SCHEMA:
+        return _protocol_receipt_invalid("receipt schema is unsupported")
+    if complete.get("schema") != _PROTOCOL_EXPORT_SCHEMA:
+        return _protocol_receipt_invalid("complete-export schema is unsupported")
+
+    try:
+        from cisco_toolkit.protocol_assurance import canonical_sha256
+
+        unsigned = dict(receipt)
+        receipt_digest = unsigned.pop("receipt_sha256", None)
+        if receipt_digest != canonical_sha256(unsigned):
+            return _protocol_receipt_invalid("receipt digest does not reconcile")
+        export_meta = receipt.get("complete_export")
+        if not isinstance(export_meta, dict):
+            return _protocol_receipt_invalid("complete-export metadata is missing")
+        export_digest = export_meta.get("sha256")
+        if export_digest != canonical_sha256(complete):
+            return _protocol_receipt_invalid("complete-export digest does not reconcile")
+    except (TypeError, ValueError, OverflowError):
+        return _protocol_receipt_invalid("receipt serialization is malformed")
+
+    if (
+        receipt.get("owner_version") != complete.get("owner_version")
+        or receipt.get("owns_score") is not False
+        or receipt.get("owns_verdict") is not False
+        or complete.get("owns_score") is not False
+        or complete.get("owns_verdict") is not False
+        or receipt.get("custody_status") != complete.get("custody_status")
+        or receipt.get("source_binding") != complete.get("source_binding")
+        or receipt.get("script_owner") != complete.get("script_owner")
+        or receipt.get("support_profiles") != complete.get("support_profiles")
+        or receipt.get("summary") != complete.get("summary")
+    ):
+        return _protocol_receipt_invalid("receipt and complete export do not reconcile")
+    if (
+        export_meta.get("schema") != _PROTOCOL_EXPORT_SCHEMA
+        or export_meta.get("media_type") != "application/json"
+    ):
+        return _protocol_receipt_invalid("complete-export metadata is malformed")
+
+    source = receipt.get("source_binding")
+    if not isinstance(source, dict):
+        return _protocol_receipt_invalid("source binding is missing")
+    digest = source.get("sha256")
+    if (
+        source.get("source") != "persisted snapshots.snapshot_json blob"
+        or not isinstance(digest, str)
+        or len(digest) != 71
+        or not digest.startswith("sha256:")
+        or any(char not in "0123456789abcdef" for char in digest[7:])
+        or not _protocol_receipt_int(source.get("bytes"))
+        or source.get("bytes") == 0
+        or not _protocol_receipt_int(source.get("snapshot_id"))
+        or not _protocol_receipt_int(source.get("campaign_id"))
+        or not isinstance(source.get("engagement_id"), str)
+        or not source["engagement_id"].strip()
+    ):
+        return _protocol_receipt_invalid("source binding is malformed or unsupported")
+
+    receipt_families = receipt.get("families")
+    complete_families = complete.get("families")
+    summary = receipt.get("summary")
+    if (
+        not isinstance(receipt_families, list)
+        or not isinstance(complete_families, list)
+        or not isinstance(summary, dict)
+    ):
+        return _protocol_receipt_invalid("family or summary collection is malformed")
+    complete_by_family = {}
+    for family in complete_families:
+        if not isinstance(family, dict) or not isinstance(family.get("family"), str):
+            return _protocol_receipt_invalid("complete-export family row is malformed")
+        name = family["family"]
+        if name in complete_by_family:
+            return _protocol_receipt_invalid("complete-export family identities are duplicated")
+        complete_by_family[name] = family
+
+    normalized = []
+    seen = set()
+    total = rendered = omitted = 0
+    status_counts = {}
+    for family in receipt_families:
+        if not isinstance(family, dict) or not isinstance(family.get("family"), str):
+            return _protocol_receipt_invalid("receipt family row is malformed")
+        name = family["family"]
+        if name in seen or name not in complete_by_family:
+            return _protocol_receipt_invalid("receipt family identities do not reconcile")
+        seen.add(name)
+        subjects = family.get("subjects")
+        complete_family = complete_by_family[name]
+        complete_subjects = complete_family.get("subjects")
+        if not isinstance(subjects, dict) or not isinstance(complete_subjects, list):
+            return _protocol_receipt_invalid("family subject collection is malformed")
+        counters = {field: subjects.get(field) for field in ("total", "rendered", "omitted")}
+        if not all(_protocol_receipt_int(value) for value in counters.values()):
+            return _protocol_receipt_invalid("family subject counters are malformed")
+        rows = subjects.get("rows")
+        if (
+            not isinstance(rows, list)
+            or counters["rendered"] != len(rows)
+            or counters["total"] != counters["rendered"] + counters["omitted"]
+            or counters["total"] != len(complete_subjects)
+            or family.get("subject_total") != counters["total"]
+            or complete_family.get("subject_total") != counters["total"]
+        ):
+            return _protocol_receipt_invalid("family subject counts do not reconcile")
+        status = family.get("evidence_status")
+        if not isinstance(status, str) or complete_family.get("evidence_status") != status:
+            return _protocol_receipt_invalid("family evidence status does not reconcile")
+        total += counters["total"]
+        rendered += counters["rendered"]
+        omitted += counters["omitted"]
+        status_counts[status] = status_counts.get(status, 0) + 1
+        normalized.append({
+            "family": name,
+            "assurance_level": str(family.get("assurance_level") or "not_verified"),
+            "evidence_status": status,
+            "source_custody": str(family.get("source_custody") or "not_reported"),
+            **counters,
+        })
+    if seen != set(complete_by_family):
+        return _protocol_receipt_invalid("receipt omits a complete-export family")
+    if (
+        summary.get("n_families") != len(normalized)
+        or summary.get("n_subjects_total") != total
+        or summary.get("by_evidence_status") != dict(sorted(status_counts.items()))
+    ):
+        return _protocol_receipt_invalid("portfolio summary does not reconcile")
+
+    return {
+        "valid": True,
+        "reason": "",
+        "schema": receipt["schema"],
+        "owner_version": receipt.get("owner_version"),
+        "owns_score": False,
+        "owns_verdict": False,
+        "custody_status": receipt.get("custody_status"),
+        "custody_failures": receipt.get("custody_failures")
+        if isinstance(receipt.get("custody_failures"), list) else [],
+        "source_binding": dict(source),
+        "script_owner": dict(receipt.get("script_owner"))
+        if isinstance(receipt.get("script_owner"), dict) else {},
+        "receipt_sha256": receipt_digest,
+        "summary": dict(summary),
+        "families": normalized,
+        "subject_totals": {"total": total, "rendered": rendered, "omitted": omitted},
+        "complete_export": {
+            "schema": export_meta["schema"],
+            "sha256": export_digest,
+            "media_type": export_meta["media_type"],
+            "endpoint": (
+                f"/api/snapshots/{source['snapshot_id']}/protocol-assurance/export"
+            ),
+        },
+        "custody_note": str(receipt.get("custody_note") or ""),
+    }
+
+
+def add_protocol_assurance_receipt(
+        doc,
+        bundle: Any,
+        *,
+        heading: str = "Source-bound Protocol Assurance receipt",
+        level: int = 2) -> dict:
+    """Render one validated portfolio receipt consistently across operator DOCX surfaces."""
+    view = protocol_assurance_receipt_view(bundle)
+    doc.add_heading(heading, level=level)
+    if not view["valid"]:
+        doc.add_paragraph(
+            "Source-bound protocol_single_snapshot_receipt/1 unavailable. This renderer did not "
+            "hash the parsed snapshot or mint source custody. Generate the document from AssessHub's "
+            "exact persisted-byte snapshot owner to include the receipt and its complete export. "
+            f"Status: NOT VERIFIED ({view['reason']})."
+        )
+        return view
+
+    source = view["source_binding"]
+    totals = view["subject_totals"]
+    custody = str(view["custody_status"] or "not_verified").upper()
+    doc.add_paragraph(
+        f"{view['schema']} · owner {view['owner_version']} · custody {custody}. This portfolio "
+        "owns no score and no verdict; evidence status is a coverage/observation classification, "
+        "not cutover authorization."
+    )
+    doc.add_paragraph(
+        f"Source owner: {source['source']} · engagement {source['engagement_id']} · campaign "
+        f"{source['campaign_id']} · snapshot {source['snapshot_id']} · exact persisted bytes "
+        f"{source['bytes']} · source SHA-256 {source['sha256']} · receipt SHA-256 "
+        f"{view['receipt_sha256']}."
+    )
+    if view["custody_failures"]:
+        doc.add_paragraph(
+            "Custody failures: " + "; ".join(str(item) for item in view["custody_failures"])
+        )
+    doc.add_paragraph(
+        f"Signed receipt payload cap (rendered / total / omitted): {totals['rendered']} / "
+        f"{totals['total']} / {totals['omitted']}. This document renders family aggregates, not "
+        f"subject-detail rows; its subject-detail display is 0 / {totals['total']} / "
+        f"{totals['total']}. Every family discloses the receipt payload's rendered / total / "
+        "omitted counters below. Decision code does not consume capped presentation arrays."
+    )
+    add_table(
+        doc,
+        ["Protocol family", "Assurance level", "Evidence status",
+         "Receipt payload rendered / total / omitted", "Producer custody"],
+        [[
+            family["family"],
+            family["assurance_level"],
+            family["evidence_status"],
+            f"{family['rendered']} / {family['total']} / {family['omitted']}",
+            family["source_custody"],
+        ] for family in view["families"]],
+        widths=[1.7, 1.6, 1.1, 1.5, 1.3],
+        fixed=False,
+    )
+    export = view["complete_export"]
+    doc.add_paragraph(
+        f"Complete export: {export['schema']} · {export['media_type']} · {export['sha256']} · "
+        f"all {totals['total']} subject row(s), uncapped. AssessHub endpoint: "
+        f"{export['endpoint']}. Retrieve and archive that JSON beside this document; the digest above "
+        "reconciles it to this receipt."
+    )
+    if view["custody_note"]:
+        doc.add_paragraph(view["custody_note"])
+    return view
 
 
 def add_table(doc, headers, rows, widths=None, *, fixed=True):

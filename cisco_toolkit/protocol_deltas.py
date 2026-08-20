@@ -16,12 +16,22 @@ from copy import deepcopy
 import re
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Sequence, Tuple
 
-from .analyze import summarize_stp_consistency_baseline, validate_etherchannel_baseline
+from .analyze import (
+    _validate_etherchannel_projection,
+    _validate_protocol_assessability_receipt,
+    summarize_stp_consistency_baseline,
+    validate_etherchannel_baseline,
+)
 from .bgp_intent import validate_bgp_configured_peer_baseline
 from .fhrp_intent import validate_fhrp_configured_group_baseline
 from .fhrp_redundancy import validate_fhrp_redundancy_domain_baseline
 from .ipv6_routing import validate_ipv6_routing_adjacency_baseline
-from .protocol_assurance import ASSURANCE_LEVELS, CHANGE_VOCABULARY
+from .protocol_assurance import (
+    ASSURANCE_LEVELS,
+    CHANGE_VOCABULARY,
+    bound_snapshot_source,
+    canonical_sha256,
+)
 from .vtp_safety import validate_vtp_safety_baseline
 
 
@@ -58,8 +68,274 @@ def _receipt(view: Mapping[str, Any]) -> dict:
         "present": view.get("present") is True,
         "valid": view.get("valid") is True,
         "source_bound": view.get("source_bound") is True,
+        "owner_source_authority": view.get("owner_source_authority") is True,
+        "comparison_source_bound": view.get("comparison_source_bound") is True,
+        "comparison_source_basis": _text(view.get("comparison_source_basis")),
+        "snapshot_sha256": _text(view.get("comparison_snapshot_sha256")),
+        "projection_sha256": _text(view.get("projection_sha256")),
         "reason": _text(view.get("reason")),
     }
+
+
+def _binding_sha256(value: Any) -> str:
+    """Return one exact-byte SHA-256 binding, never a caller custody assertion.
+
+    The source-owning composers pass either the CLI file hash or AssessHub's richer persisted-byte
+    binding.  A baseline's serialized ``projection_custody`` string is deliberately ignored: it is
+    not authority to promote a detached projection back to current-run evidence.
+    """
+    digest = value if isinstance(value, str) else (
+        value.get("sha256") if isinstance(value, Mapping) else None
+    )
+    if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        return ""
+    return digest
+
+
+def _comparison_view(
+    view: Mapping[str, Any],
+    snapshot: Any,
+    binding: Any,
+    *,
+    exact_snapshot_reconciliation: bool,
+) -> dict:
+    """Normalize process-local and exact-snapshot custody into one comparison receipt.
+
+    Current-run owner objects retain a process-local marker that is intentionally erased when a
+    snapshot is serialized.  A source-owning comparison may restore *comparison* custody—not
+    current-run custody—only when the exact snapshot bytes are hashed and this module has already
+    validated or deterministically recomputed the owner projection.  Callers cannot promote a
+    projection by editing its embedded custody/hash leaves.
+    """
+    normalized = dict(view)
+    owner_bound = bool(
+        normalized.get("source_bound") is True
+        and normalized.get("owner_source_authority") is True
+    )
+    snapshot_sha256 = _binding_sha256(binding)
+    bound_source = bound_snapshot_source(snapshot)
+    projection_sha256 = _text(normalized.get("projection_sha256"))
+    if not projection_sha256:
+        baseline = normalized.get("baseline")
+        summary = baseline.get("summary") if isinstance(baseline, Mapping) else None
+        raw_digest = summary.get("baseline_sha256") if isinstance(summary, Mapping) else None
+        if isinstance(raw_digest, str) and re.fullmatch(r"[0-9a-f]{64}", raw_digest):
+            projection_sha256 = "sha256:" + raw_digest
+    normalized["projection_sha256"] = projection_sha256
+    outer_bound = bool(
+        exact_snapshot_reconciliation
+        and normalized.get("valid") is True
+        and normalized.get("comparison_reconcilable") is True
+        and snapshot_sha256
+        and projection_sha256
+        and bound_source.get("source_bound") is True
+        and bound_source.get("sha256") == snapshot_sha256
+    )
+    normalized["comparison_source_bound"] = owner_bound or outer_bound
+    normalized["comparison_snapshot_sha256"] = snapshot_sha256
+    normalized["comparison_source_basis"] = (
+        "current_run_owner_source"
+        if owner_bound else
+        "exact_snapshot_bytes_and_validated_owner_projection"
+        if outer_bound else
+        "not_source_bound"
+    )
+    return normalized
+
+
+def _reconcilable(
+        view: Mapping[str, Any], eligible: bool = True, *,
+        owner_source_authority: bool = True) -> dict:
+    normalized = dict(view)
+    normalized["comparison_reconcilable"] = bool(
+        eligible and normalized.get("valid") is True
+    )
+    normalized["owner_source_authority"] = bool(owner_source_authority)
+    return normalized
+
+
+def _snapshot_device_roster(snapshot: Any) -> tuple[set[str] | None, str]:
+    """Return the exact admitted local-device spellings when a roster is published.
+
+    Native protocol owners do not infer vendor support from an inventory platform label.  Their
+    positive and explicit-negative claims are instead bounded by the owner coverage rows that were
+    actually published for each local snapshot device.  A missing ``devices`` key is retained for
+    legacy/direct owner unit calls; canonical comparison admission requires the key separately.
+    """
+    root = _snapshot(snapshot)
+    if "devices" not in root:
+        return None, ""
+    devices = root.get("devices")
+    if not isinstance(devices, dict):
+        return set(), "snapshot devices subject map is malformed"
+    spellings: Dict[str, str] = {}
+    for raw in devices:
+        if not isinstance(raw, str) or not raw or raw != raw.strip():
+            return set(), "snapshot devices contain a malformed local subject identity"
+        folded = raw.casefold()
+        if folded in spellings and spellings[folded] != raw:
+            return set(), "snapshot devices contain a case-insensitive identity collision"
+        spellings[folded] = raw
+    return set(spellings.values()), ""
+
+
+def _invalidate_subject_roster(view: Mapping[str, Any], reason: str) -> dict:
+    """Erase caller-controlled subjects when an owner denominator misses the snapshot roster."""
+    normalized = dict(view)
+    normalized.update({
+        "valid": False,
+        "reason": reason,
+        "source_bound": False,
+        "comparison_reconcilable": False,
+        "subject_roster_failure": True,
+        "rows": [],
+        "index": {},
+        "domain_index": {},
+        "baseline": {},
+        "roots": {},
+        "paths": {},
+        "gaps": [],
+    })
+    return normalized
+
+
+def _invalidate_owner_evidence(view: Mapping[str, Any], reason: str) -> dict:
+    """Withhold subjects for a missing co-published source without relabelling it identity drift."""
+    normalized = dict(view)
+    normalized.update({
+        "valid": False,
+        "reason": reason,
+        "source_bound": False,
+        "comparison_reconcilable": False,
+        "rows": [],
+        "index": {},
+        "domain_index": {},
+        "baseline": {},
+        "roots": {},
+        "paths": {},
+        "gaps": [],
+    })
+    return normalized
+
+
+def reconcile_native_owner_subject_roster(
+        view: Mapping[str, Any], snapshot: Any, *, family: str,
+        coverage_hosts: Any, subject_hosts: Any = ()) -> dict:
+    """Bind one structurally valid owner denominator to the exact local device roster.
+
+    ``coverage_hosts`` is the owner's explicit coverage denominator (one or more cells per host).
+    ``subject_hosts`` are positive rows/domains derived from it.  Both use exact snapshot identity
+    spellings: a structurally valid baseline computed for an empty or different estate cannot be
+    grafted into a source-bound snapshot and authorize protocol absence or health.
+    """
+    normalized = dict(view)
+    if normalized.get("valid") is not True:
+        return normalized
+    expected, roster_error = _snapshot_device_roster(snapshot)
+    if expected is None:
+        return normalized
+    if roster_error:
+        return _invalidate_subject_roster(
+            normalized, f"{family} subject roster is not comparable: {roster_error}")
+    if not isinstance(coverage_hosts, (list, tuple, set, frozenset)):
+        return _invalidate_subject_roster(
+            normalized,
+            f"{family} owner coverage denominator is missing or malformed",
+        )
+
+    actual: set[str] = set()
+    folded: Dict[str, str] = {}
+    for raw in coverage_hosts:
+        if not isinstance(raw, str) or not raw or raw != raw.strip():
+            return _invalidate_subject_roster(
+                normalized,
+                f"{family} owner coverage denominator contains a malformed identity",
+            )
+        identity = raw.casefold()
+        prior = folded.get(identity)
+        if prior is not None and prior != raw:
+            return _invalidate_subject_roster(
+                normalized,
+                f"{family} owner coverage denominator contains an identity collision",
+            )
+        folded[identity] = raw
+        actual.add(raw)
+    if actual != expected:
+        return _invalidate_subject_roster(
+            normalized,
+            f"{family} owner coverage denominator does not exactly reconcile to snapshot devices",
+        )
+
+    if not isinstance(subject_hosts, (list, tuple, set, frozenset)):
+        return _invalidate_subject_roster(
+            normalized, f"{family} owner subject identities are malformed")
+    positive: set[str] = set()
+    for raw in subject_hosts:
+        if not isinstance(raw, str) or not raw or raw != raw.strip():
+            return _invalidate_subject_roster(
+                normalized, f"{family} owner subject identities are malformed")
+        positive.add(raw)
+    if not positive <= expected:
+        return _invalidate_subject_roster(
+            normalized,
+            f"{family} owner contains a subject outside snapshot devices",
+        )
+    normalized["subject_roster_reconciled"] = True
+    return normalized
+
+
+def _reconcile_baseline_coverage_roster(
+        view: Mapping[str, Any], snapshot: Any, *, family: str) -> dict:
+    """Apply the shared roster join to owners with a public ``baseline.coverage`` array."""
+    if view.get("valid") is not True:
+        return dict(view)
+    baseline = view.get("baseline")
+    coverage = baseline.get("coverage") if isinstance(baseline, Mapping) else None
+    rows = view.get("rows")
+    if not isinstance(coverage, list) or not isinstance(rows, list):
+        return _invalidate_subject_roster(
+            view, f"{family} owner coverage denominator is missing or malformed")
+    coverage_hosts = [
+        cell.get("switch") if isinstance(cell, Mapping) else None
+        for cell in coverage
+    ]
+    subject_hosts = [
+        row.get("switch") if isinstance(row, Mapping) else None
+        for row in rows
+    ]
+    return reconcile_native_owner_subject_roster(
+        view,
+        snapshot,
+        family=family,
+        coverage_hosts=coverage_hosts,
+        subject_hosts=subject_hosts,
+    )
+
+
+def _pair_views(
+    before_view: Mapping[str, Any],
+    after_view: Mapping[str, Any],
+    before_snapshot: Any,
+    after_snapshot: Any,
+    comparison_source_binding: Any,
+    *,
+    exact_snapshot_reconciliation: bool = True,
+) -> tuple[dict, dict]:
+    pair = comparison_source_binding if isinstance(comparison_source_binding, Mapping) else {}
+    return (
+        _comparison_view(
+            before_view,
+            before_snapshot,
+            pair.get("before"),
+            exact_snapshot_reconciliation=exact_snapshot_reconciliation,
+        ),
+        _comparison_view(
+            after_view,
+            after_snapshot,
+            pair.get("after"),
+            exact_snapshot_reconciliation=exact_snapshot_reconciliation,
+        ),
+    )
 
 
 def _state(value: Mapping[str, Any] | None, fields: Sequence[str]) -> dict:
@@ -112,8 +388,37 @@ def _result(
 ) -> dict:
     if assurance_level not in ASSURANCE_LEVELS:
         raise ValueError(f"unsupported assurance level: {assurance_level}")
+    materialized = list(changes)
+
+    def explicit_not_applicable(view: Mapping[str, Any]) -> bool:
+        baseline = view.get("baseline")
+        return bool(
+            view.get("valid") is True
+            and view.get("comparison_source_bound") is True
+            and isinstance(baseline, Mapping)
+            and baseline.get("verdict") == "NOT_APPLICABLE"
+        )
+
+    applicability = (
+        "not_applicable"
+        if not materialized
+        and explicit_not_applicable(before_view)
+        and explicit_not_applicable(after_view)
+        else "applicable"
+    )
+    if not materialized and applicability == "applicable":
+        materialized = [_change(
+            f"{family}|owner_receipt",
+            "not_comparable",
+            "not_verified",
+            {},
+            {},
+            "The applicable owner emitted no materialized subject or custody disposition; "
+            "an empty array is not evidence of unchanged health.",
+        )]
+        assurance_level = "not_verified"
     normalized = []
-    for raw in changes:
+    for raw in materialized:
         row = dict(raw)
         row["family"] = family
         normalized.append(row)
@@ -127,6 +432,12 @@ def _result(
         count for name, count in by_transition.items()
         if name not in {"coverage_lost", "not_comparable"}
     )
+    receipts = {
+        "before": _receipt(before_view),
+        "after": _receipt(after_view),
+    }
+    if not all(receipt["comparison_source_bound"] for receipt in receipts.values()):
+        assurance_level = "not_verified"
     return {
         "schema": schema,
         "family": family,
@@ -134,14 +445,12 @@ def _result(
         "assurance_level": assurance_level,
         "owns_score": False,
         "owns_verdict": False,
+        "applicability": applicability,
         "comparable": bool(comparable) and not by_transition["not_comparable"],
         "assessed": bool(comparable) and not (
             by_transition["coverage_lost"] or by_transition["not_comparable"]
         ),
-        "source_receipts": {
-            "before": _receipt(before_view),
-            "after": _receipt(after_view),
-        },
+        "source_receipts": receipts,
         "summary": {
             "n_subjects": len(ordered),
             "n_comparable": comparable,
@@ -158,28 +467,53 @@ def _invalid_owner_changes(
     before_view: Mapping[str, Any],
     after_view: Mapping[str, Any],
 ) -> List[dict]:
-    if before_view.get("valid") is True and after_view.get("valid") is True:
-        return []
-    after_present = after_view.get("present") is True
-    # With no valid baseline denominator, even a valid after value cannot define survival.
-    transition = (
-        "coverage_lost"
-        if before_view.get("valid") is True and not after_present
-        else "not_comparable"
+    before_authorized = bool(
+        before_view.get("valid") is True
+        and before_view.get("comparison_source_bound") is True
     )
+    after_authorized = bool(
+        after_view.get("valid") is True
+        and after_view.get("comparison_source_bound") is True
+    )
+    if before_authorized and after_authorized:
+        return []
+    # A source-bound baseline denominator can lose after evidence.  Without that baseline custody,
+    # however, no survival claim can be made regardless of how complete the after projection looks.
+    identity_failure = bool(
+        before_view.get("subject_roster_failure") is True
+        or after_view.get("subject_roster_failure") is True
+    )
+    transition = (
+        "not_comparable"
+        if identity_failure or not before_authorized
+        else "coverage_lost"
+    )
+
+    def receipt_state(view: Mapping[str, Any]) -> dict:
+        return {
+            "present": view.get("present") is True,
+            "valid": view.get("valid") is True,
+            "owner_source_bound": view.get("source_bound") is True,
+            "owner_source_authority": view.get("owner_source_authority") is True,
+            "comparison_source_bound": view.get("comparison_source_bound") is True,
+            "reason": _text(view.get("reason")),
+        }
+
     return [_change(
         f"{family}|owner_receipt",
         transition,
         "not_verified",
-        {"valid": before_view.get("valid") is True,
-         "reason": _text(before_view.get("reason"))},
-        {"valid": after_view.get("valid") is True,
-         "reason": _text(after_view.get("reason"))},
+        receipt_state(before_view),
+        receipt_state(after_view),
         (
-            "The after owner receipt is missing, so the baseline subject denominator lost coverage."
+            "The owner coverage/subject identities do not reconcile to the exact snapshot device "
+            "roster; no absence, survival, or regression transition is asserted."
+            if identity_failure else
+            "The source-bound baseline denominator lost valid, source-bound after evidence; no "
+            "survival or regression transition is asserted."
             if transition == "coverage_lost" else
-            "One or both owner receipts are malformed, missing at baseline, or semantically incompatible; "
-            "their caller-controlled leaves were not compared."
+            "The baseline owner receipt is malformed, missing, semantically incompatible, or not "
+            "bound to an authorized comparison source; its caller-controlled leaves were not compared."
         ),
     )]
 
@@ -277,6 +611,26 @@ def _cell_neutral(family: str, cell: Mapping[str, Any] | None) -> bool:
             _text(cell.get("config_capture_status")) in {"ok", "complete"}
             and _text(cell.get("config_parser_status")) == "complete"
         )
+    if family == "ipv6_routing_adjacency":
+        protocol = _text(cell.get("protocol"))
+        if cell.get("subject") is not False or cell.get("active_route_count") != 0:
+            return False
+        if protocol == "IPv6":
+            return (
+                _text(cell.get("capture_status")) == "ok"
+                and _text(cell.get("parser_status")) == "complete"
+                and cell.get("candidate_count") == 1
+                and cell.get("parsed_count") == 1
+                and cell.get("rejected_count") == 0
+            )
+        if protocol in {"OSPFv3", "BGPv6"}:
+            return (
+                _text(cell.get("capture_status")) != "ok"
+                and _text(cell.get("parser_status")) == "not_verified"
+                and cell.get("candidate_count") == 0
+                and cell.get("parsed_count") == 0
+                and cell.get("rejected_count") == 0
+            )
     return False
 
 
@@ -351,12 +705,26 @@ def _compare_indexed(
     return changes, represented
 
 
-def compute_ipv6_routing_adjacency_delta(before: Any, after: Any) -> dict:
+def compute_ipv6_routing_adjacency_delta(
+        before: Any, after: Any, *, comparison_source_binding: Any = None) -> dict:
     """Compare validated observed default/global OSPFv3 and BGPv6 adjacencies."""
     before_value = _owner_value(before, "ipv6_routing_adjacency_baseline")
     after_value = _owner_value(after, "ipv6_routing_adjacency_baseline")
-    before_view = validate_ipv6_routing_adjacency_baseline(before_value)
-    after_view = validate_ipv6_routing_adjacency_baseline(after_value)
+    before_view, after_view = _pair_views(
+        _reconcilable(_reconcile_baseline_coverage_roster(
+            validate_ipv6_routing_adjacency_baseline(before_value),
+            before,
+            family="ipv6_routing_adjacency",
+        )),
+        _reconcilable(_reconcile_baseline_coverage_roster(
+            validate_ipv6_routing_adjacency_baseline(after_value),
+            after,
+            family="ipv6_routing_adjacency",
+        )),
+        before,
+        after,
+        comparison_source_binding,
+    )
     after_coverage = _coverage_index(
         after_view.get("baseline", {}), ("switch", "protocol"))
 
@@ -410,12 +778,26 @@ def compute_ipv6_routing_adjacency_delta(before: Any, after: Any) -> dict:
     )
 
 
-def compute_bgp_configured_peer_delta(before: Any, after: Any) -> dict:
+def compute_bgp_configured_peer_delta(
+        before: Any, after: Any, *, comparison_source_binding: Any = None) -> dict:
     """Compare the validated direct-literal default/global configured BGP peer denominator."""
-    before_view = validate_bgp_configured_peer_baseline(
-        _owner_value(before, "bgp_configured_peer_baseline"))
-    after_view = validate_bgp_configured_peer_baseline(
-        _owner_value(after, "bgp_configured_peer_baseline"))
+    before_view, after_view = _pair_views(
+        _reconcilable(_reconcile_baseline_coverage_roster(
+            validate_bgp_configured_peer_baseline(
+                _owner_value(before, "bgp_configured_peer_baseline")),
+            before,
+            family="bgp_configured_peer",
+        )),
+        _reconcilable(_reconcile_baseline_coverage_roster(
+            validate_bgp_configured_peer_baseline(
+                _owner_value(after, "bgp_configured_peer_baseline")),
+            after,
+            family="bgp_configured_peer",
+        )),
+        before,
+        after,
+        comparison_source_binding,
+    )
     after_coverage = _coverage_index(after_view.get("baseline", {}), ("switch",))
 
     def appeared(name: str, row: Mapping[str, Any]) -> dict:
@@ -509,17 +891,48 @@ def _stp_consistency_view(snapshot: Any) -> dict:
         if not host or host in index:
             return invalid("STP consistency owner returned an invalid or duplicate subject")
         index[host] = row
-    return {
+    view = {
         "present": True, "valid": True,
         "reason": "recomputed_from_exact_existing_owner_sources",
         "source_bound": False, "rows": expected["rows"], "index": index,
         "baseline": expected,
+        "projection_sha256": canonical_sha256(expected),
+        "comparison_reconcilable": True,
     }
+    if "devices" not in snapshot:
+        return view
+    receipt = _validate_protocol_assessability_receipt(
+        snapshot.get("protocol_assessability"))
+    if receipt.get("valid") is not True:
+        return _invalidate_subject_roster(
+            view,
+            "stp_consistency protocol receipt denominator is missing or malformed for "
+            "snapshot devices",
+        )
+    receipt_hosts = {
+        key[0]
+        for key in receipt.get("index", {})
+        if isinstance(key, tuple) and len(key) == 2 and key[1] == "STP"
+    }
+    return reconcile_native_owner_subject_roster(
+        view,
+        snapshot,
+        family="stp_consistency",
+        coverage_hosts=receipt_hosts,
+        subject_hosts=list(index),
+    )
 
 
-def compute_stp_consistency_delta(before: Any, after: Any) -> dict:
+def compute_stp_consistency_delta(
+        before: Any, after: Any, *, comparison_source_binding: Any = None) -> dict:
     """Compare the existing bounded state/inconsistent-port owner without parsing its prose."""
-    before_view, after_view = _stp_consistency_view(before), _stp_consistency_view(after)
+    before_view, after_view = _pair_views(
+        _stp_consistency_view(before),
+        _stp_consistency_view(after),
+        before,
+        after,
+        comparison_source_binding,
+    )
 
     def appeared(name: str, row: Mapping[str, Any]) -> dict:
         if _text(row.get("status")) in _UNAVAILABLE_STATUSES:
@@ -555,6 +968,60 @@ def compute_stp_consistency_delta(before: Any, after: Any) -> dict:
             "Root placement, roles, timers, convergence, and intended topology are not proved.",
         ),
     )
+
+
+_STP_PATH_MIN_INSTANCE = 0  # MST instance 0 shares this legacy path projection with VLAN IDs.
+_STP_PATH_MAX_INSTANCE = 4094
+_STP_PATH_MAX_TOKENS = _STP_PATH_MAX_INSTANCE - _STP_PATH_MIN_INSTANCE + 1
+_STP_PATH_MAX_TEXT = 32_768
+_STP_PATH_MAX_DIGITS = len(str(_STP_PATH_MAX_INSTANCE))
+_STP_PATH_TOKEN = re.compile(r"^([0-9]+)(?:-([0-9]+))?$")
+
+
+def _stp_path_instances(raw: str) -> tuple[tuple[str, ...], frozenset[int]] | None:
+    """Return a bounded canonical range display and exact instance set, or abstain.
+
+    The existing interface projection does not distinguish PVST VLAN IDs from MST instance IDs,
+    so zero remains admissible for MST0 while the upper bound stays at the VLAN ceiling.  Bounds
+    are checked before ``range`` construction so hostile numeric endpoints cannot cause an
+    unbounded expansion.  Empty components, reversed ranges, and excessive token lists fail
+    closed instead of being partially interpreted.
+    """
+    if not raw or len(raw) > _STP_PATH_MAX_TEXT \
+            or raw.count(",") >= _STP_PATH_MAX_TOKENS:
+        return None
+    parts = [part.strip() for part in raw.split(",")]
+    if not parts or len(parts) > _STP_PATH_MAX_TOKENS or any(not part for part in parts):
+        return None
+
+    def endpoint(value: str) -> int | None:
+        if len(value) > _STP_PATH_MAX_DIGITS:
+            return None
+        parsed = int(value)
+        return parsed if _STP_PATH_MIN_INSTANCE <= parsed <= _STP_PATH_MAX_INSTANCE else None
+
+    instances: set[int] = set()
+    for token in parts:
+        match = _STP_PATH_TOKEN.fullmatch(token)
+        if match is None:
+            return None
+        start = endpoint(match.group(1))
+        end = endpoint(match.group(2) or match.group(1))
+        if start is None or end is None or start > end:
+            return None
+        instances.update(range(start, end + 1))
+
+    ordered = sorted(instances)
+    canonical_ranges: List[str] = []
+    start = end = ordered[0]
+    for instance in ordered[1:]:
+        if instance == end + 1:
+            end = instance
+            continue
+        canonical_ranges.append(str(start) if start == end else f"{start}-{end}")
+        start = end = instance
+    canonical_ranges.append(str(start) if start == end else f"{start}-{end}")
+    return tuple(canonical_ranges), frozenset(instances)
 
 
 def _topology_view(snapshot: Any) -> dict:
@@ -601,7 +1068,6 @@ def _topology_view(snapshot: Any) -> dict:
                 "bridge_priority": bridge_priority,
                 "is_root": row["is_root"],
             }
-    vlan_token = re.compile(r"^[0-9]+(?:-[0-9]+)?$")
     for host_value, interfaces in interfaces_raw.items():
         host = _text(host_value)
         if not host or not isinstance(interfaces, dict):
@@ -612,6 +1078,7 @@ def _topology_view(snapshot: Any) -> dict:
             if not interface or not isinstance(row, dict):
                 continue
             values: dict[str, tuple[str, ...] | None] = {}
+            instance_sets: dict[str, frozenset[int] | None] = {}
             malformed = False
             for source_field, output_field in (
                 ("stp_fwd_vlans", "forwarding"), ("stp_blk_vlans", "blocked"),
@@ -619,30 +1086,70 @@ def _topology_view(snapshot: Any) -> dict:
                 raw = row.get(source_field)
                 if raw in (None, ""):
                     values[output_field] = None
+                    instance_sets[output_field] = None
                     continue
                 if not isinstance(raw, str):
                     malformed = True
                     break
-                tokens = tuple(sorted({part.strip() for part in raw.split(",") if part.strip()}))
-                if not tokens or any(not vlan_token.fullmatch(token) for token in tokens):
+                normalized = _stp_path_instances(raw)
+                if normalized is None:
                     malformed = True
                     break
-                values[output_field] = tokens
+                values[output_field], instance_sets[output_field] = normalized
             if malformed:
                 gaps.append(f"path:{host}:{interface}")
             elif values["forwarding"] is not None or values["blocked"] is not None:
-                paths[(host, interface)] = values
-    return {
+                paths[(host, interface)] = {
+                    **values,
+                    "_instance_sets": instance_sets,
+                }
+    projection_payload = {
+        "roots": [
+            {"subject": list(key), "state": roots[key]}
+            for key in sorted(roots)
+        ],
+        "paths": [
+            {
+                "subject": list(key),
+                "forwarding": paths[key].get("forwarding"),
+                "blocked": paths[key].get("blocked"),
+            }
+            for key in sorted(paths)
+        ],
+        "gaps": sorted(set(gaps)),
+    }
+    view = {
         "present": present, "valid": True,
         "reason": "bounded_existing_root_and_interface_projection",
         "source_bound": False, "roots": roots, "paths": paths,
         "gaps": sorted(set(gaps)),
+        "projection_sha256": canonical_sha256(projection_payload),
+        "comparison_reconcilable": True,
     }
+    subject_hosts = {
+        key[0] for key in roots
+    } | {
+        key[0] for key in paths
+    }
+    return reconcile_native_owner_subject_roster(
+        view,
+        snapshot,
+        family="stp_topology",
+        coverage_hosts=list(interfaces_raw),
+        subject_hosts=subject_hosts,
+    )
 
 
-def compute_stp_topology_delta(before: Any, after: Any) -> dict:
+def compute_stp_topology_delta(
+        before: Any, after: Any, *, comparison_source_binding: Any = None) -> dict:
     """Compare evidenced roots/path sets and abstain on absent roles/change counters."""
-    before_view, after_view = _topology_view(before), _topology_view(after)
+    before_view, after_view = _pair_views(
+        _topology_view(before),
+        _topology_view(after),
+        before,
+        after,
+        comparison_source_binding,
+    )
     changes = _invalid_owner_changes("stp_topology", before_view, after_view)
     if not changes:
         for key in sorted(set(before_view["roots"]) | set(after_view["roots"])):
@@ -663,18 +1170,24 @@ def compute_stp_topology_delta(before: Any, after: Any) -> dict:
         for key in sorted(set(before_view["paths"]) | set(after_view["paths"])):
             subject = "path|" + "|".join(key)
             old, new = before_view["paths"].get(key), after_view["paths"].get(key)
+            old_state = _state(old, ("forwarding", "blocked"))
+            new_state = _state(new, ("forwarding", "blocked"))
             if old is None:
-                changes.append(_change(subject, "appeared", "review", {}, new,
+                changes.append(_change(subject, "appeared", "review", {}, new_state,
                                        "A new bounded forwarding/blocked path projection appeared."))
             elif new is None:
-                changes.append(_change(subject, "coverage_lost", "not_verified", old, {},
+                changes.append(_change(subject, "coverage_lost", "not_verified", old_state, {},
                                        "Previously evidenced forwarding/blocked path state is no longer evidenced."))
             elif old == new:
-                changes.append(_change(subject, "unchanged_healthy", "none", old, new,
+                changes.append(_change(subject, "unchanged_healthy", "none", old_state, new_state,
                                        "The evidenced forwarding/blocked path sets are unchanged."))
             else:
-                old_fwd, old_blk = set(old.get("forwarding") or ()), set(old.get("blocked") or ())
-                new_fwd, new_blk = set(new.get("forwarding") or ()), set(new.get("blocked") or ())
+                old_sets = old["_instance_sets"]
+                new_sets = new["_instance_sets"]
+                old_fwd = old_sets.get("forwarding") or frozenset()
+                old_blk = old_sets.get("blocked") or frozenset()
+                new_fwd = new_sets.get("forwarding") or frozenset()
+                new_blk = new_sets.get("blocked") or frozenset()
                 if old_fwd & new_blk:
                     transition, decision_effect = "regressed", "block"
                     note = "At least one previously forwarding instance is now evidenced as blocked."
@@ -684,7 +1197,8 @@ def compute_stp_topology_delta(before: Any, after: Any) -> dict:
                 else:
                     transition, decision_effect = "intent_changed", "review"
                     note = "The bounded forwarding/blocked instance sets changed and require topology intent reconciliation."
-                changes.append(_change(subject, transition, decision_effect, old, new, note))
+                changes.append(_change(
+                    subject, transition, decision_effect, old_state, new_state, note))
         for gap in sorted(set(before_view["gaps"]) | set(after_view["gaps"])):
             changes.append(_change(
                 f"stp_topology|coverage|{gap}", "coverage_lost", "not_verified", {}, {},
@@ -714,12 +1228,60 @@ def compute_stp_topology_delta(before: Any, after: Any) -> dict:
 def _etherchannel_view(snapshot: Any) -> dict:
     root = _snapshot(snapshot)
     value = root.get("etherchannel_baseline")
-    return validate_etherchannel_baseline(
-        value,
-        projection=root.get("etherchannel_projection"),
-        protocol_assessability=root.get("protocol_assessability"),
-        devices=root.get("devices"),
+    view = _reconcilable(
+        validate_etherchannel_baseline(
+            value,
+            projection=root.get("etherchannel_projection"),
+            protocol_assessability=root.get("protocol_assessability"),
+            devices=root.get("devices"),
+        ),
+        owner_source_authority=False,
     )
+    if view.get("valid") is True and "devices" in root:
+        projection_view = _validate_etherchannel_projection(
+            root.get("etherchannel_projection"))
+        receipt_view = _validate_protocol_assessability_receipt(
+            root.get("protocol_assessability"))
+        if projection_view.get("valid") is not True \
+                or receipt_view.get("valid") is not True:
+            view = _invalidate_subject_roster(
+                view,
+                "etherchannel source denominator is missing or malformed for snapshot devices",
+            )
+        else:
+            subject_hosts = [
+                row.get("switch") if isinstance(row, Mapping) else None
+                for row in view.get("rows", [])
+            ]
+            view = reconcile_native_owner_subject_roster(
+                view,
+                snapshot,
+                family="etherchannel projection",
+                coverage_hosts=list(projection_view.get("index", {})),
+                subject_hosts=subject_hosts,
+            )
+            if view.get("valid") is True:
+                receipt_hosts = {
+                    key[0]
+                    for key in receipt_view.get("index", {})
+                    if (isinstance(key, tuple) and len(key) == 2
+                        and key[1] == "EtherChannel")
+                }
+                view = reconcile_native_owner_subject_roster(
+                    view,
+                    snapshot,
+                    family="etherchannel receipt",
+                    coverage_hosts=receipt_hosts,
+                    subject_hosts=subject_hosts,
+                )
+    if view.get("valid") is True:
+        view["projection_sha256"] = canonical_sha256({
+            "baseline": value,
+            "projection": root.get("etherchannel_projection"),
+            "protocol_assessability": root.get("protocol_assessability"),
+            "devices": root.get("devices"),
+        })
+    return view
 
 
 def _etherchannel_groups(view: Mapping[str, Any]) -> Dict[Tuple[str, str], dict]:
@@ -760,9 +1322,16 @@ def _etherchannel_groups(view: Mapping[str, Any]) -> Dict[Tuple[str, str], dict]
     return groups
 
 
-def compute_etherchannel_delta(before: Any, after: Any) -> dict:
+def compute_etherchannel_delta(
+        before: Any, after: Any, *, comparison_source_binding: Any = None) -> dict:
     """Compare validated local group/member state and count-based capacity only."""
-    before_view, after_view = _etherchannel_view(before), _etherchannel_view(after)
+    before_view, after_view = _pair_views(
+        _etherchannel_view(before),
+        _etherchannel_view(after),
+        before,
+        after,
+        comparison_source_binding,
+    )
     changes = _invalid_owner_changes("etherchannel", before_view, after_view)
     if not changes:
         old_groups, new_groups = _etherchannel_groups(before_view), _etherchannel_groups(after_view)
@@ -813,10 +1382,26 @@ def compute_etherchannel_delta(before: Any, after: Any) -> dict:
     )
 
 
-def compute_vtp_safety_delta(before: Any, after: Any) -> dict:
+def compute_vtp_safety_delta(
+        before: Any, after: Any, *, comparison_source_binding: Any = None) -> dict:
     """Compare validated VTP mode/domain/version/revision with movement defaulting to review."""
-    before_view = validate_vtp_safety_baseline(_owner_value(before, "vtp_safety_baseline"))
-    after_view = validate_vtp_safety_baseline(_owner_value(after, "vtp_safety_baseline"))
+    before_view, after_view = _pair_views(
+        _reconcilable(_reconcile_baseline_coverage_roster(
+            validate_vtp_safety_baseline(
+                _owner_value(before, "vtp_safety_baseline")),
+            before,
+            family="vtp_safety",
+        )),
+        _reconcilable(_reconcile_baseline_coverage_roster(
+            validate_vtp_safety_baseline(
+                _owner_value(after, "vtp_safety_baseline")),
+            after,
+            family="vtp_safety",
+        )),
+        before,
+        after,
+        comparison_source_binding,
+    )
     changes = _invalid_owner_changes("vtp_safety", before_view, after_view)
     represented: set[Tuple[str, ...]] = set()
     fields = (
@@ -901,12 +1486,26 @@ def compute_vtp_safety_delta(before: Any, after: Any) -> dict:
     )
 
 
-def compute_fhrp_configured_group_delta(before: Any, after: Any) -> dict:
+def compute_fhrp_configured_group_delta(
+        before: Any, after: Any, *, comparison_source_binding: Any = None) -> dict:
     """Compare the validated literal local configured-group denominator."""
-    before_view = validate_fhrp_configured_group_baseline(
-        _owner_value(before, "fhrp_configured_group_baseline"))
-    after_view = validate_fhrp_configured_group_baseline(
-        _owner_value(after, "fhrp_configured_group_baseline"))
+    before_view, after_view = _pair_views(
+        _reconcilable(_reconcile_baseline_coverage_roster(
+            validate_fhrp_configured_group_baseline(
+                _owner_value(before, "fhrp_configured_group_baseline")),
+            before,
+            family="fhrp_configured_group",
+        )),
+        _reconcilable(_reconcile_baseline_coverage_roster(
+            validate_fhrp_configured_group_baseline(
+                _owner_value(after, "fhrp_configured_group_baseline")),
+            after,
+            family="fhrp_configured_group",
+        )),
+        before,
+        after,
+        comparison_source_binding,
+    )
     after_coverage = _coverage_index(
         after_view.get("baseline", {}), ("switch", "protocol"))
 
@@ -996,12 +1595,82 @@ def _domain_healthy(state: Mapping[str, Any]) -> bool:
     )
 
 
-def compute_fhrp_redundancy_domain_delta(before: Any, after: Any) -> dict:
+def compute_fhrp_redundancy_domain_delta(
+        before: Any, after: Any, *, comparison_source_binding: Any = None) -> dict:
     """Compare validated domains; role movement is non-regressive while redundancy survives."""
-    before_view = validate_fhrp_redundancy_domain_baseline(
-        _owner_value(before, "fhrp_redundancy_domain_baseline"))
-    after_view = validate_fhrp_redundancy_domain_baseline(
-        _owner_value(after, "fhrp_redundancy_domain_baseline"))
+    def domain_view(snapshot: Any) -> dict:
+        view = validate_fhrp_redundancy_domain_baseline(
+            _owner_value(snapshot, "fhrp_redundancy_domain_baseline"))
+        baseline = view.get("baseline") if isinstance(view, Mapping) else None
+        source = baseline.get("source_receipt") if isinstance(baseline, Mapping) else None
+        normalized = _reconcilable(
+            view,
+            eligible=isinstance(source, Mapping) and source.get("valid") is True,
+        )
+        if normalized.get("valid") is not True or "devices" not in _snapshot(snapshot):
+            return normalized
+
+        upstream = validate_fhrp_configured_group_baseline(
+            _owner_value(snapshot, "fhrp_configured_group_baseline"))
+        upstream = _reconcile_baseline_coverage_roster(
+            upstream,
+            snapshot,
+            family="fhrp_redundancy_domain",
+        )
+        if upstream.get("valid") is not True:
+            if upstream.get("subject_roster_failure") is True:
+                return _invalidate_subject_roster(
+                    normalized,
+                    "fhrp_redundancy_domain configured-group source roster does not "
+                    "reconcile to snapshot devices",
+                )
+            return _invalidate_owner_evidence(
+                normalized,
+                "fhrp_redundancy_domain requires its co-published configured-group source",
+            )
+
+        upstream_baseline = upstream.get("baseline")
+        upstream_summary = (
+            upstream_baseline.get("summary")
+            if isinstance(upstream_baseline, Mapping) else None
+        )
+        expected_digest = (
+            upstream_summary.get("baseline_sha256")
+            if isinstance(upstream_summary, Mapping) else None
+        )
+        if not isinstance(source, Mapping) or source.get(
+                "configured_baseline_sha256") != expected_digest:
+            return _invalidate_subject_roster(
+                normalized,
+                "fhrp_redundancy_domain source receipt does not reconcile to the "
+                "co-published configured-group baseline",
+            )
+
+        coverage = upstream_baseline.get("coverage") \
+            if isinstance(upstream_baseline, Mapping) else None
+        coverage_hosts = [
+            cell.get("switch") if isinstance(cell, Mapping) else None
+            for cell in coverage
+        ] if isinstance(coverage, list) else None
+        subject_hosts = [
+            row.get("switch") if isinstance(row, Mapping) else None
+            for row in normalized.get("rows", [])
+        ]
+        return reconcile_native_owner_subject_roster(
+            normalized,
+            snapshot,
+            family="fhrp_redundancy_domain",
+            coverage_hosts=coverage_hosts,
+            subject_hosts=subject_hosts,
+        )
+
+    before_view, after_view = _pair_views(
+        domain_view(before),
+        domain_view(after),
+        before,
+        after,
+        comparison_source_binding,
+    )
     changes = _invalid_owner_changes("fhrp_redundancy_domain", before_view, after_view)
     if not changes:
         old_domains = before_view.get("domain_index", {})
@@ -1063,6 +1732,7 @@ __all__ = [
     "VTP_SAFETY_DELTA_SCHEMA",
     "FHRP_CONFIGURED_GROUP_DELTA_SCHEMA",
     "FHRP_REDUNDANCY_DOMAIN_DELTA_SCHEMA",
+    "reconcile_native_owner_subject_roster",
     "compute_ipv6_routing_adjacency_delta",
     "compute_bgp_configured_peer_delta",
     "compute_stp_consistency_delta",

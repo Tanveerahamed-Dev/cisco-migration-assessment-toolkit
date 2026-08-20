@@ -116,6 +116,8 @@ PARSER_CONTRACTS = {
     "show spanning-tree blockedports": ("parse_spanning_tree_blockedports",),
     "show spanning-tree inconsistentports": ("parse_spanning_tree_blockedports",),
     "show vpc": ("parse_vpc",),
+    "show vpc role": ("parse_vpc_role",),
+    "show lacp neighbor": ("parse_nxos_lacp_neighbors",),
     "show standby all": ("parse_hsrp_detail",),
     "show standby": ("parse_hsrp_detail",),
     "show standby brief": ("parse_hsrp_summary",),
@@ -139,6 +141,8 @@ PARSER_CONTRACTS = {
     "show failover": ("parse_asa_failover",),
     "show resource usage": ("parse_asa_resource_usage",),
     "show mlag": ("parse_arista_mlag",),
+    "show mlag interfaces detail": ("parse_arista_mlag_interfaces",),
+    "show lacp peer": ("parse_arista_lacp_peer",),
     "show bgp evpn summary": ("parse_arista_bgp_evpn_summary",),
     "show chassis cluster status": ("parse_junos_chassis_cluster",),
     # multicast & timing
@@ -226,11 +230,13 @@ _DICT_PARSERS = (
     "parse_show_mac_address_table", "parse_show_power_inline", "parse_show_version", "parse_show_vrf_interface",
     "parse_spanning_tree_blockedports", "parse_spanning_tree_detail", "parse_spanning_tree_root",
     "parse_spanning_tree_states", "parse_system_resources", "parse_vlan_brief", "parse_vpc",
+    "parse_vpc_role",
     "parse_vrrp_summary",
 )
 _LIST_PARSERS = (
     "parse_aci_bds", "parse_aci_epgs", "parse_aci_fabric_nodes", "parse_aci_faults", "parse_aci_tenants",
-    "parse_aci_vrfs", "parse_acl_hitcounts", "parse_arista_bgp_evpn_summary", "parse_asa_resource_usage",
+    "parse_aci_vrfs", "parse_acl_hitcounts", "parse_arista_bgp_evpn_summary",
+    "parse_arista_lacp_peer", "parse_arista_mlag_interfaces", "parse_asa_resource_usage",
     "parse_aws_security_groups",   # annotation-less (list-or-None), guarded by an isinstance at its call site
     "parse_bfd_neighbors", "parse_bgp_ipv6_summary",
     # the neighbour parsers return List[Dict[...]] (a LIST of dicts, not a dict) -- their call sites `or []`:
@@ -240,7 +246,7 @@ _LIST_PARSERS = (
     "parse_fmc_ha_pairs", "parse_igmp_groups", "parse_igmp_snooping_querier", "parse_ipv6_dhcp_guard_policy",
     "parse_ipv6_interface_addrs", "parse_ipv6_raguard_policy", "parse_ise_nodes", "parse_junos_chassis_cluster",
     "parse_lisp_sessions", "parse_mpls_l2vpn_vc", "parse_mpls_ldp_neighbors", "parse_mroute_entries",
-    "parse_nve_peers", "parse_nve_vni", "parse_ospfv3_neighbors", "parse_pim_neighbors",
+    "parse_nve_peers", "parse_nve_vni", "parse_nxos_lacp_neighbors", "parse_ospfv3_neighbors", "parse_pim_neighbors",
     "parse_policymap_drops", "parse_redistribution", "parse_sdwan_control_connections", "parse_sdwan_devices",
     "parse_sdwan_omp_counters", "parse_storm_control", "parse_syslog_events",
 )

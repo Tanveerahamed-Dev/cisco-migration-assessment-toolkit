@@ -153,6 +153,56 @@ function canonicalComparison(verdict: "PASS" | "FAIL" = "PASS"): CompareResponse
   };
 }
 
+function executionProtocolFamilyChanges(): NonNullable<CompareResponse["protocol_families"]> {
+  const supportProfile = {
+    schema: "protocol_support_profile/1" as const,
+    family: "ipv4_routing_adjacency",
+    owner_schema: "protocol_adjacency_delta/1",
+    implementation_state: "implemented" as const,
+    assurance_level: "observed_state_preservation" as const,
+    evidence_contracts: ["protocol_assessability/1"],
+    runtime_support_claim: "receipt_required_per_device_family_cell",
+    scope: { address_family: "IPv4" },
+    limitations: ["Observed-state preservation only."],
+  };
+  const changes = [{
+    family: "ipv4_routing_adjacency", subject: "DIST-EXPECTED|BGP|10.0.0.2",
+    transition: "regressed" as const, expected: true,
+    decision_effect: "block" as const, before_state: "Established", after_state: "Idle",
+    note: "Expected intent cannot neutralize this producer-owned block.",
+  }, {
+    family: "ipv4_routing_adjacency", subject: "DIST-UNEXPECTED|OSPF|10.0.0.3",
+    transition: "regressed" as const, expected: false,
+    decision_effect: "block" as const, before_state: "FULL", after_state: "EXSTART",
+    note: "Unexpected adjacency regression.",
+  }, {
+    family: "ipv4_routing_adjacency", subject: "DIST-COVERAGE|BGP|*",
+    transition: "coverage_lost" as const, expected: false,
+    decision_effect: "not_verified" as const, before_state: "observed", after_state: "",
+    note: "Post-change capture was lost.",
+  }];
+  const summary = {
+    n_subject_changes: 3, n_implicit_unchanged_healthy: 0,
+    n_expected: 1, n_unexpected: 1, n_coverage_lost: 1,
+    n_blocking: 2, n_review: 0, n_not_verified: 1,
+    by_transition: {
+      unchanged_healthy: 0, unchanged_degraded: 0, recovered: 0, regressed: 2,
+      appeared: 0, disappeared: 0, intent_changed: 0, coverage_lost: 1, not_comparable: 0,
+    },
+    by_decision_effect: { block: 2, review: 0, none: 0, not_verified: 1 },
+  };
+  return {
+    schema: "protocol_family_change_set/1", owner: "reference_only_composition",
+    owns_score: false, owns_verdict: false,
+    summary: { n_families: 1, ...summary },
+    families: [{
+      family: "ipv4_routing_adjacency", owner_schema: "protocol_adjacency_delta/1",
+      assurance_level: "observed_state_preservation", support_profile: supportProfile,
+      summary, changes, source_receipt: { schema: "protocol_adjacency_delta/1" },
+    }],
+  };
+}
+
 function executionWithComparison(verdict: "PASS" | "FAIL" = "PASS"): ExecutionState {
   const comparison = canonicalComparison(verdict);
   const cutoverGate = comparison.cutover_gate!;
@@ -424,6 +474,8 @@ describe("ExecutionPage · immutable post-change comparison", () => {
       created_at: "2026-01-01T00:00:00Z",
       snapshots: [
         snapMeta,
+        { ...snapMeta, id: 6, label: "Older capture", uploaded_at: "2026-01-01T11:30:00Z" },
+        { ...snapMeta, id: 9, label: "Pre-run upload", uploaded_at: "2026-01-01T09:59:59Z" },
         { ...snapMeta, id: 8, label: "Post-change", uploaded_at: "2026-01-01T11:00:00Z" },
       ],
     };
@@ -445,6 +497,8 @@ describe("ExecutionPage · immutable post-change comparison", () => {
     expect(await screen.findByTestId("execution-canonical-gate-missing")).toHaveTextContent("NOT VERIFIED");
     const after = await screen.findByLabelText("After snapshot");
     expect(await within(after).findByRole("option", { name: /Post-change · snapshot 8/ })).toBeInTheDocument();
+    expect(within(after).queryByRole("option", { name: /Older capture/ })).not.toBeInTheDocument();
+    expect(within(after).queryByRole("option", { name: /Pre-run upload/ })).not.toBeInTheDocument();
     fireEvent.change(after, { target: { value: "8" } });
     fireEvent.click(screen.getByRole("button", { name: "Bind and compare" }));
 
@@ -453,6 +507,28 @@ describe("ExecutionPage · immutable post-change comparison", () => {
     expect(screen.getByTestId("canonical-cutover-operator-note")).toHaveTextContent("Server-owned execution evidence");
     expect(screen.queryByTestId("execution-canonical-gate-missing")).not.toBeInTheDocument();
     expect(screen.getByTestId("execution-compare-form")).toHaveTextContent("1 immutable comparison receipt");
+  });
+
+  it("renders expected, unexpected, and coverage evidence in order without weakening an expected block", async () => {
+    const state = executionWithComparison("FAIL");
+    state.comparison_receipts![0].receipt.comparison.protocol_families = executionProtocolFamilyChanges();
+    vi.spyOn(api, "getExecution").mockResolvedValue(state);
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(snapMeta);
+    vi.spyOn(api, "getCampaign").mockResolvedValue(campaignWithAfterSnapshot());
+    renderExec();
+
+    const canonical = await screen.findByTestId("canonical-cutover-decision");
+    const expected = screen.getByTestId("family-change-expected-section");
+    const unexpected = screen.getByTestId("family-change-unexpected-section");
+    const coverage = screen.getByTestId("family-change-coverage-section");
+    expect(canonical.compareDocumentPosition(expected) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(expected.compareDocumentPosition(unexpected) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(unexpected.compareDocumentPosition(coverage) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(expected).getByTestId("family-change-expected-row-expectation")).toHaveTextContent("EXPECTED");
+    const effect = within(expected).getByTestId("family-change-expected-row-effect");
+    expect(effect).toHaveTextContent("BLOCK");
+    expect(effect.style.color).toBe("var(--crit)");
+    expect(screen.getByTestId("canonical-cutover-verdict")).toHaveTextContent("FAIL");
   });
 
   it("freezes optional expected-family intent into the execution comparison request", async () => {

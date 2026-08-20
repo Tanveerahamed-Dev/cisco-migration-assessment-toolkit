@@ -18,7 +18,7 @@ library is a warning + skip, never a crash. Every snapshot read is defensive. De
 import logging
 from datetime import datetime
 
-from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_inputs_required, add_table, add_toc
+from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_inputs_required, add_protocol_assurance_receipt, add_table, add_toc
 from cisco_toolkit.docmeta import as_dict as _as_dict, as_list as _as_list
 from cisco_toolkit.textutils import _as_num, xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5) + fail-soft numeric coercion
 
@@ -438,7 +438,12 @@ def _write_bluf(doc, waves, readiness_by_group, seq_by_group, scen_by_group, val
         )
 
 
-def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
+def write_mop_docx(
+        output_path: str,
+        snap_dict: dict,
+        label: str,
+        *,
+        protocol_assurance_bundle=None) -> None:
     """Emit the per-wave Method of Procedure (.docx) to `output_path`. Fail-soft: a missing python-docx
     is a warning + skip, and every snapshot read is defensive so malformed input degrades to placeholders.
     A genuine render error still propagates to the caller — the CLI phase wrapper logs-and-continues,
@@ -634,6 +639,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
     doc.add_paragraph(
         "Complete these once, before the first wave. They are the fleet-wide gating items the assessment "
         "flagged; cutting over before they are resolved or risk-accepted carries the documented risk.")
+    add_protocol_assurance_receipt(doc, protocol_assurance_bundle)
     # element-coerced: unlike a table cell (add_table str()s every value), add_paragraph() takes the raw
     # element and char-iterates it -- a scalar gating item raised TypeError mid-document.
     gating = _as_strs(_as_dict(snap.get("executive_brief")).get("top_gating"))

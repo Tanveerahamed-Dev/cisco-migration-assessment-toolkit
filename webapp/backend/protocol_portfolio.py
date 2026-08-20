@@ -22,8 +22,13 @@ from cisco_toolkit.bgp_intent import validate_bgp_configured_peer_baseline
 from cisco_toolkit.fhrp_intent import validate_fhrp_configured_group_baseline
 from cisco_toolkit.fhrp_redundancy import validate_fhrp_redundancy_domain_baseline
 from cisco_toolkit.ipv6_routing import validate_ipv6_routing_adjacency_baseline
-from cisco_toolkit.multichassis_lag import validate_multichassis_lag_domain_baseline
-from cisco_toolkit.protocol_assurance import canonical_sha256, protocol_support_profiles
+from cisco_toolkit.multichassis_lag import validate_multichassis_lag_snapshot_evidence
+from cisco_toolkit.protocol_deltas import reconcile_native_owner_subject_roster
+from cisco_toolkit.protocol_assurance import (
+    bound_snapshot_source,
+    canonical_sha256,
+    protocol_support_profiles,
+)
 from cisco_toolkit.vtp_safety import validate_vtp_safety_baseline
 
 
@@ -247,6 +252,24 @@ def _validated_baseline_view(
     rows = validated.get(row_key)
     if not isinstance(rows, list):
         rows = baseline.get(row_key)
+    coverage = baseline.get("coverage")
+    validated = reconcile_native_owner_subject_roster(
+        validated,
+        snapshot,
+        family=family,
+        coverage_hosts=[
+            cell.get("switch") if isinstance(cell, Mapping) else None
+            for cell in coverage
+        ] if isinstance(coverage, list) else None,
+        subject_hosts=[
+            row.get("switch") if isinstance(row, Mapping) else None
+            for row in rows
+        ] if isinstance(rows, list) else None,
+    )
+    baseline = _mapping(validated.get("baseline"))
+    rows = validated.get(row_key)
+    if not isinstance(rows, list):
+        rows = baseline.get(row_key)
     subjects = _row_subjects(
         family,
         _rows(rows),
@@ -277,8 +300,32 @@ def _routing_view(snapshot: Mapping[str, Any]) -> dict:
         )
     except (Exception, MemoryError):
         baseline, valid = {}, False
+    receipt = _mapping(_mapping(baseline).get("receipt"))
+    receipt_rows = _mapping(snapshot.get("protocol_assessability")).get("rows")
+    owner_view = reconcile_native_owner_subject_roster(
+        {
+            "valid": valid,
+            "reason": (
+                "routing adjacency owner sources are missing or malformed"
+                if not valid else ""
+            ),
+            "baseline": baseline,
+            "rows": _rows(_mapping(baseline).get("rows")),
+        },
+        snapshot,
+        family=family,
+        coverage_hosts=[
+            row.get("switch") if isinstance(row, Mapping) else None
+            for row in receipt_rows
+        ] if receipt.get("valid") is True and isinstance(receipt_rows, list) else None,
+        subject_hosts=[
+            row.get("switch") if isinstance(row, Mapping) else None
+            for row in _rows(_mapping(baseline).get("rows"))
+        ],
+    )
+    baseline = _mapping(owner_view.get("baseline"))
     subjects: List[dict] = []
-    if valid:
+    if owner_view.get("valid") is True:
         for host_row in baseline["rows"]:
             if not isinstance(host_row, dict):
                 continue
@@ -299,9 +346,9 @@ def _routing_view(snapshot: Mapping[str, Any]) -> dict:
                     ))
     subjects.sort(key=lambda item: (item["subject"].casefold(), item["subject"]))
     return _view(
-        valid=valid,
+        valid=owner_view.get("valid") is True,
         present=present,
-        reason="routing adjacency owner sources are missing or malformed" if not valid else "",
+        reason=_text(owner_view.get("reason")),
         baseline=baseline,
         subjects=subjects,
     )
@@ -335,6 +382,30 @@ def _stp_consistency_view(snapshot: Mapping[str, Any]) -> dict:
         )
     except (Exception, MemoryError):
         baseline, valid = {}, False
+    receipt = _mapping(_mapping(baseline).get("receipt"))
+    receipt_rows = _mapping(snapshot.get("protocol_assessability")).get("rows")
+    owner_view = reconcile_native_owner_subject_roster(
+        {
+            "valid": valid,
+            "reason": (
+                "STP consistency owner sources are missing, malformed, or do not reconcile"
+                if not valid else ""
+            ),
+            "baseline": baseline,
+            "rows": _rows(_mapping(baseline).get("rows")),
+        },
+        snapshot,
+        family=family,
+        coverage_hosts=[
+            row.get("switch") if isinstance(row, Mapping) else None
+            for row in receipt_rows
+        ] if receipt.get("valid") is True and isinstance(receipt_rows, list) else None,
+        subject_hosts=[
+            row.get("switch") if isinstance(row, Mapping) else None
+            for row in _rows(_mapping(baseline).get("rows"))
+        ],
+    )
+    baseline = _mapping(owner_view.get("baseline"))
     subjects = _row_subjects(
         family,
         _rows(_mapping(baseline).get("rows")),
@@ -342,9 +413,9 @@ def _stp_consistency_view(snapshot: Mapping[str, Any]) -> dict:
         lambda row: _text(row.get("switch")),
     )
     return _view(
-        valid=valid,
+        valid=owner_view.get("valid") is True,
         present=present,
-        reason="STP consistency owner sources are missing, malformed, or do not reconcile" if not valid else "",
+        reason=_text(owner_view.get("reason")),
         baseline=baseline,
         subjects=subjects,
     )
@@ -357,6 +428,7 @@ def _stp_topology_view(snapshot: Mapping[str, Any]) -> dict:
     present = "stp_roots" in snapshot or "interfaces" in snapshot
     valid = isinstance(roots, dict) and isinstance(interfaces, dict)
     subjects: List[dict] = []
+    subject_hosts: List[str] = []
     malformed = False
     if valid:
         for host_value, instances in roots.items():
@@ -378,6 +450,7 @@ def _stp_topology_view(snapshot: Mapping[str, Any]) -> dict:
                     kind="root",
                     row={**row, "switch": host},
                 ))
+                subject_hosts.append(host)
         for host_value, rows in interfaces.items():
             host = _text(host_value)
             if not host or not isinstance(rows, dict):
@@ -401,6 +474,7 @@ def _stp_topology_view(snapshot: Mapping[str, Any]) -> dict:
                         kind="path",
                         row={"switch": host, "interface": interface},
                     ))
+                    subject_hosts.append(host)
                     continue
                 subjects.append(_subject(
                     family,
@@ -410,15 +484,34 @@ def _stp_topology_view(snapshot: Mapping[str, Any]) -> dict:
                     kind="path",
                     row={"switch": host, "interface": interface},
                 ))
+                subject_hosts.append(host)
     subjects.sort(key=lambda item: (item["subject"].casefold(), item["subject"]))
     baseline = {
         "projection_custody": "persisted_snapshot_projection",
         "summary": {"by_status": dict(Counter(row["evidence_state"] for row in subjects))},
     }
+    owner_view = reconcile_native_owner_subject_roster(
+        {
+            "valid": valid and not malformed,
+            "reason": (
+                "STP root or interface projection is missing or malformed"
+                if not (valid and not malformed) else ""
+            ),
+            "baseline": baseline,
+            "rows": [],
+        },
+        snapshot,
+        family=family,
+        coverage_hosts=list(interfaces) if isinstance(interfaces, dict) else None,
+        subject_hosts=subject_hosts,
+    )
+    if owner_view.get("valid") is not True:
+        baseline = {}
+        subjects = []
     return _view(
-        valid=valid and not malformed,
+        valid=owner_view.get("valid") is True,
         present=present,
-        reason="STP root or interface projection is missing or malformed" if not (valid and not malformed) else "",
+        reason=_text(owner_view.get("reason")),
         baseline=baseline,
         subjects=subjects if valid else [],
         # The current owner explicitly withholds complete roles and topology-change counters.
@@ -438,6 +531,33 @@ def _etherchannel_view(snapshot: Mapping[str, Any]) -> dict:
         )
     except (Exception, MemoryError):
         validated = {"present": value is not None, "valid": False, "reason": "EtherChannel validation failed"}
+    source_projection = snapshot.get("etherchannel_projection")
+    projection_rows = _mapping(source_projection).get("rows")
+    receipt_rows = _mapping(snapshot.get("protocol_assessability")).get("rows")
+    subject_hosts = [
+        row.get("switch") if isinstance(row, Mapping) else None
+        for row in _rows(validated.get("rows"))
+    ]
+    validated = reconcile_native_owner_subject_roster(
+        validated,
+        snapshot,
+        family="etherchannel projection",
+        coverage_hosts=[
+            row.get("switch") if isinstance(row, Mapping) else None
+            for row in projection_rows
+        ] if isinstance(projection_rows, list) else None,
+        subject_hosts=subject_hosts,
+    )
+    validated = reconcile_native_owner_subject_roster(
+        validated,
+        snapshot,
+        family="etherchannel receipt",
+        coverage_hosts=[
+            row.get("switch") if isinstance(row, Mapping) else None
+            for row in receipt_rows
+        ] if isinstance(receipt_rows, list) else None,
+        subject_hosts=subject_hosts,
+    )
     subjects: List[dict] = []
     for host_row in _rows(validated.get("rows")):
         if not isinstance(host_row, dict):
@@ -456,7 +576,7 @@ def _etherchannel_view(snapshot: Mapping[str, Any]) -> dict:
                     kind="local_group",
                     row={**group, "switch": host},
                 ))
-    baseline = value if isinstance(value, dict) else {}
+    baseline = value if validated.get("valid") is True and isinstance(value, dict) else {}
     subjects.sort(key=lambda item: (item["subject"].casefold(), item["subject"]))
     return _view(
         valid=validated.get("valid") is True,
@@ -471,9 +591,17 @@ def _multichassis_view(snapshot: Mapping[str, Any]) -> dict:
     family, contract = "multichassis_lag", "multichassis_lag_domain_baseline/1"
     value = snapshot.get("multichassis_lag_domain_baseline")
     try:
-        validated = validate_multichassis_lag_domain_baseline(value)
+        validated = validate_multichassis_lag_snapshot_evidence(
+            value,
+            snapshot.get("multichassis_lag_typed_observations"),
+            snapshot.get("devices"),
+        )
     except (Exception, MemoryError):
-        validated = {"present": value is not None, "valid": False, "reason": "multichassis baseline validation failed"}
+        validated = {
+            "valid": False,
+            "reason": "multichassis snapshot evidence reconciliation failed",
+            "baseline": {},
+        }
     baseline = _mapping(validated.get("baseline"))
     subjects: List[dict] = []
     for key in (
@@ -497,7 +625,7 @@ def _multichassis_view(snapshot: Mapping[str, Any]) -> dict:
                     row=record,
                 ))
     subjects.sort(key=lambda item: (item["subject"].casefold(), item["subject"]))
-    present = validated.get("present") is True or "multichassis_lag_typed_observations" in snapshot
+    present = value is not None or "multichassis_lag_typed_observations" in snapshot
     reason = _text(validated.get("reason"))
     if value is None and "multichassis_lag_typed_observations" in snapshot:
         reason = "Typed observations are present, but the producer-owned domain baseline is absent"
@@ -505,6 +633,104 @@ def _multichassis_view(snapshot: Mapping[str, Any]) -> dict:
         valid=validated.get("valid") is True,
         present=present,
         reason=reason,
+        baseline=baseline,
+        subjects=subjects,
+    )
+
+
+def _fhrp_domain_view(snapshot: Mapping[str, Any]) -> dict:
+    """Project exact FHRP domains only when their configured-group roster still binds."""
+    family, contract = "fhrp_redundancy_domain", "fhrp_redundancy_domain_baseline/1"
+    value = snapshot.get("fhrp_redundancy_domain_baseline")
+    try:
+        validated = dict(validate_fhrp_redundancy_domain_baseline(value))
+    except (Exception, MemoryError):
+        validated = {
+            "present": value is not None,
+            "valid": False,
+            "reason": "FHRP redundancy-domain validation failed",
+            "baseline": {},
+            "rows": [],
+            "domains": [],
+        }
+
+    if validated.get("valid") is True:
+        source = _mapping(_mapping(validated.get("baseline")).get("source_receipt"))
+        configured_value = snapshot.get("fhrp_configured_group_baseline")
+        try:
+            configured = dict(validate_fhrp_configured_group_baseline(configured_value))
+        except (Exception, MemoryError):
+            configured = {"valid": False, "reason": "configured-group validation failed"}
+        configured_baseline = _mapping(configured.get("baseline"))
+        coverage = configured_baseline.get("coverage")
+        configured_rows = configured.get("rows")
+        configured = reconcile_native_owner_subject_roster(
+            configured,
+            snapshot,
+            family=family,
+            coverage_hosts=[
+                cell.get("switch") if isinstance(cell, Mapping) else None
+                for cell in coverage
+            ] if isinstance(coverage, list) else None,
+            subject_hosts=[
+                row.get("switch") if isinstance(row, Mapping) else None
+                for row in configured_rows
+            ] if isinstance(configured_rows, list) else None,
+        )
+        configured_baseline = _mapping(configured.get("baseline"))
+        configured_summary = _mapping(configured_baseline.get("summary"))
+        expected_digest = configured_summary.get("baseline_sha256")
+        if configured.get("valid") is not True:
+            validated = {
+                **validated,
+                "valid": False,
+                "reason": (
+                    "fhrp_redundancy_domain configured-group source roster does not "
+                    "reconcile to snapshot devices"
+                ),
+                "baseline": {},
+                "rows": [],
+                "domains": [],
+            }
+        elif source.get("configured_baseline_sha256") != expected_digest:
+            validated = {
+                **validated,
+                "valid": False,
+                "reason": (
+                    "fhrp_redundancy_domain source receipt does not reconcile to the "
+                    "co-published configured-group baseline"
+                ),
+                "baseline": {},
+                "rows": [],
+                "domains": [],
+            }
+        else:
+            domain_rows = validated.get("rows")
+            validated = reconcile_native_owner_subject_roster(
+                validated,
+                snapshot,
+                family=family,
+                coverage_hosts=[
+                    cell.get("switch") if isinstance(cell, Mapping) else None
+                    for cell in coverage
+                ] if isinstance(coverage, list) else None,
+                subject_hosts=[
+                    row.get("switch") if isinstance(row, Mapping) else None
+                    for row in domain_rows
+                ] if isinstance(domain_rows, list) else None,
+            )
+
+    baseline = _mapping(validated.get("baseline"))
+    subjects = _row_subjects(
+        family,
+        _rows(validated.get("domains")),
+        contract,
+        lambda row: _text(row.get("domain_key")),
+    )
+    return _view(
+        valid=validated.get("valid") is True,
+        present=validated.get("present") is True,
+        reason=_text(validated.get("reason")),
         baseline=baseline,
         subjects=subjects,
     )
@@ -561,15 +787,7 @@ def _family_view(snapshot: Mapping[str, Any], family: str) -> dict:
             )),
         )
     if family == "fhrp_redundancy_domain":
-        return _validated_baseline_view(
-            snapshot,
-            family=family,
-            key="fhrp_redundancy_domain_baseline",
-            contract="fhrp_redundancy_domain_baseline/1",
-            validate=validate_fhrp_redundancy_domain_baseline,
-            identity=lambda row: _text(row.get("domain_key")),
-            row_key="domains",
-        )
+        return _fhrp_domain_view(snapshot)
     if family == "multichassis_lag":
         return _multichassis_view(snapshot)
     return _view(
@@ -588,6 +806,9 @@ def supported_family_count() -> int:
 
 def _binding_failures(snapshot: Mapping[str, Any], binding: Mapping[str, Any]) -> List[str]:
     failures: List[str] = []
+    source_marker = bound_snapshot_source(snapshot)
+    if source_marker.get("source_bound") is not True:
+        failures.append("exact persisted snapshot byte authority is unavailable")
     if binding.get("source") != PERSISTED_SOURCE:
         failures.append("persisted snapshot source owner is missing or unsupported")
     digest = binding.get("sha256")
@@ -596,6 +817,10 @@ def _binding_failures(snapshot: Mapping[str, Any], binding: Mapping[str, Any]) -
     byte_count = binding.get("bytes")
     if not isinstance(byte_count, int) or isinstance(byte_count, bool) or byte_count <= 0:
         failures.append("persisted snapshot byte count is missing or malformed")
+    if source_marker.get("source_bound") is True and (
+            digest != source_marker.get("sha256")
+            or byte_count != source_marker.get("bytes")):
+        failures.append("persisted snapshot binding does not match exact parsed source bytes")
     for field in ("snapshot_id", "campaign_id"):
         value = binding.get(field)
         if not isinstance(value, int) or isinstance(value, bool):

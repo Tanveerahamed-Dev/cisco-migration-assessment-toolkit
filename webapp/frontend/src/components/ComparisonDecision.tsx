@@ -24,6 +24,34 @@ const ADMISSION_COLOR: Record<ProtocolComparisonStatus, string> = {
   not_comparable: "var(--crit)",
 };
 
+const DECISION_EFFECT_COLOR: Record<ProtocolFamilyChange["decision_effect"], string> = {
+  block: "var(--crit)",
+  review: "var(--watch)",
+  none: "var(--accent)",
+  not_verified: "var(--text-faint)",
+};
+
+const L2_REHEARSAL_COLOR: Record<string, string> = {
+  simulation_only: "var(--accent)",
+  projected_risk: "var(--watch)",
+  current_fault: "var(--crit)",
+  not_verified: "var(--text-faint)",
+};
+
+const UNEXPECTED_TRANSITIONS = new Set<ProtocolFamilyChange["transition"]>([
+  "unchanged_degraded",
+  "regressed",
+  "appeared",
+  "disappeared",
+  "intent_changed",
+]);
+
+function isCoverageLossOrNotVerified(row: ProtocolFamilyChange) {
+  return row.decision_effect === "not_verified"
+    || row.transition === "coverage_lost"
+    || row.transition === "not_comparable";
+}
+
 function safeFilename(value: string) {
   const stem = value.trim().replace(/[^a-z0-9._-]+/gi, "-").replace(/^-+|-+$/g, "");
   return stem || "atlas-comparison-receipt.json";
@@ -83,8 +111,14 @@ function ChangeRows({ rows, testId, total = rows.length }: {
           style={{ borderTop: index ? "1px solid var(--border-faint)" : undefined, padding: "6px 0" }}>
           <div className="row-flex" style={{ gap: 6, flexWrap: "wrap", alignItems: "baseline" }}>
             <span className="chip mono">{row.family}</span>
+            {row.subject_kind && (
+              <span className="chip" data-testid={`${testId}-subject-kind`}>
+                {row.subject_kind.replaceAll("_", " ").toUpperCase()}
+              </span>
+            )}
             <span className="chip">{row.transition.replaceAll("_", " ").toUpperCase()}</span>
-            <span className="chip" data-testid={`${testId}-effect`}>
+            <span className="chip" data-testid={`${testId}-effect`}
+              style={{ color: DECISION_EFFECT_COLOR[row.decision_effect], borderColor: DECISION_EFFECT_COLOR[row.decision_effect] }}>
               {row.decision_effect.replaceAll("_", " ").toUpperCase()}
             </span>
             <span className="chip" data-testid={`${testId}-expectation`}>
@@ -190,6 +224,8 @@ function OperatorEvidence({ value }: { value: CompareResponse["operator_evidence
   const rehearsal = value?.rehearsal;
   const rollback = value?.rollback;
   const impactRows = (rehearsal?.impacts || []).slice(0, ROW_CAP);
+  const l2 = rehearsal?.l2_failure_rehearsal;
+  const l2Rows = (l2?.scenarios || []).slice(0, ROW_CAP);
   const rollbackRows = (rollback?.plans || []).slice(0, ROW_CAP);
   return (
     <>
@@ -198,7 +234,10 @@ function OperatorEvidence({ value }: { value: CompareResponse["operator_evidence
         <div className="spread" style={{ gap: 8 }}>
           <b style={{ fontSize: 12 }}>Failure rehearsal</b>
           <span className="chip" data-testid="comparison-rehearsal-status"
-            style={{ color: "var(--text-faint)", borderColor: "var(--text-faint)" }}>
+            style={{
+              color: L2_REHEARSAL_COLOR[rehearsal?.status || "not_verified"] || "var(--text-faint)",
+              borderColor: L2_REHEARSAL_COLOR[rehearsal?.status || "not_verified"] || "var(--text-faint)",
+            }}>
             {(rehearsal?.status || "not_verified").replaceAll("_", " ").toUpperCase()}
           </span>
         </div>
@@ -213,6 +252,45 @@ function OperatorEvidence({ value }: { value: CompareResponse["operator_evidence
           </div>
         ))}
         <CapDisclosure rendered={impactRows.length} total={rehearsal?.n_impacts_total || 0} />
+        {l2 && (
+          <div data-testid="comparison-l2-rehearsal"
+            style={{ borderTop: "1px solid var(--border-faint)", marginTop: 8, paddingTop: 8 }}>
+            <div className="spread" style={{ gap: 8 }}>
+              <b style={{ fontSize: 11.5 }}>L2 failure projections</b>
+              <span className="chip" data-testid="comparison-l2-rehearsal-status"
+                style={{
+                  color: L2_REHEARSAL_COLOR[l2.status] || "var(--text-faint)",
+                  borderColor: L2_REHEARSAL_COLOR[l2.status] || "var(--text-faint)",
+                }}>
+                {l2.status.replaceAll("_", " ").toUpperCase()}
+              </span>
+            </div>
+            <div className="faint" style={{ fontSize: 10.5, marginTop: 4 }}>
+              Exact-source bound: {l2.source_bound ? "yes" : "no"} · {l2.summary.n_current_faults} current fault(s) · {l2.summary.n_projected_risks} projected risk(s) · {l2.summary.n_not_verified} not verified
+            </div>
+            {l2Rows.map((row, index) => (
+              <div key={`${row.family}|${row.subject}|${index}`} data-testid="comparison-l2-rehearsal-row"
+                style={{ borderTop: "1px solid var(--border-faint)", marginTop: 6, paddingTop: 6, fontSize: 11 }}>
+                <div className="row-flex" style={{ gap: 6, flexWrap: "wrap", alignItems: "baseline" }}>
+                  <span className="chip mono">{row.family}</span>
+                  <b className="mono">{row.subject}</b>
+                  <span className="chip" data-testid="comparison-l2-rehearsal-disposition"
+                    style={{
+                      color: L2_REHEARSAL_COLOR[row.disposition] || "var(--text-faint)",
+                      borderColor: L2_REHEARSAL_COLOR[row.disposition] || "var(--text-faint)",
+                    }}>
+                    {row.disposition.replaceAll("_", " ").toUpperCase()}
+                  </span>
+                </div>
+                <div className="faint" style={{ marginTop: 2 }}>
+                  {row.failure_scenario.replaceAll("_", " ")} · {row.source_owner}
+                </div>
+                <div className="dim" style={{ marginTop: 2 }}>{row.note}</div>
+              </div>
+            ))}
+            <CapDisclosure rendered={l2Rows.length} total={l2.summary.n_scenarios} />
+          </div>
+        )}
       </section>
 
       <section aria-label="Rollback evidence" data-testid="comparison-rollback"
@@ -312,13 +390,17 @@ export default function ComparisonDecision({
     ? value.protocol_families
     : undefined;
   const rows = families?.families.flatMap((family) => family.changes) || [];
-  // Decision-effect buckets come directly from each native owner. Expected intent remains a row
-  // annotation: it can neutralize review only, and must never visually hide a producer-owned block
-  // or not-verified disposition. These display buckets do not feed a score or verdict.
-  const blocking = rows.filter((row) => row.decision_effect === "block");
-  const review = rows.filter((row) => row.decision_effect === "review");
-  const notVerified = rows.filter((row) => row.decision_effect === "not_verified");
-  const nonBlocking = rows.filter((row) => row.decision_effect === "none");
+  // These are presentation-only intent buckets. Coverage/not-comparable abstentions are kept out
+  // of the observed-change buckets, and every producer-owned decision_effect remains unchanged on
+  // its row. In particular, expected intent never hides a block and none of these buckets derives
+  // the overall verdict; cutover_gate/1 remains the sole decision owner above.
+  const coverageLossOrNotVerified = rows.filter(isCoverageLossOrNotVerified);
+  const expected = rows.filter((row) => row.expected && !isCoverageLossOrNotVerified(row));
+  const unexpected = rows.filter((row) => (
+    !row.expected
+    && !isCoverageLossOrNotVerified(row)
+    && UNEXPECTED_TRANSITIONS.has(row.transition)
+  ));
   const gateBackground = gate?.verdict === "PASS"
     ? "var(--ok-soft)"
     : gate?.verdict === "FAIL" || gate?.verdict === "REGRESSED"
@@ -385,14 +467,12 @@ export default function ComparisonDecision({
           </div>
         )}
         <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
-          <FamilyChangeSection title="Blocking changes" rows={blocking} tone="var(--crit)" testId="family-change-blocking"
-            total={families?.summary.n_blocking ?? blocking.length} />
-          <FamilyChangeSection title="Review changes" rows={review} tone="var(--watch)" testId="family-change-review"
-            total={families?.summary.n_review ?? review.length} />
-          <FamilyChangeSection title="Not verified / coverage loss" rows={notVerified} tone="var(--watch)" testId="family-change-not-verified"
-            total={families?.summary.n_not_verified ?? notVerified.length} />
-          <FamilyChangeSection title="Non-blocking changes" rows={nonBlocking} tone="var(--accent)" testId="family-change-none"
-            total={families?.summary.by_decision_effect?.none ?? nonBlocking.length} />
+          <FamilyChangeSection title="Expected changes" rows={expected} tone="var(--accent)" testId="family-change-expected"
+            total={expected.length} />
+          <FamilyChangeSection title="Unexpected changes" rows={unexpected} tone="var(--watch)" testId="family-change-unexpected"
+            total={unexpected.length} />
+          <FamilyChangeSection title="Coverage loss / not verified" rows={coverageLossOrNotVerified} tone="var(--text-faint)" testId="family-change-coverage"
+            total={coverageLossOrNotVerified.length} />
         </div>
         {families && families.families.length > 0 && (
           <div data-testid="protocol-assurance-portfolio" style={{ marginTop: 9 }}>

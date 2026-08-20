@@ -1,7 +1,7 @@
 {
   "schema": "collect_parse_snapshot/1",
   "script_version": "V3.23.0",
-  "generated_at": "2026-08-20T09:23:58.455252",
+  "generated_at": "2026-08-20T19:52:50.592592",
   "devices": {
     "core1": {
       "hostname": "core1",
@@ -3042,7 +3042,7 @@
       }
     }
   },
-  "collected_at": "2026-08-07T00:00:00",
+  "collected_at": "2026-08-07T00:00:00+03:00",
   "physical_health": [
     {
       "switch": "access1",
@@ -10854,9 +10854,8 @@
         "members": [
           {
             "svi_ip": "10.0.10.2/24",
-            "switch": "core1",
-            "interface": "Vlan10",
             "participation": "positive",
+            "role": "ACTIVE",
             "findings": [
               {
                 "kind": "not_verified",
@@ -10864,19 +10863,19 @@
                 "issue": "A local configured/runtime FHRP group could not be verified."
               }
             ],
-            "protocol": "HSRP",
-            "source_group_key": "HSRP:Vlan10:10",
+            "projection_custody": "embedded_unverified",
             "virtual_ip": "10.0.10.1",
             "local_status": "not_verified",
-            "group": "10",
-            "projection_custody": "embedded_unverified",
-            "role": "ACTIVE"
+            "switch": "core1",
+            "protocol": "HSRP",
+            "source_group_key": "HSRP:Vlan10:10",
+            "interface": "Vlan10",
+            "group": "10"
           },
           {
             "svi_ip": "10.0.10.3/24",
-            "switch": "core2",
-            "interface": "Vlan10",
             "participation": "positive",
+            "role": "STANDBY",
             "findings": [
               {
                 "kind": "not_verified",
@@ -10884,13 +10883,14 @@
                 "issue": "A local configured/runtime FHRP group could not be verified."
               }
             ],
-            "protocol": "HSRP",
-            "source_group_key": "HSRP:Vlan10:10",
+            "projection_custody": "embedded_unverified",
             "virtual_ip": "10.0.10.1",
             "local_status": "not_verified",
-            "group": "10",
-            "projection_custody": "embedded_unverified",
-            "role": "STANDBY"
+            "switch": "core2",
+            "protocol": "HSRP",
+            "source_group_key": "HSRP:Vlan10:10",
+            "interface": "Vlan10",
+            "group": "10"
           }
         ],
         "findings": [
@@ -10919,9 +10919,8 @@
         "members": [
           {
             "svi_ip": "10.0.20.2/24",
-            "switch": "core1",
-            "interface": "Vlan20",
             "participation": "positive",
+            "role": "STANDBY",
             "findings": [
               {
                 "kind": "not_verified",
@@ -10929,19 +10928,19 @@
                 "issue": "A local configured/runtime FHRP group could not be verified."
               }
             ],
-            "protocol": "HSRP",
-            "source_group_key": "HSRP:Vlan20:20",
+            "projection_custody": "embedded_unverified",
             "virtual_ip": "10.0.20.1",
             "local_status": "not_verified",
-            "group": "20",
-            "projection_custody": "embedded_unverified",
-            "role": "STANDBY"
+            "switch": "core1",
+            "protocol": "HSRP",
+            "source_group_key": "HSRP:Vlan20:20",
+            "interface": "Vlan20",
+            "group": "20"
           },
           {
             "svi_ip": "10.0.20.3/24",
-            "switch": "core2",
-            "interface": "Vlan20",
             "participation": "positive",
+            "role": "ACTIVE",
             "findings": [
               {
                 "kind": "not_verified",
@@ -10949,13 +10948,14 @@
                 "issue": "A local configured/runtime FHRP group could not be verified."
               }
             ],
-            "protocol": "HSRP",
-            "source_group_key": "HSRP:Vlan20:20",
+            "projection_custody": "embedded_unverified",
             "virtual_ip": "10.0.20.1",
             "local_status": "not_verified",
-            "group": "20",
-            "projection_custody": "embedded_unverified",
-            "role": "ACTIVE"
+            "switch": "core2",
+            "protocol": "HSRP",
+            "source_group_key": "HSRP:Vlan20:20",
+            "interface": "Vlan20",
+            "group": "20"
           }
         ],
         "findings": [
@@ -10984,9 +10984,8 @@
         "members": [
           {
             "svi_ip": "10.0.40.2/24",
-            "switch": "dist1",
-            "interface": "Vlan40",
             "participation": "positive",
+            "role": "ACTIVE",
             "findings": [
               {
                 "kind": "not_verified",
@@ -10994,19 +10993,19 @@
                 "issue": "A local configured/runtime FHRP group could not be verified."
               }
             ],
-            "protocol": "HSRP",
-            "source_group_key": "HSRP:Vlan40:40",
+            "projection_custody": "embedded_unverified",
             "virtual_ip": "10.0.40.1",
             "local_status": "not_verified",
-            "group": "40",
-            "projection_custody": "embedded_unverified",
-            "role": "ACTIVE"
+            "switch": "dist1",
+            "protocol": "HSRP",
+            "source_group_key": "HSRP:Vlan40:40",
+            "interface": "Vlan40",
+            "group": "40"
           },
           {
             "svi_ip": "10.0.40.3/24",
-            "switch": "dist2",
-            "interface": "Vlan40",
             "participation": "positive",
+            "role": "STANDBY",
             "findings": [
               {
                 "kind": "not_verified",
@@ -11014,13 +11013,14 @@
                 "issue": "A local configured/runtime FHRP group could not be verified."
               }
             ],
-            "protocol": "HSRP",
-            "source_group_key": "HSRP:Vlan40:40",
+            "projection_custody": "embedded_unverified",
             "virtual_ip": "10.0.40.1",
             "local_status": "not_verified",
-            "group": "40",
-            "projection_custody": "embedded_unverified",
-            "role": "STANDBY"
+            "switch": "dist2",
+            "protocol": "HSRP",
+            "source_group_key": "HSRP:Vlan40:40",
+            "interface": "Vlan40",
+            "group": "40"
           }
         ],
         "findings": [
@@ -11049,9 +11049,8 @@
         "members": [
           {
             "svi_ip": "10.0.41.2/24",
-            "switch": "dist1",
-            "interface": "Vlan41",
             "participation": "positive",
+            "role": "ACTIVE",
             "findings": [
               {
                 "kind": "not_verified",
@@ -11059,19 +11058,19 @@
                 "issue": "A local configured/runtime FHRP group could not be verified."
               }
             ],
-            "protocol": "HSRP",
-            "source_group_key": "HSRP:Vlan41:41",
+            "projection_custody": "embedded_unverified",
             "virtual_ip": "10.0.41.1",
             "local_status": "not_verified",
-            "group": "41",
-            "projection_custody": "embedded_unverified",
-            "role": "ACTIVE"
+            "switch": "dist1",
+            "protocol": "HSRP",
+            "source_group_key": "HSRP:Vlan41:41",
+            "interface": "Vlan41",
+            "group": "41"
           },
           {
             "svi_ip": "10.0.41.3/24",
-            "switch": "dist2",
-            "interface": "Vlan41",
             "participation": "positive",
+            "role": "STANDBY",
             "findings": [
               {
                 "kind": "not_verified",
@@ -11079,13 +11078,14 @@
                 "issue": "A local configured/runtime FHRP group could not be verified."
               }
             ],
-            "protocol": "HSRP",
-            "source_group_key": "HSRP:Vlan41:41",
+            "projection_custody": "embedded_unverified",
             "virtual_ip": "10.0.41.1",
             "local_status": "not_verified",
-            "group": "41",
-            "projection_custody": "embedded_unverified",
-            "role": "STANDBY"
+            "switch": "dist2",
+            "protocol": "HSRP",
+            "source_group_key": "HSRP:Vlan41:41",
+            "interface": "Vlan41",
+            "group": "41"
           }
         ],
         "findings": [
@@ -36707,6 +36707,348 @@
     }
   },
   "vpc": {},
+  "multichassis_lag_typed_observations": {
+    "observations": [
+      {
+        "switch": "core2",
+        "vendor": "arista",
+        "platform": "eos",
+        "collection_mode": "offline",
+        "local_identity": "",
+        "peer_identity": "",
+        "domain_id": "MLAG-DC1",
+        "domain_state": {
+          "state": "active",
+          "neg_status": "connected",
+          "config_sanity": "inconsistent",
+          "peer_link_status": "up",
+          "local_intf_status": "up"
+        },
+        "legs": [],
+        "source": {
+          "schema": "multichassis_lag_typed_source_receipt/1",
+          "capture_status": "incomplete",
+          "projection_custody": "current_run_source_bound",
+          "source_sha256": "sha256:75487fc19dfea1bf347d5aa2e645ab265ddeecc6468ddbcbda5ed1512166778a",
+          "owner_version": "raw-producer-1",
+          "commands": [
+            "show mlag"
+          ]
+        }
+      }
+    ]
+  },
+  "multichassis_lag_domain_baseline": {
+    "schema": "multichassis_lag_domain_baseline/1",
+    "owner_version": "1",
+    "family": "multichassis_lag",
+    "owns_score": false,
+    "owns_verdict": false,
+    "support_profile": {
+      "schema": "protocol_support_profile/1",
+      "family": "multichassis_lag",
+      "owner_schema": "multichassis_lag_delta/1",
+      "implementation_state": "implemented",
+      "assurance_level": "intent_reconciled_survival",
+      "evidence_contracts": [
+        "multichassis_lag_typed_source_receipt/1",
+        "multichassis_lag_subject_scope/1",
+        "multichassis_lag_domain_baseline/1"
+      ],
+      "scope": {
+        "pair_identity": "explicit_reciprocal_device_system_mac",
+        "attachment_identity": "both_local_legs_plus_matching_remote_lacp_system_and_aggregation_key",
+        "record_types": [
+          "local_observation",
+          "reciprocal_peer_pair",
+          "local_leg",
+          "reconciled_attachment"
+        ]
+      },
+      "variants": [
+        {
+          "vendor": "cisco",
+          "platform": "nxos",
+          "collection_modes": [
+            "live",
+            "offline"
+          ],
+          "raw_commands": [
+            "show vpc",
+            "show vpc role",
+            "show lacp neighbor"
+          ],
+          "maximum_assurance": "intent_reconciled_survival",
+          "required_typed_evidence": [
+            "vpc_domain_state",
+            "explicit_peer_identity",
+            "lacp_partner_identity"
+          ]
+        },
+        {
+          "vendor": "arista",
+          "platform": "eos",
+          "collection_modes": [
+            "offline"
+          ],
+          "raw_commands": [
+            "show mlag",
+            "show mlag interfaces detail",
+            "show lacp peer"
+          ],
+          "maximum_assurance": "local_safety_preservation",
+          "required_typed_evidence": [
+            "mlag_domain_state",
+            "explicit_peer_identity",
+            "lacp_partner_identity"
+          ]
+        }
+      ],
+      "runtime_support_claim": "process_local_exact_raw_byte_projection_required_per_local_observation",
+      "limitations": [
+        "Catalog presence and parser availability are not runtime support evidence.",
+        "Only process-local projections parsed from exact command/import bytes receive current-run source custody.",
+        "NX-OS is supported for live or offline raw evidence; EOS is supported only for offline raw evidence.",
+        "Standard EOS MLAG captures expose the shared MLAG system ID and peer address, not reciprocal peer-device identity; EOS pair and attachment claims therefore remain not verified.",
+        "No IOS, IOS-XE, Junos, VSS, StackWise Virtual, or other vendor/platform parity is inferred.",
+        "Domain ID, vPC/MLAG ID, same-MAC learning, and topology proximity never establish a peer pair or attachment.",
+        "Capacity, hashing, orphan behavior, dual-active exclusion, counters, and failure rehearsal remain outside this bounded owner."
+      ]
+    },
+    "subject_scope": {
+      "schema": "multichassis_lag_subject_scope/1",
+      "owner_version": "1",
+      "family": "multichassis_lag",
+      "owns_score": false,
+      "owns_verdict": false,
+      "support_profile": {
+        "schema": "protocol_support_profile/1",
+        "family": "multichassis_lag",
+        "owner_schema": "multichassis_lag_delta/1",
+        "implementation_state": "implemented",
+        "assurance_level": "intent_reconciled_survival",
+        "evidence_contracts": [
+          "multichassis_lag_typed_source_receipt/1",
+          "multichassis_lag_subject_scope/1",
+          "multichassis_lag_domain_baseline/1"
+        ],
+        "scope": {
+          "pair_identity": "explicit_reciprocal_device_system_mac",
+          "attachment_identity": "both_local_legs_plus_matching_remote_lacp_system_and_aggregation_key",
+          "record_types": [
+            "local_observation",
+            "reciprocal_peer_pair",
+            "local_leg",
+            "reconciled_attachment"
+          ]
+        },
+        "variants": [
+          {
+            "vendor": "cisco",
+            "platform": "nxos",
+            "collection_modes": [
+              "live",
+              "offline"
+            ],
+            "raw_commands": [
+              "show vpc",
+              "show vpc role",
+              "show lacp neighbor"
+            ],
+            "maximum_assurance": "intent_reconciled_survival",
+            "required_typed_evidence": [
+              "vpc_domain_state",
+              "explicit_peer_identity",
+              "lacp_partner_identity"
+            ]
+          },
+          {
+            "vendor": "arista",
+            "platform": "eos",
+            "collection_modes": [
+              "offline"
+            ],
+            "raw_commands": [
+              "show mlag",
+              "show mlag interfaces detail",
+              "show lacp peer"
+            ],
+            "maximum_assurance": "local_safety_preservation",
+            "required_typed_evidence": [
+              "mlag_domain_state",
+              "explicit_peer_identity",
+              "lacp_partner_identity"
+            ]
+          }
+        ],
+        "runtime_support_claim": "process_local_exact_raw_byte_projection_required_per_local_observation",
+        "limitations": [
+          "Catalog presence and parser availability are not runtime support evidence.",
+          "Only process-local projections parsed from exact command/import bytes receive current-run source custody.",
+          "NX-OS is supported for live or offline raw evidence; EOS is supported only for offline raw evidence.",
+          "Standard EOS MLAG captures expose the shared MLAG system ID and peer address, not reciprocal peer-device identity; EOS pair and attachment claims therefore remain not verified.",
+          "No IOS, IOS-XE, Junos, VSS, StackWise Virtual, or other vendor/platform parity is inferred.",
+          "Domain ID, vPC/MLAG ID, same-MAC learning, and topology proximity never establish a peer pair or attachment.",
+          "Capacity, hashing, orphan behavior, dual-active exclusion, counters, and failure rehearsal remain outside this bounded owner."
+        ]
+      },
+      "rows": [
+        {
+          "subject_id": "local:6a6f04cfe574264b03ff24d1ca512b4b1bd7530e0816d1be6d641f5aca7f4fa6",
+          "switch": "core2",
+          "vendor": "arista",
+          "platform": "eos",
+          "collection_mode": "offline",
+          "local_identity_present": false,
+          "peer_identity_present": false,
+          "domain_id_present": true,
+          "local_leg_candidate_count": 0,
+          "status": "not_verified",
+          "assurance_level": "not_verified",
+          "source_custody": "current_run_source_bound",
+          "source_receipt": {
+            "schema": "multichassis_lag_typed_source_receipt/1",
+            "valid": true,
+            "source_bound": true,
+            "capture_status": "incomplete",
+            "projection_custody": "current_run_source_bound",
+            "source_sha256": "sha256:75487fc19dfea1bf347d5aa2e645ab265ddeecc6468ddbcbda5ed1512166778a",
+            "owner_version": "raw-producer-1",
+            "commands": [
+              "show mlag"
+            ],
+            "failures": []
+          },
+          "findings": [
+            {
+              "kind": "not_verified",
+              "code": "local_identity_missing",
+              "issue": "An explicit local device system identity was not observed."
+            },
+            {
+              "kind": "not_verified",
+              "code": "peer_identity_missing",
+              "issue": "An explicit peer device system identity was not observed."
+            },
+            {
+              "kind": "not_verified",
+              "code": "source_capture_incomplete",
+              "issue": "The exact raw-byte source set is incomplete for this declared variant."
+            }
+          ]
+        }
+      ],
+      "findings": [],
+      "summary": {
+        "n_local_subjects": 1,
+        "n_in_scope": 0,
+        "n_not_verified": 1,
+        "scope_sha256": "sha256:e290d69aaefacac19ea2a7cb476887205cf1f99e2f61a03a277304b8813570ed"
+      },
+      "limitations": [
+        "Catalog presence and parser availability are not runtime support evidence.",
+        "Only process-local projections parsed from exact command/import bytes receive current-run source custody.",
+        "NX-OS is supported for live or offline raw evidence; EOS is supported only for offline raw evidence.",
+        "Standard EOS MLAG captures expose the shared MLAG system ID and peer address, not reciprocal peer-device identity; EOS pair and attachment claims therefore remain not verified.",
+        "No IOS, IOS-XE, Junos, VSS, StackWise Virtual, or other vendor/platform parity is inferred.",
+        "Domain ID, vPC/MLAG ID, same-MAC learning, and topology proximity never establish a peer pair or attachment.",
+        "Capacity, hashing, orphan behavior, dual-active exclusion, counters, and failure rehearsal remain outside this bounded owner."
+      ]
+    },
+    "projection_custody": "current_run_source_bound",
+    "local_observations": [
+      {
+        "record_type": "local_observation",
+        "subject_id": "local:6a6f04cfe574264b03ff24d1ca512b4b1bd7530e0816d1be6d641f5aca7f4fa6",
+        "switch": "core2",
+        "vendor": "arista",
+        "platform": "eos",
+        "collection_mode": "offline",
+        "local_identity": "",
+        "peer_identity": "",
+        "domain_id": "MLAG-DC1",
+        "domain_state": {
+          "state": "active",
+          "neg_status": "connected",
+          "config_sanity": "inconsistent",
+          "peer_link_status": "up",
+          "local_intf_status": "up"
+        },
+        "reciprocal_pair_id": "",
+        "leg_count": 0,
+        "health_state": "degraded",
+        "assurance_level": "local_safety_preservation",
+        "source_custody": "current_run_source_bound",
+        "source_receipt": {
+          "schema": "multichassis_lag_typed_source_receipt/1",
+          "valid": true,
+          "source_bound": true,
+          "capture_status": "incomplete",
+          "projection_custody": "current_run_source_bound",
+          "source_sha256": "sha256:75487fc19dfea1bf347d5aa2e645ab265ddeecc6468ddbcbda5ed1512166778a",
+          "owner_version": "raw-producer-1",
+          "commands": [
+            "show mlag"
+          ],
+          "failures": []
+        },
+        "findings": [
+          {
+            "kind": "degraded",
+            "code": "config_sanity_degraded",
+            "issue": "Observed eos config sanity is a closed known-bad state."
+          },
+          {
+            "kind": "not_verified",
+            "code": "local_identity_missing",
+            "issue": "An explicit local device system identity was not observed."
+          },
+          {
+            "kind": "not_verified",
+            "code": "peer_identity_missing",
+            "issue": "An explicit peer device system identity was not observed."
+          },
+          {
+            "kind": "not_verified",
+            "code": "source_capture_incomplete",
+            "issue": "The exact raw-byte source set is incomplete for this declared variant."
+          }
+        ]
+      }
+    ],
+    "reciprocal_peer_pairs": [],
+    "local_legs": [],
+    "reconciled_attachments": [],
+    "findings": [],
+    "summary": {
+      "n_local_observations": 1,
+      "n_reciprocal_peer_pairs": 0,
+      "n_local_legs": 0,
+      "n_reconciled_attachments": 0,
+      "n_findings": 4,
+      "by_record_type": {
+        "local_observation": 1,
+        "reciprocal_peer_pair": 0,
+        "local_leg": 0,
+        "reconciled_attachment": 0
+      },
+      "by_health_state": {
+        "healthy": 0,
+        "degraded": 1,
+        "not_verified": 0
+      },
+      "baseline_sha256": "sha256:7b61a9e528cf91e07d9385ccb0b0387c01269e257686f75a5997a321d163e1ec"
+    },
+    "limitations": [
+      "Catalog presence and parser availability are not runtime support evidence.",
+      "Only process-local projections parsed from exact command/import bytes receive current-run source custody.",
+      "NX-OS is supported for live or offline raw evidence; EOS is supported only for offline raw evidence.",
+      "Standard EOS MLAG captures expose the shared MLAG system ID and peer address, not reciprocal peer-device identity; EOS pair and attachment claims therefore remain not verified.",
+      "No IOS, IOS-XE, Junos, VSS, StackWise Virtual, or other vendor/platform parity is inferred.",
+      "Domain ID, vPC/MLAG ID, same-MAC learning, and topology proximity never establish a peer pair or attachment.",
+      "Capacity, hashing, orphan behavior, dual-active exclusion, counters, and failure rehearsal remain outside this bounded owner."
+    ]
+  },
   "fhrp_detail": {
     "core1": [
       {
@@ -45795,19 +46137,19 @@
   },
   "attestation": {
     "schema": "attestation/1",
-    "generated_at": "2026-08-20T06:23:57.918821+00:00",
+    "generated_at": "2026-08-20T16:52:50.440576+00:00",
     "claims": [
       {
         "id": "read_only_command_surface",
         "method": "re-derive over every COMMANDS_* registry of the collector: the WHOLE of each command must be read-only \u2014 a read verb (show/display/get/dir/ping/moquery | aws ec2 describe- | api|ers|dataservice REST GET paths) AND no way to chain, redirect or substitute a second command out of it (no CR/LF ; & ` $ > < \\, and every pipe stage an output filter, never redirect/tee/append or a URL sink)",
         "result": "HOLDS",
-        "detail": "all 291 registry commands across 7 COMMANDS_* registries match the read-only grammar"
+        "detail": "all 297 registry commands across 7 COMMANDS_* registries match the read-only grammar"
       },
       {
         "id": "no_egress_import_graph",
         "method": "RECURSIVE AST import-walk (every subpackage, any nesting depth, lazy imports included) over the analysis package for network libraries; charter exclusion(s): rest_collect.py (the opt-in REST collector is covered by its own GET-only claim); documented exception(s), subtracted AFTER the scan and named in the result: none \u2014 the package is clean without subtracting anything",
         "result": "HOLDS",
-        "detail": "0 unexplained network-library imports across 79 analysis modules (recursive walk; excluded by charter: rest_collect.py; no documented exception was needed)"
+        "detail": "0 unexplained network-library imports across 85 analysis modules (recursive walk; excluded by charter: rest_collect.py; no documented exception was needed)"
       },
       {
         "id": "rest_collect_get_only",
@@ -45819,7 +46161,7 @@
         "id": "no_llm_runtime",
         "method": "AST import-walk over the analysis package (rest_collect.py included) + the collector entry module for LLM/GenAI SDK imports \u2014 the pipeline is deterministic and air-gapped, no model call at runtime",
         "result": "HOLDS",
-        "detail": "0 LLM/GenAI SDK imports across 81 modules (analysis package + collector entry)"
+        "detail": "0 LLM/GenAI SDK imports across 87 modules (analysis package + collector entry)"
       }
     ]
   },
@@ -56552,7 +56894,7 @@
       "retained_source_bytes_verified": true,
       "official_sources_available": true,
       "source_retrieved_at": "2026-07-30T12:47:53Z",
-      "source_age_days": 20.733331,
+      "source_age_days": 21.170063,
       "source_max_age_days": 180,
       "source_max_future_skew_seconds": 300,
       "source_future_dated": false,
@@ -56589,7 +56931,7 @@
       "retained_source_bytes_verified": true,
       "official_sources_available": true,
       "source_retrieved_at": "2026-07-30T12:47:53Z",
-      "source_age_days": 20.733337,
+      "source_age_days": 21.170068,
       "source_max_age_days": 180,
       "source_max_future_skew_seconds": 300,
       "source_future_dated": false,
@@ -56623,7 +56965,7 @@
       "active_unresolved_rows": 0,
       "error": "",
       "source_retrieved_at": "2026-07-30T13:48:46Z",
-      "source_age_days": 20.691057,
+      "source_age_days": 21.127789,
       "source_max_age_days": 180,
       "source_max_future_skew_seconds": 300,
       "source_future_dated": false,
@@ -68656,6 +68998,20 @@
         "note": "collected, nothing of this kind found (not a blind spot)"
       },
       {
+        "key": "multichassis_lag_typed_observations",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "multichassis_lag_domain_baseline",
+        "state": "published",
+        "count": 15,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
         "key": "fhrp_detail",
         "state": "published",
         "count": 1,
@@ -69147,10 +69503,10 @@
       }
     ],
     "summary": {
-      "n_published": 107,
+      "n_published": 109,
       "n_collected_but_empty": 5,
       "n_not_collected": 0,
-      "n_sections": 112
+      "n_sections": 114
     }
   },
   "fact_lineage": {

@@ -1,6 +1,15 @@
 import { useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router";
-import { api, CutoverWave, gateColor } from "../api";
+import {
+  api,
+  gateColor,
+  type Campaign,
+  type CutoverChangeIntentInput,
+  type CutoverWave,
+  type ExecutionMeta,
+  type ExecutionState,
+} from "../api";
+import ComparisonDecision from "./ComparisonDecision";
 import { CountUp, ErrorBox, SegBar, SevChip, SkelLines, useAsync } from "./ui";
 
 /* The cutover-plan panel: a gated, pilot-first run-of-show synthesized server-side from the
@@ -375,6 +384,241 @@ function WaveCard({ w, i }: { w: CutoverWaveWithBaseline; i: number }) {
   );
 }
 
+function canonicalGateColor(verdict: string) {
+  return verdict === "PASS"
+    ? "var(--ok)"
+    : verdict === "FAIL" || verdict === "REGRESSED"
+      ? "var(--crit)"
+      : verdict === "CONDITIONAL" || verdict === "REVIEW"
+        ? "var(--watch)"
+        : "var(--text-faint)";
+}
+
+type PlannerExecutionContext = {
+  execution: ExecutionState;
+  campaign: Campaign | null;
+};
+
+function PlannerExecutionComparison({ run, onReceiptBound }: {
+  run: ExecutionMeta;
+  onReceiptBound: () => void;
+}) {
+  const { data, error, loading } = useAsync<PlannerExecutionContext>(async () => {
+    const execution = await api.getExecution(run.id);
+    const campaign = execution.comparison_policy
+      ? await api.getCampaign(execution.comparison_policy.before_snapshot.campaign_id)
+      : null;
+    return { execution, campaign };
+  }, [run.id]);
+  const [boundExecution, setBoundExecution] = useState<ExecutionState | null>(null);
+  const [afterSnapshotId, setAfterSnapshotId] = useState<number | "">("");
+  const [changeIntentText, setChangeIntentText] = useState("");
+  const [compareBusy, setCompareBusy] = useState(false);
+  const [compareError, setCompareError] = useState<string | null>(null);
+  const [boundMessage, setBoundMessage] = useState<string | null>(null);
+
+  if (loading && !boundExecution) {
+    return <div className="faint" style={{ padding: 10, fontSize: 11.5 }}>Loading the immutable execution receipt…</div>;
+  }
+  if (error && !boundExecution) return <ErrorBox msg={error} />;
+  const execution = boundExecution || data?.execution;
+  if (!execution) return null;
+
+  const policy = execution.comparison_policy;
+  const receipts = Array.isArray(execution.comparison_receipts) ? execution.comparison_receipts : [];
+  const latestStored = execution.latest_comparison
+    ? receipts.find((row) => row.id === execution.latest_comparison!.receipt_id)
+    : receipts[receipts.length - 1];
+  const latestComparison = latestStored?.receipt.comparison;
+  const frozenCampaignId = policy?.before_snapshot.campaign_id;
+  const campaign = data?.campaign;
+  const candidates = policy && campaign && campaign.id === frozenCampaignId
+    ? (campaign.snapshots || []).filter((snapshot) => (
+      snapshot.campaign_id === frozenCampaignId
+      && snapshot.id !== execution.snapshot_id
+      && snapshot.id !== policy?.before_snapshot.snapshot_id
+    ))
+    : [];
+  const live = execution.status === "in_progress";
+
+  const bind = () => {
+    if (afterSnapshotId === "") {
+      setCompareError("Choose the post-change snapshot first.");
+      return;
+    }
+    let changeIntent: CutoverChangeIntentInput | undefined;
+    if (changeIntentText.trim()) {
+      try {
+        const parsed = JSON.parse(changeIntentText);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          throw new Error("Expected-change intent must be a JSON object.");
+        }
+        changeIntent = parsed as CutoverChangeIntentInput;
+      } catch (intentError: any) {
+        setCompareError(`Expected-change intent is not valid JSON: ${intentError?.message || String(intentError)}`);
+        return;
+      }
+    }
+    setCompareBusy(true);
+    setCompareError(null);
+    setBoundMessage(null);
+    const request = changeIntent
+      ? api.compareExecution(execution.id, afterSnapshotId, changeIntent)
+      : api.compareExecution(execution.id, afterSnapshotId);
+    request
+      .then((updated) => {
+        setBoundExecution(updated);
+        setAfterSnapshotId("");
+        setChangeIntentText("");
+        setBoundMessage("Post-change evidence was appended as an immutable canonical comparison receipt.");
+        onReceiptBound();
+      })
+      .catch((compareFailure) => setCompareError(compareFailure.message || String(compareFailure)))
+      .finally(() => setCompareBusy(false));
+  };
+
+  return (
+    <div data-testid={`cutover-execution-evidence-${run.id}`}
+      style={{ border: "1px solid var(--border-faint)", borderRadius: 9, padding: 10, marginTop: 8 }}>
+      {latestComparison ? (
+        <ComparisonDecision
+          value={latestComparison}
+          exportFilename={`execution-${execution.id}-comparison-receipt-${latestStored?.id || "latest"}.json`}
+        />
+      ) : policy ? (
+        <section aria-label="Canonical post-change cutover decision"
+          data-testid={`cutover-execution-gate-missing-${run.id}`}
+          style={{ border: "1px solid var(--text-faint)", borderRadius: 9, padding: "9px 10px", marginBottom: 10 }}>
+          <div className="spread" style={{ gap: 8 }}>
+            <div>
+              <b>Canonical post-change cutover decision</b>
+              <div className="faint" style={{ fontSize: 10.5, marginTop: 2 }}>
+                {execution.latest_comparison
+                  ? `Latest receipt ${execution.latest_comparison.receipt_id} is identified, but its complete payload is unavailable.`
+                  : "No immutable comparison receipt has been bound to this run."}
+              </div>
+            </div>
+            <span className="chip" style={{ color: "var(--text-faint)", borderColor: "var(--text-faint)" }}>
+              NOT VERIFIED
+            </span>
+          </div>
+          <div className="faint" style={{ fontSize: 11.5, marginTop: 6 }}>
+            Only the server-owned cutover_gate/1 in a complete stored receipt can authorize this execution.
+          </div>
+        </section>
+      ) : (
+        <section aria-label="Legacy execution comparison status"
+          data-testid={`cutover-execution-legacy-${run.id}`}
+          style={{ border: "1px solid var(--border-faint)", borderRadius: 9, padding: "9px 10px", marginBottom: 10 }}>
+          <b>Post-change comparison · legacy execution</b>
+          <div className="faint" style={{ fontSize: 11.5, marginTop: 4 }}>
+            This run predates immutable canonical comparison receipts. It remains unchanged and cannot be reinterpreted or backfilled.
+          </div>
+        </section>
+      )}
+
+      {policy && live && (
+        <section aria-label={`Bind post-change evidence for ${run.label}`}
+          data-testid={`cutover-execution-compare-form-${run.id}`}>
+          <b>Bind post-change evidence</b>
+          <div className="dim" style={{ fontSize: 11.5, margin: "4px 0 8px" }}>
+            Candidates come only from frozen campaign {policy.before_snapshot.campaign_id}. The server rechecks campaign, engagement, source custody, subjects, and owner semantics before appending—not replacing—an immutable receipt.
+          </div>
+          <div className="row-flex" style={{ gap: 8, flexWrap: "wrap" }}>
+            <label htmlFor={`cutover-execution-after-${run.id}`} className="faint" style={{ fontSize: 11 }}>
+              After snapshot
+            </label>
+            <select id={`cutover-execution-after-${run.id}`}
+              aria-label={`After snapshot for ${run.label}`}
+              value={afterSnapshotId}
+              onChange={(event) => setAfterSnapshotId(event.target.value === "" ? "" : Number(event.target.value))}
+              disabled={compareBusy || candidates.length === 0}
+              style={{ minWidth: 220 }}>
+              <option value="">choose post-change evidence…</option>
+              {candidates.map((snapshot) => (
+                <option key={snapshot.id} value={snapshot.id}>{snapshot.label} · snapshot {snapshot.id}</option>
+              ))}
+            </select>
+            <button type="button" className="btn primary" onClick={bind}
+              aria-label={`Bind and compare ${run.label}`}
+              disabled={compareBusy || afterSnapshotId === ""}>
+              {compareBusy ? "Comparing…" : "Bind and compare"}
+            </button>
+          </div>
+          <details style={{ marginTop: 8 }}>
+            <summary className="faint" style={{ cursor: "pointer", fontSize: 11.5 }}>
+              Expected family changes (optional, frozen into this receipt)
+            </summary>
+            <textarea aria-label={`Expected family changes for ${run.label}`}
+              value={changeIntentText}
+              onChange={(event) => setChangeIntentText(event.target.value)} rows={4}
+              placeholder={'{"expected_changes":[{"family":"fhrp_redundancy_domain","transitions":["intent_changed"],"subjects":[],"reason":"planned active role move"}],"note":"CAB-1234"}'}
+              style={{ width: "100%", marginTop: 6, fontFamily: "var(--mono)", fontSize: 11 }} />
+          </details>
+          {candidates.length === 0 && (
+            <div className="faint" style={{ fontSize: 11, marginTop: 7 }}>
+              No second snapshot is available in this execution&apos;s campaign yet.
+            </div>
+          )}
+          {compareError && <div role="alert" style={{ color: "var(--crit)", fontSize: 11.5, marginTop: 7 }}>{compareError}</div>}
+          {boundMessage && <div role="status" style={{ color: "var(--ok)", fontSize: 11.5, marginTop: 7 }}>{boundMessage}</div>}
+        </section>
+      )}
+      {policy && !live && (
+        <div className="faint" style={{ fontSize: 11.5 }}>
+          This execution is read-only; its {receipts.length} immutable comparison receipt(s) cannot be replaced or appended.
+        </div>
+      )}
+      {policy && receipts.length > 0 && (
+        <div className="faint" style={{ fontSize: 10.5, marginTop: 7 }}>
+          {receipts.length} immutable comparison receipt(s) retained · latest receipt {execution.latest_comparison?.receipt_id ?? "not identified"}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ExecutionRunCard({ run, onReceiptBound }: {
+  run: ExecutionMeta;
+  onReceiptBound: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const STATUS_COLOR: Record<string, string> = {
+    in_progress: "var(--accent)", completed: "var(--ok)", aborted: "var(--crit)",
+  };
+  return (
+    <div data-testid={`cutover-execution-card-${run.id}`}>
+      <div className="row-flex" style={{ gap: 7, flexWrap: "wrap" }}>
+        <Link to={`/executions/${run.id}`} className="chip"
+          data-testid={`cutover-execution-${run.id}`} style={{ textDecoration: "none" }}>
+          <span className="dot" style={{ background: STATUS_COLOR[run.status] || "var(--text-faint)" }} />
+          {run.label} · <span className="faint">{run.status.replace("_", " ")}</span>
+          {run.latest_comparison ? (
+            <>
+              {" · "}<span style={{ color: canonicalGateColor(run.latest_comparison.cutover_gate.verdict) }}>
+                post-change {run.latest_comparison.cutover_gate.verdict}
+              </span>
+              <span className="faint"> · after snapshot {run.latest_comparison.after_snapshot_id}</span>
+            </>
+          ) : run.comparison_required ? (
+            <span style={{ color: "var(--text-faint)" }}> · post-change NOT VERIFIED</span>
+          ) : (
+            <span className="faint"> · legacy · no canonical receipt</span>
+          )}
+        </Link>
+        <button type="button" className="btn ghost"
+          aria-expanded={open}
+          aria-label={`${open ? "Hide" : "Open"} post-change evidence for ${run.label}`}
+          onClick={() => setOpen((value) => !value)}
+          style={{ padding: "3px 8px", fontSize: 10.5 }}>
+          {open ? "Hide evidence" : run.comparison_required ? "Bind / view evidence" : "View legacy status"}
+        </button>
+      </div>
+      {open && <PlannerExecutionComparison run={run} onReceiptBound={onReceiptBound} />}
+    </div>
+  );
+}
+
 /* Existing war-room runs over this plan + the entry point to start a new one. */
 function ExecutionRuns({ snapId }: { snapId: number }) {
   const navigate = useNavigate();
@@ -396,16 +640,6 @@ function ExecutionRuns({ snapId }: { snapId: number }) {
       .catch((e) => { setError(e.message || String(e)); reload(); })
       .finally(() => setStarting(false));
   };
-  const STATUS_COLOR: Record<string, string> = {
-    in_progress: "var(--accent)", completed: "var(--ok)", aborted: "var(--crit)",
-  };
-  const canonicalGateColor = (verdict: string) => verdict === "PASS"
-    ? "var(--ok)"
-    : verdict === "FAIL" || verdict === "REGRESSED"
-      ? "var(--crit)"
-      : verdict === "CONDITIONAL" || verdict === "REVIEW"
-        ? "var(--watch)"
-        : "var(--text-faint)";
   return (
     <div style={{ marginTop: 16, borderTop: "1px solid var(--border-faint)", paddingTop: 14 }}>
       <div className="row-flex">
@@ -433,25 +667,9 @@ function ExecutionRuns({ snapId }: { snapId: number }) {
         <div className="faint" style={{ fontSize: 11.5, marginTop: 8 }}>Checking for existing runs…</div>
       )}
       {(runs || []).length > 0 && (
-        <div className="row-flex" style={{ marginTop: 10 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10 }}>
           {(runs || []).map((r) => (
-            <Link key={r.id} to={`/executions/${r.id}`} className="chip"
-              data-testid={`cutover-execution-${r.id}`} style={{ textDecoration: "none" }}>
-              <span className="dot" style={{ background: STATUS_COLOR[r.status] || "var(--text-faint)" }} />
-              {r.label} · <span className="faint">{r.status.replace("_", " ")}</span>
-              {r.latest_comparison ? (
-                <>
-                  {" · "}<span style={{ color: canonicalGateColor(r.latest_comparison.cutover_gate.verdict) }}>
-                    post-change {r.latest_comparison.cutover_gate.verdict}
-                  </span>
-                  <span className="faint"> · after snapshot {r.latest_comparison.after_snapshot_id}</span>
-                </>
-              ) : r.comparison_required ? (
-                <span style={{ color: "var(--text-faint)" }}> · post-change NOT VERIFIED — open run to bind</span>
-              ) : (
-                <span className="faint"> · legacy · no canonical receipt</span>
-              )}
-            </Link>
+            <ExecutionRunCard key={r.id} run={r} onReceiptBound={reload} />
           ))}
         </div>
       )}

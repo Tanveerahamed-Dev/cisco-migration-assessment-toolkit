@@ -39,6 +39,22 @@ def _make_template(path):
     wb.save(path)
 
 
+def test_empty_multichassis_producer_is_not_published_as_runtime_support():
+    snapshot = {
+        "multichassis_lag_typed_observations": {"stale": True},
+        "multichassis_lag_domain_baseline": {"stale": True},
+    }
+
+    cp._publish_multichassis_lag_blocks(
+        snapshot,
+        {"observations": []},
+        {"schema": "multichassis_lag_domain_baseline/1"},
+    )
+
+    assert "multichassis_lag_typed_observations" not in snapshot
+    assert "multichassis_lag_domain_baseline" not in snapshot
+
+
 def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch):
     collection = fx.write_collection(str(tmp_path / "collection"))
     devices = tmp_path / "devices.json"

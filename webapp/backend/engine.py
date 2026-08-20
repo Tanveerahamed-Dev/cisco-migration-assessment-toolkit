@@ -19,13 +19,11 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from cisco_toolkit import analyze as _analyze  # noqa: E402  (after path bootstrap)
+from cisco_toolkit import comparison as _comparison  # noqa: E402
 from cisco_toolkit import html as _html  # noqa: E402
 from cisco_toolkit.textutils import _as_num as _as_num  # noqa: E402  (shared fail-soft numeric coercion)
 from cisco_toolkit import __version__ as ENGINE_SCHEMA_VERSION  # noqa: E402,F401  (re-exported for the app)
-from cisco_toolkit.precert import (  # noqa: E402  (P3-E2: webapp diff schema gate)
-    compute_precert,
-    schema_compat_status,
-)
+from cisco_toolkit.precert import schema_compat_status  # noqa: E402  (P3-E2 schema gate)
 from cisco_toolkit import protocol_assurance as _protocol_assurance  # noqa: E402
 
 # Canonical hostname normalisation — reuse the engine's own so the web layer groups hosts identically.
@@ -53,7 +51,11 @@ def classify_current_baseline_item(item: Any) -> str:
     return _analyze.classify_current_baseline_item(item)
 
 
-def render_explorer_html(snapshot: Dict[str, Any], label: str) -> str:
+def render_explorer_html(
+        snapshot: Dict[str, Any],
+        label: str,
+        *,
+        protocol_assurance_bundle: Optional[Dict[str, Any]] = None) -> str:
     """Render the self-contained Blast-Radius Explorer for a stored snapshot, returned as a string.
 
     Re-uses `html.write_html_explorer` (which embeds a slimmed snapshot into the packaged template) by
@@ -62,7 +64,12 @@ def render_explorer_html(snapshot: Dict[str, Any], label: str) -> str:
     fd, path = tempfile.mkstemp(suffix=".html", prefix="assesshub_explorer_")
     os.close(fd)
     try:
-        _html.write_html_explorer(path, snapshot, label)
+        _html.write_html_explorer(
+            path,
+            snapshot,
+            label,
+            protocol_assurance_bundle=protocol_assurance_bundle,
+        )
         return Path(path).read_text(encoding="utf-8")
     finally:
         try:
@@ -91,6 +98,127 @@ def _with_schema_compat(result: Dict[str, Any], schema: Dict[str, Any]) -> Dict[
 #: renders `verdict_note` as its only prose, so this phrase is what a reader sees; the structural
 #: `not_comparable` key is its machine-readable twin.
 _NOT_COMPARABLE_PHRASE = "NOT COMPARABLE"
+
+_PERSISTED_SNAPSHOT_SOURCE = _protocol_assurance.PERSISTED_SOURCE
+_TREND_RECEIPT_SCHEMA = "campaign_adjacent_comparison_set/1"
+_TREND_PAIR_SCHEMA = "campaign_adjacent_comparison/1"
+
+
+def _matching_persisted_binding(snapshot: Any, binding: Any) -> bool:
+    """Require one complete storage receipt for the exact bytes behind ``snapshot``.
+
+    A serialized ``BoundSnapshot`` is deliberately just a dict, so neither a caller-provided hash nor
+    an embedded ``source`` string can recreate storage custody. Trend receipts use the same
+    process-local marker as the native protocol-family owners and compare the public receipt to it.
+    """
+    if not isinstance(snapshot, dict) or not isinstance(binding, dict):
+        return False
+    marker = _protocol_assurance.bound_snapshot_source(snapshot)
+    required = {
+        "source", "sha256", "bytes", "snapshot_id", "campaign_id",
+        "engagement_id", "label", "script_version",
+    }
+    return (
+        marker.get("source_bound") is True
+        and set(binding) == required
+        and binding.get("source") == _PERSISTED_SNAPSHOT_SOURCE
+        and binding.get("sha256") == marker.get("sha256")
+        and type(binding.get("bytes")) is int
+        and binding.get("bytes") == marker.get("bytes")
+        and type(binding.get("snapshot_id")) is int
+        and type(binding.get("campaign_id")) is int
+        and isinstance(binding.get("engagement_id"), str)
+        and bool(binding["engagement_id"].strip())
+        and isinstance(binding.get("label"), str)
+        and bool(binding["label"].strip())
+        and isinstance(binding.get("script_version"), str)
+        and bool(binding["script_version"].strip())
+        and binding.get("script_version") == snapshot.get("script_version")
+    )
+
+
+def _trend_comparison_receipts(
+        snapshots: List[Dict[str, Any]],
+        source_bindings: Optional[List[Dict[str, Any]]]) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Compose complete oldest-to-newest canonical receipts for every adjacent pair.
+
+    The result is intentionally separate from the legacy trajectory owner. It never synthesizes a
+    binding for callers that supplied none, and it never treats a detached dict/hash pair as proof of
+    persisted source custody.
+    """
+    n_pairs = max(0, len(snapshots) - 1)
+    unavailable = {
+        "schema": _TREND_RECEIPT_SCHEMA,
+        "status": "not_verified",
+        "n_pairs_total": n_pairs,
+        "n_pairs_returned": 0,
+        "complete": False,
+        "note": (
+            "Canonical adjacent comparison receipts were not produced because a complete ordered "
+            "set of exact-byte persisted source bindings was not available."
+        ),
+    }
+    if n_pairs == 0:
+        return [], unavailable
+    if (
+        not isinstance(source_bindings, list)
+        or len(source_bindings) != len(snapshots)
+        or any(
+            not _matching_persisted_binding(snapshot, binding)
+            for snapshot, binding in zip(snapshots, source_bindings)
+        )
+    ):
+        return [], unavailable
+
+    campaign_ids = {binding["campaign_id"] for binding in source_bindings}
+    engagement_ids = {binding["engagement_id"] for binding in source_bindings}
+    snapshot_ids = [binding["snapshot_id"] for binding in source_bindings]
+    coherence_failures: List[str] = []
+    if len(campaign_ids) != 1:
+        coherence_failures.append("source bindings cross campaign identities")
+    if len(engagement_ids) != 1:
+        coherence_failures.append("source bindings cross engagement identities")
+    if len(set(snapshot_ids)) != len(snapshot_ids):
+        coherence_failures.append("source bindings repeat a snapshot identity")
+
+    entries: List[Dict[str, Any]] = []
+    for index in range(n_pairs):
+        before_binding = source_bindings[index]
+        after_binding = source_bindings[index + 1]
+        comparison = compare_bound_pair(
+            snapshots[index],
+            snapshots[index + 1],
+            before_binding=before_binding,
+            after_binding=after_binding,
+        )
+        entries.append({
+            "schema": _TREND_PAIR_SCHEMA,
+            "index": index,
+            "from": f"C{index + 1}",
+            "to": f"C{index + 2}",
+            "before_snapshot_id": before_binding["snapshot_id"],
+            "after_snapshot_id": after_binding["snapshot_id"],
+            "before_label": before_binding["label"],
+            "after_label": after_binding["label"],
+            "comparison": comparison,
+        })
+
+    status = "not_comparable" if coherence_failures else "verified"
+    note = (
+        "Canonical comparisons were produced from the exact persisted bytes for every adjacent "
+        "campaign pair."
+        if not coherence_failures else
+        "Canonical adjacent comparisons were retained, but the series is NOT COMPARABLE: "
+        + "; ".join(coherence_failures) + "."
+    )
+    return entries, {
+        "schema": _TREND_RECEIPT_SCHEMA,
+        "status": status,
+        "n_pairs_total": n_pairs,
+        "n_pairs_returned": len(entries),
+        "complete": len(entries) == n_pairs,
+        "note": note,
+    }
 
 
 def _carry_not_comparable(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -142,14 +270,23 @@ def _carry_not_comparable(result: Dict[str, Any]) -> Dict[str, Any]:
 
 def campaign_trend(
         snapshots: List[Dict[str, Any]], *,
-        source_bindings: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
+        source_bindings: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """Trajectory across a series (oldest-first) — thin pass-through to the engine, plus the
-    fail-closed coverage-disclosure carry in `_carry_not_comparable`."""
+    fail-closed coverage-disclosure carry in `_carry_not_comparable` and additive canonical
+    adjacent-pair receipts when exact persisted custody is available."""
     snaps = list(snapshots or [])
     schema = _schema_compat(snaps)
     result = compute_campaign_trend(
         snaps, source_bindings=source_bindings, schema_status=schema)
-    return _with_schema_compat(_carry_not_comparable(result), schema)
+    result = _with_schema_compat(_carry_not_comparable(result), schema)
+    receipts, receipt_status = _trend_comparison_receipts(snaps, source_bindings)
+    result["adjacent_comparisons"] = receipts
+    result["adjacent_comparison_status"] = receipt_status
+    if receipt_status["status"] == "not_comparable":
+        prior_note = str(result.get("verdict_note") or "")
+        result["verdict"] = "INDETERMINATE"
+        result["verdict_note"] = f"{receipt_status['note']} {prior_note}".strip()
+    return result
 
 
 def snapshot_delta(
@@ -165,101 +302,20 @@ def compare_bound_pair(
         old: Dict[str, Any], new: Dict[str, Any], *,
         before_binding: Dict[str, Any], after_binding: Dict[str, Any],
         change_intent: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Compose the canonical source-bound comparison without changing any v1 owner.
-
-    The legacy delta fields remain at the top level for existing API consumers.  The certificate,
-    reference-only family composition, admission envelope, and sole overall cutover gate are
-    additive.  Both the delta and certificate consume hashes from the exact persisted bytes that
-    produced ``old`` and ``new``.
-    """
-    schema = _schema_compat([old, new])
-    source_binding = {
-        "before": dict(before_binding),
-        "after": dict(after_binding),
-    }
-    profiles = _protocol_assurance.protocol_support_profiles()
-    owner_versions = {
-        "snapshot_delta": "compute_snapshot_delta@v1",
-        "precert": "precert/1",
-        "cutover_gate": "cutover_gate/1",
-        "protocol_family_change_set": "protocol_family_change_set/1",
-        "engine_schema": ENGINE_SCHEMA_VERSION,
-        "before_snapshot_owner": str(old.get("script_version") or ""),
-        "after_snapshot_owner": str(new.get("script_version") or ""),
-    }
-    owner_versions.update({
-        f"protocol:{profile['family']}": str(profile["owner_schema"])
-        for profile in profiles
-    })
-    intent_binding = {
-        "engagement_id": before_binding.get("engagement_id"),
-        "campaign_id": before_binding.get("campaign_id"),
-        "before_snapshot_id": before_binding.get("snapshot_id"),
-        "after_snapshot_id": after_binding.get("snapshot_id"),
-        "before_sha256": before_binding.get("sha256"),
-        "after_sha256": after_binding.get("sha256"),
-    }
-    intent = _protocol_assurance.normalize_change_intent(
-        change_intent, binding=intent_binding)
-    admission = _protocol_assurance.comparison_admission(
+    """Delegate to the presentation-independent canonical comparison composer."""
+    return _comparison.compare_bound_pair(
         old,
         new,
         before_binding=before_binding,
         after_binding=after_binding,
-        schema_status=schema,
-        change_intent=intent,
-        owner_versions=owner_versions,
-        support_profiles=profiles,
+        change_intent=change_intent,
     )
-    delta = compute_snapshot_delta(
-        old, new, source_binding=source_binding, schema_status=schema)
-    delta = _with_schema_compat(delta, schema)
-    certificate = compute_precert(
-        old,
-        new,
-        source_hashes=source_binding,
-        schema_status=schema,
-    )
-    native_deltas = _protocol_assurance.compute_native_protocol_deltas(
-        old,
-        new,
-        before_binding=before_binding,
-        after_binding=after_binding,
-    )
-    protocol_families = _protocol_assurance.protocol_family_change_set(
-        delta.get("protocol_adjacencies"), intent, native_deltas=native_deltas)
-    cutover_gate = _html.compute_cutover_gate(
-        delta,
-        certificate,
-        comparison_admission=admission,
-        protocol_family_changes=protocol_families,
-    )
-    operator_evidence = _protocol_assurance.cutover_operator_evidence(new)
-    envelope = _protocol_assurance.receipt_envelope(
-        admission=admission,
-        change_intent=intent,
-        protocol_families=protocol_families,
-        delta=delta,
-        precert=certificate,
-        cutover_gate=cutover_gate,
-        operator_evidence=operator_evidence,
-    )
-    return {
-        **delta,
-        "comparison_schema": "source_bound_cutover_comparison/1",
-        "comparison_admission": admission,
-        "change_intent": intent,
-        "protocol_families": protocol_families,
-        "precert": certificate,
-        "cutover_gate": cutover_gate,
-        "operator_evidence": operator_evidence,
-        "comparison_receipt": envelope,
-    }
 
 
 def compact_execution_comparison(
         comparison: Dict[str, Any], *, before_snapshot_id: int,
-        after_snapshot_id: int) -> Dict[str, Any]:
+        after_snapshot_id: int, after_collected_at: Optional[str] = None,
+        implementation_binding: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Freeze the complete canonical comparison for one execution append.
 
     The stored receipt is uncapped and carries the exact same overall gate as ``/api/compare``.
@@ -272,5 +328,9 @@ def compact_execution_comparison(
         "after_snapshot_id": after_snapshot_id,
         "comparison": comparison,
     }
+    if after_collected_at is not None:
+        body["after_collected_at"] = after_collected_at
+    if implementation_binding is not None:
+        body["implementation_binding"] = implementation_binding
     body["receipt_sha256"] = _protocol_assurance.canonical_sha256(body)
     return body

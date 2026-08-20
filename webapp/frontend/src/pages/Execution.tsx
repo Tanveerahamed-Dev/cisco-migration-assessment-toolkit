@@ -609,7 +609,16 @@ export default function ExecutionPage() {
   // From the live ticking clock, not the server-frozen progress value — otherwise the OVER alarm
   // can't fire between mutations, exactly when the team is heads-down.
   const overBudget = p.planned_window_minutes > 0 && elapsed > p.planned_window_minutes * 60;
-  const candidates = (campaign?.snapshots || []).filter((snapshot) => snapshot.id !== ex.snapshot_id);
+  const executionStartedAt = Date.parse(ex.started_at);
+  const snapshotIdHighWatermark = comparisonPolicy?.snapshot_id_high_watermark
+    ?? ex.snapshot_id;
+  const candidates = (campaign?.snapshots || []).filter((snapshot) => {
+    const uploadedAt = Date.parse(snapshot.uploaded_at);
+    return snapshot.id > snapshotIdHighWatermark
+      && Number.isFinite(executionStartedAt)
+      && Number.isFinite(uploadedAt)
+      && uploadedAt > executionStartedAt;
+  });
   const receipts = Array.isArray(ex.comparison_receipts) ? ex.comparison_receipts : [];
   const latestStored = ex.latest_comparison
     ? receipts.find((row) => row.id === ex.latest_comparison!.receipt_id)
@@ -683,7 +692,7 @@ export default function ExecutionPage() {
           style={{ marginBottom: 12 }}>
           <h3>Bind post-change evidence</h3>
           <div className="dim" style={{ fontSize: 12, marginBottom: 8 }}>
-            Select a snapshot from the frozen start snapshot&apos;s campaign. The server rechecks campaign, engagement, source hashes, subjects, owner versions, and support profiles before appending an immutable receipt.
+            Select a newer snapshot uploaded after this run began. The server rechecks temporal order, campaign, engagement, source hashes, subjects, owner versions, and support profiles before appending an immutable receipt.
           </div>
           <div className="row-flex" style={{ gap: 8, flexWrap: "wrap" }}>
             <label htmlFor="execution-after-snapshot" className="faint" style={{ fontSize: 11 }}>After snapshot</label>
@@ -715,7 +724,7 @@ export default function ExecutionPage() {
           </details>
           {candidates.length === 0 && (
             <div className="faint" style={{ fontSize: 11, marginTop: 7 }}>
-              No second snapshot is available in this campaign yet.
+              No post-start snapshot is available in this campaign yet.
             </div>
           )}
           {compareError && <div style={{ marginTop: 8 }}><ErrorBox msg={compareError} /></div>}

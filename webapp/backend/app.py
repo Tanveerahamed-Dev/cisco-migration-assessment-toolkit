@@ -30,6 +30,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from cisco_toolkit import brand_tokens, docmeta
+from cisco_toolkit.protocol_assurance import (
+    reject_duplicate_json_keys as _reject_duplicate_json_keys,
+)
 
 from . import (
     cutover,
@@ -607,16 +610,6 @@ def _validate_snapshot(value: Any) -> Dict[str, Any]:
         elif isinstance(node, list):
             stack.extend((child, depth + 1) for child in node)
     return value
-
-
-def _reject_duplicate_json_keys(pairs: List[tuple[str, Any]]) -> Dict[str, Any]:
-    out: Dict[str, Any] = {}
-    for key, value in pairs:
-        if key in out:
-            shown = key if len(key) <= 120 else key[:117] + "..."
-            raise ValueError(f"duplicate JSON object key {shown!r}")
-        out[key] = value
-    return out
 
 
 def _parse_snapshot_bytes(raw: bytes) -> Dict[str, Any]:
@@ -1210,6 +1203,31 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         if not c:
             raise HTTPException(404, "Campaign not found")
         bound = [store.get_bound_snapshot(s["id"]) for s in c["snapshots"]]
+        if any(item is None for item in bound):
+            # Never bridge over a snapshot that disappeared between the roster read and the
+            # exact-byte reads: C1→C3 is not the adjacent-pair evidence C1→C2 and C2→C3 named.
+            # Return an explicit incomplete/indeterminate receipt set with the original expected
+            # denominator. A retry may succeed against a coherent campaign roster.
+            expected_pairs = max(0, len(c["snapshots"]) - 1)
+            unavailable = engine.campaign_trend([], source_bindings=[])
+            unavailable["verdict"] = "INDETERMINATE"
+            prior_note = str(unavailable.get("verdict_note") or "")
+            race_note = (
+                "Canonical adjacent comparisons are NOT VERIFIED because a source snapshot "
+                "disappeared while the ordered campaign was read; no non-adjacent pair was "
+                "substituted. Retry against a stable campaign roster."
+            )
+            unavailable["verdict_note"] = f"{race_note} {prior_note}".strip()
+            unavailable["adjacent_comparisons"] = []
+            unavailable["adjacent_comparison_status"] = {
+                "schema": "campaign_adjacent_comparison_set/1",
+                "status": "not_verified",
+                "n_pairs_total": expected_pairs,
+                "n_pairs_returned": 0,
+                "complete": False,
+                "note": race_note,
+            }
+            return unavailable
         available = [item for item in bound if item is not None]
         return engine.campaign_trend(
             [item[0] for item in available],
@@ -1807,10 +1825,22 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                 "Change intent is malformed and cannot be bound to an execution receipt"
                 + (f": {detail}" if detail else ""),
             )
+        implementation_binding = execution.implementation_evidence_binding(rec["state"])
+        if implementation_binding.get("valid") is not True:
+            raise HTTPException(
+                409,
+                "Post-change comparison is available only after every implementation step has "
+                "been actioned. Complete or explicitly skip the pending run-of-show steps, then "
+                "collect and upload fresh evidence.",
+            )
         receipt = engine.compact_execution_comparison(
             comparison,
             before_snapshot_id=rec["snapshot_id"],
             after_snapshot_id=body.after_snapshot_id,
+            after_collected_at=(
+                after.get("collected_at") if isinstance(after.get("collected_at"), str) else None
+            ),
+            implementation_binding=implementation_binding,
         )
         saved = store.append_execution_comparison_if_unchanged(
             execution_id, rec["_state_json"], receipt)
@@ -1838,6 +1868,14 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                 409,
                 "Submitted comparison does not match a canonical recomputation from the persisted "
                 "source bytes",
+            )
+        if status == "after_not_post_change":
+            raise HTTPException(
+                409,
+                "Post-change evidence must be a newer snapshot uploaded after this execution "
+                "started, with an aware collected_at after run start and no later than upload; "
+                "stale, missing, future-dated, or ambiguously ordered captures cannot satisfy "
+                "the canonical gate",
             )
         if status != "saved":
             raise HTTPException(
@@ -1936,11 +1974,19 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
     @app.get("/api/snapshots/{snapshot_id}/explorer", response_class=HTMLResponse)
     def snapshot_explorer(snapshot_id: RowId, request: Request) -> HTMLResponse:
         meta = store.get_snapshot_meta(snapshot_id)
-        snap = store.get_snapshot(snapshot_id)
-        if snap is None or meta is None:
+        bound = store.get_bound_snapshot(snapshot_id)
+        if bound is None or meta is None:
             raise HTTPException(404, "Snapshot not found")
+        snap, binding = bound
+        protocol_assurance_bundle = (
+            protocol_portfolio.build_protocol_single_snapshot_bundle(snap, binding)
+        )
         with _generation_slot(request.app.state.generation_semaphore):   # bound concurrent heavy renders
-            html = engine.render_explorer_html(snap, meta["label"])
+            html = engine.render_explorer_html(
+                snap,
+                meta["label"],
+                protocol_assurance_bundle=protocol_assurance_bundle,
+            )
         return HTMLResponse(content=html)
 
     @app.get("/api/snapshots/{snapshot_id}/deliverable/{kind}")
@@ -1948,7 +1994,17 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         if kind not in deliverables.SPECS:
             raise HTTPException(400, f"Unknown deliverable '{kind}'")
         meta = store.get_snapshot_meta(snapshot_id)
-        snap = store.get_snapshot(snapshot_id)
+        protocol_assurance_bundle = None
+        if kind in {"runbook", "mop", "nrfu"}:
+            bound = store.get_bound_snapshot(snapshot_id)
+            if bound is None:
+                raise HTTPException(404, "Snapshot not found")
+            snap, binding = bound
+            protocol_assurance_bundle = (
+                protocol_portfolio.build_protocol_single_snapshot_bundle(snap, binding)
+            )
+        else:
+            snap = store.get_snapshot(snapshot_id)
         if snap is None or meta is None:
             raise HTTPException(404, "Snapshot not found")
         if not _deliverable_availability().get(kind):
@@ -1961,7 +2017,13 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         # rewritten to a 500; released by the context manager even if generation raises.
         with _generation_slot(request.app.state.generation_semaphore):
             try:
-                path = deliverables.generate(kind, snap, meta["label"], gates=gate_rec)
+                path = deliverables.generate(
+                    kind,
+                    snap,
+                    meta["label"],
+                    gates=gate_rec,
+                    protocol_assurance_bundle=protocol_assurance_bundle,
+                )
             except Exception as e:  # generation failure (e.g. a malformed snapshot)
                 raise HTTPException(500, f"Failed to generate {kind}: {e}") from e
         spec = deliverables.SPECS[kind]

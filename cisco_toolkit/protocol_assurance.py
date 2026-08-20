@@ -26,6 +26,8 @@ SUBJECT_BINDING_SCHEMA = "protocol_subject_identity_set/1"
 ADMISSION_SCHEMA = "protocol_comparison_admission/1"
 CUTOVER_OPERATOR_EVIDENCE_SCHEMA = "cutover_operator_evidence/1"
 PERSISTED_SOURCE = "persisted snapshots.snapshot_json blob"
+OFFLINE_FILE_SOURCE = "exact input snapshot file bytes"
+_COMPARISON_SOURCE_OWNERS = (PERSISTED_SOURCE, OFFLINE_FILE_SOURCE)
 
 CHANGE_VOCABULARY = (
     "unchanged_healthy",
@@ -48,6 +50,160 @@ ASSURANCE_LEVELS = (
 
 _IPV4_FAMILY = "ipv4_routing_adjacency"
 _IPV4_OWNER = "protocol_adjacency_delta/1"
+
+
+_BOUND_SNAPSHOT_AUTHORITY = object()
+_BOUND_FAMILY_SET_AUTHORITY = object()
+_MAX_JSON_OBJECT_MEMBERS = 2_000_000
+
+
+class BoundSnapshot(dict):
+    """Process-local proof that one mapping was parsed from one exact JSON byte string.
+
+    The marker is intentionally not serialized: ``dict(bound)`` and JSON output retain only the
+    assessment payload.  A stored ``projection_custody`` string or a caller-provided digest can
+    therefore never recreate this authority after a round trip.  Only
+    :func:`bind_snapshot_json_bytes`, which parses and hashes the same bytes, can mint an instance.
+    """
+
+    __slots__ = (
+        "_bound_source_sha256",
+        "_bound_source_bytes",
+        "_bound_payload_sha256",
+    )
+
+    def __init__(
+            self,
+            value: Mapping[str, Any],
+            *,
+            source_sha256: str,
+            source_bytes: int,
+            payload_sha256: str,
+            _authority: object) -> None:
+        if _authority is not _BOUND_SNAPSHOT_AUTHORITY:
+            raise TypeError("BoundSnapshot can only be minted from exact JSON bytes")
+        super().__init__(value)
+        self._bound_source_sha256 = source_sha256
+        self._bound_source_bytes = source_bytes
+        self._bound_payload_sha256 = payload_sha256
+
+
+class BoundProtocolFamilyChangeSet(dict):
+    """Process-local authority over one complete, mutation-sensitive family composition.
+
+    ``protocol_family_change_set/1`` is intentionally serializable as ordinary JSON for operator
+    receipts, but detached JSON is evidence to render, not authority to make a fresh decision.  A
+    caller that deletes an applicable family, rewrites producer custody, or rebuilds the unkeyed
+    outer receipt must not be able to feed that edited mapping back into ``cutover_gate/1``.  The
+    private canonical digest is minted only by the family composer and is deliberately absent from
+    the wire contract; JSON round trips therefore lose decision authority.
+    """
+
+    __slots__ = ("_bound_payload_sha256",)
+
+    def __init__(
+            self,
+            value: Mapping[str, Any],
+            *,
+            payload_sha256: str,
+            _authority: object) -> None:
+        if _authority is not _BOUND_FAMILY_SET_AUTHORITY:
+            raise TypeError(
+                "BoundProtocolFamilyChangeSet can only be minted by the canonical composer"
+            )
+        super().__init__(value)
+        self._bound_payload_sha256 = payload_sha256
+
+
+def validate_protocol_family_change_set_authority(value: Any) -> dict:
+    """Validate the non-serializable authority and exact current bytes of a family set.
+
+    Structural and row-level reconciliation remains in the sole gate owner.  This check closes the
+    trust-boundary gap that structural validation alone cannot close: an internally coherent but
+    detached subset has no proof that it is the complete family set produced for the source pair.
+    """
+    present = value is not None
+    if not isinstance(value, BoundProtocolFamilyChangeSet):
+        return {
+            "present": present,
+            "valid": False,
+            "reason": (
+                "protocol family change set is detached from the canonical in-process composer"
+            ),
+        }
+    expected = getattr(value, "_bound_payload_sha256", None)
+    try:
+        actual = canonical_sha256(dict(value))
+    except (TypeError, ValueError, OverflowError, RecursionError, MemoryError):
+        actual = None
+    if not isinstance(expected, str) or expected != actual:
+        return {
+            "present": True,
+            "valid": False,
+            "reason": "protocol family change set changed after canonical composition",
+        }
+    return {"present": True, "valid": True, "reason": "ok"}
+
+
+def reject_duplicate_json_keys(pairs: List[tuple[str, Any]]) -> Dict[str, Any]:
+    """Build one JSON object while refusing ambiguous duplicate member names."""
+    if len(pairs) > _MAX_JSON_OBJECT_MEMBERS:
+        raise ValueError("JSON object exceeds the structural member limit")
+    result: Dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            shown = key if len(key) <= 120 else key[:117] + "..."
+            raise ValueError(f"duplicate JSON object key {shown!r}")
+        result[key] = value
+    return result
+
+
+def _reject_nonfinite_json(token: str) -> None:
+    raise ValueError(f"non-finite JSON number: {token}")
+
+
+def bind_snapshot_json_bytes(raw: Any) -> BoundSnapshot:
+    """Parse finite JSON and bind the resulting snapshot to those exact bytes.
+
+    Decoding and hashing share the byte object.  Callers that own database/file bytes use this
+    instead of parsing first and then trusting a digest leaf supplied alongside a detached dict.
+    """
+    if isinstance(raw, memoryview):
+        payload = raw.tobytes()
+    elif isinstance(raw, bytearray):
+        payload = bytes(raw)
+    elif isinstance(raw, bytes):
+        payload = raw
+    else:
+        raise TypeError("snapshot source must be bytes")
+    value = json.loads(
+        payload.decode("utf-8"),
+        parse_constant=_reject_nonfinite_json,
+        object_pairs_hook=reject_duplicate_json_keys,
+    )
+    if not isinstance(value, dict):
+        raise ValueError("snapshot JSON root must be an object")
+    return BoundSnapshot(
+        value,
+        source_sha256="sha256:" + hashlib.sha256(payload).hexdigest(),
+        source_bytes=len(payload),
+        payload_sha256=canonical_sha256(value),
+        _authority=_BOUND_SNAPSHOT_AUTHORITY,
+    )
+
+
+def bound_snapshot_source(value: Any) -> dict:
+    """Return the non-serializable exact-byte marker as a normalized read-only receipt."""
+    if (
+        not isinstance(value, BoundSnapshot)
+        or canonical_sha256(dict(value)) != value._bound_payload_sha256
+    ):
+        return {"source_bound": False, "sha256": "", "bytes": 0}
+    return {
+        "source_bound": True,
+        "sha256": value._bound_source_sha256,
+        "bytes": value._bound_source_bytes,
+    }
 
 
 def canonical_json_bytes(value: Any) -> bytes:
@@ -271,6 +427,33 @@ def protocol_support_profiles() -> List[dict]:
     return profiles
 
 
+def canonical_decision_owner_versions(
+        *, before_snapshot_owner: Any, after_snapshot_owner: Any) -> dict:
+    """Return the exact Release-1 decision-owner roster admitted by the canonical gate.
+
+    The roster is derived from the executable support profiles, never the capability catalog.  Keeping
+    this constructor beside the admission validator prevents a caller from substituting a plausible but
+    incomplete set of owner strings while still labelling the receipt ``admitted``.
+    """
+    from cisco_toolkit import __version__ as engine_schema
+
+    profiles = protocol_support_profiles()
+    owners = {
+        "snapshot_delta": "compute_snapshot_delta@v1",
+        "precert": "precert/1",
+        "cutover_gate": "cutover_gate/1",
+        "protocol_family_change_set": FAMILY_CHANGE_SET_SCHEMA,
+        "engine_schema": engine_schema,
+        "before_snapshot_owner": _text(before_snapshot_owner),
+        "after_snapshot_owner": _text(after_snapshot_owner),
+    }
+    owners.update({
+        f"protocol:{profile['family']}": str(profile["owner_schema"])
+        for profile in profiles
+    })
+    return owners
+
+
 def normalize_change_intent(raw: Any, *, binding: Mapping[str, Any]) -> dict:
     """Return a server-bound expected-change contract; malformed intent is explicit and invalid."""
     failures: List[str] = []
@@ -361,23 +544,33 @@ def comparison_admission(
     failures: List[str] = []
     gaps: List[str] = []
 
-    snapshots = {"before": _dict(before), "after": _dict(after)}
+    snapshots = {"before": before, "after": after}
     for side, binding in (("before", before_binding), ("after", after_binding)):
-        if binding.get("source") != PERSISTED_SOURCE:
+        if binding.get("source") not in _COMPARISON_SOURCE_OWNERS:
             failures.append(f"{side} source owner is missing or unsupported")
         if not _is_sha256(binding.get("sha256")):
-            failures.append(f"{side} persisted-source SHA-256 binding is missing or malformed")
+            failures.append(f"{side} exact-source SHA-256 binding is missing or malformed")
         byte_count = binding.get("bytes")
         if (not isinstance(byte_count, int) or isinstance(byte_count, bool) or byte_count <= 0):
-            failures.append(f"{side} persisted-source byte count is missing or malformed")
+            failures.append(f"{side} exact-source byte count is missing or malformed")
         if not isinstance(binding.get("snapshot_id"), int):
             failures.append(f"{side} snapshot identity is missing or malformed")
         if not isinstance(binding.get("campaign_id"), int):
             failures.append(f"{side} campaign identity is missing or malformed")
         if not _text(binding.get("engagement_id")):
             failures.append(f"{side} engagement identity is missing or malformed")
+        source_marker = bound_snapshot_source(snapshots[side])
+        if source_marker.get("source_bound") is not True:
+            failures.append(
+                f"{side} parsed snapshot is detached, mutated, or not bound to exact source bytes"
+            )
+        elif (source_marker.get("sha256") != binding.get("sha256")
+              or source_marker.get("bytes") != binding.get("bytes")):
+            failures.append(
+                f"{side} parsed snapshot byte marker does not match its source binding"
+            )
         bound_owner = _text(binding.get("script_version"))
-        snapshot_owner = _text(snapshots[side].get("script_version"))
+        snapshot_owner = _text(_dict(snapshots[side]).get("script_version"))
         if not bound_owner or not snapshot_owner or bound_owner != snapshot_owner:
             failures.append(
                 f"{side} stored owner version does not match the parsed snapshot owner"
@@ -418,32 +611,24 @@ def comparison_admission(
     if intent_binding != expected_intent_binding:
         failures.append("change intent is not bound to this exact comparison pair")
 
-    profiles = [dict(profile) for profile in support_profiles if isinstance(profile, Mapping)]
-    profile_families = [_text(profile.get("family")) for profile in profiles]
-    if (not profiles
-            or len(set(profile_families)) != len(profile_families)
-            or any(
-                profile.get("schema") != SUPPORT_PROFILE_SCHEMA
-                or not _text(profile.get("family"))
-                or not _text(profile.get("owner_schema"))
-                or profile.get("assurance_level") not in ASSURANCE_LEVELS
-                or profile.get("implementation_state") != "implemented"
-                or not isinstance(profile.get("evidence_contracts"), list)
-                or not profile.get("evidence_contracts")
-                or any(not _text(item) for item in profile.get("evidence_contracts", []))
-                or not isinstance(profile.get("scope"), dict)
-                or not profile.get("scope")
-                or not _text(profile.get("runtime_support_claim"))
-                or not isinstance(profile.get("limitations"), list)
-                or not profile.get("limitations")
-                or any(not _text(item) for item in profile.get("limitations", []))
-                for profile in profiles
-            )):
-        failures.append("protocol support profiles are missing or malformed")
-    if (not owner_versions
-            or any(not _text(key) or not _text(value)
-                   for key, value in owner_versions.items())):
-        failures.append("decision owner versions are missing")
+    try:
+        profiles = [
+            dict(profile) for profile in support_profiles
+            if isinstance(profile, Mapping)
+        ]
+    except (TypeError, ValueError, RecursionError, MemoryError):
+        profiles = []
+    canonical_profiles = protocol_support_profiles()
+    if profiles != canonical_profiles:
+        failures.append("protocol support profiles do not match the exact canonical executable roster")
+
+    owners = dict(owner_versions) if isinstance(owner_versions, Mapping) else {}
+    expected_owners = canonical_decision_owner_versions(
+        before_snapshot_owner=before_binding.get("script_version"),
+        after_snapshot_owner=after_binding.get("script_version"),
+    )
+    if owners != expected_owners:
+        failures.append("decision owner versions do not match the exact canonical owner roster")
 
     status = "not_comparable" if failures else ("coverage_lost" if gaps else "admitted")
     assurance = "not_verified" if status != "admitted" else "observed_state_preservation"
@@ -462,26 +647,285 @@ def comparison_admission(
             "before": before_subjects,
             "after": after_subjects,
         },
-        "owner_versions": dict(owner_versions),
+        "owner_versions": owners,
         "support_profiles": profiles,
         "failures": list(dict.fromkeys(failures)),
         "coverage_gaps": list(dict.fromkeys(gaps)),
     }
 
 
-def _assessability_declares(snapshot: Mapping[str, Any], protocol: str) -> bool:
+def validate_comparison_admission(value: Any) -> dict:
+    """Validate the complete closed ``protocol_comparison_admission/1`` contract.
+
+    This validator is deliberately independent of the producer's ``status`` leaf.  A caller cannot
+    retain the word ``admitted`` after deleting custody, subject, owner, or support-profile evidence.
+    Canonical non-admitted receipts remain usable explanations, but only a complete and coherent
+    admitted receipt can authorize the sole cutover gate.
+    """
+    present = value is not None
+    validation_failures: List[str] = []
+
+    def fail(reason: str) -> None:
+        if reason not in validation_failures:
+            validation_failures.append(reason)
+
+    def string_list(raw: Any, label: str) -> List[str]:
+        if (not isinstance(raw, list)
+                or any(not isinstance(item, str) or not item.strip() for item in raw)
+                or len(set(raw)) != len(raw)):
+            fail(f"comparison admission {label} is missing or malformed")
+            return []
+        return list(raw)
+
+    try:
+        if not isinstance(value, dict):
+            fail("comparison admission receipt is missing or has an unusable root shape")
+            raise ValueError("invalid admission root")
+        admission = value
+        expected_top_keys = {
+            "schema", "status", "decision_eligible", "assurance_level",
+            "engagement_id", "campaign_id", "source_binding", "subject_binding",
+            "owner_versions", "support_profiles", "failures", "coverage_gaps",
+        }
+        if set(admission) != expected_top_keys:
+            fail("comparison admission receipt fields do not match protocol_comparison_admission/1")
+        if admission.get("schema") != ADMISSION_SCHEMA:
+            fail("comparison admission schema is missing or unsupported")
+
+        failures = string_list(admission.get("failures"), "failures")
+        gaps = string_list(admission.get("coverage_gaps"), "coverage gaps")
+        # Empty lists are canonical and valid; ``string_list`` distinguishes them from malformed roots.
+        if admission.get("failures") == []:
+            failures = []
+        if admission.get("coverage_gaps") == []:
+            gaps = []
+
+        status = admission.get("status")
+        expected_status = (
+            "not_comparable" if failures else "coverage_lost" if gaps else "admitted"
+        )
+        if status not in {"admitted", "coverage_lost", "not_comparable"}:
+            fail("comparison admission status is missing or unsupported")
+        elif status != expected_status:
+            fail("comparison admission status does not reconcile to its failures and coverage gaps")
+        if type(admission.get("decision_eligible")) is not bool \
+                or admission.get("decision_eligible") is not (status == "admitted"):
+            fail("comparison admission decision eligibility does not reconcile to its status")
+        expected_assurance = (
+            "observed_state_preservation" if status == "admitted" else "not_verified"
+        )
+        if admission.get("assurance_level") != expected_assurance:
+            fail("comparison admission assurance level does not reconcile to its status")
+
+        engagement_id = admission.get("engagement_id")
+        campaign_id = admission.get("campaign_id")
+        if not _text(engagement_id):
+            fail("comparison admission top-level engagement identity is missing or malformed")
+        if type(campaign_id) is not int:
+            fail("comparison admission top-level campaign identity is missing or malformed")
+
+        source_pair = admission.get("source_binding")
+        if not isinstance(source_pair, dict) or set(source_pair) != {"before", "after"}:
+            fail("comparison admission source pair is missing or malformed")
+            source_pair = {}
+        source_views: Dict[str, dict] = {}
+        source_keys = {
+            "source", "sha256", "bytes", "snapshot_id", "campaign_id",
+            "engagement_id", "label", "script_version",
+        }
+        for side in ("before", "after"):
+            binding = source_pair.get(side)
+            if not isinstance(binding, dict) or set(binding) != source_keys:
+                fail(f"{side} comparison source binding is missing or malformed")
+                binding = {}
+            source_views[side] = binding
+            if binding.get("source") not in _COMPARISON_SOURCE_OWNERS:
+                fail(f"{side} comparison source owner is missing or unsupported")
+            if not _is_sha256(binding.get("sha256")):
+                fail(f"{side} exact-source SHA-256 binding is missing or malformed")
+            byte_count = binding.get("bytes")
+            if type(byte_count) is not int or byte_count <= 0:
+                fail(f"{side} exact-source byte count is missing or malformed")
+            if type(binding.get("snapshot_id")) is not int:
+                fail(f"{side} snapshot identity is missing or malformed")
+            if type(binding.get("campaign_id")) is not int:
+                fail(f"{side} campaign identity is missing or malformed")
+            if not _text(binding.get("engagement_id")):
+                fail(f"{side} engagement identity is missing or malformed")
+            if not _text(binding.get("label")):
+                fail(f"{side} snapshot label is missing or malformed")
+            if not _text(binding.get("script_version")):
+                fail(f"{side} snapshot owner version is missing or malformed")
+
+        before_source = source_views["before"]
+        after_source = source_views["after"]
+        if before_source.get("snapshot_id") == after_source.get("snapshot_id"):
+            fail("before and after comparison snapshot identities must be distinct")
+        if (before_source.get("campaign_id") != campaign_id
+                or after_source.get("campaign_id") != campaign_id):
+            fail("comparison admission campaign identity does not reconcile to its source pair")
+        if (before_source.get("engagement_id") != engagement_id
+                or after_source.get("engagement_id") != engagement_id):
+            fail("comparison admission engagement identity does not reconcile to its source pair")
+
+        subject_pair = admission.get("subject_binding")
+        if not isinstance(subject_pair, dict) or set(subject_pair) != {"before", "after"}:
+            fail("comparison admission subject pair is missing or malformed")
+            subject_pair = {}
+        subject_keys = {
+            "schema", "identity_kind", "n_subjects", "subjects",
+            "subjects_sha256", "valid", "failures",
+        }
+        for side in ("before", "after"):
+            subjects = subject_pair.get(side)
+            if not isinstance(subjects, dict) or set(subjects) != subject_keys:
+                fail(f"{side} comparison subject binding is missing or malformed")
+                continue
+            if subjects.get("schema") != SUBJECT_BINDING_SCHEMA \
+                    or subjects.get("identity_kind") != "local_snapshot_device":
+                fail(f"{side} comparison subject identity contract is missing or unsupported")
+            rows = subjects.get("subjects")
+            if (not isinstance(rows, list)
+                    or any(not isinstance(item, str) or not item.strip() for item in rows)):
+                fail(f"{side} comparison subject identities are missing or malformed")
+                rows = []
+            ordered = sorted(rows, key=lambda item: (item.casefold(), item))
+            if rows != ordered or len({item.casefold() for item in rows}) != len(rows):
+                fail(f"{side} comparison subject identities are not canonical and collision-free")
+            if type(subjects.get("n_subjects")) is not int \
+                    or subjects.get("n_subjects") != len(rows):
+                fail(f"{side} comparison subject count does not reconcile to its identities")
+            if subjects.get("subjects_sha256") != canonical_sha256({"subjects": rows}):
+                fail(f"{side} comparison subject digest does not reconcile to its identities")
+            nested_failures = string_list(
+                subjects.get("failures"), f"{side} subject-binding failures")
+            if subjects.get("failures") == []:
+                nested_failures = []
+            if type(subjects.get("valid")) is not bool \
+                    or subjects.get("valid") is not (not nested_failures):
+                fail(f"{side} comparison subject validity does not reconcile to its failures")
+            for item in nested_failures:
+                if f"{side}: {item}" not in failures:
+                    fail(f"{side} subject-binding failure is not retained by comparison admission")
+            empty_gap = f"{side} snapshot has no bound device subjects"
+            if subjects.get("valid") is True and not rows and empty_gap not in gaps:
+                fail(f"{side} empty subject scope is not retained as a comparison coverage gap")
+            if rows and empty_gap in gaps:
+                fail(f"{side} comparison coverage gap contradicts its non-empty subject scope")
+
+        profiles = admission.get("support_profiles")
+        canonical_profiles = protocol_support_profiles()
+        if not isinstance(profiles, list) or profiles != canonical_profiles:
+            fail("comparison support profiles do not match the exact canonical executable roster")
+
+        owners = admission.get("owner_versions")
+        expected_owners = canonical_decision_owner_versions(
+            before_snapshot_owner=before_source.get("script_version"),
+            after_snapshot_owner=after_source.get("script_version"),
+        )
+        if not isinstance(owners, dict) or owners != expected_owners:
+            fail("comparison owner versions do not match the exact canonical owner roster")
+    except (TypeError, ValueError, KeyError, AttributeError, RecursionError, MemoryError):
+        if not validation_failures:
+            fail("comparison admission validation failed")
+
+    return {
+        "present": present,
+        "valid": not validation_failures,
+        "reason": "ok" if not validation_failures else validation_failures[0],
+        "failures": validation_failures,
+    }
+
+
+def _assessability_declares(
+        snapshot: Mapping[str, Any], protocol: str, *, positive_subject_only: bool = False) -> bool:
     receipt = snapshot.get("protocol_assessability")
-    families = receipt.get("families") if isinstance(receipt, dict) else None
+    field = "rows" if positive_subject_only else "families"
+    families = receipt.get(field) if isinstance(receipt, dict) else None
     wanted = protocol.casefold()
     return isinstance(families, list) and any(
         isinstance(row, dict)
         and _text(row.get("protocol")).casefold() == wanted
+        and (
+            not positive_subject_only
+            or row.get("health_row_emitted") is True
+        )
         for row in families
     )
 
 
 def _declares_any(snapshot: Mapping[str, Any], keys: Iterable[str]) -> bool:
     return any(key in snapshot for key in keys)
+
+
+def _stp_positive_or_malformed(snapshot: Mapping[str, Any]) -> bool:
+    """Recognize actual STP subjects/attempted malformed evidence, not the fixed family roster."""
+    from cisco_toolkit import protocol_deltas
+
+    health = snapshot.get("protocol_health")
+    health_attempted = (
+        "protocol_health" in snapshot and not isinstance(health, list)
+    ) or (
+        isinstance(health, list) and any(
+            isinstance(row, dict) and _text(row.get("protocol")).casefold() == "stp"
+            for row in health
+        )
+    )
+    interfaces = snapshot.get("interfaces")
+    interface_topology = isinstance(interfaces, dict) and any(
+        isinstance(row, dict)
+        and (
+            "stp_fwd_vlans" in row
+            or "stp_blk_vlans" in row
+        )
+        for device_rows in interfaces.values()
+        if isinstance(device_rows, dict)
+        for row in device_rows.values()
+    )
+    roots = snapshot.get("stp_roots")
+    root_topology = "stp_roots" in snapshot and (
+        not isinstance(roots, dict) or bool(roots)
+    )
+    topology_attempted = root_topology or interface_topology
+    consistency_attempted = (
+        "stp_consistency_baseline" in snapshot
+        or health_attempted
+        or topology_attempted
+        or _assessability_declares(snapshot, "STP", positive_subject_only=True)
+    )
+    if not consistency_attempted and not topology_attempted:
+        return False
+    consistency = (
+        protocol_deltas._stp_consistency_view(snapshot)
+        if consistency_attempted else {"valid": True, "rows": []}
+    )
+    topology = (
+        protocol_deltas._topology_view(snapshot)
+        if topology_attempted else {"valid": True, "roots": {}, "paths": {}, "gaps": []}
+    )
+    return (
+        consistency.get("valid") is not True
+        or topology.get("valid") is not True
+        or bool(consistency.get("rows"))
+        or bool(topology.get("roots"))
+        or bool(topology.get("paths"))
+        or bool(topology.get("gaps"))
+    )
+
+
+def _etherchannel_positive_or_malformed(snapshot: Mapping[str, Any]) -> bool:
+    """Recognize a local bundle subject without treating an emitted empty container as support."""
+    from cisco_toolkit import protocol_deltas
+
+    baseline = snapshot.get("etherchannel_baseline")
+    projection = snapshot.get("etherchannel_projection")
+    attempted = baseline is not None or projection is not None or _assessability_declares(
+        snapshot, "EtherChannel", positive_subject_only=True
+    )
+    if not attempted:
+        return False
+    view = protocol_deltas._etherchannel_view(snapshot)
+    return view.get("valid") is not True or bool(view.get("rows"))
 
 
 def _normalized_source_binding(value: Any, snapshot: Mapping[str, Any]) -> dict:
@@ -598,30 +1042,45 @@ def compute_native_protocol_deltas(
     after_source = _normalized_source_binding(after_binding, new)
     specs = (
         (protocol_deltas.compute_ipv6_routing_adjacency_delta,
-         ("ipv6_routing_adjacency_baseline",), None),
+         ("ipv6_routing_adjacency_baseline",), None, None),
         (protocol_deltas.compute_bgp_configured_peer_delta,
-         ("bgp_configured_peer_baseline",), None),
+         ("bgp_configured_peer_baseline",), None, None),
         (protocol_deltas.compute_stp_consistency_delta,
-         ("stp_consistency_baseline",), "STP"),
+         (), None, _stp_positive_or_malformed),
         (protocol_deltas.compute_stp_topology_delta,
-         ("stp_roots",), "STP"),
+         (), None, _stp_positive_or_malformed),
         (protocol_deltas.compute_etherchannel_delta,
-         ("etherchannel_baseline", "etherchannel_projection"), "EtherChannel"),
+         (), None, _etherchannel_positive_or_malformed),
         (protocol_deltas.compute_vtp_safety_delta,
-         ("vtp_safety_baseline",), "VTP"),
+         ("vtp_safety_baseline",), "VTP", None),
         (protocol_deltas.compute_fhrp_configured_group_delta,
-         ("fhrp_configured_group_baseline",), "FHRP"),
+         ("fhrp_configured_group_baseline",), "FHRP", None),
         (protocol_deltas.compute_fhrp_redundancy_domain_delta,
-         ("fhrp_redundancy_domain_baseline",), None),
+         ("fhrp_redundancy_domain_baseline",), None, None),
     )
     results: List[dict] = []
-    for computer, keys, assessability_family in specs:
-        applicable = _declares_any(old, keys) or _declares_any(new, keys)
+    comparison_source_binding = {
+        "before": before_source,
+        "after": after_source,
+    }
+    for computer, keys, assessability_family, predicate in specs:
+        applicable = (
+            predicate(old) or predicate(new)
+            if predicate is not None
+            else _declares_any(old, keys) or _declares_any(new, keys)
+        )
         if assessability_family:
             applicable = applicable or _assessability_declares(
-                old, assessability_family) or _assessability_declares(new, assessability_family)
+                old, assessability_family, positive_subject_only=True
+            ) or _assessability_declares(
+                new, assessability_family, positive_subject_only=True
+            )
         if applicable:
-            results.append(computer(old, new))
+            results.append(computer(
+                old,
+                new,
+                comparison_source_binding=comparison_source_binding,
+            ))
 
     multichassis_keys = (
         "multichassis_lag_typed_observations", "multichassis_lag_domain_baseline",
@@ -635,7 +1094,18 @@ def compute_native_protocol_deltas(
         def baseline(snapshot: Mapping[str, Any], binding: Mapping[str, Any]) -> dict:
             stored = snapshot.get("multichassis_lag_domain_baseline")
             if stored is not None:
-                return stored
+                reconciled = multichassis_lag.validate_multichassis_lag_snapshot_evidence(
+                    stored,
+                    snapshot.get("multichassis_lag_typed_observations"),
+                    snapshot.get("devices"),
+                )
+                if reconciled.get("valid") is True:
+                    return stored
+                # A valid-but-empty baseline forces the existing native owner to emit a
+                # not-comparable receipt. It cannot preserve any pair/attachment claim from an
+                # unreconciled stored projection.
+                return multichassis_lag.compute_multichassis_lag_domain_baseline(
+                    {"observations": []})
             return multichassis_lag.compute_multichassis_lag_domain_baseline(
                 _legacy_multichassis_input(snapshot, binding))
 
@@ -819,6 +1289,127 @@ def _ipv4_family(delta: Any, change_intent: Mapping[str, Any], profile: Mapping[
     }
 
 
+_PROTOCOL_DELTA_NATIVE_SCHEMAS = frozenset({
+    "ipv6_routing_adjacency_delta/1",
+    "bgp_configured_peer_delta/1",
+    "stp_consistency_delta/1",
+    "stp_topology_delta/1",
+    "etherchannel_delta/1",
+    "vtp_safety_delta/1",
+    "fhrp_configured_group_delta/1",
+    "fhrp_redundancy_domain_delta/1",
+})
+_PROTOCOL_DELTA_SOURCE_RECEIPT_FIELDS = frozenset({
+    "present", "valid", "source_bound", "owner_source_authority",
+    "comparison_source_bound", "comparison_source_basis", "snapshot_sha256",
+    "projection_sha256", "reason",
+})
+_MULTICHASSIS_LAG_DELTA_SCHEMA = "multichassis_lag_delta/1"
+_MULTICHASSIS_SOURCE_BINDING_FIELDS = frozenset({
+    "custody", "before_snapshot_sha256", "after_snapshot_sha256",
+    "before_baseline_sha256", "after_baseline_sha256",
+})
+
+
+def _protocol_delta_source_custody(value: Mapping[str, Any]) -> tuple[dict, List[str]]:
+    """Validate the native protocol-delta receipt pair without minting source authority.
+
+    The comparison owner already decided whether a current-run owner marker or an exact-snapshot
+    reconciliation authorizes each projection.  Composition verifies that closed receipt and its
+    internal implications; it never upgrades a false custody bit from caller-provided hashes.
+    """
+    failures: List[str] = []
+    bound = {"before": False, "after": False}
+    pair = value.get("source_receipts")
+    if not isinstance(pair, dict) or set(pair) != {"before", "after"}:
+        return bound, ["native protocol source receipt pair is missing or malformed"]
+
+    for side in ("before", "after"):
+        receipt = pair.get(side)
+        if (not isinstance(receipt, dict)
+                or set(receipt) != _PROTOCOL_DELTA_SOURCE_RECEIPT_FIELDS):
+            failures.append(f"{side} native protocol source receipt is missing or malformed")
+            continue
+        bool_fields = (
+            "present", "valid", "source_bound", "owner_source_authority",
+            "comparison_source_bound",
+        )
+        if any(type(receipt.get(field)) is not bool for field in bool_fields):
+            failures.append(f"{side} native protocol source receipt flags are malformed")
+            continue
+        if any(not isinstance(receipt.get(field), str) for field in (
+                "comparison_source_basis", "snapshot_sha256", "projection_sha256", "reason")):
+            failures.append(f"{side} native protocol source receipt text leaves are malformed")
+            continue
+
+        present = receipt["present"]
+        valid = receipt["valid"]
+        owner_bound = receipt["source_bound"] and receipt["owner_source_authority"]
+        comparison_bound = receipt["comparison_source_bound"]
+        basis = receipt["comparison_source_basis"]
+        snapshot_sha = receipt["snapshot_sha256"]
+        projection_sha = receipt["projection_sha256"]
+        coherent = True
+
+        if valid and not present:
+            failures.append(f"{side} native protocol valid receipt is not present")
+            coherent = False
+        if receipt["source_bound"] and (not present or not valid):
+            failures.append(f"{side} native protocol owner custody contradicts receipt validity")
+            coherent = False
+        if snapshot_sha and not _is_sha256(snapshot_sha):
+            failures.append(f"{side} native protocol snapshot digest is malformed")
+            coherent = False
+        if projection_sha and not _is_sha256(projection_sha):
+            failures.append(f"{side} native protocol projection digest is malformed")
+            coherent = False
+
+        if comparison_bound:
+            if not present or not valid or not _is_sha256(projection_sha):
+                failures.append(
+                    f"{side} native protocol comparison custody lacks a valid owner projection")
+                coherent = False
+            if basis == "current_run_owner_source":
+                if not owner_bound:
+                    failures.append(
+                        f"{side} native protocol current-run custody lacks owner authority")
+                    coherent = False
+            elif basis == "exact_snapshot_bytes_and_validated_owner_projection":
+                if owner_bound or not _is_sha256(snapshot_sha):
+                    failures.append(
+                        f"{side} native protocol exact-snapshot custody is incoherent")
+                    coherent = False
+            else:
+                failures.append(f"{side} native protocol comparison custody basis is unsupported")
+                coherent = False
+        else:
+            if basis != "not_source_bound" or owner_bound:
+                failures.append(f"{side} native protocol unbound custody disposition is incoherent")
+                coherent = False
+
+        bound[side] = bool(comparison_bound and coherent)
+    return bound, failures
+
+
+def _multichassis_source_custody(value: Mapping[str, Any]) -> List[str]:
+    """Validate the distinct multichassis comparison binding in its own v1 terms."""
+    failures: List[str] = []
+    if value.get("owner_version") != "1":
+        failures.append("multichassis delta owner version is missing or unsupported")
+    binding = value.get("source_binding")
+    if (not isinstance(binding, dict)
+            or set(binding) != _MULTICHASSIS_SOURCE_BINDING_FIELDS):
+        return [*failures, "multichassis comparison source binding is missing or malformed"]
+    if binding.get("custody") != "persisted_snapshot_bytes_bound":
+        failures.append("multichassis comparison source custody is missing or unsupported")
+    for leaf in (
+            "before_snapshot_sha256", "after_snapshot_sha256",
+            "before_baseline_sha256", "after_baseline_sha256"):
+        if not _is_sha256(binding.get(leaf)):
+            failures.append(f"multichassis {leaf.replace('_', ' ')} is missing or malformed")
+    return failures
+
+
 def _native_family(delta: Any, change_intent: Mapping[str, Any],
                    profiles: Mapping[str, Mapping[str, Any]], index: int) -> dict:
     value = _dict(delta)
@@ -844,6 +1435,8 @@ def _native_family(delta: Any, change_intent: Mapping[str, Any],
         failures.append("native delta schema does not match its support profile owner")
     if value.get("owns_score") is not False or value.get("owns_verdict") is not False:
         failures.append("native delta must own neither score nor verdict")
+    is_protocol_delta = schema in _PROTOCOL_DELTA_NATIVE_SCHEMAS
+    is_multichassis = schema == _MULTICHASSIS_LAG_DELTA_SCHEMA
     assurance = value.get("assurance_level")
     if assurance not in ASSURANCE_LEVELS:
         failures.append("native delta assurance level is missing or unsupported")
@@ -852,6 +1445,25 @@ def _native_family(delta: Any, change_intent: Mapping[str, Any],
     if not isinstance(raw_rows, list):
         failures.append("native delta changes are missing or malformed")
         raw_rows = []
+    protocol_source_bound = {"before": False, "after": False}
+    applicability = value.get("applicability")
+    if is_protocol_delta:
+        if value.get("owner") != schema:
+            failures.append("native protocol delta owner does not match its schema")
+        if applicability not in ("applicable", "not_applicable"):
+            failures.append("native protocol delta applicability is missing or unsupported")
+        elif applicability == "applicable" and not raw_rows:
+            failures.append("applicable native protocol delta emitted no subject rows")
+        elif applicability == "not_applicable" and raw_rows:
+            failures.append("not-applicable native protocol delta emitted subject rows")
+        protocol_source_bound, custody_failures = _protocol_delta_source_custody(value)
+        failures.extend(custody_failures)
+        if applicability == "not_applicable" and not all(protocol_source_bound.values()):
+            failures.append(
+                "not-applicable native protocol delta lacks source-bound receipts on both sides")
+    elif is_multichassis:
+        failures.extend(_multichassis_source_custody(value))
+
     raw_summary = value.get("summary")
     by_transition = raw_summary.get("by_transition") if isinstance(raw_summary, dict) else None
     if (not isinstance(by_transition, dict)
@@ -872,6 +1484,13 @@ def _native_family(delta: Any, change_intent: Mapping[str, Any],
 
     rows: List[dict] = []
     observed_counts = {token: 0 for token in CHANGE_VOCABULARY}
+    observed_effects = {token: 0 for token in _DECISION_EFFECTS}
+    multichassis_record_types = {
+        "local_observation",
+        "reciprocal_peer_pair",
+        "local_leg",
+        "reconciled_attachment",
+    }
     for row_index, raw in enumerate(raw_rows):
         if not isinstance(raw, dict):
             failures.append(f"native changes[{row_index}] is malformed")
@@ -884,8 +1503,14 @@ def _native_family(delta: Any, change_intent: Mapping[str, Any],
                 or not _text(raw.get("note"))):
             failures.append(f"native changes[{row_index}] is missing a required semantic leaf")
             continue
+        record_type = raw.get("record_type")
+        if is_multichassis and record_type not in multichassis_record_types:
+            failures.append(
+                f"native changes[{row_index}] is missing a closed multichassis record type"
+            )
+            continue
         expected = _expected(change_intent, family, transition, subject)
-        rows.append({
+        normalized = {
             "family": family,
             "subject": subject,
             "transition": transition,
@@ -894,10 +1519,81 @@ def _native_family(delta: Any, change_intent: Mapping[str, Any],
             "before_state": raw.get("before_state", {}),
             "after_state": raw.get("after_state", {}),
             "note": raw["note"],
-        })
+        }
+        if is_multichassis:
+            normalized["subject_kind"] = record_type
+        rows.append(normalized)
         observed_counts[transition] += 1
+        observed_effects[producer_effect] += 1
     if by_transition != observed_counts:
         failures.append("native delta transition summary does not reconcile to its complete rows")
+    if is_protocol_delta:
+        by_effect = raw_summary.get("by_decision_effect") \
+            if isinstance(raw_summary, dict) else None
+        if (not isinstance(by_effect, dict)
+                or tuple(by_effect) != _DECISION_EFFECTS
+                or any(
+                    not isinstance(by_effect.get(effect), int)
+                    or isinstance(by_effect.get(effect), bool)
+                    or by_effect.get(effect) < 0
+                    for effect in _DECISION_EFFECTS
+                )
+                or by_effect != observed_effects):
+            failures.append(
+                "native protocol decision-effect summary does not reconcile to its complete rows")
+        comparable_count = sum(
+            count for transition, count in observed_counts.items()
+            if transition not in {"coverage_lost", "not_comparable"}
+        )
+        if (not isinstance(raw_summary, dict)
+                or type(raw_summary.get("n_subjects")) is not int
+                or raw_summary.get("n_subjects") != len(rows)
+                or type(raw_summary.get("n_comparable")) is not int
+                or raw_summary.get("n_comparable") != comparable_count):
+            failures.append("native protocol subject/comparable summary is malformed")
+        expected_comparable = bool(comparable_count) and not observed_counts["not_comparable"]
+        expected_assessed = bool(comparable_count) and not (
+            observed_counts["coverage_lost"] or observed_counts["not_comparable"])
+        if (type(value.get("comparable")) is not bool
+                or value.get("comparable") is not expected_comparable
+                or type(value.get("assessed")) is not bool
+                or value.get("assessed") is not expected_assessed):
+            failures.append("native protocol comparable/assessed flags do not reconcile to its rows")
+        if applicability == "not_applicable" and rows:
+            failures.append("not-applicable native protocol delta is not rowless")
+        if applicability == "applicable" and not rows:
+            failures.append("applicable native protocol delta has no valid materialized subject")
+        if applicability == "applicable" and not all(protocol_source_bound.values()):
+            expected_transition = (
+                "coverage_lost" if protocol_source_bound["before"] else "not_comparable"
+            )
+            if (assurance != "not_verified" or not rows
+                    or any(
+                        row["transition"] != expected_transition
+                        or row["decision_effect"] != "not_verified"
+                        for row in rows
+                    )):
+                failures.append(
+                    "unbound native protocol custody is not reconciled to an abstaining transition")
+    elif is_multichassis:
+        raw_comparison_failures = value.get("comparison_failures")
+        if (not isinstance(raw_comparison_failures, list)
+                or any(not _text(item) for item in raw_comparison_failures)
+                or len(set(raw_comparison_failures)) != len(raw_comparison_failures)):
+            failures.append("multichassis comparison failures are missing or malformed")
+            raw_comparison_failures = []
+        if not raw_comparison_failures and not rows:
+            failures.append("source-bound multichassis delta emitted no subject rows")
+        if isinstance(raw_summary, dict):
+            n_changes = sum(
+                count for transition, count in observed_counts.items()
+                if transition not in {"unchanged_healthy", "unchanged_degraded"}
+            )
+            if (type(raw_summary.get("n_subjects")) is not int
+                    or raw_summary.get("n_subjects") != len(rows)
+                    or type(raw_summary.get("n_changes")) is not int
+                    or raw_summary.get("n_changes") != n_changes):
+                failures.append("multichassis delta summary does not reconcile to its rows")
     if failures:
         rows = [_not_comparable_row(family, "; ".join(dict.fromkeys(failures)))]
         assurance = "not_verified"
@@ -952,7 +1648,7 @@ def protocol_family_change_set(
             for token in _DECISION_EFFECTS
         },
     }
-    return {
+    payload = {
         "schema": FAMILY_CHANGE_SET_SCHEMA,
         "owner": "reference_only_composition",
         "owns_score": False,
@@ -960,31 +1656,129 @@ def protocol_family_change_set(
         "summary": summary,
         "families": families,
     }
+    return BoundProtocolFamilyChangeSet(
+        payload,
+        payload_sha256=canonical_sha256(payload),
+        _authority=_BOUND_FAMILY_SET_AUTHORITY,
+    )
+
+
+def current_baseline_blocker_export(snapshot: Any) -> dict:
+    """Return the uncapped, non-decision projection behind ``current_baseline_gate/1``.
+
+    The v1 gate deliberately retains its 50-row compatibility cap.  This additive owner first asks
+    that unchanged gate to reconcile the complete validation plan, then projects every classified
+    blocker for export.  It never supplies counts or rows back to decision code.
+    """
+    from cisco_toolkit.analyze import (
+        classify_current_baseline_item,
+        compute_current_baseline_gate,
+    )
+
+    snap = _dict(snapshot)
+    plan = snap.get("validation_plan")
+    gate = compute_current_baseline_gate(plan)
+    integrity = _dict(gate.get("integrity"))
+    summary = _dict(gate.get("summary"))
+    failures: List[str] = []
+    if integrity.get("valid") is not True:
+        failures.extend(
+            str(item) for item in _list(integrity.get("failures")) if str(item).strip()
+        )
+    items = plan.get("items") if isinstance(plan, dict) else None
+    if not isinstance(items, list):
+        failures.append("validation plan items are unavailable")
+
+    def bounded(value: Any, limit: int) -> str:
+        text = value.strip() if isinstance(value, str) else ""
+        return text if len(text) <= limit else text[:max(0, limit - 3)] + "..."
+
+    rows: List[dict] = []
+    if not failures:
+        for item in items:
+            state = classify_current_baseline_item(item)
+            if state in {"clear", "invalid"}:
+                continue
+            rows.append({
+                "device": bounded(item.get("device"), 120),
+                "wave": bounded(item.get("wave"), 120),
+                "category": bounded(item.get("category"), 80),
+                "severity": bounded(item.get("severity"), 20),
+                "check": bounded(item.get("check"), 240),
+                "evidence_state": state,
+                "expect": bounded(item.get("expect"), 600),
+                "projection_custody": bounded(item.get("projection_custody"), 120),
+                "source_key": bounded(item.get("source_key"), 300),
+            })
+    declared_total = summary.get("n_blockers")
+    if (not failures and (
+            type(declared_total) is not int or declared_total != len(rows))):
+        failures.append("uncapped blocker rows do not reconcile to current_baseline_gate/1")
+        rows = []
+    status = "available" if not failures else "not_verified"
+    payload = {
+        "schema": "current_baseline_blocker_export/1",
+        "owner": "reference_only_projection",
+        "owns_verdict": False,
+        "status": status,
+        "source_owner": "validation_plan reconciled by current_baseline_gate/1",
+        "rows": rows,
+        "summary": {
+            "n_blockers_total": len(rows) if not failures else 0,
+            "n_rows_returned": len(rows),
+            "omitted": 0,
+            "complete": not failures,
+            "rows_sha256": canonical_sha256({"rows": rows}),
+        },
+        "failures": list(dict.fromkeys(failures))[:20],
+        "note": (
+            "Complete uncapped blocker export; this reference-only projection does not participate "
+            "in the current-baseline or cutover verdict."
+            if status == "available" else
+            "Complete blocker export is not verified because the validation plan did not reconcile."
+        ),
+    }
+    return payload
 
 
 def cutover_operator_evidence(snapshot: Any) -> dict:
     """Project existing simulation and rollback owners without inventing rehearsal success.
 
     ``failure_impact`` is an existing bounded simulation projection, not proof that an operator
-    rehearsed a failure.  ``migration_scenarios`` owns rollback planning prose, not execution.
-    Keeping those distinctions explicit lets decision surfaces put the evidence in the right order
-    while withholding a stronger field claim than the stored snapshot supports.
+    rehearsed a failure.  The additive ``l2_failure_rehearsal/1`` receipt composes the existing
+    failover/native-delta/traffic-assurance owners and remains reference-only.  ``migration_scenarios``
+    owns rollback planning prose, not execution.  Keeping those distinctions explicit lets decision
+    surfaces put the evidence in the right order while withholding a stronger field claim than the
+    stored snapshot supports.
     """
     snap = _dict(snapshot)
+    # Lazy import avoids a module cycle: the rehearsal composer reuses the native delta owners,
+    # which in turn consume the shared contracts in this module.
+    from cisco_toolkit.l2_rehearsal import compute_l2_failure_rehearsal
+
+    l2_rehearsal = compute_l2_failure_rehearsal(snapshot)
     raw_impacts = snap.get("failure_impact")
     impacts = [dict(row) for row in raw_impacts
                if isinstance(row, dict)] if isinstance(raw_impacts, list) else []
+    l2_status = l2_rehearsal.get("status")
+    l2_has_projection = l2_status in {"simulation_only", "projected_risk", "current_fault"}
     rehearsal = {
-        "status": "simulation_only" if impacts else "not_verified",
+        "status": (
+            "current_fault" if l2_status == "current_fault" else
+            "projected_risk" if l2_status == "projected_risk" else
+            "simulation_only" if impacts or l2_has_projection else
+            "not_verified"
+        ),
         "assurance_level": "not_verified",
         "source_owner": "failure_impact projection",
         "n_impacts_total": len(impacts),
         "impacts": impacts,
+        "l2_failure_rehearsal": l2_rehearsal,
         "note": (
-            "Existing failure-impact simulation is retained as planning evidence; no source-bound "
-            "operator rehearsal receipt is present, so rehearsal remains not verified."
-            if impacts else
-            "No source-bound failure simulation or operator rehearsal receipt is present."
+            "Existing failure-impact and bounded L2 projections are retained as planning evidence; "
+            "no source-bound operator rehearsal receipt is present, so rehearsal remains not verified."
+            if impacts or l2_has_projection else
+            "No supported source-bound failure projection or operator rehearsal receipt is present."
         ),
     }
 
@@ -1026,6 +1820,7 @@ def cutover_operator_evidence(snapshot: Any) -> dict:
         "schema": CUTOVER_OPERATOR_EVIDENCE_SCHEMA,
         "owner": "reference_only_projection",
         "owns_verdict": False,
+        "current_baseline_blocker_export": current_baseline_blocker_export(snapshot),
         "rehearsal": rehearsal,
         "rollback": rollback,
     }

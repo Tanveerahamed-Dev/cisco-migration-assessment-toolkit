@@ -375,6 +375,13 @@ from cisco_toolkit.ipv6_routing import (
     compute_ipv6_routing_subject_scope,
     embedded_ipv6_routing_adjacency_baseline,
 )
+from cisco_toolkit.comparison import compare_bound_pair
+from cisco_toolkit.protocol_assurance import (
+    OFFLINE_FILE_SOURCE,
+    bind_snapshot_json_bytes,
+    reject_duplicate_json_keys,
+)
+from cisco_toolkit.multichassis_lag import compute_multichassis_lag_domain_baseline
 from cisco_toolkit.nrfu_export import compute_nrfu_commands   # NEW: four-phase NRFU certification pack (READ-ONLY commands + expected values pre-filled from the snapshot)
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue. _load_cmd_output +
 # _safe_parse dropped step 28 (build_interfaces, their last monolith user, moved to
@@ -466,7 +473,7 @@ from cisco_toolkit.traffic_assurance import (
 )
 from cisco_toolkit.whatif import run_scenarios                          # roadmap G4 (failure-injection what-if)
 from cisco_toolkit.path_assertions import evaluate_path_assertions      # roadmap G3 (named path/segmentation intents)
-from cisco_toolkit.precert import compute_precert, schema_compat_status  # roadmap C1 (Pre-Change Cert); P3-E2 schema gate
+from cisco_toolkit.precert import schema_compat_status  # roadmap C1 (Pre-Change Cert); P3-E2 schema gate
 from cisco_toolkit.assertions import evaluate_pack                      # roadmap A1/H1/H2 (checks-as-data)
 # NEW-V3.23.37-.38 (PHASE 2.7 steps 27-28): the model-construction layer - the per-device
 # InterfaceData builder + switch-level DevicePhysical / switch-identity records + global-ARP
@@ -478,7 +485,7 @@ from cisco_toolkit.build import (
     read_run_config,   # NEW-V3.23.146 (raw running-config text for golden-config drift)
     read_syslog_log,   # NEW-V3.23.164 (raw 'show logging' text for syslog intelligence)
     build_platform_metrics,   # NEW-V3.23.167 (CPU/memory/system-resources facts for platform health)
-    build_routes, inscope_subnets, scope_routes, build_bgp_received, build_nat, build_security, build_config_hygiene, build_stp_roots, build_vpc, build_fhrp_detail, build_overlay, build_copp, build_mpls, build_routing_neighbors,
+    build_routes, inscope_subnets, scope_routes, build_bgp_received, build_nat, build_security, build_config_hygiene, build_stp_roots, build_vpc, build_multichassis_lag_typed_observation, build_fhrp_detail, build_overlay, build_copp, build_mpls, build_routing_neighbors,
     build_lisp, build_cts, build_dmvpn, build_crypto, build_bfd, build_ipv6_nd, build_ipv6_routing,   # universal arch coverage
     build_aci,   # Cisco ACI (APIC JSON-ingestion channel)
     build_sdwan,   # Cisco Catalyst SD-WAN (vManage JSON-ingestion channel)
@@ -499,13 +506,13 @@ from cisco_toolkit.build import (
 # '--compare OLD NEW' diff workbook. Homed in cisco_toolkit/html.py; imported back so main() keeps
 # building/serializing the snapshot + emitting the HTML + diff outputs.
 from cisco_toolkit.html import (snapshot_state, sparsify_interfaces, write_html_explorer, write_diff_workbook,
-                                compute_snapshot_delta, compute_cutover_gate,
                                 write_campaign_workbook, redact_snapshot,
                                 redact_collected_inplace, redact_workbook_cells,   # campaign trend; audit-3 #8 workbook redact
                                 redact_collection_dir)                             # Plan A Tier-1 #5 (raw-capture secret scrub)
 from cisco_toolkit.context import AnalysisContext                    # Plan A #15 (typed pipeline carrier / strangler)
 from cisco_toolkit.docmeta import (artifact_candidate_paths, artifact_kind,
                                    validate_artifact)
+from cisco_toolkit.protocol_receipt_surfaces import write_protocol_assurance_receipt_sheet
 from cisco_toolkit.coverage_matrix import compute_coverage_matrix   # Plan A #5 (coverage-as-a-first-class-row SSOT)
 from cisco_toolkit.detector_schema import compute_detector_schema   # J1 (per-detector descriptors; not-observed != healthy)
 from cisco_toolkit.unknown_evidence import (                        # governed, aggregate-only parser/coverage unknown queue
@@ -566,6 +573,8 @@ COMMANDS_NXOS = [
     "show port-channel summary",
     "show etherchannel summary",
     "show vpc",                          # NEW-V3.23.125 (vPC / MLAG peer confirmation for the flow simulator)
+    "show vpc role",                     # explicit local/peer device system-MAC identity for typed vPC custody
+    "show lacp neighbor",                # explicit downstream LACP partner system + operational key
     "show nve peers",                    # VXLAN-EVPN VTEP peer state -> build_overlay / _d_nve_peer_health
     "show bgp l2vpn evpn summary",       # BGP-EVPN control plane (MAC/IP route exchange) -> _d_evpn_rr_health
     "show nve vni",                      # VXLAN VNI (VLAN/VRF<->VNI) binding state -> _d_nve_vni_health
@@ -738,6 +747,8 @@ COMMANDS_IOS = [
 # universal entry point and needs only this.
 COMMANDS_ARISTA = [
     "show mlag",                         # Arista MLAG (multi-chassis link agg) state -> build_arista / _d_arista_mlag_degraded
+    "show mlag interfaces detail",       # explicit local MLAG legs; peer device identity is not present
+    "show lacp peer",                    # explicit downstream LACP partner system + operational key
     "show bgp evpn summary",             # Arista BGP-EVPN overlay control plane -> build_arista / _d_arista_evpn_degraded
 ]
 # MULTI-VENDOR (Juniper Junos): device-native JSON via 'show ... | display json'. Same offline-only fold as
@@ -1676,6 +1687,176 @@ def _bind_input(path: str, *, role: str,
     return data, record, binding
 
 
+def _parse_offline_comparison_context(data: bytes) -> dict:
+    """Validate the explicit identity/change contract for a decision-grade file comparison.
+
+    Snapshot filenames and directory proximity are not engagement or campaign identity.  The CLI
+    therefore abstains unless the operator supplies this small, closed, exact-byte context object.
+    It carries no credentials and does not broaden the comparison evidence surface.
+    """
+    def reject_constant(token: str) -> None:
+        raise ValueError(f"non-finite JSON number: {token}")
+
+    try:
+        value = json.loads(
+            data.decode("utf-8"),
+            parse_constant=reject_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(f"invalid JSON ({exc})") from exc
+    if not isinstance(value, dict):
+        raise ValueError("root must be an object")
+    allowed = {
+        "schema", "engagement_id", "campaign_id", "before_snapshot_id",
+        "after_snapshot_id", "change_intent",
+    }
+    if set(value) - allowed:
+        raise ValueError(
+            "unsupported field(s): " + ", ".join(sorted(set(value) - allowed))
+        )
+    if value.get("schema") != "offline_comparison_context/1":
+        raise ValueError("schema must be offline_comparison_context/1")
+    engagement_id = value.get("engagement_id")
+    if not isinstance(engagement_id, str) or not engagement_id.strip():
+        raise ValueError("engagement_id must be a non-empty string")
+    for field in ("campaign_id", "before_snapshot_id", "after_snapshot_id"):
+        field_value = value.get(field)
+        if type(field_value) is not int or field_value <= 0:
+            raise ValueError(f"{field} must be a positive integer")
+    if value["before_snapshot_id"] == value["after_snapshot_id"]:
+        raise ValueError("before_snapshot_id and after_snapshot_id must be distinct")
+    if "change_intent" in value and not isinstance(value["change_intent"], dict):
+        raise ValueError("change_intent must be an object when supplied")
+    return {
+        "schema": value["schema"],
+        "engagement_id": engagement_id.strip(),
+        "campaign_id": value["campaign_id"],
+        "before_snapshot_id": value["before_snapshot_id"],
+        "after_snapshot_id": value["after_snapshot_id"],
+        "change_intent": value.get("change_intent"),
+    }
+
+
+def _parse_offline_trend_context(data: bytes) -> dict:
+    """Validate the exact ordered identity contract for an offline campaign trend.
+
+    A series of filenames is not campaign identity.  Every declared snapshot identity is therefore
+    bound to the SHA-256 of the exact bytes supplied on the matching ``--trend`` position.  Expected
+    changes, when present, are also ordered one-for-one with the adjacent comparison pairs.
+    """
+    def reject_constant(token: str) -> None:
+        raise ValueError(f"non-finite JSON number: {token}")
+
+    try:
+        value = json.loads(
+            data.decode("utf-8"),
+            parse_constant=reject_constant,
+            object_pairs_hook=reject_duplicate_json_keys,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(f"invalid JSON ({exc})") from exc
+    if not isinstance(value, dict):
+        raise ValueError("root must be an object")
+    allowed = {
+        "schema", "engagement_id", "campaign_id", "snapshots",
+        "adjacent_change_intents",
+    }
+    if set(value) - allowed:
+        raise ValueError(
+            "unsupported field(s): " + ", ".join(sorted(set(value) - allowed))
+        )
+    if value.get("schema") != "offline_trend_context/1":
+        raise ValueError("schema must be offline_trend_context/1")
+    engagement_id = value.get("engagement_id")
+    if not isinstance(engagement_id, str) or not engagement_id.strip():
+        raise ValueError("engagement_id must be a non-empty string")
+    campaign_id = value.get("campaign_id")
+    if type(campaign_id) is not int or campaign_id <= 0:
+        raise ValueError("campaign_id must be a positive integer")
+    snapshots = value.get("snapshots")
+    if not isinstance(snapshots, list) or len(snapshots) < 2:
+        raise ValueError("snapshots must be an ordered list with at least two entries")
+    normalized_snapshots = []
+    seen_ids = set()
+    for index, item in enumerate(snapshots):
+        if not isinstance(item, dict):
+            raise ValueError(f"snapshots[{index}] must be an object")
+        if set(item) - {"snapshot_id", "source_sha256", "label"}:
+            raise ValueError(
+                f"snapshots[{index}] has unsupported field(s): "
+                + ", ".join(sorted(set(item) - {"snapshot_id", "source_sha256", "label"}))
+            )
+        snapshot_id = item.get("snapshot_id")
+        if type(snapshot_id) is not int or snapshot_id <= 0:
+            raise ValueError(f"snapshots[{index}].snapshot_id must be a positive integer")
+        if snapshot_id in seen_ids:
+            raise ValueError("snapshot identities must be unique within the ordered campaign")
+        seen_ids.add(snapshot_id)
+        source_sha256 = item.get("source_sha256")
+        if (
+            not isinstance(source_sha256, str)
+            or len(source_sha256) != 71
+            or not source_sha256.startswith("sha256:")
+            or any(ch not in "0123456789abcdefABCDEF" for ch in source_sha256[7:])
+        ):
+            raise ValueError(
+                f"snapshots[{index}].source_sha256 must be sha256:<64 hexadecimal characters>"
+            )
+        label = item.get("label", f"C{index + 1}")
+        if not isinstance(label, str) or not label.strip():
+            raise ValueError(f"snapshots[{index}].label must be a non-empty string when supplied")
+        normalized_snapshots.append({
+            "snapshot_id": snapshot_id,
+            "source_sha256": "sha256:" + source_sha256[7:].lower(),
+            "label": label.strip(),
+        })
+    intents = value.get("adjacent_change_intents")
+    if intents is None:
+        normalized_intents = [None] * (len(normalized_snapshots) - 1)
+    else:
+        if not isinstance(intents, list) or len(intents) != len(normalized_snapshots) - 1:
+            raise ValueError(
+                "adjacent_change_intents must contain exactly one object or null per adjacent pair"
+            )
+        normalized_intents = []
+        for index, item in enumerate(intents):
+            if item is not None and not isinstance(item, dict):
+                raise ValueError(
+                    f"adjacent_change_intents[{index}] must be an object or null"
+                )
+            normalized_intents.append(item)
+    return {
+        "schema": "offline_trend_context/1",
+        "engagement_id": engagement_id.strip(),
+        "campaign_id": campaign_id,
+        "snapshots": normalized_snapshots,
+        "adjacent_change_intents": normalized_intents,
+    }
+
+
+def _publish_multichassis_lag_blocks(
+        snapshot: dict, typed_observations: Any, domain_baseline: Any) -> None:
+    """Publish runtime multichassis evidence only when a real local observation exists."""
+    observations = (
+        typed_observations.get("observations")
+        if isinstance(typed_observations, dict) else None
+    )
+    rows = (
+        [dict(row) for row in observations if isinstance(row, dict)]
+        if isinstance(observations, list) else []
+    )
+    if not rows:
+        snapshot.pop("multichassis_lag_typed_observations", None)
+        snapshot.pop("multichassis_lag_domain_baseline", None)
+        return
+    snapshot["multichassis_lag_typed_observations"] = {
+        "observations": rows
+    }
+    snapshot["multichassis_lag_domain_baseline"] = (
+        dict(domain_baseline) if isinstance(domain_baseline, dict) else {}
+    )
+
+
 def _input_binding_errors(bindings: List[dict]) -> List[str]:
     """Recheck caller-owned paths before publication; return bounded, content-free errors."""
     errors = []
@@ -2063,12 +2244,17 @@ def _derive_collected_at(no_collect: bool, collection_dir: str, root_dir: str):
     earliest member-file mtime, else -- last resort -- now() flagged `defaulted=True` so the caller
     can disclose that the collection date was unknown. Pure read; no side effects."""
     if not no_collect:
-        return datetime.now().isoformat(), False
+        return datetime.now().astimezone().isoformat(), False
     base = os.path.basename(os.path.normpath(collection_dir or root_dir or ""))
     m = re.search(r"(\d{8})_(\d{6})", base)
     if m:
         try:
-            return datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S").isoformat(), False
+            return (
+                datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+                .astimezone()
+                .isoformat(),
+                False,
+            )
         except ValueError:
             pass
     d = collection_dir or root_dir or ""
@@ -2076,10 +2262,10 @@ def _derive_collected_at(no_collect: bool, collection_dir: str, root_dir: str):
         mtimes = [os.path.getmtime(os.path.join(dp, f))
                   for dp, _dirs, files in os.walk(d) for f in files]
         if mtimes:
-            return datetime.fromtimestamp(min(mtimes)).isoformat(), False
+            return datetime.fromtimestamp(min(mtimes)).astimezone().isoformat(), False
     except OSError:
         pass
-    return datetime.now().isoformat(), True
+    return datetime.now().astimezone().isoformat(), True
 
 # =============================================================================
 # V3.15.0 ADDITIONS - new analysis outputs (Tier 1) + new collection (Tier 2).
@@ -2664,6 +2850,11 @@ def main():
                          "Findings Delta + Pre-Change Certificate) plus a <output>.precert.json "
                          "Pre-Change Validation Certificate (roadmap C1; --path-intents is honored); "
                          "skips collection and the template.")
+    ap.add_argument("--comparison-context", default=None, metavar="FILE",
+                    help="With --compare, bind the exact file pair to an explicit engagement, campaign, "
+                         "before/after snapshot identity, and optional expected-change intent. JSON schema: "
+                         "offline_comparison_context/1. Without it, artifacts are still written but the "
+                         "canonical gate remains INDETERMINATE/not-comparable.")
     ap.add_argument("--fail-on-compare-gate", action="store_true",
                     help="With --compare, exit 2 after writing the workbook and certificate unless the "
                          "combined CUTOVER GATE verdict is PASS. Opt-in; requires --compare.")
@@ -2772,6 +2963,13 @@ def main():
                     help="NEW-V3.23.145: migration-campaign trend across a SERIES of snapshot JSONs (>=2, "
                          "oldest first) -> a trend workbook (Campaign Summary verdict + Timeline w/ chart + "
                          "Burndown). Skips collection and the template.")
+    ap.add_argument("--trend-context", default=None, metavar="FILE",
+                    help="With --trend, bind each ordered snapshot identity to its exact source SHA-256, "
+                         "one engagement, and one campaign. JSON schema: offline_trend_context/1. Without "
+                         "it, the trajectory remains available but adjacent canonical comparison receipts "
+                         "are explicitly NOT VERIFIED and incomplete. Contract fields: engagement_id, "
+                         "campaign_id, snapshots:[{snapshot_id,source_sha256,label?}], and optional "
+                         "adjacent_change_intents:[object|null] with exactly one entry per pair.")
     ap.add_argument("--allow-schema-mismatch", action="store_true",
                     help="P3-E2: permit --compare/--trend across snapshots produced by DIFFERENT engine "
                          "schema versions (script_version). OFF by default, so a cross-schema diff -- which "
@@ -2794,11 +2992,16 @@ def main():
 
     if args.fail_on_compare_gate and not args.compare:
         ap.error("--fail-on-compare-gate requires --compare OLD_SNAPSHOT NEW_SNAPSHOT")
+    if args.comparison_context and not args.compare:
+        ap.error("--comparison-context requires --compare OLD_SNAPSHOT NEW_SNAPSHOT")
+    if args.trend_context and not args.trend:
+        ap.error("--trend-context requires --trend SNAPSHOT SNAPSHOT [...]")
 
     if args.traffic_intents and (args.compare or args.trend):
         ap.error(
             "--traffic-intents is supported only for a full offline assessment run; "
-            "--compare/--trend do not evaluate or publish Traffic Assurance"
+            "--compare/--trend project any stored traffic_assurance receipt but never rerun the "
+            "path engine with a new intent catalog"
         )
 
     # This run's gate ledger starts empty. Matters for hosts that call main() twice in one process --
@@ -2830,20 +3033,23 @@ def main():
                 old_p, role="compare_before")
             new_bytes, new_record, new_binding = _bind_input(
                 new_p, role="compare_after")
-            old_snap = json.loads(old_bytes.decode("utf-8"))
-            new_snap = json.loads(new_bytes.decode("utf-8"))
+            old_snap = bind_snapshot_json_bytes(old_bytes)
+            new_snap = bind_snapshot_json_bytes(new_bytes)
         except FileNotFoundError as e:
             ap.error(f"--compare: snapshot file not found: {e.filename}")
-        except (OSError, RuntimeError, json.JSONDecodeError, UnicodeDecodeError) as e:
+        except (OSError, RuntimeError, ValueError, json.JSONDecodeError, UnicodeDecodeError) as e:
             ap.error(f"--compare: could not parse snapshot JSON ({e})")
-        if any(isinstance(snap, dict) and "traffic_assurance" in snap
-               for snap in (old_snap, new_snap)):
-            ap.error(
-                "--compare: an input snapshot contains traffic_assurance, but --compare does not "
-                "evaluate or publish Traffic Assurance; rerun generic snapshots from the original "
-                "evidence without --traffic-intents, and run Traffic Assurance only through separate "
-                "full offline assessments"
-            )
+        comparison_context = None
+        comparison_context_binding = None
+        if args.comparison_context:
+            try:
+                context_bytes, _context_record, comparison_context_binding = _bind_input(
+                    args.comparison_context, role="offline_comparison_context")
+                comparison_context = _parse_offline_comparison_context(context_bytes)
+            except FileNotFoundError as exc:
+                ap.error(f"--comparison-context: file not found: {exc.filename}")
+            except (OSError, RuntimeError, ValueError) as exc:
+                ap.error(f"--comparison-context: {exc}")
         # P3-E2: refuse to diff across a schema/script_version change unless explicitly allowed -- a
         # cross-schema diff can misreport a schema difference as a real change (never emit it silently).
         _sc_status, _sc_msg = schema_compat_status([old_snap, new_snap], labels=[old_p, new_p])
@@ -2851,10 +3057,6 @@ def main():
             "status": _sc_status,
             "message": _sc_msg,
             "override": bool(args.allow_schema_mismatch),
-        }
-        _source_binding = {
-            "before": old_record["sha256"],
-            "after": new_record["sha256"],
         }
         if _sc_status == "mismatch" and not args.allow_schema_mismatch:
             ap.error(f"--compare: {_sc_msg}. Re-run with --allow-schema-mismatch to diff across schema "
@@ -2864,36 +3066,72 @@ def main():
                            + (" -- proceeding under --allow-schema-mismatch" if _sc_status == "mismatch" else ""))
         try:
             _require_current_bindings(
-                [old_binding, new_binding, *(_validated_inputs.get("bindings") or [])],
+                [old_binding, new_binding,
+                 *([comparison_context_binding] if comparison_context_binding else []),
+                 *(_validated_inputs.get("bindings") or [])],
                 "--compare input")
         except ValueError as exc:
             ap.error(str(exc))
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         diff_out = args.output or f"Migration_Diff_{stamp}.xlsx"
         os.makedirs(os.path.dirname(os.path.abspath(diff_out)) or ".", exist_ok=True)  # FIX-V3.23.103: same missing-output-dir guard
-        # roadmap C1: the Pre-Change Validation Certificate — the fib differential packaged as the PPDIOO
-        # gate artifact (<output>.precert.json + a 'Pre-Change Certificate' sheet). An optional
-        # --path-intents catalog is re-validated across the pair and folded into the certificate.
+        # One source-owned comparison document now feeds JSON, workbook, terminal, and optional exit
+        # enforcement.  File location is not engagement/campaign identity: absent an explicit context,
+        # the exact bytes remain useful diagnostics but the unsupported source owner deliberately makes
+        # admission not-comparable and prevents PASS.
         _intents = _validated_inputs.get("path_intents")
-        cert = compute_precert(
-            old_snap, new_snap, path_intents=_intents,
-            source_hashes=_source_binding, schema_status=_sc_binding)
+        context = comparison_context or {
+            "engagement_id": "offline-context-not-supplied",
+            "campaign_id": 0,
+            "before_snapshot_id": -1,
+            "after_snapshot_id": -2,
+            "change_intent": None,
+        }
+        source_owner = (OFFLINE_FILE_SOURCE if comparison_context is not None
+                        else "unbound exact input snapshot file bytes")
+
+        def offline_source_binding(record: dict, snapshot: dict, *, side: str) -> dict:
+            return {
+                "source": source_owner,
+                "sha256": "sha256:" + str(record.get("sha256") or ""),
+                "bytes": record.get("size"),
+                "snapshot_id": context[f"{side}_snapshot_id"],
+                "campaign_id": context["campaign_id"],
+                "engagement_id": context["engagement_id"],
+                "label": record.get("name") or os.path.basename(
+                    old_p if side == "before" else new_p),
+                "script_version": str(snapshot.get("script_version") or ""),
+            }
+
+        before_binding = offline_source_binding(old_record, old_snap, side="before")
+        after_binding = offline_source_binding(new_record, new_snap, side="after")
+        comparison_receipt = compare_bound_pair(
+            old_snap,
+            new_snap,
+            before_binding=before_binding,
+            after_binding=after_binding,
+            change_intent=context.get("change_intent"),
+            path_intents=_intents,
+        )
+        cert = comparison_receipt["precert"]
+        canonical_gate = comparison_receipt["cutover_gate"]
         cutover_gate = write_diff_workbook(
-            old_snap, new_snap, diff_out, precert=cert,
-            source_binding=_source_binding, schema_status=_sc_binding)
+            old_snap, new_snap, diff_out, comparison=comparison_receipt)
         # Compatibility for embedders that temporarily wrap/monkeypatch the writer with the historic
         # no-return contract.  The shipped writer always returns this exact canonical receipt after save.
         if not isinstance(cutover_gate, dict):
-            cutover_gate = compute_cutover_gate(
-                compute_snapshot_delta(
-                    old_snap, new_snap, source_binding=_source_binding,
-                    schema_status=_sc_binding),
-                cert,
-            )
+            cutover_gate = canonical_gate
         precert_path = os.path.splitext(os.path.abspath(diff_out))[0] + ".precert.json"
+        comparison_path = os.path.splitext(os.path.abspath(diff_out))[0] + ".comparison.json"
         write_json_file(precert_path, cert)
+        write_json_file(comparison_path, comparison_receipt)
         logger.info(f"[OK] Saved diff workbook: {os.path.abspath(diff_out)}")
         logger.info(f"[OK] Pre-Change Validation Certificate: {precert_path}  (verdict: {cert.get('verdict')})")
+        logger.info(
+            "[OK] Canonical source-bound comparison receipt: %s  (gate: %s)",
+            comparison_path,
+            cutover_gate.get("verdict", "INDETERMINATE"),
+        )
         gate_verdict = str(cutover_gate.get("verdict") or "INDETERMINATE")
         gate_line = f"[CUTOVER GATE: {gate_verdict}] {cutover_gate.get('operator_note') or cutover_gate.get('note')}"
         if gate_verdict in ("REGRESSED", "FAIL"):
@@ -2923,20 +3161,40 @@ def main():
             for index, p in enumerate(args.trend):
                 data, record, binding = _bind_input(
                     p, role=f"trend_snapshot_{index + 1}")
-                snaps.append(json.loads(data.decode("utf-8")))
+                # The source-bound parser rejects duplicate keys, non-finite numbers, non-object roots,
+                # and later mutation of the parsed mapping.  Trend must never be a weaker admission path
+                # than the pair comparison built from the same exact bytes.
+                snaps.append(bind_snapshot_json_bytes(data))
                 trend_records.append(record)
                 trend_bindings.append(binding)
         except FileNotFoundError as e:
             ap.error(f"--trend: snapshot file not found: {e.filename}")
-        except (OSError, RuntimeError, json.JSONDecodeError, UnicodeDecodeError) as e:
+        except (OSError, RuntimeError, ValueError, json.JSONDecodeError, UnicodeDecodeError) as e:
             ap.error(f"--trend: could not parse snapshot JSON ({e})")
-        if any(isinstance(snap, dict) and "traffic_assurance" in snap for snap in snaps):
-            ap.error(
-                "--trend: an input snapshot contains traffic_assurance, but --trend does not "
-                "evaluate or publish Traffic Assurance; rerun generic snapshots from the original "
-                "evidence without --traffic-intents, and run Traffic Assurance only through separate "
-                "full offline assessments"
-            )
+        trend_context = None
+        trend_context_binding = None
+        if args.trend_context:
+            try:
+                context_bytes, _context_record, trend_context_binding = _bind_input(
+                    args.trend_context, role="offline_trend_context")
+                trend_context = _parse_offline_trend_context(context_bytes)
+            except FileNotFoundError as exc:
+                ap.error(f"--trend-context: file not found: {exc.filename}")
+            except (OSError, RuntimeError, ValueError) as exc:
+                ap.error(f"--trend-context: {exc}")
+            identities = trend_context["snapshots"]
+            if len(identities) != len(snaps):
+                ap.error(
+                    "--trend-context: snapshots must contain exactly one ordered identity for each "
+                    "--trend input"
+                )
+            for index, (identity, record) in enumerate(zip(identities, trend_records)):
+                actual_sha256 = "sha256:" + record["sha256"]
+                if identity["source_sha256"] != actual_sha256:
+                    ap.error(
+                        f"--trend-context: snapshots[{index}].source_sha256 does not match the "
+                        "exact bytes of the corresponding --trend input"
+                    )
         # P3-E2: same schema/script_version gate for the campaign series (an engine upgrade mid-campaign
         # would otherwise trend across incompatible schemas silently).
         _sc_status, _sc_msg = schema_compat_status(snaps, labels=list(args.trend))
@@ -2953,17 +3211,142 @@ def main():
                            + (" -- proceeding under --allow-schema-mismatch" if _sc_status == "mismatch" else ""))
         try:
             _require_current_bindings(
-                [*trend_bindings, *(_validated_inputs.get("bindings") or [])],
+                [*trend_bindings,
+                 *([trend_context_binding] if trend_context_binding else []),
+                 *(_validated_inputs.get("bindings") or [])],
                 "--trend input")
         except ValueError as exc:
             ap.error(str(exc))
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         trend_out = args.output or f"Migration_Trend_{stamp}.xlsx"
         os.makedirs(os.path.dirname(os.path.abspath(trend_out)) or ".", exist_ok=True)
+
+        n_pairs = len(snaps) - 1
+        pair_entries = []
+        source_receipts = []
+        if trend_context is not None:
+            canonical_bindings = []
+            for snapshot, record, identity in zip(
+                    snaps, trend_records, trend_context["snapshots"]):
+                source_binding = {
+                    "source": OFFLINE_FILE_SOURCE,
+                    "sha256": "sha256:" + record["sha256"],
+                    "bytes": record["size"],
+                    "snapshot_id": identity["snapshot_id"],
+                    "campaign_id": trend_context["campaign_id"],
+                    "engagement_id": trend_context["engagement_id"],
+                    "label": identity["label"],
+                    "script_version": str(snapshot.get("script_version") or ""),
+                }
+                canonical_bindings.append(source_binding)
+                source_receipts.append(dict(source_binding))
+            for index in range(n_pairs):
+                before_binding = canonical_bindings[index]
+                after_binding = canonical_bindings[index + 1]
+                comparison = compare_bound_pair(
+                    snaps[index],
+                    snaps[index + 1],
+                    before_binding=before_binding,
+                    after_binding=after_binding,
+                    change_intent=trend_context["adjacent_change_intents"][index],
+                    path_intents=_validated_inputs.get("path_intents"),
+                )
+                gate = comparison.get("cutover_gate")
+                admission = comparison.get("comparison_admission")
+                envelope = comparison.get("comparison_receipt")
+                pair_entries.append({
+                    "schema": "campaign_adjacent_comparison/1",
+                    "index": index,
+                    "from": f"C{index + 1}",
+                    "to": f"C{index + 2}",
+                    "before_snapshot_id": before_binding["snapshot_id"],
+                    "after_snapshot_id": after_binding["snapshot_id"],
+                    "before_label": before_binding["label"],
+                    "after_label": after_binding["label"],
+                    "before_sha256": before_binding["sha256"],
+                    "after_sha256": after_binding["sha256"],
+                    # Projection only: these values are copied from the canonical comparison owners.
+                    "canonical_gate": (
+                        gate.get("verdict", "INDETERMINATE")
+                        if isinstance(gate, dict) else "INDETERMINATE"
+                    ),
+                    "admission_status": (
+                        admission.get("status", "not_comparable")
+                        if isinstance(admission, dict) else "not_comparable"
+                    ),
+                    "comparison_receipt_sha256": (
+                        envelope.get("receipt_sha256", "")
+                        if isinstance(envelope, dict) else ""
+                    ),
+                    "comparison": comparison,
+                })
+            receipt_status = "verified"
+            receipt_note = (
+                "Canonical comparisons were produced from the exact offline source bytes and the "
+                "explicit ordered campaign identity contract for every adjacent pair."
+            )
+        else:
+            for index, (snapshot, record) in enumerate(zip(snaps, trend_records)):
+                source_receipts.append({
+                    "source": "exact offline snapshot bytes; campaign identity not supplied",
+                    "sha256": "sha256:" + record["sha256"],
+                    "bytes": record["size"],
+                    "snapshot_id": None,
+                    "campaign_id": None,
+                    "engagement_id": "",
+                    "label": f"C{index + 1}",
+                    "script_version": str(snapshot.get("script_version") or ""),
+                })
+            receipt_status = "not_verified"
+            receipt_note = (
+                "Canonical adjacent comparisons were not produced because --trend-context did not "
+                "supply a complete ordered engagement, campaign, snapshot identity, and exact-source "
+                "binding. Filenames were not treated as identity."
+            )
+        adjacent_comparisons = {
+            "schema": "campaign_adjacent_comparison_set/1",
+            "status": receipt_status,
+            "assurance_level": (
+                "observed_state_preservation" if receipt_status == "verified" else "not_verified"
+            ),
+            "engagement_id": (
+                trend_context["engagement_id"] if trend_context is not None else ""
+            ),
+            "campaign_id": (
+                trend_context["campaign_id"] if trend_context is not None else None
+            ),
+            "n_pairs_total": n_pairs,
+            "n_pairs_returned": len(pair_entries),
+            "complete": receipt_status == "verified" and len(pair_entries) == n_pairs,
+            "note": receipt_note,
+            "source_receipts": source_receipts,
+            # This portable sidecar is the uncapped sink. Workbook rendering is separately capped and
+            # discloses its rendered/total/omitted counts without feeding a capped array to any decision.
+            "comparisons": pair_entries,
+            "portable_export": {
+                "rendered": len(pair_entries),
+                "total": len(pair_entries),
+                "omitted": 0,
+                "complete": True,
+            },
+        }
         write_campaign_workbook(
             snaps, trend_out, source_bindings=_source_bindings,
-            schema_status=_sc_binding)
+            schema_status=_sc_binding, adjacent_comparisons=adjacent_comparisons)
+        comparison_export = (
+            os.path.splitext(os.path.abspath(trend_out))[0] + ".trend-comparisons.json"
+        )
+        write_json_file(comparison_export, adjacent_comparisons)
         logger.info(f"[OK] Saved campaign trend workbook: {os.path.abspath(trend_out)}")
+        logger.info(
+            "[OK] Adjacent canonical comparison receipt export: %s  "
+            "(status: %s; complete: %s; pairs: %s/%s)",
+            comparison_export,
+            adjacent_comparisons["status"],
+            str(adjacent_comparisons["complete"]).lower(),
+            adjacent_comparisons["n_pairs_returned"],
+            adjacent_comparisons["n_pairs_total"],
+        )
         return
 
     if not args.devices_file:
@@ -3264,6 +3647,19 @@ def main():
     all_shadow_infra = _axis_stores["shadow_infra"]
     all_routing_neighbors = _axis_stores["routing_neighbors"]
     all_redistribution = _axis_stores["redistribution"]
+
+    # Release-1 multichassis assurance producer.  This runs after raw evidence has been bound and
+    # reads the exact command bytes through input_custody.  The process-local markers survive only
+    # long enough to authorize this baseline; JSON serialization intentionally strips them.
+    multichassis_lag_typed_observations = {"observations": []}
+    _multichassis_collection_mode = "offline" if args.no_collect else "live"
+    for hostname, platform, cmd_to_file in all_devices_meta:
+        observation = build_multichassis_lag_typed_observation(
+            hostname, platform, _multichassis_collection_mode, cmd_to_file)
+        if observation is not None:
+            multichassis_lag_typed_observations["observations"].append(observation)
+    multichassis_lag_domain_baseline = compute_multichassis_lag_domain_baseline(
+        multichassis_lag_typed_observations)
 
     # Phase 5.7: routing tables (route-aware reachability) - parsed from the already-collected
     # 'show ip route', scoped to the in-scope gateway subnets so the embedded snapshot stays small.
@@ -4044,6 +4440,14 @@ def main():
     snap_dict["config_hygiene"] = all_config_hygiene                # NEW-V3.23.61 (undefined refs / unused structures: {host:{undefined,unused,summary}})
     snap_dict["stp_roots"] = all_stp_roots                          # NEW-V3.23.62 (per-VLAN STP root bridge: {host:{vlan:{root_priority,root_address,is_root}}})
     snap_dict["vpc"] = all_vpc                                       # NEW-V3.23.125 (vPC / MLAG status: {host:{domain_id,role,peer_status,vpcs}}) -> confirms MLAG peers in the flow simulator
+    # Catalog/parser presence is not runtime evidence.  Publish this family only when at least one
+    # real typed local observation exists; an estate with no vPC/MLAG capture must remain
+    # not-applicable, not acquire a synthetic empty family that withholds every cutover PASS.
+    _publish_multichassis_lag_blocks(
+        snap_dict,
+        multichassis_lag_typed_observations,
+        multichassis_lag_domain_baseline,
+    )                                                               # process marker intentionally erased
     snap_dict["fhrp_detail"] = all_fhrp_detail                       # full HSRP election/preempt/tracking detail -> _d_fhrp_resilience (first non-Meridian coverage)
     snap_dict["overlay"] = all_overlay                               # VXLAN-EVPN overlay (NVE peers) -> _d_nve_peer_health (engine's own target fabric, was blind)
     snap_dict["copp"] = all_copp                                     # CoPP drop counters -> _d_copp_drops (control-plane policing health)
@@ -4649,6 +5053,14 @@ def _stage_finalize(ctx: "AnalysisContext") -> FinalizationResult:
             "Assessment workbook", "workbook object was absent at finalization")
     else:
         def _save_workbook():
+            # The CLI renderer holds only the mutable parsed mapping, not the later exact persisted
+            # snapshot bytes. Unless a caller explicitly supplies the portfolio owner's validated
+            # receipt/export sidecar, the sheet truthfully renders NOT VERIFIED and names the
+            # complete AssessHub export instead of hashing this detached object.
+            write_protocol_assurance_receipt_sheet(
+                wb,
+                getattr(ctx, "protocol_assurance_bundle", None),
+            )
             _write_integrity_disclosure_sheet(wb, snap_dict)
             wb.save(out_xlsx)
 

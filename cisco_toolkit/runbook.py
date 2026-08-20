@@ -26,7 +26,7 @@ import textwrap
 from collections import Counter
 from datetime import datetime
 
-from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_inputs_required, add_table, add_toc
+from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_inputs_required, add_protocol_assurance_receipt, add_table, add_toc
 from cisco_toolkit.docmeta import as_dict as _as_dict, as_list as _as_list   # shared snapshot-section coercers (ops.py uses the same): a truthy non-dict/non-list section must degrade, not crash
 from cisco_toolkit.textutils import _as_num   # fail-soft numeric coercion of device-derived leaf counts
 
@@ -199,7 +199,13 @@ def _gateways(snap: dict):
     return rows
 
 
-def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths: dict = None) -> None:
+def write_runbook_docx(
+        output_path: str,
+        snap_dict: dict,
+        label: str,
+        flow_paths: dict = None,
+        *,
+        protocol_assurance_bundle=None) -> None:
     """Emit the assessment & migration runbook (.docx) from the live snapshot. Safe/fail-soft:
     a missing python-docx is a warning + skip; never crashes a run whose other outputs are saved."""
     try:
@@ -714,6 +720,12 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
     pa_rows = _R(passess.get("rows"))
     pa_valid = passess.get("schema") == "protocol_assessability/1" and bool(pa_rows)
     doc.add_heading("6.5 Protocol behaviour & remediation", level=2)
+    add_protocol_assurance_receipt(
+        doc,
+        protocol_assurance_bundle,
+        heading="6.5.1 Source-bound Protocol Assurance receipt",
+        level=3,
+    )
 
     # VTP safety is a closed local-status audit receipt, distinct from sparse
     # protocol health/intelligence.  The runbook accepts only the serialized

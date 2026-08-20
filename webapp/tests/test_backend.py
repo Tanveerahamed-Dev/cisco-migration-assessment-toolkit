@@ -6,6 +6,7 @@ or the engine's golden contract.
 """
 
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -1469,13 +1470,13 @@ def test_execution_outcome_vocabulary(client):
     )
     assert upload.status_code == 201, upload.text
     snap_id = upload.json()["id"]
-    after_upload = client.post(
+    pre_run_upload = client.post(
         f"/api/campaigns/{cid}/snapshots",
-        files={"file": ("after.json", json.dumps(snap).encode(), "application/json")},
-        data={"label": "after"},
+        files={"file": ("pre-run.json", json.dumps(snap).encode(), "application/json")},
+        data={"label": "pre-run candidate"},
     )
-    assert after_upload.status_code == 201, after_upload.text
-    after_id = after_upload.json()["id"]
+    assert pre_run_upload.status_code == 201, pre_run_upload.text
+    pre_run_id = pre_run_upload.json()["id"]
 
     def run():
         return client.post(f"/api/snapshots/{snap_id}/executions", json={}).json()
@@ -1501,6 +1502,35 @@ def test_execution_outcome_vocabulary(client):
 
     # every wave completed, nothing skipped/failed, latest canonical gate PASS -> SUCCESSFUL
     ex = run()
+    refused = client.post(
+        f"/api/executions/{ex['id']}/compare", json={"after_snapshot_id": pre_run_id}
+    )
+    assert refused.status_code == 409
+    assert "after every implementation step has been actioned" in refused.json()["detail"]
+    assert client.get(f"/api/executions/{ex['id']}").json()["comparison_receipts"] == []
+
+    ex = close_all(ex["id"], ex, "COMPLETE")
+    implementation_finished_at = max(
+        datetime.fromisoformat(step["at"])
+        for wave in ex["waves"]
+        for step in wave["steps"]
+    )
+    after_upload = client.post(
+        f"/api/campaigns/{cid}/snapshots",
+        files={"file": (
+            "after.json",
+            json.dumps({
+                **snap,
+                "collected_at": (
+                    implementation_finished_at + timedelta(microseconds=1)
+                ).isoformat(),
+            }).encode(),
+            "application/json",
+        )},
+        data={"label": "after"},
+    )
+    assert after_upload.status_code == 201, after_upload.text
+    after_id = after_upload.json()["id"]
     comparison = client.post(
         f"/api/executions/{ex['id']}/compare", json={"after_snapshot_id": after_id}
     )
@@ -1510,9 +1540,56 @@ def test_execution_outcome_vocabulary(client):
     assert ex["latest_comparison"]["cutover_gate"]["verdict"] == "PASS"
     assert ex["comparison_receipts"][0]["receipt"]["comparison"]["cutover_gate"] \
         == ex["latest_comparison"]["cutover_gate"]
-    ex = close_all(ex["id"], ex, "COMPLETE")
     ex = client.post(f"/api/executions/{ex['id']}/finish", json={"status": "completed"}).json()
     assert ex["outcome"] == "SUCCESSFUL"
+
+    # A PASS is bound to the exact completed implementation record that preceded collection.
+    # Re-actioning a step after the capture changes that record, so the stale receipt cannot later
+    # authorize SUCCESSFUL even though its immutable gate remains PASS.
+    stale = run()
+    for wave in list(stale["waves"]):
+        for index, step in enumerate(list(wave["steps"])):
+            if step["status"] == "pending":
+                stale = client.post(
+                    f"/api/executions/{stale['id']}/step",
+                    json={"wave": wave["group"], "index": index, "status": "done"},
+                ).json()
+    stale_boundary = max(
+        datetime.fromisoformat(step["at"])
+        for wave in stale["waves"]
+        for step in wave["steps"]
+    )
+    stale_after = client.post(
+        f"/api/campaigns/{cid}/snapshots",
+        files={"file": (
+            "stale-after.json",
+            json.dumps({
+                **snap,
+                "collected_at": (stale_boundary + timedelta(microseconds=1)).isoformat(),
+            }).encode(),
+            "application/json",
+        )},
+        data={"label": "stale after"},
+    )
+    assert stale_after.status_code == 201, stale_after.text
+    compared = client.post(
+        f"/api/executions/{stale['id']}/compare",
+        json={"after_snapshot_id": stale_after.json()["id"]},
+    )
+    assert compared.status_code == 200, compared.text
+    stale = compared.json()
+    assert stale["latest_comparison"]["cutover_gate"]["verdict"] == "PASS"
+    first_wave = stale["waves"][0]
+    stale = client.post(
+        f"/api/executions/{stale['id']}/step",
+        json={"wave": first_wave["group"], "index": 0, "status": "done"},
+    ).json()
+    stale = close_all(stale["id"], stale, "COMPLETE")
+    stale = client.post(
+        f"/api/executions/{stale['id']}/finish", json={"status": "completed"}
+    ).json()
+    assert stale["latest_comparison"]["cutover_gate"]["verdict"] == "PASS"
+    assert stale["outcome"] == "PARTIALLY IMPLEMENTED"
 
     # The same clean manual run with no post-change receipt is not accepted as successful.
     ex = run()

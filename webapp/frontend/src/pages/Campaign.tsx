@@ -2,6 +2,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { api, bandColor, gateColor } from "../api";
 import type {
+  CampaignTrendResponse,
   CompareResponse,
   CutoverChangeIntentInput,
   CurrentBaselineGate,
@@ -169,6 +170,104 @@ const CURRENT_BASELINE_COLOR: Record<string, string> = {
   CLEAR: "var(--ok)",
 };
 
+const TREND_PAIR_RENDER_CAP = 3;
+const CANONICAL_GATE_COLOR: Record<string, string> = {
+  PASS: "var(--ok)",
+  CONDITIONAL: "var(--watch)",
+  REVIEW: "var(--watch)",
+  INDETERMINATE: "var(--text-faint)",
+  FAIL: "var(--crit)",
+  REGRESSED: "var(--crit)",
+};
+
+function downloadTrendJson(value: CampaignTrendResponse, campaignId: number) {
+  const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json;charset=utf-8" });
+  const makeUrl = typeof URL.createObjectURL === "function";
+  const href = makeUrl
+    ? URL.createObjectURL(blob)
+    : `data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(value, null, 2))}`;
+  const anchor = document.createElement("a");
+  anchor.href = href;
+  anchor.download = `atlas-campaign-${campaignId}-trend-receipts.json`;
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  if (makeUrl) URL.revokeObjectURL(href);
+}
+
+function TrendCanonicalReceipts({ value, campaignId }: {
+  value: CampaignTrendResponse;
+  campaignId: number;
+}) {
+  const rows = Array.isArray(value.adjacent_comparisons) ? value.adjacent_comparisons : [];
+  const status = value.adjacent_comparison_status;
+  const rendered = rows.slice(0, TREND_PAIR_RENDER_CAP);
+  const produced = rows.length;
+  const omitted = Math.max(0, produced - rendered.length);
+  const expected = Math.max(produced, status?.n_pairs_total ?? 0);
+  const statusText = (status?.status || "not_verified").replaceAll("_", " ").toUpperCase();
+  const statusColor = status?.status === "verified"
+    ? "var(--ok)"
+    : status?.status === "not_comparable"
+      ? "var(--crit)"
+      : "var(--text-faint)";
+
+  return (
+    <section aria-label="Adjacent canonical cutover receipts" data-testid="trend-canonical-receipts"
+      style={{ border: "1px solid var(--border-faint)", borderRadius: 9, padding: 10, marginBottom: 12 }}>
+      <div className="spread" style={{ gap: 8, marginBottom: 7 }}>
+        <div>
+          <b>Adjacent canonical cutover receipts</b>
+          <div className="faint" style={{ fontSize: 10.5, marginTop: 2 }}>
+            Server-owned cutover_gate/1 decisions from each persisted Cn → Cn+1 source pair
+          </div>
+        </div>
+        <div className="row-flex" style={{ gap: 7, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <span className="chip" data-testid="trend-receipt-status"
+            style={{ color: statusColor, borderColor: statusColor }}>{statusText}</span>
+          <button type="button" className="btn ghost" data-testid="trend-json-export"
+            onClick={() => downloadTrendJson(value, campaignId)} style={{ fontSize: 10.5, padding: "4px 8px" }}>
+            Export Trend JSON
+          </button>
+        </div>
+      </div>
+      <div className="dim" data-testid="trend-receipt-note" style={{ fontSize: 11.5, marginBottom: rows.length ? 7 : 0 }}>
+        {status?.note || "No canonical adjacent comparison status was published. Trend cutover receipt coverage is not verified."}
+      </div>
+      {rendered.map((entry) => {
+        const gate = entry.comparison.cutover_gate;
+        const receipt = entry.comparison.comparison_receipt;
+        const admission = entry.comparison.comparison_admission;
+        const gateVerdict = gate?.verdict || "NOT VERIFIED";
+        const gateTone = CANONICAL_GATE_COLOR[gateVerdict] || "var(--text-faint)";
+        return (
+          <details key={`${entry.index}|${entry.before_snapshot_id}|${entry.after_snapshot_id}`}
+            data-testid="trend-adjacent-comparison"
+            style={{ borderTop: "1px solid var(--border-faint)", padding: "7px 0" }}>
+            <summary style={{ cursor: "pointer" }}>
+              <span className="mono">{entry.from} → {entry.to}</span>{" "}
+              <b>{entry.before_label} → {entry.after_label}</b>{" "}
+              <span className="chip" data-testid="trend-adjacent-gate"
+                style={{ color: gateTone, borderColor: gateTone }}>{gateVerdict}</span>
+            </summary>
+            <div className="faint mono" data-testid="trend-adjacent-receipt"
+              style={{ fontSize: 10, margin: "6px 0", overflowWrap: "anywhere" }}>
+              Snapshots {entry.before_snapshot_id} → {entry.after_snapshot_id} · admission {admission?.status || "not verified"}<br />
+              Receipt: {receipt?.receipt_sha256 || "not published"}
+            </div>
+            <ComparisonDecision value={entry.comparison}
+              exportFilename={`atlas-campaign-${campaignId}-${entry.from}-${entry.to}-comparison.json`} />
+          </details>
+        );
+      })}
+      <div className="faint" data-testid="trend-cap-disclosure" style={{ fontSize: 10.5, marginTop: 7 }}>
+        Rendered: {rendered.length} · Total produced: {produced} · Omitted from view: {omitted} · Expected pairs: {expected} · Receipt set complete: {status?.complete === true ? "YES" : "NO"}. Trend JSON export contains every produced receipt; unproduced expected pairs remain NOT VERIFIED.
+      </div>
+    </section>
+  );
+}
+
 function currentBaselineVerdict(value?: CurrentBaselineGate | null) {
   return value && typeof value.verdict === "string" && value.verdict ? value.verdict : "NOT_ASSESSED";
 }
@@ -180,13 +279,25 @@ function compareDeltaColor(verdict: string, current?: CurrentBaselineGate | null
   return VERDICT_COLOR[verdict] || "var(--text-dim)";
 }
 
-function CurrentBaselineGatePanel({ value }: { value?: CurrentBaselineGate | null }) {
+type CurrentBaselineExport = NonNullable<
+  NonNullable<CompareResponse["operator_evidence"]>["current_baseline_blocker_export"]
+>;
+
+function CurrentBaselineGatePanel({ value, completeExport }: {
+  value?: CurrentBaselineGate | null;
+  completeExport?: CurrentBaselineExport | null;
+}) {
   const verdict = currentBaselineVerdict(value);
   const color = CURRENT_BASELINE_COLOR[verdict] || "var(--text-dim)";
   const summary = value?.summary || {};
   const byState = summary.by_state || {};
   const blockers = Array.isArray(value?.blockers) ? value!.blockers! : [];
   const integrityFailures = Array.isArray(value?.integrity?.failures) ? value!.integrity!.failures! : [];
+  const rendered = typeof summary.n_blockers_returned === "number"
+    ? summary.n_blockers_returned
+    : blockers.length;
+  const total = typeof summary.n_blockers === "number" ? summary.n_blockers : rendered;
+  const omitted = Math.max(0, total - rendered);
   return (
     <section aria-label="Current baseline gate" data-testid="compare-current-baseline"
       style={{ border: `1px solid ${color}`, borderRadius: 9, marginBottom: 12, overflow: "hidden" }}>
@@ -244,11 +355,13 @@ function CurrentBaselineGatePanel({ value }: { value?: CurrentBaselineGate | nul
           </div>
         );
       })}
-      {summary.blockers_capped && (
-        <div className="faint" style={{ fontSize: 10.5, padding: "7px 11px" }}>
-          {summary.n_blockers_returned ?? blockers.length} of {summary.n_blockers ?? "all"} blocker rows were returned; inspect the full Validation-plan deliverable.
-        </div>
-      )}
+      <div className="faint" data-testid="current-baseline-cap-disclosure"
+        style={{ fontSize: 10.5, padding: "7px 11px" }}>
+        Rendered: {rendered} · Total: {total} · Omitted: {omitted}.{" "}
+        {completeExport?.status === "available" && completeExport.summary.complete
+          ? `Complete comparison JSON contains ${completeExport.summary.n_rows_returned} of ${completeExport.summary.n_blockers_total} blocker rows (omitted ${completeExport.summary.omitted}).`
+          : "Complete blocker export is NOT VERIFIED; do not infer omitted rows are clear."}
+      </div>
     </section>
   );
 }
@@ -343,6 +456,14 @@ function Trend({ id }: { id: number }) {
     );
   }
   if (loading || !data) return null;
+  const adjacentRows = Array.isArray(data.adjacent_comparisons)
+    ? data.adjacent_comparisons
+    : [];
+  const latestAdjacent = adjacentRows.length
+    ? adjacentRows[adjacentRows.length - 1]
+    : undefined;
+  const finalBaselineExport = latestAdjacent?.comparison.operator_evidence
+    ?.current_baseline_blocker_export;
   const baselineVerdict = currentBaselineVerdict(data.current_baseline);
   const trendColor = data.verdict === "IMPROVING" && baselineVerdict !== "CLEAR"
     ? "var(--text-faint)"
@@ -352,7 +473,9 @@ function Trend({ id }: { id: number }) {
       <div className="panel">
         <h3>Campaign trajectory</h3>
         <div className="dim" style={{ fontSize: 13, marginBottom: 12 }}>{data.verdict_note}</div>
-        <CurrentBaselineGatePanel value={data.current_baseline} />
+        <TrendCanonicalReceipts value={data} campaignId={id} />
+        <CurrentBaselineGatePanel value={data.current_baseline}
+          completeExport={finalBaselineExport} />
       </div>
     );
   }
@@ -368,7 +491,9 @@ function Trend({ id }: { id: number }) {
         </span>
       </div>
       <div className="dim" style={{ fontSize: 13, marginBottom: 14 }}>{data.verdict_note}</div>
-      <CurrentBaselineGatePanel value={data.current_baseline} />
+      <TrendCanonicalReceipts value={data} campaignId={id} />
+      <CurrentBaselineGatePanel value={data.current_baseline}
+        completeExport={finalBaselineExport} />
       <ProtocolAdjacencyGate value={data.protocol_adjacencies} />
       <div className="grid cols-3">
         {data.trajectory.map((t: any) => (
@@ -630,7 +755,10 @@ export default function CampaignPage() {
                 <div style={{ marginTop: 14, fontSize: 13 }}>
                   <ComparisonDecision
                     value={cmp}
-                    currentBaseline={<CurrentBaselineGatePanel value={cmp.current_baseline} />}
+                    currentBaseline={<CurrentBaselineGatePanel
+                      value={cmp.current_baseline}
+                      completeExport={cmp.operator_evidence?.current_baseline_blocker_export}
+                    />}
                     exportFilename={`campaign-${cid}-snapshots-${cmpA}-${cmpB}-comparison.json`}
                   />
                   <div className="row-flex" style={{ marginBottom: 8 }}>

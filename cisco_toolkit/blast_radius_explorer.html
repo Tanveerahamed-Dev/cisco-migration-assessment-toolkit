@@ -2792,6 +2792,7 @@ let SNAP=null, MODEL=null, CHAINS=[], POS={}, LOGICAL={w:1000,h:600};
 let SEL=null, VLAN="all", MODE="health", LAYOUT="layered";   // V3.23.76: land on the Risk cockpit (Health) so the first view is the "where's the risk / fix-first" synthesis, not a raw 60-node hairball; a deep-link #mode=… still overrides via readHash()
 let TRACE_SRC=null, TRACE_DST=null, TRACE=null;
 let SNAP_B=null, MODEL_B=null, CMP=null, SNAP_LABEL="DEMO";
+let PROTOCOL_ASSURANCE_SURFACE=null;   // renderer sidecar; never read from the snapshot mapping
 let SEARCHQ="";
 let EPSEL=null, EPALL=[], REACH=null;   // selected endpoint + flat index (A) + cached reachability (B)
 let FLOW_SRC=null, FLOW_DST=null, FLOWRES=null;   // interactive endpoint->endpoint flow (C)
@@ -2888,8 +2889,11 @@ function setComparisonSnapshot(snapB){
   SNAP_B=snapB;MODEL_B=modelB;CMP=cmp;
 }
 /* ---- entry point (signature preserved for Python embed) ---- */
-function load(snap,label,live){
+function load(snap,label,live,protocolAssurance){
   SNAP=snap; SNAP_LABEL=label;
+  // A receipt belongs to the exact source used for THIS load. Manual/demo JSON loads do not inherit
+  // the previously embedded sidecar and cannot mint authority from receipt-looking snapshot keys.
+  PROTOCOL_ASSURANCE_SURFACE=protocolAssuranceSurface(protocolAssurance);
   const warn=schemaNotice(snap); showSchemaWarn(warn); if(warn)srAnnounce(warn);
   try{
     MODEL=buildModel(snap); CHAINS=causalityChains(MODEL);
@@ -10331,6 +10335,52 @@ function serviceMapSection(){
     `<div class="ln" style="margin-top:8px"><b>Multicast:</b> ${mc.active_interfaces||0} interface(s) across ${mc.active_switch_count||0} switch(es) run PIM/mroute <span class="faint">(Confirmed forwarding presence)</span>.${mcNote}</div>`+
     gset+ptpLine+qLine+mediaBlock+`</div>`;
 }
+/* Source-bound portfolio receipt sidecar. Python validates the detached receipt/export hashes and
+   counters before embedding this projection. This browser never searches SNAP for a receipt-looking
+   key: a manual/legacy JSON load is explicitly NOT VERIFIED and clears any prior bound sidecar. */
+function protocolAssuranceSurface(value){
+  if(!value||typeof value!=="object"||value.schema!=="protocol_single_snapshot_receipt/1"||
+      typeof value.receipt_valid!=="boolean")return {
+    schema:"protocol_single_snapshot_receipt/1",receipt_valid:false,status:"NOT VERIFIED",
+    reason:"source-bound sidecar not supplied",owns_score:false,owns_verdict:false,
+    custody_status:"not_verified",source_binding:{},receipt_sha256:"",families:[],
+    subject_cap:{rendered:0,total:0,omitted:0},
+    complete_export:{schema:"protocol_single_snapshot_export/1",sha256:"",media_type:"application/json",
+      reference:"AssessHub /api/snapshots/{id}/protocol-assurance/export after persisted-byte import",
+      available:false},
+    operator_note:"This renderer did not hash the parsed snapshot or mint source custody."
+  };
+  return value;
+}
+function protocolAssuranceReceiptSection(){
+  const p=protocolAssuranceSurface(PROTOCOL_ASSURANCE_SURFACE),exp=p.complete_export||{},
+    ref=String(exp.reference||"protocol_single_snapshot_export/1"),reason=String(p.reason||"source-bound sidecar unavailable");
+  if(p.receipt_valid!==true)return `<div class="sec"><h3>Protocol Assurance receipt <span class="badge b-watch">NOT VERIFIED</span></h3>`+
+    `<div class="card watch"><div class="ln"><b><span class="mono">protocol_single_snapshot_receipt/1</span> unavailable.</b> `+
+    `This Explorer did not hash the parsed snapshot or mint source custody.</div>`+
+    `<div class="ln"><b>Reason:</b> ${esc(reason)}.</div>`+
+    `<div class="ln"><b>Cap disclosure:</b> rendered / total / omitted = 0 / 0 / 0 because no source-bound receipt was supplied.</div>`+
+    `<div class="ln"><b>Complete export:</b> <span class="mono">protocol_single_snapshot_export/1</span> · uncapped JSON · NOT ATTACHED · ${esc(ref)}.</div>`+
+    `<div class="ln faint">This portfolio owns no score and no verdict. Import the exact snapshot into AssessHub to obtain and archive the complete export beside this file.</div></div></div>`;
+  const source=p.source_binding&&typeof p.source_binding==="object"?p.source_binding:{},
+    cap=p.subject_cap&&typeof p.subject_cap==="object"?p.subject_cap:{rendered:0,total:0,omitted:0},
+    families=Array.isArray(p.families)?p.families:[], custody=String(p.custody_status||"not_verified"),
+    tok=custody==="bound"?"ok":"watch", status=custody==="bound"?"BOUND":"NOT VERIFIED";
+  const rows=families.map(f=>{const evidence=String(f.evidence_status||"not_verified"),
+    ftok=evidence==="observed"?"ok":evidence==="not_applicable"?"neutral":"watch";
+    return `<tr><td><b>${esc(f.family||"—")}</b></td><td>${esc(f.assurance_level||"not_verified")}</td>`+
+      `<td><span class="pill pl-${ftok}">${esc(evidence.replaceAll("_"," ").toUpperCase())}</span></td>`+
+      `<td class="mono">${esc(f.rendered||0)} / ${esc(f.total||0)} / ${esc(f.omitted||0)}</td></tr>`;}).join("");
+  return `<div class="sec"><h3>Protocol Assurance receipt <span class="badge b-${tok}">${status}</span></h3>`+
+    `<div class="card ${tok}"><div class="ln"><b><span class="mono">${esc(p.schema)}</span></b> · owner ${esc(p.owner_version||"—")} · no score · no verdict.</div>`+
+    `<div class="ln"><b>Exact persisted source:</b> engagement ${esc(source.engagement_id||"—")} · campaign ${esc(source.campaign_id)} · snapshot ${esc(source.snapshot_id)} · ${esc(source.bytes)} bytes.</div>`+
+    `<div class="ln mono" style="overflow-wrap:anywhere"><b>Source SHA-256:</b> ${esc(source.sha256||"—")}<br><b>Receipt SHA-256:</b> ${esc(p.receipt_sha256||"—")}</div>`+
+    `<div class="ln"><b>Receipt subject cap (rendered / total / omitted):</b> ${esc(cap.rendered||0)} / ${esc(cap.total||0)} / ${esc(cap.omitted||0)}. `+
+    `This panel renders all ${families.length} family aggregate row(s) and zero subject rows; decision code does not consume capped arrays.</div>`+
+    `<div class="ln"><b>Complete export:</b> <span class="mono">${esc(exp.schema||"protocol_single_snapshot_export/1")}</span> · uncapped ${esc(exp.media_type||"application/json")} · `+
+    `<span class="mono" style="overflow-wrap:anywhere">${esc(exp.sha256||"—")}</span> · ${esc(ref)}. Retrieve and archive that JSON beside this Explorer.</div></div>`+
+    (rows?`<table style="margin-top:8px"><thead><tr><th>Family</th><th>Assurance</th><th>Evidence</th><th>Receipt rendered / total / omitted</th></tr></thead><tbody>${rows}</tbody></table>`:"")+`</div>`;
+}
 function protocolDetailHosts(routingHosts,receiptRows,healthRows,intelligenceRows){
   const hosts=new Set((routingHosts||[]).filter(h=>typeof h==="string"&&h));
   const bgpRows=typeof bgpConfiguredPeerRows==="function"?bgpConfiguredPeerRows():[],
@@ -10359,6 +10409,7 @@ function drawProtocols(){
   const pa=protocolAssessability(), paRows=pa?pa.rows:[];
   const detailHosts=protocolDetailHosts(withProto,paRows,ph,pi);
   if(!detailHosts.length)return `<div class="drawer-head"><div class="eyebrow">Protocols</div><div class="title">Routing-protocol topology</div></div>
+    ${protocolAssuranceReceiptSection()}
     ${vtpSafetySection()}
     ${ipv6RoutingAdjacencySection()}
     ${fhrpConfiguredGroupSection()}
@@ -10382,6 +10433,7 @@ function drawProtocols(){
     :`<p class="faint">No protocol boundaries — every routing device runs a single protocol domain.</p>`;
   const adjRows=adj.length?adj.slice().sort((a,b)=>(a.ok-b.ok)||a.host.localeCompare(b.host)).map(a=>`<div class="ln"><span class="pill pl-${a.ok?"ok":"crit"}">${a.ok?"✓":"✗"} ${_protoLabel(a.proto)}</span> <span class="mono">${esc(shortName(a.host))}</span> ↔ <span class="mono">${esc(a.peer)}</span> <span class="faint">${esc(a.state)} · ${esc(a.via)}</span></div>`).join(""):`<p class="faint">No adjacencies in snapshot.</p>`;
   return `<div class="drawer-head"><div class="eyebrow">Protocols</div><div class="title">Routing-protocol topology</div></div>
+    ${protocolAssuranceReceiptSection()}
     <div class="sec"><div class="headline">
       <div class="stat"><div class="v">${withProto.length}</div><div class="k">routing devices</div></div>
       <div class="stat ${redistPts.length?"watch":""}"><div class="v">${redistPts.length}</div><div class="k">boundaries</div></div>

@@ -365,6 +365,13 @@ export interface ProtocolComparisonAdmission {
 export interface ProtocolFamilyChange {
   family: string;
   subject: string;
+  /** Native subject identity class; multichassis keeps local/pair/leg/attachment distinct. */
+  subject_kind?:
+    | "local_observation"
+    | "reciprocal_peer_pair"
+    | "local_leg"
+    | "reconciled_attachment"
+    | string;
   transition: ProtocolChangeTransition;
   /** Producer-reconciled intent classification. UI code displays this value; it does not infer it. */
   expected: boolean;
@@ -511,16 +518,71 @@ export interface ProtocolReceiptEnvelope {
   receipt_sha256: string;
 }
 
+export type L2FailureRehearsalDisposition =
+  | "simulation_only"
+  | "projected_risk"
+  | "current_fault"
+  | "not_verified";
+
+export interface L2FailureRehearsalScenario {
+  family: "stp" | "etherchannel" | "multichassis_lag" | "service_path" | string;
+  subject: string;
+  failure_scenario: string;
+  disposition: L2FailureRehearsalDisposition;
+  assurance_level: "not_verified";
+  source_owner: string;
+  current_fault: boolean;
+  evidence: Record<string, unknown>;
+  note: string;
+}
+
+export interface L2FailureRehearsal {
+  schema: "l2_failure_rehearsal/1";
+  owner: "reference_only_composition" | string;
+  owns_score: false;
+  owns_verdict: false;
+  status: "simulation_only" | "projected_risk" | "current_fault" | "not_verified";
+  assurance_level: "not_verified";
+  source_bound: boolean;
+  summary: {
+    n_scenarios: number;
+    n_current_faults: number;
+    n_projected_risks: number;
+    n_not_verified: number;
+    by_disposition: Record<L2FailureRehearsalDisposition, number>;
+  };
+  scenarios: L2FailureRehearsalScenario[];
+  limitations: string[];
+}
+
 export interface CutoverOperatorEvidence {
   schema: "cutover_operator_evidence/1";
   owner: "reference_only_projection" | string;
   owns_verdict: false;
+  current_baseline_blocker_export?: {
+    schema: "current_baseline_blocker_export/1";
+    owner: "reference_only_projection" | string;
+    owns_verdict: false;
+    status: "available" | "not_verified";
+    source_owner: string;
+    rows: CurrentBaselineBlocker[];
+    summary: {
+      n_blockers_total: number;
+      n_rows_returned: number;
+      omitted: number;
+      complete: boolean;
+      rows_sha256: string;
+    };
+    failures: string[];
+    note: string;
+  };
   rehearsal: {
-    status: "simulation_only" | "not_verified";
+    status: "simulation_only" | "projected_risk" | "current_fault" | "not_verified";
     assurance_level: "not_verified";
     source_owner: string;
     n_impacts_total: number;
     impacts: Array<Record<string, unknown>>;
+    l2_failure_rehearsal?: L2FailureRehearsal;
     note: string;
   };
   rollback: {
@@ -560,10 +622,71 @@ export interface CompareResponse {
   comparison_receipt?: ProtocolReceiptEnvelope;
 }
 
+export type CampaignTrendVerdict =
+  | "IMPROVING"
+  | "REGRESSING"
+  | "MIXED"
+  | "FLAT"
+  | "INSUFFICIENT"
+  | "INDETERMINATE";
+
+export interface CampaignTrendTrajectory {
+  metric: string;
+  first: number;
+  last: number;
+  delta: number;
+  direction: "improving" | "worsening" | "flat" | string;
+}
+
+export interface CampaignAdjacentComparison {
+  schema: "campaign_adjacent_comparison/1";
+  index: number;
+  from: string;
+  to: string;
+  before_snapshot_id: number;
+  after_snapshot_id: number;
+  before_label: string;
+  after_label: string;
+  /** Complete server-owned source_bound_cutover_comparison/1 document for this adjacent pair. */
+  comparison: CompareResponse;
+}
+
+export interface CampaignAdjacentComparisonStatus {
+  schema: "campaign_adjacent_comparison_set/1";
+  status: "verified" | "not_verified" | "not_comparable";
+  n_pairs_total: number;
+  n_pairs_returned: number;
+  complete: boolean;
+  note: string;
+}
+
+/** GET /api/campaigns/{id}/trend. Direction-of-travel remains distinct from every canonical gate. */
+export interface CampaignTrendResponse {
+  verdict: CampaignTrendVerdict;
+  verdict_note: string;
+  trajectory: CampaignTrendTrajectory[];
+  timeline?: Array<Record<string, unknown>>;
+  steps?: Array<Record<string, unknown>>;
+  not_comparable?: {
+    lost: string[];
+    never_measured: string[];
+    disclosure_available?: boolean;
+  };
+  integrity?: Record<string, unknown>;
+  provenance?: Record<string, unknown>;
+  schema_compat?: Record<string, unknown>;
+  protocol_adjacencies?: ProtocolAdjacencyDelta;
+  current_baseline?: CurrentBaselineGate;
+  adjacent_comparisons?: CampaignAdjacentComparison[];
+  adjacent_comparison_status?: CampaignAdjacentComparisonStatus;
+}
+
 export interface ExecutionComparisonReceiptBody {
   schema: "execution_comparison_receipt/1";
   before_snapshot_id: number;
   after_snapshot_id: number;
+  after_collected_at?: string;
+  implementation_binding?: ExecutionLatestComparison["implementation_binding"];
   comparison: CompareResponse;
   receipt_sha256: string;
 }
@@ -585,6 +708,15 @@ export interface ExecutionLatestComparison {
   receipt_sha256: string;
   before_snapshot_id: number;
   after_snapshot_id: number;
+  after_collected_at?: string;
+  implementation_binding?: {
+    schema: "execution_implementation_binding/1";
+    valid: boolean;
+    n_steps: number;
+    completed_at: string;
+    steps_sha256: string;
+    failures: string[];
+  };
   cutover_gate: CutoverGate;
 }
 
@@ -592,6 +724,8 @@ export interface ExecutionComparisonPolicy {
   schema: "execution_comparison_policy/1";
   canonical_gate_required: true;
   before_snapshot: ProtocolSourceBinding;
+  /** Highest persisted snapshot id visible when this execution began. */
+  snapshot_id_high_watermark?: number;
 }
 
 export interface ValidationCheck {
@@ -1106,7 +1240,7 @@ export const api = {
   createCampaign: (name: string, description = "") =>
     post<Campaign>("/api/campaigns", { name, description }),
   deleteCampaign: (id: number) => fetch(`/api/campaigns/${id}`, { method: "DELETE" }).then((r) => j<null>(r)),
-  trend: (id: number) => fetch(`/api/campaigns/${id}/trend`).then((r) => j<any>(r)),
+  trend: (id: number) => fetch(`/api/campaigns/${id}/trend`).then((r) => j<CampaignTrendResponse>(r)),
   getGates: (id: number) => fetch(`/api/campaigns/${id}/gates`).then((r) => j<GateBoardData>(r)),
   setGate: (id: number, wave: string, gate: string, decision: string, signed_by = "", note = "") =>
     post<{ records: GateRecord[] }>(`/api/campaigns/${id}/gates`, { wave, gate, decision, signed_by, note }),

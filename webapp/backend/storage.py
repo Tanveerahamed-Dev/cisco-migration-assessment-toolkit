@@ -23,7 +23,7 @@ import sqlite3
 import sys
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -101,6 +101,17 @@ WHEN EXISTS (
 BEGIN
     SELECT RAISE(ABORT, 'execution comparison source snapshot bindings are immutable');
 END;
+CREATE TRIGGER IF NOT EXISTS execution_comparison_sources_no_replace
+BEFORE INSERT ON snapshots
+WHEN EXISTS (
+    SELECT 1 FROM execution_comparisons ec
+    WHERE ec.before_snapshot_id = NEW.id OR ec.after_snapshot_id = NEW.id
+)
+BEGIN
+    -- SQLite's REPLACE conflict handler can delete a row without running DELETE triggers when
+    -- recursive_triggers is disabled (the default). Refuse insertion over a receipt-bound id too.
+    SELECT RAISE(ABORT, 'execution comparison source snapshot bindings are immutable');
+END;
 CREATE TRIGGER IF NOT EXISTS execution_comparison_engagement_no_delete
 BEFORE DELETE ON campaign_identities
 WHEN EXISTS (
@@ -123,6 +134,17 @@ WHEN EXISTS (
 BEGIN
     SELECT RAISE(ABORT, 'execution comparison engagement bindings are immutable');
 END;
+CREATE TRIGGER IF NOT EXISTS execution_comparison_engagement_no_replace
+BEFORE INSERT ON campaign_identities
+WHEN EXISTS (
+    SELECT 1 FROM snapshots s
+    JOIN execution_comparisons ec
+      ON ec.before_snapshot_id = s.id OR ec.after_snapshot_id = s.id
+    WHERE s.campaign_id = NEW.campaign_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'execution comparison engagement bindings are immutable');
+END;
 CREATE TABLE IF NOT EXISTS gates (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
@@ -137,14 +159,61 @@ CREATE TABLE IF NOT EXISTS gates (
 """
 
 
+_NOW_LOCK = threading.Lock()
+_LAST_NOW: Optional[datetime] = None
+
+
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    # Execution evidence ordering is a decision boundary: a snapshot uploaded before a run
+    # starts cannot later be relabelled as that run's post-change observation.  Preserve
+    # microseconds so ordinary start-then-upload flows have a strict, durable ordering even when
+    # both writes occur within the same wall-clock second.
+    global _LAST_NOW
+    with _NOW_LOCK:
+        current = datetime.now(timezone.utc)
+        if _LAST_NOW is not None and current <= _LAST_NOW:
+            current = _LAST_NOW + timedelta(microseconds=1)
+        _LAST_NOW = current
+    return current.isoformat(timespec="microseconds")
+
+
+def _parse_aware_timestamp(value: Any) -> Optional[datetime]:
+    """Parse one persisted ISO timestamp, refusing missing/naive/ambiguous values."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _canonical_json_bytes(value: Any) -> bytes:
+    """Return the one JSON encoding used for decision-receipt identity checks.
+
+    Comparing parsed Python objects is unsafe at this boundary because Python deliberately treats
+    ``False == 0`` and ``1 == 1.0``.  Canonical JSON retains those JSON type distinctions and also
+    rejects non-finite numbers, which are outside the receipt contract.
+    """
+    return json.dumps(
+        value, sort_keys=True, ensure_ascii=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+
+
+def _canonical_json_identity_matches(left: Any, right: Any) -> bool:
+    """Require both canonical bytes and their SHA-256 digest to identify the same JSON value."""
+    left_payload = _canonical_json_bytes(left)
+    right_payload = _canonical_json_bytes(right)
+    return (
+        hashlib.sha256(left_payload).digest() == hashlib.sha256(right_payload).digest()
+        and left_payload == right_payload
+    )
 
 
 def _canonical_receipt_sha256(value: Any) -> str:
-    payload = json.dumps(
-        value, sort_keys=True, ensure_ascii=True, separators=(",", ":"), allow_nan=False
-    ).encode("utf-8")
+    payload = _canonical_json_bytes(value)
     return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
@@ -243,41 +312,6 @@ def _comparison_envelope_valid(comparison: Any) -> bool:
         and envelope.get("owner_versions") == admission.get("owner_versions")
         and envelope.get("support_profiles") == admission.get("support_profiles")
     )
-
-
-def _canonical_cutover_gate_valid(comparison: Any) -> bool:
-    """Prove the stored gate is the exact result of the sole decision owner.
-
-    Detached hashes establish immutability, not semantic authority: a caller with an entirely
-    rewritten payload can recompute every digest.  Persistence therefore recomputes the gate from
-    the complete, uncapped inputs before that gate is allowed to move an execution's latest marker.
-    The import is local to keep the storage module free of an import-time engine dependency.
-    """
-    if not isinstance(comparison, dict):
-        return False
-    gate = comparison.get("cutover_gate")
-    admission = comparison.get("comparison_admission")
-    families = comparison.get("protocol_families")
-    certificate = comparison.get("precert")
-    if not all(isinstance(value, dict) for value in (
-            gate, admission, families, certificate)):
-        return False
-    delta = {
-        key: value for key, value in comparison.items()
-        if key not in _COMPARISON_ADDITIVE_FIELDS
-    }
-    try:
-        from cisco_toolkit.html import compute_cutover_gate
-
-        expected = compute_cutover_gate(
-            delta,
-            certificate,
-            comparison_admission=admission,
-            protocol_family_changes=families,
-        )
-    except (TypeError, ValueError, OverflowError):
-        return False
-    return gate == expected
 
 
 _BACKUP_DIR = "backups"
@@ -617,8 +651,9 @@ class Store:
         if row is None:
             return None
         raw, binding = _snapshot_binding_from_row(row)
+        from cisco_toolkit.protocol_assurance import bind_snapshot_json_bytes
         return (
-            json.loads(raw),
+            bind_snapshot_json_bytes(raw),
             binding,
         )
 
@@ -717,11 +752,27 @@ class Store:
                     }
                     ordinal = max(used, default=0) + 1
                     state["label"] = f"Cutover run {ordinal}"
+                # The persisted start instant, not the earlier in-memory plan-build instant, owns
+                # the post-change boundary. Freeze it while the same write transaction also reads
+                # the current snapshot-id high-water mark. A later snapshot must exceed both this
+                # mark and the temporal/capture checks at receipt append.
+                persisted_started_at = _now()
+                state["started_at"] = persisted_started_at
+                policy = state.get("comparison_policy") if isinstance(state, dict) else None
+                if isinstance(policy, dict) and policy.get("schema") == (
+                    "execution_comparison_policy/1"
+                ):
+                    high_watermark_row = self._conn.execute(
+                        "SELECT COALESCE(MAX(id),0) AS snapshot_id FROM snapshots"
+                    ).fetchone()
+                    policy["snapshot_id_high_watermark"] = int(
+                        high_watermark_row["snapshot_id"] if high_watermark_row else 0
+                    )
                 cur = self._conn.execute(
                     """INSERT INTO executions(snapshot_id, label, status, started_at, ended_at, state_json)
                        VALUES (?,?,?,?,?,?)""",
                     (snapshot_id, state.get("label", ""), state.get("status", "in_progress"),
-                     state.get("started_at", _now()), state.get("ended_at"),
+                     persisted_started_at, state.get("ended_at"),
                      json.dumps(state, separators=(",", ":"))),
                 )
                 execution_id = int(cur.lastrowid or 0)
@@ -778,8 +829,10 @@ class Store:
         comparison = receipt.get("comparison")
         if not _comparison_envelope_valid(comparison):
             raise ValueError("execution comparison detached receipt is invalid")
-        if not _canonical_cutover_gate_valid(comparison):
-            raise ValueError("execution comparison canonical cutover gate is invalid")
+        # Do not try to re-authorize a detached JSON family set here. The canonical comparison's
+        # process-local family authority is intentionally lost at the API/wire boundary. Semantic
+        # authority is established below, inside BEGIN IMMEDIATE, by recomputing the *entire*
+        # comparison from the two exact persisted blobs and requiring canonical JSON equality.
         gate = comparison.get("cutover_gate") if isinstance(comparison, dict) else None
         if not isinstance(gate, dict) or gate.get("schema") != "cutover_gate/1":
             raise ValueError("execution comparison has no canonical cutover gate")
@@ -795,7 +848,8 @@ class Store:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
                 row = self._conn.execute(
-                    """SELECT snapshot_id, status, state_json FROM executions WHERE id=?""",
+                    """SELECT snapshot_id, status, started_at, state_json
+                       FROM executions WHERE id=?""",
                     (execution_id,),
                 ).fetchone()
                 if row is None:
@@ -817,6 +871,22 @@ class Store:
                         or policy.get("canonical_gate_required") is not True):
                     self._conn.rollback()
                     return {"status": "legacy"}
+                snapshot_id_high_watermark = policy.get("snapshot_id_high_watermark")
+                if (
+                    type(snapshot_id_high_watermark) is not int
+                    or snapshot_id_high_watermark < before_snapshot_id
+                ):
+                    self._conn.rollback()
+                    return {"status": "after_not_post_change"}
+                from . import execution as execution_owner
+
+                implementation_binding = execution_owner.implementation_evidence_binding(state)
+                if (
+                    implementation_binding.get("valid") is not True
+                    or receipt.get("implementation_binding") != implementation_binding
+                ):
+                    self._conn.rollback()
+                    return {"status": "after_not_post_change"}
 
                 # Re-read both source rows while the write transaction is held. Snapshot blobs are
                 # immutable through the API, but another process can delete a row between the
@@ -828,7 +898,7 @@ class Store:
                     return {"status": "source_mismatch"}
                 source_rows = self._conn.execute(
                     """SELECT s.id AS snapshot_id, s.campaign_id, i.engagement_id,
-                              s.label, s.script_version,
+                              s.label, s.uploaded_at, s.script_version,
                               CAST(s.snapshot_json AS BLOB) AS snapshot_blob
                        FROM snapshots s
                        JOIN campaign_identities i ON i.campaign_id=s.campaign_id
@@ -844,7 +914,8 @@ class Store:
                     raw_source, binding = _snapshot_binding_from_row(source_row)
                     current_bindings[binding["snapshot_id"]] = binding
                     try:
-                        parsed_source = json.loads(raw_source)
+                        from cisco_toolkit.protocol_assurance import bind_snapshot_json_bytes
+                        parsed_source = bind_snapshot_json_bytes(raw_source)
                     except (TypeError, ValueError, UnicodeDecodeError):
                         self._conn.rollback()
                         return {"status": "source_mismatch"}
@@ -857,6 +928,50 @@ class Store:
                 if before_binding is None or after_binding is None:
                     self._conn.rollback()
                     return {"status": "source_missing"}
+
+                # A canonical after receipt is post-change evidence for *this* run, not merely a
+                # second snapshot from the same campaign.  Enforce the temporal/provenance order
+                # again under the same write lock that appends the receipt.  Snapshot IDs provide
+                # a database ordering witness; aware upload/start timestamps independently prove
+                # that the evidence was introduced after the run began.  Missing or ambiguous
+                # timestamps abstain instead of allowing PASS.
+                source_by_id = {
+                    int(source_row["snapshot_id"]): source_row for source_row in source_rows
+                }
+                before_row = source_by_id.get(before_snapshot_id)
+                after_row = source_by_id.get(after_snapshot_id)
+                run_started_at = _parse_aware_timestamp(row["started_at"])
+                before_uploaded_at = _parse_aware_timestamp(
+                    before_row["uploaded_at"] if before_row is not None else None
+                )
+                after_uploaded_at = _parse_aware_timestamp(
+                    after_row["uploaded_at"] if after_row is not None else None
+                )
+                after_snapshot = current_snapshots.get(after_snapshot_id)
+                after_collected_at = _parse_aware_timestamp(
+                    after_snapshot.get("collected_at")
+                    if isinstance(after_snapshot, dict) else None
+                )
+                implementation_completed_at = _parse_aware_timestamp(
+                    implementation_binding.get("completed_at")
+                )
+                if (
+                    after_snapshot_id <= snapshot_id_high_watermark
+                    or run_started_at is None
+                    or before_uploaded_at is None
+                    or after_uploaded_at is None
+                    or after_collected_at is None
+                    or implementation_completed_at is None
+                    or receipt.get("after_collected_at") != after_snapshot.get("collected_at")
+                    or before_uploaded_at > run_started_at
+                    or after_uploaded_at <= run_started_at
+                    or after_uploaded_at <= before_uploaded_at
+                    or after_collected_at <= run_started_at
+                    or after_collected_at <= implementation_completed_at
+                    or after_collected_at > after_uploaded_at
+                ):
+                    self._conn.rollback()
+                    return {"status": "after_not_post_change"}
 
                 admission = comparison.get("comparison_admission")
                 admission_source = admission.get("source_binding") \
@@ -935,8 +1050,7 @@ class Store:
                     after_binding=after_binding,
                     change_intent=intent_request,
                 )
-                if (_canonical_receipt_sha256(comparison)
-                        != _canonical_receipt_sha256(canonical_comparison)):
+                if not _canonical_json_identity_matches(comparison, canonical_comparison):
                     self._conn.rollback()
                     return {"status": "comparison_mismatch"}
                 cur = self._conn.execute(
@@ -954,6 +1068,8 @@ class Store:
                     "receipt_sha256": claimed_hash,
                     "before_snapshot_id": before_snapshot_id,
                     "after_snapshot_id": after_snapshot_id,
+                    "after_collected_at": after_snapshot.get("collected_at"),
+                    "implementation_binding": implementation_binding,
                     "cutover_gate": dict(gate),
                 }
                 encoded_state = json.dumps(state, separators=(",", ":"), allow_nan=False)

@@ -1,32 +1,27 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 
 import pytest
 
 from cisco_toolkit.multichassis_lag import (
     MULTICHASSIS_LAG_DELTA_SCHEMA,
     MULTICHASSIS_LAG_DOMAIN_BASELINE_SCHEMA,
-    MULTICHASSIS_LAG_SOURCE_RECEIPT_SCHEMA,
     MULTICHASSIS_LAG_SUBJECT_SCOPE_SCHEMA,
     compute_multichassis_lag_delta,
     compute_multichassis_lag_domain_baseline,
     compute_multichassis_lag_subject_scope,
     multichassis_lag_support_profile,
+    produce_multichassis_lag_typed_observation,
     validate_multichassis_lag_domain_baseline,
 )
 from cisco_toolkit.protocol_assurance import ASSURANCE_LEVELS, CHANGE_VOCABULARY
 
 
-def _source(hex_digit: str, *, capture: str = "ok", custody: str = "current_run_source_bound") -> dict:
-    return {
-        "schema": MULTICHASSIS_LAG_SOURCE_RECEIPT_SCHEMA,
-        "capture_status": capture,
-        "projection_custody": custody,
-        "source_sha256": f"sha256:{hex_digit * 64}",
-        "owner_version": "typed-fixture-v1",
-        "commands": ["show vpc", "show lacp neighbor"],
-    }
+def _identity(name: str) -> str:
+    compact = hashlib.sha256(name.casefold().encode()).hexdigest()[:12]
+    return ":".join(compact[index:index + 2] for index in range(0, 12, 2))
 
 
 def _nxos_observation(
@@ -42,6 +37,8 @@ def _nxos_observation(
     status: str = "up",
     consistency: str = "success",
     collection_mode: str = "live",
+    extra_legs: list[dict] | None = None,
+    domain_state_overrides: dict[str, str] | None = None,
 ) -> dict:
     legs = []
     if attachment_id is not None:
@@ -55,22 +52,68 @@ def _nxos_observation(
                 "lacp_partner_aggregation_id": partner_aggregation,
             }
         )
-    return {
-        "switch": switch,
-        "vendor": "cisco",
-        "platform": "nxos",
-        "collection_mode": collection_mode,
-        "peer_identity": peer,
-        "domain_id": domain_id,
-        "domain_state": {
-            "peer_status": "peer adjacency formed ok",
-            "keepalive_status": "peer is alive",
-            "consistency": "success",
-            "peer_link_status": "up",
-        },
-        "source": _source(source_digit),
-        "legs": legs,
+    legs.extend(extra_legs or [])
+    vpc_rows = "".join(
+        f"{leg['attachment_id']} {leg['local_port_channel']} {leg['status']} "
+        f"{leg['consistency']} success 10-20\n"
+        for leg in legs
+    )
+    domain_state = {
+        "peer_status": "peer adjacency formed ok",
+        "keepalive_status": "peer is alive",
+        "consistency": "success",
+        "peer_link_status": "up",
     }
+    domain_state.update(domain_state_overrides or {})
+    vpc = f"""vPC domain id                     : {domain_id}
+Peer status                       : {domain_state['peer_status']}
+vPC keep-alive status             : {domain_state['keepalive_status']}
+Configuration consistency status : {domain_state['consistency']}
+Number of vPCs configured         : {len(legs)}
+
+vPC Peer-link status
+id Port Status Active vlans
+1 Po100 {domain_state['peer_link_status']} 1-4094
+
+vPC status
+id Port Status Consistency Reason Active vlans
+{vpc_rows}""".encode()
+    role = f"""vPC Role status
+vPC role                        : primary
+Dual Active Detection Status    : Disabled
+vPC system-mac                  : 00:00:5e:00:01:01
+vPC local system-mac            : {_identity(switch)}
+vPC peer system-mac             : {_identity(peer)}
+""".encode()
+    lacp_sections = []
+    for leg in legs:
+        partner_system_value = leg.get("lacp_partner_system_id")
+        partner_key_value = leg.get("lacp_partner_aggregation_id")
+        if not partner_system_value or not partner_key_value:
+            continue
+        port_number = int("".join(ch for ch in leg["local_port_channel"] if ch.isdigit()))
+        partner_mac = str(partner_system_value).replace(".", "").replace(":", "").replace("-", "")
+        partner_mac = "-".join(partner_mac[index:index + 2] for index in range(0, 12, 2))
+        key = int(str(partner_key_value), 0) if str(partner_key_value).startswith("0x") else int(partner_key_value)
+        lacp_sections.append(f"""port-channel{port_number} neighbors
+Partner's information
+Port System ID Port Number Age Flags
+Eth1/{port_number} 32768,{partner_mac}0x11f 20 SA
+LACP Partner Partner Partner
+Port Priority Oper Key Port State
+32768 0x{key:x} 0x3d
+""")
+    commands = {
+        "show vpc": vpc,
+        "show vpc role": role,
+        "show lacp neighbor": ("\n".join(lacp_sections) or "No LACP neighbors\n").encode(),
+    }
+    observation = produce_multichassis_lag_typed_observation(
+        switch, vendor="cisco", platform="nxos", collection_mode=collection_mode,
+        command_bytes=commands,
+    )
+    assert observation is not None
+    return observation
 
 
 def _eos_observation(
@@ -83,43 +126,65 @@ def _eos_observation(
     partner_system: str | None = "00:11:22:33:44:55",
     partner_aggregation: str | None = "42",
     collection_mode: str = "offline",
+    domain_state_overrides: dict[str, str] | None = None,
 ) -> dict:
-    legs = []
+    interfaces = ""
+    lacp = "No LACP peers\n"
     if attachment_id is not None:
-        legs.append(
-            {
-                "attachment_id": attachment_id,
-                "local_port_channel": "Port-Channel20",
-                "status": "up",
-                "consistency": "success",
-                "lacp_partner_system_id": partner_system,
-                "lacp_partner_aggregation_id": partner_aggregation,
-            }
+        interfaces = (
+            "mlag state local remote oper config last change changes\n"
+            f"{attachment_id} active-full Po20 Po20 up/up ena/ena 1 day ago 1\n"
         )
-    return {
-        "switch": switch,
-        "vendor": "arista",
-        "platform": "eos",
-        "collection_mode": collection_mode,
-        "peer_identity": peer,
-        "domain_id": domain_id,
-        "domain_state": {
-            "state": "active",
-            "neg_status": "connected",
-            "config_sanity": "consistent",
-            "peer_link_status": "up",
-            "local_intf_status": "up",
-        },
-        "source": _source(source_digit),
-        "legs": legs,
+        if partner_system and partner_aggregation:
+            lacp = f"""Port Channel Port-Channel20*:
+Et20 Bundled | 8000,{str(partner_system).replace(':', '-')} 20 ALGs+CD 0x{int(partner_aggregation):04x} 32768
+"""
+    domain_state = {
+        "state": "active",
+        "neg_status": "connected",
+        "config_sanity": "consistent",
+        "peer_link_status": "up",
+        "local_intf_status": "up",
     }
+    domain_state.update(domain_state_overrides or {})
+    observation = produce_multichassis_lag_typed_observation(
+        switch, vendor="arista", platform="eos", collection_mode=collection_mode,
+        command_bytes={
+            "show mlag": (
+                '{"domainId":"' + domain_id + '","peerAddress":"192.0.2.1",'
+                f'"peerLink":"Port-Channel1000","state":"{domain_state["state"]}",'
+                f'"negStatus":"{domain_state["neg_status"]}",'
+                f'"configSanity":"{domain_state["config_sanity"]}",'
+                f'"peerLinkStatus":"{domain_state["peer_link_status"]}",'
+                f'"localIntfStatus":"{domain_state["local_intf_status"]}",'
+                '"systemId":"02:1c:73:00:13:19","mlagPorts":{"Active-full":1}}'
+            ).encode(),
+            "show mlag interfaces detail": interfaces.encode(),
+            "show lacp peer": lacp.encode(),
+        },
+    )
+    assert observation is not None
+    return observation
 
 
-def _nxos_pair(*, domain_id: str = "10") -> dict:
+def _nxos_pair(*, domain_id: str = "10", second_status: str = "up",
+               partner_system: str = "0011.2233.4455",
+               partner_aggregation: str = "42",
+               second_partner_system: str | None = None,
+               second_partner_aggregation: str | None = None,
+               extra_legs: list[dict] | None = None) -> dict:
     return {
         "observations": [
-            _nxos_observation("leaf-a", "leaf-b", source_digit="a", domain_id=domain_id),
-            _nxos_observation("leaf-b", "leaf-a", source_digit="b", domain_id=domain_id),
+            _nxos_observation(
+                "leaf-a", "leaf-b", source_digit="a", domain_id=domain_id,
+                partner_system=partner_system, partner_aggregation=partner_aggregation,
+                extra_legs=extra_legs),
+            _nxos_observation(
+                "leaf-b", "leaf-a", source_digit="b", domain_id=domain_id,
+                status=second_status,
+                partner_system=(second_partner_system or partner_system),
+                partner_aggregation=(second_partner_aggregation or partner_aggregation),
+                extra_legs=extra_legs),
         ]
     }
 
@@ -154,28 +219,16 @@ def test_support_profile_and_subject_scope_are_closed_and_total() -> None:
     profile = multichassis_lag_support_profile()
     assert profile["owner_schema"] == MULTICHASSIS_LAG_DELTA_SCHEMA
     assert profile["assurance_level"] == "intent_reconciled_survival"
-    assert profile["variants"] == [
-        {
-            "vendor": "cisco",
-            "platform": "nxos",
-            "collection_modes": ["live", "offline"],
-            "required_typed_evidence": [
-                "vpc_domain_state",
-                "explicit_peer_identity",
-                "lacp_partner_identity",
-            ],
-        },
-        {
-            "vendor": "arista",
-            "platform": "eos",
-            "collection_modes": ["offline"],
-            "required_typed_evidence": [
-                "mlag_domain_state",
-                "explicit_peer_identity",
-                "lacp_partner_identity",
-            ],
-        },
+    assert profile["variants"][0]["collection_modes"] == ["live", "offline"]
+    assert profile["variants"][0]["raw_commands"] == [
+        "show vpc", "show vpc role", "show lacp neighbor",
     ]
+    assert profile["variants"][0]["maximum_assurance"] == "intent_reconciled_survival"
+    assert profile["variants"][1]["collection_modes"] == ["offline"]
+    assert profile["variants"][1]["raw_commands"] == [
+        "show mlag", "show mlag interfaces detail", "show lacp peer",
+    ]
+    assert profile["variants"][1]["maximum_assurance"] == "local_safety_preservation"
     assert any("No IOS" in limitation for limitation in profile["limitations"])
 
     scope = compute_multichassis_lag_subject_scope(_nxos_pair())
@@ -187,7 +240,7 @@ def test_support_profile_and_subject_scope_are_closed_and_total() -> None:
     unsupported = _eos_pair()
     unsupported["observations"][0]["collection_mode"] = "live"
     unsupported_scope = compute_multichassis_lag_subject_scope(unsupported)
-    assert unsupported_scope["summary"]["n_not_verified"] == 1
+    assert unsupported_scope["summary"]["n_not_verified"] == 2
     assert unsupported_scope["rows"][0]["status"] == "not_verified"
 
     for malformed in (None, [], "typed", {"observations": [None]}):
@@ -199,9 +252,8 @@ def test_support_profile_and_subject_scope_are_closed_and_total() -> None:
         assert validate_multichassis_lag_domain_baseline(baseline)["valid"] is True
 
 
-@pytest.mark.parametrize("fixture", [_nxos_pair, _eos_pair])
-def test_reciprocal_pair_and_attachment_require_complete_typed_evidence(fixture) -> None:
-    baseline = compute_multichassis_lag_domain_baseline(fixture())
+def test_reciprocal_pair_and_attachment_require_complete_typed_evidence() -> None:
+    baseline = compute_multichassis_lag_domain_baseline(_nxos_pair())
     validation = validate_multichassis_lag_domain_baseline(baseline, require_current_run=True)
 
     assert validation["valid"] is True
@@ -313,8 +365,12 @@ def test_unknown_missing_and_known_bad_domain_states_fail_closed(
 
     local = next(row for row in baseline["local_observations"] if row["switch"].endswith("-a"))
     assert local["health_state"] == expected_state
-    assert baseline["reciprocal_peer_pairs"][0]["health_state"] == expected_state
-    assert baseline["reconciled_attachments"][0]["health_state"] == expected_state
+    if platform == "nxos":
+        assert baseline["reciprocal_peer_pairs"][0]["health_state"] == expected_state
+        assert baseline["reconciled_attachments"][0]["health_state"] == expected_state
+    else:
+        assert baseline["reciprocal_peer_pairs"] == []
+        assert baseline["reconciled_attachments"] == []
 
 
 @pytest.mark.parametrize(
@@ -381,9 +437,8 @@ def test_delta_uses_shared_vocabulary_and_tracks_health_and_intent_transitions()
     assert equal_content["comparison_failures"] == []
     assert equal_content["summary"]["by_transition"]["unchanged_healthy"] == 6
 
-    degraded_input = _nxos_pair()
-    degraded_input["observations"][1]["legs"][0]["status"] = "down"
-    degraded = compute_multichassis_lag_domain_baseline(degraded_input)
+    degraded = compute_multichassis_lag_domain_baseline(
+        _nxos_pair(second_status="down"))
     regression = compute_multichassis_lag_delta(
         healthy,
         degraded,
@@ -413,11 +468,8 @@ def test_delta_uses_shared_vocabulary_and_tracks_health_and_intent_transitions()
         if row["transition"] == "unchanged_degraded"
     } == {"block"}
 
-    changed_input = _nxos_pair()
-    for observation in changed_input["observations"]:
-        observation["legs"][0]["lacp_partner_system_id"] = "00aa.bbcc.ddee"
-        observation["legs"][0]["lacp_partner_aggregation_id"] = "84"
-    changed = compute_multichassis_lag_domain_baseline(changed_input)
+    changed = compute_multichassis_lag_domain_baseline(_nxos_pair(
+        partner_system="00aa.bbcc.ddee", partner_aggregation="84"))
     intent = compute_multichassis_lag_delta(
         healthy,
         changed,
@@ -442,9 +494,11 @@ def test_delta_uses_shared_vocabulary_and_tracks_health_and_intent_transitions()
 
 def test_delta_distinguishes_coverage_loss_appearance_disappearance_and_bad_binding() -> None:
     healthy = compute_multichassis_lag_domain_baseline(_nxos_pair())
-    incomplete_input = _nxos_pair()
-    incomplete_input["observations"][1]["legs"][0].pop("lacp_partner_system_id")
-    incomplete = compute_multichassis_lag_domain_baseline(incomplete_input)
+    incomplete = compute_multichassis_lag_domain_baseline({"observations": [
+        _nxos_observation("leaf-a", "leaf-b", source_digit="a"),
+        _nxos_observation(
+            "leaf-b", "leaf-a", source_digit="b", partner_system=None),
+    ]})
     lost = compute_multichassis_lag_delta(
         healthy,
         incomplete,
@@ -457,20 +511,14 @@ def test_delta_distinguishes_coverage_loss_appearance_disappearance_and_bad_bind
     assert attachment_change["assurance_level"] == "not_verified"
     assert attachment_change["decision_effect"] == "not_verified"
 
-    expanded_input = _nxos_pair()
-    for index, observation in enumerate(expanded_input["observations"]):
-        observation["legs"].append(
-            {
-                "attachment_id": "30",
-                "local_port_channel": "Po30",
-                "status": "up",
-                "consistency": "success",
-                "lacp_partner_system_id": "00ff.eedd.ccbb",
-                "lacp_partner_aggregation_id": "60",
-            }
-        )
-        observation["source"] = _source("c" if index == 0 else "d")
-    expanded = compute_multichassis_lag_domain_baseline(expanded_input)
+    expanded = compute_multichassis_lag_domain_baseline(_nxos_pair(extra_legs=[{
+        "attachment_id": "30",
+        "local_port_channel": "Po30",
+        "status": "up",
+        "consistency": "success",
+        "lacp_partner_system_id": "00ff.eedd.ccbb",
+        "lacp_partner_aggregation_id": "60",
+    }]))
     appeared = compute_multichassis_lag_delta(
         healthy,
         expanded,

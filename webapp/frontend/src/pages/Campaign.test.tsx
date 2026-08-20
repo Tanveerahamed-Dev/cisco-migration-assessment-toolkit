@@ -3,7 +3,13 @@ import { render, screen, waitFor, fireEvent, within } from "@testing-library/rea
 import { MemoryRouter, Routes, Route } from "react-router";
 import CampaignPage, { NEXT_DECISION, VERDICT_COLOR } from "./Campaign";
 import { api } from "../api";
-import type { Campaign, CompareResponse, SnapshotMeta, GateBoardData } from "../api";
+import type {
+  Campaign,
+  CampaignAdjacentComparison,
+  CompareResponse,
+  SnapshotMeta,
+  GateBoardData,
+} from "../api";
 
 // ── pure maps ─────────────────────────────────────────────────────────────
 // The gate cell cycles pending → GO → NO-GO → SLIPPED → pending (a closed 4-state ring).
@@ -64,6 +70,49 @@ function snap(id: number): SnapshotMeta {
     script_version: "3.30.0",
     n_devices: 10,
     summary: { bands: { critical: 1, watch: 2, healthy: 7 } } as SnapshotMeta["summary"],
+  };
+}
+
+function trendPair(index: number, verdict: "PASS" | "FAIL"): CampaignAdjacentComparison {
+  const beforeId = index + 1;
+  const afterId = index + 2;
+  return {
+    schema: "campaign_adjacent_comparison/1",
+    index,
+    from: `C${index + 1}`,
+    to: `C${index + 2}`,
+    before_snapshot_id: beforeId,
+    after_snapshot_id: afterId,
+    before_label: `Wave ${beforeId}`,
+    after_label: `Wave ${afterId}`,
+    comparison: {
+      // Deliberately CLEAN even for a FAIL gate: Trend must render the server-owned cutover gate,
+      // never derive an overall decision from the legacy delta.
+      verdict: "CLEAN",
+      findings: {},
+      health: {},
+      cabling: { assessed: true, summary: {} },
+      cutover_gate: {
+        schema: "cutover_gate/1",
+        verdict,
+        note: `server basis ${index}`,
+        operator_note: `server operator decision ${index}`,
+        delta_verdict: "CLEAN",
+        delta_display: "CLEAN",
+        delta_note: "legacy delta only",
+        certificate_verdict: verdict === "PASS" ? "PASS" : "FAIL",
+        certificate_note: "server precert",
+        protocol_gate: "PASS",
+        protocol_baseline_peers: 1,
+        protocol_regressions: 0,
+        protocol_coverage_gaps: 0,
+      },
+      comparison_receipt: {
+        schema: "protocol_receipt_envelope/1",
+        payload_sha256: `sha256:payload-${index}`,
+        receipt_sha256: `sha256:receipt-${index}`,
+      } as CompareResponse["comparison_receipt"],
+    },
   };
 }
 
@@ -176,6 +225,75 @@ describe("CampaignPage", () => {
     expect(baseline).toHaveTextContent("BLOCKED");
     expect(baseline.style.color).toBe("var(--crit)");
     expect(screen.getByText("Final OSPF neighbor remains EXSTART")).toBeInTheDocument();
+  });
+
+  it("renders server-owned adjacent gates and receipts with a complete capped Trend export", async () => {
+    vi.spyOn(api, "getCampaign").mockResolvedValue(campaign({ snapshots: [snap(1), snap(2)] }));
+    vi.spyOn(api, "getGates").mockResolvedValue(emptyGates);
+    vi.spyOn(api, "trend").mockResolvedValue({
+      verdict: "IMPROVING",
+      verdict_note: "Aggregate direction only; adjacent decisions remain authoritative.",
+      trajectory: [],
+      adjacent_comparison_status: {
+        schema: "campaign_adjacent_comparison_set/1",
+        status: "verified",
+        n_pairs_total: 4,
+        n_pairs_returned: 4,
+        complete: true,
+        note: "Four exact-byte adjacent comparisons were published.",
+      },
+      adjacent_comparisons: [
+        trendPair(0, "PASS"),
+        trendPair(1, "FAIL"),
+        trendPair(2, "PASS"),
+        trendPair(3, "FAIL"),
+      ],
+    });
+    renderCampaign();
+
+    expect(await screen.findByTestId("trend-receipt-status")).toHaveTextContent("VERIFIED");
+    expect(screen.getByTestId("trend-receipt-note")).toHaveTextContent(
+      "Four exact-byte adjacent comparisons were published.",
+    );
+    const gates = screen.getAllByTestId("trend-adjacent-gate");
+    expect(gates).toHaveLength(3);
+    expect(gates[0]).toHaveTextContent("PASS");
+    expect(gates[1]).toHaveTextContent("FAIL");
+    expect(screen.getAllByTestId("trend-adjacent-receipt")[1]).toHaveTextContent("sha256:receipt-1");
+    expect(screen.getByTestId("trend-cap-disclosure")).toHaveTextContent(
+      "Rendered: 3 · Total produced: 4 · Omitted from view: 1 · Expected pairs: 4 · Receipt set complete: YES",
+    );
+    expect(screen.getByRole("button", { name: "Export Trend JSON" })).toBeInTheDocument();
+    expect(screen.getAllByTestId("canonical-cutover-verdict")[1]).toHaveTextContent("FAIL");
+    expect(screen.getByText("Aggregate direction only; adjacent decisions remain authoritative.")).toBeInTheDocument();
+  });
+
+  it("distinguishes missing adjacent evidence from rows omitted only by the UI cap", async () => {
+    vi.spyOn(api, "getCampaign").mockResolvedValue(campaign({ snapshots: [snap(1), snap(2), snap(3)] }));
+    vi.spyOn(api, "getGates").mockResolvedValue(emptyGates);
+    vi.spyOn(api, "trend").mockResolvedValue({
+      verdict: "INDETERMINATE",
+      verdict_note: "The ordered receipt set is incomplete.",
+      trajectory: [],
+      adjacent_comparison_status: {
+        schema: "campaign_adjacent_comparison_set/1",
+        status: "not_verified",
+        n_pairs_total: 2,
+        n_pairs_returned: 0,
+        complete: false,
+        note: "A middle source disappeared; no non-adjacent pair was substituted.",
+      },
+      adjacent_comparisons: [],
+    });
+    renderCampaign();
+
+    expect(await screen.findByTestId("trend-receipt-status")).toHaveTextContent("NOT VERIFIED");
+    expect(screen.getByTestId("trend-cap-disclosure")).toHaveTextContent(
+      "Rendered: 0 · Total produced: 0 · Omitted from view: 0 · Expected pairs: 2 · Receipt set complete: NO",
+    );
+    expect(screen.getByTestId("trend-cap-disclosure")).toHaveTextContent(
+      "unproduced expected pairs remain NOT VERIFIED",
+    );
   });
 
   it("surfaces a failed trend fetch as an error panel instead of silently vanishing", async () => {
@@ -510,6 +628,12 @@ describe("CampaignPage · coverage honesty and stale state", () => {
       decision_effect: "block" as const,
       note: "Intent cannot neutralize this producer-owned regression.",
     };
+    const neutralRecovery = {
+      family: "ipv4_routing_adjacency", subject: "DIST-RECOVERED|BGP|10.0.0.99",
+      transition: "recovered" as const, expected: false, before_state: "Idle", after_state: "Established",
+      decision_effect: "none" as const,
+      note: "Recovered evidence is favorable context, not an unexpected change.",
+    };
     const unexpected = Array.from({ length: 10 }, (_, index) => ({
       family: "ipv4_routing_adjacency", subject: `DIST-${index + 1}|OSPF|10.0.0.${index + 1}`,
       transition: "regressed" as const, expected: false, before_state: "FULL", after_state: "EXSTART",
@@ -520,6 +644,12 @@ describe("CampaignPage · coverage honesty and stale state", () => {
       transition: "coverage_lost" as const, expected: false, before_state: "observed", after_state: "",
       decision_effect: "not_verified" as const, note: `Capture lost ${index + 1}.`,
     }));
+    const fullBaselineBlockers = Array.from({ length: 55 }, (_, index) => ({
+      device: `DIST-${index + 1}`, wave: "Group 1", category: "Routing", severity: "High",
+      check: `Baseline blocker ${index + 1}`, expect: "Observed state must be healthy.",
+      evidence_state: "degraded", projection_custody: "source_bound",
+      source_key: `validation_plan.items.${index}`,
+    }));
     vi.spyOn(api, "compare").mockResolvedValue({
       comparison_schema: "source_bound_cutover_comparison/1",
       verdict: "CLEAN",
@@ -529,8 +659,8 @@ describe("CampaignPage · coverage honesty and stale state", () => {
         schema: "current_baseline_gate/1", verdict: "BLOCKED", assessed: true,
         note: "One current fault remains.",
         summary: {
-          n_items: 3, n_blockers: 1, n_blockers_returned: 1, blockers_capped: false,
-          by_state: { degraded: 1, review: 0, not_verified: 0 },
+          n_items: 55, n_blockers: 55, n_blockers_returned: 1, blockers_capped: true,
+          by_state: { degraded: 55, review: 0, not_verified: 0 },
         },
         blockers: [{
           device: "DIST-1", wave: "Group 1", category: "Routing", severity: "High",
@@ -544,23 +674,23 @@ describe("CampaignPage · coverage honesty and stale state", () => {
         schema: "protocol_family_change_set/1", owner: "reference_only_composition",
         owns_score: false, owns_verdict: false,
         summary: {
-          n_families: 1, n_subject_changes: 14, n_expected: 2, n_unexpected: 10,
+          n_families: 1, n_subject_changes: 15, n_expected: 2, n_unexpected: 10,
           n_coverage_lost: 2, n_blocking: 11, n_review: 0, n_not_verified: 2,
-          by_decision_effect: { block: 11, review: 0, none: 1, not_verified: 2 },
+          by_decision_effect: { block: 11, review: 0, none: 2, not_verified: 2 },
         },
         families: [{
           family: "ipv4_routing_adjacency", owner_schema: "protocol_adjacency_delta/1",
           assurance_level: "observed_state_preservation", support_profile: supportProfile,
           summary: {
-            n_subject_changes: 14, n_expected: 2, n_unexpected: 10, n_coverage_lost: 2,
+            n_subject_changes: 15, n_expected: 2, n_unexpected: 10, n_coverage_lost: 2,
             n_blocking: 11, n_review: 0, n_not_verified: 2,
-            by_decision_effect: { block: 11, review: 0, none: 1, not_verified: 2 },
+            by_decision_effect: { block: 11, review: 0, none: 2, not_verified: 2 },
             by_transition: {
-              unchanged_healthy: 0, unchanged_degraded: 0, recovered: 1, regressed: 11,
+              unchanged_healthy: 0, unchanged_degraded: 0, recovered: 2, regressed: 11,
               appeared: 0, disappeared: 0, intent_changed: 0, coverage_lost: 2, not_comparable: 0,
             },
           },
-          changes: [...expected, expectedBlock, ...unexpected, ...coverage],
+          changes: [...expected, expectedBlock, neutralRecovery, ...unexpected, ...coverage],
           source_receipt: { schema: "protocol_adjacency_delta/1", gate: "REGRESSED" },
         }],
       },
@@ -574,10 +704,47 @@ describe("CampaignPage · coverage honesty and stale state", () => {
       },
       operator_evidence: {
         schema: "cutover_operator_evidence/1", owner: "reference_only_projection", owns_verdict: false,
+        current_baseline_blocker_export: {
+          schema: "current_baseline_blocker_export/1", owner: "reference_only_projection",
+          owns_verdict: false, status: "available",
+          source_owner: "validation_plan reconciled by current_baseline_gate/1",
+          rows: fullBaselineBlockers,
+          summary: {
+            n_blockers_total: 55, n_rows_returned: 55, omitted: 0, complete: true,
+            rows_sha256: `sha256:${"c".repeat(64)}`,
+          },
+          failures: [], note: "Complete uncapped blocker export.",
+        },
         rehearsal: {
-          status: "simulation_only", assurance_level: "not_verified",
+          status: "current_fault", assurance_level: "not_verified",
           source_owner: "failure_impact projection", n_impacts_total: 1,
           impacts: [{ host: "DIST-1", severity: "High", detail: "three endpoints strand" }],
+          l2_failure_rehearsal: {
+            schema: "l2_failure_rehearsal/1", owner: "reference_only_composition",
+            owns_score: false, owns_verdict: false, status: "current_fault",
+            assurance_level: "not_verified", source_bound: true,
+            summary: {
+              n_scenarios: 2, n_current_faults: 1, n_projected_risks: 0, n_not_verified: 1,
+              by_disposition: {
+                simulation_only: 0, projected_risk: 0, current_fault: 1, not_verified: 1,
+              },
+            },
+            scenarios: [{
+              family: "etherchannel", subject: "DIST-1|Po1",
+              failure_scenario: "single_observed_forwarding_member_loss",
+              disposition: "current_fault", assurance_level: "not_verified",
+              source_owner: "etherchannel_delta/1", current_fault: true,
+              evidence: { observed_forwarding_capacity_units: 1, remaining_observed_units_after_loss: 0 },
+              note: "Current local bundle degradation remains present; service-path survival is not verified.",
+            }, {
+              family: "multichassis_lag", subject: "multichassis_lag|coverage",
+              failure_scenario: "single_peer_or_local_leg_loss",
+              disposition: "not_verified", assurance_level: "not_verified",
+              source_owner: "multichassis_lag_delta/1", current_fault: false, evidence: {},
+              note: "Reciprocal peer and matching LACP attachment evidence is unavailable.",
+            }],
+            limitations: ["Simulation is not an operator rehearsal."],
+          },
           note: "Simulation exists, but no source-bound operator rehearsal receipt was supplied.",
         },
         rollback: {
@@ -595,7 +762,7 @@ describe("CampaignPage · coverage honesty and stale state", () => {
         protocol_coverage_gaps: 2, comparison_admission_status: "admitted",
         comparison_admission_note: "Bound source identities and owner semantics were admitted.",
         current_baseline_verdict: "BLOCKED", current_baseline_note: "One current fault remains.",
-        current_baseline_blockers: 1, current_baseline_degraded: 1,
+        current_baseline_blockers: 55, current_baseline_degraded: 55,
         current_baseline_review: 0, current_baseline_not_verified: 0,
       },
       comparison_receipt: {
@@ -617,29 +784,52 @@ describe("CampaignPage · coverage honesty and stale state", () => {
     expect(screen.getByTestId("canonical-cutover-verdict").style.color).toBe("var(--crit)");
     expect(screen.getByTestId("canonical-cutover-operator-note").textContent).toBe(operatorNote);
     expect(screen.getByTestId("canonical-cutover-basis").textContent).toBe(basisNote);
+    expect(screen.getByTestId("current-baseline-cap-disclosure")).toHaveTextContent(
+      "Rendered: 1 · Total: 55 · Omitted: 54",
+    );
+    expect(screen.getByTestId("current-baseline-cap-disclosure")).toHaveTextContent(
+      "Complete comparison JSON contains 55 of 55 blocker rows (omitted 0)",
+    );
     expect(screen.getByTestId("protocol-family-server-summary")).toHaveTextContent("2 expected");
     expect(screen.getByTestId("protocol-family-server-summary")).toHaveTextContent("10 unexpected");
     expect(screen.getByTestId("protocol-family-server-summary")).toHaveTextContent("2 coverage lost");
-    const blockingSection = screen.getByTestId("family-change-blocking-section");
-    expect(within(blockingSection).getAllByTestId("family-change-blocking-row")).toHaveLength(8);
-    expect(within(blockingSection).getByText(/Rendered: 8 · Total: 11 · Omitted: 3/)).toBeInTheDocument();
-    expect(within(blockingSection).getAllByTestId("family-change-blocking-row-expectation")[0]).toHaveTextContent("EXPECTED");
-    expect(within(blockingSection).getAllByTestId("family-change-blocking-row-effect")[0]).toHaveTextContent("BLOCK");
+    const expectedSection = screen.getByTestId("family-change-expected-section");
+    const unexpectedSection = screen.getByTestId("family-change-unexpected-section");
+    const coverageSection = screen.getByTestId("family-change-coverage-section");
+    expect(baseline.compareDocumentPosition(expectedSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(expectedSection.compareDocumentPosition(unexpectedSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(unexpectedSection.compareDocumentPosition(coverageSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(expectedSection).getAllByTestId("family-change-expected-row")).toHaveLength(2);
+    const expectedBlockRow = within(expectedSection).getByText(/DIST-EXPECTED/).closest("[data-testid='family-change-expected-row']")!;
+    expect(within(expectedBlockRow).getByTestId("family-change-expected-row-expectation")).toHaveTextContent("EXPECTED");
+    expect(within(expectedBlockRow).getByTestId("family-change-expected-row-effect")).toHaveTextContent("BLOCK");
+    expect(within(expectedBlockRow).getByTestId("family-change-expected-row-effect").style.color).toBe("var(--crit)");
+    expect(within(unexpectedSection).getAllByTestId("family-change-unexpected-row")).toHaveLength(8);
+    expect(within(unexpectedSection).getByText(/Rendered: 8 · Total: 10 · Omitted: 2/)).toBeInTheDocument();
+    expect(within(unexpectedSection).queryByText(/DIST-RECOVERED/)).not.toBeInTheDocument();
+    expect(within(coverageSection).getAllByTestId("family-change-coverage-row")).toHaveLength(2);
+    expect(within(coverageSection).getByText(/Rendered: 2 · Total: 2 · Omitted: 0/)).toBeInTheDocument();
     const portfolio = screen.getByTestId("protocol-assurance-portfolio");
     const familyDrilldown = within(portfolio).getByTestId("protocol-assurance-family");
     expect(familyDrilldown).toHaveTextContent("ipv4_routing_adjacency");
     fireEvent.click(familyDrilldown.querySelector("summary")!);
     expect(within(portfolio).getAllByTestId("protocol-assurance-subject")).toHaveLength(8);
-    expect(within(portfolio).getByText(/Rendered: 8 · Total: 14 · Omitted: 6/)).toBeInTheDocument();
+    expect(within(portfolio).getByText(/Rendered: 8 · Total: 15 · Omitted: 7/)).toBeInTheDocument();
     expect(screen.getByTestId("comparison-admission-status")).toHaveTextContent("ADMITTED");
     const service = screen.getByTestId("comparison-precert");
     const rehearsal = screen.getByTestId("comparison-rehearsal");
     const rollback = screen.getByTestId("comparison-rollback");
     const custody = screen.getByTestId("comparison-admission");
+    expect(coverageSection.compareDocumentPosition(service) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(service.compareDocumentPosition(rehearsal) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(rehearsal.compareDocumentPosition(rollback) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(rollback.compareDocumentPosition(custody) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByTestId("comparison-rehearsal-status")).toHaveTextContent("SIMULATION ONLY");
+    expect(screen.getByTestId("comparison-rehearsal-status")).toHaveTextContent("CURRENT FAULT");
+    const l2Rehearsal = screen.getByTestId("comparison-l2-rehearsal");
+    expect(within(l2Rehearsal).getByTestId("comparison-l2-rehearsal-status")).toHaveTextContent("CURRENT FAULT");
+    expect(within(l2Rehearsal).getAllByTestId("comparison-l2-rehearsal-row")).toHaveLength(2);
+    expect(within(l2Rehearsal).getByText(/service-path survival is not verified/i)).toBeInTheDocument();
+    expect(within(l2Rehearsal).getByText(/Rendered: 2 · Total: 2 · Omitted: 0/)).toBeInTheDocument();
     expect(screen.getByTestId("comparison-rollback-status")).toHaveTextContent("PLANNED");
     expect(screen.getByTestId("comparison-rollback-row")).toHaveTextContent("retained legacy uplinks");
     expect(screen.getByTestId("comparison-receipt-digests")).toHaveTextContent(`sha256:${"b".repeat(64)}`);

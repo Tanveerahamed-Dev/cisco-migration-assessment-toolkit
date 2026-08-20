@@ -12,6 +12,8 @@ from hashlib import sha256
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from cisco_toolkit.cmdio import TRUNK_TABLE_CMD_VARIANTS, _load_cmd_output, _safe_parse
+from cisco_toolkit import input_custody
+from cisco_toolkit.multichassis_lag import produce_multichassis_lag_typed_observation
 from cisco_toolkit.model import DevicePhysical, InterfaceData
 from cisco_toolkit.parse import (
     ParsedRouteTable,
@@ -168,8 +170,60 @@ def build_stp_roots(cmd_to_file: Dict[str, str]) -> dict:
 def build_vpc(cmd_to_file: Dict[str, str]) -> dict:
     """vPC / MLAG status parsed from this device's already-collected 'show vpc' (NX-OS) ->
     {domain_id, role, peer_status, keepalive_status, vpcs:[...]}; {} when the device runs no vPC.
-    Fail-soft. CONFIRMS MLAG peer pairs (vs topology inference) for the flow simulator."""
+    Fail-soft. This legacy local projection does not confirm a peer pair or dual-homed attachment;
+    the typed multichassis owner requires reciprocal system identities and matching LACP evidence."""
     return _safe_parse(parse_vpc, _load_cmd_output(cmd_to_file, "show vpc")) or {}
+
+
+def build_multichassis_lag_typed_observation(
+        hostname: str, platform: str, collection_mode: str,
+        cmd_to_file: Dict[str, str]) -> Optional[dict]:
+    """Produce one raw-byte-bound vPC/MLAG observation from already-custodied captures.
+
+    NX-OS live/offline and EOS offline are the only declared variants.  The ordinary platform
+    detector is Cisco-oriented, so an offline EOS import is selected from an actual ``show mlag``
+    capture rather than from a caller label.  Missing or unreadable supplemental commands stay
+    absent; the producer then emits incomplete/not-verified evidence instead of filling leaves from
+    topology, domain IDs, vPC/MLAG IDs, or IP addresses.
+    """
+    mode = str(collection_mode or "").strip().casefold()
+
+    def _read(commands: Tuple[str, ...]) -> Dict[str, bytes]:
+        evidence = {}
+        for command in commands:
+            path = cmd_to_file.get(command)
+            if not path:
+                continue
+            try:
+                evidence[command] = input_custody.read_bytes(path)
+            except (OSError, input_custody.BoundInputMutationError):
+                # BoundInputMutationError is recorded by input_custody for mandatory finalization.
+                # The local observation remains incomplete rather than parsing changed bytes.
+                continue
+        return evidence
+
+    nxos_commands = ("show vpc", "show vpc role", "show lacp neighbor")
+    if "show vpc" in cmd_to_file:
+        observation = produce_multichassis_lag_typed_observation(
+            hostname,
+            vendor="cisco",
+            platform="nxos",
+            collection_mode=mode,
+            command_bytes=_read(nxos_commands),
+        )
+        if observation is not None:
+            return observation
+
+    eos_commands = ("show mlag", "show mlag interfaces detail", "show lacp peer")
+    if mode == "offline" and "show mlag" in cmd_to_file:
+        return produce_multichassis_lag_typed_observation(
+            hostname,
+            vendor="arista",
+            platform="eos",
+            collection_mode=mode,
+            command_bytes=_read(eos_commands),
+        )
+    return None
 
 
 def build_fhrp_detail(cmd_to_file: Dict[str, str]) -> list:

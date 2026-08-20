@@ -1,12 +1,14 @@
 """Typed, source-explicit multichassis LAG assurance owners.
 
 The legacy NX-OS vPC and EOS MLAG projections are useful local observations, but neither one is an
-authoritative pair or attachment model.  This module deliberately accepts a bounded *typed* input
-instead of reading command files; collector integration is a later step.  Its input shape is::
+authoritative pair or attachment model.  Current-run authority is minted only by the raw-byte
+producers in this module: a caller-supplied receipt string or digest can never authorize a typed
+observation.  Its serialized audit shape is::
 
     {"observations": [{
         "switch": "leaf-a", "vendor": "cisco", "platform": "nxos",
-        "collection_mode": "live", "peer_identity": "leaf-b", "domain_id": "10",
+        "collection_mode": "live", "local_identity": "00:00:00:00:00:0a",
+        "peer_identity": "00:00:00:00:00:0b", "domain_id": "10",
         "domain_state": {"peer_status": "peer adjacency formed ok", ...},
         "source": {
             "schema": "multichassis_lag_typed_source_receipt/1",
@@ -34,6 +36,7 @@ gate remains elsewhere.  Missing, unsupported, malformed, one-sided, or ambiguou
 from __future__ import annotations
 
 import copy
+import hashlib
 import re
 from collections import Counter, defaultdict
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
@@ -43,6 +46,14 @@ from cisco_toolkit.protocol_assurance import (
     CHANGE_VOCABULARY,
     SUPPORT_PROFILE_SCHEMA,
     canonical_sha256,
+)
+from cisco_toolkit.parse import (
+    parse_arista_lacp_peer,
+    parse_arista_mlag,
+    parse_arista_mlag_interfaces,
+    parse_nxos_lacp_neighbors,
+    parse_vpc,
+    parse_vpc_role,
 )
 
 
@@ -66,6 +77,10 @@ _CAPTURE_STATES = {"ok", "missing", "empty", "error", "unreadable", "incomplete"
 _MAX_OBSERVATIONS = 4096
 _MAX_LEGS_PER_OBSERVATION = 4096
 _MAX_TEXT = 256
+_MAX_COMMAND_BYTES = 16 * 1024 * 1024
+
+_NXOS_COMMANDS = ("show vpc", "show vpc role", "show lacp neighbor")
+_EOS_COMMANDS = ("show mlag", "show mlag interfaces detail", "show lacp peer")
 
 _NXOS_REQUIRED_STATES = {
     "peer_status": ({"peer adjacency formed ok"}, {"peer adjacency not formed"}),
@@ -110,8 +125,9 @@ _TRANSITION_NOTES = {
 
 _LIMITATIONS = [
     "Catalog presence and parser availability are not runtime support evidence.",
-    "The module validates caller-supplied typed observations and receipts; it does not collect or parse device commands.",
-    "NX-OS is supported for live or offline typed evidence; EOS is supported only for offline typed evidence.",
+    "Only process-local projections parsed from exact command/import bytes receive current-run source custody.",
+    "NX-OS is supported for live or offline raw evidence; EOS is supported only for offline raw evidence.",
+    "Standard EOS MLAG captures expose the shared MLAG system ID and peer address, not reciprocal peer-device identity; EOS pair and attachment claims therefore remain not verified.",
     "No IOS, IOS-XE, Junos, VSS, StackWise Virtual, or other vendor/platform parity is inferred.",
     "Domain ID, vPC/MLAG ID, same-MAC learning, and topology proximity never establish a peer pair or attachment.",
     "Capacity, hashing, orphan behavior, dual-active exclusion, counters, and failure rehearsal remain outside this bounded owner.",
@@ -120,6 +136,31 @@ _LIMITATIONS = [
 
 class _CurrentRunMultichassisLagBaseline(dict):
     """Process-local marker; JSON/deep reconstruction cannot self-authorize current-run custody."""
+
+    def __copy__(self):
+        return dict(self)
+
+    def __deepcopy__(self, memo):
+        return copy.deepcopy(dict(self), memo)
+
+    def __reduce_ex__(self, protocol):
+        return dict, (dict(self),)
+
+
+_RAW_PRODUCER_AUTHORITY = object()
+
+
+class _RawBoundMultichassisObservation(dict):
+    """Process-local raw-byte projection marker lost by copying or JSON serialization."""
+
+    def __copy__(self):
+        return dict(self)
+
+    def __deepcopy__(self, memo):
+        return copy.deepcopy(dict(self), memo)
+
+    def __reduce_ex__(self, protocol):
+        return dict, (dict(self),)
 
 
 def _text(value: Any, limit: int = _MAX_TEXT) -> str:
@@ -225,10 +266,234 @@ def _port_channel(value: Any) -> str:
 
 def _system_id(value: Any) -> str:
     text = _text(value)
-    compact = re.sub(r"[.:-]", "", text).casefold()
+    separated = re.fullmatch(
+        r"([0-9a-f]{1,2})([-:])([0-9a-f]{1,2})(?:\2([0-9a-f]{1,2})){4}",
+        text,
+        re.IGNORECASE,
+    )
+    if separated:
+        compact = "".join(part.zfill(2) for part in re.split(r"[-:]", text)).casefold()
+    else:
+        compact = re.sub(r"[.:-]", "", text).casefold()
     if not re.fullmatch(r"[0-9a-f]{12}", compact):
         return ""
     return ":".join(compact[index:index + 2] for index in range(0, 12, 2))
+
+
+def _aggregation_id(value: Any) -> str:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return str(value)
+    text = _text(value)
+    try:
+        if text.casefold().startswith("0x"):
+            return str(int(text, 16))
+    except ValueError:
+        return ""
+    return str(int(text)) if text.isdigit() else ""
+
+
+def _exact_command_digest(commands: Mapping[str, bytes]) -> str:
+    digest = hashlib.sha256()
+    for command in sorted(commands, key=lambda item: (item.casefold(), item)):
+        command_bytes = command.encode("utf-8")
+        payload = commands[command]
+        digest.update(len(command_bytes).to_bytes(4, "big"))
+        digest.update(command_bytes)
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def _authorized_raw_observation(value: Any) -> bool:
+    return bool(
+        isinstance(value, _RawBoundMultichassisObservation)
+        and getattr(value, "_producer_authority", None) is _RAW_PRODUCER_AUTHORITY
+        and getattr(value, "_source_sha256", "")
+        == _mapping(value.get("source")).get("source_sha256")
+        and getattr(value, "_projection_sha256", "") == canonical_sha256(dict(value))
+    )
+
+
+def _authorized_raw_identity(value: Any) -> bool:
+    return bool(
+        isinstance(value, _RawBoundMultichassisObservation)
+        and getattr(value, "_producer_authority", None) is _RAW_PRODUCER_AUTHORITY
+        and getattr(value, "_identity_sha256", "") == canonical_sha256({
+            "local_identity": value.get("local_identity"),
+            "peer_identity": value.get("peer_identity"),
+        })
+    )
+
+
+def _bounded_command_bytes(value: Any, expected: Tuple[str, ...]) -> Dict[str, bytes]:
+    if not isinstance(value, Mapping) or len(value) > 32:
+        return {}
+    accepted: Dict[str, bytes] = {}
+    for command in expected:
+        payload = value.get(command)
+        if isinstance(payload, bytes) and 0 < len(payload) <= _MAX_COMMAND_BYTES:
+            accepted[command] = payload
+    return accepted
+
+
+def _decode_commands(commands: Mapping[str, bytes]) -> Dict[str, str]:
+    decoded = {}
+    for command, payload in commands.items():
+        try:
+            decoded[command] = payload.decode("utf-8", errors="strict")
+        except UnicodeError:
+            continue
+    return decoded
+
+
+def _partner_by_port_channel(rows: Any) -> Dict[str, Tuple[str, str]]:
+    grouped: Dict[str, List[Tuple[str, str]]] = defaultdict(list)
+    for raw in rows if isinstance(rows, list) else []:
+        if not isinstance(raw, dict):
+            continue
+        port_channel = _port_channel(raw.get("port_channel"))
+        partner_system = _system_id(raw.get("partner_system_id"))
+        partner_key = _aggregation_id(raw.get("partner_oper_key"))
+        if port_channel:
+            grouped[port_channel].append((partner_system, partner_key))
+    result = {}
+    for port_channel, identities in grouped.items():
+        systems = {system for system, _key in identities if system}
+        keys = {key for _system, key in identities if key}
+        complete = bool(identities) and all(system and key for system, key in identities)
+        result[port_channel] = (
+            (next(iter(systems)), next(iter(keys)))
+            if complete and len(systems) == len(keys) == 1 else ("", "")
+        )
+    return result
+
+
+def _mint_raw_observation(payload: dict, commands: Mapping[str, bytes],
+                          expected_commands: Tuple[str, ...]) -> dict:
+    source_digest = _exact_command_digest(commands)
+    payload["source"] = {
+        "schema": MULTICHASSIS_LAG_SOURCE_RECEIPT_SCHEMA,
+        "capture_status": "ok" if set(commands) == set(expected_commands) else "incomplete",
+        # This value is serialized for audit only. _source_receipt grants authority exclusively
+        # from the private process-local marker and projection digest below.
+        "projection_custody": "current_run_source_bound",
+        "source_sha256": source_digest,
+        "owner_version": f"raw-producer-{MULTICHASSIS_LAG_OWNER_VERSION}",
+        "commands": list(commands),
+    }
+    observation = _RawBoundMultichassisObservation(payload)
+    observation._producer_authority = _RAW_PRODUCER_AUTHORITY
+    observation._source_sha256 = source_digest
+    observation._identity_sha256 = canonical_sha256({
+        "local_identity": observation.get("local_identity"),
+        "peer_identity": observation.get("peer_identity"),
+    })
+    observation._projection_sha256 = canonical_sha256(dict(observation))
+    return observation
+
+
+def produce_multichassis_lag_typed_observation(
+        switch: str, *, vendor: str, platform: str, collection_mode: str,
+        command_bytes: Any) -> Optional[dict]:
+    """Parse one device's exact command/import bytes into a process-local typed observation.
+
+    Arbitrary semantic dictionaries are intentionally not accepted.  Unknown command names,
+    non-byte values, invalid UTF-8, and oversized captures are omitted from the evidence set and
+    therefore cannot elevate custody or fill an identity leaf.
+    """
+    switch_name = _text(switch)
+    platform_name = _platform(platform)
+    vendor_name = _token(vendor)
+    mode = _token(collection_mode)
+    if not switch_name or not _support(platform_name, vendor_name, mode):
+        return None
+    expected = _NXOS_COMMANDS if platform_name == "nxos" else _EOS_COMMANDS
+    commands = _bounded_command_bytes(command_bytes, expected)
+    decoded = _decode_commands(commands)
+
+    if platform_name == "nxos":
+        domain = parse_vpc(decoded.get("show vpc", ""))
+        if not domain:
+            return None
+        role = parse_vpc_role(decoded.get("show vpc role", ""))
+        partners = _partner_by_port_channel(
+            parse_nxos_lacp_neighbors(decoded.get("show lacp neighbor", "")))
+        legs = []
+        for raw_leg in domain.get("vpcs", []) if isinstance(domain.get("vpcs"), list) else []:
+            if not isinstance(raw_leg, dict):
+                continue
+            port_channel = _port_channel(raw_leg.get("port"))
+            partner_system, partner_key = partners.get(port_channel, ("", ""))
+            legs.append({
+                "attachment_id": raw_leg.get("id"),
+                "local_port_channel": port_channel,
+                "status": raw_leg.get("status"),
+                "consistency": raw_leg.get("consistency"),
+                "lacp_partner_system_id": partner_system,
+                "lacp_partner_aggregation_id": partner_key,
+            })
+        peer_link = domain.get("peer_link") if isinstance(domain.get("peer_link"), dict) else {}
+        payload = {
+            "switch": switch_name,
+            "vendor": "cisco",
+            "platform": "nxos",
+            "collection_mode": mode,
+            "local_identity": role.get("local_system_mac", ""),
+            "peer_identity": role.get("peer_system_mac", ""),
+            "domain_id": domain.get("domain_id"),
+            "domain_state": {
+                "peer_status": domain.get("peer_status", ""),
+                "keepalive_status": domain.get("keepalive_status", ""),
+                "consistency": domain.get("consistency", ""),
+                "peer_link_status": peer_link.get("status", ""),
+            },
+            "legs": legs,
+        }
+        return _mint_raw_observation(payload, commands, expected)
+
+    domain = parse_arista_mlag(decoded.get("show mlag", ""))
+    if not domain:
+        return None
+    partners = _partner_by_port_channel(
+        parse_arista_lacp_peer(decoded.get("show lacp peer", "")))
+    legs = []
+    for raw_leg in parse_arista_mlag_interfaces(
+            decoded.get("show mlag interfaces detail", "")):
+        port_channel = _port_channel(raw_leg.get("local_port_channel"))
+        partner_system, partner_key = partners.get(port_channel, ("", ""))
+        local_up = _token(raw_leg.get("local_oper_status")) == "up"
+        configs_equal = (
+            _token(raw_leg.get("local_config_status")) == "ena"
+            and _token(raw_leg.get("remote_config_status")) == "ena"
+        )
+        legs.append({
+            "attachment_id": raw_leg.get("mlag_id"),
+            "local_port_channel": port_channel,
+            "status": "up" if local_up else "down",
+            "consistency": "success" if configs_equal else "failed",
+            "lacp_partner_system_id": partner_system,
+            "lacp_partner_aggregation_id": partner_key,
+        })
+    payload = {
+        "switch": switch_name,
+        "vendor": "arista",
+        "platform": "eos",
+        "collection_mode": mode,
+        # show mlag's systemId is the shared MLAG-domain MAC and peerAddress is an IP; neither
+        # is accepted as local or reciprocal peer-device identity.
+        "local_identity": "",
+        "peer_identity": "",
+        "domain_id": domain.get("domain_id"),
+        "domain_state": {
+            "state": domain.get("state", ""),
+            "neg_status": domain.get("neg_status", ""),
+            "config_sanity": domain.get("config_sanity", ""),
+            "peer_link_status": domain.get("peer_link_status", ""),
+            "local_intf_status": domain.get("local_intf_status", ""),
+        },
+        "legs": legs,
+    }
+    return _mint_raw_observation(payload, commands, expected)
 
 
 def _support(platform: str, vendor: str, collection_mode: str) -> bool:
@@ -253,7 +518,7 @@ def multichassis_lag_support_profile() -> dict:
             MULTICHASSIS_LAG_DOMAIN_BASELINE_SCHEMA,
         ],
         "scope": {
-            "pair_identity": "explicit_reciprocal_switch_identity",
+            "pair_identity": "explicit_reciprocal_device_system_mac",
             "attachment_identity": (
                 "both_local_legs_plus_matching_remote_lacp_system_and_aggregation_key"
             ),
@@ -264,21 +529,25 @@ def multichassis_lag_support_profile() -> dict:
                 "vendor": "cisco",
                 "platform": "nxos",
                 "collection_modes": ["live", "offline"],
+                "raw_commands": list(_NXOS_COMMANDS),
+                "maximum_assurance": "intent_reconciled_survival",
                 "required_typed_evidence": ["vpc_domain_state", "explicit_peer_identity", "lacp_partner_identity"],
             },
             {
                 "vendor": "arista",
                 "platform": "eos",
                 "collection_modes": ["offline"],
+                "raw_commands": list(_EOS_COMMANDS),
+                "maximum_assurance": "local_safety_preservation",
                 "required_typed_evidence": ["mlag_domain_state", "explicit_peer_identity", "lacp_partner_identity"],
             },
         ],
-        "runtime_support_claim": "typed_source_receipt_required_per_local_observation",
+        "runtime_support_claim": "process_local_exact_raw_byte_projection_required_per_local_observation",
         "limitations": list(_LIMITATIONS),
     }
 
 
-def _source_receipt(value: Any) -> dict:
+def _source_receipt(value: Any, observation: Any = None) -> dict:
     raw = _mapping(value)
     failures: List[str] = []
     schema = _text(raw.get("schema"))
@@ -308,13 +577,17 @@ def _source_receipt(value: Any) -> dict:
             elif normalized not in commands:
                 commands.append(normalized)
     valid = not failures
-    source_bound = valid and capture == "ok" and custody == "current_run_source_bound"
+    # Receipt strings are disclosure, never authority.  Only the private raw-byte producer marker,
+    # with both exact-byte and semantic projection digests intact, can elevate this observation.
+    source_bound = valid and _authorized_raw_observation(observation)
     return {
         "schema": MULTICHASSIS_LAG_SOURCE_RECEIPT_SCHEMA,
         "valid": valid,
         "source_bound": source_bound,
         "capture_status": capture if capture in _CAPTURE_STATES else "",
-        "projection_custody": custody if custody in _CUSTODIES else "embedded_unverified",
+        "projection_custody": (
+            "current_run_source_bound" if source_bound else "embedded_unverified"
+        ),
         "source_sha256": digest,
         "owner_version": owner,
         "commands": sorted(commands, key=lambda item: (item.casefold(), item)),
@@ -343,9 +616,11 @@ def _normalize_observation(raw: Any, index: int) -> Optional[dict]:
     vendor = _token(raw.get("vendor"))
     platform = _platform(raw.get("platform"))
     collection_mode = _token(raw.get("collection_mode"))
-    peer_identity = _text(raw.get("peer_identity"))
+    local_identity = _system_id(raw.get("local_identity"))
+    peer_identity = _system_id(raw.get("peer_identity"))
+    identity_bound = _authorized_raw_identity(raw)
     domain_id = _domain_id(raw.get("domain_id"))
-    source = _source_receipt(raw.get("source"))
+    source = _source_receipt(raw.get("source"), raw)
     state_raw = _mapping(raw.get("domain_state"))
     state_rules = _NXOS_REQUIRED_STATES if platform == "nxos" else (
         _EOS_REQUIRED_STATES if platform == "eos" else {}
@@ -359,6 +634,7 @@ def _normalize_observation(raw: Any, index: int) -> Optional[dict]:
         "vendor": vendor,
         "platform": platform,
         "collection_mode": collection_mode,
+        "local_identity": local_identity,
         "peer_identity": peer_identity,
         "domain_id": domain_id,
         "domain_state": domain_state,
@@ -376,14 +652,36 @@ def _normalize_observation(raw: Any, index: int) -> Optional[dict]:
         issue = "The vendor/platform/collection-mode tuple is outside the closed support profile."
         _add(record, "not_verified", "support_profile_not_implemented", issue)
         record["_scope_findings"].append(_finding("not_verified", "support_profile_not_implemented", issue))
+        record["_eligible"] = False
     if not source["source_bound"]:
         issue = "The typed observation is not backed by a complete current-run source receipt."
         _add(record, "not_verified", "source_receipt_not_bound", issue)
         record["_scope_findings"].append(_finding("not_verified", "source_receipt_not_bound", issue))
+    elif source["capture_status"] != "ok":
+        issue = "The exact raw-byte source set is incomplete for this declared variant."
+        _add(record, "not_verified", "source_capture_incomplete", issue)
+        record["_scope_findings"].append(
+            _finding("not_verified", "source_capture_incomplete", issue)
+        )
+    if not local_identity:
+        issue = "An explicit local device system identity was not observed."
+        _add(record, "not_verified", "local_identity_missing", issue)
+        record["_scope_findings"].append(
+            _finding("not_verified", "local_identity_missing", issue)
+        )
+        record["_eligible"] = False
     if not peer_identity:
-        issue = "An explicit peer identity was not supplied."
+        issue = "An explicit peer device system identity was not observed."
         _add(record, "not_verified", "peer_identity_missing", issue)
         record["_scope_findings"].append(_finding("not_verified", "peer_identity_missing", issue))
+        record["_eligible"] = False
+    if local_identity and peer_identity and not identity_bound:
+        issue = "The reciprocal device identities are not bound to a process-local raw-byte projection."
+        _add(record, "not_verified", "peer_identity_not_source_bound", issue)
+        record["_scope_findings"].append(
+            _finding("not_verified", "peer_identity_not_source_bound", issue)
+        )
+        record["_eligible"] = False
     if not domain_id:
         issue = "The locally observed domain ID is missing; it is never inferred from another device."
         _add(record, "not_verified", "domain_id_missing", issue)
@@ -438,6 +736,21 @@ def _prepare(value: Any) -> Tuple[List[dict], List[dict]]:
             row["leg_count"] = 0
             _refresh(row, "local_safety_preservation")
         collapsed.append(row)
+    by_local_identity: Dict[str, List[dict]] = defaultdict(list)
+    for row in collapsed:
+        if row["local_identity"]:
+            by_local_identity[row["local_identity"]].append(row)
+    for duplicates in by_local_identity.values():
+        if len(duplicates) < 2:
+            continue
+        for row in duplicates:
+            issue = "Multiple switches claim the same explicit local device system identity."
+            _add(row, "not_verified", "local_identity_duplicate", issue)
+            row["_scope_findings"].append(
+                _finding("not_verified", "local_identity_duplicate", issue)
+            )
+            row["_eligible"] = False
+            _refresh(row, "local_safety_preservation")
     if not collapsed and not findings:
         findings.append(_finding("not_verified", "observations_missing",
                                  "No typed multichassis local observation was supplied."))
@@ -447,7 +760,7 @@ def _prepare(value: Any) -> Tuple[List[dict], List[dict]]:
 def _public_observation(row: dict) -> dict:
     return {key: copy.deepcopy(row[key]) for key in (
         "record_type", "subject_id", "switch", "vendor", "platform", "collection_mode",
-        "peer_identity", "domain_id", "domain_state", "reciprocal_pair_id", "leg_count",
+        "local_identity", "peer_identity", "domain_id", "domain_state", "reciprocal_pair_id", "leg_count",
         "health_state", "assurance_level", "source_custody", "source_receipt", "findings",
     )}
 
@@ -462,6 +775,7 @@ def _scope_from_prepared(prepared: List[dict], findings: List[dict]) -> dict:
             "vendor": row["vendor"],
             "platform": row["platform"],
             "collection_mode": row["collection_mode"],
+            "local_identity_present": bool(row["local_identity"]),
             "peer_identity_present": bool(row["peer_identity"]),
             "domain_id_present": bool(row["domain_id"]),
             "local_leg_candidate_count": row["leg_count"],
@@ -507,8 +821,8 @@ def compute_multichassis_lag_subject_scope(value: Any) -> dict:
 
 
 def _pair_id(a: str, b: str) -> str:
-    switches = sorted((a.casefold(), b.casefold()))
-    return _stable_id("pair", {"switches": switches})
+    identities = sorted((a, b))
+    return _stable_id("pair", {"device_system_identities": identities})
 
 
 def _attachment_id(pair_id: str, local_attachment_id: str) -> str:
@@ -530,23 +844,26 @@ def _leg_id(switch: str, attachment_id: str, port_channel: str, index: int) -> s
 
 
 def _reconcile_pairs(prepared: List[dict]) -> List[dict]:
-    index = {row["switch"].casefold(): row for row in prepared if row.get("_eligible")}
+    index = {
+        row["local_identity"]: row
+        for row in prepared if row.get("_eligible") and row["local_identity"]
+    }
     pair_members: Dict[str, Tuple[dict, dict]] = {}
     for row in prepared:
         if not row.get("_eligible"):
             continue
-        peer_key = row["peer_identity"].casefold() if row["peer_identity"] else ""
+        peer_key = row["peer_identity"]
         peer = index.get(peer_key)
         reciprocal = (
             peer is not None
             and peer is not row
-            and peer.get("peer_identity", "").casefold() == row["switch"].casefold()
+            and peer.get("peer_identity", "") == row["local_identity"]
         )
         if not reciprocal:
             _add(row, "not_verified", "peer_identity_not_reciprocal",
                  "The named peer did not explicitly and uniquely name this switch in return.")
             continue
-        pair_id = _pair_id(row["switch"], peer["switch"])
+        pair_id = _pair_id(row["local_identity"], peer["local_identity"])
         row["reciprocal_pair_id"] = pair_id
         pair_members[pair_id] = tuple(sorted((row, peer), key=lambda item: item["switch"].casefold()))
 
@@ -589,8 +906,14 @@ def _reconcile_pairs(prepared: List[dict]) -> List[dict]:
             "pair_id": pair_id,
             "switches": [a["switch"], b["switch"]],
             "peer_evidence": [
-                {"switch": a["switch"], "peer_identity": a["peer_identity"]},
-                {"switch": b["switch"], "peer_identity": b["peer_identity"]},
+                {
+                    "switch": a["switch"], "local_identity": a["local_identity"],
+                    "peer_identity": a["peer_identity"],
+                },
+                {
+                    "switch": b["switch"], "local_identity": b["local_identity"],
+                    "peer_identity": b["peer_identity"],
+                },
             ],
             "platforms": [a["platform"], b["platform"]],
             "domain_ids": [a["domain_id"], b["domain_id"]],
@@ -613,7 +936,7 @@ def _normalize_leg(observation: dict, raw: Any, index: int, pair_index: Mapping[
     status = _token(value.get("status"))
     consistency = _token(value.get("consistency"))
     partner_system = _system_id(value.get("lacp_partner_system_id"))
-    partner_aggregation = _numeric_or_text(value.get("lacp_partner_aggregation_id"))
+    partner_aggregation = _aggregation_id(value.get("lacp_partner_aggregation_id"))
     pair_id = observation["reciprocal_pair_id"]
     attachment_subject_id = _attachment_id(pair_id, attachment_id) if pair_id and attachment_id else ""
     leg = {
@@ -896,6 +1219,7 @@ def _structural_validation(value: Any) -> Tuple[bool, str]:
         return False, "baseline_record_limit_invalid"
     local_index: Dict[str, dict] = {}
     local_by_switch: Dict[str, dict] = {}
+    local_by_identity: Dict[str, dict] = {}
     for record in arrays["local_observation"]:
         if not _record_common(record, "local_observation"):
             return False, "baseline_local_observation_invalid"
@@ -903,6 +1227,9 @@ def _structural_validation(value: Any) -> Tuple[bool, str]:
         if not switch or record["subject_id"] != _stable_id("local", {"switch": switch.casefold()}):
             return False, "baseline_local_identity_invalid"
         if record["subject_id"] in local_index or switch.casefold() in local_by_switch:
+            return False, "baseline_local_identity_duplicate"
+        local_identity = _system_id(record.get("local_identity"))
+        if local_identity and local_identity in local_by_identity:
             return False, "baseline_local_identity_duplicate"
         source = record.get("source_receipt")
         if not isinstance(source, dict) or set(source) != {
@@ -914,12 +1241,15 @@ def _structural_validation(value: Any) -> Tuple[bool, str]:
                 not source.get("source_bound")
                 or not _support(record.get("platform"), record.get("vendor"), record.get("collection_mode"))
                 or not _domain_states_healthy(record)
-                or not _text(record.get("peer_identity"))
+                or not local_identity
+                or not _system_id(record.get("peer_identity"))
                 or not _domain_id(record.get("domain_id"))
                 or not _text(record.get("reciprocal_pair_id"))):
             return False, "baseline_local_false_health"
         local_index[record["subject_id"]] = record
         local_by_switch[switch.casefold()] = record
+        if local_identity:
+            local_by_identity[local_identity] = record
     domain_members: Dict[str, set] = defaultdict(set)
     for record in local_index.values():
         if record.get("domain_id"):
@@ -936,23 +1266,37 @@ def _structural_validation(value: Any) -> Tuple[bool, str]:
             return False, "baseline_pair_identity_invalid"
         if any(str(s).casefold() not in local_by_switch for s in switches):
             return False, "baseline_pair_member_invalid"
-        expected_id = _pair_id(str(switches[0]), str(switches[1]))
+        members = [local_by_switch[str(s).casefold()] for s in switches]
+        identities = [_system_id(member.get("local_identity")) for member in members]
+        if not all(identities) or len(set(identities)) != 2:
+            return False, "baseline_pair_identity_invalid"
+        expected_id = _pair_id(identities[0], identities[1])
         if record.get("pair_id") != expected_id or record["subject_id"] != expected_id:
             return False, "baseline_pair_identity_invalid"
         if not isinstance(evidence, list) or len(evidence) != 2:
             return False, "baseline_pair_evidence_invalid"
         evidence_map = {
-            _text(item.get("switch")).casefold(): _text(item.get("peer_identity")).casefold()
+            _text(item.get("switch")).casefold(): (
+                _system_id(item.get("local_identity")), _system_id(item.get("peer_identity"))
+            )
             for item in evidence if isinstance(item, dict)
         }
         switch_keys = {str(s).casefold() for s in switches}
-        if set(evidence_map) != switch_keys or any(evidence_map[switch] not in switch_keys - {switch} for switch in switch_keys):
+        member_identity = {
+            member["switch"].casefold(): _system_id(member.get("local_identity"))
+            for member in members
+        }
+        if set(evidence_map) != switch_keys or any(
+                evidence_map[switch][0] != member_identity[switch]
+                or evidence_map[switch][1] not in {
+                    identity for other, identity in member_identity.items() if other != switch
+                }
+                for switch in switch_keys):
             return False, "baseline_pair_evidence_invalid"
         for switch in switch_keys:
             if local_by_switch[switch].get("reciprocal_pair_id") != expected_id:
                 return False, "baseline_pair_member_invalid"
         if record["health_state"] == "healthy":
-            members = [local_by_switch[str(s).casefold()] for s in switches]
             domains = {member["domain_id"].casefold() for member in members}
             if any(member["health_state"] != "healthy" for member in members) \
                     or len(domains) != 1 or next(iter(domains), "") in reused \
@@ -977,7 +1321,7 @@ def _structural_validation(value: Any) -> Tuple[bool, str]:
                 or record.get("status") != "up"
                 or record.get("consistency") != "success"
                 or not _system_id(record.get("lacp_partner_system_id"))
-                or not _numeric_or_text(record.get("lacp_partner_aggregation_id"))
+                or not _aggregation_id(record.get("lacp_partner_aggregation_id"))
                 or pair_index[record["pair_id"]]["health_state"] != "healthy"):
             return False, "baseline_local_leg_false_health"
         attachment_subject = record.get("attachment_subject_id")
@@ -1065,6 +1409,156 @@ def validate_multichassis_lag_domain_baseline(
         "source_bound": source_bound,
         "reason": "ok",
         "baseline": copy.deepcopy(dict(value)),
+    }
+
+
+def _snapshot_input_projection(value: Mapping[str, Any]) -> dict:
+    """Project only serialized typed inputs that a stored baseline is allowed to claim.
+
+    Current-run source authority is intentionally process-local and disappears when the snapshot
+    is serialized. Reconciliation therefore compares the complete normalized input disclosure,
+    not the derived health/custody flags. The baseline's own structural validator independently
+    proves that any pair and attachment records derive from these local observations and legs.
+    """
+    local = []
+    for row in value.get("local_observations", []):
+        if not isinstance(row, dict):
+            continue
+        source = _mapping(row.get("source_receipt"))
+        local.append({
+            "subject_id": row.get("subject_id"),
+            "switch": row.get("switch"),
+            "vendor": row.get("vendor"),
+            "platform": row.get("platform"),
+            "collection_mode": row.get("collection_mode"),
+            "local_identity": row.get("local_identity"),
+            "peer_identity": row.get("peer_identity"),
+            "domain_id": row.get("domain_id"),
+            "domain_state": copy.deepcopy(row.get("domain_state")),
+            "leg_count": row.get("leg_count"),
+            "source_receipt": {
+                field: copy.deepcopy(source.get(field))
+                for field in (
+                    "schema", "capture_status", "source_sha256", "owner_version", "commands",
+                )
+            },
+        })
+    legs = [{
+        field: copy.deepcopy(row.get(field))
+        for field in (
+            "subject_id", "switch", "attachment_id", "local_port_channel", "status",
+            "consistency", "lacp_partner_system_id", "lacp_partner_aggregation_id",
+        )
+    } for row in value.get("local_legs", []) if isinstance(row, dict)]
+    local.sort(key=lambda row: (
+        _text(row.get("switch")).casefold(), _text(row.get("subject_id")),
+    ))
+    legs.sort(key=lambda row: (
+        _text(row.get("switch")).casefold(), _text(row.get("subject_id")),
+    ))
+    return {"local_observations": local, "local_legs": legs}
+
+
+def validate_multichassis_lag_snapshot_evidence(
+        baseline: Any, typed_observations: Any, devices: Any) -> dict:
+    """Reconcile a persisted baseline to its co-published typed rows and device subjects.
+
+    A structurally valid baseline is insufficient on its own because an uploaded snapshot could
+    pair it with a truncated, stale, or unrelated typed-observation set. This validator requires
+    an exact one-to-one normalized local/leg projection and binds every claimed local switch to the
+    snapshot's admitted ``devices`` denominator. It makes no new runtime-support claim.
+    """
+    baseline_view = validate_multichassis_lag_domain_baseline(baseline)
+    if baseline_view.get("valid") is not True:
+        return {
+            "valid": False,
+            "reason": f"stored_baseline_invalid:{baseline_view.get('reason', 'unknown')}",
+            "baseline": {},
+            "local_subjects": [],
+        }
+    if not isinstance(typed_observations, dict) or set(typed_observations) != {"observations"}:
+        return {
+            "valid": False,
+            "reason": "typed_observation_root_missing_or_malformed",
+            "baseline": {},
+            "local_subjects": [],
+        }
+    raw_rows = typed_observations.get("observations")
+    if (not isinstance(raw_rows, list) or len(raw_rows) > _MAX_OBSERVATIONS
+            or any(not isinstance(row, dict) for row in raw_rows)):
+        return {
+            "valid": False,
+            "reason": "typed_observation_rows_missing_or_malformed",
+            "baseline": {},
+            "local_subjects": [],
+        }
+    if not isinstance(devices, dict):
+        return {
+            "valid": False,
+            "reason": "snapshot_device_subjects_missing_or_malformed",
+            "baseline": {},
+            "local_subjects": [],
+        }
+    device_subjects: Dict[str, str] = {}
+    for raw_subject in devices:
+        subject = _text(raw_subject)
+        if not subject or subject.casefold() in device_subjects:
+            return {
+                "valid": False,
+                "reason": "snapshot_device_subject_identity_invalid_or_ambiguous",
+                "baseline": {},
+                "local_subjects": [],
+            }
+        device_subjects[subject.casefold()] = subject
+
+    try:
+        recomputed = compute_multichassis_lag_domain_baseline(typed_observations)
+        recomputed_view = validate_multichassis_lag_domain_baseline(recomputed)
+    except (Exception, MemoryError):
+        recomputed_view = {"valid": False, "reason": "normalization_failed", "baseline": {}}
+    if recomputed_view.get("valid") is not True:
+        return {
+            "valid": False,
+            "reason": f"typed_observation_normalization_failed:{recomputed_view.get('reason', 'unknown')}",
+            "baseline": {},
+            "local_subjects": [],
+        }
+
+    stored = baseline_view["baseline"]
+    normalized = recomputed_view["baseline"]
+    stored_local = stored.get("local_observations", [])
+    normalized_local = normalized.get("local_observations", [])
+    if len(raw_rows) != len(stored_local) or len(raw_rows) != len(normalized_local):
+        return {
+            "valid": False,
+            "reason": "typed_observation_count_does_not_reconcile",
+            "baseline": {},
+            "local_subjects": [],
+        }
+    if _snapshot_input_projection(stored) != _snapshot_input_projection(normalized):
+        return {
+            "valid": False,
+            "reason": "typed_observation_projection_does_not_reconcile",
+            "baseline": {},
+            "local_subjects": [],
+        }
+
+    local_subjects = sorted(
+        (_text(row.get("switch")) for row in stored_local),
+        key=lambda item: (item.casefold(), item),
+    )
+    if any(subject.casefold() not in device_subjects for subject in local_subjects):
+        return {
+            "valid": False,
+            "reason": "multichassis_local_subject_not_in_snapshot_devices",
+            "baseline": {},
+            "local_subjects": local_subjects,
+        }
+    return {
+        "valid": True,
+        "reason": "ok",
+        "baseline": stored,
+        "local_subjects": local_subjects,
     }
 
 
@@ -1279,8 +1773,10 @@ __all__ = [
     "MULTICHASSIS_LAG_SOURCE_RECEIPT_SCHEMA",
     "MULTICHASSIS_LAG_OWNER_VERSION",
     "multichassis_lag_support_profile",
+    "produce_multichassis_lag_typed_observation",
     "compute_multichassis_lag_subject_scope",
     "compute_multichassis_lag_domain_baseline",
     "validate_multichassis_lag_domain_baseline",
+    "validate_multichassis_lag_snapshot_evidence",
     "compute_multichassis_lag_delta",
 ]
