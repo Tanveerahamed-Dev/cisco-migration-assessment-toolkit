@@ -1,8 +1,8 @@
 {
   "schema_version": "tracked-binary-review/1",
   "receipt_kind": "tracked_repository_binary_privacy_review",
-  "review_basis_commit": "302df8b6ba08c928af98a79030d766c519a44bd5",
-  "binary_set_digest": "664d3efa62bfae77102e7dd2ac8503f681c5b66fdb0db46c43ef2397c42ceac0",
+  "review_basis_commit": "77027472d348670e2f198100e53cf451bfbccbb1",
+  "binary_set_digest": "5969b46395269a67c6e4a353c5fefd02cfed56d1cc8f4777d47f8643046216a7",
   "records": [
     {
       "path": "cisco_toolkit/data/oui_registry.tsv.gz",
@@ -289,9 +289,9 @@
     },
     {
       "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/Bars-728.png",
-      "git_blob_oid": "80fde5f2aaaef60637cbcc174c20a2d2f4637ef3",
-      "raw_sha256": "bfef736b3d8d33acdffbb730641f0d87a501d4b162629b7d0fe6b394b19448ab",
-      "raw_bytes": 26208,
+      "git_blob_oid": "99ba96b8a950a844161dcd9299f2b44961ee086d",
+      "raw_sha256": "cd75900ff2f834a01cfe9ca2f2b0eb0174ab8f1ef347b2f31b9ae605a016a21b",
+      "raw_bytes": 26328,
       "media_type": "image/png",
       "format": "png",
       "automated_format_evidence": {
@@ -309,9 +309,9 @@
         "interlace_method": 0,
         "chunk_count": 10,
         "idat_chunk_count": 8,
-        "idat_compressed_bytes": 26067,
+        "idat_compressed_bytes": 26187,
         "decoded_scanline_bytes": 1529500,
-        "decoded_scanline_sha256": "7cafb5323a09e96c307c7bb28d8cbb9a7c56298eb753e1cd1add2528d5d743a4",
+        "decoded_scanline_sha256": "11aa9462775cb05af4e30523da8aa075b274c5543524cabb0da0b80235ec3ffe",
         "risky_metadata_chunk_counts": {
           "eXIf": 0,
           "iCCP": 0,
@@ -327,7 +327,7 @@
         "independent_from_proposer": true,
         "review_scope": "rendered_pixels_and_context",
         "evidence_references": [
-          "decoded-rgba-sha256:12354b6c49c806446fa9f2dec8705dfd49157e5442615cab2f19e0ea917fbb5a",
+          "decoded-rgba-sha256:b978a9b778b0cf4c4a6cf0d0503556b26e20179685a7ee9b97fe8e0397ecff6b",
           "privacy-scan:forbidden-local-generic-identities",
           "visual-review:exact-rendered-pixels"
         ],
@@ -336,9 +336,9 @@
     },
     {
       "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/Bars.png",
-      "git_blob_oid": "2681ec1dfa7d6d18ac4a5025f48a262175e57877",
-      "raw_sha256": "db5630a3e42c38c7cef822ad4e40c5ce6c85b9ae104352bf25d72427c501fab5",
-      "raw_bytes": 26744,
+      "git_blob_oid": "536129a0ce82164c718154ce63189d01186cccb0",
+      "raw_sha256": "6aeb120f845109a5bd82c4f7ba4d79dbc9038ea406bcf9a5ac51ff37cfe4423a",
+      "raw_bytes": 26896,
       "media_type": "image/png",
       "format": "png",
       "automated_format_evidence": {
@@ -356,9 +356,9 @@
         "interlace_method": 0,
         "chunk_count": 10,
         "idat_chunk_count": 8,
-        "idat_compressed_bytes": 26603,
+        "idat_compressed_bytes": 26755,
         "decoded_scanline_bytes": 1890700,
-        "decoded_scanline_sha256": "ec151b4d0b85442d5feab26188a3917c5c107b6c7dcdc9d0ed6fc33da1a7804d",
+        "decoded_scanline_sha256": "3bcd3d5128972ed55ad9999e90396cc20f5bc5d8772e547d58e5a2b801d72a41",
         "risky_metadata_chunk_counts": {
           "eXIf": 0,
           "iCCP": 0,
@@ -374,7 +374,7 @@
         "independent_from_proposer": true,
         "review_scope": "rendered_pixels_and_context",
         "evidence_references": [
-          "decoded-rgba-sha256:2cf7665b777b2a403c9306e74143491ec688715882f590b0092b85b0c1a6fb13",
+          "decoded-rgba-sha256:a4f1f2a34bad996b38a4e802fa350b3d4247fac0fb2883f38ff1297d94fc1b6a",
           "privacy-scan:forbidden-local-generic-identities",
           "visual-review:exact-rendered-pixels"
         ],
@@ -477,9 +477,9 @@
     },
     {
       "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/CausalFlowPanel-728.png",
-      "git_blob_oid": "8f5b5a317c6ad321f59a26a8383e6c9861b88060",
-      "raw_sha256": "a88892fe7b873495862ecbe448eed15faaa03c50f43c85cc5ad5f6d9caf2dc0b",
-      "raw_bytes": 136743,
+      "git_blob_oid": "d8afeabbf7a333b3e4d6aa816f0aaa2000d5bd34",
+      "raw_sha256": "e5158e63c9d34b5ac5b0ed8a1d091b664fe7ac616e0497717203f7f29525d725",
+      "raw_bytes": 137065,
       "media_type": "image/png",
       "format": "png",
       "automated_format_evidence": {
@@ -497,9 +497,9 @@
         "interlace_method": 0,
         "chunk_count": 37,
         "idat_chunk_count": 35,
-        "idat_compressed_bytes": 136278,
+        "idat_compressed_bytes": 136600,
         "decoded_scanline_bytes": 2986895,
-        "decoded_scanline_sha256": "110b84f9df8d2b83800ee7e7b917cadaa4a6e2be1f0d17625be6b0acf134eea2",
+        "decoded_scanline_sha256": "20a2c5cde4853bb65061976858b652cad26609f8371ab3d9e1fee316aeb4a6b8",
         "risky_metadata_chunk_counts": {
           "eXIf": 0,
           "iCCP": 0,
@@ -515,7 +515,7 @@
         "independent_from_proposer": true,
         "review_scope": "rendered_pixels_and_context",
         "evidence_references": [
-          "decoded-rgba-sha256:3f332f7ba9d07af88271f423e71db07e049d7112f7c4a9d6aafe59ed583d9855",
+          "decoded-rgba-sha256:933e7c1d7b59a4c36316f8fd0d6835c8b257d2de0d5299322d7937105fda258f",
           "privacy-scan:forbidden-local-generic-identities",
           "visual-review:exact-rendered-pixels"
         ],
@@ -524,9 +524,9 @@
     },
     {
       "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/CausalFlowPanel.png",
-      "git_blob_oid": "47a15335e6931b24a0077b379f60a210dcd9d785",
-      "raw_sha256": "0a3ff7790edd9d602e44c7c228ec7edbb448d4c5476b55c48c5533b02c9e16b7",
-      "raw_bytes": 151538,
+      "git_blob_oid": "278b5ad3b6dec6c36efc94f79d29796ec31c9394",
+      "raw_sha256": "f060788d3f1ec6421c868b7072a94aeb047116e4503377ae726b14fc6a09c22f",
+      "raw_bytes": 151852,
       "media_type": "image/png",
       "format": "png",
       "automated_format_evidence": {
@@ -544,9 +544,9 @@
         "interlace_method": 0,
         "chunk_count": 40,
         "idat_chunk_count": 38,
-        "idat_compressed_bytes": 151037,
+        "idat_compressed_bytes": 151351,
         "decoded_scanline_bytes": 3913749,
-        "decoded_scanline_sha256": "58c49b9aebfe37a83683d6cd2ded46dd81bbc851b12c387b44d3cdb21a4a9e99",
+        "decoded_scanline_sha256": "daea51f7f9a39c9f7425ec9f97d08e1bd30c2108d0f4c701659873054f54af73",
         "risky_metadata_chunk_counts": {
           "eXIf": 0,
           "iCCP": 0,
@@ -562,7 +562,7 @@
         "independent_from_proposer": true,
         "review_scope": "rendered_pixels_and_context",
         "evidence_references": [
-          "decoded-rgba-sha256:b283827013c1c02be2ca7a5474bb1a76e5ab363766c5f7045eaa98bf056bc1a4",
+          "decoded-rgba-sha256:2d96d4d30dfd56dcdc1f8c028aef5b193647f7034eae10929f4b2d391e97d18f",
           "privacy-scan:forbidden-local-generic-identities",
           "visual-review:exact-rendered-pixels"
         ],
@@ -665,9 +665,9 @@
     },
     {
       "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/CutoverPlanner-728.png",
-      "git_blob_oid": "7697496c460ae2607d56f8e8b8eb0f92d4424819",
-      "raw_sha256": "25f6382dbba5a645b4ce78ff3d4a8d0ff88c665615e5db7b5a9f9ddad8d3f3dd",
-      "raw_bytes": 153603,
+      "git_blob_oid": "9b985406f798d15bda58bb4dfea87ba881decea0",
+      "raw_sha256": "81702125d19049822f61edd91902da6fdcd792d63de260c1db0b56dfab11d033",
+      "raw_bytes": 153831,
       "media_type": "image/png",
       "format": "png",
       "automated_format_evidence": {
@@ -685,9 +685,9 @@
         "interlace_method": 0,
         "chunk_count": 41,
         "idat_chunk_count": 39,
-        "idat_compressed_bytes": 153090,
+        "idat_compressed_bytes": 153318,
         "decoded_scanline_bytes": 3919890,
-        "decoded_scanline_sha256": "a5aaa847b53e78de88dec8127288c8616cf593e77e26267baa515e5a53814978",
+        "decoded_scanline_sha256": "6706ba9e86d37791cf358ef64639f4f5c0e3b53ea187e30488001a78b057538c",
         "risky_metadata_chunk_counts": {
           "eXIf": 0,
           "iCCP": 0,
@@ -703,7 +703,7 @@
         "independent_from_proposer": true,
         "review_scope": "rendered_pixels_and_context",
         "evidence_references": [
-          "decoded-rgba-sha256:07dbf8e9c450974d29a81c2eefeaacfe2c39ea14f8e15dcfa6f729e1fb0a8756",
+          "decoded-rgba-sha256:2038623faf24238b85adad54c698ee641f497520e1a211e29a0825dfe9e59574",
           "privacy-scan:forbidden-local-generic-identities",
           "visual-review:exact-rendered-pixels"
         ],
@@ -712,9 +712,9 @@
     },
     {
       "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/CutoverPlanner.png",
-      "git_blob_oid": "f29c59f8cccc4b8ee4a4733af80e07b864abd3cf",
-      "raw_sha256": "9f833eafc6c1eb6fd45ba8b4afb717ad81eed87bef9df6ba9e8532f3c16bb064",
-      "raw_bytes": 151773,
+      "git_blob_oid": "c2a9009a736939ba101484cd9a8df40a2568bda1",
+      "raw_sha256": "d15d4667a6a3f4d4279fa09a309af4300627b17d8daefd6e940e983e6c75634f",
+      "raw_bytes": 151867,
       "media_type": "image/png",
       "format": "png",
       "automated_format_evidence": {
@@ -732,9 +732,9 @@
         "interlace_method": 0,
         "chunk_count": 40,
         "idat_chunk_count": 38,
-        "idat_compressed_bytes": 151272,
+        "idat_compressed_bytes": 151366,
         "decoded_scanline_bytes": 4208158,
-        "decoded_scanline_sha256": "81aa49275db55783120a67191244890189b6e541928e0e216db1f33f02f85e71",
+        "decoded_scanline_sha256": "d1fce33f7d76db35d7b7a6a453f60a92dd6ede3494df77667c93ccada1a908d4",
         "risky_metadata_chunk_counts": {
           "eXIf": 0,
           "iCCP": 0,
@@ -750,7 +750,7 @@
         "independent_from_proposer": true,
         "review_scope": "rendered_pixels_and_context",
         "evidence_references": [
-          "decoded-rgba-sha256:e24c591adbc46c0c8da970ddb4cbec983405c785694be1fe7d636818794dfde4",
+          "decoded-rgba-sha256:a681e4c3a1eb5fff3540caa883a252d38f35f5c3c42171b4eeafde35c1f93a79",
           "privacy-scan:forbidden-local-generic-identities",
           "visual-review:exact-rendered-pixels"
         ],
@@ -759,9 +759,9 @@
     },
     {
       "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/DemoDataProvider-728.png",
-      "git_blob_oid": "2b40ded463861f08995de853f89a98139af6f20d",
-      "raw_sha256": "9cd23f5fac84b6320891f84452c80d69c9f8489d6d12068784535cb85ba3ee87",
-      "raw_bytes": 77349,
+      "git_blob_oid": "e5a4464b31857b3c6da407affc3b0f26fd04e7bf",
+      "raw_sha256": "b3be75cacb6eeab7ede92b67667ebb0b28f4c518c9a4a372882d39964c81cb11",
+      "raw_bytes": 63109,
       "media_type": "image/png",
       "format": "png",
       "automated_format_evidence": {
@@ -773,15 +773,15 @@
         "idat_framing_valid": true,
         "trailing_bytes": 0,
         "width": 728,
-        "height": 986,
+        "height": 904,
         "bit_depth": 8,
         "color_type": 2,
         "interlace_method": 0,
-        "chunk_count": 22,
-        "idat_chunk_count": 20,
-        "idat_compressed_bytes": 77064,
-        "decoded_scanline_bytes": 2154410,
-        "decoded_scanline_sha256": "6856c1ce986267ab52985f648408fbe2a8ae0270c7484c2f0be65e71dadcfefa",
+        "chunk_count": 19,
+        "idat_chunk_count": 17,
+        "idat_compressed_bytes": 62860,
+        "decoded_scanline_bytes": 1975240,
+        "decoded_scanline_sha256": "b19ce9e505b9ceaa9225138479bdd53e697288652e83ccd584e2de5e36008f61",
         "risky_metadata_chunk_counts": {
           "eXIf": 0,
           "iCCP": 0,
@@ -797,7 +797,7 @@
         "independent_from_proposer": true,
         "review_scope": "rendered_pixels_and_context",
         "evidence_references": [
-          "decoded-rgba-sha256:a0b3a4542067176e9bd5c0be1285b5f3c1bd9df440b2db075040ede594c05632",
+          "decoded-rgba-sha256:4a553208687c2761d3dc32480ad5eb7314c4338c9366f7ee66feec979bafb3a8",
           "privacy-scan:forbidden-local-generic-identities",
           "visual-review:exact-rendered-pixels"
         ],
@@ -806,9 +806,9 @@
     },
     {
       "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/DemoDataProvider.png",
-      "git_blob_oid": "892ca0e04d5c248d8782c11d59b083760315ee35",
-      "raw_sha256": "b967c8aa7fad6df56b8c561557f8d6adae64fd27fc1af2216d820bd856e1158b",
-      "raw_bytes": 82653,
+      "git_blob_oid": "425f6f8585051ff5b1dda8dc404c0489ce2a8bb9",
+      "raw_sha256": "7a7fd660f5d3936a21ac6054401a7585ca6b4ac69e2ff0a01aed03d676141880",
+      "raw_bytes": 68047,
       "media_type": "image/png",
       "format": "png",
       "automated_format_evidence": {
@@ -820,15 +820,15 @@
         "idat_framing_valid": true,
         "trailing_bytes": 0,
         "width": 900,
-        "height": 824,
+        "height": 760,
         "bit_depth": 8,
         "color_type": 2,
         "interlace_method": 0,
-        "chunk_count": 24,
-        "idat_chunk_count": 22,
-        "idat_compressed_bytes": 82344,
-        "decoded_scanline_bytes": 2225624,
-        "decoded_scanline_sha256": "c929df6cfa12b24db968fff2a4ea14eea976b615c08e2ecf77807effcfb7ebeb",
+        "chunk_count": 20,
+        "idat_chunk_count": 18,
+        "idat_compressed_bytes": 67786,
+        "decoded_scanline_bytes": 2052760,
+        "decoded_scanline_sha256": "94aecc1e65e1f225b6f52e529de06f21a04b703daf9f4e79f3e755bddb7b807c",
         "risky_metadata_chunk_counts": {
           "eXIf": 0,
           "iCCP": 0,
@@ -844,7 +844,7 @@
         "independent_from_proposer": true,
         "review_scope": "rendered_pixels_and_context",
         "evidence_references": [
-          "decoded-rgba-sha256:70c9db0a16d41ea2860a74616f95c16001ead4090b31c19b021b7979fcf94e2c",
+          "decoded-rgba-sha256:78e81695e0892383b3d82c550ec76596a198ddd1366a10cf76ab0aaa70c2e82e",
           "privacy-scan:forbidden-local-generic-identities",
           "visual-review:exact-rendered-pixels"
         ],
@@ -853,9 +853,9 @@
     },
     {
       "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/DesignBlueprintPanel-728.png",
-      "git_blob_oid": "fa29549d10be9e5ac5e51f9571492314cc3df8fa",
-      "raw_sha256": "bf30b069e740309103cd467959e91fa17ee3c3cdd1527b7bea7ca746393d8e6e",
-      "raw_bytes": 296560,
+      "git_blob_oid": "1cba4f8ea06f4bd32a9e42922192c6263eca6f0c",
+      "raw_sha256": "abb0116ae2dce31090e4c017be7ec9f0d0dce828e50d271a8cc9f70f4d0c7c3c",
+      "raw_bytes": 535923,
       "media_type": "image/png",
       "format": "png",
       "automated_format_evidence": {
@@ -867,15 +867,15 @@
         "idat_framing_valid": true,
         "trailing_bytes": 0,
         "width": 728,
-        "height": 3184,
+        "height": 5036,
         "bit_depth": 8,
         "color_type": 2,
         "interlace_method": 0,
-        "chunk_count": 76,
-        "idat_chunk_count": 74,
-        "idat_compressed_bytes": 295627,
-        "decoded_scanline_bytes": 6957040,
-        "decoded_scanline_sha256": "accc4e9b5287044443d81a0eb84b1e716e2ed7cfe97b2ac9271f8e15dc74c6aa",
+        "chunk_count": 134,
+        "idat_chunk_count": 132,
+        "idat_compressed_bytes": 534294,
+        "decoded_scanline_bytes": 11003660,
+        "decoded_scanline_sha256": "85be3b30edac870010e41335ddcc7d66c36a30e28c41334a04c7570a1c8c5255",
         "risky_metadata_chunk_counts": {
           "eXIf": 0,
           "iCCP": 0,
@@ -891,7 +891,7 @@
         "independent_from_proposer": true,
         "review_scope": "rendered_pixels_and_context",
         "evidence_references": [
-          "decoded-rgba-sha256:0b3179b1edc77912ba5a10c00c6bd327290d58d5d3cda3618ecf9a4e015ffdcc",
+          "decoded-rgba-sha256:3a4a000b59dad348ca0f7c1aab4d0629a0c4d9a1a5069cc70ff2bef7c569b5d2",
           "privacy-scan:forbidden-local-generic-identities",
           "visual-review:exact-rendered-pixels"
         ],
@@ -900,9 +900,9 @@
     },
     {
       "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/DesignBlueprintPanel.png",
-      "git_blob_oid": "e632ed8d14f20a9d5b90424402c267dafc085cdc",
-      "raw_sha256": "8af6edf9c937e67d94b55ee65840ea96e7e7ac67341ca5f49e7065b6816b5c1e",
-      "raw_bytes": 298856,
+      "git_blob_oid": "33b4f770f2847921bf6630872782778ca00b3790",
+      "raw_sha256": "a05d48289ab4fbead25206988c798730ec4af0b4777b72004278626507556010",
+      "raw_bytes": 530162,
       "media_type": "image/png",
       "format": "png",
       "automated_format_evidence": {
@@ -914,15 +914,15 @@
         "idat_framing_valid": true,
         "trailing_bytes": 0,
         "width": 900,
-        "height": 3115,
+        "height": 4672,
         "bit_depth": 8,
         "color_type": 2,
         "interlace_method": 0,
-        "chunk_count": 76,
-        "idat_chunk_count": 74,
-        "idat_compressed_bytes": 297923,
-        "decoded_scanline_bytes": 8413615,
-        "decoded_scanline_sha256": "e30182282bb824ef6fae93cb7fbe6f16b49db5f2967a5707d2ca21f576163d8b",
+        "chunk_count": 133,
+        "idat_chunk_count": 131,
+        "idat_compressed_bytes": 528545,
+        "decoded_scanline_bytes": 12619072,
+        "decoded_scanline_sha256": "ee6ef972725b8b2bdf4f80a975e9567fd6c606b0d6780a6ef72f7900f5688c34",
         "risky_metadata_chunk_counts": {
           "eXIf": 0,
           "iCCP": 0,
@@ -938,7 +938,7 @@
         "independent_from_proposer": true,
         "review_scope": "rendered_pixels_and_context",
         "evidence_references": [
-          "decoded-rgba-sha256:75cadd4317de6b417533ae00f4fd4dee5b566a62698d4a67cdc53c7d2224a0f2",
+          "decoded-rgba-sha256:6bc6848b2ca0d4d66f0cd80b70303943ccc742339206f6c62716bd85cb826582",
           "privacy-scan:forbidden-local-generic-identities",
           "visual-review:exact-rendered-pixels"
         ],
@@ -1887,9 +1887,9 @@
     },
     {
       "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/TopologyGraph-728.png",
-      "git_blob_oid": "ab0d86a445d0919db3140eafee05f840cfa8db72",
-      "raw_sha256": "6b354cb53bcb96bf4c0ff573fd13352cde0e7106c2d18916af0bf8ef9a835345",
-      "raw_bytes": 79046,
+      "git_blob_oid": "5c8eef64d530cbb4e4be58b18dfd07c0cd4914a1",
+      "raw_sha256": "57d4ca2b84d8f5da5f6a97f917fd58c7c8c90cc45d7ec5535698b632e8e24d74",
+      "raw_bytes": 50843,
       "media_type": "image/png",
       "format": "png",
       "automated_format_evidence": {
@@ -1905,11 +1905,11 @@
         "bit_depth": 8,
         "color_type": 2,
         "interlace_method": 0,
-        "chunk_count": 23,
-        "idat_chunk_count": 21,
-        "idat_compressed_bytes": 78749,
+        "chunk_count": 16,
+        "idat_chunk_count": 14,
+        "idat_compressed_bytes": 50630,
         "decoded_scanline_bytes": 1529500,
-        "decoded_scanline_sha256": "82dbc9741bd26f3b14414f657e1d43c050780f4ea0d80d641fb79ef554d7aba5",
+        "decoded_scanline_sha256": "a5440b2c729ac18465f89296e927f7084348878170321a150a313b4d1ca1cc04",
         "risky_metadata_chunk_counts": {
           "eXIf": 0,
           "iCCP": 0,
@@ -1925,7 +1925,7 @@
         "independent_from_proposer": true,
         "review_scope": "rendered_pixels_and_context",
         "evidence_references": [
-          "decoded-rgba-sha256:d5adfed86b0af88d63f06b6e379fa10ca84c500d88d0f82f727224de022072ff",
+          "decoded-rgba-sha256:104939a84b2f11e45729d3a149ccd5567103c8106312184e868c40cf6e2e21ce",
           "privacy-scan:forbidden-local-generic-identities",
           "visual-review:exact-rendered-pixels"
         ],
@@ -1934,9 +1934,9 @@
     },
     {
       "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/TopologyGraph.png",
-      "git_blob_oid": "3d5540f67b8a962cb047d9b9f123bcfc7a098211",
-      "raw_sha256": "c5f4e6a1d68b7ff9ade6ec43b6302f6fdce3465749af621a2817b24796c034c0",
-      "raw_bytes": 86888,
+      "git_blob_oid": "a8a5e061fe83a79d0106e5f58c4de044ff112964",
+      "raw_sha256": "e786230404c7cd619a560a2fef56861953364d6b12a93eff1aba58847a7b9471",
+      "raw_bytes": 58653,
       "media_type": "image/png",
       "format": "png",
       "automated_format_evidence": {
@@ -1952,11 +1952,11 @@
         "bit_depth": 8,
         "color_type": 2,
         "interlace_method": 0,
-        "chunk_count": 25,
-        "idat_chunk_count": 23,
-        "idat_compressed_bytes": 86567,
+        "chunk_count": 18,
+        "idat_chunk_count": 16,
+        "idat_compressed_bytes": 58416,
         "decoded_scanline_bytes": 1890700,
-        "decoded_scanline_sha256": "d375e2962607f5240a77bac9339d79896189268469fa3cbe79acd171f8befbab",
+        "decoded_scanline_sha256": "9b035419c8e022d2b41557201ebf29ec336375b6955045076f23000dcec65549",
         "risky_metadata_chunk_counts": {
           "eXIf": 0,
           "iCCP": 0,
@@ -1972,7 +1972,7 @@
         "independent_from_proposer": true,
         "review_scope": "rendered_pixels_and_context",
         "evidence_references": [
-          "decoded-rgba-sha256:c2b8bd6b1af08326bccff5ef20af393cddf0bf8ee7a5dcaca0f2ce816d12320a",
+          "decoded-rgba-sha256:9bf01c14e8d8974380263aa96996a0072e1fa6465aed644f4c78fad0508794fb",
           "privacy-scan:forbidden-local-generic-identities",
           "visual-review:exact-rendered-pixels"
         ],
