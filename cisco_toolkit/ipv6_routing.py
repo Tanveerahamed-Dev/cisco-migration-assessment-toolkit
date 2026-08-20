@@ -110,6 +110,7 @@ _ROUTE_NEUTRAL_SOURCES = frozenset({
     "eigrp", "nd", "ndp", "mobile", "nat", "lisp", "application",
     "discard", "odr",
 })
+_NX_ROUTE_NEUTRAL_SOURCES = frozenset({"am", "direct", "broadcast"})
 
 _CLI_ERROR_PREFIXES = (
     "% invalid input", "% incomplete command", "% ambiguous command",
@@ -163,8 +164,10 @@ def _safe_string(value: Any, limit: int, *, empty: bool = True) -> bool:
 
 def _safe_ascii_string(value: Any, limit: int, *, empty: bool = True) -> bool:
     return bool(
-        _safe_string(value, limit, empty=empty)
-        and (not value or value.isascii())
+        isinstance(value, str) and len(value) <= limit
+        and (empty or value) and (not value or value.isascii())
+        and value.strip() == value
+        and not any(ord(char) < 32 or ord(char) == 127 for char in value)
     )
 
 
@@ -302,9 +305,11 @@ def _commands(platform: str, input_name: str) -> Tuple[str, ...]:
         return (_ROUTE_COMMAND,)
     if input_name == "bgp_ipv6_neighbors":
         return _BGP_COMMANDS
-    return _OSPF_NXOS_COMMANDS if platform.casefold() in {
-        "nxos", "nx-os", "nexus", "n9k"
-    } else _OSPF_IOS_COMMANDS
+    return _OSPF_NXOS_COMMANDS if _is_nxos(platform) else _OSPF_IOS_COMMANDS
+
+
+def _is_nxos(platform: str) -> bool:
+    return platform.casefold() in {"nxos", "nx-os", "nexus", "n9k"}
 
 
 def _finding(kind: str, code: str, issue: str) -> dict:
@@ -356,7 +361,12 @@ def _parse_route_summary(body: str) -> dict:
         return dict(empty, parser_status="rejected", rejected_count=1,
                     finding_codes=["route_census_rejected"])
 
-    header_rows: List[Tuple[str, int, bool, str, int]] = []
+    # ``show ipv6 route summary`` has two bounded text contracts in scope:
+    # IOS/XE's ``... - N entries`` census and NX-OS's RIB summary headed by
+    # ``IPv6 Routing Table for VRF ...``.  Keep the grammar kind on each
+    # header so an NX-OS uptime/source table cannot be interpreted through the
+    # IOS/XE route-list grammar (or vice versa).
+    header_rows: List[Tuple[str, int, bool, str, int, str]] = []
     header_re = re.compile(
         r"^\s*IPv6\s+Routing\s+Table(?P<summary>\s+Summary)?"
         r"(?:\s+for\s+VRF\s+(?P<vrf>\"[^\"]{1,128}\"|"
@@ -375,30 +385,116 @@ def _parse_route_summary(body: str) -> dict:
         inline = (match.group("inline") or "").strip()
         summary_hint = bool(match.group("summary") or inline)
         entries = int(match.group("entries"))
-        header_rows.append((context, index, summary_hint, inline, entries))
+        header_rows.append((
+            context, index, summary_hint, inline, entries, "ios",
+        ))
+    nx_header_re = re.compile(
+        r"^\s*IPv6\s+Routing\s+Table\s+for\s+VRF\s+"
+        r"(?P<vrf>\"[^\"]{1,128}\"|'[^']{1,128}'|"
+        r"[A-Za-z0-9_.-]{1,128})\s*$",
+        re.IGNORECASE,
+    )
+    for index, line in enumerate(lines):
+        match = nx_header_re.fullmatch(line)
+        if not match:
+            continue
+        context = match.group("vrf").strip("\"'")
+        header_rows.append((context, index, True, "", 0, "nxos"))
+    header_rows.sort(key=lambda item: item[1])
     if not header_rows:
         return dict(empty, parser_status="rejected", candidate_count=1,
                     rejected_count=1, finding_codes=["route_census_rejected"])
-
-    context_review = len(header_rows) != 1 or any(
-        context.casefold() not in {"default", "global"}
-        for context, _index, _summary_hint, _inline, _entries in header_rows
-    )
-    if any(entries > _MAX_ACTIVE_ROUTES
-           for _context, _index, _summary_hint, _inline, entries in header_rows):
+    in_scope_header_indexes = [
+        index for index, header in enumerate(header_rows)
+        if header[0].casefold() in {"default", "global"}
+    ]
+    if len(in_scope_header_indexes) > 1:
+        # More than one default/global table cannot be reduced to one owned
+        # subject census without hiding protocols present outside the first
+        # table.  Named VRF companions remain review-only below.
         return dict(empty, parser_status="rejected", candidate_count=1,
                     rejected_count=1, header=True,
                     finding_codes=["route_census_rejected"])
-    # Never merge across tables.  The first header remains observable, but the
-    # context conflict prevents a positive CLEAR decision.
-    start = header_rows[0][1] + 1
-    end = header_rows[1][1] if len(header_rows) > 1 else len(lines)
-    inline = header_rows[0][3]
+
+    context_review = len(header_rows) != 1 or any(
+        context.casefold() not in {"default", "global"}
+        for context, _index, _summary_hint, _inline, _entries, _kind
+        in header_rows
+    )
+    if any(entries > _MAX_ACTIVE_ROUTES
+           for _context, _index, _summary_hint, _inline, entries, _kind
+           in header_rows):
+        return dict(empty, parser_status="rejected", candidate_count=1,
+                    rejected_count=1, header=True,
+                    finding_codes=["route_census_rejected"])
+    # Never merge across tables.  Prefer the unique default/global table even
+    # when a named VRF precedes it; otherwise that named table could hide the
+    # in-scope protocol census.  With no in-scope header, preserve the bounded
+    # first-table review fallback.
+    selected_index = (
+        in_scope_header_indexes[0] if in_scope_header_indexes else 0
+    )
+    selected_header = header_rows[selected_index]
+    start = selected_header[1] + 1
+    end = (
+        header_rows[selected_index + 1][1]
+        if selected_index + 1 < len(header_rows) else len(lines)
+    )
+    inline = selected_header[3]
+    grammar_kind = selected_header[5]
     source_values: Dict[str, List[int]] = {"OSPFv3": [], "BGPv6": []}
     normalized_values: Dict[str, List[int]] = {}
+    backup_source_values: Dict[str, List[int]] = {
+        "OSPFv3": [], "BGPv6": [],
+    }
+    backup_normalized_values: Dict[str, List[int]] = {}
     aggregate_counts: List[int] = []
+    ios_explicit_totals: List[int] = []
     grammar_rows = 0
     hard_rejected = False
+
+    def classify(label: str) -> Tuple[str, str]:
+        nonlocal hard_rejected
+        low = re.sub(r"\s+", " ", label.strip().casefold())
+        tag_separator = r"(?:\s+|-)" if grammar_kind == "nxos" else r"\s+"
+        protocol = ""
+        normalized_source = ""
+        if re.fullmatch(
+                rf"(?:ospf|ospfv3)(?:{tag_separator}"
+                r"[A-Za-z0-9_.-]{1,32})?",
+                low):
+            protocol = "OSPFv3"
+            normalized_source = "ospfv3"
+        elif low.startswith(("ospf", "ospfv3")):
+            hard_rejected = True
+            return "", ""
+        else:
+            bgp_match = re.fullmatch(
+                rf"bgp(?:{tag_separator}(\S{{1,16}}))?", low)
+            if bgp_match and (
+                    not bgp_match.group(1)
+                    or _canonical_as(bgp_match.group(1))):
+                protocol = "BGPv6"
+                normalized_source = "bgpv6"
+            elif low.startswith("bgp"):
+                hard_rejected = True
+                return "", ""
+        if not protocol:
+            neutral = low if (
+                low in _ROUTE_NEUTRAL_SOURCES
+                or grammar_kind == "nxos" and low in _NX_ROUTE_NEUTRAL_SOURCES
+            ) else ""
+            tagged = re.fullmatch(
+                r"(rip|ripng|isis|is-is|eigrp)\s+[A-Za-z0-9_.-]{1,32}",
+                low,
+            )
+            if tagged:
+                neutral = tagged.group(1)
+            if not neutral:
+                hard_rejected = True
+                return "", ""
+            normalized_source = neutral
+        return protocol, normalized_source
 
     def record(label: str, count_text: str) -> None:
         nonlocal grammar_rows, hard_rejected
@@ -412,37 +508,11 @@ def _parse_route_summary(body: str) -> dict:
             hard_rejected = True
             return
         if low == "total":
+            ios_explicit_totals.append(count)
             return
-        protocol = ""
-        normalized_source = ""
-        if re.fullmatch(r"(?:ospf|ospfv3)(?:\s+[A-Za-z0-9_.-]{1,32})?", low):
-            protocol = "OSPFv3"
-            normalized_source = "ospfv3"
-        elif low.startswith(("ospf", "ospfv3")):
-            hard_rejected = True
+        protocol, normalized_source = classify(label)
+        if not normalized_source:
             return
-        else:
-            bgp_match = re.fullmatch(r"bgp(?:\s+(\S{1,16}))?", low)
-            if bgp_match and (
-                    not bgp_match.group(1)
-                    or _canonical_as(bgp_match.group(1))):
-                protocol = "BGPv6"
-                normalized_source = "bgpv6"
-            elif low.startswith("bgp"):
-                hard_rejected = True
-                return
-        if not protocol:
-            neutral = low if low in _ROUTE_NEUTRAL_SOURCES else ""
-            tagged = re.fullmatch(
-                r"(rip|ripng|isis|is-is|eigrp)\s+[A-Za-z0-9_.-]{1,32}",
-                low,
-            )
-            if tagged:
-                neutral = tagged.group(1)
-            if not neutral:
-                hard_rejected = True
-                return
-            normalized_source = neutral
         grammar_rows += 1
         aggregate_counts.append(count)
         normalized_values.setdefault(normalized_source, []).append(count)
@@ -465,14 +535,138 @@ def _parse_route_summary(body: str) -> dict:
         return True
 
     grammar_proof = False
-    if inline:
+    if grammar_kind == "ios" and inline:
         grammar_proof = number_first_list(inline.lstrip(":").strip())
 
     column_header = False
+    nx_routes: List[int] = []
+    nx_paths: List[int] = []
+    nx_best_headers = 0
+    nx_mask_headers = 0
+    nx_in_best = False
+    nx_in_masks = False
+    nx_mask_counts: Dict[int, int] = {}
+    nx_backup_counts: List[int] = []
+    ios_prefix_headers = 0
+    ios_in_prefixes = False
+    ios_prefix_counts: Dict[int, int] = {}
     for raw in lines[start:end]:
         line = raw.strip()
         if not line:
             continue
+        if grammar_kind == "nxos":
+            total_routes = re.fullmatch(
+                r"Total\s+number\s+of\s+routes\s*:\s*(\d{1,10})",
+                line, re.IGNORECASE,
+            )
+            if total_routes:
+                nx_routes.append(int(total_routes.group(1)))
+                continue
+            total_paths = re.fullmatch(
+                r"Total\s+number\s+of\s+paths\s*:\s*(\d{1,10})",
+                line, re.IGNORECASE,
+            )
+            if total_paths:
+                nx_paths.append(int(total_paths.group(1)))
+                continue
+            if re.fullmatch(
+                    r"Best\s+paths\s+per\s+protocol\s*:\s+"
+                    r"Backup\s+paths\s+per\s+protocol\s*:",
+                    line, re.IGNORECASE):
+                nx_best_headers += 1
+                nx_in_best = True
+                nx_in_masks = False
+                continue
+            if re.fullmatch(
+                    r"Number\s+of\s+routes\s+per\s+mask-length\s*:",
+                    line, re.IGNORECASE):
+                nx_mask_headers += 1
+                nx_in_best = False
+                nx_in_masks = True
+                continue
+            nx_source = re.fullmatch(
+                r"(?P<best_label>[A-Za-z][A-Za-z0-9_. /-]{0,63})"
+                r"\s*:\s*(?P<best_count>\d{1,10})"
+                r"(?:\s+(?:None|"
+                r"(?P<backup_label>[A-Za-z][A-Za-z0-9_. /-]{0,63})"
+                r"\s*:\s*(?P<backup_count>\d{1,10})))?",
+                line, re.IGNORECASE,
+            )
+            if nx_in_best and nx_source:
+                record(
+                    nx_source.group("best_label"),
+                    nx_source.group("best_count"),
+                )
+                backup_label = nx_source.group("backup_label")
+                backup_count = nx_source.group("backup_count")
+                if backup_label and backup_count:
+                    backup_protocol, normalized = classify(backup_label)
+                    count = int(backup_count)
+                    if not normalized or count > _MAX_ACTIVE_ROUTES:
+                        hard_rejected = True
+                    else:
+                        nx_backup_counts.append(count)
+                        backup_normalized_values.setdefault(
+                            normalized, []).append(count)
+                        if backup_protocol:
+                            backup_source_values[backup_protocol].append(count)
+                continue
+            if nx_in_masks:
+                mask_parts = list(re.finditer(
+                    r"/(\d{1,3})\s*:\s*(\d{1,10})", line,
+                    re.IGNORECASE,
+                ))
+                residue = re.sub(
+                    r"/(\d{1,3})\s*:\s*(\d{1,10})", "", line,
+                    flags=re.IGNORECASE,
+                )
+                if mask_parts and not residue.strip():
+                    for part in mask_parts:
+                        length = int(part.group(1))
+                        count = int(part.group(2))
+                        if length > 128 or count > _MAX_ACTIVE_ROUTES \
+                                or length in nx_mask_counts:
+                            hard_rejected = True
+                            break
+                        nx_mask_counts[length] = count
+                    continue
+            # The NX-OS contract is deliberately exact.  In particular, an
+            # ordinary ``prefix, ubest/mbest`` route-list row under the same
+            # table banner never becomes census evidence.
+            hard_rejected = True
+            continue
+
+        if re.fullmatch(
+                r"Number\s+of\s+prefixes\s*:", line,
+                re.IGNORECASE):
+            ios_prefix_headers += 1
+            ios_in_prefixes = True
+            continue
+        if re.match(r"^Number\s+of\s+prefix", line, re.IGNORECASE):
+            hard_rejected = True
+            continue
+        if ios_in_prefixes:
+            prefix_parts = list(re.finditer(
+                r"/(\d{1,3})\s*:\s*(\d{1,10})", line,
+                re.IGNORECASE,
+            ))
+            residue = re.sub(
+                r"/(\d{1,3})\s*:\s*(\d{1,10})", "", line,
+                flags=re.IGNORECASE,
+            )
+            if prefix_parts and not residue.strip(" ,"):
+                for part in prefix_parts:
+                    length = int(part.group(1))
+                    count = int(part.group(2))
+                    if length > 128 or count > _MAX_ACTIVE_ROUTES \
+                            or length in ios_prefix_counts:
+                        hard_rejected = True
+                        break
+                    ios_prefix_counts[length] = count
+                continue
+            hard_rejected = True
+            continue
+
         if re.fullmatch(
                 r"Route\s+Source\s+Networks\s+Subnets\s+Overhead\s+"
                 r"Memory(?:\s+\(bytes\))?", line, re.IGNORECASE):
@@ -502,11 +696,71 @@ def _parse_route_summary(body: str) -> dict:
         # listing into a census.
         if re.match(r"^\d+\s+", line):
             grammar_proof = number_first_list(line) or grammar_proof
+            continue
+        # Count narrowly source-shaped residue rather than arbitrary CLI
+        # boilerplate.  Otherwise a malformed label (for example ``?spf``)
+        # could disappear while neutral source counts still close the declared
+        # denominator.
+        colon_residue = re.fullmatch(
+            r"\S.{0,63}?\s*:\s*\d{1,10}(?:\s+.*)?", line)
+        column_residue = column_header and re.fullmatch(
+            r"\S.{0,63}?\s+\S{1,64}\s+\d{1,10}\s+"
+            r"\d{1,10}\s+\d{1,10}\s*", line)
+        known_source_residue = re.match(
+            r"^(?:ospf|ospfv3|bgp|connected|local|static|rip|ripng|"
+            r"isis|is-is|eigrp)\b", line, re.IGNORECASE)
+        if colon_residue or column_residue or known_source_residue:
+            hard_rejected = True
 
-    duplicates = any(len(values) > 1 for values in normalized_values.values())
-    conflicts = any(len(set(values)) > 1 for values in source_values.values())
+    if grammar_kind == "nxos":
+        bounded_totals = bool(
+            len(nx_routes) == len(nx_paths) == 1
+            and nx_routes[0] <= _MAX_ACTIVE_ROUTES
+            and nx_paths[0] <= _MAX_ACTIVE_ROUTES
+            and nx_paths[0] >= nx_routes[0]
+        )
+        grammar_proof = bool(
+            bounded_totals
+            and nx_best_headers == nx_mask_headers == 1
+            and nx_mask_counts
+            and sum(nx_mask_counts.values()) == nx_routes[0]
+            and sum(aggregate_counts) + sum(nx_backup_counts) == nx_paths[0]
+        )
+    else:
+        entries = selected_header[4]
+        source_total_valid = sum(aggregate_counts) == entries
+        explicit_total_valid = not ios_explicit_totals or (
+            len(ios_explicit_totals) == 1
+            and ios_explicit_totals[0] == entries
+        )
+        prefix_total_valid = not ios_prefix_headers or (
+            ios_prefix_headers == 1
+            and bool(ios_prefix_counts)
+            and sum(ios_prefix_counts.values()) == entries
+        )
+        grammar_proof = bool(
+            grammar_proof and source_total_valid
+            and explicit_total_valid and prefix_total_valid
+        )
+
+    # Best and backup columns are independent NX-OS censuses.  The same
+    # protocol appearing once in each column is intentional, while repeated
+    # sources within either column remain review-only ambiguity.
+    duplicates = any(
+        len(values) > 1 for values in normalized_values.values()
+    ) or any(
+        len(values) > 1 for values in backup_normalized_values.values()
+    )
+    conflicts = any(
+        len(set(values)) > 1 for values in source_values.values()
+    ) or any(
+        len(set(values)) > 1 for values in backup_source_values.values()
+    )
     counts = {
-        protocol: (values[0] if values else 0)
+        protocol: (
+            sum(values) + sum(backup_source_values[protocol])
+            if grammar_kind == "nxos" else values[0] if values else 0
+        )
         for protocol, values in source_values.items()
     }
     aggregate_overflow = sum(aggregate_counts) > _MAX_ACTIVE_ROUTES
@@ -535,21 +789,37 @@ def _parse_route_summary(body: str) -> dict:
 
 def _ospf_process_context(body: str) -> Tuple[str, bool, bool]:
     processes = set()
+    recognized_contexts = 0
+    context_shaped_lines = 0
     named_context = False
     non_ipv6_af = False
     patterns = (
-        re.compile(r"\bProcess\s+ID\s+([A-Za-z0-9_.-]+)", re.I),
+        re.compile(
+            r"^\s*OSPFv3\b.*\bProcess\s+ID\s+"
+            r"([A-Za-z0-9_.-]+)(?:\)|\s|$)",
+            re.I,
+        ),
         re.compile(
             r"^\s*OSPFv3\s+([A-Za-z0-9_.-]+)\s+address-family\b",
             re.I,
         ),
         re.compile(r"\bRouting Process\s+\"?ospfv3\s+([A-Za-z0-9_.-]+)", re.I),
     )
+    context_shape_patterns = (
+        re.compile(r"^\s*OSPFv3\s+\S+\s+address-family\b", re.I),
+        re.compile(
+            r"^\s*OSPFv3\s+Router\b.*\bProcess\s+ID\b", re.I),
+        re.compile(r"^\s*OSPFv3\s+Process\s+ID\b", re.I),
+        re.compile(r"^\s*Routing\s+Process\s+\"?ospfv3\b", re.I),
+    )
     for line in body.splitlines():
+        if any(pattern.search(line) for pattern in context_shape_patterns):
+            context_shaped_lines += 1
         for pattern in patterns:
             match = pattern.search(line)
             if match:
                 processes.add(match.group(1))
+                recognized_contexts += 1
                 break
         vrf = re.search(r"\bVRF\s+[\"']?([A-Za-z0-9_.-]+)", line, re.I)
         if vrf and vrf.group(1).casefold() not in {"default", "global"}:
@@ -559,7 +829,11 @@ def _ospf_process_context(body: str) -> Tuple[str, bool, bool]:
             non_ipv6_af = True
     process = sorted(processes, key=lambda value: (value.casefold(), value))[0] \
         if processes else ""
-    return process, len(processes) > 1 or named_context or non_ipv6_af, bool(processes)
+    return process, (
+        recognized_contexts != 1 or len(processes) > 1
+        or context_shaped_lines != recognized_contexts
+        or named_context or non_ipv6_af
+    ), recognized_contexts == 1
 
 
 def _valid_ospf_dead_time(value: str) -> bool:
@@ -601,6 +875,11 @@ def _valid_bgp_up_down(value: str) -> bool:
     )
 
 
+def _valid_ospf_up_time(value: str) -> bool:
+    """Validate the bounded NX-OS OSPFv3 ``Up Time`` duration grammar."""
+    return value.casefold() != "never" and _valid_bgp_up_down(value)
+
+
 def _canonical_bgp_state(value: str) -> str:
     collapsed = re.sub(r"\s+", " ", value.strip()).casefold()
     states = {
@@ -629,19 +908,74 @@ def _parse_ospfv3(body: str) -> dict:
         return dict(empty, parser_status="rejected", rejected_count=1,
                     finding_codes=["ospfv3_parser_rejected"])
     process, context_review, process_present = _ospf_process_context(body)
-    header_re = re.compile(
+    context_review = context_review or not process_present
+    ios_header_re = re.compile(
         r"^\s*Neighbor\s+ID\s+Pri\s+State\s+Dead\s+Time\s+"
         r"Interface\s+ID\s+Interface\s*$", re.IGNORECASE)
-    header_count = sum(bool(header_re.fullmatch(line)) for line in body.splitlines())
+    nxos_header_re = re.compile(
+        r"^\s*Neighbor\s+ID\s+Pri\s+State\s+Up\s+Time\s+"
+        r"Interface\s+ID\s+Interface\s*$", re.IGNORECASE)
+    ios_header_count = sum(
+        bool(ios_header_re.fullmatch(line)) for line in body.splitlines())
+    nxos_header_count = sum(
+        bool(nxos_header_re.fullmatch(line)) for line in body.splitlines())
+    nx_context_lines = [
+        line for line in body.splitlines()
+        if re.match(r"^\s*OSPFv3\s+Process\s+ID\b", line, re.IGNORECASE)
+    ]
+    nx_contexts = [
+        match.groups() for line in nx_context_lines
+        if (match := re.fullmatch(
+            r"\s*OSPFv3\s+Process\s+ID\s+"
+            r"([A-Za-z0-9_.-]{1,32})\s+vrf\s+"
+            r"(\"[^\"]{1,128}\"|'[^']{1,128}'|"
+            r"[A-Za-z0-9_.-]{1,128})\s*",
+            line, re.IGNORECASE,
+        ))
+    ]
+    nx_total_lines = [
+        line for line in body.splitlines()
+        if re.match(
+            r"^\s*Total\s+number\s+of\s+neighbors\b", line,
+            re.IGNORECASE,
+        )
+    ]
+    nx_total_values = [
+        int(match.group(1)) for line in nx_total_lines
+        if (match := re.fullmatch(
+            r"\s*Total\s+number\s+of\s+neighbors\s*:\s*"
+            r"(\d{1,10})\s*",
+            line, re.IGNORECASE,
+        ))
+    ]
+    header_count = ios_header_count + nxos_header_count
     header = header_count == 1
     context_review = context_review or header_count > 1
+    if nxos_header_count:
+        if len(nx_context_lines) == len(nx_contexts) == 1:
+            process = nx_contexts[0][0]
+            nx_vrf = nx_contexts[0][1].strip("\"'").casefold()
+            context_review = context_review or nx_vrf not in {
+                "default", "global",
+            }
+        else:
+            context_review = True
     rows: List[dict] = []
     candidate_count = rejected_count = 0
     duplicate = False
     identities: Dict[str, dict] = {}
+    row_re = re.compile(
+        r"^(\S+)\s+(\d+)\s+([A-Za-z0-9_-]+)\s*/\s*"
+        r"([A-Za-z0-9_-]+)\s+(\S+)\s+(\S+)\s+(\S+)\s*$",
+    )
+    candidate_row_re = re.compile(
+        r"^\S+\s+\S+\s+\S+\s*/\s*\S+\s+\S+\s+\S+\s+\S+\s*$",
+    )
     for raw in body.splitlines():
         line = raw.strip()
-        if not re.match(r"^\d{1,3}(?:\.\d{1,3}){3}\s+", line):
+        match = row_re.fullmatch(line)
+        if not re.match(r"^\d{1,3}(?:\.\d{1,3}){3}\s+", line) \
+                and not (header and candidate_row_re.fullmatch(line)):
             continue
         candidate_count += 1
         if candidate_count > _MAX_CANDIDATES:
@@ -650,10 +984,6 @@ def _parse_ospfv3(body: str) -> dict:
                         rejected_count=_MAX_CANDIDATES,
                         header=header,
                         finding_codes=["ospfv3_candidate_cap_exceeded"])
-        match = re.fullmatch(
-            r"^(\S+)\s+(\d+)\s+([A-Za-z0-9_-]+)\s*/\s*"
-            r"([A-Za-z0-9_-]+)\s+(\S+)\s+(\S+)\s+(\S+)\s*$", line,
-        )
         if not match:
             rejected_count += 1
             continue
@@ -664,8 +994,13 @@ def _parse_ospfv3(body: str) -> dict:
         except ValueError:
             rejected_count += 1
             continue
+        valid_time = (
+            _valid_ospf_dead_time(dead_time) if ios_header_count else
+            _valid_ospf_up_time(dead_time) if nxos_header_count else
+            _valid_ospf_dead_time(dead_time)
+        )
         if not re.fullmatch(r"\d{1,5}", priority) or int(priority) > 65_535 \
-                or not _valid_ospf_dead_time(dead_time) \
+                or not valid_time \
                 or not re.fullmatch(r"\d{1,10}", interface_id) \
                 or int(interface_id) > _MAX_ACTIVE_ROUTES:
             rejected_count += 1
@@ -698,6 +1033,25 @@ def _parse_ospfv3(body: str) -> dict:
                 identities[identity] = row
             continue
         identities[identity] = row
+    if nxos_header_count and any(
+            value > _MAX_CANDIDATES for value in nx_total_values):
+        return dict(empty, parser_status="rejected",
+                    candidate_count=_MAX_CANDIDATES,
+                    rejected_count=_MAX_CANDIDATES, header=header,
+                    finding_codes=["ospfv3_candidate_cap_exceeded"])
+    if nxos_header_count and not (
+            len(nx_total_lines) == len(nx_total_values) == 1
+            and nx_total_values[0] == candidate_count):
+        # NX-OS publishes the source table denominator.  Missing, malformed,
+        # repeated, or mismatched totals make the projection review-only;
+        # otherwise an omitted neighbor could be hidden behind healthy rows.
+        context_review = True
+    if not process and identities:
+        # Without a bounded process identity, row facts cannot satisfy the
+        # owner schema.  Retain their denominator as rejected evidence and let
+        # the exact header/context produce a valid review-only static row.
+        rejected_count += len(identities)
+        identities = {}
     rows = list(identities.values())
     if rows and not header:
         rejected_count += 1
@@ -717,6 +1071,7 @@ def _parse_ospfv3(body: str) -> dict:
     if rejected_count and not duplicate:
         codes.append("ospfv3_candidate_rejected")
     parser_status = (
+        "review" if context_review and header else
         "review" if rows and review else
         "complete" if rows else
         "rejected" if rejected_count else
@@ -734,7 +1089,7 @@ def _parse_ospfv3(body: str) -> dict:
     }
 
 
-def _parse_bgpv6(body: str) -> dict:
+def _parse_bgpv6(body: str, platform: str = "") -> dict:
     empty = {
         "parser_status": "not_verified", "candidate_count": 0,
         "parsed_count": 0, "rejected_count": 0, "rows": [],
@@ -756,6 +1111,11 @@ def _parse_bgpv6(body: str) -> dict:
 
     process_matches = list(re.finditer(
         r"(?im)^\s*BGP router identifier\b.*?local AS number\s+(\S+)", body))
+    process_context_lines = sum(
+        bool(re.match(r"^\s*BGP\s+router\s+identifier\b", line,
+                      re.IGNORECASE))
+        for line in lines
+    )
     processes = [
         canonical for match in process_matches
         if (canonical := _canonical_as(match.group(1)))
@@ -779,12 +1139,33 @@ def _parse_bgpv6(body: str) -> dict:
             vrf = match.group("vrf").strip("\"'").casefold()
             af = re.sub(r"\s+", " ", match.group("af").strip()).casefold()
             nx_contexts.append((vrf, af))
+    nxos_contract = _is_nxos(platform) or bool(nx_context_lines)
+    nx_peer_total_lines = [
+        line for line in lines
+        if re.match(r"^\s*BGP\s+table\s+version\s+is\b", line,
+                    re.IGNORECASE)
+    ]
+    nx_peer_totals = []
+    nx_peer_total_re = re.compile(
+        r"^\s*BGP\s+table\s+version\s+is\s+(\d{1,20})\s*,\s*"
+        r"IPv6\s+Unicast\s+config\s+peers\s+(\d{1,10})\s*,\s*"
+        r"capable\s+peers\s+(\d{1,10})\s*$",
+        re.IGNORECASE,
+    )
+    for line in nx_peer_total_lines:
+        if match := nx_peer_total_re.fullmatch(line):
+            nx_peer_totals.append(tuple(int(value) for value in match.groups()))
     context_review = bool(
         header_count > 1
         or nx_context_lines != len(nx_contexts)
-        or len(process_matches) != len(processes)
+        or process_context_lines != len(process_matches)
+        or len(process_matches) != 1
+        or len(processes) != 1
         or len(set(processes)) > 1
         or len(nx_contexts) > 1
+        or nxos_contract and not (
+            nx_context_lines == len(nx_contexts) == 1
+        )
         or any(vrf not in {"default", "global"} or af != "ipv6 unicast"
                for vrf, af in nx_contexts)
         or re.search(
@@ -798,7 +1179,9 @@ def _parse_bgpv6(body: str) -> dict:
     index = 0
     while index < len(lines):
         stripped = lines[index].strip()
-        if re.fullmatch(r"[0-9A-Fa-f:.]+(?:%[A-Za-z0-9_.:/-]+)?", stripped) \
+        if re.fullmatch(
+                r"\*?[0-9A-Fa-f:.]+(?:%[A-Za-z0-9_.:/-]+)?",
+                stripped) \
                 and index + 1 < len(lines):
             following = lines[index + 1].strip()
             if following and re.match(r"^\d+\s+\S+(?:\s+|$)", following):
@@ -816,16 +1199,50 @@ def _parse_bgpv6(body: str) -> dict:
             continue
         tokens = line.split()
         first = tokens[0]
+        table_candidate = bool(
+            header and len(tokens) in {10, 11}
+            and all(re.fullmatch(r"\d+", token) for token in tokens[3:8])
+        )
+        marker = re.fullmatch(
+            r"([^0-9A-Fa-f:\s]+)"
+            r"([0-9A-Fa-f][0-9A-Fa-f:.]*(?:%[A-Za-z0-9_.:/-]+)?)",
+            first,
+        )
+        if marker:
+            candidate_count += 1
+            if candidate_count > _MAX_CANDIDATES:
+                return dict(empty, parser_status="rejected",
+                            candidate_count=_MAX_CANDIDATES,
+                            rejected_count=_MAX_CANDIDATES,
+                            header=header,
+                            finding_codes=["bgpv6_candidate_cap_exceeded"])
+            # IOS/XE may prefix a summary neighbor with exactly one adjacent
+            # ``*``.  Any other or repeated marker remains an observed but
+            # rejected candidate; it cannot disappear from the denominator.
+            if marker.group(1) != "*":
+                rejected_count += 1
+                continue
+            first = marker.group(2)
+            tokens[0] = first
         # Count both IPv4 and IPv6-looking table candidates so a wrong-family
         # row cannot silently disappear from an IPv6 receipt.
         try:
             ipaddress.ip_address(first.partition("%")[0])
         except ValueError:
-            if re.match(r"^[0-9A-Fa-f][^\s]*:", first):
-                candidate_count += 1
+            if table_candidate or re.match(r"^[0-9A-Fa-f][^\s]*:", first):
+                if not marker:
+                    candidate_count += 1
                 rejected_count += 1
+                if candidate_count > _MAX_CANDIDATES:
+                    return dict(
+                        empty, parser_status="rejected",
+                        candidate_count=_MAX_CANDIDATES,
+                        rejected_count=_MAX_CANDIDATES, header=header,
+                        finding_codes=["bgpv6_candidate_cap_exceeded"],
+                    )
             continue
-        candidate_count += 1
+        if not marker:
+            candidate_count += 1
         if candidate_count > _MAX_CANDIDATES:
             return dict(empty, parser_status="rejected",
                         candidate_count=_MAX_CANDIDATES,
@@ -879,6 +1296,28 @@ def _parse_bgpv6(body: str) -> dict:
                 identities[identity] = row
             continue
         identities[identity] = row
+    if nxos_contract and any(
+            table_version > _MAX_BGP_COUNTER
+            or configured > _MAX_CANDIDATES
+            or capable > _MAX_CANDIDATES
+            for table_version, configured, capable in nx_peer_totals):
+        return dict(
+            empty, parser_status="rejected",
+            candidate_count=_MAX_CANDIDATES,
+            rejected_count=_MAX_CANDIDATES, header=header,
+            finding_codes=["bgpv6_candidate_cap_exceeded"],
+        )
+    if nxos_contract and not (
+            len(nx_peer_total_lines) == len(nx_peer_totals) == 1
+            and nx_peer_totals[0][2] <= nx_peer_totals[0][1]
+            and candidate_count >= nx_peer_totals[0][1]):
+        # NX-OS publishes the configured-peer denominator.  A truncated table
+        # cannot become complete merely because every retained row is healthy;
+        # extra candidates remain possible for dynamic ``*`` peers.
+        context_review = True
+    if not process and identities:
+        rejected_count += len(identities)
+        identities = {}
     rows = list(identities.values())
     malformed = rejected_count > int(duplicate)
     if rows and not header:
@@ -918,9 +1357,9 @@ def _parse_bgpv6(body: str) -> dict:
     }
 
 
-def _parse_family(input_name: str, body: str) -> dict:
+def _parse_family(input_name: str, body: str, platform: str = "") -> dict:
     return _parse_ospfv3(body) if input_name == "ospfv3_neighbors" \
-        else _parse_bgpv6(body)
+        else _parse_bgpv6(body, platform)
 
 
 def _parser_projection(parsed: dict) -> dict:
@@ -957,14 +1396,14 @@ def _select_capture(host: str, platform: str, input_name: str, mapping: dict,
     conflict = False
     if status == "ok":
         parser = _parse_route_summary(body) if input_name == "route_summary" \
-            else _parse_family(input_name, body)
+            else _parse_family(input_name, body, platform)
         comparable = []
         for other_command, other_body, other_status in candidates:
             if other_status != "ok":
                 continue
             other = _parse_route_summary(other_body) \
                 if input_name == "route_summary" else \
-                _parse_family(input_name, other_body)
+                _parse_family(input_name, other_body, platform)
             comparable.append(_parser_projection(other) if input_name != "route_summary" else {
                 key: other[key] for key in (
                     "parser_status", "candidate_count", "parsed_count",
@@ -1218,10 +1657,12 @@ def _row_projection(row: dict) -> dict:
     }
 
 
-def _coverage_projection_payload(cell: dict, rows: Sequence[dict]) -> dict:
+def _coverage_projection_payload(
+        cell: dict,
+        rows_by_family: Dict[Tuple[str, str], Sequence[dict]]) -> dict:
     projected = [] if cell["input"] == "route_summary" else [
-        _row_projection(row) for row in rows if row["switch"] == cell["switch"]
-        and row["protocol"] == cell["protocol"]
+        _row_projection(row) for row in rows_by_family.get(
+            (cell["switch"], cell["protocol"]), ())
     ]
     return {
         "switch": cell["switch"], "input": cell["input"],
@@ -1289,7 +1730,7 @@ def _compute_ipv6_routing_subject_scope(
                 protocols.update(
                     protocol for protocol, count in parsed["counts"].items() if count > 0)
             elif command in _BGP_COMMANDS:
-                parsed = _parse_bgpv6(body)
+                parsed = _parse_bgpv6(body, platforms.get(host, ""))
                 if parsed["parser_status"] == "rejected":
                     return _scope_receipt(False, True, "scope_evidence_rejected")
                 if parsed["header"] or parsed["candidate_count"] or parsed["rows"]:
@@ -1501,10 +1942,14 @@ def _compute_ipv6_routing_adjacency_baseline(
     all_cells.sort(key=lambda cell: (
         cell["switch"].casefold(), cell["switch"], input_order[cell["input"]],
     ))
+    rows_by_family: Dict[Tuple[str, str], List[dict]] = {}
+    for row in all_rows:
+        rows_by_family.setdefault(
+            (row["switch"], row["protocol"]), []).append(row)
     for cell in all_cells:
         cell["source_sha256"] = _sha(_coverage_source_payload(cell))
         cell["projection_sha256"] = _sha(
-            _coverage_projection_payload(cell, all_rows))
+            _coverage_projection_payload(cell, rows_by_family))
 
     global_findings = sorted([
         {
@@ -1635,16 +2080,14 @@ def _validate_row_shape(row: Any, custody: str) -> Tuple[bool, str]:
         "state_raw": 96, "state": 32, "status": 32, "command": 128,
         "acceptance": 1800, "source_key": 512, "projection_custody": 40,
     }
-    if any(not _safe_string(row.get(field), limit)
-           for field, limit in text_limits.items()):
-        return False, "baseline_row_text_invalid"
     ascii_fields = {
         "switch", "platform", "protocol", "routing_instance", "process",
         "peer", "peer_key", "interface", "remote_as", "role", "state_raw",
         "state", "status", "command", "source_key", "projection_custody",
     }
-    if any(not _safe_ascii_string(row.get(field), text_limits[field])
-           for field in ascii_fields):
+    if not _safe_string(row.get("acceptance"), text_limits["acceptance"]) \
+            or any(not _safe_ascii_string(row.get(field), text_limits[field])
+                   for field in ascii_fields):
         return False, "baseline_row_text_invalid"
     if not _valid_natural(row.get("prefix_count"), _MAX_ACTIVE_ROUTES) \
             or type(row.get("prefix_count_present")) is not bool:
@@ -1670,8 +2113,8 @@ def _validate_row_shape(row: Any, custody: str) -> Tuple[bool, str]:
         except ValueError:
             return False, "baseline_ospfv3_identity_invalid"
         if peer != row["peer"] or not row["interface"] \
-                or (row["process"] and not re.fullmatch(
-                    r"[A-Za-z0-9_.-]{1,64}", row["process"])) \
+                or not re.fullmatch(
+                    r"[A-Za-z0-9_.-]{1,64}", row["process"]) \
                 or not re.fullmatch(r"[A-Za-z][A-Za-z0-9./:_-]{0,127}", row["interface"]) \
                 or row["remote_as"] or not row["role"] \
                 or not re.fullmatch(r"[A-Z0-9_-]{1,32}", row["role"]) \
@@ -1691,7 +2134,8 @@ def _validate_row_shape(row: Any, custody: str) -> Tuple[bool, str]:
         if not peer or peer != row["peer"] or zone != row["interface"] \
                 or not row["remote_as"] \
                 or _canonical_as(row["remote_as"]) != row["remote_as"] \
-                or (row["process"] and _canonical_as(row["process"]) != row["process"]) \
+                or not row["process"] \
+                or _canonical_as(row["process"]) != row["process"] \
                 or row["role"] or row["peer_key"] != \
                 f"bgpv6|default|{row['peer'].casefold()}":
             return False, "baseline_bgpv6_identity_invalid"
@@ -1727,9 +2171,6 @@ def _validate_coverage_shape(cell: Any) -> Tuple[bool, str]:
         "status": 32, "selected_command": 128, "capture_status": 32,
         "parser_status": 32, "source_sha256": 64, "projection_sha256": 64,
     }
-    if any(not _safe_string(cell.get(field), limit)
-           for field, limit in text_limits.items()):
-        return False, "baseline_coverage_text_invalid"
     if any(not _safe_ascii_string(cell.get(field), limit)
            for field, limit in text_limits.items()):
         return False, "baseline_coverage_text_invalid"
@@ -1742,6 +2183,29 @@ def _validate_coverage_shape(cell: Any) -> Tuple[bool, str]:
     if cell["candidate_count"] != cell["parsed_count"] + cell["rejected_count"] \
             or not _valid_natural(cell.get("active_route_count"), _MAX_ACTIVE_ROUTES):
         return False, "baseline_coverage_count_invalid"
+    if cell["input"] == "route_summary" and cell["capture_status"] == "ok":
+        if cell["parser_status"] == "rejected":
+            # The producer's scope prepass aborts on a rejected route census;
+            # it can never publish an owner-valid successful-capture cell in
+            # this state, including an otherwise balanced 1/0/1 tuple.
+            return False, "baseline_coverage_source_parser_invalid"
+        route_counts_valid = {
+            "complete": (
+                cell["candidate_count"], cell["parsed_count"],
+                cell["rejected_count"],
+            ) == (1, 1, 0),
+            "review": (
+                cell["parsed_count"] == 1
+                and cell["rejected_count"] >= 1
+                and cell["candidate_count"] == 1 + cell["rejected_count"]
+            ),
+        }.get(cell["parser_status"], False)
+        if not route_counts_valid:
+            # A route census is one parsed, source-bound table receipt.  A
+            # review adds rejected evidence; a rejected census retains only
+            # rejected evidence.  Balanced but impossible tuples (including
+            # complete 0/0/0) cannot pass the generic candidate equation.
+            return False, "baseline_coverage_parser_count_invalid"
     codes = cell.get("finding_codes")
     if not isinstance(codes, list) or len(codes) > _MAX_FINDINGS_PER_ROW \
             or codes != sorted(set(codes)) \
@@ -1752,10 +2216,30 @@ def _validate_coverage_shape(cell: Any) -> Tuple[bool, str]:
         return False, "baseline_coverage_input_protocol_invalid"
     if cell["selected_command"] not in _commands(cell["platform"], cell["input"]):
         return False, "baseline_coverage_command_invalid"
+    if cell["input"] in {"ospfv3_neighbors", "bgp_ipv6_neighbors"}:
+        if cell["capture_status"] == "ok" and cell["parser_status"] not in {
+                "complete", "review"}:
+            # A successful family capture can only produce a complete parse or
+            # bounded review evidence.  Rejected/not-verified states are
+            # emitted only when the source capture itself is not usable.
+            return False, "baseline_coverage_source_parser_invalid"
+        if not cell["subject"] and (
+                cell["capture_status"] == "ok"
+                or cell["parser_status"] != "not_verified"
+                or any(cell[field] for field in (
+                    "candidate_count", "parsed_count", "rejected_count"))
+                or cell["active_route_count"]
+                or codes):
+            # No-subject family cells are absence receipts, never successful
+            # parser receipts.  Preserve that producer reachability boundary
+            # even when every mutable field and digest is internally coherent.
+            return False, "baseline_coverage_source_parser_invalid"
     if cell["capture_status"] != "ok":
         if cell["parser_status"] != "not_verified" \
                 or any(cell[field] for field in (
-                    "candidate_count", "parsed_count", "rejected_count")):
+                    "candidate_count", "parsed_count", "rejected_count")) \
+                or cell["input"] == "route_summary" \
+                and cell["active_route_count"]:
             return False, "baseline_coverage_source_parser_invalid"
     elif cell["parser_status"] == "complete" and cell["rejected_count"]:
         return False, "baseline_coverage_parser_count_invalid"
@@ -1923,6 +2407,8 @@ def _structural_validation_impl(value: Any) -> Tuple[bool, str]:
             cell = cells[input_name]
             family_rows = rows_by_family.get((host, protocol), [])
             nonstatic = [row for row in family_rows if row["peer_key"]]
+            if len({row["process"] for row in nonstatic}) > 1:
+                return False, "baseline_family_process_mismatch"
             if cell["parsed_count"] != len(nonstatic):
                 return False, "baseline_family_parsed_census_mismatch"
             if cell["subject"] is not bool(family_rows):
@@ -1965,7 +2451,7 @@ def _structural_validation_impl(value: Any) -> Tuple[bool, str]:
     for cell in coverage:
         if cell["source_sha256"] != _sha(_coverage_source_payload(cell)) \
                 or cell["projection_sha256"] != _sha(
-                    _coverage_projection_payload(cell, rows)):
+                    _coverage_projection_payload(cell, rows_by_family)):
             return False, "baseline_coverage_hash_mismatch"
 
     expected_findings = sorted([

@@ -4404,6 +4404,8 @@ function renderDrawer(){
     p.insertBefore(aff, p.firstChild);
   }
   p.querySelectorAll("[data-askhost]").forEach(b=>b.onclick=()=>{abToggle(true); abSubmit("tell me about "+b.dataset.askhost);});
+  p.querySelectorAll("[data-ipv6-blocker-export]").forEach(b=>b.onclick=()=>
+    exportIpv6RoutingAdjacencyBlockers(b.dataset.ipv6Host||""));
   p.querySelectorAll("[data-cm-orient]").forEach(b=>b.onclick=cmToggleOrient);
   p.querySelectorAll("[data-cm-fabric]").forEach(b=>b.onclick=()=>cmSetFabric(!CM_FABRIC));
   p.querySelectorAll("[data-cm-tier]").forEach(b=>b.onclick=()=>cmSetTier(b.dataset.cmTier==="all"?null:+b.dataset.cmTier));
@@ -9598,7 +9600,7 @@ const _IPV6_ROUTING_ROUTE_COMMAND="show ipv6 route summary",_IPV6_ROUTING_BGP_CO
 const _IPV6_ROUTING_OSPF_IOS_COMMANDS=new Set(["show ospfv3 neighbor","show ipv6 ospf neighbor","show ospfv3 neighbors","show ipv6 ospfv3 neighbors","show ipv6 ospfv3 neighbor","show ipv6 ospf neighbors"]);
 const _IPV6_ROUTING_OSPF_NXOS_COMMANDS=new Set(["show ipv6 ospfv3 neighbors","show ospfv3 neighbors","show ipv6 ospfv3 neighbor","show ospfv3 neighbor","show ipv6 ospf neighbor","show ipv6 ospf neighbors"]);
 const _IPV6_ROUTING_OSPF_HEALTHY=new Set(["FULL","2WAY"]),_IPV6_ROUTING_OSPF_DEGRADED=new Set(["DOWN","ATTEMPT","INIT","EXSTART","EXCHANGE","LOADING"]);
-const _IPV6_ROUTING_BGP_DEGRADED=new Set(["IDLE","IDLE(ADMIN)","CONNECT","ACTIVE","OPENSENT","OPENCONFIRM"]);
+const _IPV6_ROUTING_BGP_DEGRADED=new Set(["IDLE","IDLE(ADMIN)","CONNECT","ACTIVE","OPENSENT","OPENCONFIRM","IDLE(ADMIN-SHUT)"]);
 const _IPV6_ROUTING_LIMITATIONS=[
   "The baseline covers observed default/global IPv6 OSPFv3 and BGPv6 runtime adjacencies; it is not a configured or expected-peer denominator.",
   "An empty or NOT_APPLICABLE result is not proof that IPv6 routing, another VRF, another address family, or an expected peer is absent.",
@@ -9660,6 +9662,12 @@ function _ipv6RoutingCanonicalAs(value){if(typeof value!=="string"||value.trim()
   const match=/^(\d{1,5})\.(\d{1,5})$/.exec(value);if(!match)return "";
   const high=Number(match[1]),low=Number(match[2]);return high<=65535&&low<=65535&&
     String(high)===match[1]&&String(low)===match[2]?high+"."+low:"";}
+function _ipv6RoutingCanonicalBgpState(value){if(typeof value!=="string")return "";
+  const collapsed=value.trim().replace(/\s+/g," ").toLowerCase(),states={
+    "idle":"IDLE","idle (admin)":"IDLE(ADMIN)","idle(admin)":"IDLE(ADMIN)",
+    "idle (admin-shut)":"IDLE(ADMIN-SHUT)","idle(admin-shut)":"IDLE(ADMIN-SHUT)",
+    "connect":"CONNECT","active":"ACTIVE","opensent":"OPENSENT","openconfirm":"OPENCONFIRM"};
+  return states[collapsed]||"";}
 function _ipv6RoutingCanonicalIpv4(value){if(typeof value!=="string")return "";const parts=value.split(".");
   if(parts.length!==4||parts.some(part=>!(/^(0|[1-9]\d{0,2})$/.test(part))||Number(part)>255))return "";
   return parts.join(".");}
@@ -9715,6 +9723,15 @@ function _ipv6RoutingRowShape(row,custody){return _ipv6RoutingExactKeys(row,_IPV
   row.findings.every(_ipv6RoutingRowFinding)&&row.findings.every((item,index)=>!index||
     _ipv6RoutingCompare(row.findings[index-1].code,item.code)<0||
     (row.findings[index-1].code===item.code&&_ipv6RoutingCompare(row.findings[index-1].issue,item.issue)<=0));}
+function _ipv6RoutingRouteCensusCountsValid(cell){if(cell.input!=="route_summary"||cell.capture_status!=="ok")return true;
+  if(cell.parser_status==="complete")return cell.candidate_count===1&&cell.parsed_count===1&&cell.rejected_count===0;
+  if(cell.parser_status==="review")return cell.candidate_count===1+cell.rejected_count&&cell.parsed_count===1&&cell.rejected_count>=1;
+  return false;}
+function _ipv6RoutingFamilyCoverageReachable(cell){if(cell.input==="route_summary")return true;
+  if(cell.capture_status==="ok"&&!["complete","review"].includes(cell.parser_status))return false;
+  return cell.subject||cell.capture_status!=="ok"&&cell.parser_status==="not_verified"&&
+    cell.candidate_count===0&&cell.parsed_count===0&&cell.rejected_count===0&&
+    cell.active_route_count===0&&cell.finding_codes.length===0;}
 function _ipv6RoutingCoverageShape(cell){return _ipv6RoutingExactKeys(cell,_IPV6_ROUTING_COVERAGE_KEYS)&&
   _ipv6RoutingSafeString(cell.switch,128,false)&&_ipv6RoutingSafeString(cell.platform,80)&&
   Object.prototype.hasOwnProperty.call(_IPV6_ROUTING_INPUT_PROTOCOL,cell.input)&&
@@ -9732,12 +9749,46 @@ function _ipv6RoutingCoverageShape(cell){return _ipv6RoutingExactKeys(cell,_IPV6
   cell.finding_codes.every((code,index)=>!index||cell.finding_codes[index-1]<code)&&
   cell.candidate_count===cell.parsed_count+cell.rejected_count&&
   (cell.capture_status==="ok"||(cell.parser_status==="not_verified"&&!cell.candidate_count&&!cell.parsed_count&&!cell.rejected_count))&&
+  (cell.capture_status==="ok"||cell.input!=="route_summary"||cell.active_route_count===0)&&
   !(cell.capture_status==="ok"&&cell.parser_status==="complete"&&cell.rejected_count>0)&&
   !(cell.capture_status==="ok"&&cell.parser_status==="review"&&cell.rejected_count===0)&&
   !(cell.capture_status==="ok"&&cell.parser_status==="rejected"&&(cell.parsed_count>0||cell.rejected_count===0))&&
   !(cell.capture_status==="ok"&&["not_verified","explicit_no_subject"].includes(cell.parser_status)&&
-    (cell.candidate_count>0||cell.parsed_count>0||cell.rejected_count>0));}
-function _ipv6RoutingDigest(value){return _fhrpDigest(value);}
+    (cell.candidate_count>0||cell.parsed_count>0||cell.rejected_count>0))&&
+  _ipv6RoutingRouteCensusCountsValid(cell)&&_ipv6RoutingFamilyCoverageReachable(cell);}
+/* IPv6 receipts can legally reach 20k rows and 12,288 coverage cells while
+   remaining below the shared 32 MiB canonical byte ceiling.  Their many
+   small, exact-key leaves can exceed FHRP's deliberately smaller two-million
+   fragment guard, so keep that guard untouched and use bounded 64 KiB chunks
+   for this larger schema.  Every append is non-empty, making the byte ceiling
+   an intrinsic upper bound on fragment work as well. */
+const _IPV6_ROUTING_CANONICAL_JSON_LIMIT=32*1024*1024,
+  _IPV6_ROUTING_CANONICAL_CHUNK=64*1024,
+  _IPV6_ROUTING_CANONICAL_FRAGMENT_LIMIT=_IPV6_ROUTING_CANONICAL_JSON_LIMIT;
+function _ipv6RoutingCanonicalJson(value){const seen=new WeakSet(),chunks=[];
+  let chunkParts=[],chunkLength=0,failed=false,length=0,fragments=0;
+  const flush=()=>{if(chunkParts.length){chunks.push(chunkParts.join(""));chunkParts=[];chunkLength=0;}};
+  const append=text=>{if(failed||typeof text!=="string"||!text||
+      fragments>=_IPV6_ROUTING_CANONICAL_FRAGMENT_LIMIT||
+      length+text.length>_IPV6_ROUTING_CANONICAL_JSON_LIMIT){failed=true;return false;}
+    fragments++;length+=text.length;let offset=0;
+    while(offset<text.length){const available=_IPV6_ROUTING_CANONICAL_CHUNK-chunkLength,
+        piece=text.slice(offset,offset+available);chunkParts.push(piece);chunkLength+=piece.length;offset+=piece.length;
+      if(chunkLength===_IPV6_ROUTING_CANONICAL_CHUNK)flush();}return true;};
+  const encode=(item,depth)=>{if(failed||depth>16){failed=true;return;}
+    if(item===null){append("null");return;}if(typeof item==="string"){append(_fhrpJsonString(item));return;}
+    if(typeof item==="boolean"){append(item?"true":"false");return;}
+    if(typeof item==="number"){if(Number.isSafeInteger(item))append(String(Object.is(item,-0)?0:item));else failed=true;return;}
+    if(!item||typeof item!=="object"||seen.has(item)){failed=true;return;}seen.add(item);
+    if(Array.isArray(item)){if(append("["))for(let index=0;index<item.length&&!failed;index++){
+        if(index&&!append(","))break;encode(item[index],depth+1);}if(!failed)append("]");}
+    else if(Object.getPrototypeOf(item)===Object.prototype||Object.getPrototypeOf(item)===null){const keys=Object.keys(item).sort();
+      if(append("{"))for(let index=0;index<keys.length&&!failed;index++){if(index&&!append(","))break;
+        const key=_fhrpJsonString(keys[index]);if(!append(key)||!append(":"))break;encode(item[keys[index]],depth+1);}if(!failed)append("}");}
+    else failed=true;seen.delete(item);};
+  encode(value,0);if(failed)return "";flush();return chunks.join("");}
+function _ipv6RoutingDigest(value){const canonical=_ipv6RoutingCanonicalJson(value);
+  return canonical?_fhrpSha256Ascii(canonical):"";}
 function _ipv6RoutingBaselineDigest(value){const summary={...value.summary};delete summary.baseline_sha256;
   return _ipv6RoutingDigest({...value,summary});}
 function _ipv6RoutingRowFactsValid(row){const staticRow=!row.peer_key;if(staticRow){if(
@@ -9745,7 +9796,8 @@ function _ipv6RoutingRowFactsValid(row){const staticRow=!row.peer_key;if(staticR
     row.state_raw!=="NOT_VERIFIED"||row.state!=="NOT_VERIFIED"||row.prefix_count!==0||
     row.prefix_count_present||!["review","not_verified"].includes(row.status))return false;
   }else if(row.protocol==="OSPFv3"){const peer=_ipv6RoutingCanonicalIpv4(row.peer),slash=row.state_raw.indexOf("/");
-    if(!peer||peer!==row.peer||!row.interface||!/^[A-Za-z][A-Za-z0-9./:_-]{0,127}$/.test(row.interface)||
+    if(!peer||peer!==row.peer||!row.interface||!/^[A-Za-z0-9_.-]{1,64}$/.test(row.process)||
+      !/^[A-Za-z][A-Za-z0-9./:_-]{0,127}$/.test(row.interface)||
       !!row.remote_as||!row.role||!/^[A-Z0-9_-]{1,32}$/.test(row.role)||slash<0||
       row.state_raw.slice(0,slash).toUpperCase()!==row.state||row.state_raw.slice(slash+1)!==row.role||
       row.prefix_count!==0||row.prefix_count_present||row.peer_key!=="ospfv3|default|"+
@@ -9753,12 +9805,12 @@ function _ipv6RoutingRowFactsValid(row){const staticRow=!row.peer_key;if(staticR
   }else{const canonical=_ipv6RoutingCanonicalIpv6(row.peer),normalized=canonical[0],zone=canonical[1];
     if(!normalized||normalized!==row.peer||zone!==row.interface||!row.remote_as||
       _ipv6RoutingCanonicalAs(row.remote_as)!==row.remote_as||
-      (row.process&&_ipv6RoutingCanonicalAs(row.process)!==row.process)||row.role||
+      !row.process||_ipv6RoutingCanonicalAs(row.process)!==row.process||row.role||
       row.peer_key!=="bgpv6|default|"+_ipv6RoutingCasefold(row.peer))return false;
     if(row.prefix_count_present){if(row.state!=="ESTABLISHED"||!/^\d+$/.test(row.state_raw)||
         Number(row.state_raw)!==row.prefix_count)return false;
     }else if(row.prefix_count!==0||row.state==="ESTABLISHED"||
-      row.state_raw.replace(/\s+/g,"").toUpperCase()!==row.state)return false;}
+      _ipv6RoutingCanonicalBgpState(row.state_raw)!==row.state)return false;}
   const input=row.protocol==="OSPFv3"?"ospfv3_neighbors":"bgp_ipv6_neighbors";
   return _ipv6RoutingCommands(row.platform,input).has(row.command)&&
     row.source_key===_ipv6RoutingSourceKey(row.command);}
@@ -9798,8 +9850,8 @@ function _ipv6RoutingCoverageSourcePayload(cell){const payload={};for(const key 
   return payload;}
 function _ipv6RoutingRowProjection(row){const payload={};for(const key of ["switch","platform","protocol","routing_instance","process","peer","peer_key","interface","remote_as","role","state_raw","state","prefix_count","prefix_count_present","status","findings"])
     payload[key]=row[key];return payload;}
-function _ipv6RoutingCoverageProjectionPayload(cell,rows){const projected=cell.input==="route_summary"?[]:rows.filter(row=>
-    row.switch===cell.switch&&row.protocol===cell.protocol).map(_ipv6RoutingRowProjection);
+function _ipv6RoutingCoverageProjectionPayload(cell,rowsByHostProtocol){const projected=cell.input==="route_summary"?[]:
+    (rowsByHostProtocol.get(cell.switch+"\u0000"+cell.protocol)||[]).map(_ipv6RoutingRowProjection);
   return {switch:cell.switch,input:cell.input,protocol:cell.protocol,subject:cell.subject,status:cell.status,
     active_route_count:cell.active_route_count,rows:projected};}
 function _ipv6RoutingRowOrder(left,right){return _ipv6RoutingCompare(_ipv6RoutingCasefold(left.switch),_ipv6RoutingCasefold(right.switch))||
@@ -9882,7 +9934,8 @@ function ipv6RoutingAdjacencyReceiptValid(b){try{
     for(const [protocol,input] of [["OSPFv3","ospfv3_neighbors"],["BGPv6","bgp_ipv6_neighbors"]]){
       const cell=cells.get(input),familyRows=rowsByHostProtocol.get(host+"\u0000"+protocol)||[],
         nonstatic=familyRows.filter(row=>!!row.peer_key);
-      if(cell.parsed_count!==nonstatic.length||cell.subject!==Boolean(familyRows.length))return false;
+      if(new Set(nonstatic.map(row=>row.process)).size>1||cell.parsed_count!==nonstatic.length||
+        cell.subject!==Boolean(familyRows.length))return false;
       if(!cell.subject){if(cell.status!=="not_applicable"||cell.active_route_count!==0)return false;}
       else{const statuses=new Set(familyRows.map(row=>row.status)),expectedStatus=statuses.has("degraded")?"degraded":
         statuses.has("review")?"review":statuses.has("not_verified")?"not_verified":"assessed";
@@ -9899,8 +9952,8 @@ function ipv6RoutingAdjacencyReceiptValid(b){try{
   }
   for(const cell of b.coverage)if(cell[_IPV6_ROUTING_SOURCE_DIGEST_KEY]!==
       _ipv6RoutingDigest(_ipv6RoutingCoverageSourcePayload(cell))||
-    cell[_IPV6_ROUTING_PROJECTION_DIGEST_KEY]!==
-      _ipv6RoutingDigest(_ipv6RoutingCoverageProjectionPayload(cell,b.rows)))return false;
+    cell[_IPV6_ROUTING_PROJECTION_DIGEST_KEY]!==_ipv6RoutingDigest(
+      _ipv6RoutingCoverageProjectionPayload(cell,rowsByHostProtocol)))return false;
   const expectedFindings=b.rows.flatMap(row=>row.findings.map(finding=>({switch:row.switch,protocol:row.protocol,
     peer_key:row.peer_key,kind:finding.kind,code:finding.code,issue:finding.issue}))).sort(_ipv6RoutingGlobalFindingOrder);
   if(b.findings.length!==expectedFindings.length||
@@ -9938,6 +9991,17 @@ function ipv6RoutingAdjacencyRows(host){const b=ipv6RoutingAdjacencyBaseline(),r
 function ipv6RoutingAdjacencyCoverageRows(host){const b=ipv6RoutingAdjacencyBaseline(),rows=b?b.coverage:[];
   return host?rows.filter(row=>row.switch===host):rows.slice();}
 function ipv6RoutingAdjacencyBlocker(row){return ["degraded","review","not_verified"].includes(String(row&&row.status||""));}
+function ipv6RoutingAdjacencyBlockerExportRows(host){const b=ipv6RoutingAdjacencyBaseline();if(!b)return [];
+  return b.rows.filter(row=>ipv6RoutingAdjacencyBlocker(row)&&(!host||row.switch===host)).map(row=>({
+    switch:row.switch,platform:row.platform,protocol:row.protocol,peer:row.peer,process:row.process,
+    interface:row.interface,remote_as:row.remote_as,state_raw:row.state_raw,state:row.state,status:row.status,
+    command:row.command,acceptance:row.acceptance,projection_custody:row.projection_custody,
+    findings:row.findings.map(finding=>({kind:finding.kind,code:finding.code,issue:finding.issue})),
+  }));}
+function exportIpv6RoutingAdjacencyBlockers(host){const rows=ipv6RoutingAdjacencyBlockerExportRows(host),
+    scope=host||"fleet",safeScope=scope.replace(/[^A-Za-z0-9_.-]+/g,"_").slice(0,80)||"fleet",
+    blob=new Blob([JSON.stringify(rows,null,2)+"\n"],{type:"application/json;charset=utf-8"});
+  downloadBlob(blob,"ipv6-routing-blockers-"+safeScope+".json");}
 function _ipv6RoutingTok(status){return status==="assessed"?"ok":status==="degraded"?"crit":
   ["review","not_verified","not_applicable"].includes(status)?"watch":"neutral";}
 function ipv6RoutingAdjacencyText(value){return value===null||value===undefined?"":
@@ -9989,15 +10053,21 @@ function ipv6RoutingAdjacencySection(host){const b=ipv6RoutingAdjacencyBaseline(
   if(!b)return '<div class="sec"><h3>IPv6 routing adjacency — observed default/global runtime <span class="badge b-watch">not assessed</span></h3>'+
     '<div class="card watch"><div class="ln"><b>IPv6 adjacency-row and fleet-coverage counts are unavailable.</b> <span class="mono">ipv6_routing_adjacency_baseline/1</span> is absent, malformed, or not an embedded-unverified serialized receipt. No rejected receipt leaves or IPv6 routing conclusion are shown.</div>'+
     '<div class="ln faint" style="margin-top:5px">Re-collect and validate IPv6 route-summary, OSPFv3-neighbor, and BGP IPv6-unicast summary evidence; zero visible rows is not proof that IPv6 routing or expected peers are absent.</div></div></div>';
-  const rows=ipv6RoutingAdjacencyRows(host),blockers=rows.filter(ipv6RoutingAdjacencyBlocker),
-    ordinary=rows.filter(row=>row.status==="assessed"),shown=blockers.concat(ordinary.slice(0,50)),
-    coverageStats=ipv6RoutingAdjacencyCoverageStats(),hostCoverage=host?ipv6RoutingAdjacencyCoverageRows(host):[],
+  const rows=host?b.rows.filter(row=>row.switch===host):b.rows,blockers=rows.filter(ipv6RoutingAdjacencyBlocker),
+    ordinary=rows.filter(row=>row.status==="assessed"),shownBlockers=blockers.slice(0,200),
+    shownOrdinary=ordinary.slice(0,50),shown=shownBlockers.concat(shownOrdinary),summary=b.summary,
+    coverageStats={nHosts:summary.n_hosts,nSubjectHosts:summary.n_subject_hosts,byStatus:summary.by_coverage_status},
+    hostCoverage=host?b.coverage.filter(cell=>cell.switch===host):[],
     coverageBySubject=new Map(b.coverage.map(cell=>[cell.switch+"\u0000"+cell.protocol,cell])),
     verdict=ipv6RoutingAdjacencyText(b.verdict)||"NOT ASSESSED",counts={assessed:0,degraded:0,review:0,not_verified:0};
   rows.forEach(row=>counts[row.status]++);const tok=counts.degraded?"crit":counts.review||counts.not_verified||
-    verdict==="NOT_APPLICABLE"?"watch":verdict==="CLEAR"?"ok":"neutral",cap=ordinary.length>50?
-    '<div class="ln faint" style="margin-top:7px"><b>All '+blockers.length+' blocker row(s) are rendered.</b> 50 of '+
-    ordinary.length+' assessed row(s) are shown; the <b>IPv6 Routing</b> workbook sheet and runbook use the same bounded projection.</div>':"";
+    verdict==="NOT_APPLICABLE"?"watch":verdict==="CLEAR"?"ok":"neutral",
+    omittedBlockers=blockers.length-shownBlockers.length,omittedOrdinary=ordinary.length-shownOrdinary.length,
+    cap='<div class="card '+(omittedBlockers?"watch":"neutral")+'" style="margin-top:9px"><div class="ln"><b>Initial row projection:</b> blockers rendered '+
+      shownBlockers.length+' / total '+blockers.length+' / omitted '+omittedBlockers+'; assessed rendered '+shownOrdinary.length+
+      ' / total '+ordinary.length+' / omitted '+omittedOrdinary+'. Omitted rows remain in the validated receipt and are not treated as clear.</div>'+(
+      blockers.length?'<div class="ln" style="margin-top:7px"><button type="button" class="btn ghost" data-ipv6-blocker-export="1" data-ipv6-host="'+
+        esc(ipv6RoutingAdjacencyText(host))+'">Export all IPv6 blocker rows (JSON)</button></div>':"")+'</div>';
   return '<div class="sec"><h3>IPv6 routing adjacency — observed default/global runtime <span class="badge b-'+tok+'">'+
     esc(verdict.replaceAll("_"," "))+'</span></h3><div class="headline">'+
     '<div class="stat"><div class="v">'+rows.length+'</div><div class="k">adjacency row</div></div>'+

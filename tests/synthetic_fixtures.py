@@ -1338,7 +1338,7 @@ Log Buffer (4096 bytes):
 # routing-active GATE (census only -- never a firing signal). core1/core2 emit none of these -> {} (silent), so
 # EXACTLY ONE switch fires.
 "show ipv6 route summary": """\
-IPv6 Routing Table - default - 8 entries
+IPv6 Routing Table - default - 10 entries
 Route Source    Networks    Subnets     Overhead    Memory (bytes)
 connected       4           0           384         576
 local           4           0           384         576

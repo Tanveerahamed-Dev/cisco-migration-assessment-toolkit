@@ -517,9 +517,12 @@ def test_ipv6_routing_family_binds_separate_owner_census_custody_and_direct_outp
         family["cells"]["validation"]["boundary"]
     )
     output = family["cells"]["output"]
-    assert "every degraded, review, and not-verified row plus the first 50 assessed rows" in (
+    assert "Workbook and runbook retain every degraded, review, and not-verified row" in (
         output["prerequisite"]
     )
+    assert "Explorer initially renders at most 200 blocker rows" in output["prerequisite"]
+    assert "reports exact rendered/total/omitted counts" in output["prerequisite"]
+    assert "exports every validated blocker row" in output["prerequisite"]
     assert "exact observed peer/state" in output["prerequisite"]
     assert "serialized current_run_source_bound receipts fail closed" in output["boundary"]
     for excluded in (
@@ -537,6 +540,8 @@ def test_ipv6_routing_family_binds_separate_owner_census_custody_and_direct_outp
     for symbol in (
         "ipv6RoutingAdjacencyReceiptValid", "ipv6RoutingAdjacencySection",
         "ipv6RoutingAdjacencyCoverageStats", "ipv6RoutingAdjacencyCoverageRows",
+        "ipv6RoutingAdjacencyBlockerExportRows",
+        "exportIpv6RoutingAdjacencyBlockers",
     ):
         assert symbol in explorer["symbols"]
 
@@ -550,7 +555,10 @@ def test_ipv6_routing_family_binds_separate_owner_census_custody_and_direct_outp
     assert "coverage-only host visible" in component
     assert "matching a degraded state is NOT ACCEPTANCE" in component
     assert "serialized <code>current_run_source_bound</code> claim" in component
-    assert "first 50 assessed" in component
+    assert "Workbook and runbook retain every blocker plus the first 50 assessed" in component
+    assert "Explorer initially renders at most 200 blockers" in component
+    assert "reports exact" in component and "rendered/total/omitted counts" in component
+    assert "exports every validated blocker row" in component
     assert "exact observed peer/state" in component
     assert "never render raw" in component and "SHA values" in component
     assert "does not yet include the separately owned OSPFv3/BGPv6 receipt" in component

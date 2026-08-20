@@ -293,8 +293,10 @@ export function ProtocolDepthExplorer({
         review, and not-verified row is a blocker; matching a degraded state is NOT ACCEPTANCE.
         Current-run decisions require process-local source custody. Audit copies are
         <code>embedded_unverified</code>, and a serialized <code>current_run_source_bound</code> claim
-        fails closed. Workbook, runbook, and Explorer retain every blocker plus the first 50 assessed
-        rows, render bounded command/custody and exact observed peer/state, and never render raw
+        fails closed. Workbook and runbook retain every blocker plus the first 50 assessed rows.
+        Explorer initially renders at most 200 blockers plus the first 50 assessed rows, reports exact
+        rendered/total/omitted counts, and exports every validated blocker row through a bounded safe
+        JSON projection. These surfaces render bounded command/custody and exact observed peer/state, and never render raw
         captures, SHA values, source locators, or paths. This is not a configured or expected-peer
         denominator. Empty or NOT_APPLICABLE evidence is not absence; OSPF process/VRF/network-type,
         BGP policy/VRF/other-AF, route/prefix correctness, RIB/FIB/path selection, convergence,

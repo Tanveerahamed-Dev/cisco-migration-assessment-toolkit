@@ -13,6 +13,7 @@ import subprocess
 import pytest
 from openpyxl import Workbook
 
+import cisco_toolkit.ipv6_routing as ipv6_routing_module
 from cisco_toolkit.capture_integrity import compute_capture_integrity_from_paths
 from cisco_toolkit.excel import (
     IPV6_ROUTING_SHEET_NAME,
@@ -128,6 +129,7 @@ def receipts(tmp_path_factory):
             "show bgp ipv6 unicast summary": _bgp_table([
                 ("2001:db8:0:1::1", "65001", "12"),
                 ("2001:db8:0:9::9", "65009", "Active"),
+                ("2001:db8:0:a::a", "65010", "Idle (Admin-Shut)"),
             ]),
         },
         "review-edge": {
@@ -224,6 +226,184 @@ process.stdout.write(JSON.stringify({
     return json.loads(proc.stdout)
 
 
+def _explorer_validation_result(encoded_baseline: str) -> dict:
+    assert NODE is not None
+    script = r"""
+const fs=require('fs');
+const html=fs.readFileSync(process.argv[1],'utf8');
+const start=html.indexOf('const _FHRP_GROUP_SCOPE=');
+const end=html.indexOf('/* the dynamic routing protocols',start);
+if(start<0||end<0)throw new Error('protocol receipt block not found');
+const baseline=JSON.parse(fs.readFileSync(0,'utf8'));
+let SNAP={ipv6_routing_adjacency_baseline:baseline};
+function esc(v){return String(v??'');}
+function shortName(v){return String(v??'');}
+eval(html.slice(start,end));
+const started=performance.now();
+const valid=ipv6RoutingAdjacencyReceiptValid(baseline);
+const elapsedMs=performance.now()-started,memory=process.memoryUsage();
+process.stdout.write(JSON.stringify({
+  valid,elapsedMs,rssBytes:memory.rss,heapUsedBytes:memory.heapUsed,
+}));
+"""
+    proc = subprocess.run(
+        [NODE, "--max-old-space-size=512", "-e", script, str(EXPLORER)],
+        input=encoded_baseline,
+        capture_output=True,
+        check=True,
+        text=True,
+        encoding="utf-8",
+        timeout=90,
+    )
+    return json.loads(proc.stdout)
+
+
+def _explorer_section_cap_result(encoded_baseline: str) -> dict:
+    assert NODE is not None
+    script = r"""
+const fs=require('fs');
+const html=fs.readFileSync(process.argv[1],'utf8');
+const start=html.indexOf('const _FHRP_GROUP_SCOPE=');
+const end=html.indexOf('/* the dynamic routing protocols',start);
+if(start<0||end<0)throw new Error('protocol receipt block not found');
+const baseline=JSON.parse(fs.readFileSync(0,'utf8'));
+let SNAP={ipv6_routing_adjacency_baseline:baseline};
+function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function shortName(v){return String(v??'');}
+eval(html.slice(start,end));
+const started=performance.now(),section=ipv6RoutingAdjacencySection();
+const elapsedMs=performance.now()-started;
+const exported=ipv6RoutingAdjacencyBlockerExportRows();
+const rowKeys=['acceptance','command','findings','interface','peer','platform','process','projection_custody','protocol','remote_as','state','state_raw','status','switch'].sort().join('\0');
+const findingKeys=['code','issue','kind'].sort().join('\0');
+const memory=process.memoryUsage();
+process.stdout.write(JSON.stringify({
+  elapsedMs,sectionLength:section.length,
+  renderedCards:(section.match(/data-jump=/g)||[]).length,
+  exactCounts:section.includes('blockers rendered 200 / total 20000 / omitted 19800'),
+  exportControl:section.includes('Export all IPv6 blocker rows (JSON)'),
+  exportCount:exported.length,
+  exportKeysSafe:exported.every(row=>Object.keys(row).sort().join('\0')===rowKeys&&
+    Array.isArray(row.findings)&&row.findings.every(finding=>Object.keys(finding).sort().join('\0')===findingKeys)),
+  rssBytes:memory.rss,heapUsedBytes:memory.heapUsed,
+}));
+"""
+    proc = subprocess.run(
+        [NODE, "--max-old-space-size=512", "-e", script, str(EXPLORER)],
+        input=encoded_baseline,
+        capture_output=True,
+        check=True,
+        text=True,
+        encoding="utf-8",
+        timeout=90,
+    )
+    return json.loads(proc.stdout)
+
+
+def _schema_max_ipv6_receipt(receipts: dict, *, degraded: bool = False) -> dict:
+    base = receipts["embedded"]
+    row_template = next(
+        row for row in base["rows"]
+        if row["protocol"] == "OSPFv3"
+        and row["status"] == ("degraded" if degraded else "assessed")
+        and row["state_raw"] == ("EXSTART/-" if degraded else "FULL/DR")
+    )
+    route_template = next(
+        cell for cell in base["coverage"]
+        if cell["switch"] == "review-edge" and cell["input"] == "route_summary"
+    )
+    ospf_template = next(
+        cell for cell in base["coverage"]
+        if cell["switch"] == "bulk-edge"
+        and cell["input"] == "ospfv3_neighbors"
+    )
+    bgp_template = next(
+        cell for cell in base["coverage"]
+        if cell["switch"] == "review-edge"
+        and cell["input"] == "bgp_ipv6_neighbors"
+    )
+    assert route_template["parser_status"] == "complete"
+    assert ospf_template["capture_status"] == "ok"
+    assert bgp_template["capture_status"] != "ok"
+
+    n_hosts, n_rows = 4096, 20_000
+    rows: list[dict] = []
+    coverage: list[dict] = []
+    remaining = n_rows
+    for index in range(n_hosts):
+        host = f"h{index:04d}"
+        host_row_count = min(5, remaining - (n_hosts - index - 1) * 4)
+        remaining -= host_row_count
+        host_rows = []
+        for peer_index in range(1, host_row_count + 1):
+            peer = f"10.{index // 256}.{index % 256}.{peer_index}"
+            interface = f"Vlan{peer_index}"
+            row = copy.deepcopy(row_template)
+            row.update({
+                "switch": host, "peer": peer, "interface": interface,
+                "peer_key": (
+                    f"ospfv3|default|1|{peer}|{interface.casefold()}"
+                ),
+            })
+            row["acceptance"] = ipv6_routing_module._acceptance(row)
+            host_rows.append(row)
+        rows.extend(host_rows)
+
+        route_cell = copy.deepcopy(route_template)
+        route_cell.update({"switch": host, "active_route_count": host_row_count})
+        ospf_cell = copy.deepcopy(ospf_template)
+        ospf_cell.update({
+            "switch": host, "subject": True,
+            "status": "degraded" if degraded else "assessed",
+            "candidate_count": host_row_count,
+            "parsed_count": host_row_count, "rejected_count": 0,
+            "active_route_count": host_row_count,
+            "finding_codes": ["ospfv3_state_degraded"] if degraded else [],
+        })
+        bgp_cell = copy.deepcopy(bgp_template)
+        bgp_cell["switch"] = host
+        for cell in (route_cell, ospf_cell, bgp_cell):
+            _rehash_coverage_cell({"rows": host_rows}, cell)
+            coverage.append(cell)
+    assert remaining == 0
+
+    baseline = copy.deepcopy(base)
+    findings = [
+        {
+            "switch": row["switch"], "protocol": row["protocol"],
+            "peer_key": row["peer_key"], "kind": finding["kind"],
+            "code": finding["code"], "issue": finding["issue"],
+        }
+        for row in rows for finding in row["findings"]
+    ]
+    baseline.update({
+        "rows": rows, "coverage": coverage, "findings": findings,
+        "verdict": "BLOCKED" if degraded else "CLEAR", "assessed": True,
+    })
+    baseline["summary"].update({
+        "n_hosts": n_hosts, "n_subject_hosts": n_hosts, "n_rows": n_rows,
+        "n_ospfv3_rows": n_rows, "n_bgpv6_rows": 0,
+        "n_assessed": 0 if degraded else n_rows,
+        "n_degraded": n_rows if degraded else 0, "n_review": 0,
+        "n_not_verified": 0,
+        "by_status": {
+            "degraded": n_rows if degraded else 0, "review": 0,
+            "not_verified": 0, "assessed": 0 if degraded else n_rows,
+        },
+        "by_coverage_status": {
+            "degraded": n_hosts if degraded else 0, "review": 0,
+            "not_verified": 0,
+            "assessed": n_hosts if degraded else n_hosts * 2,
+            "not_applicable": n_hosts,
+        },
+    })
+    payload = dict(baseline)
+    payload["summary"] = dict(baseline["summary"])
+    payload["summary"].pop("baseline_sha256", None)
+    baseline["summary"]["baseline_sha256"] = _canonical_sha(payload)
+    return baseline
+
+
 @pytest.mark.skipif(NODE is None, reason="node is required for Explorer receipt tests")
 def test_valid_embedded_broken_and_healthy_rows_survive_caps_without_private_leaves(receipts):
     baseline = receipts["embedded"]
@@ -287,7 +467,15 @@ def test_valid_embedded_broken_and_healthy_rows_survive_caps_without_private_lea
 
     blocker_count = len(blockers)
     assert f"All {blocker_count} blocker row(s) are shown; 50 of" in runbook_text
-    assert f"All {blocker_count} blocker row(s) are rendered.</b> 50 of" in explorer["rendered"]
+    assert (
+        f"blockers rendered {blocker_count} / total {blocker_count} / omitted 0"
+        in explorer["rendered"]
+    )
+    assert (
+        f"assessed rendered 50 / total {len(assessed)} / omitted "
+        f"{len(assessed) - 50}" in explorer["rendered"]
+    )
+    assert "Export all IPv6 blocker rows (JSON)" in explorer["rendered"]
     assert "HEALTH-DETAIL-PRESERVED" in runbook_text
     assert "INTELLIGENCE-DETAIL-PRESERVED" in runbook_text
 
@@ -326,6 +514,95 @@ def test_malformed_tampered_and_serialized_current_claims_fail_closed(receipts):
 @pytest.mark.skipif(NODE is None, reason="node is required for Explorer receipt tests")
 def test_explorer_python_js_semantics_match_and_semantic_tamper_fails(receipts):
     valid = receipts["embedded"]
+
+    def coverage_only_route_receipt(
+        parser_status: str,
+        candidate_count: int,
+        parsed_count: int,
+        rejected_count: int,
+        finding_codes: list[str],
+    ) -> dict:
+        baseline = copy.deepcopy(valid)
+        cell = next(
+            item for item in baseline["coverage"]
+            if item["switch"] == "coverage-only-edge"
+            and item["input"] == "route_summary"
+        )
+        assert cell["subject"] is False
+        assert cell["status"] == "not_applicable"
+        cell.update({
+            "parser_status": parser_status,
+            "candidate_count": candidate_count,
+            "parsed_count": parsed_count,
+            "rejected_count": rejected_count,
+            "finding_codes": finding_codes,
+        })
+        _rehash_coverage_cell(baseline, cell)
+        baseline["summary"]["baseline_sha256"] = _canonical_digest(baseline)
+        return baseline
+
+    def non_subject_family_receipt(
+        parser_status: str,
+        candidate_count: int,
+        parsed_count: int,
+        rejected_count: int,
+    ) -> dict:
+        baseline = copy.deepcopy(valid)
+        cell = next(
+            item for item in baseline["coverage"]
+            if item["switch"] == "coverage-only-edge"
+            and item["input"] == "ospfv3_neighbors"
+        )
+        assert cell["subject"] is False
+        assert cell["status"] == "not_applicable"
+        cell.update({
+            "capture_status": "ok", "parser_status": parser_status,
+            "candidate_count": candidate_count, "parsed_count": parsed_count,
+            "rejected_count": rejected_count, "active_route_count": 0,
+            "finding_codes": [],
+        })
+        _rehash_coverage_cell(baseline, cell)
+        baseline["summary"]["baseline_sha256"] = _canonical_digest(baseline)
+        return baseline
+
+    def family_process_receipt(protocol: str, mutation: str) -> dict:
+        baseline = copy.deepcopy(valid)
+        candidates = [
+            row for row in baseline["rows"]
+            if row["switch"] == "bulk-edge" and row["protocol"] == protocol
+            and row["peer_key"] and row["status"] == "assessed"
+            and not row["findings"]
+        ]
+        assert candidates
+        target = min(candidates, key=lambda row: row["peer_key"])
+        if mutation == "split":
+            target = max(candidates, key=lambda row: row["peer_key"])
+        target["process"] = "" if mutation == "remove" else (
+            "2" if protocol == "OSPFv3" else "65009"
+        )
+        if protocol == "OSPFv3":
+            parts = target["peer_key"].split("|")
+            parts[2] = target["process"] or "-"
+            target["peer_key"] = "|".join(parts)
+        target["acceptance"] = ipv6_routing_module._acceptance(target)
+        protocol_order = {"OSPFv3": 0, "BGPv6": 1}
+        baseline["rows"].sort(key=lambda row: (
+            row["switch"].casefold(), row["switch"],
+            protocol_order[row["protocol"]], row["peer_key"].casefold(),
+            row["peer_key"],
+        ))
+        input_name = (
+            "ospfv3_neighbors" if protocol == "OSPFv3"
+            else "bgp_ipv6_neighbors"
+        )
+        cell = next(
+            item for item in baseline["coverage"]
+            if item["switch"] == "bulk-edge" and item["input"] == input_name
+        )
+        _rehash_coverage_cell(baseline, cell)
+        baseline["summary"]["baseline_sha256"] = _canonical_digest(baseline)
+        return baseline
+
     digest_tamper = copy.deepcopy(valid)
     digest_tamper["rows"][0]["peer"] = "2001:db8::dead"
     semantic_tamper = copy.deepcopy(valid)
@@ -375,9 +652,205 @@ def test_explorer_python_js_semantics_match_and_semantic_tamper_fails(receipts):
     rejected_route_tamper["summary"]["baseline_sha256"] = _canonical_digest(
         rejected_route_tamper
     )
+    ospf_process_tamper = copy.deepcopy(valid)
+    ospf_row = next(
+        row for row in ospf_process_tamper["rows"]
+        if row["switch"] == "review-edge" and row["protocol"] == "OSPFv3"
+        and row["peer_key"]
+    )
+    old_peer_key = ospf_row["peer_key"]
+    ospf_row["process"] = "bad process"
+    ospf_row["peer_key"] = (
+        f"ospfv3|default|bad process|{ospf_row['peer']}|"
+        f"{ospf_row['interface'].casefold()}"
+    )
+    for finding in ospf_process_tamper["findings"]:
+        if (
+            finding["switch"] == ospf_row["switch"]
+            and finding["protocol"] == "OSPFv3"
+            and finding["peer_key"] == old_peer_key
+        ):
+            finding["peer_key"] = ospf_row["peer_key"]
+    ospf_cell = next(
+        cell for cell in ospf_process_tamper["coverage"]
+        if cell["switch"] == ospf_row["switch"]
+        and cell["input"] == "ospfv3_neighbors"
+    )
+    _rehash_coverage_cell(ospf_process_tamper, ospf_cell)
+    ospf_process_tamper["summary"]["baseline_sha256"] = _canonical_digest(
+        ospf_process_tamper
+    )
+    ospf_process_view = validate_ipv6_routing_adjacency_baseline(
+        ospf_process_tamper
+    )
+    assert ospf_process_view["valid"] is False
+    assert ospf_process_view["reason"] == "baseline_ospfv3_facts_invalid"
+
+    bgp_state_raw_tamper = copy.deepcopy(valid)
+    bgp_row = next(
+        row for row in bgp_state_raw_tamper["rows"]
+        if row["protocol"] == "BGPv6" and row["state_raw"] == "Active"
+    )
+    bgp_row["state_raw"] = "Ac tive"
+    bgp_row["acceptance"] = bgp_row["acceptance"].replace(
+        "state Active", "state Ac tive",
+    )
+    bgp_cell = next(
+        cell for cell in bgp_state_raw_tamper["coverage"]
+        if cell["switch"] == bgp_row["switch"]
+        and cell["input"] == "bgp_ipv6_neighbors"
+    )
+    _rehash_coverage_cell(bgp_state_raw_tamper, bgp_cell)
+    bgp_state_raw_tamper["summary"]["baseline_sha256"] = _canonical_digest(
+        bgp_state_raw_tamper
+    )
+    bgp_state_raw_view = validate_ipv6_routing_adjacency_baseline(
+        bgp_state_raw_tamper
+    )
+    assert bgp_state_raw_view["valid"] is False
+    assert bgp_state_raw_view["reason"] == "baseline_bgpv6_state_invalid"
+
+    route_complete_zero_tamper = copy.deepcopy(valid)
+    complete_route_cell = next(
+        cell for cell in route_complete_zero_tamper["coverage"]
+        if cell["switch"] == "bulk-edge" and cell["input"] == "route_summary"
+    )
+    assert complete_route_cell["capture_status"] == "ok"
+    assert complete_route_cell["parser_status"] == "complete"
+    complete_route_cell.update({
+        "candidate_count": 0, "parsed_count": 0, "rejected_count": 0,
+    })
+    _rehash_coverage_cell(route_complete_zero_tamper, complete_route_cell)
+    route_complete_zero_tamper["summary"]["baseline_sha256"] = _canonical_digest(
+        route_complete_zero_tamper
+    )
+    route_complete_zero_view = validate_ipv6_routing_adjacency_baseline(
+        route_complete_zero_tamper
+    )
+    assert route_complete_zero_view["valid"] is False
+    assert route_complete_zero_view["reason"] == (
+        "baseline_coverage_parser_count_invalid"
+    )
+
+    non_ok_route_active_count_tamper = copy.deepcopy(valid)
+    non_ok_route_cell = next(
+        cell for cell in non_ok_route_active_count_tamper["coverage"]
+        if cell["switch"] == "notverified-edge"
+        and cell["input"] == "route_summary"
+    )
+    assert non_ok_route_cell["capture_status"] == "ok"
+    assert non_ok_route_cell["parser_status"] == "complete"
+    assert non_ok_route_cell["active_route_count"] == 1
+    non_ok_route_cell.update({
+        "status": "not_verified",
+        "capture_status": "not_observed",
+        "parser_status": "not_verified",
+        "candidate_count": 0,
+        "parsed_count": 0,
+        "rejected_count": 0,
+        "finding_codes": ["route_census_not_verified"],
+    })
+    # Deliberately retain active_route_count == 1. The family cell also has
+    # one active route, so only the producer-reachability rule can reject it.
+    _rehash_coverage_cell(
+        non_ok_route_active_count_tamper, non_ok_route_cell,
+    )
+    coverage_counts = non_ok_route_active_count_tamper["summary"][
+        "by_coverage_status"
+    ]
+    coverage_counts["assessed"] -= 1
+    coverage_counts["not_verified"] += 1
+    non_ok_route_active_count_tamper["summary"]["baseline_sha256"] = (
+        _canonical_digest(non_ok_route_active_count_tamper)
+    )
+    non_ok_route_view = validate_ipv6_routing_adjacency_baseline(
+        non_ok_route_active_count_tamper
+    )
+    assert non_ok_route_view["valid"] is False
+    assert non_ok_route_view["reason"] == (
+        "baseline_coverage_source_parser_invalid"
+    )
+
+    valid_route_review = coverage_only_route_receipt(
+        "review", 2, 1, 1, ["route_context_review"],
+    )
+    assert validate_ipv6_routing_adjacency_baseline(valid_route_review)[
+        "valid"
+    ] is True
+
+    unreachable_route_rejected_tampers = {
+        "route_na_ok_rejected_with_code_and_recomputed_hashes": (
+            coverage_only_route_receipt(
+                "rejected", 1, 0, 1, ["route_census_rejected"],
+            )
+        ),
+        "route_na_ok_rejected_without_code_and_recomputed_hashes": (
+            coverage_only_route_receipt("rejected", 1, 0, 1, [])
+        ),
+    }
+    for tampered in unreachable_route_rejected_tampers.values():
+        view = validate_ipv6_routing_adjacency_baseline(tampered)
+        assert view["valid"] is False
+        assert view["reason"] == "baseline_coverage_source_parser_invalid"
+
+    route_review_without_parsed_tamper = coverage_only_route_receipt(
+        "review", 1, 0, 1, ["route_context_review"],
+    )
+    route_review_without_parsed_view = validate_ipv6_routing_adjacency_baseline(
+        route_review_without_parsed_tamper
+    )
+    assert route_review_without_parsed_view["valid"] is False
+    assert route_review_without_parsed_view["reason"] == (
+        "baseline_coverage_parser_count_invalid"
+    )
+
+    unreachable_family_tampers = {
+        "family_na_ok_rejected_with_recomputed_hashes": (
+            non_subject_family_receipt("rejected", 1, 0, 1)
+        ),
+        "family_na_ok_not_verified_with_recomputed_hashes": (
+            non_subject_family_receipt("not_verified", 0, 0, 0)
+        ),
+        "family_na_ok_explicit_none_with_recomputed_hashes": (
+            non_subject_family_receipt("explicit_no_subject", 0, 0, 0)
+        ),
+        "family_na_ok_complete_zero_with_recomputed_hashes": (
+            non_subject_family_receipt("complete", 0, 0, 0)
+        ),
+    }
+    for tampered in unreachable_family_tampers.values():
+        view = validate_ipv6_routing_adjacency_baseline(tampered)
+        assert view["valid"] is False
+        assert view["reason"] == "baseline_coverage_source_parser_invalid"
+
+    family_process_tampers = {
+        "ospf_process_removed_with_recomputed_hashes": (
+            family_process_receipt("OSPFv3", "remove")
+        ),
+        "bgp_process_removed_with_recomputed_hashes": (
+            family_process_receipt("BGPv6", "remove")
+        ),
+        "ospf_process_split_with_recomputed_hashes": (
+            family_process_receipt("OSPFv3", "split")
+        ),
+        "bgp_process_split_with_recomputed_hashes": (
+            family_process_receipt("BGPv6", "split")
+        ),
+    }
+    for name, tampered in family_process_tampers.items():
+        view = validate_ipv6_routing_adjacency_baseline(tampered)
+        assert view["valid"] is False
+        expected_reason = (
+            "baseline_family_process_mismatch" if "split" in name
+            else "baseline_ospfv3_facts_invalid" if name.startswith("ospf")
+            else "baseline_bgpv6_identity_invalid"
+        )
+        assert view["reason"] == expected_reason
+
     current_json = json.loads(json.dumps(receipts["current"]))
     cases = {
         "valid_embedded": valid,
+        "valid_route_review": valid_route_review,
         "digest_tamper": digest_tamper,
         "semantic_tamper_with_recomputed_digest": semantic_tamper,
         "duplicate_identity_with_recomputed_digest": duplicate_identity,
@@ -387,6 +860,18 @@ def test_explorer_python_js_semantics_match_and_semantic_tamper_fails(receipts):
         "coverage_source_hash_with_recomputed_digest": source_hash_tamper,
         "coverage_projection_hash_with_recomputed_digest": projection_hash_tamper,
         "route_census_rejected_with_recomputed_hashes": rejected_route_tamper,
+        "ospf_process_with_recomputed_hashes": ospf_process_tamper,
+        "bgp_state_raw_with_recomputed_hashes": bgp_state_raw_tamper,
+        "route_complete_zero_with_recomputed_hashes": route_complete_zero_tamper,
+        "non_ok_route_positive_active_count_with_recomputed_hashes": (
+            non_ok_route_active_count_tamper
+        ),
+        "route_review_without_parsed_with_recomputed_hashes": (
+            route_review_without_parsed_tamper
+        ),
+        **unreachable_route_rejected_tampers,
+        **unreachable_family_tampers,
+        **family_process_tampers,
         "serialized_current_claim": current_json,
         "missing": None,
     }
@@ -416,6 +901,56 @@ def test_explorer_python_js_semantics_match_and_semantic_tamper_fails(receipts):
     assert "source_\"+\"sha256" not in renderer
     assert "projection_\"+\"sha256" not in renderer
     assert "source_key" not in renderer
+
+
+@pytest.mark.skipif(NODE is None, reason="node is required for Explorer cap tests")
+def test_explorer_accepts_schema_max_receipt_with_bounded_linear_validation(
+    receipts,
+):
+    baseline = _schema_max_ipv6_receipt(receipts)
+    assert len(baseline["rows"]) == 20_000
+    assert len(baseline["coverage"]) == 12_288
+    encoded = json.dumps(
+        baseline, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        allow_nan=False,
+    )
+    assert 20 * 1024 * 1024 < len(encoded) <= 32 * 1024 * 1024
+
+    result = _explorer_validation_result(encoded)
+    assert result["valid"] is True
+    assert result["elapsedMs"] < 30_000
+    assert result["rssBytes"] < 768 * 1024 * 1024
+
+    # The IPv6 digest gets the larger schema-specific chunked path; the
+    # shared FHRP fragment guard remains unchanged.
+    html = EXPLORER.read_text(encoding="utf-8")
+    fhrp_canonical = html[
+        html.index("function _fhrpCanonicalJson"):
+        html.index("function _fhrpSha256Ascii")
+    ]
+    assert "parts.length>=2000000" in fhrp_canonical
+
+
+@pytest.mark.skipif(NODE is None, reason="node is required for Explorer cap tests")
+def test_explorer_bounds_schema_max_blocker_dom_and_exports_every_safe_row(
+    receipts,
+):
+    baseline = _schema_max_ipv6_receipt(receipts, degraded=True)
+    encoded = json.dumps(
+        baseline, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        allow_nan=False,
+    )
+    assert 25 * 1024 * 1024 < len(encoded) <= 32 * 1024 * 1024
+
+    result = _explorer_section_cap_result(encoded)
+    assert result["sectionLength"] < 1_000_000
+    assert result["renderedCards"] == 200
+    assert result["exactCounts"] is True
+    assert result["exportControl"] is True
+    assert result["exportCount"] == 20_000
+    assert result["exportKeysSafe"] is True
+    assert result["elapsedMs"] < 15_000
+    assert result["rssBytes"] < 768 * 1024 * 1024
 
 
 @pytest.mark.skipif(NODE is None, reason="node is required for Explorer receipt tests")

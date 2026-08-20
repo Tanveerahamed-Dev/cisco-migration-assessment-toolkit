@@ -2616,14 +2616,11 @@ _IPV6_ROUTING_SCOPE_REASONS = {
 
 
 def _ipv6_routing_scope_text(value: Any, limit: int, *, required: bool) -> bool:
-    """Return whether a scope identity leaf is bounded, one-line UTF-8 text."""
+    """Return whether a scope identity leaf matches the owner's ASCII contract."""
     if (not isinstance(value, str) or len(value) > limit
             or value != value.strip() or (required and not value)
+            or not value.isascii()
             or any(ord(char) < 32 or ord(char) == 127 for char in value)):
-        return False
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError:
         return False
     return True
 
@@ -2653,11 +2650,11 @@ def _ipv6_routing_scope_subjects(value: Any) -> set[tuple[str, str, str]]:
     if value["valid"] is False:
         if value["reason"] not in _IPV6_ROUTING_SCOPE_REASONS or value["rows"]:
             return global_blocker
-        # A producer-owned invalid receipt scopes a blocker only when a
-        # recognized IPv6 command was actually attempted.  A malformed scope
-        # above cannot make that bounded claim and therefore fails closed to
-        # one global blocker; an exact invalid/unattempted receipt is neutral.
-        return global_blocker if value["attempted"] else set()
+        # No producer-owned invalid receipt can prove the neutral no-attempt
+        # state.  Only the exact valid/ok/empty receipt below owns that claim;
+        # every rejected or internally inconsistent scope therefore abstains
+        # with one fixed, leaf-free global blocker.
+        return global_blocker
     if value["reason"] != "ok" or len(value["rows"]) > 4096:
         return global_blocker
     if not value["rows"]:

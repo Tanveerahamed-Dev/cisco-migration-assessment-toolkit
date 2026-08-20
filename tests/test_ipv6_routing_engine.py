@@ -25,7 +25,7 @@ from cisco_toolkit.nrfu_export import compute_nrfu_commands
 
 
 ROUTE_SUMMARY = """\
-IPv6 Routing Table - default - 8 entries
+IPv6 Routing Table - default - 10 entries
 Route Source    Networks    Subnets     Overhead    Memory (bytes)
 connected       4           0           384         576
 local           4           0           384         576
@@ -423,6 +423,23 @@ def test_validation_nrfu_and_owner_share_common_fields_and_custody(tmp_path):
     },
     {
         "schema": IPV6_ROUTING_SUBJECT_SCOPE_SCHEMA,
+        "valid": False,
+        "attempted": False,
+        "reason": "scope_evidence_rejected",
+        "rows": [],
+    },
+    {
+        "schema": IPV6_ROUTING_SUBJECT_SCOPE_SCHEMA,
+        "valid": True,
+        "attempted": True,
+        "reason": "ok",
+        "rows": [{
+            "switch": "safe\u202eexe", "platform": "ios",
+            "protocols": ["OSPFv3"],
+        }],
+    },
+    {
+        "schema": IPV6_ROUTING_SUBJECT_SCOPE_SCHEMA,
         "valid": True,
         "attempted": True,
         "reason": "ok",
@@ -454,7 +471,7 @@ def test_rejected_or_hostile_scope_yields_one_static_global_blocker_without_echo
     rendered = json.dumps([readiness, plan, nrfu, punchlist])
     for hostile_leaf in (
             "HOSTILE-DEVICE", "HOSTILE-PEER", "HOSTILE-HEALTHY-TARGET",
-            "HOSTILE-SCOPE-LEAF", "host-4096"):
+            "HOSTILE-SCOPE-LEAF", "host-4096", "safe\u202eexe"):
         assert hostile_leaf not in rendered
 
 
