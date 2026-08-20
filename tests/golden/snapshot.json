@@ -1927,44 +1927,44 @@
     "virtual_ip": "10.0.10.1",
     "members": [
      {
-      "group": "10",
       "protocol": "HSRP",
-      "svi_ip": "10.0.10.2/24",
-      "participation": "positive",
+      "local_status": "not_verified",
+      "projection_custody": "embedded_unverified",
+      "group": "10",
+      "source_group_key": "HSRP:Vlan10:10",
+      "switch": "core1",
       "role": "ACTIVE",
       "interface": "Vlan10",
+      "virtual_ip": "10.0.10.1",
+      "participation": "positive",
+      "svi_ip": "10.0.10.2/24",
       "findings": [
        {
         "kind": "not_verified",
         "code": "local_group_not_verified",
         "issue": "A local configured/runtime FHRP group could not be verified."
        }
-      ],
-      "virtual_ip": "10.0.10.1",
-      "local_status": "not_verified",
-      "projection_custody": "embedded_unverified",
-      "switch": "core1",
-      "source_group_key": "HSRP:Vlan10:10"
+      ]
      },
      {
-      "group": "10",
       "protocol": "HSRP",
-      "svi_ip": "10.0.10.3/24",
-      "participation": "positive",
+      "local_status": "not_verified",
+      "projection_custody": "embedded_unverified",
+      "group": "10",
+      "source_group_key": "HSRP:Vlan10:10",
+      "switch": "core2",
       "role": "STANDBY",
       "interface": "Vlan10",
+      "virtual_ip": "10.0.10.1",
+      "participation": "positive",
+      "svi_ip": "10.0.10.3/24",
       "findings": [
        {
         "kind": "not_verified",
         "code": "local_group_not_verified",
         "issue": "A local configured/runtime FHRP group could not be verified."
        }
-      ],
-      "virtual_ip": "10.0.10.1",
-      "local_status": "not_verified",
-      "projection_custody": "embedded_unverified",
-      "switch": "core2",
-      "source_group_key": "HSRP:Vlan10:10"
+      ]
      }
     ],
     "findings": [
@@ -1992,44 +1992,44 @@
     "virtual_ip": "10.0.20.1",
     "members": [
      {
-      "group": "20",
       "protocol": "HSRP",
-      "svi_ip": "10.0.20.2/24",
-      "participation": "positive",
+      "local_status": "not_verified",
+      "projection_custody": "embedded_unverified",
+      "group": "20",
+      "source_group_key": "HSRP:Vlan20:20",
+      "switch": "core1",
       "role": "STANDBY",
       "interface": "Vlan20",
+      "virtual_ip": "10.0.20.1",
+      "participation": "positive",
+      "svi_ip": "10.0.20.2/24",
       "findings": [
        {
         "kind": "not_verified",
         "code": "local_group_not_verified",
         "issue": "A local configured/runtime FHRP group could not be verified."
        }
-      ],
-      "virtual_ip": "10.0.20.1",
-      "local_status": "not_verified",
-      "projection_custody": "embedded_unverified",
-      "switch": "core1",
-      "source_group_key": "HSRP:Vlan20:20"
+      ]
      },
      {
-      "group": "20",
       "protocol": "HSRP",
-      "svi_ip": "10.0.20.3/24",
-      "participation": "positive",
+      "local_status": "not_verified",
+      "projection_custody": "embedded_unverified",
+      "group": "20",
+      "source_group_key": "HSRP:Vlan20:20",
+      "switch": "core2",
       "role": "ACTIVE",
       "interface": "Vlan20",
+      "virtual_ip": "10.0.20.1",
+      "participation": "positive",
+      "svi_ip": "10.0.20.3/24",
       "findings": [
        {
         "kind": "not_verified",
         "code": "local_group_not_verified",
         "issue": "A local configured/runtime FHRP group could not be verified."
        }
-      ],
-      "virtual_ip": "10.0.20.1",
-      "local_status": "not_verified",
-      "projection_custody": "embedded_unverified",
-      "switch": "core2",
-      "source_group_key": "HSRP:Vlan20:20"
+      ]
      }
     ],
     "findings": [
@@ -2169,6 +2169,364 @@
    "A configuration revision is an observed counter, not a freshness, correctness, or safe-to-match target; matching a high revision is not acceptance.",
    "VTP passwords, database contents, pruning behavior, per-VLAN propagation, simultaneous state, failover, and cutover authorization remain outside this receipt.",
    "NOT_APPLICABLE means no positive local VTP-status subject was identified in the bounded input; it is not proof that VTP is absent from the platform or network."
+  ]
+ },
+ "ipv6_routing_adjacency_baseline": {
+  "schema": "ipv6_routing_adjacency_baseline/1",
+  "scope": {
+   "routing_instance": "default",
+   "address_family": "ipv6",
+   "protocols": [
+    "OSPFv3",
+    "BGPv6"
+   ],
+   "denominator": "observed_runtime_adjacencies"
+  },
+  "verdict": "BLOCKED",
+  "assessed": true,
+  "projection_custody": "embedded_unverified",
+  "rows": [
+   {
+    "switch": "access1",
+    "platform": "ios",
+    "protocol": "OSPFv3",
+    "routing_instance": "default",
+    "process": "1",
+    "peer": "10.0.0.1",
+    "peer_key": "ospfv3|default|1|10.0.0.1|vlan10",
+    "interface": "Vlan10",
+    "remote_as": "",
+    "role": "DR",
+    "state_raw": "FULL/DR",
+    "state": "FULL",
+    "prefix_count": 0,
+    "prefix_count_present": false,
+    "status": "assessed",
+    "command": "show ospfv3 neighbor",
+    "acceptance": "Observed OSPFv3 runtime adjacency on access1: peer 10.0.0.1, state FULL/DR, interface Vlan10. Preserve the normalized peer identity and settled state or explicitly explain the change. The denominator is observed runtime adjacencies, not configured or expected peers; BGP prefix counts are informational and are not pinned targets.",
+    "source_key": "show ospfv3 neighbor#default_ipv6_runtime_adjacencies+show ipv6 route summary#default_ipv6_dynamic_route_census",
+    "projection_custody": "embedded_unverified",
+    "findings": []
+   },
+   {
+    "switch": "access1",
+    "platform": "ios",
+    "protocol": "OSPFv3",
+    "routing_instance": "default",
+    "process": "1",
+    "peer": "10.0.0.7",
+    "peer_key": "ospfv3|default|1|10.0.0.7|vlan10",
+    "interface": "Vlan10",
+    "remote_as": "",
+    "role": "DROTHER",
+    "state_raw": "2WAY/DROTHER",
+    "state": "2WAY",
+    "prefix_count": 0,
+    "prefix_count_present": false,
+    "status": "assessed",
+    "command": "show ospfv3 neighbor",
+    "acceptance": "Observed OSPFv3 runtime adjacency on access1: peer 10.0.0.7, state 2WAY/DROTHER, interface Vlan10. Preserve the normalized peer identity and settled state or explicitly explain the change. The denominator is observed runtime adjacencies, not configured or expected peers; BGP prefix counts are informational and are not pinned targets.",
+    "source_key": "show ospfv3 neighbor#default_ipv6_runtime_adjacencies+show ipv6 route summary#default_ipv6_dynamic_route_census",
+    "projection_custody": "embedded_unverified",
+    "findings": []
+   },
+   {
+    "switch": "access1",
+    "platform": "ios",
+    "protocol": "OSPFv3",
+    "routing_instance": "default",
+    "process": "1",
+    "peer": "10.0.0.9",
+    "peer_key": "ospfv3|default|1|10.0.0.9|gigabitethernet0/1",
+    "interface": "GigabitEthernet0/1",
+    "remote_as": "",
+    "role": "-",
+    "state_raw": "EXSTART/-",
+    "state": "EXSTART",
+    "prefix_count": 0,
+    "prefix_count_present": false,
+    "status": "degraded",
+    "command": "show ospfv3 neighbor",
+    "acceptance": "PRE-CUTOVER DEGRADED \u2014 BLOCKER: Observed OSPFv3 runtime adjacency on access1: peer 10.0.0.9, state EXSTART/-, interface GigabitEthernet0/1. Matching this degraded observation after cutover is NOT ACCEPTANCE; resolve or explicitly disposition it before the window.",
+    "source_key": "show ospfv3 neighbor#default_ipv6_runtime_adjacencies+show ipv6 route summary#default_ipv6_dynamic_route_census",
+    "projection_custody": "embedded_unverified",
+    "findings": [
+     {
+      "kind": "degraded",
+      "code": "ospfv3_state_degraded",
+      "issue": "The observed OSPFv3 adjacency is in a known transient or down state."
+     }
+    ]
+   },
+   {
+    "switch": "access1",
+    "platform": "ios",
+    "protocol": "BGPv6",
+    "routing_instance": "default",
+    "process": "65001",
+    "peer": "2001:db8:0:1::1",
+    "peer_key": "bgpv6|default|2001:db8:0:1::1",
+    "interface": "",
+    "remote_as": "65001",
+    "role": "",
+    "state_raw": "12",
+    "state": "ESTABLISHED",
+    "prefix_count": 12,
+    "prefix_count_present": true,
+    "status": "assessed",
+    "command": "show bgp ipv6 unicast summary",
+    "acceptance": "Observed BGPv6 runtime adjacency on access1: peer 2001:db8:0:1::1, state 12, remote AS 65001, observed PfxRcd 12. Preserve the normalized peer identity and settled state or explicitly explain the change. The denominator is observed runtime adjacencies, not configured or expected peers; BGP prefix counts are informational and are not pinned targets.",
+    "source_key": "show bgp ipv6 unicast summary#default_ipv6_runtime_adjacencies+show ipv6 route summary#default_ipv6_dynamic_route_census",
+    "projection_custody": "embedded_unverified",
+    "findings": []
+   },
+   {
+    "switch": "access1",
+    "platform": "ios",
+    "protocol": "BGPv6",
+    "routing_instance": "default",
+    "process": "65001",
+    "peer": "2001:db8:0:9::9",
+    "peer_key": "bgpv6|default|2001:db8:0:9::9",
+    "interface": "",
+    "remote_as": "65009",
+    "role": "",
+    "state_raw": "Active",
+    "state": "ACTIVE",
+    "prefix_count": 0,
+    "prefix_count_present": false,
+    "status": "degraded",
+    "command": "show bgp ipv6 unicast summary",
+    "acceptance": "PRE-CUTOVER DEGRADED \u2014 BLOCKER: Observed BGPv6 runtime adjacency on access1: peer 2001:db8:0:9::9, state Active, remote AS 65009. Matching this degraded observation after cutover is NOT ACCEPTANCE; resolve or explicitly disposition it before the window.",
+    "source_key": "show bgp ipv6 unicast summary#default_ipv6_runtime_adjacencies+show ipv6 route summary#default_ipv6_dynamic_route_census",
+    "projection_custody": "embedded_unverified",
+    "findings": [
+     {
+      "kind": "degraded",
+      "code": "bgpv6_state_degraded",
+      "issue": "The observed BGPv6 peer is in a known non-Established FSM state."
+     }
+    ]
+   }
+  ],
+  "coverage": [
+   {
+    "switch": "access1",
+    "platform": "ios",
+    "input": "route_summary",
+    "protocol": "IPv6",
+    "subject": true,
+    "status": "assessed",
+    "selected_command": "show ipv6 route summary",
+    "capture_status": "ok",
+    "parser_status": "complete",
+    "candidate_count": 1,
+    "parsed_count": 1,
+    "rejected_count": 0,
+    "active_route_count": 2,
+    "source_sha256": "067e762101ea8475c19a37955b45a68fda963e7647a4653e1157fbfc1f4975e5",
+    "projection_sha256": "3c3adec94669d7a96889ad834913d296653dc5a35f5ee4ffb9ce99d414d3f5d2",
+    "finding_codes": []
+   },
+   {
+    "switch": "access1",
+    "platform": "ios",
+    "input": "ospfv3_neighbors",
+    "protocol": "OSPFv3",
+    "subject": true,
+    "status": "degraded",
+    "selected_command": "show ospfv3 neighbor",
+    "capture_status": "ok",
+    "parser_status": "complete",
+    "candidate_count": 3,
+    "parsed_count": 3,
+    "rejected_count": 0,
+    "active_route_count": 1,
+    "source_sha256": "059bc25179ea1e35408ee4e5f6528c08e5c613d489f53a63a48a1d3f62820eb6",
+    "projection_sha256": "bbd9a3a3c681e79262015aa2c617fe9afb2d0e0fa5921bd3bbf845c2342cd42a",
+    "finding_codes": [
+     "ospfv3_state_degraded"
+    ]
+   },
+   {
+    "switch": "access1",
+    "platform": "ios",
+    "input": "bgp_ipv6_neighbors",
+    "protocol": "BGPv6",
+    "subject": true,
+    "status": "degraded",
+    "selected_command": "show bgp ipv6 unicast summary",
+    "capture_status": "ok",
+    "parser_status": "complete",
+    "candidate_count": 2,
+    "parsed_count": 2,
+    "rejected_count": 0,
+    "active_route_count": 1,
+    "source_sha256": "2d4257e1cbe7817a0a6b6548c88aa94510489e5e7dccc065e3e5b1bb92fe2893",
+    "projection_sha256": "75640a17f9771ba6af8a3355c593647434e336f36f9e4ff960501fcecb192a15",
+    "finding_codes": [
+     "bgpv6_state_degraded"
+    ]
+   },
+   {
+    "switch": "core1",
+    "platform": "ios",
+    "input": "route_summary",
+    "protocol": "IPv6",
+    "subject": false,
+    "status": "not_applicable",
+    "selected_command": "show ipv6 route summary",
+    "capture_status": "not_observed",
+    "parser_status": "not_verified",
+    "candidate_count": 0,
+    "parsed_count": 0,
+    "rejected_count": 0,
+    "active_route_count": 0,
+    "source_sha256": "83cf3863aaeffe91da511aa3177198a25650d9f9d458d1577d2a1f01ddca9485",
+    "projection_sha256": "bc7a06c169b00da8f64807eb63df8214ba029eb48bb84b94e3d85ff07032790e",
+    "finding_codes": []
+   },
+   {
+    "switch": "core1",
+    "platform": "ios",
+    "input": "ospfv3_neighbors",
+    "protocol": "OSPFv3",
+    "subject": false,
+    "status": "not_applicable",
+    "selected_command": "show ospfv3 neighbor",
+    "capture_status": "not_observed",
+    "parser_status": "not_verified",
+    "candidate_count": 0,
+    "parsed_count": 0,
+    "rejected_count": 0,
+    "active_route_count": 0,
+    "source_sha256": "969aacb013a454b1bf0d6f5e47608bd515fc15599d4946d9e88de0a43e944780",
+    "projection_sha256": "7f675d838e381c9a4b7c78117da02113d5b5ee6bb44bf72b39f4d4cb0a1bfb99",
+    "finding_codes": []
+   },
+   {
+    "switch": "core1",
+    "platform": "ios",
+    "input": "bgp_ipv6_neighbors",
+    "protocol": "BGPv6",
+    "subject": false,
+    "status": "not_applicable",
+    "selected_command": "show bgp ipv6 unicast summary",
+    "capture_status": "not_observed",
+    "parser_status": "not_verified",
+    "candidate_count": 0,
+    "parsed_count": 0,
+    "rejected_count": 0,
+    "active_route_count": 0,
+    "source_sha256": "62217f9f972caff76e94946e8155262ed78fc874cf5d1d66d04bac7bc64e61db",
+    "projection_sha256": "94ccb83dc6af7be6ef0724c173409e91b63bfbd118c1302c07d4575b7869669c",
+    "finding_codes": []
+   },
+   {
+    "switch": "core2",
+    "platform": "nxos",
+    "input": "route_summary",
+    "protocol": "IPv6",
+    "subject": false,
+    "status": "not_applicable",
+    "selected_command": "show ipv6 route summary",
+    "capture_status": "not_observed",
+    "parser_status": "not_verified",
+    "candidate_count": 0,
+    "parsed_count": 0,
+    "rejected_count": 0,
+    "active_route_count": 0,
+    "source_sha256": "8e50a154e5ab33b43f3f32da7b54256ed131caac25e68e61a92ecca3e5a1a84f",
+    "projection_sha256": "8e379456e302bd1084022cb6a85e71f88989cdf3d387520e5a1f2bc53d699840",
+    "finding_codes": []
+   },
+   {
+    "switch": "core2",
+    "platform": "nxos",
+    "input": "ospfv3_neighbors",
+    "protocol": "OSPFv3",
+    "subject": false,
+    "status": "not_applicable",
+    "selected_command": "show ipv6 ospfv3 neighbors",
+    "capture_status": "not_observed",
+    "parser_status": "not_verified",
+    "candidate_count": 0,
+    "parsed_count": 0,
+    "rejected_count": 0,
+    "active_route_count": 0,
+    "source_sha256": "919e4c45a455a2f34f3878c17aaa24b5e0ec408694fec8f7a00c0fe8c2864295",
+    "projection_sha256": "1b5e52730e83ae6bed474c99d73ea454561da0e93af782ad5b05cfc947888b9e",
+    "finding_codes": []
+   },
+   {
+    "switch": "core2",
+    "platform": "nxos",
+    "input": "bgp_ipv6_neighbors",
+    "protocol": "BGPv6",
+    "subject": false,
+    "status": "not_applicable",
+    "selected_command": "show bgp ipv6 unicast summary",
+    "capture_status": "not_observed",
+    "parser_status": "not_verified",
+    "candidate_count": 0,
+    "parsed_count": 0,
+    "rejected_count": 0,
+    "active_route_count": 0,
+    "source_sha256": "cd1878b45eb2e1eadadfb728ecf89d01ef707548e01f0298d2667a24aa2fd45e",
+    "projection_sha256": "c082d16591ad0ce66c984478d49dd8b0850d25058e249354d8dbe440faae2e78",
+    "finding_codes": []
+   }
+  ],
+  "findings": [
+   {
+    "switch": "access1",
+    "protocol": "OSPFv3",
+    "peer_key": "ospfv3|default|1|10.0.0.9|gigabitethernet0/1",
+    "kind": "degraded",
+    "code": "ospfv3_state_degraded",
+    "issue": "The observed OSPFv3 adjacency is in a known transient or down state."
+   },
+   {
+    "switch": "access1",
+    "protocol": "BGPv6",
+    "peer_key": "bgpv6|default|2001:db8:0:9::9",
+    "kind": "degraded",
+    "code": "bgpv6_state_degraded",
+    "issue": "The observed BGPv6 peer is in a known non-Established FSM state."
+   }
+  ],
+  "summary": {
+   "n_hosts": 3,
+   "n_subject_hosts": 1,
+   "n_rows": 5,
+   "n_ospfv3_rows": 3,
+   "n_bgpv6_rows": 2,
+   "n_assessed": 3,
+   "n_degraded": 2,
+   "n_review": 0,
+   "n_not_verified": 0,
+   "by_status": {
+    "degraded": 2,
+    "review": 0,
+    "not_verified": 0,
+    "assessed": 3
+   },
+   "by_coverage_status": {
+    "degraded": 2,
+    "review": 0,
+    "not_verified": 0,
+    "assessed": 1,
+    "not_applicable": 6
+   },
+   "baseline_sha256": "e37470a92affd00ce1fccbca1574611a661b757cc0effa1cefc6af86ada06f08"
+  },
+  "limitations": [
+   "The baseline covers observed default/global IPv6 OSPFv3 and BGPv6 runtime adjacencies; it is not a configured or expected-peer denominator.",
+   "An empty or NOT_APPLICABLE result is not proof that IPv6 routing, another VRF, another address family, or an expected peer is absent.",
+   "OSPFv3 process, area, network type, timers, authentication, LSDB correctness, persistence, and convergence history are incomplete or outside this receipt.",
+   "BGPv6 policy, activation intent, route correctness, other VRFs/address families, and configured-but-unobserved peers remain outside this receipt.",
+   "IPv6 route-summary counts are point-in-time census context; BGP prefix counts are informational and are not pinned acceptance targets.",
+   "An embedded_unverified projection is an audit receipt only and cannot authorize a current-run positive cutover decision."
   ]
  },
  "etherchannel_projection": {
@@ -3436,6 +3794,34 @@
     "device": "access1",
     "platform": "ios",
     "wave": "Group 1",
+    "category": "IPv6 Routing",
+    "severity": "High",
+    "check": "BGPv6 2001:db8:0:9::9 state Active degraded baseline",
+    "command": "show bgp ipv6 unicast summary",
+    "expect": "PRE-CUTOVER DEGRADED \u2014 BLOCKER: Observed BGPv6 runtime adjacency on access1: peer 2001:db8:0:9::9, state Active, remote AS 65009. Matching this degraded observation after cutover is NOT ACCEPTANCE; resolve or explicitly disposition it before the window.",
+    "why": "Observed OSPFv3/IPv6-unicast BGP adjacency evidence is bounded to the default routing instance and does not infer an expected-peer set, route propagation, policy correctness, convergence, simultaneous sampling, or freshness.",
+    "evidence_state": "degraded",
+    "projection_custody": "current_run_source_bound",
+    "source_key": "show bgp ipv6 unicast summary#default_ipv6_runtime_adjacencies+show ipv6 route summary#default_ipv6_dynamic_route_census"
+   },
+   {
+    "device": "access1",
+    "platform": "ios",
+    "wave": "Group 1",
+    "category": "IPv6 Routing",
+    "severity": "High",
+    "check": "OSPFv3 10.0.0.9 state EXSTART/- degraded baseline",
+    "command": "show ospfv3 neighbor",
+    "expect": "PRE-CUTOVER DEGRADED \u2014 BLOCKER: Observed OSPFv3 runtime adjacency on access1: peer 10.0.0.9, state EXSTART/-, interface GigabitEthernet0/1. Matching this degraded observation after cutover is NOT ACCEPTANCE; resolve or explicitly disposition it before the window.",
+    "why": "Observed OSPFv3/IPv6-unicast BGP adjacency evidence is bounded to the default routing instance and does not infer an expected-peer set, route propagation, policy correctness, convergence, simultaneous sampling, or freshness.",
+    "evidence_state": "degraded",
+    "projection_custody": "current_run_source_bound",
+    "source_key": "show ospfv3 neighbor#default_ipv6_runtime_adjacencies+show ipv6 route summary#default_ipv6_dynamic_route_census"
+   },
+   {
+    "device": "access1",
+    "platform": "ios",
+    "wave": "Group 1",
     "category": "Reachability",
     "severity": "High",
     "check": "VLAN 10 endpoints can reach their gateway",
@@ -3509,6 +3895,48 @@
     "evidence_state": "review",
     "projection_custody": "embedded_unverified",
     "source_key": "protocol_health[core2,STP] + protocol_assessability.rows[core2,STP] + interfaces.core2 + stp_roots.core2"
+   },
+   {
+    "device": "access1",
+    "platform": "ios",
+    "wave": "Group 1",
+    "category": "IPv6 Routing",
+    "severity": "Medium",
+    "check": "BGPv6 2001:db8:0:1::1 state 12 observed baseline",
+    "command": "show bgp ipv6 unicast summary",
+    "expect": "Observed BGPv6 runtime adjacency on access1: peer 2001:db8:0:1::1, state 12, remote AS 65001, observed PfxRcd 12. Preserve the normalized peer identity and settled state or explicitly explain the change. The denominator is observed runtime adjacencies, not configured or expected peers; BGP prefix counts are informational and are not pinned targets.",
+    "why": "Observed OSPFv3/IPv6-unicast BGP adjacency evidence is bounded to the default routing instance and does not infer an expected-peer set, route propagation, policy correctness, convergence, simultaneous sampling, or freshness.",
+    "evidence_state": "assessed",
+    "projection_custody": "current_run_source_bound",
+    "source_key": "show bgp ipv6 unicast summary#default_ipv6_runtime_adjacencies+show ipv6 route summary#default_ipv6_dynamic_route_census"
+   },
+   {
+    "device": "access1",
+    "platform": "ios",
+    "wave": "Group 1",
+    "category": "IPv6 Routing",
+    "severity": "Medium",
+    "check": "OSPFv3 10.0.0.1 state FULL/DR observed baseline",
+    "command": "show ospfv3 neighbor",
+    "expect": "Observed OSPFv3 runtime adjacency on access1: peer 10.0.0.1, state FULL/DR, interface Vlan10. Preserve the normalized peer identity and settled state or explicitly explain the change. The denominator is observed runtime adjacencies, not configured or expected peers; BGP prefix counts are informational and are not pinned targets.",
+    "why": "Observed OSPFv3/IPv6-unicast BGP adjacency evidence is bounded to the default routing instance and does not infer an expected-peer set, route propagation, policy correctness, convergence, simultaneous sampling, or freshness.",
+    "evidence_state": "assessed",
+    "projection_custody": "current_run_source_bound",
+    "source_key": "show ospfv3 neighbor#default_ipv6_runtime_adjacencies+show ipv6 route summary#default_ipv6_dynamic_route_census"
+   },
+   {
+    "device": "access1",
+    "platform": "ios",
+    "wave": "Group 1",
+    "category": "IPv6 Routing",
+    "severity": "Medium",
+    "check": "OSPFv3 10.0.0.7 state 2WAY/DROTHER observed baseline",
+    "command": "show ospfv3 neighbor",
+    "expect": "Observed OSPFv3 runtime adjacency on access1: peer 10.0.0.7, state 2WAY/DROTHER, interface Vlan10. Preserve the normalized peer identity and settled state or explicitly explain the change. The denominator is observed runtime adjacencies, not configured or expected peers; BGP prefix counts are informational and are not pinned targets.",
+    "why": "Observed OSPFv3/IPv6-unicast BGP adjacency evidence is bounded to the default routing instance and does not infer an expected-peer set, route propagation, policy correctness, convergence, simultaneous sampling, or freshness.",
+    "evidence_state": "assessed",
+    "projection_custody": "current_run_source_bound",
+    "source_key": "show ospfv3 neighbor#default_ipv6_runtime_adjacencies+show ipv6 route summary#default_ipv6_dynamic_route_census"
    },
    {
     "device": "core1",
@@ -3870,6 +4298,34 @@
      "device": "access1",
      "platform": "ios",
      "wave": "Group 1",
+     "category": "IPv6 Routing",
+     "severity": "High",
+     "check": "BGPv6 2001:db8:0:9::9 state Active degraded baseline",
+     "command": "show bgp ipv6 unicast summary",
+     "expect": "PRE-CUTOVER DEGRADED \u2014 BLOCKER: Observed BGPv6 runtime adjacency on access1: peer 2001:db8:0:9::9, state Active, remote AS 65009. Matching this degraded observation after cutover is NOT ACCEPTANCE; resolve or explicitly disposition it before the window.",
+     "why": "Observed OSPFv3/IPv6-unicast BGP adjacency evidence is bounded to the default routing instance and does not infer an expected-peer set, route propagation, policy correctness, convergence, simultaneous sampling, or freshness.",
+     "evidence_state": "degraded",
+     "projection_custody": "current_run_source_bound",
+     "source_key": "show bgp ipv6 unicast summary#default_ipv6_runtime_adjacencies+show ipv6 route summary#default_ipv6_dynamic_route_census"
+    },
+    {
+     "device": "access1",
+     "platform": "ios",
+     "wave": "Group 1",
+     "category": "IPv6 Routing",
+     "severity": "High",
+     "check": "OSPFv3 10.0.0.9 state EXSTART/- degraded baseline",
+     "command": "show ospfv3 neighbor",
+     "expect": "PRE-CUTOVER DEGRADED \u2014 BLOCKER: Observed OSPFv3 runtime adjacency on access1: peer 10.0.0.9, state EXSTART/-, interface GigabitEthernet0/1. Matching this degraded observation after cutover is NOT ACCEPTANCE; resolve or explicitly disposition it before the window.",
+     "why": "Observed OSPFv3/IPv6-unicast BGP adjacency evidence is bounded to the default routing instance and does not infer an expected-peer set, route propagation, policy correctness, convergence, simultaneous sampling, or freshness.",
+     "evidence_state": "degraded",
+     "projection_custody": "current_run_source_bound",
+     "source_key": "show ospfv3 neighbor#default_ipv6_runtime_adjacencies+show ipv6 route summary#default_ipv6_dynamic_route_census"
+    },
+    {
+     "device": "access1",
+     "platform": "ios",
+     "wave": "Group 1",
      "category": "Reachability",
      "severity": "High",
      "check": "VLAN 10 endpoints can reach their gateway",
@@ -3945,6 +4401,48 @@
      "source_key": "protocol_health[core2,STP] + protocol_assessability.rows[core2,STP] + interfaces.core2 + stp_roots.core2"
     },
     {
+     "device": "access1",
+     "platform": "ios",
+     "wave": "Group 1",
+     "category": "IPv6 Routing",
+     "severity": "Medium",
+     "check": "BGPv6 2001:db8:0:1::1 state 12 observed baseline",
+     "command": "show bgp ipv6 unicast summary",
+     "expect": "Observed BGPv6 runtime adjacency on access1: peer 2001:db8:0:1::1, state 12, remote AS 65001, observed PfxRcd 12. Preserve the normalized peer identity and settled state or explicitly explain the change. The denominator is observed runtime adjacencies, not configured or expected peers; BGP prefix counts are informational and are not pinned targets.",
+     "why": "Observed OSPFv3/IPv6-unicast BGP adjacency evidence is bounded to the default routing instance and does not infer an expected-peer set, route propagation, policy correctness, convergence, simultaneous sampling, or freshness.",
+     "evidence_state": "assessed",
+     "projection_custody": "current_run_source_bound",
+     "source_key": "show bgp ipv6 unicast summary#default_ipv6_runtime_adjacencies+show ipv6 route summary#default_ipv6_dynamic_route_census"
+    },
+    {
+     "device": "access1",
+     "platform": "ios",
+     "wave": "Group 1",
+     "category": "IPv6 Routing",
+     "severity": "Medium",
+     "check": "OSPFv3 10.0.0.1 state FULL/DR observed baseline",
+     "command": "show ospfv3 neighbor",
+     "expect": "Observed OSPFv3 runtime adjacency on access1: peer 10.0.0.1, state FULL/DR, interface Vlan10. Preserve the normalized peer identity and settled state or explicitly explain the change. The denominator is observed runtime adjacencies, not configured or expected peers; BGP prefix counts are informational and are not pinned targets.",
+     "why": "Observed OSPFv3/IPv6-unicast BGP adjacency evidence is bounded to the default routing instance and does not infer an expected-peer set, route propagation, policy correctness, convergence, simultaneous sampling, or freshness.",
+     "evidence_state": "assessed",
+     "projection_custody": "current_run_source_bound",
+     "source_key": "show ospfv3 neighbor#default_ipv6_runtime_adjacencies+show ipv6 route summary#default_ipv6_dynamic_route_census"
+    },
+    {
+     "device": "access1",
+     "platform": "ios",
+     "wave": "Group 1",
+     "category": "IPv6 Routing",
+     "severity": "Medium",
+     "check": "OSPFv3 10.0.0.7 state 2WAY/DROTHER observed baseline",
+     "command": "show ospfv3 neighbor",
+     "expect": "Observed OSPFv3 runtime adjacency on access1: peer 10.0.0.7, state 2WAY/DROTHER, interface Vlan10. Preserve the normalized peer identity and settled state or explicitly explain the change. The denominator is observed runtime adjacencies, not configured or expected peers; BGP prefix counts are informational and are not pinned targets.",
+     "why": "Observed OSPFv3/IPv6-unicast BGP adjacency evidence is bounded to the default routing instance and does not infer an expected-peer set, route propagation, policy correctness, convergence, simultaneous sampling, or freshness.",
+     "evidence_state": "assessed",
+     "projection_custody": "current_run_source_bound",
+     "source_key": "show ospfv3 neighbor#default_ipv6_runtime_adjacencies+show ipv6 route summary#default_ipv6_dynamic_route_census"
+    },
+    {
      "device": "core1",
      "platform": "ios",
      "wave": "Group 1",
@@ -3997,23 +4495,24 @@
    ]
   },
   "summary": {
-   "n_items": 23,
+   "n_items": 28,
    "n_waves": 1,
    "by_category": {
     "FHRP": 8,
     "Gateway": 5,
+    "IPv6 Routing": 5,
     "Reachability": 2,
     "Routing": 1,
     "STP": 5,
     "Link": 2
    },
-   "n_high": 19
+   "n_high": 21
   },
   "banner": "Run these AFTER each wave's cutover. The 'Observed baseline / acceptance' column preserves what was actually observed and never invents a healthy count. Rows beginning 'PRE-CUTOVER DEGRADED \u2014 BLOCKER:' or 'PRE-CUTOVER REVIEW \u2014 BLOCKER:' are blockers: matching a faulted observation is NOT ACCEPTANCE, and identity/timing ambiguity requires live verification. 'BGP CONFIGURED PEER NOT VERIFIED \u2014 BLOCKER:', 'ROUTING BASELINE NOT VERIFIED \u2014 BLOCKER:', 'ETHERCHANNEL BASELINE NOT VERIFIED \u2014 BLOCKER:', and 'VTP SAFETY BASELINE NOT VERIFIED \u2014 BLOCKER:' mean the current-run receipt cannot authorize the corresponding observed baseline and require re-collection. Evidence-backed rows disclose projection custody; BGP configured-peer rows cover only direct static literal peers in the default/global IPv4-unicast scope, OSPF/EIGRP remain observed-peer scope, and EtherChannel is observed local group/member scope rather than configured or partner intent. VTP safety is a local mode/domain/revision exposure review, not database authority or propagation proof. Resolve or explicitly disposition every blocker and investigate every baseline deviation before acceptance."
  },
  "nrfu_commands": {
   "schema": "nrfu_commands/1",
-  "banner": "Four-phase NRFU certification pack: run each READ-ONLY command and evaluate the output against the pre-filled observed baseline / acceptance text; the source key cites the embedded snapshot evidence. An unexplained deviation is a regression to investigate before sign-off. A PRE-CUTOVER DEGRADED, PRE-CUTOVER REVIEW, BGP CONFIGURED PEER NOT VERIFIED, or FHRP CONFIGURED GROUP NOT VERIFIED, or an FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: marker is a blocker to resolve or explicitly disposition before the window; reproducing a degraded state is not acceptance, and a review row requires live simultaneous verification. A ROUTING BASELINE NOT VERIFIED, ETHERCHANNEL BASELINE NOT VERIFIED, or VTP SAFETY BASELINE NOT VERIFIED row requires re-collection before an exact observed baseline can be accepted. An STP CONSISTENCY BASELINE NOT VERIFIED row requires re-collection before an exact observed baseline can be accepted. STP consistency, Routing, FHRP, EtherChannel, and VTP cases carry evidence_family, evidence_state, and projection_custody; embedded_unverified means the published receipt does not cryptographically bind projected peers, FHRP groups, EtherChannel member-state projections, or STP health projections to raw captures. '[NOT OBSERVED \u2026]' rows are honest abstentions \u2014 record the baseline at execution. Phase IV rows are HUMAN-EXECUTED with the application owner.",
+  "banner": "Four-phase NRFU certification pack: run each READ-ONLY command and evaluate the output against the pre-filled observed baseline / acceptance text; the source key cites the embedded snapshot evidence. An unexplained deviation is a regression to investigate before sign-off. A PRE-CUTOVER DEGRADED, PRE-CUTOVER REVIEW, BGP CONFIGURED PEER NOT VERIFIED, or FHRP CONFIGURED GROUP NOT VERIFIED, or an FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: marker is a blocker to resolve or explicitly disposition before the window; reproducing a degraded state is not acceptance, and a review row requires live simultaneous verification. A ROUTING BASELINE NOT VERIFIED, ETHERCHANNEL BASELINE NOT VERIFIED or VTP SAFETY BASELINE NOT VERIFIED row requires re-collection before an exact observed baseline can be accepted. An IPV6 ROUTING BASELINE NOT VERIFIED \u2014 BLOCKER: marker likewise requires scoped OSPFv3/IPv6-unicast BGP re-collection before acceptance. An STP CONSISTENCY BASELINE NOT VERIFIED row requires re-collection before an exact observed baseline can be accepted. STP consistency, Routing, IPv6 Routing, FHRP, EtherChannel, and VTP cases carry evidence_family, evidence_state, and projection_custody; embedded_unverified means the published receipt does not cryptographically bind projected peers, FHRP groups, EtherChannel member-state projections, or STP health projections to raw captures. '[NOT OBSERVED \u2026]' rows are honest abstentions \u2014 record the baseline at execution. Phase IV rows are HUMAN-EXECUTED with the application owner.",
   "waves": [
    {
     "wave_id": "Group 1",
@@ -4069,12 +4568,67 @@
         "id": "NRFU-W1-P2-006",
         "phase": 2,
         "scope": "per-site",
+        "command": "show ospfv3 neighbor",
+        "expected": "Observed OSPFv3 runtime adjacency on access1: peer 10.0.0.1, state FULL/DR, interface Vlan10. Preserve the normalized peer identity and settled state or explicitly explain the change. The denominator is observed runtime adjacencies, not configured or expected peers; BGP prefix counts are informational and are not pinned targets.",
+        "source_key": "show ospfv3 neighbor#default_ipv6_runtime_adjacencies+show ipv6 route summary#default_ipv6_dynamic_route_census",
+        "evidence_family": "IPv6 Routing",
+        "evidence_state": "assessed",
+        "projection_custody": "current_run_source_bound"
+       },
+       {
+        "id": "NRFU-W1-P2-007",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show ospfv3 neighbor",
+        "expected": "Observed OSPFv3 runtime adjacency on access1: peer 10.0.0.7, state 2WAY/DROTHER, interface Vlan10. Preserve the normalized peer identity and settled state or explicitly explain the change. The denominator is observed runtime adjacencies, not configured or expected peers; BGP prefix counts are informational and are not pinned targets.",
+        "source_key": "show ospfv3 neighbor#default_ipv6_runtime_adjacencies+show ipv6 route summary#default_ipv6_dynamic_route_census",
+        "evidence_family": "IPv6 Routing",
+        "evidence_state": "assessed",
+        "projection_custody": "current_run_source_bound"
+       },
+       {
+        "id": "NRFU-W1-P2-008",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show ospfv3 neighbor",
+        "expected": "PRE-CUTOVER DEGRADED \u2014 BLOCKER: Observed OSPFv3 runtime adjacency on access1: peer 10.0.0.9, state EXSTART/-, interface GigabitEthernet0/1. Matching this degraded observation after cutover is NOT ACCEPTANCE; resolve or explicitly disposition it before the window.",
+        "source_key": "show ospfv3 neighbor#default_ipv6_runtime_adjacencies+show ipv6 route summary#default_ipv6_dynamic_route_census",
+        "evidence_family": "IPv6 Routing",
+        "evidence_state": "degraded",
+        "projection_custody": "current_run_source_bound"
+       },
+       {
+        "id": "NRFU-W1-P2-009",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show bgp ipv6 unicast summary",
+        "expected": "Observed BGPv6 runtime adjacency on access1: peer 2001:db8:0:1::1, state 12, remote AS 65001, observed PfxRcd 12. Preserve the normalized peer identity and settled state or explicitly explain the change. The denominator is observed runtime adjacencies, not configured or expected peers; BGP prefix counts are informational and are not pinned targets.",
+        "source_key": "show bgp ipv6 unicast summary#default_ipv6_runtime_adjacencies+show ipv6 route summary#default_ipv6_dynamic_route_census",
+        "evidence_family": "IPv6 Routing",
+        "evidence_state": "assessed",
+        "projection_custody": "current_run_source_bound"
+       },
+       {
+        "id": "NRFU-W1-P2-010",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show bgp ipv6 unicast summary",
+        "expected": "PRE-CUTOVER DEGRADED \u2014 BLOCKER: Observed BGPv6 runtime adjacency on access1: peer 2001:db8:0:9::9, state Active, remote AS 65009. Matching this degraded observation after cutover is NOT ACCEPTANCE; resolve or explicitly disposition it before the window.",
+        "source_key": "show bgp ipv6 unicast summary#default_ipv6_runtime_adjacencies+show ipv6 route summary#default_ipv6_dynamic_route_census",
+        "evidence_family": "IPv6 Routing",
+        "evidence_state": "degraded",
+        "projection_custody": "current_run_source_bound"
+       },
+       {
+        "id": "NRFU-W1-P2-011",
+        "phase": 2,
+        "scope": "per-site",
         "command": "show spanning-tree vlan 10",
         "expected": "Root bridge aaaa.0001.0001 for VLAN 10 (priority 24586) \u2014 unchanged",
         "source_key": "stp_roots.access1.10"
        },
        {
-        "id": "NRFU-W1-P2-007",
+        "id": "NRFU-W1-P2-012",
         "phase": 2,
         "scope": "per-site",
         "command": "show spanning-tree vlan 30",
@@ -4082,7 +4636,7 @@
         "source_key": "stp_roots.access1.30"
        },
        {
-        "id": "NRFU-W1-P2-008",
+        "id": "NRFU-W1-P2-013",
         "phase": 2,
         "scope": "per-site",
         "command": "show cdp neighbors",
@@ -4090,7 +4644,7 @@
         "source_key": "interfaces.access1.*.cdp_neighbor"
        },
        {
-        "id": "NRFU-W1-P3-009",
+        "id": "NRFU-W1-P3-014",
         "phase": 3,
         "scope": "per-site",
         "command": "show ip dhcp snooping binding",
@@ -4098,7 +4652,7 @@
         "source_key": "dhcp_snooping.access1"
        },
        {
-        "id": "NRFU-W1-P4-043",
+        "id": "NRFU-W1-P4-048",
         "phase": 4,
         "scope": "end-to-end",
         "command": "ping <representative 'General / Back-office (unclassified)' application endpoint>",
@@ -4112,7 +4666,7 @@
       "platform_dialect": "ios",
       "cases": [
        {
-        "id": "NRFU-W1-P1-010",
+        "id": "NRFU-W1-P1-015",
         "phase": 1,
         "scope": "per-site",
         "command": "show version",
@@ -4120,7 +4674,7 @@
         "source_key": "devices.core1.sw_version"
        },
        {
-        "id": "NRFU-W1-P1-011",
+        "id": "NRFU-W1-P1-016",
         "phase": 1,
         "scope": "per-site",
         "command": "show inventory",
@@ -4128,7 +4682,7 @@
         "source_key": "devices.core1.model"
        },
        {
-        "id": "NRFU-W1-P1-012",
+        "id": "NRFU-W1-P1-017",
         "phase": 1,
         "scope": "per-site",
         "command": "show environment all",
@@ -4136,7 +4690,7 @@
         "source_key": "devices.core1.ps_status"
        },
        {
-        "id": "NRFU-W1-P2-013",
+        "id": "NRFU-W1-P2-018",
         "phase": 2,
         "scope": "per-site",
         "command": "show interface status",
@@ -4144,7 +4698,7 @@
         "source_key": "interfaces.core1"
        },
        {
-        "id": "NRFU-W1-P2-014",
+        "id": "NRFU-W1-P2-019",
         "phase": 2,
         "scope": "per-site",
         "command": "show etherchannel summary",
@@ -4155,7 +4709,7 @@
         "projection_custody": "embedded_unverified"
        },
        {
-        "id": "NRFU-W1-P2-015",
+        "id": "NRFU-W1-P2-020",
         "phase": 2,
         "scope": "per-site",
         "command": "show spanning-tree inconsistentports",
@@ -4166,7 +4720,7 @@
         "projection_custody": "embedded_unverified"
        },
        {
-        "id": "NRFU-W1-P2-016",
+        "id": "NRFU-W1-P2-021",
         "phase": 2,
         "scope": "per-site",
         "command": "show spanning-tree vlan 10",
@@ -4174,7 +4728,7 @@
         "source_key": "stp_roots.core1.10"
        },
        {
-        "id": "NRFU-W1-P2-017",
+        "id": "NRFU-W1-P2-022",
         "phase": 2,
         "scope": "per-site",
         "command": "show spanning-tree vlan 30",
@@ -4182,7 +4736,7 @@
         "source_key": "stp_roots.core1.30"
        },
        {
-        "id": "NRFU-W1-P2-018",
+        "id": "NRFU-W1-P2-023",
         "phase": 2,
         "scope": "per-site",
         "command": "show standby brief",
@@ -4205,7 +4759,7 @@
         "fhrp_scope": "default/ipv4"
        },
        {
-        "id": "NRFU-W1-P2-019",
+        "id": "NRFU-W1-P2-024",
         "phase": 2,
         "scope": "per-site",
         "command": "show standby brief",
@@ -4228,7 +4782,7 @@
         "fhrp_scope": "default/ipv4"
        },
        {
-        "id": "NRFU-W1-P2-020",
+        "id": "NRFU-W1-P2-025",
         "phase": 2,
         "scope": "per-site",
         "command": "show standby brief",
@@ -4263,7 +4817,7 @@
         ]
        },
        {
-        "id": "NRFU-W1-P2-021",
+        "id": "NRFU-W1-P2-026",
         "phase": 2,
         "scope": "per-site",
         "command": "show standby brief",
@@ -4298,7 +4852,7 @@
         ]
        },
        {
-        "id": "NRFU-W1-P2-022",
+        "id": "NRFU-W1-P2-027",
         "phase": 2,
         "scope": "per-site",
         "command": "show ip ospf neighbor",
@@ -4309,7 +4863,7 @@
         "projection_custody": "embedded_unverified"
        },
        {
-        "id": "NRFU-W1-P2-023",
+        "id": "NRFU-W1-P2-028",
         "phase": 2,
         "scope": "per-site",
         "command": "show cdp neighbors",
@@ -4317,7 +4871,7 @@
         "source_key": "interfaces.core1.*.cdp_neighbor"
        },
        {
-        "id": "NRFU-W1-P3-024",
+        "id": "NRFU-W1-P3-029",
         "phase": 3,
         "scope": "per-site",
         "command": "show ip dhcp snooping binding",
@@ -4325,7 +4879,7 @@
         "source_key": "dhcp_snooping.core1"
        },
        {
-        "id": "NRFU-W1-P3-038",
+        "id": "NRFU-W1-P3-043",
         "phase": 3,
         "scope": "end-to-end",
         "command": "ping 10.0.10.2",
@@ -4333,7 +4887,7 @@
         "source_key": "interfaces.core1.Vlan10.svi_ip"
        },
        {
-        "id": "NRFU-W1-P3-039",
+        "id": "NRFU-W1-P3-044",
         "phase": 3,
         "scope": "end-to-end",
         "command": "ping 10.0.10.2",
@@ -4341,7 +4895,7 @@
         "source_key": "interfaces.core1.Vlan10.svi_ip"
        },
        {
-        "id": "NRFU-W1-P4-044",
+        "id": "NRFU-W1-P4-049",
         "phase": 4,
         "scope": "end-to-end",
         "command": "ping <representative 'Compute / Virtualization' application endpoint>",
@@ -4355,7 +4909,7 @@
       "platform_dialect": "nxos",
       "cases": [
        {
-        "id": "NRFU-W1-P1-025",
+        "id": "NRFU-W1-P1-030",
         "phase": 1,
         "scope": "per-site",
         "command": "show version",
@@ -4363,7 +4917,7 @@
         "source_key": "devices.core2.sw_version"
        },
        {
-        "id": "NRFU-W1-P1-026",
+        "id": "NRFU-W1-P1-031",
         "phase": 1,
         "scope": "per-site",
         "command": "show module",
@@ -4371,7 +4925,7 @@
         "source_key": "devices.core2.model"
        },
        {
-        "id": "NRFU-W1-P1-027",
+        "id": "NRFU-W1-P1-032",
         "phase": 1,
         "scope": "per-site",
         "command": "show environment",
@@ -4379,7 +4933,7 @@
         "source_key": "devices.core2.ps_status"
        },
        {
-        "id": "NRFU-W1-P2-028",
+        "id": "NRFU-W1-P2-033",
         "phase": 2,
         "scope": "per-site",
         "command": "show interface status",
@@ -4387,7 +4941,7 @@
         "source_key": "interfaces.core2"
        },
        {
-        "id": "NRFU-W1-P2-029",
+        "id": "NRFU-W1-P2-034",
         "phase": 2,
         "scope": "per-site",
         "command": "show port-channel summary",
@@ -4398,7 +4952,7 @@
         "projection_custody": "embedded_unverified"
        },
        {
-        "id": "NRFU-W1-P2-030",
+        "id": "NRFU-W1-P2-035",
         "phase": 2,
         "scope": "per-site",
         "command": "show spanning-tree inconsistentports",
@@ -4409,7 +4963,7 @@
         "projection_custody": "embedded_unverified"
        },
        {
-        "id": "NRFU-W1-P2-031",
+        "id": "NRFU-W1-P2-036",
         "phase": 2,
         "scope": "per-site",
         "command": "show spanning-tree vlan 10",
@@ -4417,7 +4971,7 @@
         "source_key": "stp_roots.core2.10"
        },
        {
-        "id": "NRFU-W1-P2-032",
+        "id": "NRFU-W1-P2-037",
         "phase": 2,
         "scope": "per-site",
         "command": "show spanning-tree vlan 20",
@@ -4425,7 +4979,7 @@
         "source_key": "stp_roots.core2.20"
        },
        {
-        "id": "NRFU-W1-P2-033",
+        "id": "NRFU-W1-P2-038",
         "phase": 2,
         "scope": "per-site",
         "command": "show hsrp brief",
@@ -4448,7 +5002,7 @@
         "fhrp_scope": "default/ipv4"
        },
        {
-        "id": "NRFU-W1-P2-034",
+        "id": "NRFU-W1-P2-039",
         "phase": 2,
         "scope": "per-site",
         "command": "show hsrp brief",
@@ -4471,7 +5025,7 @@
         "fhrp_scope": "default/ipv4"
        },
        {
-        "id": "NRFU-W1-P2-035",
+        "id": "NRFU-W1-P2-040",
         "phase": 2,
         "scope": "per-site",
         "command": "show hsrp brief",
@@ -4506,7 +5060,7 @@
         ]
        },
        {
-        "id": "NRFU-W1-P2-036",
+        "id": "NRFU-W1-P2-041",
         "phase": 2,
         "scope": "per-site",
         "command": "show hsrp brief",
@@ -4541,7 +5095,7 @@
         ]
        },
        {
-        "id": "NRFU-W1-P2-037",
+        "id": "NRFU-W1-P2-042",
         "phase": 2,
         "scope": "per-site",
         "command": "show cdp neighbors",
@@ -4549,7 +5103,7 @@
         "source_key": "interfaces.core2.*.cdp_neighbor"
        },
        {
-        "id": "NRFU-W1-P3-040",
+        "id": "NRFU-W1-P3-045",
         "phase": 3,
         "scope": "end-to-end",
         "command": "ping 10.0.10.2",
@@ -4557,7 +5111,7 @@
         "source_key": "interfaces.core1.Vlan10.svi_ip"
        },
        {
-        "id": "NRFU-W1-P3-041",
+        "id": "NRFU-W1-P3-046",
         "phase": 3,
         "scope": "end-to-end",
         "command": "traceroute 10.0.10.2",
@@ -4565,7 +5119,7 @@
         "source_key": "interfaces.core1.Vlan10.svi_ip"
        },
        {
-        "id": "NRFU-W1-P3-042",
+        "id": "NRFU-W1-P3-047",
         "phase": 3,
         "scope": "end-to-end",
         "command": "ping 10.0.10.2",
@@ -4580,10 +5134,10 @@
   "summary": {
    "n_waves": 1,
    "n_devices": 3,
-   "n_cases": 44,
+   "n_cases": 49,
    "by_phase": {
     "1": 9,
-    "2": 26,
+    "2": 31,
     "3": 7,
     "4": 2
    },
@@ -4632,7 +5186,16 @@
    "n_vtp_safety_cases": 0,
    "n_vtp_safety_blockers": 0,
    "vtp_safety_by_evidence_state": {},
-   "vtp_safety_by_projection_custody": {}
+   "vtp_safety_by_projection_custody": {},
+   "n_ipv6_routing_cases": 5,
+   "n_ipv6_routing_blockers": 2,
+   "ipv6_routing_by_evidence_state": {
+    "assessed": 3,
+    "degraded": 2
+   },
+   "ipv6_routing_by_projection_custody": {
+    "current_run_source_bound": 5
+   }
   }
  },
  "golden_drift": {
@@ -5434,7 +5997,7 @@
    ],
    "endpoints": 5,
    "readiness": "NOT READY",
-   "n_fail": 4,
+   "n_fail": 5,
    "n_warn": 3,
    "checks": [
     {
@@ -5466,6 +6029,12 @@
      "status": "warn",
      "note": "STP consistency baseline not verified on access1 (review), core1 (review), core2 (review); re-collect show spanning-tree and show spanning-tree inconsistentports",
      "phase": "Dependency mapping"
+    },
+    {
+     "check": "IPv6 routing adjacencies",
+     "status": "fail",
+     "note": "degraded observed IPv6 adjacency: OSPFv3 10.0.0.9 (EXSTART/-), BGPv6 2001:db8:0:9::9 (Active); matching a degraded state after cutover is NOT ACCEPTANCE",
+     "phase": "Baseline capture"
     },
     {
      "check": "Port-channels healthy",
@@ -7794,7 +8363,7 @@
   "access1": {
    "route_summary": {
     "present": true,
-    "total": 8,
+    "total": 10,
     "by_source": {
      "connected": 4,
      "local": 4,
@@ -8198,6 +8767,32 @@
   {
    "severity": "High",
    "rank": 3,
+   "category": "IPv6 Routing",
+   "devices": [
+    "access1"
+   ],
+   "wave": "",
+   "title": "BGPv6 2001:db8:0:9::9 state Active degraded before cutover",
+   "detail": "PRE-CUTOVER DEGRADED \u2014 BLOCKER: Observed BGPv6 runtime adjacency on access1: peer 2001:db8:0:9::9, state Active, remote AS 65009. Matching this degraded observation after cutover is NOT ACCEPTANCE; resolve or explicitly disposition it before the window.",
+   "remediation": "",
+   "priority": 11
+  },
+  {
+   "severity": "High",
+   "rank": 3,
+   "category": "IPv6 Routing",
+   "devices": [
+    "access1"
+   ],
+   "wave": "",
+   "title": "OSPFv3 10.0.0.9 state EXSTART/- degraded before cutover",
+   "detail": "PRE-CUTOVER DEGRADED \u2014 BLOCKER: Observed OSPFv3 runtime adjacency on access1: peer 10.0.0.9, state EXSTART/-, interface GigabitEthernet0/1. Matching this degraded observation after cutover is NOT ACCEPTANCE; resolve or explicitly disposition it before the window.",
+   "remediation": "",
+   "priority": 12
+  },
+  {
+   "severity": "High",
+   "rank": 3,
    "category": "L1",
    "devices": [
     "core1"
@@ -8207,7 +8802,7 @@
    "detail": "L1 risk 'err-disabled' on 1 switch(es).",
    "remediation": "",
    "source_command": "show interface status",
-   "priority": 11
+   "priority": 13
   },
   {
    "severity": "High",
@@ -8221,7 +8816,7 @@
    "detail": "L3 forwarding risk 'single-gateway' on 1 switch(es).",
    "remediation": "Add gateway / FHRP redundancy.",
    "source_command": "show ip route",
-   "priority": 12
+   "priority": 14
   },
   {
    "severity": "High",
@@ -8235,7 +8830,7 @@
    "detail": "2 event(s) in the collected log window.",
    "remediation": "The same MAC is being learned on two ports -- usually an L2 loop or a dual-homed host. Verify STP state on both ports and resolve before this domain's cutover window.",
    "source_command": "show logging",
-   "priority": 13
+   "priority": 15
   },
   {
    "severity": "High",
@@ -8249,7 +8844,7 @@
    "detail": "1 event(s) in the collected log window.",
    "remediation": "Find the err-disable cause ('show interfaces status err-disabled') and fix the root cause -- do not blindly re-enable the port.",
    "source_command": "show logging",
-   "priority": 14
+   "priority": 16
   },
   {
    "severity": "High",
@@ -8262,7 +8857,7 @@
    "title": "OSPF high",
    "detail": "10.0.99.9 EXSTART/DROTHER",
    "remediation": "",
-   "priority": 15
+   "priority": 17
   },
   {
    "severity": "High",
@@ -8276,7 +8871,7 @@
    "detail": "1 local user(s) use a reversible / cleartext password: legacy (hashes redacted).",
    "remediation": "Store local users with 'secret' (Type-8/9); remove Type-0/7 'password' entries.",
    "source_command": "show running-config",
-   "priority": 16
+   "priority": 18
   },
   {
    "severity": "High",
@@ -8290,7 +8885,7 @@
    "detail": "a default community (public/private); 1 v1/v2c community string(s) '<redacted>' -- v1/v2c carry the community in cleartext.",
    "remediation": "Remove SNMPv1/v2c communities; use SNMPv3 with auth+priv (SHA/AES).",
    "source_command": "show running-config",
-   "priority": 17
+   "priority": 19
   },
   {
    "severity": "High",
@@ -8304,7 +8899,7 @@
    "detail": "a VTY line permits telnet (cleartext management).",
    "remediation": "Set 'transport input ssh' on every VTY line; disable telnet.",
    "source_command": "show running-config",
-   "priority": 18
+   "priority": 20
   },
   {
    "severity": "High",
@@ -8318,7 +8913,7 @@
    "detail": "The IOS XE web UI was mass-exploited in 2023-24 (tens of thousands of devices implanted); any HTTP(S) server on a network device is standing attack surface.",
    "remediation": "Disable 'ip http server' / 'ip http secure-server', or restrict them to the management network with an ACL; validate the running release with the Cisco Software Checker.",
    "source_command": "show version",
-   "priority": 19
+   "priority": 21
   },
   {
    "severity": "Medium",
@@ -8331,7 +8926,7 @@
    "title": "CR-06: Layered config debt on a critical asset",
    "detail": "2 config-truth axes are off-baseline AND removal strands 3 endpoint(s) across 2 VLAN(s) \u2014 drift on the box you can least afford to misjudge.",
    "remediation": "Stacked independent risks on one asset \u2014 clear at least one leg before this device's migration window.",
-   "priority": 20
+   "priority": 22
   },
   {
    "severity": "Medium",
@@ -8344,7 +8939,7 @@
    "title": "core1: L1 fault on an L3 gateway switch",
    "detail": "core1 hosts L3 gateway SVIs and has an err-disabled or high-error port - physical instability at a routing aggregation point.",
    "remediation": "",
-   "priority": 21
+   "priority": 23
   },
   {
    "severity": "Medium",
@@ -8359,7 +8954,7 @@
    "detail": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: source or domain evidence could not be verified. Re-collect before acceptance.",
    "remediation": "Re-collect and validate the domain receipt before deciding intended membership or remediation.",
    "source_command": "show standby brief",
-   "priority": 22
+   "priority": 24
   },
   {
    "severity": "Medium",
@@ -8374,7 +8969,7 @@
    "detail": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: source or domain evidence could not be verified. Re-collect before acceptance.",
    "remediation": "Re-collect and validate the domain receipt before deciding intended membership or remediation.",
    "source_command": "show standby brief",
-   "priority": 23
+   "priority": 25
   },
   {
    "severity": "Medium",
@@ -8388,7 +8983,7 @@
    "detail": "L1 risk 'single-fiber-uplink' on 1 switch(es).",
    "remediation": "",
    "source_command": "show interface status",
-   "priority": 24
+   "priority": 26
   },
   {
    "severity": "Medium",
@@ -8402,7 +8997,7 @@
    "detail": "1 event(s) in the collected log window.",
    "remediation": "CDP detected a duplex mismatch with the neighbor. Set both ends to auto (or pin both); late collisions silently throttle throughput.",
    "source_command": "show logging",
-   "priority": 25
+   "priority": 27
   },
   {
    "severity": "Medium",
@@ -8416,7 +9011,7 @@
    "detail": "1 interface(s) with >= 3 down transitions: GigabitEthernet1/0/9 (3x).",
    "remediation": "Repeated up/down transitions point at physical-layer instability (cable / optic / negotiation). Fix the media -- flapping links invalidate pre-cutover baselines.",
    "source_command": "show logging",
-   "priority": 26
+   "priority": 28
   },
   {
    "severity": "Medium",
@@ -8430,7 +9025,7 @@
    "detail": "6 failed login(s) in the collected log window.",
    "remediation": "Multiple failed logins recorded. Confirm AAA health and check for unauthorized access attempts before the migration window.",
    "source_command": "show logging",
-   "priority": 27
+   "priority": 29
   },
   {
    "severity": "Medium",
@@ -8443,7 +9038,7 @@
    "title": "Control-plane CPU elevated",
    "detail": "CPU 63% (show processes cpu (5-min avg)).",
    "remediation": "A 5-minute CPU at/above 60% is workable but worth explaining before the cutover adds protocol churn. Identify the top processes and confirm the level is expected for this role.",
-   "priority": 28
+   "priority": 30
   },
   {
    "severity": "Medium",
@@ -8458,7 +9053,7 @@
    "detail": "The spanning-tree root is not on the VLAN's gateway switch -- traffic to the default gateway hairpins.",
    "remediation": "Align the STP root priority with the active gateway switch.",
    "source_command": "show spanning-tree",
-   "priority": 29
+   "priority": 31
   },
   {
    "severity": "Medium",
@@ -8472,7 +9067,7 @@
    "detail": "no central AAA ('aaa new-model' / 'aaa authentication login default group') -- authentication is local-only / line-based.",
    "remediation": "Enable 'aaa new-model' for centralized authentication / authorization / accounting.",
    "source_command": "show running-config",
-   "priority": 30
+   "priority": 32
   },
   {
    "severity": "Medium",
@@ -8486,7 +9081,7 @@
    "detail": "no 'service password-encryption' -- passwords can be stored in cleartext (Type-0).",
    "remediation": "Configure 'service password-encryption' and migrate Type-7 secrets to Type-8/9.",
    "source_command": "show running-config",
-   "priority": 31
+   "priority": 33
   },
   {
    "severity": "Medium",
@@ -8500,7 +9095,7 @@
    "detail": "enabled: HTTP server (cleartext).",
    "remediation": "Disable HTTP server, Smart Install, source-route, bootp, finger and 'service config'.",
    "source_command": "show running-config",
-   "priority": 32
+   "priority": 34
   },
   {
    "severity": "Medium",
@@ -8515,7 +9110,7 @@
    "detail": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 / 0 0).",
    "remediation": "Apply an 'access-class' ACL and a non-zero 'exec-timeout' on every VTY line.",
    "source_command": "show running-config",
-   "priority": 33
+   "priority": 35
   },
   {
    "severity": "Low",
@@ -8530,7 +9125,7 @@
    "title": "Native VLAN 1 on 4 operationally-trunking port(s)",
    "detail": "4 operationally-trunking port(s) (live trunk status) across 3 live-trunking switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure. (The design gap counts trunk-mode port(s) -- switchport-mode basis, administrative or negotiated -- so the two figures can differ.)",
    "remediation": "Set a dedicated, unused native VLAN on every 802.1Q trunk.",
-   "priority": 34
+   "priority": 36
   },
   {
    "severity": "Low",
@@ -8542,7 +9137,7 @@
    "detail": "None of the 2 assessable device(s) has any active QoS configuration (policies attached, trust, or auto-QoS).",
    "remediation": "The whole assessable fleet runs best-effort. Acceptable for pure data; a documented risk if voice/video/storage rides this network. Record the customer's stance as a CRD requirement before the migration.",
    "source_command": "show policy-map interface",
-   "priority": 35
+   "priority": 37
   },
   {
    "severity": "Low",
@@ -8556,7 +9151,7 @@
    "detail": "Rooted on the default priority -- elected on a MAC tiebreak, so it can move on a cutover.",
    "remediation": "Set a deliberate root-bridge priority on the intended switch.",
    "source_command": "show spanning-tree",
-   "priority": 36
+   "priority": 38
   },
   {
    "severity": "Low",
@@ -8570,7 +9165,7 @@
    "detail": "no syslog / buffered logging -- no audit trail across the migration.",
    "remediation": "Configure 'logging host' / 'logging buffered' to retain an audit trail.",
    "source_command": "show running-config",
-   "priority": 37
+   "priority": 39
   },
   {
    "severity": "Low",
@@ -8585,7 +9180,7 @@
    "detail": "no login / MOTD legal-notice banner.",
    "remediation": "Configure a 'banner login' / 'banner motd' legal-notice banner.",
    "source_command": "show running-config",
-   "priority": 38
+   "priority": 40
   },
   {
    "severity": "Low",
@@ -8599,7 +9194,7 @@
    "detail": "no NTP server -- clock drift makes logs and certificate validity untrustworthy.",
    "remediation": "Configure an authenticated 'ntp server' so logs and certificate validity are trustworthy.",
    "source_command": "show running-config",
-   "priority": 39
+   "priority": 41
   }
  ],
  "operational_drift": [
@@ -9508,13 +10103,13 @@
     "id": "read_only_command_surface",
     "method": "re-derive over every COMMANDS_* registry of the collector: the WHOLE of each command must be read-only \u2014 a read verb (show/display/get/dir/ping/moquery | aws ec2 describe- | api|ers|dataservice REST GET paths) AND no way to chain, redirect or substitute a second command out of it (no CR/LF ; & ` $ > < \\, and every pipe stage an output filter, never redirect/tee/append or a URL sink)",
     "result": "HOLDS",
-    "detail": "all 289 registry commands across 7 COMMANDS_* registries match the read-only grammar"
+    "detail": "all 291 registry commands across 7 COMMANDS_* registries match the read-only grammar"
    },
    {
     "id": "no_egress_import_graph",
     "method": "RECURSIVE AST import-walk (every subpackage, any nesting depth, lazy imports included) over the analysis package for network libraries; charter exclusion(s): rest_collect.py (the opt-in REST collector is covered by its own GET-only claim); documented exception(s), subtracted AFTER the scan and named in the result: none \u2014 the package is clean without subtracting anything",
     "result": "HOLDS",
-    "detail": "0 unexplained network-library imports across 78 analysis modules (recursive walk; excluded by charter: rest_collect.py; no documented exception was needed)"
+    "detail": "0 unexplained network-library imports across 79 analysis modules (recursive walk; excluded by charter: rest_collect.py; no documented exception was needed)"
    },
    {
     "id": "rest_collect_get_only",
@@ -9526,7 +10121,7 @@
     "id": "no_llm_runtime",
     "method": "AST import-walk over the analysis package (rest_collect.py included) + the collector entry module for LLM/GenAI SDK imports \u2014 the pipeline is deterministic and air-gapped, no model call at runtime",
     "result": "HOLDS",
-    "detail": "0 LLM/GenAI SDK imports across 80 modules (analysis package + collector entry)"
+    "detail": "0 LLM/GenAI SDK imports across 81 modules (analysis package + collector entry)"
    }
   ]
  },
@@ -11893,7 +12488,7 @@
     "hard_cutover_endpoints": 3,
     "dual_homed_pct": 33,
     "recommended_scenario": "phased",
-    "rationale": "gating checks fail (4 blocker(s)) \u2014 resolve them, then migrate in small validated waves.",
+    "rationale": "gating checks fail (5 blocker(s)) \u2014 resolve them, then migrate in small validated waves.",
     "playbook": {
      "pre": "Resolve gating checks first; schedule single-homed (hard-cutover) switches into maintenance windows.",
      "validate": "Per wave, prove forwarding for a sample endpoint of EACH hosted class before the next wave.",
@@ -11947,8 +12542,8 @@
     "risks": [
      {
       "severity": "Low",
-      "title": "1 High/Critical punch-list item(s) on this domain's switches",
-      "detail": "Open High/Critical items (categories: Cross-layer) intersect this domain's switches.",
+      "title": "3 High/Critical punch-list item(s) on this domain's switches",
+      "detail": "Open High/Critical items (categories: Cross-layer, IPv6 Routing) intersect this domain's switches.",
       "remediation": "See the Migration Punch-List for the prioritized, per-device fix order.",
       "standard": ""
      }
@@ -13031,6 +13626,13 @@
     "note": "seen \u2014 collected and non-empty"
    },
    {
+    "key": "ipv6_routing_adjacency_baseline",
+    "state": "published",
+    "count": 10,
+    "kind": "dict",
+    "note": "seen \u2014 collected and non-empty"
+   },
+   {
     "key": "etherchannel_projection",
     "state": "published",
     "count": 4,
@@ -13411,7 +14013,7 @@
    {
     "key": "punchlist",
     "state": "published",
-    "count": 39,
+    "count": 41,
     "kind": "list",
     "note": "seen \u2014 collected and non-empty"
    },
@@ -13704,10 +14306,10 @@
    }
   ],
   "summary": {
-   "n_published": 104,
+   "n_published": 105,
    "n_collected_but_empty": 7,
    "n_not_collected": 0,
-   "n_sections": 111
+   "n_sections": 112
   }
  }
 }

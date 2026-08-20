@@ -262,6 +262,25 @@
   null,
   null
  ],
+ "IPv6 Routing": [
+  "IPV6 ROUTING ADJACENCY GATE \u2014 OBSERVED OSPFV3 AND IPV6-UNICAST BGP \u00b7 BLOCKED. Every DEGRADED, REVIEW, and NOT VERIFIED row is a pre-cutover blocker; matching a degraded state is NOT ACCEPTANCE.",
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null
+ ],
  "BGP Peer Intent": [
   "CONFIGURED BGP PEER GATE \u2014 DEFAULT/GLOBAL IPv4 UNICAST \u00b7 NOT_APPLICABLE. A configured-active literal peer absent from a usable summary is a blocker. Excludes VRFs, IPv6, VPNv4/EVPN, peer groups/templates, dynamic peers, policy, routes, best path, RPKI, convergence, freshness, interoperability, and cutover authorization.",
   null,
@@ -697,7 +716,7 @@
   null
  ],
  "NRFU Commands": [
-  "\u26a0 Four-phase NRFU certification pack: run each READ-ONLY command and evaluate the output against the pre-filled observed baseline / acceptance text; the source key cites the embedded snapshot evidence. An unexplained deviation is a regression to investigate before sign-off. A PRE-CUTOVER DEGRADED, PRE-CUTOVER REVIEW, BGP CONFIGURED PEER NOT VERIFIED, or FHRP CONFIGURED GROUP NOT VERIFIED, or an FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: marker is a blocker to resolve or explicitly disposition before the window; reproducing a degraded state is not acceptance, and a review row requires live simultaneous verification. A ROUTING BASELINE NOT VERIFIED, ETHERCHANNEL BASELINE NOT VERIFIED, or VTP SAFETY BASELINE NOT VERIFIED row requires re-collection before an exact observed baseline can be accepted. An STP CONSISTENCY BASELINE NOT VERIFIED row requires re-collection before an exact observed baseline can be accepted. STP consistency, Routing, FHRP, EtherChannel, and VTP cases carry evidence_family, evidence_state, and projection_custody; embedded_unverified means the published receipt does not cryptographically bind projected peers, FHRP groups, EtherChannel member-state projections, or STP health projections to raw captures. '[NOT OBSERVED \u2026]' rows are honest abstentions \u2014 record the baseline at execution. Phase IV rows are HUMAN-EXECUTED with the application owner. Evidence-state blockers apply to every protocol: DEGRADED, REVIEW, and BASELINE NOT VERIFIED cases require resolution, re-collection, or explicit disposition before acceptance; matching a degraded observation is not acceptance.",
+  "\u26a0 Four-phase NRFU certification pack: run each READ-ONLY command and evaluate the output against the pre-filled observed baseline / acceptance text; the source key cites the embedded snapshot evidence. An unexplained deviation is a regression to investigate before sign-off. A PRE-CUTOVER DEGRADED, PRE-CUTOVER REVIEW, BGP CONFIGURED PEER NOT VERIFIED, or FHRP CONFIGURED GROUP NOT VERIFIED, or an FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: marker is a blocker to resolve or explicitly disposition before the window; reproducing a degraded state is not acceptance, and a review row requires live simultaneous verification. A ROUTING BASELINE NOT VERIFIED, ETHERCHANNEL BASELINE NOT VERIFIED or VTP SAFETY BASELINE NOT VERIFIED row requires re-collection before an exact observed baseline can be accepted. An IPV6 ROUTING BASELINE NOT VERIFIED \u2014 BLOCKER: marker likewise requires scoped OSPFv3/IPv6-unicast BGP re-collection before acceptance. An STP CONSISTENCY BASELINE NOT VERIFIED row requires re-collection before an exact observed baseline can be accepted. STP consistency, Routing, IPv6 Routing, FHRP, EtherChannel, and VTP cases carry evidence_family, evidence_state, and projection_custody; embedded_unverified means the published receipt does not cryptographically bind projected peers, FHRP groups, EtherChannel member-state projections, or STP health projections to raw captures. '[NOT OBSERVED \u2026]' rows are honest abstentions \u2014 record the baseline at execution. Phase IV rows are HUMAN-EXECUTED with the application owner. Evidence-state blockers apply to every protocol: DEGRADED, REVIEW, and BASELINE NOT VERIFIED cases require resolution, re-collection, or explicit disposition before acceptance; matching a degraded observation is not acceptance.",
   null,
   null,
   null,

@@ -144,8 +144,10 @@ jobs:
       - name: Audit frontend dependencies
         working-directory: webapp/frontend
         env:
-          NPM_CONFIG_USERCONFIG: /dev/null
-          NPM_CONFIG_GLOBALCONFIG: /dev/null
+          # npm 11 rejects one path being loaded as both user and global
+          # configuration. Keep both layers isolated without aliasing them.
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/npm-userconfig
+          NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/npm-globalconfig
         run: >-
           npm audit --audit-level=high
           --registry=https://registry.npmjs.org/

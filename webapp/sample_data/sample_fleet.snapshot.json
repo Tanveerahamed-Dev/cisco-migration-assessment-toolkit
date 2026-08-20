@@ -1,7 +1,7 @@
 {
   "schema": "collect_parse_snapshot/1",
   "script_version": "V3.23.0",
-  "generated_at": "2026-08-16T10:56:53.112624",
+  "generated_at": "2026-08-20T09:23:58.455252",
   "devices": {
     "core1": {
       "hostname": "core1",
@@ -10853,11 +10853,10 @@
         "virtual_ip": "10.0.10.1",
         "members": [
           {
-            "source_group_key": "HSRP:Vlan10:10",
+            "svi_ip": "10.0.10.2/24",
+            "switch": "core1",
             "interface": "Vlan10",
-            "group": "10",
-            "protocol": "HSRP",
-            "local_status": "not_verified",
+            "participation": "positive",
             "findings": [
               {
                 "kind": "not_verified",
@@ -10865,19 +10864,19 @@
                 "issue": "A local configured/runtime FHRP group could not be verified."
               }
             ],
+            "protocol": "HSRP",
+            "source_group_key": "HSRP:Vlan10:10",
             "virtual_ip": "10.0.10.1",
-            "participation": "positive",
-            "svi_ip": "10.0.10.2/24",
-            "switch": "core1",
+            "local_status": "not_verified",
+            "group": "10",
             "projection_custody": "embedded_unverified",
             "role": "ACTIVE"
           },
           {
-            "source_group_key": "HSRP:Vlan10:10",
+            "svi_ip": "10.0.10.3/24",
+            "switch": "core2",
             "interface": "Vlan10",
-            "group": "10",
-            "protocol": "HSRP",
-            "local_status": "not_verified",
+            "participation": "positive",
             "findings": [
               {
                 "kind": "not_verified",
@@ -10885,10 +10884,11 @@
                 "issue": "A local configured/runtime FHRP group could not be verified."
               }
             ],
+            "protocol": "HSRP",
+            "source_group_key": "HSRP:Vlan10:10",
             "virtual_ip": "10.0.10.1",
-            "participation": "positive",
-            "svi_ip": "10.0.10.3/24",
-            "switch": "core2",
+            "local_status": "not_verified",
+            "group": "10",
             "projection_custody": "embedded_unverified",
             "role": "STANDBY"
           }
@@ -10918,11 +10918,10 @@
         "virtual_ip": "10.0.20.1",
         "members": [
           {
-            "source_group_key": "HSRP:Vlan20:20",
+            "svi_ip": "10.0.20.2/24",
+            "switch": "core1",
             "interface": "Vlan20",
-            "group": "20",
-            "protocol": "HSRP",
-            "local_status": "not_verified",
+            "participation": "positive",
             "findings": [
               {
                 "kind": "not_verified",
@@ -10930,19 +10929,19 @@
                 "issue": "A local configured/runtime FHRP group could not be verified."
               }
             ],
+            "protocol": "HSRP",
+            "source_group_key": "HSRP:Vlan20:20",
             "virtual_ip": "10.0.20.1",
-            "participation": "positive",
-            "svi_ip": "10.0.20.2/24",
-            "switch": "core1",
+            "local_status": "not_verified",
+            "group": "20",
             "projection_custody": "embedded_unverified",
             "role": "STANDBY"
           },
           {
-            "source_group_key": "HSRP:Vlan20:20",
+            "svi_ip": "10.0.20.3/24",
+            "switch": "core2",
             "interface": "Vlan20",
-            "group": "20",
-            "protocol": "HSRP",
-            "local_status": "not_verified",
+            "participation": "positive",
             "findings": [
               {
                 "kind": "not_verified",
@@ -10950,10 +10949,11 @@
                 "issue": "A local configured/runtime FHRP group could not be verified."
               }
             ],
+            "protocol": "HSRP",
+            "source_group_key": "HSRP:Vlan20:20",
             "virtual_ip": "10.0.20.1",
-            "participation": "positive",
-            "svi_ip": "10.0.20.3/24",
-            "switch": "core2",
+            "local_status": "not_verified",
+            "group": "20",
             "projection_custody": "embedded_unverified",
             "role": "ACTIVE"
           }
@@ -10983,11 +10983,10 @@
         "virtual_ip": "10.0.40.1",
         "members": [
           {
-            "source_group_key": "HSRP:Vlan40:40",
+            "svi_ip": "10.0.40.2/24",
+            "switch": "dist1",
             "interface": "Vlan40",
-            "group": "40",
-            "protocol": "HSRP",
-            "local_status": "not_verified",
+            "participation": "positive",
             "findings": [
               {
                 "kind": "not_verified",
@@ -10995,19 +10994,19 @@
                 "issue": "A local configured/runtime FHRP group could not be verified."
               }
             ],
+            "protocol": "HSRP",
+            "source_group_key": "HSRP:Vlan40:40",
             "virtual_ip": "10.0.40.1",
-            "participation": "positive",
-            "svi_ip": "10.0.40.2/24",
-            "switch": "dist1",
+            "local_status": "not_verified",
+            "group": "40",
             "projection_custody": "embedded_unverified",
             "role": "ACTIVE"
           },
           {
-            "source_group_key": "HSRP:Vlan40:40",
+            "svi_ip": "10.0.40.3/24",
+            "switch": "dist2",
             "interface": "Vlan40",
-            "group": "40",
-            "protocol": "HSRP",
-            "local_status": "not_verified",
+            "participation": "positive",
             "findings": [
               {
                 "kind": "not_verified",
@@ -11015,10 +11014,11 @@
                 "issue": "A local configured/runtime FHRP group could not be verified."
               }
             ],
+            "protocol": "HSRP",
+            "source_group_key": "HSRP:Vlan40:40",
             "virtual_ip": "10.0.40.1",
-            "participation": "positive",
-            "svi_ip": "10.0.40.3/24",
-            "switch": "dist2",
+            "local_status": "not_verified",
+            "group": "40",
             "projection_custody": "embedded_unverified",
             "role": "STANDBY"
           }
@@ -11048,11 +11048,10 @@
         "virtual_ip": "10.0.41.1",
         "members": [
           {
-            "source_group_key": "HSRP:Vlan41:41",
+            "svi_ip": "10.0.41.2/24",
+            "switch": "dist1",
             "interface": "Vlan41",
-            "group": "41",
-            "protocol": "HSRP",
-            "local_status": "not_verified",
+            "participation": "positive",
             "findings": [
               {
                 "kind": "not_verified",
@@ -11060,19 +11059,19 @@
                 "issue": "A local configured/runtime FHRP group could not be verified."
               }
             ],
+            "protocol": "HSRP",
+            "source_group_key": "HSRP:Vlan41:41",
             "virtual_ip": "10.0.41.1",
-            "participation": "positive",
-            "svi_ip": "10.0.41.2/24",
-            "switch": "dist1",
+            "local_status": "not_verified",
+            "group": "41",
             "projection_custody": "embedded_unverified",
             "role": "ACTIVE"
           },
           {
-            "source_group_key": "HSRP:Vlan41:41",
+            "svi_ip": "10.0.41.3/24",
+            "switch": "dist2",
             "interface": "Vlan41",
-            "group": "41",
-            "protocol": "HSRP",
-            "local_status": "not_verified",
+            "participation": "positive",
             "findings": [
               {
                 "kind": "not_verified",
@@ -11080,10 +11079,11 @@
                 "issue": "A local configured/runtime FHRP group could not be verified."
               }
             ],
+            "protocol": "HSRP",
+            "source_group_key": "HSRP:Vlan41:41",
             "virtual_ip": "10.0.41.1",
-            "participation": "positive",
-            "svi_ip": "10.0.41.3/24",
-            "switch": "dist2",
+            "local_status": "not_verified",
+            "group": "41",
             "projection_custody": "embedded_unverified",
             "role": "STANDBY"
           }
@@ -32726,7 +32726,7 @@
         {
           "check": "IPv6 routing adjacencies",
           "status": "fail",
-          "note": "degraded observed IPv6 adjacency: OSPFv3 10.0.0.9 (EXSTART/-), BGPv6 2001:db8:0:9::9 (Active), OSPFv3 10.0.0.9 (EXSTART/-), BGPv6 2001:db8:0:9::9 (Active), OSPFv3 10.0.0.9 (EXSTART/-), BGPv6 2001:db8:0:9::9 (Active), OSPFv3 10.0.0.9 (EXSTART/-), BGPv6 2001:db8:0:9::9 (Active), OSPFv3 10.0.0.9 (EXSTART/-), BGPv6 2001:db8:0:9::9 (Active), OSPFv3 10.0.0.9 (EXSTART/-), BGPv6 2001:db8:0:9::9 (Active), OSPFv3 10.0.0.9 (EXSTART/-), BGPv6 2001:db8:0:9::9 (Active), OSPFv3 10.0.0.9 (EXSTART/-), BGPv6 2001:db8:0:9::9 (Active), OSPFv3 10.0.0.9 (EXSTART/-), BGPv6 2001:db8:0:9::9 (Active), OSPFv3 10.0.0.9 (EXSTART/-), BGPv6 2001:db8:0:9::9 (Active), OSPFv3 10.0.0.9 (EXSTART/-), BGPv6 2001:db8:0:9::9 (Active), OSPFv3 10.0.0.9 (EXSTART/-), BGPv6 2001:db8:0:9::9 (Active), OSPFv3 10.0.0.9 (EXSTART/-), BGPv6 2001:db8:0:9::9 (Active), OSPFv3 10.0.0.9 (EXSTART/-), BGPv6 2001:db8:0:9::9 (Active), OSPFv3 10.0.0.9 (EXSTART/-), BGPv6 2001:db8:0:9::9 (Active), OSPFv3 10.0.0.9 (EXSTART/-), BGPv6 2001:db8:0:9::9 (Active), OSPFv3 10.0.0.9 (EXSTART/-), BGPv6 2001:db8:0:9::9 (Active); matching a degraded state after cutover is NOT ACCEPTANCE",
+          "note": "degraded observed IPv6 adjacency: OSPFv3 10.0.0.9 (EXSTART/-), BGPv6 2001:db8:0:9::9 (Active), OSPFv3 10.0.0.9 (EXSTART/-), BGPv6 2001:db8:0:9::9 (Active), OSPFv3 10.0.0.9 (EXSTART/-), BGPv6 2001:db8:0:9::9 (Active), OSPFv3 10.0.0.9 (EXSTART/-), BGPv6 2001:db8:0:9::9 (Active); +26 additional blocker row(s) retained in Cutover Validation and NRFU; matching a degraded state after cutover is NOT ACCEPTANCE",
           "phase": "Baseline capture"
         },
         {
@@ -37482,7 +37482,7 @@
     "access1": {
       "route_summary": {
         "present": true,
-        "total": 8,
+        "total": 10,
         "by_source": {
           "connected": 4,
           "local": 4,
@@ -37533,7 +37533,7 @@
     "access2": {
       "route_summary": {
         "present": true,
-        "total": 8,
+        "total": 10,
         "by_source": {
           "connected": 4,
           "local": 4,
@@ -37584,7 +37584,7 @@
     "access3": {
       "route_summary": {
         "present": true,
-        "total": 8,
+        "total": 10,
         "by_source": {
           "connected": 4,
           "local": 4,
@@ -37635,7 +37635,7 @@
     "access4": {
       "route_summary": {
         "present": true,
-        "total": 8,
+        "total": 10,
         "by_source": {
           "connected": 4,
           "local": 4,
@@ -37686,7 +37686,7 @@
     "access5": {
       "route_summary": {
         "present": true,
-        "total": 8,
+        "total": 10,
         "by_source": {
           "connected": 4,
           "local": 4,
@@ -37737,7 +37737,7 @@
     "access6": {
       "route_summary": {
         "present": true,
-        "total": 8,
+        "total": 10,
         "by_source": {
           "connected": 4,
           "local": 4,
@@ -37788,7 +37788,7 @@
     "access7": {
       "route_summary": {
         "present": true,
-        "total": 8,
+        "total": 10,
         "by_source": {
           "connected": 4,
           "local": 4,
@@ -37839,7 +37839,7 @@
     "access8": {
       "route_summary": {
         "present": true,
-        "total": 8,
+        "total": 10,
         "by_source": {
           "connected": 4,
           "local": 4,
@@ -37890,7 +37890,7 @@
     "access9": {
       "route_summary": {
         "present": true,
-        "total": 8,
+        "total": 10,
         "by_source": {
           "connected": 4,
           "local": 4,
@@ -37941,7 +37941,7 @@
     "access10": {
       "route_summary": {
         "present": true,
-        "total": 8,
+        "total": 10,
         "by_source": {
           "connected": 4,
           "local": 4,
@@ -37992,7 +37992,7 @@
     "access11": {
       "route_summary": {
         "present": true,
-        "total": 8,
+        "total": 10,
         "by_source": {
           "connected": 4,
           "local": 4,
@@ -38043,7 +38043,7 @@
     "access12": {
       "route_summary": {
         "present": true,
-        "total": 8,
+        "total": 10,
         "by_source": {
           "connected": 4,
           "local": 4,
@@ -38094,7 +38094,7 @@
     "access13": {
       "route_summary": {
         "present": true,
-        "total": 8,
+        "total": 10,
         "by_source": {
           "connected": 4,
           "local": 4,
@@ -38145,7 +38145,7 @@
     "access14": {
       "route_summary": {
         "present": true,
-        "total": 8,
+        "total": 10,
         "by_source": {
           "connected": 4,
           "local": 4,
@@ -38196,7 +38196,7 @@
     "access15": {
       "route_summary": {
         "present": true,
-        "total": 8,
+        "total": 10,
         "by_source": {
           "connected": 4,
           "local": 4,
@@ -38247,7 +38247,7 @@
     "access16": {
       "route_summary": {
         "present": true,
-        "total": 8,
+        "total": 10,
         "by_source": {
           "connected": 4,
           "local": 4,
@@ -38298,7 +38298,7 @@
     "access17": {
       "route_summary": {
         "present": true,
-        "total": 8,
+        "total": 10,
         "by_source": {
           "connected": 4,
           "local": 4,
@@ -45795,7 +45795,7 @@
   },
   "attestation": {
     "schema": "attestation/1",
-    "generated_at": "2026-08-16T07:56:52.682969+00:00",
+    "generated_at": "2026-08-20T06:23:57.918821+00:00",
     "claims": [
       {
         "id": "read_only_command_surface",
@@ -56552,7 +56552,7 @@
       "retained_source_bytes_verified": true,
       "official_sources_available": true,
       "source_retrieved_at": "2026-07-30T12:47:53Z",
-      "source_age_days": 16.797818,
+      "source_age_days": 20.733331,
       "source_max_age_days": 180,
       "source_max_future_skew_seconds": 300,
       "source_future_dated": false,
@@ -56589,7 +56589,7 @@
       "retained_source_bytes_verified": true,
       "official_sources_available": true,
       "source_retrieved_at": "2026-07-30T12:47:53Z",
-      "source_age_days": 16.797823,
+      "source_age_days": 20.733337,
       "source_max_age_days": 180,
       "source_max_future_skew_seconds": 300,
       "source_future_dated": false,
@@ -56623,7 +56623,7 @@
       "active_unresolved_rows": 0,
       "error": "",
       "source_retrieved_at": "2026-07-30T13:48:46Z",
-      "source_age_days": 16.755543,
+      "source_age_days": 20.691057,
       "source_max_age_days": 180,
       "source_max_future_skew_seconds": 300,
       "source_future_dated": false,

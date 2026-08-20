@@ -148,8 +148,10 @@ def test_dependency_audit_is_ordinary_strict_npm_audit_without_an_exception_wrap
     assert "--registry=https://registry.npmjs.org/" in dependency_audit
     assert "--offline=false" in dependency_audit
     assert "--include=prod --include=dev --include=optional --include=peer" in dependency_audit
-    assert "NPM_CONFIG_USERCONFIG: /dev/null" in dependency_audit
-    assert "NPM_CONFIG_GLOBALCONFIG: /dev/null" in dependency_audit
+    assert "NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/npm-userconfig" in dependency_audit
+    assert "NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/npm-globalconfig" in dependency_audit
+    assert "NPM_CONFIG_USERCONFIG: /dev/null" not in dependency_audit
+    assert "NPM_CONFIG_GLOBALCONFIG: /dev/null" not in dependency_audit
     assert "verify_frontend_npm_audit" not in dependency_audit
     assert "npm audit fix" not in dependency_audit
     assert "GHSA-qwww-vcr4-c8h2" not in dependency_audit

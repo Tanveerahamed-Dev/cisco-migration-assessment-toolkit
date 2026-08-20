@@ -68,6 +68,7 @@
         "cisco_toolkit/aclcheck.py",
         "cisco_toolkit/analyze.py",
         "cisco_toolkit/assertions.py",
+        "cisco_toolkit/bgp_intent.py",
         "cisco_toolkit/causal.py",
         "cisco_toolkit/coverage_matrix.py",
         "cisco_toolkit/cutover_sim.py",
@@ -78,9 +79,13 @@
         "cisco_toolkit/fault_corpus.py",
         "cisco_toolkit/feature_compliance.py",
         "cisco_toolkit/fib.py",
+        "cisco_toolkit/fhrp_intent.py",
+        "cisco_toolkit/fhrp_redundancy.py",
+        "cisco_toolkit/ipv6_routing.py",
         "cisco_toolkit/memory_guard.py",
         "cisco_toolkit/traffic_assurance.py",
         "cisco_toolkit/upgrade_targets.py",
+        "cisco_toolkit/vtp_safety.py",
         "cisco_toolkit/whatif.py"
       ]
     },

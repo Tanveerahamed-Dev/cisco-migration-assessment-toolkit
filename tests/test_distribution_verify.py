@@ -11,7 +11,10 @@ import runpy
 import shutil
 import subprocess
 import tarfile
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10; tomli is a declared runtime dependency.
+    import tomli as tomllib  # type: ignore[no-redef]
 import zipfile
 from pathlib import Path, PurePosixPath
 

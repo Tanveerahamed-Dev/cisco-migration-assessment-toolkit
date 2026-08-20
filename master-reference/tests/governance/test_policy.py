@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -293,6 +294,29 @@ def test_assurance_and_unknown_intake_owners_match_their_static_dependencies() -
     allowed = {tuple(edge) for edge in contract["allowed_edges"]}
     assert ("governance", "evidence_access") in allowed
     assert ("atlas_portable", "deliverables") in allowed
+
+
+def test_protocol_evidence_owners_are_derived_truth() -> None:
+    contract = load_contract()
+    protocol_owners = {
+        path: component_for_path(path, contract)
+        for path in (
+            "cisco_toolkit/bgp_intent.py",
+            "cisco_toolkit/fhrp_intent.py",
+            "cisco_toolkit/fhrp_redundancy.py",
+            "cisco_toolkit/ipv6_routing.py",
+            "cisco_toolkit/vtp_safety.py",
+        )
+    }
+    assert protocol_owners == {path: "analysis" for path in protocol_owners}
+
+
+def test_master_reference_ci_fetches_review_basis_history() -> None:
+    workflow = (SITE_ROOT.parent / ".github" / "workflows" / "master-reference-ci.yml").read_text(
+        encoding="utf-8"
+    )
+    checkout_step = workflow.partition("actions/checkout@")[2].partition("actions/setup-node@")[0]
+    assert re.search(r"(?m)^\s+fetch-depth:\s*0\s*$", checkout_step)
 
 
 def test_resolved_forbidden_import_blocks_architecture_receipt() -> None:
