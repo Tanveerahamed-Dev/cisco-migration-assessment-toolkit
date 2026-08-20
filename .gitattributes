@@ -64,6 +64,13 @@ webapp/frontend/index.html text eol=lf
 # Windows and Linux builds feed the same header rules into the Sites archive.
 master-reference/public/_headers text eol=lf
 
+# Vite's CSS-module identifiers include source-position input. A Windows
+# `core.autocrlf=true` checkout previously materialized selected Atlas module
+# styles as CRLF, producing different scoped class names, asset filenames, and
+# custody hashes than the same Git blobs on Linux. Keep every Master Reference
+# stylesheet LF so the reviewed production CSS receipt is cross-platform.
+master-reference/**/*.css text eol=lf
+
 # The bounded image parser is a byte-bound local package. Its SBOM source
 # receipt is computed over selected Git blobs, so every checkout must
 # materialize the same LF bytes for local verification and package tests.

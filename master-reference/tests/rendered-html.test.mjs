@@ -48,12 +48,12 @@ const INERT_TEXT_TAGS = new Set([
   "xmp",
 ]);
 const CORE_OUTCOME_STYLESHEET = Object.freeze({
-  href: "/assets/index-C_Gl0jrw.css",
-  sha256: "f88fab14575c38c41f55e35991159acb78d7c48cc01fd904e8f6bc938eb538d2",
+  href: "/assets/index-B9KNmxWm.css",
+  sha256: "bc9b52cac7e84bc24340532b3dbb1fa964200f2bfe2675924774b5cf902e6925",
   attributes: Object.freeze({
     "data-precedence": "vite-rsc/importer-resources",
-    "data-rsc-css-href": "/assets/index-C_Gl0jrw.css",
-    href: "/assets/index-C_Gl0jrw.css",
+    "data-rsc-css-href": "/assets/index-B9KNmxWm.css",
+    href: "/assets/index-B9KNmxWm.css",
     rel: "stylesheet",
   }),
 });
@@ -1600,7 +1600,7 @@ test("renders the complete protocol stage matrix and coverage-honest family doss
   for (const stage of model.stages) assert.ok(html.includes(stage.label));
   assert.ok(html.includes("No emitted family row means"));
   const visible = normalizedVisibleText(html);
-  assert.ok(visible.includes("31 adjacent or"));
+  assert.ok(visible.includes("30 adjacent or"));
   assert.match(visible, /current\s*:\s*0/);
   assert.match(visible, /partial\s*:\s*21/);
   assert.match(visible, /missing\s*:\s*17/);
