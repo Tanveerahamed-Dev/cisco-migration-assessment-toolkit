@@ -50,7 +50,7 @@ _MAX_PORTABLE_INTEGER = 9_007_199_254_740_991
 
 _PDF_GATE_LINEAGE_SOURCE_OIDS = (
     ("rendered_sink_lineage", "ed375f35a60b7eb4cc5719223b5c349fd2bddba2", False),
-    ("capability_sink_lineage", "19312d959afd79e0ae91330f6b864e0bcfba0456", False),
+    ("capability_sink_lineage", "b95c5a629203976e0046497f7c66804c62305635", False),
     ("core_sink_lineage", "27b7c166a78894d957bd3f35b5f64170dd11afb4", True),
 )
 _PDF_GATE_MECHANICAL_OBSERVATION_DIGESTS = (
@@ -60,7 +60,7 @@ _PDF_GATE_MECHANICAL_OBSERVATION_DIGESTS = (
     ),
     (
         "capability_sink_mechanical_verification",
-        "afee08dec849ca72dad14a40790735337fc151dc721836ce2fc1a2a980ea5b15",
+        "e47484a07177df12dd2c9a2372cf525babd6bf9d3a1d47abdfeb414f4799a527",
     ),
     (
         "core_sink_mechanical_verification",
@@ -69,7 +69,7 @@ _PDF_GATE_MECHANICAL_OBSERVATION_DIGESTS = (
 )
 _PDF_GATE_OBSERVED_RECEIPT_DIGESTS = (
     ("rendered_sink_lineage", "7ef64012f0c22920149875e1ab0f92535bfebd118b65add09594ce6a6865cdeb"),
-    ("capability_sink_lineage", "3c293e70426b4579b73530fa2944cdc856b479805579850ef3d1f9968519d931"),
+    ("capability_sink_lineage", "01db0f97a29917d083d01053caabd64bc27144c6883004361478e3dfd29a9dce"),
     ("core_sink_lineage", "95d901997eb6aa9fd61ac768ab29fc6c3f2fb1118b4d5e1ee01286029d76f469"),
 )
 _GENERATED_PDF_PROVENANCE_FIELDS = (

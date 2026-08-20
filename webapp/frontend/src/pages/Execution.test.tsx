@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
 import ExecutionPage, { fmtClock, OUTCOME_COLOR } from "./Execution";
 import { api } from "../api";
-import type { ExecCheck, ExecutionState, SnapshotMeta } from "../api";
+import type { CompareResponse, ExecCheck, ExecutionState, SnapshotMeta } from "../api";
 
 // ── pure helpers ──────────────────────────────────────────────────────────
 // The war-room elapsed clock: seconds → H:MM:SS, recomputed from started_at each tick.
@@ -110,6 +110,80 @@ function renderExec() {
       </Routes>
     </MemoryRouter>,
   );
+}
+
+function comparisonPolicy() {
+  return {
+    schema: "execution_comparison_policy/1" as const,
+    canonical_gate_required: true as const,
+    before_snapshot: {
+      source: "persisted snapshots.snapshot_json blob",
+      sha256: `sha256:${"1".repeat(64)}`,
+      bytes: 1234,
+      snapshot_id: 7,
+      campaign_id: 3,
+      engagement_id: "eng-east",
+      label: "Baseline",
+      script_version: "3.30.0",
+    },
+  };
+}
+
+function canonicalComparison(verdict: "PASS" | "FAIL" = "PASS"): CompareResponse {
+  return {
+    comparison_schema: "source_bound_cutover_comparison/1",
+    verdict: verdict === "PASS" ? "CLEAN" : "REGRESSED",
+    cutover_gate: {
+      schema: "cutover_gate/1",
+      verdict,
+      note: `Bound decision basis for ${verdict}.`,
+      operator_note: `Overall before/after cutover decision: ${verdict}. Server-owned execution evidence.`,
+      delta_verdict: verdict === "PASS" ? "CLEAN" : "REGRESSED",
+      delta_display: verdict === "PASS" ? "CLEAN" : "REGRESSED",
+      delta_note: "Bound delta evidence.",
+      certificate_verdict: verdict,
+      certificate_note: "Bound path evidence.",
+      protocol_gate: verdict,
+      protocol_baseline_peers: 1,
+      protocol_regressions: verdict === "PASS" ? 0 : 1,
+      protocol_coverage_gaps: 0,
+      comparison_admission_status: "admitted",
+      comparison_admission_note: "Source and subject identities admitted.",
+    },
+  };
+}
+
+function executionWithComparison(verdict: "PASS" | "FAIL" = "PASS"): ExecutionState {
+  const comparison = canonicalComparison(verdict);
+  const cutoverGate = comparison.cutover_gate!;
+  return execState({
+    execution_schema: "cutover_execution/2",
+    comparison_policy: comparisonPolicy(),
+    latest_comparison: {
+      schema: "execution_latest_comparison/1",
+      receipt_id: 41,
+      receipt_sha256: `sha256:${"a".repeat(64)}`,
+      before_snapshot_id: 7,
+      after_snapshot_id: 8,
+      cutover_gate: cutoverGate,
+    },
+    comparison_receipts: [{
+      id: 41,
+      execution_id: 1,
+      before_snapshot_id: 7,
+      after_snapshot_id: 8,
+      receipt_sha256: `sha256:${"a".repeat(64)}`,
+      cutover_verdict: verdict,
+      created_at: "2026-01-01T11:30:00Z",
+      receipt: {
+        schema: "execution_comparison_receipt/1",
+        before_snapshot_id: 7,
+        after_snapshot_id: 8,
+        comparison,
+        receipt_sha256: `sha256:${"a".repeat(64)}`,
+      },
+    }],
+  });
 }
 
 describe("ExecutionPage", () => {
@@ -339,6 +413,93 @@ describe("ExecutionPage", () => {
   });
 });
 
+describe("ExecutionPage · immutable post-change comparison", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  function campaignWithAfterSnapshot() {
+    return {
+      id: 3,
+      name: "DC East Migration",
+      description: "",
+      created_at: "2026-01-01T00:00:00Z",
+      snapshots: [
+        snapMeta,
+        { ...snapMeta, id: 8, label: "Post-change", uploaded_at: "2026-01-01T11:00:00Z" },
+      ],
+    };
+  }
+
+  it("binds a same-campaign after snapshot and renders the returned canonical receipt", async () => {
+    const initial = execState({
+      execution_schema: "cutover_execution/2",
+      comparison_policy: comparisonPolicy(),
+      comparison_receipts: [],
+    });
+    const updated = executionWithComparison("PASS");
+    vi.spyOn(api, "getExecution").mockResolvedValue(initial);
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(snapMeta);
+    vi.spyOn(api, "getCampaign").mockResolvedValue(campaignWithAfterSnapshot());
+    const compare = vi.spyOn(api, "compareExecution").mockResolvedValue(updated);
+    renderExec();
+
+    expect(await screen.findByTestId("execution-canonical-gate-missing")).toHaveTextContent("NOT VERIFIED");
+    const after = await screen.findByLabelText("After snapshot");
+    expect(await within(after).findByRole("option", { name: /Post-change · snapshot 8/ })).toBeInTheDocument();
+    fireEvent.change(after, { target: { value: "8" } });
+    fireEvent.click(screen.getByRole("button", { name: "Bind and compare" }));
+
+    await waitFor(() => expect(compare).toHaveBeenCalledWith(1, 8));
+    expect(await screen.findByTestId("canonical-cutover-verdict")).toHaveTextContent("PASS");
+    expect(screen.getByTestId("canonical-cutover-operator-note")).toHaveTextContent("Server-owned execution evidence");
+    expect(screen.queryByTestId("execution-canonical-gate-missing")).not.toBeInTheDocument();
+    expect(screen.getByTestId("execution-compare-form")).toHaveTextContent("1 immutable comparison receipt");
+  });
+
+  it("freezes optional expected-family intent into the execution comparison request", async () => {
+    const initial = execState({
+      execution_schema: "cutover_execution/2",
+      comparison_policy: comparisonPolicy(),
+      comparison_receipts: [],
+    });
+    vi.spyOn(api, "getExecution").mockResolvedValue(initial);
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(snapMeta);
+    vi.spyOn(api, "getCampaign").mockResolvedValue(campaignWithAfterSnapshot());
+    const compare = vi.spyOn(api, "compareExecution").mockResolvedValue(
+      executionWithComparison("REVIEW"),
+    );
+    const intent = {
+      expected_changes: [{
+        family: "fhrp_redundancy_domain", transitions: ["intent_changed"],
+        subjects: [], reason: "planned active role move",
+      }],
+      note: "CAB-1234",
+    };
+    renderExec();
+
+    const after = await screen.findByLabelText("After snapshot");
+    expect(await within(after).findByRole("option", { name: /Post-change · snapshot 8/ }))
+      .toBeInTheDocument();
+    fireEvent.change(after, { target: { value: "8" } });
+    fireEvent.change(screen.getByLabelText("Execution expected family changes JSON"), {
+      target: { value: JSON.stringify(intent) },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Bind and compare" }));
+
+    await waitFor(() => expect(compare).toHaveBeenCalledWith(1, 8, intent));
+  });
+
+  it("keeps a legacy execution neutral and offers no backfill control", async () => {
+    vi.spyOn(api, "getExecution").mockResolvedValue(execState());
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(snapMeta);
+    const getCampaign = vi.spyOn(api, "getCampaign");
+    renderExec();
+
+    expect(await screen.findByTestId("execution-comparison-legacy")).toHaveTextContent(/cannot be reinterpreted or backfilled/i);
+    expect(screen.queryByTestId("execution-compare-form")).not.toBeInTheDocument();
+    expect(getCampaign).not.toHaveBeenCalled();
+  });
+});
+
 // ── FE-13: an UNVALIDATED wave must not wear the colour of a VALIDATED one ──────────────────
 // The wave header's check counter is `{nPass}✓ {nFail}✗` coloured `nFail ? crit : ok`. A wave whose
 // validation checks are all still `pending` has nFail === 0, so it rendered in exactly the green a
@@ -471,5 +632,30 @@ describe("ExecutionPage · finish-confirm matches the backend outcome derivation
     expect(msg).toContain("start-snapshot current-baseline gate is BLOCKED");
     expect(msg).toContain("PARTIALLY IMPLEMENTED");
     expect(msg).toContain("re-collect a CLEAR snapshot");
+  });
+
+  it("warns that a new execution without a latest canonical PASS derives partial", async () => {
+    const st = executionWithComparison("FAIL");
+    st.waves[0].closeout = { decision: "COMPLETE", at: "2026-01-01T11:00:00Z", by: "eng", note: "" };
+    st.plan_summary = {
+      current_baseline: {
+        schema: "current_baseline_gate/1", verdict: "CLEAR", assessed: true,
+        note: "Observed start scope is clear.",
+      },
+    } as ExecutionState["plan_summary"];
+    vi.spyOn(api, "getExecution").mockResolvedValue(st);
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(snapMeta);
+    vi.spyOn(api, "getCampaign").mockResolvedValue({
+      id: 3, name: "DC East Migration", description: "", created_at: "2026-01-01T00:00:00Z",
+      snapshots: [snapMeta, { ...snapMeta, id: 8, label: "Post-change" }],
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    renderExec();
+    fireEvent.click(await screen.findByRole("button", { name: /Finish run · partial/i }));
+
+    const msg = confirm.mock.calls[0][0] as string;
+    expect(msg).toContain("latest canonical post-change gate is FAIL");
+    expect(msg).toContain("PARTIALLY IMPLEMENTED");
+    expect(msg).toContain("server-owned cutover gate is PASS");
   });
 });

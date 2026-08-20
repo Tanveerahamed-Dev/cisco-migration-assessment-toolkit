@@ -25,17 +25,17 @@ CONTENT_PATHS = (
 )
 EXPECTED_SOURCE_COUNTS = {
     "master-reference/content/atlas-core.json": 155,
-    "master-reference/content/capability-catalog.json": 422,
+    "master-reference/content/capability-catalog.json": 424,
     "master-reference/content/delivery-governance.json": 969,
     "master-reference/content/open-horizon-register.json": 315,
     "master-reference/content/output-contract.json": 275,
 }
-EXPECTED_TOTAL_CANDIDATES = 2_136
+EXPECTED_TOTAL_CANDIDATES = 2_138
 # These values bind every semantic rule except the selected-commit Git blob OID.
 # They are filled from and independently checked against the reviewed v2 spec.
 EXPECTED_SOURCE_SPEC_DIGESTS = {
     "master-reference/content/atlas-core.json": "88945e355209ff0d42376c1fc5273f23729a21d5d82021f7c1ae63d38f65402e",
-    "master-reference/content/capability-catalog.json": "21fb22df10f364ed8c6ac043d53aa31221ac6763e554a5a4f2c50fbe41015748",
+    "master-reference/content/capability-catalog.json": "4f5c453366826242722b987f5af073b94eeccddf75177ef3a44e07773d123820",
     "master-reference/content/delivery-governance.json": "62b113259ea0bc532a3c76faa63c8ee55f20746dd928e17a29b380ca45c15d38",
     "master-reference/content/open-horizon-register.json": "5739641632a20c199cb3b12f57efb18825879c45dc0c2d8be22da6079c9c6d27",
     "master-reference/content/output-contract.json": "417d637ca609aed5e37c62004cc279618655c0c214ef4f61dab1db3b829d9084",

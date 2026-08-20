@@ -34,6 +34,12 @@ CREATE TABLE IF NOT EXISTS campaigns (
     description TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS campaign_identities (
+    campaign_id   INTEGER PRIMARY KEY REFERENCES campaigns(id) ON DELETE CASCADE,
+    engagement_id TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_campaign_identity_engagement
+    ON campaign_identities(engagement_id);
 CREATE TABLE IF NOT EXISTS snapshots (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     campaign_id    INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
@@ -55,6 +61,68 @@ CREATE TABLE IF NOT EXISTS executions (
     state_json  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_executions_snapshot ON executions(snapshot_id, started_at);
+CREATE TABLE IF NOT EXISTS execution_comparisons (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    execution_id       INTEGER NOT NULL REFERENCES executions(id) ON DELETE CASCADE,
+    before_snapshot_id INTEGER NOT NULL,
+    after_snapshot_id  INTEGER NOT NULL,
+    receipt_sha256     TEXT NOT NULL,
+    cutover_verdict    TEXT NOT NULL,
+    created_at         TEXT NOT NULL,
+    receipt_json       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_execution_comparisons_latest
+    ON execution_comparisons(execution_id, id);
+CREATE TRIGGER IF NOT EXISTS execution_comparisons_no_update
+BEFORE UPDATE ON execution_comparisons
+BEGIN
+    SELECT RAISE(ABORT, 'execution comparison receipts are immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS execution_comparisons_no_delete
+BEFORE DELETE ON execution_comparisons
+BEGIN
+    SELECT RAISE(ABORT, 'execution comparison receipts are immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS execution_comparison_sources_no_delete
+BEFORE DELETE ON snapshots
+WHEN EXISTS (
+    SELECT 1 FROM execution_comparisons ec
+    WHERE ec.before_snapshot_id = OLD.id OR ec.after_snapshot_id = OLD.id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'execution comparison source snapshots are immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS execution_comparison_sources_no_rebind
+BEFORE UPDATE OF id, campaign_id, label, script_version, snapshot_json ON snapshots
+WHEN EXISTS (
+    SELECT 1 FROM execution_comparisons ec
+    WHERE ec.before_snapshot_id = OLD.id OR ec.after_snapshot_id = OLD.id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'execution comparison source snapshot bindings are immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS execution_comparison_engagement_no_delete
+BEFORE DELETE ON campaign_identities
+WHEN EXISTS (
+    SELECT 1 FROM snapshots s
+    JOIN execution_comparisons ec
+      ON ec.before_snapshot_id = s.id OR ec.after_snapshot_id = s.id
+    WHERE s.campaign_id = OLD.campaign_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'execution comparison engagement bindings are immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS execution_comparison_engagement_no_rebind
+BEFORE UPDATE OF campaign_id, engagement_id ON campaign_identities
+WHEN EXISTS (
+    SELECT 1 FROM snapshots s
+    JOIN execution_comparisons ec
+      ON ec.before_snapshot_id = s.id OR ec.after_snapshot_id = s.id
+    WHERE s.campaign_id = OLD.campaign_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'execution comparison engagement bindings are immutable');
+END;
 CREATE TABLE IF NOT EXISTS gates (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
@@ -71,6 +139,145 @@ CREATE TABLE IF NOT EXISTS gates (
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _canonical_receipt_sha256(value: Any) -> str:
+    payload = json.dumps(
+        value, sort_keys=True, ensure_ascii=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+_SNAPSHOT_BINDING_FIELDS = (
+    "source",
+    "sha256",
+    "bytes",
+    "snapshot_id",
+    "campaign_id",
+    "engagement_id",
+    "label",
+    "script_version",
+)
+_COMPARISON_ADDITIVE_FIELDS = frozenset({
+    "comparison_schema",
+    "comparison_admission",
+    "change_intent",
+    "protocol_families",
+    "precert",
+    "cutover_gate",
+    "operator_evidence",
+    "comparison_receipt",
+})
+
+
+def _snapshot_blob_bytes(value: Any) -> bytes:
+    if isinstance(value, memoryview):
+        return value.tobytes()
+    if isinstance(value, str):
+        return value.encode("utf-8")
+    if isinstance(value, bytes):
+        return value
+    return bytes(value)
+
+
+def _snapshot_binding_from_row(row: sqlite3.Row) -> tuple[bytes, Dict[str, Any]]:
+    raw = _snapshot_blob_bytes(row["snapshot_blob"])
+    return raw, {
+        "source": _SNAPSHOT_BINDING_SOURCE,
+        "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+        "bytes": len(raw),
+        "snapshot_id": int(row["snapshot_id"]),
+        "campaign_id": int(row["campaign_id"]),
+        "engagement_id": str(row["engagement_id"]),
+        "label": str(row["label"]),
+        "script_version": str(row["script_version"]),
+    }
+
+
+def _binding_matches(candidate: Any, expected: Dict[str, Any]) -> bool:
+    return isinstance(candidate, dict) and all(
+        field in candidate
+        and type(candidate[field]) is type(expected[field])
+        and candidate[field] == expected[field]
+        for field in _SNAPSHOT_BINDING_FIELDS
+    )
+
+
+def _comparison_envelope_valid(comparison: Any) -> bool:
+    """Verify the detached decision envelope against the complete comparison payload.
+
+    The comparison keeps the legacy delta fields at top level and adds the seven Release-1 fields
+    listed above.  Reconstructing that delta here lets persistence reject a rehashed outer wrapper
+    whose detached payload or duplicated custody metadata was changed after gate computation.
+    """
+    if (not isinstance(comparison, dict)
+            or comparison.get("comparison_schema") != "source_bound_cutover_comparison/1"):
+        return False
+    envelope = comparison.get("comparison_receipt")
+    admission = comparison.get("comparison_admission")
+    if (not isinstance(envelope, dict)
+            or envelope.get("schema") != "protocol_receipt_envelope/1"
+            or not isinstance(admission, dict)):
+        return False
+    unsigned = dict(envelope)
+    claimed_receipt = unsigned.pop("receipt_sha256", None)
+    delta = {
+        key: value for key, value in comparison.items()
+        if key not in _COMPARISON_ADDITIVE_FIELDS
+    }
+    payload = {
+        "admission": admission,
+        "change_intent": comparison.get("change_intent"),
+        "protocol_families": comparison.get("protocol_families"),
+        "delta": delta,
+        "precert": comparison.get("precert"),
+        "cutover_gate": comparison.get("cutover_gate"),
+        "operator_evidence": comparison.get("operator_evidence"),
+    }
+    return (
+        claimed_receipt == _canonical_receipt_sha256(unsigned)
+        and envelope.get("payload_sha256") == _canonical_receipt_sha256(payload)
+        and envelope.get("admission") == admission
+        and envelope.get("source_binding") == admission.get("source_binding")
+        and envelope.get("subject_binding") == admission.get("subject_binding")
+        and envelope.get("owner_versions") == admission.get("owner_versions")
+        and envelope.get("support_profiles") == admission.get("support_profiles")
+    )
+
+
+def _canonical_cutover_gate_valid(comparison: Any) -> bool:
+    """Prove the stored gate is the exact result of the sole decision owner.
+
+    Detached hashes establish immutability, not semantic authority: a caller with an entirely
+    rewritten payload can recompute every digest.  Persistence therefore recomputes the gate from
+    the complete, uncapped inputs before that gate is allowed to move an execution's latest marker.
+    The import is local to keep the storage module free of an import-time engine dependency.
+    """
+    if not isinstance(comparison, dict):
+        return False
+    gate = comparison.get("cutover_gate")
+    admission = comparison.get("comparison_admission")
+    families = comparison.get("protocol_families")
+    certificate = comparison.get("precert")
+    if not all(isinstance(value, dict) for value in (
+            gate, admission, families, certificate)):
+        return False
+    delta = {
+        key: value for key, value in comparison.items()
+        if key not in _COMPARISON_ADDITIVE_FIELDS
+    }
+    try:
+        from cisco_toolkit.html import compute_cutover_gate
+
+        expected = compute_cutover_gate(
+            delta,
+            certificate,
+            comparison_admission=admission,
+            protocol_family_changes=families,
+        )
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return gate == expected
 
 
 _BACKUP_DIR = "backups"
@@ -113,6 +320,19 @@ class Store:
             self._boot_hardening(dbfile, db_mtime)  # BEFORE the schema touches a corrupt file
         with self._lock:
             self._conn.executescript(_SCHEMA)
+            # Older stores predate an explicit engagement identity. Give each existing campaign a
+            # durable opaque identity exactly once; it is stored beside the campaign and survives
+            # a copied/moved USB database. Campaign names/paths are never inferred as identity.
+            missing = self._conn.execute(
+                """SELECT c.id FROM campaigns c
+                   LEFT JOIN campaign_identities i ON i.campaign_id=c.id
+                   WHERE i.campaign_id IS NULL ORDER BY c.id"""
+            ).fetchall()
+            for row in missing:
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO campaign_identities(campaign_id, engagement_id) VALUES (?,?)",
+                    (row["id"], "urn:uuid:" + str(uuid.uuid4())),
+                )
             self._conn.commit()
 
     def _boot_hardening(self, dbfile: Path, db_mtime: float | None) -> None:
@@ -220,23 +440,36 @@ class Store:
             self._conn.close()
 
     # -- campaigns ---------------------------------------------------------
-    def create_campaign(self, name: str, description: str = "") -> Dict[str, Any]:
+    def create_campaign(self, name: str, description: str = "",
+                        engagement_id: str = "") -> Dict[str, Any]:
+        engagement = engagement_id.strip() or ("urn:uuid:" + str(uuid.uuid4()))
         with self._lock:
-            cur = self._conn.execute(
-                "INSERT INTO campaigns(name, description, created_at) VALUES (?,?,?)",
-                (name.strip() or "Untitled campaign", description.strip(), _now()),
-            )
-            self._conn.commit()
-            cid = cur.lastrowid
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                cur = self._conn.execute(
+                    "INSERT INTO campaigns(name, description, created_at) VALUES (?,?,?)",
+                    (name.strip() or "Untitled campaign", description.strip(), _now()),
+                )
+                cid = int(cur.lastrowid or 0)
+                self._conn.execute(
+                    "INSERT INTO campaign_identities(campaign_id, engagement_id) VALUES (?,?)",
+                    (cid, engagement),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
         return self.get_campaign(cid)  # type: ignore[return-value]
 
     def list_campaigns(self) -> List[Dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute(
-                """SELECT c.*,
+                """SELECT c.*, i.engagement_id,
                           COUNT(s.id)            AS n_snapshots,
                           MAX(s.uploaded_at)     AS last_upload
-                   FROM campaigns c LEFT JOIN snapshots s ON s.campaign_id = c.id
+                   FROM campaigns c
+                   JOIN campaign_identities i ON i.campaign_id = c.id
+                   LEFT JOIN snapshots s ON s.campaign_id = c.id
                    GROUP BY c.id ORDER BY c.created_at DESC"""
             ).fetchall()
         out = []
@@ -250,7 +483,9 @@ class Store:
     def get_campaign(self, campaign_id: int) -> Optional[Dict[str, Any]]:
         with self._lock:
             row = self._conn.execute(
-                "SELECT * FROM campaigns WHERE id = ?", (campaign_id,)
+                """SELECT c.*, i.engagement_id FROM campaigns c
+                   JOIN campaign_identities i ON i.campaign_id=c.id
+                   WHERE c.id = ?""", (campaign_id,)
             ).fetchone()
         if not row:
             return None
@@ -258,11 +493,38 @@ class Store:
         d["snapshots"] = self.list_snapshots(campaign_id)
         return d
 
-    def delete_campaign(self, campaign_id: int) -> bool:
+    def delete_campaign_if_unreceipted(self, campaign_id: int) -> str:
+        """Atomically delete a campaign only when no canonical decision receipt depends on it."""
         with self._lock:
-            cur = self._conn.execute("DELETE FROM campaigns WHERE id = ?", (campaign_id,))
-            self._conn.commit()
-            return cur.rowcount > 0
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                exists = self._conn.execute(
+                    "SELECT 1 FROM campaigns WHERE id=?", (campaign_id,)
+                ).fetchone()
+                if exists is None:
+                    self._conn.rollback()
+                    return "missing"
+                receipt = self._conn.execute(
+                    """SELECT 1
+                       FROM execution_comparisons ec
+                       JOIN executions e ON e.id=ec.execution_id
+                       JOIN snapshots s ON s.id=e.snapshot_id
+                       WHERE s.campaign_id=? LIMIT 1""",
+                    (campaign_id,),
+                ).fetchone()
+                if receipt is not None:
+                    self._conn.rollback()
+                    return "receipted"
+                self._conn.execute("DELETE FROM campaigns WHERE id=?", (campaign_id,))
+                self._conn.commit()
+                return "deleted"
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def delete_campaign(self, campaign_id: int) -> bool:
+        """Compatibility wrapper; campaigns containing decision receipts are immutable."""
+        return self.delete_campaign_if_unreceipted(campaign_id) == "deleted"
 
     # -- snapshots ---------------------------------------------------------
     def add_snapshot(self, campaign_id: int, label: str, snapshot: Dict[str, Any],
@@ -296,8 +558,11 @@ class Store:
     def list_snapshots(self, campaign_id: int) -> List[Dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute(
-                """SELECT id, campaign_id, label, uploaded_at, script_version, n_devices, summary_json
-                   FROM snapshots WHERE campaign_id = ? ORDER BY uploaded_at ASC, id ASC""",
+                """SELECT s.id, s.campaign_id, i.engagement_id, s.label, s.uploaded_at,
+                          s.script_version, s.n_devices, s.summary_json
+                   FROM snapshots s
+                   JOIN campaign_identities i ON i.campaign_id=s.campaign_id
+                   WHERE s.campaign_id = ? ORDER BY s.uploaded_at ASC, s.id ASC""",
                 (campaign_id,),
             ).fetchall()
         return [self._meta_row(r) for r in rows]
@@ -305,8 +570,11 @@ class Store:
     def get_snapshot_meta(self, snapshot_id: int) -> Optional[Dict[str, Any]]:
         with self._lock:
             row = self._conn.execute(
-                """SELECT id, campaign_id, label, uploaded_at, script_version, n_devices, summary_json
-                   FROM snapshots WHERE id = ?""", (snapshot_id,)
+                """SELECT s.id, s.campaign_id, i.engagement_id, s.label, s.uploaded_at,
+                          s.script_version, s.n_devices, s.summary_json
+                   FROM snapshots s
+                   JOIN campaign_identities i ON i.campaign_id=s.campaign_id
+                   WHERE s.id = ?""", (snapshot_id,)
             ).fetchone()
         return self._meta_row(row) if row else None
 
@@ -339,24 +607,19 @@ class Store:
         """
         with self._lock:
             row = self._conn.execute(
-                """SELECT CAST(snapshot_json AS BLOB) AS snapshot_blob
-                   FROM snapshots WHERE id = ?""", (snapshot_id,)
+                """SELECT s.id AS snapshot_id, s.campaign_id, i.engagement_id,
+                          s.label, s.script_version,
+                          CAST(s.snapshot_json AS BLOB) AS snapshot_blob
+                   FROM snapshots s
+                   JOIN campaign_identities i ON i.campaign_id=s.campaign_id
+                   WHERE s.id = ?""", (snapshot_id,)
             ).fetchone()
         if row is None:
             return None
-        raw = row["snapshot_blob"]
-        if isinstance(raw, memoryview):
-            raw = raw.tobytes()
-        elif isinstance(raw, str):
-            raw = raw.encode("utf-8")
-        elif not isinstance(raw, bytes):
-            raw = bytes(raw)
+        raw, binding = _snapshot_binding_from_row(row)
         return (
             json.loads(raw),
-            {
-                "source": _SNAPSHOT_BINDING_SOURCE,
-                "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
-            },
+            binding,
         )
 
     def get_snapshot_section(self, snapshot_id: int, key: str) -> Any:
@@ -404,11 +667,35 @@ class Store:
                    ORDER BY uploaded_at DESC, id DESC LIMIT 1""", (campaign_id,)).fetchone()
         return int(row["id"]) if row else None
 
-    def delete_snapshot(self, snapshot_id: int) -> bool:
+    def delete_snapshot_if_unreceipted(self, snapshot_id: int) -> str:
+        """Atomically preserve every before/after source named by a canonical receipt."""
         with self._lock:
-            cur = self._conn.execute("DELETE FROM snapshots WHERE id = ?", (snapshot_id,))
-            self._conn.commit()
-            return cur.rowcount > 0
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                exists = self._conn.execute(
+                    "SELECT 1 FROM snapshots WHERE id=?", (snapshot_id,)
+                ).fetchone()
+                if exists is None:
+                    self._conn.rollback()
+                    return "missing"
+                receipt = self._conn.execute(
+                    """SELECT 1 FROM execution_comparisons
+                       WHERE before_snapshot_id=? OR after_snapshot_id=? LIMIT 1""",
+                    (snapshot_id, snapshot_id),
+                ).fetchone()
+                if receipt is not None:
+                    self._conn.rollback()
+                    return "receipted"
+                self._conn.execute("DELETE FROM snapshots WHERE id=?", (snapshot_id,))
+                self._conn.commit()
+                return "deleted"
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def delete_snapshot(self, snapshot_id: int) -> bool:
+        """Compatibility wrapper; receipt-bound source snapshots are never deleted."""
+        return self.delete_snapshot_if_unreceipted(snapshot_id) == "deleted"
 
     # -- executions ----------------------------------------------------------
     # A live cutover-execution run (war room) over one snapshot's plan. The state blob is the source
@@ -453,7 +740,236 @@ class Store:
         if not row:
             return None
         return {"id": row["id"], "snapshot_id": row["snapshot_id"],
-                "state": json.loads(row["state_json"]), "_state_json": row["state_json"]}
+                "state": json.loads(row["state_json"]), "_state_json": row["state_json"],
+                "comparisons": self.list_execution_comparisons(execution_id)}
+
+    def list_execution_comparisons(self, execution_id: int) -> List[Dict[str, Any]]:
+        """Append order is the immutable receipt order; integer id defines "latest"."""
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT id, execution_id, before_snapshot_id, after_snapshot_id,
+                          receipt_sha256, cutover_verdict, created_at, receipt_json
+                   FROM execution_comparisons WHERE execution_id=? ORDER BY id ASC""",
+                (execution_id,),
+            ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["receipt"] = json.loads(item.pop("receipt_json"))
+            out.append(item)
+        return out
+
+    def append_execution_comparison_if_unchanged(
+            self, execution_id: int, expected_state_json: str,
+            receipt: Dict[str, Any]) -> Dict[str, Any]:
+        """Atomically append one immutable comparison and move the latest-gate marker.
+
+        ``BEGIN IMMEDIATE`` plus the exact state-json comparison closes both races: a concurrent
+        execution mutation cannot be overwritten, and a finish cannot pass between comparison
+        computation and receipt append.  The receipt table itself has no update API and a database
+        trigger refuses UPDATEs.
+        """
+        unsigned = dict(receipt) if isinstance(receipt, dict) else {}
+        claimed_hash = unsigned.pop("receipt_sha256", None)
+        if claimed_hash != _canonical_receipt_sha256(unsigned):
+            raise ValueError("execution comparison receipt digest is invalid")
+        if receipt.get("schema") != "execution_comparison_receipt/1":
+            raise ValueError("execution comparison receipt schema is invalid")
+        comparison = receipt.get("comparison")
+        if not _comparison_envelope_valid(comparison):
+            raise ValueError("execution comparison detached receipt is invalid")
+        if not _canonical_cutover_gate_valid(comparison):
+            raise ValueError("execution comparison canonical cutover gate is invalid")
+        gate = comparison.get("cutover_gate") if isinstance(comparison, dict) else None
+        if not isinstance(gate, dict) or gate.get("schema") != "cutover_gate/1":
+            raise ValueError("execution comparison has no canonical cutover gate")
+        verdict = str(gate.get("verdict") or "")
+        before_snapshot_id = receipt.get("before_snapshot_id")
+        after_snapshot_id = receipt.get("after_snapshot_id")
+        if (not isinstance(before_snapshot_id, int) or isinstance(before_snapshot_id, bool)
+                or not isinstance(after_snapshot_id, int) or isinstance(after_snapshot_id, bool)):
+            raise ValueError("execution comparison snapshot identities are invalid")
+        encoded_receipt = json.dumps(receipt, separators=(",", ":"), allow_nan=False)
+        created_at = _now()
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                row = self._conn.execute(
+                    """SELECT snapshot_id, status, state_json FROM executions WHERE id=?""",
+                    (execution_id,),
+                ).fetchone()
+                if row is None:
+                    self._conn.rollback()
+                    return {"status": "missing"}
+                if row["state_json"] != expected_state_json:
+                    self._conn.rollback()
+                    return {"status": "conflict"}
+                if row["status"] != "in_progress":
+                    self._conn.rollback()
+                    return {"status": "closed"}
+                if int(row["snapshot_id"]) != before_snapshot_id:
+                    self._conn.rollback()
+                    return {"status": "identity_mismatch"}
+                state = json.loads(row["state_json"])
+                policy = state.get("comparison_policy") if isinstance(state, dict) else None
+                if (not isinstance(policy, dict)
+                        or policy.get("schema") != "execution_comparison_policy/1"
+                        or policy.get("canonical_gate_required") is not True):
+                    self._conn.rollback()
+                    return {"status": "legacy"}
+
+                # Re-read both source rows while the write transaction is held. Snapshot blobs are
+                # immutable through the API, but another process can delete a row between the
+                # route's initial read and this append. Binding to the rows again here ensures the
+                # receipt is admitted only while the exact source bytes and custody identities it
+                # names still exist. The same check catches an internally miswired/rehashed receipt.
+                if before_snapshot_id == after_snapshot_id:
+                    self._conn.rollback()
+                    return {"status": "source_mismatch"}
+                source_rows = self._conn.execute(
+                    """SELECT s.id AS snapshot_id, s.campaign_id, i.engagement_id,
+                              s.label, s.script_version,
+                              CAST(s.snapshot_json AS BLOB) AS snapshot_blob
+                       FROM snapshots s
+                       JOIN campaign_identities i ON i.campaign_id=s.campaign_id
+                       WHERE s.id IN (?,?)""",
+                    (before_snapshot_id, after_snapshot_id),
+                ).fetchall()
+                if len(source_rows) != 2:
+                    self._conn.rollback()
+                    return {"status": "source_missing"}
+                current_bindings: Dict[int, Dict[str, Any]] = {}
+                current_snapshots: Dict[int, Dict[str, Any]] = {}
+                for source_row in source_rows:
+                    raw_source, binding = _snapshot_binding_from_row(source_row)
+                    current_bindings[binding["snapshot_id"]] = binding
+                    try:
+                        parsed_source = json.loads(raw_source)
+                    except (TypeError, ValueError, UnicodeDecodeError):
+                        self._conn.rollback()
+                        return {"status": "source_mismatch"}
+                    if not isinstance(parsed_source, dict):
+                        self._conn.rollback()
+                        return {"status": "source_mismatch"}
+                    current_snapshots[binding["snapshot_id"]] = parsed_source
+                before_binding = current_bindings.get(before_snapshot_id)
+                after_binding = current_bindings.get(after_snapshot_id)
+                if before_binding is None or after_binding is None:
+                    self._conn.rollback()
+                    return {"status": "source_missing"}
+
+                admission = comparison.get("comparison_admission")
+                admission_source = admission.get("source_binding") \
+                    if isinstance(admission, dict) else None
+                envelope = comparison.get("comparison_receipt")
+                envelope_source = envelope.get("source_binding") \
+                    if isinstance(envelope, dict) else None
+                provenance = comparison.get("provenance")
+                delta_source = provenance.get("source_binding") \
+                    if isinstance(provenance, dict) else None
+                frozen_before = policy.get("before_snapshot")
+                source_pairs = (admission_source, envelope_source, delta_source)
+                source_mismatch = (
+                    before_binding["campaign_id"] != after_binding["campaign_id"]
+                    or before_binding["engagement_id"] != after_binding["engagement_id"]
+                    or not isinstance(admission, dict)
+                    or type(admission.get("campaign_id")) is not int
+                    or admission.get("campaign_id") != before_binding["campaign_id"]
+                    or not isinstance(admission.get("engagement_id"), str)
+                    or admission.get("engagement_id") != before_binding["engagement_id"]
+                    or not _binding_matches(frozen_before, before_binding)
+                    or any(
+                        not isinstance(pair, dict)
+                        or not _binding_matches(pair.get("before"), before_binding)
+                        or not _binding_matches(pair.get("after"), after_binding)
+                        for pair in source_pairs
+                    )
+                )
+                precert = comparison.get("precert")
+                precert_source = precert.get("source_binding") \
+                    if isinstance(precert, dict) else None
+                intent = comparison.get("change_intent")
+                intent_binding = intent.get("binding") if isinstance(intent, dict) else None
+                if (not isinstance(precert_source, dict)
+                        or precert_source.get("before") != before_binding["sha256"]
+                        or precert_source.get("after") != after_binding["sha256"]
+                        or not isinstance(intent_binding, dict)
+                        or not isinstance(intent_binding.get("engagement_id"), str)
+                        or intent_binding.get("engagement_id") != before_binding["engagement_id"]
+                        or type(intent_binding.get("campaign_id")) is not int
+                        or intent_binding.get("campaign_id") != before_binding["campaign_id"]
+                        or type(intent_binding.get("before_snapshot_id")) is not int
+                        or intent_binding.get("before_snapshot_id") != before_snapshot_id
+                        or type(intent_binding.get("after_snapshot_id")) is not int
+                        or intent_binding.get("after_snapshot_id") != after_snapshot_id
+                        or intent_binding.get("before_sha256") != before_binding["sha256"]
+                        or intent_binding.get("after_sha256") != after_binding["sha256"]):
+                    source_mismatch = True
+                if source_mismatch:
+                    self._conn.rollback()
+                    return {"status": "source_mismatch"}
+
+                # Digest reconciliation is not semantic reconciliation: a caller can rewrite the
+                # delta/certificate/family inputs, recompute their gate, and then recompute every
+                # enclosing hash. Re-run the complete comparison owner over the exact blobs read
+                # under this write transaction and require byte-for-byte-equivalent JSON values.
+                # Execution receipts accept only a canonical valid intent; malformed intent remains
+                # visible on the read-only /api/compare surface but cannot mutate execution state.
+                intent_status = intent.get("status") if isinstance(intent, dict) else None
+                if intent_status == "not_supplied":
+                    intent_request = None
+                elif intent_status == "reconciled":
+                    intent_request = {
+                        "expected_changes": intent.get("expected_changes"),
+                        "note": intent.get("note"),
+                    }
+                else:
+                    self._conn.rollback()
+                    return {"status": "comparison_mismatch"}
+                from . import engine as comparison_engine
+
+                canonical_comparison = comparison_engine.compare_bound_pair(
+                    current_snapshots[before_snapshot_id],
+                    current_snapshots[after_snapshot_id],
+                    before_binding=before_binding,
+                    after_binding=after_binding,
+                    change_intent=intent_request,
+                )
+                if (_canonical_receipt_sha256(comparison)
+                        != _canonical_receipt_sha256(canonical_comparison)):
+                    self._conn.rollback()
+                    return {"status": "comparison_mismatch"}
+                cur = self._conn.execute(
+                    """INSERT INTO execution_comparisons(
+                           execution_id, before_snapshot_id, after_snapshot_id, receipt_sha256,
+                           cutover_verdict, created_at, receipt_json)
+                       VALUES (?,?,?,?,?,?,?)""",
+                    (execution_id, before_snapshot_id, after_snapshot_id, claimed_hash,
+                     verdict, created_at, encoded_receipt),
+                )
+                receipt_id = int(cur.lastrowid or 0)
+                state["latest_comparison"] = {
+                    "schema": "execution_latest_comparison/1",
+                    "receipt_id": receipt_id,
+                    "receipt_sha256": claimed_hash,
+                    "before_snapshot_id": before_snapshot_id,
+                    "after_snapshot_id": after_snapshot_id,
+                    "cutover_gate": dict(gate),
+                }
+                encoded_state = json.dumps(state, separators=(",", ":"), allow_nan=False)
+                changed = self._conn.execute(
+                    """UPDATE executions SET state_json=?
+                       WHERE id=? AND status='in_progress' AND state_json=?""",
+                    (encoded_state, execution_id, expected_state_json),
+                )
+                if changed.rowcount != 1:
+                    self._conn.rollback()
+                    return {"status": "conflict"}
+                self._conn.commit()
+                return {"status": "saved", "receipt_id": receipt_id, "state": state}
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def save_execution_if_unchanged(self, execution_id: int, expected_state_json: str,
                                     state: Dict[str, Any]) -> str:
@@ -496,17 +1012,56 @@ class Store:
     def list_executions(self, snapshot_id: int) -> List[Dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute(
-                """SELECT id, snapshot_id, label, status, started_at, ended_at
+                """SELECT id, snapshot_id, label, status, started_at, ended_at, state_json
                    FROM executions WHERE snapshot_id = ? ORDER BY started_at DESC, id DESC""",
                 (snapshot_id,),
             ).fetchall()
-        return [dict(r) for r in rows]
+        out = []
+        for row in rows:
+            item = dict(row)
+            state = json.loads(item.pop("state_json"))
+            if isinstance(state.get("latest_comparison"), dict):
+                item["latest_comparison"] = state["latest_comparison"]
+            item["comparison_required"] = (
+                isinstance(state.get("comparison_policy"), dict)
+                and state["comparison_policy"].get("canonical_gate_required") is True
+            )
+            out.append(item)
+        return out
+
+    def delete_execution_if_unreceipted(self, execution_id: int) -> str:
+        """Delete an unreceipted run atomically: ``deleted``, ``receipted``, or ``missing``.
+
+        A canonical comparison is an append-only decision record.  The existence check and delete
+        share one write transaction so a comparison racing this operation either commits first and
+        blocks deletion, or observes that the execution was removed and cannot leave an orphan.
+        """
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                exists = self._conn.execute(
+                    "SELECT 1 FROM executions WHERE id=?", (execution_id,)
+                ).fetchone()
+                if exists is None:
+                    self._conn.rollback()
+                    return "missing"
+                receipt = self._conn.execute(
+                    "SELECT 1 FROM execution_comparisons WHERE execution_id=? LIMIT 1",
+                    (execution_id,),
+                ).fetchone()
+                if receipt is not None:
+                    self._conn.rollback()
+                    return "receipted"
+                self._conn.execute("DELETE FROM executions WHERE id=?", (execution_id,))
+                self._conn.commit()
+                return "deleted"
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def delete_execution(self, execution_id: int) -> bool:
-        with self._lock:
-            cur = self._conn.execute("DELETE FROM executions WHERE id = ?", (execution_id,))
-            self._conn.commit()
-            return cur.rowcount > 0
+        """Compatibility wrapper; canonical receipt-bearing executions are never deleted."""
+        return self.delete_execution_if_unreceipted(execution_id) == "deleted"
 
     # -- gates ---------------------------------------------------------------
     # Per-(wave, gate) sign-off dispositions for a campaign's T-minus calendar. An absent row IS

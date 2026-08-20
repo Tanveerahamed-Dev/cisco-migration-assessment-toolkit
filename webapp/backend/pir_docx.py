@@ -224,6 +224,94 @@ def write_pir_docx(output_path: str, state: Dict[str, Any], snapshot_label: str)
                 widths=[1.3, 0.7, 1.5, 1.3, 1.9],
             )
 
+    # Canonical post-change evidence is an append-only execution receipt, not an operator-entered
+    # check result.  Carry every before/after binding into the PIR and make the newest gate explicit;
+    # older/legacy runs are disclosed as having no receipt rather than being reinterpreted or
+    # synthetically backfilled at export time.
+    doc.add_heading("Canonical post-change comparison receipts", level=2)
+    raw_receipts = state.get("comparison_receipts")
+    comparison_receipts = (
+        [row for row in raw_receipts if isinstance(row, dict)]
+        if isinstance(raw_receipts, list) else []
+    )
+    policy = state.get("comparison_policy")
+    comparison_required = (
+        isinstance(policy, dict)
+        and policy.get("schema") == "execution_comparison_policy/1"
+        and policy.get("canonical_gate_required") is True
+    )
+    if not comparison_receipts:
+        doc.add_paragraph(
+            "No canonical post-change comparison receipt has been bound to this execution. "
+            + (
+                "A PASS receipt is required before this run can have a successful outcome."
+                if comparison_required else
+                "This legacy execution is not reinterpreted or backfilled with later evidence."
+            )
+        )
+    else:
+        latest_id = max(
+            (row.get("id") for row in comparison_receipts
+             if isinstance(row.get("id"), int) and not isinstance(row.get("id"), bool)),
+            default=None,
+        )
+        receipt_rows: List[List[Any]] = []
+        for row in comparison_receipts:
+            body = row.get("receipt") if isinstance(row.get("receipt"), dict) else {}
+            comparison = body.get("comparison") if isinstance(body.get("comparison"), dict) else {}
+            admission = (
+                comparison.get("comparison_admission")
+                if isinstance(comparison.get("comparison_admission"), dict) else {}
+            )
+            sources = admission.get("source_binding") \
+                if isinstance(admission.get("source_binding"), dict) else {}
+            before = sources.get("before") if isinstance(sources.get("before"), dict) else {}
+            after = sources.get("after") if isinstance(sources.get("after"), dict) else {}
+            gate = comparison.get("cutover_gate") \
+                if isinstance(comparison.get("cutover_gate"), dict) else {}
+            comparison_envelope = (
+                comparison.get("comparison_receipt")
+                if isinstance(comparison.get("comparison_receipt"), dict) else {}
+            )
+            marker = "LATEST" if latest_id is not None and row.get("id") == latest_id else "Prior"
+            receipt_rows.append([
+                f"{marker}\n#{row.get('id', '—')}\n{_fmt_ts(row.get('created_at'))}",
+                f"{body.get('before_snapshot_id', before.get('snapshot_id', '—'))}\n"
+                f"{before.get('sha256') or 'hash unavailable'}\n"
+                f"{before.get('bytes', '—')} persisted bytes",
+                f"{body.get('after_snapshot_id', after.get('snapshot_id', '—'))}\n"
+                f"{after.get('sha256') or 'hash unavailable'}\n"
+                f"{after.get('bytes', '—')} persisted bytes",
+                f"{gate.get('verdict') or row.get('cutover_verdict') or 'NOT VERIFIED'}\n"
+                f"admission: {admission.get('status') or 'not recorded'}",
+                f"execution receipt: {body.get('receipt_sha256') or row.get('receipt_sha256') or '—'}\n"
+                f"comparison payload: {comparison_envelope.get('payload_sha256') or '—'}",
+            ])
+        table(
+            ["Receipt", "Before snapshot / source hash", "After snapshot / source hash",
+             "Canonical gate", "Receipt custody"],
+            receipt_rows,
+            widths=[0.8, 1.55, 1.55, 1.05, 1.55],
+        )
+        latest = max(
+            comparison_receipts,
+            key=lambda row: row.get("id")
+            if isinstance(row.get("id"), int) and not isinstance(row.get("id"), bool) else -1,
+        )
+        latest_body = latest.get("receipt") if isinstance(latest.get("receipt"), dict) else {}
+        latest_comparison = (
+            latest_body.get("comparison")
+            if isinstance(latest_body.get("comparison"), dict) else {}
+        )
+        latest_gate = (
+            latest_comparison.get("cutover_gate")
+            if isinstance(latest_comparison.get("cutover_gate"), dict) else {}
+        )
+        p = doc.add_paragraph()
+        p.add_run("Latest canonical operator decision: ").bold = True
+        p.add_run(str(latest_gate.get("operator_note") or
+                      "No operator note was present in the canonical gate receipt."))
+
     # ---- 2. Planned vs actual, per wave ----
     doc.add_heading("2. Planned vs actual, per wave", level=1)
     rows = []

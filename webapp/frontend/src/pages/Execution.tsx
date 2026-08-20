@@ -1,6 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
-import { api, CurrentBaselineBlocker, CurrentBaselineGate, ExecCheck, ExecStep, ExecutionState, ExecWave, gateColor, SnapshotMeta } from "../api";
+import { api, gateColor } from "../api";
+import type {
+  Campaign,
+  CutoverChangeIntentInput,
+  CurrentBaselineBlocker,
+  CurrentBaselineGate,
+  ExecCheck,
+  ExecStep,
+  ExecutionState,
+  ExecWave,
+  SnapshotMeta,
+} from "../api";
+import ComparisonDecision from "../components/ComparisonDecision";
 import { CountUp, ErrorBox, Loading, SevChip, useAsync, useToast } from "../components/ui";
 
 /* The cutover execution console (war room): the snapshot's gated run-of-show, made live.
@@ -472,9 +484,20 @@ export default function ExecutionPage() {
   const [ex, setEx] = useState<ExecutionState | null>(null);
   const queueRef = useRef<Promise<unknown>>(Promise.resolve());
   const [operator, setOperator] = useState<string>(() => localStorage.getItem("assesshub-operator") || "");
+  const [afterSnapshotId, setAfterSnapshotId] = useState<number | "">("");
+  const [changeIntentText, setChangeIntentText] = useState("");
+  const [compareBusy, setCompareBusy] = useState(false);
+  const [compareError, setCompareError] = useState<string | null>(null);
   const { toast, node: toastNode } = useToast();
   const { data: snapMeta } = useAsync<SnapshotMeta | null>(
     () => (ex ? api.getSnapshot(ex.snapshot_id) : Promise.resolve(null)), [ex?.snapshot_id]);
+  const comparisonPolicy = ex?.comparison_policy;
+  const { data: campaign } = useAsync<Campaign | null>(
+    () => (comparisonPolicy && snapMeta
+      ? api.getCampaign(snapMeta.campaign_id)
+      : Promise.resolve(null)),
+    [comparisonPolicy?.schema, snapMeta?.campaign_id],
+  );
 
   useEffect(() => { if (data) setEx(data); }, [data]);
   useEffect(() => { localStorage.setItem("assesshub-operator", operator); }, [operator]);
@@ -495,6 +518,46 @@ export default function ExecutionPage() {
       .then(fn)
       .then(setEx)
       .catch((e) => toast(e.message || String(e)));
+  };
+
+  const bindPostChangeComparison = () => {
+    if (afterSnapshotId === "") {
+      toast("Choose the post-change snapshot first.");
+      return;
+    }
+    let changeIntent: CutoverChangeIntentInput | undefined;
+    if (changeIntentText.trim()) {
+      try {
+        const parsed = JSON.parse(changeIntentText);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          throw new Error("Expected-change intent must be a JSON object.");
+        }
+        changeIntent = parsed as CutoverChangeIntentInput;
+      } catch (e: any) {
+        const message = `Expected-change intent is not valid JSON: ${e?.message || String(e)}`;
+        setCompareError(message);
+        toast("Fix the expected-change intent before binding evidence.");
+        return;
+      }
+    }
+    setCompareBusy(true);
+    setCompareError(null);
+    queueRef.current = queueRef.current
+      .then(() => changeIntent
+        ? api.compareExecution(eid, afterSnapshotId, changeIntent)
+        : api.compareExecution(eid, afterSnapshotId))
+      .then((updated) => {
+        setEx(updated);
+        setAfterSnapshotId("");
+        setChangeIntentText("");
+        toast("Post-change evidence bound to an immutable canonical comparison receipt.");
+      })
+      .catch((e) => {
+        const message = e.message || String(e);
+        setCompareError(message);
+        toast(message);
+      })
+      .finally(() => setCompareBusy(false));
   };
 
   const act = {
@@ -523,6 +586,9 @@ export default function ExecutionPage() {
     const notComplete = ex.waves.filter((w) => w.closeout.decision !== "COMPLETE").length;
     const frozenBaseline = ex.plan_summary?.current_baseline;
     const baselineForcesPartial = !!frozenBaseline && frozenBaseline.verdict !== "CLEAR";
+    const canonicalVerdict = ex.latest_comparison?.cutover_gate?.verdict;
+    const canonicalForcesPartial = ex.comparison_policy?.canonical_gate_required === true
+      && canonicalVerdict !== "PASS";
     const msg = status === "aborted"
       ? "Abort this run? The record is kept and the PIR will show ABORTED."
       : open ? `${open} wave(s) are not closed out — finishing now derives a ${predicted} outcome. Finish anyway?`
@@ -530,6 +596,8 @@ export default function ExecutionPage() {
           ? `${notComplete} wave(s) closed out as something other than COMPLETE — finishing now derives a ${predicted} outcome. Finish anyway?`
           : baselineForcesPartial
             ? `The start-snapshot current-baseline gate is ${frozenBaseline.verdict}. Finishing now derives a PARTIALLY IMPLEMENTED outcome; re-collect a CLEAR snapshot and start a new run for successful acceptance. Finish anyway?`
+          : canonicalForcesPartial
+            ? `The latest canonical post-change gate is ${canonicalVerdict || "NOT VERIFIED"}. Finishing now derives a PARTIALLY IMPLEMENTED outcome; bind a comparison whose server-owned cutover gate is PASS for successful acceptance. Finish anyway?`
           : "Finish this run? It becomes read-only and the outcome is derived for the PIR.";
     if (!window.confirm(msg)) return;
     apply(() => api.execFinish(eid, status, "", operator));
@@ -541,6 +609,17 @@ export default function ExecutionPage() {
   // From the live ticking clock, not the server-frozen progress value — otherwise the OVER alarm
   // can't fire between mutations, exactly when the team is heads-down.
   const overBudget = p.planned_window_minutes > 0 && elapsed > p.planned_window_minutes * 60;
+  const candidates = (campaign?.snapshots || []).filter((snapshot) => snapshot.id !== ex.snapshot_id);
+  const receipts = Array.isArray(ex.comparison_receipts) ? ex.comparison_receipts : [];
+  const latestStored = ex.latest_comparison
+    ? receipts.find((row) => row.id === ex.latest_comparison!.receipt_id)
+    : receipts[receipts.length - 1];
+  const latestComparison = latestStored?.receipt.comparison;
+  const canonicalVerdict = ex.latest_comparison?.cutover_gate?.verdict;
+  const canonicalRequiredWithoutPass = ex.comparison_policy?.canonical_gate_required === true
+    && canonicalVerdict !== "PASS";
+  const baselinePreventsSuccess = !!ex.plan_summary?.current_baseline
+    && ex.plan_summary.current_baseline.verdict !== "CLEAR";
 
   return (
     <div className="container">
@@ -569,6 +648,84 @@ export default function ExecutionPage() {
           </span>
         )}
       </div>
+
+      {latestComparison ? (
+        <ComparisonDecision
+          value={latestComparison}
+          exportFilename={`execution-${eid}-comparison-receipt-${latestStored?.id || "latest"}.json`}
+        />
+      ) : comparisonPolicy ? (
+        <section aria-label="Canonical post-change cutover decision" data-testid="execution-canonical-gate-missing"
+          style={{ border: "1px solid var(--text-faint)", borderRadius: 9, padding: "10px 11px", marginBottom: 12 }}>
+          <div className="spread" style={{ gap: 8 }}>
+            <div>
+              <b>Canonical post-change cutover decision</b>
+              <div className="faint" style={{ fontSize: 10.5, marginTop: 2 }}>No immutable comparison receipt has been bound to this run</div>
+            </div>
+            <span className="chip" style={{ color: "var(--text-faint)", borderColor: "var(--text-faint)" }}>NOT VERIFIED</span>
+          </div>
+          <div className="faint" style={{ fontSize: 11.5, marginTop: 6 }}>
+            A new execution can be successful only when its latest server-owned cutover_gate/1 receipt is PASS.
+          </div>
+        </section>
+      ) : (
+        <section aria-label="Legacy execution comparison status" data-testid="execution-comparison-legacy"
+          style={{ border: "1px solid var(--border-faint)", borderRadius: 9, padding: "9px 11px", marginBottom: 12 }}>
+          <b>Post-change comparison · legacy execution</b>
+          <div className="faint" style={{ fontSize: 11.5, marginTop: 4 }}>
+            This run predates immutable canonical comparison receipts. It remains unchanged and cannot be reinterpreted or backfilled.
+          </div>
+        </section>
+      )}
+
+      {comparisonPolicy && live && (
+        <section aria-label="Bind post-change evidence" data-testid="execution-compare-form" className="panel"
+          style={{ marginBottom: 12 }}>
+          <h3>Bind post-change evidence</h3>
+          <div className="dim" style={{ fontSize: 12, marginBottom: 8 }}>
+            Select a snapshot from the frozen start snapshot&apos;s campaign. The server rechecks campaign, engagement, source hashes, subjects, owner versions, and support profiles before appending an immutable receipt.
+          </div>
+          <div className="row-flex" style={{ gap: 8, flexWrap: "wrap" }}>
+            <label htmlFor="execution-after-snapshot" className="faint" style={{ fontSize: 11 }}>After snapshot</label>
+            <select id="execution-after-snapshot" aria-label="After snapshot" value={afterSnapshotId}
+              onChange={(event) => setAfterSnapshotId(event.target.value === "" ? "" : Number(event.target.value))}
+              disabled={compareBusy || candidates.length === 0} style={{ minWidth: 220 }}>
+              <option value="">choose post-change evidence…</option>
+              {candidates.map((snapshot) => (
+                <option key={snapshot.id} value={snapshot.id}>{snapshot.label} · snapshot {snapshot.id}</option>
+              ))}
+            </select>
+            <button type="button" className="btn primary" onClick={bindPostChangeComparison}
+              disabled={compareBusy || afterSnapshotId === ""}>
+              {compareBusy ? "Comparing…" : "Bind and compare"}
+            </button>
+          </div>
+          <details style={{ marginTop: 9 }}>
+            <summary className="faint" style={{ cursor: "pointer", fontSize: 11.5 }}>
+              Expected family changes (optional, frozen into this receipt)
+            </summary>
+            <div className="faint" style={{ fontSize: 10.5, margin: "6px 0" }}>
+              Reviewable planned transitions can be reconciled; blocks, coverage loss, and
+              incompatibility remain non-PASS regardless of intent.
+            </div>
+            <textarea aria-label="Execution expected family changes JSON" value={changeIntentText}
+              onChange={(event) => setChangeIntentText(event.target.value)} rows={5}
+              placeholder={'{"expected_changes":[{"family":"fhrp_redundancy_domain","transitions":["intent_changed"],"subjects":[],"reason":"planned active role move"}],"note":"CAB-1234"}'}
+              style={{ width: "100%", fontFamily: "var(--mono)", fontSize: 11 }} />
+          </details>
+          {candidates.length === 0 && (
+            <div className="faint" style={{ fontSize: 11, marginTop: 7 }}>
+              No second snapshot is available in this campaign yet.
+            </div>
+          )}
+          {compareError && <div style={{ marginTop: 8 }}><ErrorBox msg={compareError} /></div>}
+          {receipts.length > 0 && (
+            <div className="faint" style={{ fontSize: 10.5, marginTop: 7 }}>
+              {receipts.length} immutable comparison receipt(s) retained · latest receipt {ex.latest_comparison?.receipt_id ?? "not identified"}
+            </div>
+          )}
+        </section>
+      )}
 
       <FrozenBaselineGate gate={ex.plan_summary?.current_baseline}
         blockerCount={ex.plan_summary?.n_baseline_blockers} scope="run" />
@@ -611,10 +768,12 @@ export default function ExecutionPage() {
         {live && (
           <>
             <button className="btn primary" onClick={() => finish("completed")}
-              title={ex.plan_summary?.current_baseline && ex.plan_summary.current_baseline.verdict !== "CLEAR"
+              title={baselinePreventsSuccess
                 ? "Finishing this frozen non-clear baseline can only derive PARTIALLY IMPLEMENTED"
-                : undefined}>
-              ■ Finish run{ex.plan_summary?.current_baseline && ex.plan_summary.current_baseline.verdict !== "CLEAR" ? " · partial" : ""}
+                : canonicalRequiredWithoutPass
+                  ? "A new execution requires a latest canonical PASS gate for SUCCESSFUL"
+                  : undefined}>
+              ■ Finish run{baselinePreventsSuccess || canonicalRequiredWithoutPass ? " · partial" : ""}
             </button>
             <button className="btn danger" onClick={() => finish("aborted")}>Abort</button>
           </>

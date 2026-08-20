@@ -31,7 +31,18 @@ from pydantic import BaseModel, Field
 
 from cisco_toolkit import brand_tokens, docmeta
 
-from . import cutover, deliverables, engine, execution, gates, graph, ingest, serve, summary
+from . import (
+    cutover,
+    deliverables,
+    engine,
+    execution,
+    gates,
+    graph,
+    ingest,
+    protocol_portfolio,
+    serve,
+    summary,
+)
 from .storage import Store
 
 _HERE = Path(__file__).resolve().parent
@@ -108,16 +119,37 @@ _SQLITE_INT_MAX = 2 ** 63 - 1
 RowId = Annotated[int, PathParam(ge=_SQLITE_INT_MIN, le=_SQLITE_INT_MAX)]
 #: The same bound for an id carried in a request BODY (Pydantic model field).
 BodyRowId = Field(ge=_SQLITE_INT_MIN, le=_SQLITE_INT_MAX)
+BoundedToken = Annotated[str, Field(max_length=_LEN_TOKEN)]
+BoundedName = Annotated[str, Field(max_length=_LEN_NAME)]
 
 
 class CampaignIn(BaseModel):
     name: str = Field(max_length=_LEN_NAME)
     description: str = Field(default="", max_length=_LEN_NOTE)
+    engagement_id: str = Field(default="", max_length=_LEN_NAME)
+
+
+class ExpectedFamilyChangeIn(BaseModel):
+    family: str = Field(min_length=1, max_length=_LEN_NAME)
+    transitions: List[BoundedToken] = Field(min_length=1, max_length=9)
+    subjects: List[BoundedName] = Field(default_factory=list, max_length=200)
+    reason: str = Field(default="", max_length=_LEN_NOTE)
+
+
+class ChangeIntentIn(BaseModel):
+    expected_changes: List[ExpectedFamilyChangeIn] = Field(default_factory=list, max_length=200)
+    note: str = Field(default="", max_length=_LEN_NOTE)
 
 
 class CompareIn(BaseModel):
     old_id: int = BodyRowId
     new_id: int = BodyRowId
+    change_intent: ChangeIntentIn | None = None
+
+
+class ExecutionCompareIn(BaseModel):
+    after_snapshot_id: int = BodyRowId
+    change_intent: ChangeIntentIn | None = None
 
 
 class FolderIngestIn(BaseModel):
@@ -1142,7 +1174,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
 
     @app.post("/api/campaigns", status_code=201)
     def create_campaign(body: CampaignIn) -> Dict[str, Any]:
-        return store.create_campaign(body.name, body.description)
+        return store.create_campaign(body.name, body.description, body.engagement_id)
 
     # freshens EVERY snapshot: parse + DB write each
     @app.get("/api/campaigns/{campaign_id}")
@@ -1158,8 +1190,15 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
 
     @app.delete("/api/campaigns/{campaign_id}", status_code=204)
     def delete_campaign(campaign_id: RowId):
-        if not store.delete_campaign(campaign_id):
+        deleted = store.delete_campaign_if_unreceipted(campaign_id)
+        if deleted == "missing":
             raise HTTPException(404, "Campaign not found")
+        if deleted == "receipted":
+            raise HTTPException(
+                409,
+                "A campaign containing canonical comparison receipts is an immutable decision "
+                "record and cannot be deleted",
+            )
         # A bare 204 — JSONResponse(content=None) would serialize a "null" body, which uvicorn
         # rejects on a 204 with an ASGI RuntimeError on every delete.
         return Response(status_code=204)
@@ -1344,6 +1383,23 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
     def get_section(snapshot_id: RowId, name: str) -> Dict[str, Any]:
         if name not in _ALLOWED_SECTIONS:
             raise HTTPException(400, f"Unknown section '{name}'")
+        if name == protocol_portfolio.SECTION_KEY:
+            bound = store.get_bound_snapshot(snapshot_id)
+            if bound is None:
+                raise HTTPException(404, "Snapshot not found")
+            snap, binding = bound
+            bundle = protocol_portfolio.build_protocol_single_snapshot_bundle(snap, binding)
+            receipt = bundle["receipt"]
+            return {
+                "section": name,
+                "data": {
+                    "receipt": receipt,
+                    "complete_export": {
+                        **receipt["complete_export"],
+                        "url": f"/api/snapshots/{snapshot_id}/protocol-assurance/export",
+                    },
+                },
+            }
         snap = store.get_snapshot(snapshot_id)
         if snap is None:
             raise HTTPException(404, "Snapshot not found")
@@ -1376,6 +1432,28 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                     physical_health=snap.get("physical_health"), protocol_health=snap.get("protocol_health"),
                     move_groups=snap.get("move_groups"))
         return {"section": name, "data": data}
+
+    @app.get("/api/snapshots/{snapshot_id}/protocol-assurance/export")
+    def protocol_assurance_export(snapshot_id: RowId) -> Response:
+        """Complete, uncapped JSON portfolio bound to the exact persisted snapshot blob."""
+        bound = store.get_bound_snapshot(snapshot_id)
+        if bound is None:
+            raise HTTPException(404, "Snapshot not found")
+        snap, binding = bound
+        bundle = protocol_portfolio.build_protocol_single_snapshot_bundle(snap, binding)
+        payload = protocol_portfolio.canonical_export_bytes(bundle["complete_export"])
+        digest = bundle["receipt"]["complete_export"]["sha256"]
+        return Response(
+            content=payload,
+            media_type="application/json",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="protocol-assurance-snapshot-{snapshot_id}.json"'
+                ),
+                "Cache-Control": "no-store",
+                "X-Atlas-Content-SHA256": digest,
+            },
+        )
 
     @app.get("/api/snapshots/{snapshot_id}/graph")
     def snapshot_graph(snapshot_id: RowId) -> Dict[str, Any]:
@@ -1580,7 +1658,34 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                     if isinstance(body.get("interview_answers"), dict) else body)
         return compute_design_nrfu(compute_design_blueprint(snap, register or {}))
 
+    def _bound_comparison_pair(before_snapshot_id: int, after_snapshot_id: int):
+        if before_snapshot_id == after_snapshot_id:
+            raise HTTPException(400, "Before and after snapshots must be different")
+        before_bound = store.get_bound_snapshot(before_snapshot_id)
+        after_bound = store.get_bound_snapshot(after_snapshot_id)
+        if before_bound is None or after_bound is None:
+            raise HTTPException(404, "One or both snapshots not found")
+        before, before_binding = before_bound
+        after, after_binding = after_bound
+        if before_binding.get("engagement_id") != after_binding.get("engagement_id"):
+            raise HTTPException(
+                409,
+                "Snapshots belong to different engagements; cross-engagement comparison is non-overridable",
+            )
+        if before_binding.get("campaign_id") != after_binding.get("campaign_id"):
+            raise HTTPException(
+                409,
+                "Snapshots belong to different campaigns; compare evidence within one campaign",
+            )
+        return before, before_binding, after, after_binding
+
     # -- execution runs (war room) ------------------------------------------
+    def _execution_view(rec: Dict[str, Any], state: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        view = execution.with_progress(
+            rec["id"], rec["snapshot_id"], state if state is not None else rec["state"])
+        view["comparison_receipts"] = list(rec.get("comparisons") or [])
+        return view
+
     def _mutate_execution(execution_id: int, fn) -> Dict[str, Any]:
         """Atomic read-modify-write on one run's state; returns the updated derived state."""
         with execution.MUTATION_LOCK:
@@ -1607,17 +1712,19 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                     "Execution run changed in another server process. Reload it and retry "
                     "the update so no operator's record is overwritten.",
                 )
-            return execution.with_progress(execution_id, rec["snapshot_id"], rec["state"])
+            return _execution_view(rec, rec["state"])
 
     @app.post("/api/snapshots/{snapshot_id}/executions", status_code=201)
     def start_execution(snapshot_id: RowId, body: ExecutionIn) -> Dict[str, Any]:
         """Materialize the snapshot's cutover plan into a live, frozen execution run."""
-        snap = store.get_snapshot(snapshot_id)
-        if snap is None:
+        bound = store.get_bound_snapshot(snapshot_id)
+        if bound is None:
             raise HTTPException(404, "Snapshot not found")
+        snap, source_binding = bound
         # Build the (label-independent) plan OFF the lock — it can block for a while and must not
         # serialize the whole war room.
-        state = execution.start_run(snap, body.label, body.operator)
+        state = execution.start_run(
+            snap, body.label, body.operator, source_binding=source_binding)
         if not state["waves"]:
             raise HTTPException(400, "No migration waves were derived from this snapshot — nothing to execute")
         # Auto-label + insert atomically under Store's BEGIN IMMEDIATE, so independent server
@@ -1637,7 +1744,10 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                 # start-side sibling that was left raw. The plan build is unaffected — it ran off the
                 # snapshot already in memory — so nothing partial is persisted.
                 raise HTTPException(404, "Snapshot not found") from e
-        return execution.with_progress(eid, snapshot_id, state)
+        return {
+            **execution.with_progress(eid, snapshot_id, state),
+            "comparison_receipts": [],
+        }
 
     @app.get("/api/snapshots/{snapshot_id}/executions")
     def list_executions(snapshot_id: RowId) -> List[Dict[str, Any]]:
@@ -1650,7 +1760,94 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         rec = store.get_execution(execution_id)
         if not rec:
             raise HTTPException(404, "Execution run not found")
-        return execution.with_progress(rec["id"], rec["snapshot_id"], rec["state"])
+        return _execution_view(rec)
+
+    @app.post("/api/executions/{execution_id}/compare")
+    def compare_execution(execution_id: RowId, body: ExecutionCompareIn) -> Dict[str, Any]:
+        """Bind one after snapshot and append the canonical comparison receipt to a live run."""
+        rec = store.get_execution(execution_id)
+        if not rec:
+            raise HTTPException(404, "Execution run not found")
+        policy = rec["state"].get("comparison_policy") \
+            if isinstance(rec.get("state"), dict) else None
+        if (not isinstance(policy, dict)
+                or policy.get("schema") != "execution_comparison_policy/1"
+                or policy.get("canonical_gate_required") is not True):
+            raise HTTPException(
+                409,
+                "This legacy execution predates canonical comparison receipts and cannot be backfilled",
+            )
+        if rec["state"].get("status") != "in_progress":
+            raise HTTPException(409, "A finished execution cannot accept new comparison evidence")
+
+        before, before_binding, after, after_binding = _bound_comparison_pair(
+            rec["snapshot_id"], body.after_snapshot_id)
+        frozen = policy.get("before_snapshot")
+        required_keys = ("snapshot_id", "campaign_id", "engagement_id", "sha256")
+        if (not isinstance(frozen, dict)
+                or any(frozen.get(key) != before_binding.get(key) for key in required_keys)):
+            raise HTTPException(
+                409,
+                "The execution's frozen start-snapshot custody no longer matches stored source bytes",
+            )
+        comparison = engine.compare_bound_pair(
+            before,
+            after,
+            before_binding=before_binding,
+            after_binding=after_binding,
+            change_intent=(body.change_intent.model_dump(mode="json")
+                           if body.change_intent is not None else None),
+        )
+        intent = comparison.get("change_intent")
+        if not isinstance(intent, dict) or intent.get("valid") is not True:
+            failures = intent.get("failures") if isinstance(intent, dict) else []
+            detail = "; ".join(str(item) for item in failures if str(item).strip())
+            raise HTTPException(
+                422,
+                "Change intent is malformed and cannot be bound to an execution receipt"
+                + (f": {detail}" if detail else ""),
+            )
+        receipt = engine.compact_execution_comparison(
+            comparison,
+            before_snapshot_id=rec["snapshot_id"],
+            after_snapshot_id=body.after_snapshot_id,
+        )
+        saved = store.append_execution_comparison_if_unchanged(
+            execution_id, rec["_state_json"], receipt)
+        status = saved.get("status")
+        if status == "missing":
+            raise HTTPException(404, "Execution run was deleted")
+        if status == "closed":
+            raise HTTPException(409, "A finished execution cannot accept new comparison evidence")
+        if status == "legacy":
+            raise HTTPException(409, "Legacy execution comparison backfill is not allowed")
+        if status == "identity_mismatch":
+            raise HTTPException(409, "Execution start-snapshot identity no longer matches")
+        if status == "source_missing":
+            raise HTTPException(
+                404,
+                "A comparison source snapshot was deleted while the canonical gate was computed",
+            )
+        if status == "source_mismatch":
+            raise HTTPException(
+                409,
+                "Canonical comparison custody no longer matches the persisted source bytes",
+            )
+        if status == "comparison_mismatch":
+            raise HTTPException(
+                409,
+                "Submitted comparison does not match a canonical recomputation from the persisted "
+                "source bytes",
+            )
+        if status != "saved":
+            raise HTTPException(
+                409,
+                "Execution run changed while comparison was computed. Reload and compare again.",
+            )
+        updated = store.get_execution(execution_id)
+        if not updated:
+            raise HTTPException(404, "Execution run was deleted")
+        return _execution_view(updated)
 
     @app.post("/api/executions/{execution_id}/step")
     def execution_step(execution_id: RowId, body: StepIn) -> Dict[str, Any]:
@@ -1707,7 +1904,10 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                 # Old rows may carry SUCCESSFUL from the former closeout-only authority rule.
                 # Recompute the read view before exporting so a PIR cannot publish that stale
                 # verdict when required steps/checks were never completed.
-                report_state = execution.with_current_outcome(rec["state"])
+                report_state = {
+                    **execution.with_current_outcome(rec["state"]),
+                    "comparison_receipts": list(rec.get("comparisons") or []),
+                }
                 write_pir_docx(path, report_state, snap_label)
             except Exception as e:
                 if os.path.exists(path):
@@ -1722,8 +1922,15 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         # Under the mutation lock so a delete can't land inside another request's
         # read-modify-write window (whose save would then be a silent no-op).
         with execution.MUTATION_LOCK:
-            if not store.delete_execution(execution_id):
+            deleted = store.delete_execution_if_unreceipted(execution_id)
+            if deleted == "missing":
                 raise HTTPException(404, "Execution run not found")
+            if deleted == "receipted":
+                raise HTTPException(
+                    409,
+                    "An execution with canonical comparison receipts is an immutable decision "
+                    "record and cannot be deleted",
+                )
         return Response(status_code=204)
 
     @app.get("/api/snapshots/{snapshot_id}/explorer", response_class=HTMLResponse)
@@ -1769,21 +1976,28 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
 
     @app.delete("/api/snapshots/{snapshot_id}", status_code=204)
     def delete_snapshot(snapshot_id: RowId):
-        if not store.delete_snapshot(snapshot_id):
+        deleted = store.delete_snapshot_if_unreceipted(snapshot_id)
+        if deleted == "missing":
             raise HTTPException(404, "Snapshot not found")
+        if deleted == "receipted":
+            raise HTTPException(
+                409,
+                "A snapshot bound by a canonical comparison receipt is immutable and cannot be "
+                "deleted",
+            )
         return Response(status_code=204)
 
     @app.post("/api/compare")
     def compare(body: CompareIn) -> Dict[str, Any]:
-        old_bound = store.get_bound_snapshot(body.old_id)
-        new_bound = store.get_bound_snapshot(body.new_id)
-        if old_bound is None or new_bound is None:
-            raise HTTPException(404, "One or both snapshots not found")
-        old, old_binding = old_bound
-        new, new_binding = new_bound
-        return engine.snapshot_delta(
-            old, new,
-            source_binding={"before": old_binding, "after": new_binding},
+        old, old_binding, new, new_binding = _bound_comparison_pair(
+            body.old_id, body.new_id)
+        return engine.compare_bound_pair(
+            old,
+            new,
+            before_binding=old_binding,
+            after_binding=new_binding,
+            change_intent=(body.change_intent.model_dump(mode="json")
+                           if body.change_intent is not None else None),
         )
 
     # -- demo --------------------------------------------------------------

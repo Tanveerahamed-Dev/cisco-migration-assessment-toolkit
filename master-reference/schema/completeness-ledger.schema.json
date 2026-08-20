@@ -477,18 +477,18 @@
                 "maxItems": 5,
                 "allOf": [
                   {"contains": {"properties": {"path": {"const": "master-reference/content/atlas-core.json"}, "candidate_count": {"const": 155}}, "required": ["path", "candidate_count"]}, "minContains": 1, "maxContains": 1},
-                  {"contains": {"properties": {"path": {"const": "master-reference/content/capability-catalog.json"}, "candidate_count": {"const": 422}}, "required": ["path", "candidate_count"]}, "minContains": 1, "maxContains": 1},
+                  {"contains": {"properties": {"path": {"const": "master-reference/content/capability-catalog.json"}, "candidate_count": {"const": 424}}, "required": ["path", "candidate_count"]}, "minContains": 1, "maxContains": 1},
                   {"contains": {"properties": {"path": {"const": "master-reference/content/delivery-governance.json"}, "candidate_count": {"const": 969}}, "required": ["path", "candidate_count"]}, "minContains": 1, "maxContains": 1},
                   {"contains": {"properties": {"path": {"const": "master-reference/content/open-horizon-register.json"}, "candidate_count": {"const": 315}}, "required": ["path", "candidate_count"]}, "minContains": 1, "maxContains": 1},
                   {"contains": {"properties": {"path": {"const": "master-reference/content/output-contract.json"}, "candidate_count": {"const": 275}}, "required": ["path", "candidate_count"]}, "minContains": 1, "maxContains": 1}
                 ]
               },
               "source_receipts_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-              "expected_candidates": {"const": 2136},
-              "discovered_candidates": {"const": 2136},
-              "classified_candidates": {"const": 2136},
+              "expected_candidates": {"const": 2138},
+              "discovered_candidates": {"const": 2138},
+              "classified_candidates": {"const": 2138},
               "independently_reviewed_candidates": {"const": 0},
-              "unresolved_candidates": {"const": 2136},
+              "unresolved_candidates": {"const": 2138},
               "candidate_set_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
               "compiler_integrity_claims_classified": {"const": 6},
               "error_codes": {

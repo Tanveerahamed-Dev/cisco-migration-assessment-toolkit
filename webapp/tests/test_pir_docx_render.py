@@ -34,7 +34,10 @@ def _minimal_state(*, finished: bool) -> dict:
 
 
 def _text_of(path: str) -> str:
-    return "\n".join(p.text for p in docx.Document(path).paragraphs)
+    document = docx.Document(path)
+    paragraphs = [p.text for p in document.paragraphs]
+    cells = [cell.text for table in document.tables for row in table.rows for cell in row.cells]
+    return "\n".join(paragraphs + cells)
 
 
 def test_write_pir_docx_finished_run(tmp_path):
@@ -64,3 +67,54 @@ def test_write_pir_docx_is_a_valid_openable_docx(tmp_path):
     for heading in ("Document control", "1. Execution summary", "2. Planned vs actual",
                     "3. Per-wave as-executed log", "4. Timeline", "5. Review & sign-off"):
         assert heading in text, f"missing section heading: {heading!r}"
+
+
+def test_pir_renders_bound_before_after_receipt_and_latest_canonical_gate(tmp_path):
+    state = _minimal_state(finished=True)
+    state["comparison_policy"] = {
+        "schema": "execution_comparison_policy/1",
+        "canonical_gate_required": True,
+    }
+    state["comparison_receipts"] = [{
+        "id": 9,
+        "created_at": "2026-07-12T11:20:00+00:00",
+        "cutover_verdict": "PASS",
+        "receipt_sha256": "sha256:" + "9" * 64,
+        "receipt": {
+            "schema": "execution_comparison_receipt/1",
+            "before_snapshot_id": 41,
+            "after_snapshot_id": 42,
+            "receipt_sha256": "sha256:" + "9" * 64,
+            "comparison": {
+                "comparison_admission": {
+                    "status": "admitted",
+                    "source_binding": {
+                        "before": {"snapshot_id": 41, "sha256": "sha256:" + "a" * 64,
+                                   "bytes": 1234},
+                        "after": {"snapshot_id": 42, "sha256": "sha256:" + "b" * 64,
+                                  "bytes": 1250},
+                    },
+                },
+                "cutover_gate": {
+                    "schema": "cutover_gate/1",
+                    "verdict": "PASS",
+                    "operator_note": "Canonical PASS from the stored before/after evidence.",
+                },
+                "comparison_receipt": {"payload_sha256": "sha256:" + "c" * 64},
+            },
+        },
+    }]
+    out = str(tmp_path / "pir_receipt.docx")
+    P.write_pir_docx(out, state, "Assessment_2026-06-13")
+    text = _text_of(out)
+    assert "Canonical post-change comparison receipts" in text
+    assert "LATEST" in text and "41" in text and "42" in text
+    assert "sha256:" + "a" * 64 in text
+    assert "sha256:" + "b" * 64 in text
+    assert "Canonical PASS from the stored before/after evidence." in text
+
+
+def test_pir_discloses_legacy_execution_has_no_backfilled_receipt(tmp_path):
+    out = str(tmp_path / "pir_legacy_receipt.docx")
+    P.write_pir_docx(out, _minimal_state(finished=True), "legacy")
+    assert "legacy execution is not reinterpreted or backfilled" in _text_of(out)

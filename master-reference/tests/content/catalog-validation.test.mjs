@@ -323,7 +323,7 @@ test("binds protocol depth to seven health families plus one receipt-owned runti
   assert.equal(protocolDepth.kind, "source-bound-derived-view");
   assert.match(protocolDepth.authority, /never field evidence|never.*field evidence/i);
   assert.equal(protocolDomain.entries.length, protocolDepth.denominator.catalog_cell_count);
-  assert.equal(protocolDomain.entries.length - protocolDepth.families.length, 30);
+  assert.equal(protocolDomain.entries.length - protocolDepth.families.length, 31);
   assert.equal(protocolDepth.denominator.health_family_count, 7);
   assert.equal(protocolDepth.denominator.family_count, 8);
   assert.equal(protocolDepth.denominator.stage_count, 8);
@@ -656,16 +656,16 @@ test("validates the exact capability shape and exposes the default /capabilities
   const entries = view.catalog.domains.flatMap((domain) => domain.entries);
 
   assert.equal(view.catalog.domains.length, 12);
-  assert.equal(entries.length, 211);
-  assert.equal(new Set(entries.map((entry) => entry.id)).size, 211);
-  assert.equal(view.semantic_record_count, 225);
+  assert.equal(entries.length, 212);
+  assert.equal(new Set(entries.map((entry) => entry.id)).size, 212);
+  assert.equal(view.semantic_record_count, 226);
   assert.equal(
     view.semantic_record_count,
     capabilitySinkLineageContract.source_scope.expected_records,
   );
   assert.deepEqual(view.rendered_observations, envelope.rendered_observations);
   assert.deepEqual(view.safety_observations, envelope.safety_observations);
-  assert.equal(view.rendered_observations.length, 422);
+  assert.equal(view.rendered_observations.length, 424);
   assert.equal(view.safety_observations.length, 7);
   const webSink = capabilitySinkLineageContract.sinks.find(
     (sink) => sink.sink_id === "web.capabilities.default",
@@ -687,7 +687,7 @@ test("validates the exact capability shape and exposes the default /capabilities
         (row) => row.slot_id,
       ),
     ).size,
-    429,
+    431,
   );
 
   const renderedKeys = [

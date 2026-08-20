@@ -186,11 +186,11 @@ def test_contract_schema_exact_source_and_candidate_denominator(live) -> None:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     Draft202012Validator.check_schema(schema)
     assert list(Draft202012Validator(schema).iter_errors(contract)) == []
-    assert _digest(contract) == "4e0fd034dc9ccb61333518feef088f71bfa1220eafb83d9ddabb481d87d67757"
+    assert _digest(contract) == "1b219cd558bc2a6c717293008872d24f0035fbf7314d254ed1f065d9173a4a06"
     assert hashlib.sha256(SOURCE_PATH.read_bytes()).hexdigest() == contract["source_scope"]["sha256"]
     assert len(capability["domains"]) == 12
-    assert len(list(_entries(capability))) == 211
-    assert len(records) == len({row["facet_id"] for row in records}) == 422
+    assert len(list(_entries(capability))) == 212
+    assert len(records) == len({row["facet_id"] for row in records}) == 424
     assert _digest(sorted(row["facet_id"] for row in records)) == contract["source_scope"]["facet_id_set_digest"]
     payload_keys = {
         "facet_id", "source_path", "source_blob_oid", "source_pointer", "rule_id", "record_kind",
@@ -212,19 +212,19 @@ def test_both_sinks_map_every_facet_and_seven_boundaries_but_stay_blocked(live) 
     )
     assert summary["closes_global_gate"] is False
     assert summary["global_denominator"] == {
-        "expected_candidates": 2136,
-        "in_scope_candidates": 422,
+        "expected_candidates": 2138,
+        "in_scope_candidates": 424,
         "out_of_scope_candidates": 1714,
         "independently_reviewed": 0,
-        "unresolved": 2136,
-        "claim_contract_digest": "4ebd7da5caa6aab63f3ba122d480fef638f46b866c665845087433074f436c8d",
-        "classification_digest": "b5bc4783b8bd6461fc4669b39a555ae061081a278e36712cdb6f70a5e673d1df",
-        "source_receipts_digest": "863f93c7bc0599b1cfe7e5b42eb5b10c8087a704af9de194be18d9bf28008689",
-        "candidate_set_digest": "a768b5a6c9a94390ada8e9c24627c8908f6a7b51e3f06d59b79ac8f1a5ffdd43",
+        "unresolved": 2138,
+        "claim_contract_digest": "bed99adaf4dea5ec8f6293993ecb981c1258354563ddf00cf35f2e837eef75de",
+        "classification_digest": "1319f15e0439eb85277982ab8d36086770156161e11328c82a17209ef22cf6f1",
+        "source_receipts_digest": "dbf82e7d86db36468af02bcc475a6d7b8da54d794560e0c66005a6978317f100",
+        "candidate_set_digest": "0500bab20bb6e4e1220d9a1d83ab566206f539cfbdc30077b2e50a16755f3f6b",
     }
     assert summary["observed_sink_count"] == 2
     for receipt in summary["sink_receipts"]:
-        assert (receipt["mapped_exactly_once"], receipt["rendered"], receipt["explicitly_omitted"]) == (422, 422, 0)
+        assert (receipt["mapped_exactly_once"], receipt["rendered"], receipt["explicitly_omitted"]) == (424, 424, 0)
         assert (receipt["unmapped"], receipt["multiply_mapped"], receipt["fallback_count"]) == (0, 0, 0)
         assert (receipt["safety_inputs_expected"], receipt["safety_inputs_bound"], receipt["safety_violations"]) == (7, 7, 0)
         assert (receipt["producer_verdict"], receipt["independent_verdict"]) == ("PASS", "BLOCK")
@@ -402,7 +402,7 @@ def test_source_object_raw_blob_oid_and_contract_digest_are_exact(live) -> None:
             sink_observations={},
         )
     tampered = copy.deepcopy(contract)
-    tampered["global_denominator"]["independently_reviewed"] = 422
+    tampered["global_denominator"]["independently_reviewed"] = 424
     with pytest.raises(CapabilitySinkLineageError, match="contract_invalid"):
         evaluate_capability_sink_lineage(
             contract=tampered,
@@ -438,7 +438,7 @@ def test_loader_and_schema_reject_nonportable_duplicate_and_gate_promotion(live)
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     for path, value in (
         (("closes_global_gate",), True),
-        (("global_denominator", "independently_reviewed"), 422),
+        (("global_denominator", "independently_reviewed"), 424),
         (("global_denominator", "unresolved"), 1714),
         (("sinks", 1, "locator"), "/capabilities?q=x"),
         (("sinks", 0, "expected_omitted"), 1),
@@ -463,7 +463,7 @@ def test_unavailable_shape_never_promotes_global_or_sink_gate(live) -> None:
     )
     assert summary["closes_global_gate"] is False
     assert summary["global_denominator"]["independently_reviewed"] == 0
-    assert summary["global_denominator"]["unresolved"] == 2136
+    assert summary["global_denominator"]["unresolved"] == 2138
     assert summary["observed_sink_count"] == 0
     assert all(row["producer_verdict"] == row["independent_verdict"] == "BLOCK" for row in summary["sink_receipts"])
     with pytest.raises(CapabilitySinkLineageError, match="unavailable_input_invalid"):

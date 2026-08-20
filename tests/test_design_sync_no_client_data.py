@@ -58,7 +58,12 @@ _BARREL_HELPER_EXPORTS = frozenset(
 
 # Topology3D is an internal, lazy-loaded implementation detail of TopologyGraph. It takes internal
 # graph state rather than a public snapId contract and cannot produce a useful static Design card.
-_DELIBERATE_SOURCE_ONLY_COMPONENTS = frozenset({"Topology3D"})
+# ComparisonDecision is likewise a workflow-internal renderer: it requires a complete source-bound
+# comparison receipt, preserves uncapped custody fields, and exports that receipt. Turning it into a
+# static design-sync card would require maintaining a second fictional semantic receipt outside the
+# server-owned contract, so Campaign and Execution reuse it directly without publishing it as a
+# standalone design-system component.
+_DELIBERATE_SOURCE_ONLY_COMPONENTS = frozenset({"ComparisonDecision", "Topology3D"})
 
 _BARREL_EXPORT_BLOCK = re.compile(
     r"^\s*export\s*{(?P<body>.*?)}\s*from\s*[\"'][^\"']+[\"']\s*;?",

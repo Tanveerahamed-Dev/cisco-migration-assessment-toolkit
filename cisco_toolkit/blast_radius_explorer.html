@@ -2079,7 +2079,7 @@ function demoSnapshot(){
     "DIST-2":[{prefix:"10.0.10.0/24",source:"connected",next_hop:"",out_intf:"Vlan10"},
               {prefix:"10.0.20.0/24",source:"connected",next_hop:"",out_intf:"Vlan20"},
               {prefix:"0.0.0.0/0",source:"OSPF",next_hop:"10.0.99.2",out_intf:"Po1"}]},
-  // V3.23.125: vPC / MLAG status (compute from 'show vpc') — DIST-1/DIST-2 are a CONFIRMED vPC pair (domain 10).
+  // V3.23.125: local vPC / MLAG status (compute from 'show vpc') — shared domain 10 is an UNVERIFIED pair candidate only.
   vpc:{
     "DIST-1":{domain_id:10,role:"primary",peer_status:"peer adjacency formed ok",keepalive_status:"peer is alive",consistency:"success",num_vpcs:1,
       peer_link:{id:"1",port:"Po1",status:"up",vlans:"1,10,20,30,99"},vpcs:[{id:"20",port:"Po20",status:"up",consistency:"success",vlans:"10,20"}]},
@@ -5621,14 +5621,24 @@ function appDomainOf(host){ if(!host)return ""; const doms=(SNAP&&SNAP.applicati
   const d=doms.find(x=>(x.switches||[]).includes(host)); return d?d.domain:"";}
 /* inferred MLAG/vPC pairs (no `show vpc` yet): two gateways for a VLAN that are directly linked
    (peer-link candidate), or the two switches a dual-homed endpoint lands on. Labeled "inferred". */
-/* V3.23.125: CONFIRMED vPC/MLAG pairs from `show vpc` (SNAP.vpc) — two hosts in the same vPC domain. */
+/* V3.23.125 compatibility visualization: shared-domain candidates from local `show vpc`
+   observations. A domain ID is an attribute, never pair identity; every generated combination is
+   unverified. Confirmation requires explicit reciprocal peer identities, both local legs (one on
+   each proven peer), and matching remote LACP system and aggregation/key identity. */
 function vpcPairs(){const out=new Set(); const vpc=(SNAP&&SNAP.vpc)||{}; const byDom={};
   Object.keys(vpc).forEach(h=>{const d=vpc[h]&&vpc[h].domain_id; if(d!=null)(byDom[d]=byDom[d]||[]).push(h);});
   Object.keys(byDom).forEach(k=>{const hs=byDom[k]; for(let i=0;i<hs.length;i++)for(let j=i+1;j<hs.length;j++)out.add([hs[i],hs[j]].sort().join("||"));});
   return out;}
-function _mlagTag(a,b){return vpcPairs().has([a,b].sort().join("||"))?"confirmed":"inferred";}
+const _MLAG_CONFIRM_REQUIREMENTS="Confirmation requires explicit reciprocal peer identities, both local legs (one on each proven peer), and matching remote LACP system and aggregation/key identity.";
+function _mlagEvidence(a,b){const vpc=(SNAP&&SNAP.vpc)||{},da=vpc[a]&&vpc[a].domain_id,db=vpc[b]&&vpc[b].domain_id;
+  const same=da!=null&&db!=null&&String(da)===String(db);
+  if(!same)return {tag:"inferred",note:`Inferred MLAG/vPC candidate from topology or endpoint placement only. ${_MLAG_CONFIRM_REQUIREMENTS}`};
+  const n=Object.keys(vpc).filter(h=>vpc[h]&&vpc[h].domain_id!=null&&String(vpc[h].domain_id)===String(da)).length;
+  const collision=n>2?` ${n} hosts report this domain, so every pairwise combination is ambiguous.`:"";
+  return {tag:"candidate",note:`Unverified vPC/MLAG candidate from shared domain ID only.${collision} ${_MLAG_CONFIRM_REQUIREMENTS}`};}
+function _mlagTag(a,b){return _mlagEvidence(a,b).tag;}
 function inferMlagPairs(){const pairs=new Set(); const add=(a,b)=>{if(a&&b&&a!==b)pairs.add([a,b].sort().join("||"));};
-  vpcPairs().forEach(k=>pairs.add(k));                              // confirmed vPC pairs take precedence (tagged via _mlagTag)
+  vpcPairs().forEach(k=>pairs.add(k));                              // compatibility candidates stay explicitly unverified via _mlagTag
   if(MODEL&&MODEL.gateways)for(const gws of MODEL.gateways.values()){const g=[...gws];
     for(let i=0;i<g.length;i++)for(let j=i+1;j<g.length;j++){
       const linked=(MODEL.adj.get(g[i])||[]).some(li=>{const L=MODEL.links[li];return (L.a===g[i]&&L.b===g[j])||(L.a===g[j]&&L.b===g[i]);});
@@ -5739,13 +5749,13 @@ function buildFlowJourney(F,srcOverride){if(!F||!F.src||!F.dst)return null;
   // transit + gateway nodes
   for(let i=0;i<hosts.length;i++){const h=hosts[i],nx=hosts[i+1]; const isGw=(h===sgw||h===dgw); const layers=[];
     if(nx){const onSrcSide=(idxGw<0)||(i<idxGw); const vid=onSrcSide?sv:dv;
-      const li=_edgeBetween(MODEL,vid,h,nx,false), L=li>=0?MODEL.links[li]:null, pc=!!(L&&L.portChannel), peer=_isMlag(h,nx,mlag);
+      const li=_edgeBetween(MODEL,vid,h,nx,false), L=li>=0?MODEL.links[li]:null, pc=!!(L&&L.portChannel), peer=_isMlag(h,nx,mlag), mev=peer?_mlagEvidence(h,nx):null;
       const root=onSrcSide?rootS:rootD;
       layers.push(rung("L1","Physical",pc?"ok":"watch",pc?"Port-channel (redundant)":"Single uplink",
         pc?"Bundle survives a member loss (bandwidth degrades only).":"Single physical link — its loss drops this hop (see backup path)."));
       layers.push(rung("L2","Data-Link","ok",`${shortName(h)} → ${shortName(nx)} via ${pc?"port-channel":"trunk uplink"}`,
-        `${root?`Forwards toward STP root ${shortName(root)} on the root port.`:"STP-forwarding trunk."}${pc?" Egress is a port-channel (member chosen by src-dst hash).":""}${peer?` ${shortName(h)}/${shortName(nx)} are ${_mlagTag(h,nx)==="confirmed"?"a confirmed vPC pair (show vpc)":"an inferred MLAG/vPC pair"}.`:""}`,
-        peer?_mlagTag(h,nx):"derived"));}
+        `${root?`Forwards toward STP root ${shortName(root)} on the root port.`:"STP-forwarding trunk."}${pc?" Egress is a port-channel (member chosen by src-dst hash).":""}${peer?` ${shortName(h)}/${shortName(nx)}: ${mev.note}`:""}`,
+        peer?mev.tag:"derived"));}
     if(isGw&&routed&&h===sgw){const fh=(MODEL.fhrp&&MODEL.fhrp.get(sv))||null;
       const act=fh&&fh.active&&fh.active.size?[...fh.active][0]:null, sby=fh&&fh.standby&&fh.standby.size?[...fh.standby][0]:null;
       const rt=d.ip?_routeCovers(sgw,d.ip):null, vrf=gwVrf(sgw,sv)||"global";
@@ -6165,8 +6175,8 @@ function _fsimMapHtml(S,J,i){return (S.both&&S.Jr)?fsimDualMap(S.J,S.Jr):fsimMap
 function _fsimStackHtml(S,J,i,backupActive,reverseActive){
   const nd=J.nodes[i]||J.nodes[0];
   const ep=nd.ep?`<div class="fsim-ep faint">${esc(nd.ep.ip||"")}${nd.ep.mac?` · ${esc(nd.ep.mac)}`:""}${nd.ep.cls?` · ${esc(nd.ep.cls)}${nd.ep.vendor?" ("+esc(nd.ep.vendor)+")":""}`:""}</div>`:"";
-  const mtag=nd.mlagPeer?_mlagTag(nd.host,nd.mlagPeer):"";
-  const mlag=nd.mlagPeer?` <span class="pill pl-${mtag==="confirmed"?"ok":"watch"}" title="${mtag==="confirmed"?"confirmed via show vpc":"inferred from topology — confirm with show vpc"}">${mtag} ${mtag==="confirmed"?"vPC":"MLAG"} peer ${esc(shortName(nd.mlagPeer))}</span>`:"";
+  const mev=nd.mlagPeer?_mlagEvidence(nd.host,nd.mlagPeer):null;
+  const mlag=mev?` <span class="pill pl-watch" title="${esc(mev.note)}">${mev.tag==="candidate"?"unverified vPC/MLAG candidate":"inferred MLAG/vPC candidate"} peer ${esc(shortName(nd.mlagPeer))}</span>`:"";
   const rungs=(nd.layers||[]).map(l=>`<div class="fsim-rung ${_fsimLrTok(l.verdict)}">`+
     `<div class="fsim-rh"><span class="fsim-ll">${esc(l.layer)} · ${esc(l.label)}</span><b>${esc(l.decision)}</b><span class="fsim-tag">${esc(l.tag)}</span></div>`+
     `<div class="fsim-why">${esc(l.why)}</div></div>`).join("");

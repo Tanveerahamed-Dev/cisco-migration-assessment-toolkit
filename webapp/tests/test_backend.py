@@ -349,6 +349,45 @@ def test_upload_and_compare(client):
     assert binding["after"]["source"] == "persisted snapshots.snapshot_json blob"
     assert binding["before"]["sha256"].startswith("sha256:")
     assert binding["after"]["sha256"].startswith("sha256:")
+    body = cmp.json()
+    assert body["precert"]["schema"] == "precert/1"
+    assert body["cutover_gate"]["schema"] == "cutover_gate/1"
+    assert body["protocol_families"]["schema"] == "protocol_family_change_set/1"
+    assert body["protocol_families"]["owns_score"] is False
+    assert body["protocol_families"]["owns_verdict"] is False
+    assert {family["family"] for family in body["protocol_families"]["families"]} == {
+        "ipv4_routing_adjacency", "ipv6_routing_adjacency", "bgp_configured_peer",
+        "stp_consistency", "stp_topology", "etherchannel", "vtp_safety",
+        "fhrp_configured_group", "fhrp_redundancy_domain", "multichassis_lag",
+    }
+    multichassis = next(
+        family for family in body["protocol_families"]["families"]
+        if family["family"] == "multichassis_lag"
+    )
+    assert any(
+        row["transition"] == "unchanged_degraded"
+        and row["decision_effect"] == "block"
+        for row in multichassis["changes"]
+    )
+    assert not any(
+        row.get("record_type") in {"reciprocal_peer_pair", "reconciled_attachment"}
+        for row in multichassis["source_receipt"]["changes"]
+    )
+    assert len(body["comparison_admission"]["support_profiles"]) == 10
+    assert body["operator_evidence"]["schema"] == "cutover_operator_evidence/1"
+    assert body["operator_evidence"]["owns_verdict"] is False
+    assert body["operator_evidence"]["rehearsal"]["assurance_level"] == "not_verified"
+    assert body["operator_evidence"]["rollback"]["assurance_level"] == "not_verified"
+    receipt = body["comparison_receipt"]
+    assert receipt["schema"] == "protocol_receipt_envelope/1"
+    assert receipt["receipt_sha256"].startswith("sha256:")
+    assert receipt["admission"]["campaign_id"] == cid
+    assert receipt["source_binding"]["before"]["snapshot_id"] == a.json()["id"]
+    assert receipt["source_binding"]["after"]["snapshot_id"] == b.json()["id"]
+    assert receipt["source_binding"]["before"]["engagement_id"] == c["engagement_id"]
+    assert body["cutover_gate"]["comparison_admission_status"] in {
+        "admitted", "coverage_lost", "not_comparable"
+    }
 
     trend = client.get(f"/api/campaigns/{cid}/trend")
     assert trend.status_code == 200
@@ -358,6 +397,44 @@ def test_upload_and_compare(client):
     assert len(trend_bindings) == 2
     assert all(b["source"] == "persisted snapshots.snapshot_json blob"
                and b["sha256"].startswith("sha256:") for b in trend_bindings)
+
+
+def test_compare_admission_refuses_same_snapshot_cross_campaign_and_cross_engagement(client):
+    import json
+
+    raw = json.dumps({
+        "script_version": "V3.23.0", "devices": {"sw1": {}},
+        "health_scores": [], "punchlist": [],
+    }).encode()
+
+    def campaign(name, engagement=""):
+        return client.post(
+            "/api/campaigns", json={"name": name, "engagement_id": engagement}
+        ).json()
+
+    def upload(cid, label):
+        response = client.post(
+            f"/api/campaigns/{cid}/snapshots",
+            files={"file": (f"{label}.json", raw, "application/json")},
+            data={"label": label},
+        )
+        assert response.status_code == 201, response.text
+        return response.json()["id"]
+
+    first = campaign("first", "ENG-1")
+    other_engagement = campaign("second", "ENG-2")
+    same_engagement = campaign("third", "ENG-1")
+    a = upload(first["id"], "a")
+    b = upload(other_engagement["id"], "b")
+    c = upload(same_engagement["id"], "c")
+
+    assert client.post("/api/compare", json={"old_id": a, "new_id": a}).status_code == 400
+    cross_engagement = client.post("/api/compare", json={"old_id": a, "new_id": b})
+    assert cross_engagement.status_code == 409
+    assert "different engagements" in cross_engagement.json()["detail"]
+    cross_campaign = client.post("/api/compare", json={"old_id": a, "new_id": c})
+    assert cross_campaign.status_code == 409
+    assert "different campaigns" in cross_campaign.json()["detail"]
 
 
 def test_engine_diff_surfaces_schema_compat_status():
@@ -1334,19 +1411,51 @@ def test_execution_outcome_vocabulary(client):
     # Use an explicitly CLEAR current baseline. The demo snapshot intentionally carries a degraded
     # OSPF baseline and therefore cannot exercise the clean-success branch anymore.
     row = {
-        "device": "sw1", "platform": "ios", "wave": "G1", "category": "Routing",
+        "device": "R1", "platform": "ios", "wave": "G1", "category": "Routing",
         "severity": "High", "check": "Observed adjacency stable", "command": "show ip ospf neighbor",
         "expect": "Observed peer remains FULL", "why": "Detect adjacency regression",
         "evidence_state": "assessed", "projection_custody": "embedded_unverified",
-        "source_key": "routing_neighbors.sw1",
+        "source_key": "routing_neighbors.R1",
+    }
+    routes = {
+        "R1": [
+            {"prefix": "10.1.1.0/24", "source": "connected", "out_intf": "Vlan10"},
+            {"prefix": "10.0.12.0/30", "source": "connected", "out_intf": "Gi0/1"},
+            {"prefix": "10.2.2.0/24", "source": "ospf", "next_hop": "10.0.12.2",
+             "out_intf": "Gi0/1"},
+        ],
+        "R2": [
+            {"prefix": "10.2.2.0/24", "source": "connected", "out_intf": "Vlan20"},
+            {"prefix": "10.0.12.0/30", "source": "connected", "out_intf": "Gi0/1"},
+            {"prefix": "10.1.1.0/24", "source": "ospf", "next_hop": "10.0.12.1",
+             "out_intf": "Gi0/1"},
+        ],
+    }
+    interfaces = {
+        "R1": {"Vlan10": {"svi_ip": "10.1.1.1/24"},
+               "Gi0/1": {"svi_ip": "10.0.12.1/30"}},
+        "R2": {"Gi0/1": {"svi_ip": "10.0.12.2/30"},
+               "Vlan20": {"svi_ip": "10.2.2.1/24"}},
     }
     snap = {
-        "devices": {"sw1": {"platform": "ios"}},
-        "wave_sequencing": [{"group": "G1", "make_before_break": ["sw1"],
+        "script_version": "V3.23.0",
+        "devices": {"R1": {"platform": "ios"}, "R2": {"platform": "ios"}},
+        "interfaces": interfaces,
+        "routes": routes,
+        "health_scores": [
+            {"switch": "R1", "band": "Good", "score": 90},
+            {"switch": "R2", "band": "Good", "score": 90},
+        ],
+        "punchlist": [],
+        "segmentation": {
+            "domains": [{"domain": "payments", "isolated": True, "exposure": "isolated"}],
+            "vrfs": [{"vrf": "PCI", "gateway_count": 1}],
+        },
+        "wave_sequencing": [{"group": "G1", "make_before_break": ["R1", "R2"],
                              "hard_cutover": [], "hard_cutover_endpoints": 0}],
-        "migration_readiness": [{"group": "G1", "switches": ["sw1"], "readiness": "READY",
+        "migration_readiness": [{"group": "G1", "switches": ["R1", "R2"], "readiness": "READY",
                                   "n_fail": 0, "n_warn": 0, "checks": []}],
-        "move_groups": [{"group": "G1", "switches": ["sw1"], "endpoints": 1}],
+        "move_groups": [{"group": "G1", "switches": ["R1", "R2"], "endpoints": 1}],
         "validation_plan": {
             "items": [row], "by_wave": {"G1": [row]},
             "summary": {"n_items": 1, "n_waves": 1, "by_category": {"Routing": 1}, "n_high": 1},
@@ -1360,6 +1469,13 @@ def test_execution_outcome_vocabulary(client):
     )
     assert upload.status_code == 201, upload.text
     snap_id = upload.json()["id"]
+    after_upload = client.post(
+        f"/api/campaigns/{cid}/snapshots",
+        files={"file": ("after.json", json.dumps(snap).encode(), "application/json")},
+        data={"label": "after"},
+    )
+    assert after_upload.status_code == 201, after_upload.text
+    after_id = after_upload.json()["id"]
 
     def run():
         return client.post(f"/api/snapshots/{snap_id}/executions", json={}).json()
@@ -1383,11 +1499,26 @@ def test_execution_outcome_vocabulary(client):
                              json={"wave": w["group"], "decision": decision}).json()
         return ex
 
-    # every wave completed, nothing skipped/failed -> SUCCESSFUL
+    # every wave completed, nothing skipped/failed, latest canonical gate PASS -> SUCCESSFUL
     ex = run()
+    comparison = client.post(
+        f"/api/executions/{ex['id']}/compare", json={"after_snapshot_id": after_id}
+    )
+    assert comparison.status_code == 200, comparison.text
+    ex = comparison.json()
+    assert len(ex["comparison_receipts"]) == 1
+    assert ex["latest_comparison"]["cutover_gate"]["verdict"] == "PASS"
+    assert ex["comparison_receipts"][0]["receipt"]["comparison"]["cutover_gate"] \
+        == ex["latest_comparison"]["cutover_gate"]
     ex = close_all(ex["id"], ex, "COMPLETE")
     ex = client.post(f"/api/executions/{ex['id']}/finish", json={"status": "completed"}).json()
     assert ex["outcome"] == "SUCCESSFUL"
+
+    # The same clean manual run with no post-change receipt is not accepted as successful.
+    ex = run()
+    ex = close_all(ex["id"], ex, "COMPLETE")
+    ex = client.post(f"/api/executions/{ex['id']}/finish", json={"status": "completed"}).json()
+    assert ex["outcome"] == "PARTIALLY IMPLEMENTED"
 
     # a rolled-back wave dominates the verdict, even when every other wave completed
     ex = run()
@@ -2157,13 +2288,14 @@ def test_every_row_id_param_is_range_bounded(client):
             if f.name.endswith("_id") and len(bounds(f)) != 2:
                 unbounded.append(f"path {r.path}:{f.name}")
     # body ids live inside the Pydantic models, not on the dependant
-    from backend.app import CompareIn
+    from backend.app import CompareIn, ExecutionCompareIn
 
-    for name, fi in CompareIn.model_fields.items():
-        if name.endswith("_id"):
-            kinds = {type(m) for m in (fi.metadata or [])}
-            if not ({annotated_types.Ge, annotated_types.Le} <= kinds):
-                unbounded.append(f"body CompareIn.{name}")
+    for model in (CompareIn, ExecutionCompareIn):
+        for name, fi in model.model_fields.items():
+            if name.endswith("_id"):
+                kinds = {type(m) for m in (fi.metadata or [])}
+                if not ({annotated_types.Ge, annotated_types.Le} <= kinds):
+                    unbounded.append(f"body {model.__name__}.{name}")
     assert not unbounded, f"id parameters with no SQLite-INTEGER bound: {unbounded}"
 
 

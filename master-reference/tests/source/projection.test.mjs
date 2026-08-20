@@ -966,12 +966,12 @@ async function trackedConsequentialClaimFixture() {
       candidate_digest: "79253dc74d3c25a49179f38b57ea25c7ff603195eb03ee97c5eb38793d78d894",
     }],
     ["master-reference/content/capability-catalog.json", {
-      git_blob_oid: "19312d959afd79e0ae91330f6b864e0bcfba0456",
-      sha256: "f4c4c5eb652d2ceb6ac60eca299a1a533334034a2d2551910fbbc364ba5c14ef",
-      bytes: 92635,
-      rule_set_digest: "12c2a143a2955faaf7694f22b78799af833cbd4f8e49a1bed87ea142dfe68917",
-      candidate_count: 422,
-      candidate_digest: "b92ac8c92f0564c7dd542ffde283633bc8d6e3e5a43aaa77cfef50f65720b18a",
+      git_blob_oid: "b95c5a629203976e0046497f7c66804c62305635",
+      sha256: "c680d0977547c2ed2a0200d0c3e15c5e4a5faba478278de22c563eeb56aac54a",
+      bytes: 93347,
+      rule_set_digest: "971e96f4e07b358862388646f280ac4ec78a1d090709681cc41d4deff75df9e7",
+      candidate_count: 424,
+      candidate_digest: "1a6037a66182272ebff882ce471a273b66c0b938bb0de92d4172a0564032269c",
     }],
     ["master-reference/content/delivery-governance.json", {
       git_blob_oid: "4db11fe882cc5c498c85e4b71c34979ae35e1b8b",
@@ -1005,7 +1005,7 @@ async function trackedConsequentialClaimFixture() {
   const contract = JSON.parse(contractRaw.toString("utf8"));
   assert.equal(
     sha256(contractRaw),
-    "4ebd7da5caa6aab63f3ba122d480fef638f46b866c665845087433074f436c8d",
+    "bed99adaf4dea5ec8f6293993ecb981c1258354563ddf00cf35f2e837eef75de",
   );
   rawSources.set(CONSEQUENTIAL_CLAIM_CONTRACT_PATH, {
     raw: contractRaw,
@@ -1045,18 +1045,18 @@ async function trackedConsequentialClaimFixture() {
     contract_path: CONSEQUENTIAL_CLAIM_CONTRACT_PATH,
     contract_git_blob_oid: gitBlobOid(contractRaw),
     contract_digest: sha256(contractRaw),
-    classification_digest: "b5bc4783b8bd6461fc4669b39a555ae061081a278e36712cdb6f70a5e673d1df",
+    classification_digest: "1319f15e0439eb85277982ab8d36086770156161e11328c82a17209ef22cf6f1",
     source_universe_expected: 5,
     source_universe_registered: 5,
     source_universe_unclassified: 0,
     source_receipts: sourceReceipts,
-    source_receipts_digest: "863f93c7bc0599b1cfe7e5b42eb5b10c8087a704af9de194be18d9bf28008689",
-    expected_candidates: 2136,
-    discovered_candidates: 2136,
-    classified_candidates: 2136,
+    source_receipts_digest: "dbf82e7d86db36468af02bcc475a6d7b8da54d794560e0c66005a6978317f100",
+    expected_candidates: 2138,
+    discovered_candidates: 2138,
+    classified_candidates: 2138,
     independently_reviewed_candidates: 0,
-    unresolved_candidates: 2136,
-    candidate_set_digest: "a768b5a6c9a94390ada8e9c24627c8908f6a7b51e3f06d59b79ac8f1a5ffdd43",
+    unresolved_candidates: 2138,
+    candidate_set_digest: "0500bab20bb6e4e1220d9a1d83ab566206f539cfbdc30077b2e50a16755f3f6b",
     compiler_integrity_claims_expected: 6,
     compiler_integrity_claims_classified: 6,
     compiler_integrity_claims_consequential: 0,
@@ -1569,7 +1569,7 @@ test("projection independently recomputes the bounded claim census and rejects s
 
 test("projection binds every consequential-claim facet subject without accepting review promotion", async () => {
   const fixture = await trackedConsequentialClaimFixture();
-  assert.equal(fixture.facetRecords.length, 2_136);
+  assert.equal(fixture.facetRecords.length, 2_138);
   assert.equal(
     digestObject(fixture.facetRecords.map(
       ({ id: _id, entity_type: _entityType, evidence_state: _evidenceState, ...subject }) => subject,

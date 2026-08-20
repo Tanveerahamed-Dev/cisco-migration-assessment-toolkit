@@ -929,7 +929,9 @@ def compute_snapshot_delta(old: dict, new: dict, *, source_binding: Optional[dic
 
 
 def compute_cutover_gate(delta: dict, certificate: dict,
-                         current_baseline: Optional[dict] = None) -> dict:
+                         current_baseline: Optional[dict] = None,
+                         comparison_admission: Optional[dict] = None,
+                         protocol_family_changes: Optional[dict] = None) -> dict:
     """Return the one combined before/after decision shown to an operator.
 
     ``compute_snapshot_delta`` and the Pre-Change Certificate answer different questions.  The former
@@ -939,7 +941,12 @@ def compute_cutover_gate(delta: dict, certificate: dict,
 
     The function is pure and total so every presentation surface can render the exact same receipt.
     ``current_baseline`` is optional for backward compatibility with direct legacy callers; when
-    omitted, the receipt embedded by ``compute_snapshot_delta`` is consumed.
+    omitted, the receipt embedded by ``compute_snapshot_delta`` is consumed.  The additive
+    ``comparison_admission`` contract is consumed only when supplied by a source-owning caller.
+    It can withhold a PASS for incompatible ownership, malformed identity/custody, or missing
+    comparison scope without changing the legacy two-argument contract.  The additive reference-only
+    family change set owns no verdict; when supplied, this sole decision owner consumes each native
+    family's producer-owned decision effect over the complete, uncapped row set.
     """
     delta = _as_dict(delta)
     certificate = _as_dict(certificate)
@@ -972,6 +979,177 @@ def compute_cutover_gate(delta: dict, certificate: dict,
     delta_note = _bounded_note(delta.get("verdict_note"), "No delta basis was emitted.")
     certificate_note = _bounded_note(
         certificate.get("verdict_note"), "No certificate basis was emitted.")
+
+    admission_supplied = comparison_admission is not None
+    admission = _as_dict(comparison_admission)
+    admission_status = str(admission.get("status") or "not_comparable").strip().lower()
+    if admission_status not in {"admitted", "coverage_lost", "not_comparable"}:
+        admission_status = "not_comparable"
+    admission_failures = admission.get("failures") if isinstance(admission.get("failures"), list) else []
+    admission_gaps = admission.get("coverage_gaps") if isinstance(admission.get("coverage_gaps"), list) else []
+    if admission_supplied and admission.get("schema") != "protocol_comparison_admission/1":
+        admission_status = "not_comparable"
+        admission_failures = ["comparison admission receipt is missing or malformed"]
+    admission_note = _bounded_note(
+        "; ".join(str(item) for item in (admission_failures or admission_gaps) if str(item).strip()),
+        ("Comparison ownership, custody, subjects, and owner semantics were admitted."
+         if admission_status == "admitted"
+         else "Comparison admission did not establish decision-grade comparability."),
+    )
+
+    families_supplied = protocol_family_changes is not None
+    families = _as_dict(protocol_family_changes)
+    family_status = "not_supplied"
+    family_blocking = family_review = family_not_verified = family_rows = 0
+    family_note = "No additive protocol family change set was supplied."
+    if families_supplied:
+        transition_tokens = (
+            "unchanged_healthy", "unchanged_degraded", "recovered", "regressed",
+            "appeared", "disappeared", "intent_changed", "coverage_lost",
+            "not_comparable",
+        )
+        effect_tokens = ("block", "review", "none", "not_verified")
+        assurance_tokens = {
+            "intent_reconciled_survival", "observed_state_preservation",
+            "local_safety_preservation", "not_verified",
+        }
+
+        def _natural(value: Any) -> Optional[int]:
+            return (value if isinstance(value, int) and not isinstance(value, bool)
+                    and value >= 0 else None)
+
+        malformed = (
+            families.get("schema") != "protocol_family_change_set/1"
+            or families.get("owner") != "reference_only_composition"
+            or families.get("owns_score") is not False
+            or families.get("owns_verdict") is not False
+            or not isinstance(families.get("families"), list)
+            or not families.get("families")
+            or not isinstance(families.get("summary"), dict)
+        )
+        aggregate = {
+            "n_families": 0, "n_subject_changes": 0, "n_expected": 0,
+            "n_unexpected": 0, "n_coverage_lost": 0, "n_blocking": 0,
+            "n_review": 0, "n_not_verified": 0,
+            "by_transition": {token: 0 for token in transition_tokens},
+            "by_decision_effect": {token: 0 for token in effect_tokens},
+        }
+        seen_families = set()
+        for family in families.get("families", []) if not malformed else []:
+            family_name = (family.get("family") if isinstance(family, dict) else None)
+            owner_schema = (family.get("owner_schema") if isinstance(family, dict) else None)
+            family_summary = family.get("summary") if isinstance(family, dict) else None
+            support = family.get("support_profile") if isinstance(family, dict) else None
+            changes = family.get("changes") if isinstance(family, dict) else None
+            if (not isinstance(family_name, str) or not family_name.strip()
+                    or family_name in seen_families
+                    or not isinstance(owner_schema, str) or not owner_schema.strip()
+                    or family.get("assurance_level") not in assurance_tokens
+                    or not isinstance(changes, list)
+                    or not isinstance(family_summary, dict)
+                    or not isinstance(family.get("source_receipt"), dict)
+                    or not isinstance(support, dict)
+                    or support.get("schema") != "protocol_support_profile/1"
+                    or support.get("family") != family_name
+                    or support.get("owner_schema") != owner_schema
+                    or support.get("implementation_state") != "implemented"
+                    or support.get("assurance_level") not in assurance_tokens
+                    or not isinstance(support.get("evidence_contracts"), list)
+                    or not support.get("evidence_contracts")
+                    or not isinstance(support.get("scope"), dict) or not support.get("scope")
+                    or not isinstance(support.get("runtime_support_claim"), str)
+                    or not support.get("runtime_support_claim").strip()
+                    or not isinstance(support.get("limitations"), list)
+                    or not support.get("limitations")):
+                malformed = True
+                break
+            seen_families.add(family_name)
+            row_transitions = {token: 0 for token in transition_tokens}
+            row_effects = {token: 0 for token in effect_tokens}
+            expected_count = unexpected_count = 0
+            for row in changes:
+                if (not isinstance(row, dict)
+                        or row.get("family") != family_name
+                        or not isinstance(row.get("subject"), str)
+                        or not row.get("subject").strip()
+                        or row.get("transition") not in transition_tokens
+                        or row.get("decision_effect") not in effect_tokens
+                        or not isinstance(row.get("expected"), bool)
+                        or "before_state" not in row or "after_state" not in row
+                        or not isinstance(row.get("note"), str) or not row.get("note").strip()):
+                    malformed = True
+                    break
+                family_rows += 1
+                row_transitions[row["transition"]] += 1
+                effect = row["decision_effect"]
+                row_effects[effect] += 1
+                family_blocking += effect == "block"
+                family_review += effect == "review"
+                family_not_verified += effect == "not_verified"
+                expected_count += row["expected"]
+                unexpected_count += (
+                    not row["expected"] and row["transition"] in {
+                        "unchanged_degraded", "regressed", "appeared", "disappeared",
+                        "intent_changed",
+                    }
+                )
+            if malformed:
+                break
+            implicit = _natural(family_summary.get("n_implicit_unchanged_healthy"))
+            declared_transitions = family_summary.get("by_transition")
+            declared_effects = family_summary.get("by_decision_effect")
+            expected_transitions = dict(row_transitions)
+            if implicit is not None:
+                expected_transitions["unchanged_healthy"] += implicit
+            expected_summary = {
+                "n_subject_changes": len(changes),
+                "n_expected": expected_count,
+                "n_unexpected": unexpected_count,
+                "n_coverage_lost": expected_transitions["coverage_lost"],
+                "n_blocking": row_effects["block"],
+                "n_review": row_effects["review"],
+                "n_not_verified": row_effects["not_verified"],
+            }
+            if (implicit is None
+                    or any(_natural(family_summary.get(key)) != value
+                           for key, value in expected_summary.items())
+                    or declared_transitions != expected_transitions
+                    or declared_effects != row_effects):
+                malformed = True
+                break
+            aggregate["n_families"] += 1
+            for key in (
+                    "n_subject_changes", "n_expected", "n_unexpected", "n_coverage_lost",
+                    "n_blocking", "n_review", "n_not_verified"):
+                aggregate[key] += expected_summary[key]
+            for token in transition_tokens:
+                aggregate["by_transition"][token] += expected_transitions[token]
+            for token in effect_tokens:
+                aggregate["by_decision_effect"][token] += row_effects[token]
+        if not malformed:
+            supplied_summary = families["summary"]
+            malformed = any(
+                supplied_summary.get(key) != value for key, value in aggregate.items()
+            )
+        if malformed:
+            family_status = "not_comparable"
+            family_blocking = family_review = family_rows = 0
+            family_not_verified = 1
+            family_note = "Protocol family change set is missing or malformed."
+        elif family_not_verified:
+            family_status = "coverage_lost"
+            family_note = (
+                f"{family_not_verified} protocol family subject(s) are not verified or comparable."
+            )
+        elif family_blocking:
+            family_status = "regressed"
+            family_note = f"{family_blocking} protocol family subject regression(s) block acceptance."
+        elif family_review:
+            family_status = "review"
+            family_note = f"{family_review} unexpected protocol family change(s) require review."
+        else:
+            family_status = "clear"
+            family_note = f"{family_rows} protocol family change row(s) carry no blocking effect."
 
     # A direct pre-existing caller may supply only the historical delta + certificate pair.  Preserve
     # its exact receipt shape and precedence.  Every real compute_snapshot_delta result now carries the
@@ -1074,16 +1252,24 @@ def compute_cutover_gate(delta: dict, certificate: dict,
     # Preserve the established workbook precedence: a proven observed regression is strongest; then
     # current/certificate blockers; missing evidence; reviewable delta; and certificate conditions.
     # CLEAR is the only supplied current-baseline state compatible with an overall PASS.
-    if delta_verdict == "REGRESSED":
+    if admission_supplied and admission_status != "admitted":
+        verdict = "INDETERMINATE"
+    elif families_supplied and family_status == "not_comparable":
+        verdict = "INDETERMINATE"
+    elif delta_verdict == "REGRESSED":
+        verdict = "REGRESSED"
+    elif (families_supplied and family_blocking
+          and delta_verdict != "INDETERMINATE"):
         verdict = "REGRESSED"
     elif baseline_supplied and baseline_verdict == "BLOCKED":
         verdict = "FAIL"
     elif certificate_verdict == "FAIL":
         verdict = "FAIL"
     elif (delta_verdict == "INDETERMINATE" or certificate_verdict == "INDETERMINATE"
+          or (families_supplied and family_not_verified)
           or (baseline_supplied and baseline_verdict in {"INDETERMINATE", "NOT_ASSESSED"})):
         verdict = "INDETERMINATE"
-    elif delta_verdict == "REVIEW":
+    elif delta_verdict == "REVIEW" or (families_supplied and family_review):
         verdict = "REVIEW"
     elif certificate_verdict == "CONDITIONAL":
         verdict = "CONDITIONAL"
@@ -1092,12 +1278,24 @@ def compute_cutover_gate(delta: dict, certificate: dict,
 
     baseline_basis = (f"Current baseline: {baseline_verdict}. Current-baseline basis: {baseline_note} "
                       if baseline_supplied else "")
-    note = (f"Delta observation: {delta_display}. Delta basis: {delta_note} "
+    admission_basis = (f"Comparison admission: {admission_status.upper()}. "
+                       f"Admission basis: {admission_note} " if admission_supplied else "")
+    family_basis = (f"Protocol family changes: {family_status.upper()}. "
+                    f"Family basis: {family_note} " if families_supplied else "")
+    note = (f"{admission_basis}Delta observation: {delta_display}. Delta basis: {delta_note} "
+            f"{family_basis}"
             f"{baseline_basis}Pre-Change Certificate: {certificate_verdict}. "
             f"Certificate basis: {certificate_note}")
 
-    if verdict == "REGRESSED":
-        if protocol_regressions:
+    if admission_supplied and admission_status != "admitted":
+        action = ("Do not declare the cutover good; repair the comparison admission failure or "
+                  "missing coverage and recompute from bound evidence.")
+    elif verdict == "REGRESSED":
+        if families_supplied and family_blocking:
+            noun = "subject was" if family_blocking == 1 else "subjects were"
+            action = (f"{family_blocking} protocol family {noun} classified as blocking by the "
+                      "native family owner; investigate or roll back before proceeding.")
+        elif protocol_regressions:
             noun = "regression was" if protocol_regressions == 1 else "regressions were"
             action = (f"{protocol_regressions} baseline-observed protocol adjacency state {noun} "
                       "proven; investigate or roll back before proceeding.")
@@ -1160,6 +1358,20 @@ def compute_cutover_gate(delta: dict, certificate: dict,
         "protocol_regressions": protocol_regressions,
         "protocol_coverage_gaps": protocol_coverage_gaps,
     }
+    if admission_supplied:
+        result.update({
+            "comparison_admission_status": admission_status,
+            "comparison_admission_note": admission_note,
+        })
+    if families_supplied:
+        result.update({
+            "protocol_family_status": family_status,
+            "protocol_family_note": family_note,
+            "protocol_family_rows": family_rows,
+            "protocol_family_blocking": family_blocking,
+            "protocol_family_review": family_review,
+            "protocol_family_not_verified": family_not_verified,
+        })
     if baseline_supplied:
         result.update({
             "current_baseline_verdict": baseline_verdict,
@@ -1173,12 +1385,20 @@ def compute_cutover_gate(delta: dict, certificate: dict,
 
 
 def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = None, *,
-                        source_binding: Optional[dict] = None, schema_status: Any = None) -> dict:
+                        source_binding: Optional[dict] = None, schema_status: Any = None,
+                        protocol_families: Optional[dict] = None) -> dict:
     """Write a diff workbook (Summary / Interface Changes / Endpoint Changes /
     SVI Changes) comparing two snapshot_state() dicts. `precert` is an optional precomputed
     Pre-Change Validation Certificate (roadmap C1); when None it is computed here, so the
     'Pre-Change Certificate' sheet is always present.  Exact input hashes and schema-gate status
-    supplied by the file-loading caller are rendered into both decision surfaces."""
+    supplied by the file-loading caller are rendered into both decision surfaces.
+
+    ``protocol_families`` is an optional complete ``protocol_family_change_set/1`` composed by a
+    source-owning caller.  When omitted, the workbook computes each applicable native owner from the
+    same in-memory snapshots and source hashes, then composes it with the unchanged IPv4 adjacency
+    delta.  In both cases that one, uncapped object is passed to the canonical cutover gate and
+    rendered without recomputation.
+    """
     old = old if isinstance(old, dict) else {}            # total on a non-dict snapshot (parsed null/[]/scalar)
     new = new if isinstance(new, dict) else {}
     from openpyxl import Workbook
@@ -1244,6 +1464,27 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
     cd0 = (delta.get("cabling") or {}).get("summary") or {}   # physical cable delta (EDA cable-map SSOT)
     pd0 = delta.get("protocol_adjacencies") or {}              # receipt-gated observed adjacency delta
     pds0 = pd0.get("summary") or {}
+    if protocol_families is None:
+        # Release 1's CLI has no expected-change-intent input.  Compose the reference-only initial
+        # family view from the SAME in-memory pair and IPv4 delta already owned above; an empty intent
+        # means every material change remains unexpected and reviewable.
+        from cisco_toolkit.protocol_assurance import (
+            compute_native_protocol_deltas,
+            protocol_family_change_set,
+        )
+        source_pair = _as_dict(source_binding)
+        native_deltas = compute_native_protocol_deltas(
+            old,
+            new,
+            before_binding=source_pair.get("before"),
+            after_binding=source_pair.get("after"),
+        )
+        family_changes = protocol_family_change_set(
+            pd0, {"expected_changes": []}, native_deltas=native_deltas)
+    else:
+        # Do not copy, truncate, or reinterpret a caller-composed native family set: the gate and
+        # workbook below must consume/project the exact same object.
+        family_changes = protocol_families
     bd0 = _as_dict(delta.get("current_baseline"))              # current-snapshot acceptance baseline
     bds0 = _as_dict(bd0.get("summary"))
     bd_states0 = _as_dict(bds0.get("by_state"))
@@ -1253,6 +1494,146 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
         # A positive observed result remains useful under partial coverage; a zero does not.  When one
         # scoped cell is unassessed, render its zero outcomes as an abstention rather than an all-clear.
         return value if value or pd0.get("assessed") else "—"
+
+    def _family_state_cell(value: Any) -> Any:
+        """Render a producer-owned before/after state without turning absence into a clean blank."""
+        if value is None or value == "" or value == {} or value == [] or value == ():
+            return "NOT VERIFIED"
+        if isinstance(value, str):
+            return value.strip() or "NOT VERIFIED"
+        if isinstance(value, (dict, list, tuple)):
+            try:
+                return json.dumps(value, sort_keys=True, ensure_ascii=True,
+                                  separators=(",", ":"), allow_nan=False)
+            except (TypeError, ValueError, OverflowError):
+                return "NOT VERIFIED — malformed producer state"
+        if isinstance(value, set):
+            return "NOT VERIFIED — malformed producer state"
+        return value
+
+    def _family_surface(change_set: Any) -> tuple:
+        """Project every producer row and calculate display-only totals over that full row set.
+
+        These counts never participate in a decision; ``compute_cutover_gate`` above remains the
+        sole consumer of family-native ``decision_effect`` values.  Placeholder rows are deliberate:
+        a missing family/list/leaf must remain visible as NOT VERIFIED, never disappear as a clean zero.
+        """
+        closed_transitions = {
+            "unchanged_healthy", "unchanged_degraded", "recovered", "regressed",
+            "appeared", "disappeared", "intent_changed", "coverage_lost", "not_comparable",
+        }
+        closed_effects = {"block", "review", "none", "not_verified"}
+        closed_assurance = {
+            "intent_reconciled_survival", "observed_state_preservation",
+            "local_safety_preservation", "not_verified",
+        }
+        block = _as_dict(change_set)
+        raw_families = block.get("families")
+        family_records = raw_families if isinstance(raw_families, list) else []
+        rows: List[dict] = []
+        source_rows = 0
+        placeholder_rows = 0
+        expected_counts = {"YES": 0, "NO": 0, "NOT VERIFIED": 0}
+        effect_counts = {name: 0 for name in ("block", "review", "none", "not_verified")}
+        effect_counts["NOT VERIFIED"] = 0
+        transition_counts: Dict[str, int] = {}
+        assurance_counts: Dict[str, int] = {}
+
+        def _placeholder(family: Any, note: str) -> None:
+            nonlocal placeholder_rows
+            placeholder_rows += 1
+            rows.append({
+                "family": _family_state_cell(family),
+                "subject": "NOT VERIFIED",
+                "transition": "NOT VERIFIED",
+                "expected": "NOT VERIFIED",
+                "decision_effect": "NOT VERIFIED",
+                "assurance": "NOT VERIFIED",
+                "before": "NOT VERIFIED",
+                "after": "NOT VERIFIED",
+                "note": note,
+                "placeholder": True,
+            })
+
+        if not isinstance(raw_families, list) or not raw_families:
+            _placeholder(
+                "NOT VERIFIED",
+                "Protocol family change set is missing or empty; row-level changes are NOT VERIFIED.",
+            )
+        else:
+            for family_index, raw_family in enumerate(raw_families):
+                if not isinstance(raw_family, dict):
+                    _placeholder(
+                        "NOT VERIFIED",
+                        f"families[{family_index}] is malformed; its changes are NOT VERIFIED.",
+                    )
+                    continue
+                family_name = raw_family.get("family")
+                assurance = raw_family.get("assurance_level")
+                raw_changes = raw_family.get("changes")
+                if not isinstance(raw_changes, list) or not raw_changes:
+                    _placeholder(
+                        family_name,
+                        (f"Family {family_name or 'NOT VERIFIED'} emitted no materialized subject-change "
+                         "rows; row-level before/after evidence is NOT VERIFIED on this sheet."),
+                    )
+                    continue
+                for row_index, raw_row in enumerate(raw_changes):
+                    source_rows += 1
+                    if not isinstance(raw_row, dict):
+                        _placeholder(
+                            family_name,
+                            (f"Family {family_name or 'NOT VERIFIED'} changes[{row_index}] is malformed; "
+                             "the producer row is retained as NOT VERIFIED."),
+                        )
+                        expected_counts["NOT VERIFIED"] += 1
+                        effect_counts["NOT VERIFIED"] += 1
+                        transition_counts["NOT VERIFIED"] = transition_counts.get("NOT VERIFIED", 0) + 1
+                        assurance_counts["NOT VERIFIED"] = assurance_counts.get("NOT VERIFIED", 0) + 1
+                        continue
+
+                    transition_raw = raw_row.get("transition")
+                    transition_key = (transition_raw if transition_raw in closed_transitions
+                                      else "NOT VERIFIED")
+                    effect_raw = raw_row.get("decision_effect")
+                    effect_key = effect_raw if effect_raw in closed_effects else "NOT VERIFIED"
+                    assurance_raw = raw_row.get("assurance_level", assurance)
+                    assurance_key = (assurance_raw if assurance_raw in closed_assurance
+                                     else "NOT VERIFIED")
+                    expected_raw = raw_row.get("expected")
+                    expected_key = ("YES" if expected_raw is True else
+                                    "NO" if expected_raw is False else "NOT VERIFIED")
+                    transition_counts[transition_key] = transition_counts.get(transition_key, 0) + 1
+                    effect_counts[effect_key] += 1
+                    assurance_counts[assurance_key] = assurance_counts.get(assurance_key, 0) + 1
+                    expected_counts[expected_key] += 1
+                    rows.append({
+                        "family": _family_state_cell(raw_row.get("family", family_name)),
+                        "subject": _family_state_cell(raw_row.get("subject")),
+                        "transition": _family_state_cell(transition_raw),
+                        "expected": expected_key,
+                        "decision_effect": _family_state_cell(effect_raw),
+                        "assurance": _family_state_cell(assurance_raw),
+                        "before": _family_state_cell(raw_row.get("before_state")),
+                        "after": _family_state_cell(raw_row.get("after_state")),
+                        "note": _family_state_cell(raw_row.get("note")),
+                        "placeholder": False,
+                    })
+
+        def _counts_text(counts: Dict[str, int]) -> str:
+            return ", ".join(f"{name}={count}" for name, count in sorted(counts.items()))
+
+        disclosure = (
+            f"Complete uncapped export: rendered {source_rows} of {source_rows} producer subject-change "
+            f"row(s); omitted=0; family records={len(family_records)}; placeholder NOT VERIFIED "
+            f"rows={placeholder_rows}. Expected: {_counts_text(expected_counts)}. "
+            f"Producer decision effects: {_counts_text(effect_counts)}. "
+            f"Transitions: {_counts_text(transition_counts) if transition_counts else 'NOT VERIFIED'}. "
+            f"Assurance: {_counts_text(assurance_counts) if assurance_counts else 'NOT VERIFIED'}."
+        )
+        return rows, source_rows, disclosure
+
+    family_surface_rows, family_source_rows, family_disclosure = _family_surface(family_changes)
 
     # Summary (leads with the cutover-validation VERDICT)
     ws = sheet("Summary", ["Metric", "Old", "New", "Delta"])
@@ -1264,7 +1645,7 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
     # the AssessHub compare view and the CLI diff workbook disagreeing at the cutover gate.
     o_sw, n_sw = delta["switches"]["old"], delta["switches"]["new"]
     o_if, n_if = delta["interfaces"]["old"], delta["interfaces"]["new"]
-    gate = compute_cutover_gate(delta, cert)
+    gate = compute_cutover_gate(delta, cert, protocol_family_changes=family_changes)
     gate_verdict = gate["verdict"]
     gate_note = gate["note"]
     _VERDICT_FILL = {"PASS": "C6EFCE", "CLEAN": "C6EFCE", "CONDITIONAL": "FFEB9C",
@@ -1301,6 +1682,10 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
         ("Protocol adjacency coverage gaps", "", pds0.get("n_coverage_gaps", 0),
          (f"Gate {pd0.get('gate', 'NOT_ASSESSED')}; projection custody "
           f"{pd0.get('projection_custody', 'embedded_unverified')}")),
+        ("Protocol family changes (complete)", "",
+         family_source_rows if family_source_rows else "NOT VERIFIED",
+         (f"Canonical family status {gate.get('protocol_family_status', 'NOT VERIFIED')}. "
+          f"{family_disclosure}")),
         ("Reachability flows newly blocked", "", len(rd0.get("newly_blocked") or []),
          (f"{rd0.get('pairs_tested', 0)} sampled flow(s) across {rd0.get('subnets_tested', 0)} of "
           f"{rd0.get('subnets_total', 0)} subnet(s){' (CAPPED — coverage incomplete)' if rd0.get('capped') else ''}, "
@@ -1500,6 +1885,47 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
                                           "Protocol adjacency preservation NOT assessed.")).font = DF
         ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=7)
     autofit(ws, 7); ws.column_dimensions["G"].width = 72
+
+    # Protocol Family Changes — complete, uncapped projection of the same reference-only change set
+    # consumed by the canonical cutover gate.  This is additive: the established IPv4 owner sheet above
+    # remains intact.  The renderer neither infers native semantics nor drops malformed/empty producer rows;
+    # every evidence absence is a visible NOT VERIFIED placeholder.
+    ws = sheet("Protocol Family Changes",
+               ["Family", "Subject", "Transition", "Expected", "Producer decision_effect",
+                "Assurance", "Before", "After", "Note"])
+    r = 2
+    for item in family_surface_rows:
+        vals = [
+            item["family"], item["subject"], item["transition"], item["expected"],
+            item["decision_effect"], item["assurance"], item["before"], item["after"],
+            item["note"],
+        ]
+        for c, value in enumerate(vals, 1):
+            cell = ws.cell(row=r, column=c, value=_cv(value)); cell.font = DF; cell.alignment = AL
+        effect = str(item.get("decision_effect") or "")
+        transition = str(item.get("transition") or "")
+        fill = (
+            "FFC7CE" if effect == "block" else
+            "FFEB9C" if effect == "review" else
+            "C6EFCE" if transition == "recovered" else
+            "D9D9D9" if item.get("placeholder") or effect in {"not_verified", "NOT VERIFIED"}
+            else "FFFFFF"
+        )
+        ws.cell(row=r, column=5).fill = PatternFill("solid", fgColor=fill)
+        r += 1
+    totals_subject = (f"{family_source_rows} producer row(s)" if family_source_rows
+                      else "NOT VERIFIED")
+    totals = ["FULL TOTALS", totals_subject, "see Note", "see Note", "see Note", "see Note",
+              f"rendered {family_source_rows} of {family_source_rows}", "omitted 0", family_disclosure]
+    for c, value in enumerate(totals, 1):
+        cell = ws.cell(row=r, column=c, value=_cv(value)); cell.font = DF; cell.alignment = AL
+        cell.fill = PatternFill("solid", fgColor="D9D9D9")
+    ws.cell(row=r, column=1).font = Font(name="Calibri", bold=True, size=10)
+    autofit(ws, 9)
+    ws.column_dimensions["B"].width = 54
+    ws.column_dimensions["G"].width = 54
+    ws.column_dimensions["H"].width = 54
+    ws.column_dimensions["I"].width = 80
 
     # Reachability (W2) — computed RIB->FIB flows the change DEFINITIVELY broke (the offline Batfish-peer what-if).
     # Coverage-honest: distinguishes 'tested, no regressions' from 'no routes collected -> not assessed'.

@@ -231,6 +231,12 @@ _VPC_SHOW = (
     "30    Po30          up     failed      compat-failed         1,30\n")
 
 
+def _healthy_vpc_show():
+    """Return the shared real-shaped capture with every local member leg healthy."""
+    return (_VPC_SHOW.replace("down   failed      down", "up     success     success")
+                     .replace("up     failed      compat-failed", "up     success     success"))
+
+
 # ---------------------------------------------------------------- TEST-01 ---
 def test_vpc_detector_end_to_end_from_real_parser():
     """TEST-01: _d_vpc_health had no end-to-end test running the REAL parse_vpc into the detector -- the
@@ -243,11 +249,62 @@ def test_vpc_detector_end_to_end_from_real_parser():
     assert sig["vpc_legs"] == 3 and sig["vpc_legs_down"] == 1 and sig["vpc_legs_incons"] == 1
     assert sig["vpc_dom_bad"] == 0                            # domain itself healthy (peer ok / cons success)
     assert da._d_vpc_health(snap, sig) is not None           # fires on the degraded legs
-    clean = (_VPC_SHOW.replace("down   failed      down", "up     success     success")
-                      .replace("up     failed      compat-failed", "up     success     success"))
+    clean = _healthy_vpc_show()
     csnap = {"vpc": {"nx-core1": parse.parse_vpc(clean)}}
     csig = da._signals(csnap)
     assert csig["vpc_unhealthy"] == 0 and da._d_vpc_health(csnap, csig) is None
+
+
+def test_vpc_domain_health_is_closed_exact_parser_to_detector():
+    """Negative, missing, blank, and unknown NX-OS domain states must never pass by substring/absence.
+
+    Every case traverses the real ``parse_vpc`` -> ``_signals`` -> detector contract.  The one accepted
+    state per required leaf is pinned by the unmodified healthy capture first; this test does not infer
+    peer-pair or attachment identity.
+    """
+    from cisco_toolkit import parse
+
+    healthy = _healthy_vpc_show()
+    healthy_snap = {"vpc": {"nx-core1": parse.parse_vpc(healthy)}}
+    healthy_sig = da._signals(healthy_snap)
+    assert healthy_sig["vpc_dom_bad"] == 0
+    assert healthy_sig["vpc_unhealthy"] == 0
+    assert da._d_vpc_health(healthy_snap, healthy_sig) is None
+
+    peer_line = "Peer status                       : peer adjacency formed ok\n"
+    keepalive_line = "vPC keep-alive status             : peer is alive\n"
+    consistency_line = "Configuration consistency status  : success\n"
+    peer_link_line = "1     Po1    up     1,10,20,30\n"
+    mutations = {
+        "negative peer substring": healthy.replace(
+            "peer adjacency formed ok", "peer adjacency not formed"),
+        "negative keepalive substring": healthy.replace("peer is alive", "peer is not alive"),
+        "unknown peer": healthy.replace("peer adjacency formed ok", "peer adjacency pending"),
+        "unknown keepalive": healthy.replace("peer is alive", "peer state pending"),
+        "unknown consistency": healthy.replace(consistency_line,
+                                                 "Configuration consistency status  : unknown\n"),
+        "unknown peer-link": healthy.replace(peer_link_line,
+                                              "1     Po1    unknown 1,10,20,30\n"),
+        "blank peer": healthy.replace(peer_line, "Peer status                       : \n"),
+        "blank keepalive": healthy.replace(keepalive_line,
+                                             "vPC keep-alive status             : \n"),
+        "blank consistency": healthy.replace(consistency_line,
+                                               "Configuration consistency status  : \n"),
+        "blank peer-link": healthy.replace(peer_link_line,
+                                             "1     Po1           1,10,20,30\n"),
+        "missing peer": healthy.replace(peer_line, ""),
+        "missing keepalive": healthy.replace(keepalive_line, ""),
+        "missing consistency": healthy.replace(consistency_line, ""),
+        "missing peer-link": healthy.replace(peer_link_line, ""),
+    }
+    for label, capture in mutations.items():
+        parsed = parse.parse_vpc(capture)
+        assert parsed, label
+        snap = {"vpc": {"nx-core1": parsed}}
+        sig = da._signals(snap)
+        assert sig["vpc_dom_bad"] == 1, label
+        assert sig["vpc_unhealthy"] == 1, label
+        assert da._d_vpc_health(snap, sig) is not None, label
 
 
 # ---------------------------------------------------------------- TEST-02 ---

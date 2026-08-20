@@ -13,6 +13,7 @@ from cisco_toolkit.analyze import (
 from cisco_toolkit.html import (compute_campaign_trend, compute_cutover_gate, compute_snapshot_delta,
                                 write_campaign_workbook, write_diff_workbook)
 from cisco_toolkit.model import InterfaceData
+from cisco_toolkit.protocol_assurance import protocol_family_change_set
 
 
 def _row(number=1, *, state="assessed", marker="", wave="Group 1", category="Routing"):
@@ -223,7 +224,15 @@ def test_unchanged_degraded_current_state_fails_combined_gate_without_changing_d
             "flows": {}, "stamps": {}, "segmentation": [], "intents": [], "blind_spots": [],
         },
     )
-    assert workbook_gate == gate
+    family_changes = protocol_family_change_set(
+        delta["protocol_adjacencies"], {"expected_changes": []})
+    additive_gate = compute_cutover_gate(
+        delta,
+        {"verdict": "PASS", "verdict_note": "bounded certificate passed"},
+        protocol_family_changes=family_changes,
+    )
+    assert workbook_gate == additive_gate
+    assert workbook_gate["verdict"] == gate["verdict"]
     workbook = load_workbook(output, read_only=True)
     try:
         assert "Current Baseline Gate" in workbook.sheetnames

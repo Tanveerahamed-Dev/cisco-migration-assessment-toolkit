@@ -168,6 +168,15 @@
           "traffic_plane_refs": ["traffic.physical", "traffic.l2"]
         },
         {
+          "id": "cap.protocol.multichassis-lag",
+          "title": "Multichassis LAG (vPC and MLAG)",
+          "state": "partial",
+          "current_scope": "Typed assurance keeps local observations, reciprocally evidenced peer pairs, local legs, and reconciled dual-homed attachments distinct. Initial evidence support is NX-OS vPC live or offline capture and EOS MLAG offline import; a domain ID or matching bundle ID alone never proves a pair or attachment, and other vendor parity is not claimed.",
+          "owner_refs": ["owner.analysis", "owner.protocol.knowledge"],
+          "gap_refs": ["gap.protocol-depth"],
+          "traffic_plane_refs": ["traffic.physical", "traffic.l2"]
+        },
+        {
           "id": "cap.protocol.vtp",
           "title": "VTP",
           "state": "partial",

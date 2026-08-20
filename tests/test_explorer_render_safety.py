@@ -162,6 +162,64 @@ def _run(driver_body: str, tmp_path, payload=None):
     return json.loads(proc.stdout)
 
 
+def test_vpc_domain_grouping_is_explicitly_candidate_only() -> None:
+    """The compatibility pair generator must never promote a shared domain ID to identity."""
+    html = EXPLORER.read_text(encoding="utf-8")
+    start = html.index("/* V3.23.125 compatibility visualization")
+    end = html.index("function _mlagPeerOf", start)
+    block = html[start:end]
+
+    assert 'return {tag:"candidate"' in block
+    assert '"confirmed"' not in block.casefold()
+    assert "A domain ID is an attribute, never pair identity" in block
+    assert "explicit reciprocal peer identities" in block
+    assert "both local legs (one on each proven peer)" in block
+    assert "matching remote LACP system and aggregation/key identity" in block
+    assert "CONFIRMED vPC pair" not in html
+
+
+_VPC_CANDIDATE_DRIVER = """
+const EV=globalThis.__EV;
+globalThis.__P=JSON.parse(require('fs').readFileSync(process.argv[2],'utf-8'));
+EV('SNAP=globalThis.__P');
+const pairs=[...EV('vpcPairs')()].sort();
+const details=pairs.map(k=>{const p=k.split('||'),ev=EV('_mlagEvidence')(p[0],p[1]);
+  const J={src:{},dst:{},nodes:[{host:p[0],mlagPeer:p[1],role:'transit',label:'Transit',layers:[]}]};
+  return {pair:k,tag:EV('_mlagTag')(p[0],p[1]),note:ev.note,
+    rendered:EV('_fsimStackHtml')({showFrame:false,useBackup:false,both:false},J,0,false,false)};});
+process.stdout.write(JSON.stringify({pairs,details}));
+"""
+
+
+@pytest.mark.parametrize(
+    ("hosts", "expected_pairs"),
+    [
+        (["site-a", "site-b", "site-c"], 3),
+        (["site1-a", "site1-b", "site2-a", "site2-b"], 6),
+    ],
+)
+@pytest.mark.skipif(not NODE, reason="node is not available")
+def test_reused_vpc_domain_collisions_render_every_combination_unverified(
+    tmp_path, hosts: list[str], expected_pairs: int
+) -> None:
+    """Three-host collisions and cross-site domain reuse stay visible, but never confirmed."""
+    payload = {host: {"domain_id": 10} for host in hosts}
+    out = _run(_VPC_CANDIDATE_DRIVER, tmp_path, payload={"vpc": payload})
+
+    assert len(out["pairs"]) == expected_pairs
+    assert len(out["details"]) == expected_pairs
+    for detail in out["details"]:
+        assert detail["tag"] == "candidate"
+        assert f"{len(hosts)} hosts report this domain" in detail["note"]
+        assert "every pairwise combination is ambiguous" in detail["note"]
+        assert "explicit reciprocal peer identities" in detail["note"]
+        assert "both local legs (one on each proven peer)" in detail["note"]
+        assert "matching remote LACP system and aggregation/key identity" in detail["note"]
+        assert "pl-watch" in detail["rendered"]
+        assert "unverified vPC/MLAG candidate" in detail["rendered"]
+        assert "confirmed" not in detail["rendered"].casefold()
+
+
 # --------------------------------------------------------------------------- fixtures
 def _fabric() -> dict:
     """Two access switches uplinked to a core, one endpoint whose ARP-learned address is

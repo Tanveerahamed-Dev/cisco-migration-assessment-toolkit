@@ -16,8 +16,8 @@ const CAPABILITY_STATES = [
 ] as const satisfies readonly CapabilityState[];
 
 const EXPECTED_DOMAIN_COUNT = 12;
-const EXPECTED_ENTRY_COUNT = 211;
-const EXPECTED_SEMANTIC_RECORD_COUNT = 225;
+const EXPECTED_ENTRY_COUNT = 212;
+const EXPECTED_SEMANTIC_RECORD_COUNT = 226;
 const ADVISORY_ENTRY_ID = "cap.engine.training-curriculum";
 
 const ROOT_KEYS = [
@@ -89,7 +89,7 @@ export type CapabilityReferenceRegistry = {
 
 export type CapabilityCatalogViewModel = CapabilityObservationEnvelope & {
   catalog: CapabilityCatalog;
-  semantic_record_count: 225;
+  semantic_record_count: 226;
 };
 
 function fail(_path: string, _reason: string): never {

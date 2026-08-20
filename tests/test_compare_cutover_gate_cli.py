@@ -10,6 +10,10 @@ from openpyxl import load_workbook
 from cisco_toolkit.html import (compute_cutover_gate, compute_snapshot_delta,
                                 write_diff_workbook)
 from cisco_toolkit.precert import compute_precert
+from cisco_toolkit.protocol_assurance import (
+    compute_native_protocol_deltas,
+    protocol_family_change_set,
+)
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -250,7 +254,12 @@ def test_write_diff_workbook_returns_the_exact_public_decision(tmp_path):
     after = _snapshot("EXSTART/DR", "2026-08-15T00:05:00")
     certificate = compute_precert(before, after)
     delta = compute_snapshot_delta(before, after)
-    expected = compute_cutover_gate(delta, certificate)
+    families = protocol_family_change_set(
+        delta["protocol_adjacencies"], {"expected_changes": []},
+        native_deltas=compute_native_protocol_deltas(before, after),
+    )
+    expected = compute_cutover_gate(
+        delta, certificate, protocol_family_changes=families)
     out = tmp_path / "returned-gate.xlsx"
 
     actual = write_diff_workbook(before, after, str(out), precert=certificate)
@@ -261,6 +270,120 @@ def test_write_diff_workbook_returns_the_exact_public_decision(tmp_path):
     assert actual["protocol_baseline_peers"] == 1
     assert actual["protocol_regressions"] == 1
     assert _workbook_gate(str(out)) == actual["verdict"]
+    workbook = load_workbook(out, read_only=True)
+    assert "Protocol Adjacency Delta" in workbook.sheetnames
+    assert "Protocol Family Changes" in workbook.sheetnames
+    family_rows = list(workbook["Protocol Family Changes"].iter_rows(values_only=True))
+    assert family_rows[0] == (
+        "Family", "Subject", "Transition", "Expected", "Producer decision_effect",
+        "Assurance", "Before", "After", "Note",
+    )
+    assert any(row[2] == "regressed" and row[4] == "block" for row in family_rows[1:])
+
+
+def test_protocol_family_changes_sheet_is_complete_uncapped_and_gate_reconciled(tmp_path):
+    before = _snapshot("FULL/DR", "2026-08-15T00:00:00")
+    after = _snapshot("FULL/DR", "2026-08-15T00:05:00")
+    certificate = compute_precert(before, after)
+    changes = [{
+        "family": "stp_topology",
+        "subject": f"R1|vlan|{vlan}",
+        "transition": "intent_changed",
+        "expected": False,
+        "decision_effect": "review",
+        "before_state": {"root": "R1", "vlan": vlan},
+        "after_state": {"root": "R2", "vlan": vlan},
+        "note": "Unexpected root movement requires operator review.",
+    } for vlan in range(1, 174)]
+    by_transition = {
+        token: (len(changes) if token == "intent_changed" else 0)
+        for token in (
+            "unchanged_healthy", "unchanged_degraded", "recovered", "regressed",
+            "appeared", "disappeared", "intent_changed", "coverage_lost",
+            "not_comparable",
+        )
+    }
+    native = {
+        "schema": "stp_topology_delta/1",
+        "family": "stp_topology",
+        "assurance_level": "not_verified",
+        "owns_score": False,
+        "owns_verdict": False,
+        "summary": {"by_transition": by_transition},
+        "changes": [
+            {key: value for key, value in row.items() if key != "expected"}
+            for row in changes
+        ],
+    }
+    delta = compute_snapshot_delta(before, after)
+    families = protocol_family_change_set(
+        delta["protocol_adjacencies"], {"expected_changes": []},
+        native_deltas=[native],
+    )
+    expected = compute_cutover_gate(
+        delta, certificate, protocol_family_changes=families)
+    out = tmp_path / "uncapped-family-changes.xlsx"
+
+    actual = write_diff_workbook(
+        before, after, str(out), precert=certificate, protocol_families=families)
+
+    assert actual == expected
+    assert actual["protocol_family_rows"] == len(changes)
+    assert actual["protocol_family_review"] == len(changes)
+    assert _workbook_gate(str(out)) == actual["verdict"] == "REVIEW"
+    workbook = load_workbook(out, read_only=True)
+    assert "Protocol Adjacency Delta" in workbook.sheetnames
+    ws = workbook["Protocol Family Changes"]
+    rows = list(ws.iter_rows(values_only=True))
+    subjects = [row[1] for row in rows[1:] if row[0] == "stp_topology"]
+    assert len(subjects) == len(changes)
+    assert set(subjects) == {row["subject"] for row in changes}
+    totals = next(row for row in rows if row[0] == "FULL TOTALS")
+    assert totals[6] == f"rendered {len(changes)} of {len(changes)}"
+    assert totals[7] == "omitted 0"
+    assert f"rendered {len(changes)} of {len(changes)}" in totals[8]
+    assert "omitted=0" in totals[8]
+    summary = workbook["Summary"]
+    summary_rows = {
+        summary.cell(row, 1).value: (summary.cell(row, 3).value, summary.cell(row, 4).value)
+        for row in range(2, summary.max_row + 1)
+    }
+    count, disclosure = summary_rows["Protocol family changes (complete)"]
+    assert count == len(changes)
+    assert f"rendered {len(changes)} of {len(changes)}" in disclosure
+    assert "omitted=0" in disclosure
+
+
+def test_protocol_family_changes_missing_or_empty_evidence_is_not_verified(tmp_path):
+    before = _snapshot("FULL/DR", "2026-08-15T00:00:00")
+    after = _snapshot("FULL/DR", "2026-08-15T00:05:00")
+    empty_families = {
+        "schema": "protocol_family_change_set/1",
+        "owner": "reference_only_composition",
+        "owns_score": False,
+        "owns_verdict": False,
+        "families": [{
+            "family": "stp_topology",
+            "assurance_level": "local_safety_preservation",
+            "changes": [],
+        }],
+    }
+    out = tmp_path / "empty-family-changes.xlsx"
+
+    write_diff_workbook(
+        before, after, str(out), protocol_families=empty_families)
+
+    workbook = load_workbook(out, read_only=True)
+    ws = workbook["Protocol Family Changes"]
+    assert ws.cell(2, 1).value == "stp_topology"
+    assert all(ws.cell(2, column).value == "NOT VERIFIED" for column in range(2, 9))
+    summary = workbook["Summary"]
+    row = next(
+        row for row in summary.iter_rows(values_only=True)
+        if row[0] == "Protocol family changes (complete)"
+    )
+    assert row[2] == "NOT VERIFIED"
+    assert "placeholder NOT VERIFIED rows=1" in row[3]
 
 
 def test_compare_cli_enforcement_rejects_an_unchanged_degraded_current_baseline(tmp_path):
@@ -329,12 +452,14 @@ def test_compare_cli_reports_combined_gate_and_enforces_only_when_requested(tmp_
     assert _workbook_gate(str(enforced_out)) == "REGRESSED"
     assert "[COMPARE GATE ENFORCED] Artifacts were written" in enforced_terminal
 
-    clean_proc, clean_out, clean_cert_path = run(clean_path, "enforced-pass", enforce=True)
+    clean_proc, clean_out, clean_cert_path = run(
+        clean_path, "enforced-missing-family-coverage", enforce=True)
     clean_terminal = clean_proc.stdout + clean_proc.stderr
-    assert clean_proc.returncode == 0, clean_terminal
+    assert clean_proc.returncode == 2, clean_terminal
     assert clean_out.exists() and clean_cert_path.exists()
-    assert _workbook_gate(str(clean_out)) == "PASS"
-    assert "[CUTOVER GATE: PASS]" in clean_terminal
+    assert _workbook_gate(str(clean_out)) == "INDETERMINATE"
+    assert "[CUTOVER GATE: INDETERMINATE]" in clean_terminal
+    assert "missing or invalid evidence" in clean_terminal
 
     legacy_before = _snapshot("FULL/DR", "2026-08-15T00:00:00")
     legacy_after = _snapshot("FULL/DR", "2026-08-15T00:05:00")

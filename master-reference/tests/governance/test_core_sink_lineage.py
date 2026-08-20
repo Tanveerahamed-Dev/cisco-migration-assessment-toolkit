@@ -175,7 +175,7 @@ def test_contract_schema_exact_source_rule_grammar_and_denominator(live) -> None
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     Draft202012Validator.check_schema(schema)
     assert list(Draft202012Validator(schema).iter_errors(contract)) == []
-    assert _digest(contract) == "a9968d54eb1b52fdfd1a42fd6c800dbd9d979d3ad3ad9ece09c57d84ef74e3b0"
+    assert _digest(contract) == "690943bf2eafd34887afc7e86dbe40983d50b96dca5536693edbcaef22b8d47c"
     raw = SOURCE_PATH.read_bytes()
     assert (len(raw), hashlib.sha256(raw).hexdigest(), _git_blob_oid(raw)) == (
         40_781,
@@ -242,15 +242,15 @@ def test_both_sinks_account_155_as_nine_rendered_and_146_omitted_without_promoti
     assert summary["schema_version"] == "rendered-sink-lineage-core/1.0.0"
     assert summary["closes_global_gate"] is False
     assert summary["global_denominator"] == {
-        "expected_candidates": 2136,
+        "expected_candidates": 2138,
         "in_scope_candidates": 155,
-        "out_of_scope_candidates": 1981,
+        "out_of_scope_candidates": 1983,
         "independently_reviewed": 0,
-        "unresolved": 2136,
-        "claim_contract_digest": "4ebd7da5caa6aab63f3ba122d480fef638f46b866c665845087433074f436c8d",
-        "classification_digest": "b5bc4783b8bd6461fc4669b39a555ae061081a278e36712cdb6f70a5e673d1df",
-        "source_receipts_digest": "863f93c7bc0599b1cfe7e5b42eb5b10c8087a704af9de194be18d9bf28008689",
-        "candidate_set_digest": "a768b5a6c9a94390ada8e9c24627c8908f6a7b51e3f06d59b79ac8f1a5ffdd43",
+        "unresolved": 2138,
+        "claim_contract_digest": "bed99adaf4dea5ec8f6293993ecb981c1258354563ddf00cf35f2e837eef75de",
+        "classification_digest": "1319f15e0439eb85277982ab8d36086770156161e11328c82a17209ef22cf6f1",
+        "source_receipts_digest": "dbf82e7d86db36468af02bcc475a6d7b8da54d794560e0c66005a6978317f100",
+        "candidate_set_digest": "0500bab20bb6e4e1220d9a1d83ab566206f539cfbdc30077b2e50a16755f3f6b",
     }
     assert summary["source"]["grounding_fallback_candidate_count"] == 62
     assert summary["source"]["safety_input_count"] == 0
@@ -387,7 +387,7 @@ def test_schema_rejects_mapping_omission_source_and_gate_promotion(live) -> None
     for path, value in (
         (("closes_global_gate",), True),
         (("global_denominator", "independently_reviewed"), 155),
-        (("global_denominator", "unresolved"), 1981),
+        (("global_denominator", "unresolved"), 1983),
         (("source_scope", "expected_grounding_fallback_candidates"), 0),
         (("source_scope", "candidate_rules", 9, "candidate_fields"), [{"facet_path": "question", "claim_kind": "x", "value_type": "string"}]),
         (("source_scope", "candidate_rules", 14, "identity", "kind"), "root"),
@@ -456,7 +456,7 @@ def test_unavailable_fixed_branches_never_promote_and_reject_hostile_types(live)
         assert summary["closes_global_gate"] is False
         assert summary["source"]["grounding_fallback_candidate_count"] == 0
         assert summary["global_denominator"]["independently_reviewed"] == 0
-        assert summary["global_denominator"]["unresolved"] == 2136
+        assert summary["global_denominator"]["unresolved"] == 2138
         assert all(row["producer_verdict"] == row["independent_verdict"] == "BLOCK" for row in summary["sink_receipts"])
     with pytest.raises(CoreSinkLineageError, match="unavailable_input_invalid"):
         unavailable_core_sink_lineage(

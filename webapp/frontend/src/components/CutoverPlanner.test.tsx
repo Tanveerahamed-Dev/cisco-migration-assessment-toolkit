@@ -317,6 +317,43 @@ describe("CutoverPlanner (render)", () => {
     expect(screen.queryByText(/not evidence that no run is open/i)).toBeNull();
   });
 
+  it("surfaces the latest post-change gate and honest bind state from existing execution receipts", async () => {
+    vi.spyOn(api, "cutover").mockResolvedValue(cutover as never);
+    vi.spyOn(api, "meta").mockResolvedValue({ deliverables: [] } as never);
+    vi.spyOn(api, "listExecutions").mockResolvedValue([
+      {
+        id: 41, snapshot_id: 1, label: "Cutover run 1", status: "in_progress",
+        started_at: "2026-08-20T00:00:00Z", ended_at: null, comparison_required: true,
+      },
+      {
+        id: 42, snapshot_id: 1, label: "Cutover run 2", status: "completed",
+        started_at: "2026-08-20T01:00:00Z", ended_at: "2026-08-20T02:00:00Z",
+        comparison_required: true,
+        latest_comparison: {
+          schema: "execution_latest_comparison/1", receipt_id: 7,
+          receipt_sha256: `sha256:${"a".repeat(64)}`,
+          before_snapshot_id: 1, after_snapshot_id: 9,
+          cutover_gate: { schema: "cutover_gate/1", verdict: "PASS" },
+        },
+      },
+      {
+        id: 43, snapshot_id: 1, label: "Legacy run", status: "completed",
+        started_at: "2026-08-19T01:00:00Z", ended_at: "2026-08-19T02:00:00Z",
+      },
+    ] as never);
+    renderPlanner();
+
+    expect(await screen.findByTestId("cutover-execution-41")).toHaveTextContent(
+      /post-change NOT VERIFIED — open run to bind/,
+    );
+    expect(screen.getByTestId("cutover-execution-42")).toHaveTextContent(
+      /post-change PASS · after snapshot 9/,
+    );
+    expect(screen.getByTestId("cutover-execution-43")).toHaveTextContent(
+      /legacy · no canonical receipt/,
+    );
+  });
+
   it("flips aria-expanded on the wave's run-of-show toggle as it opens/closes", async () => {
     vi.spyOn(api, "cutover").mockResolvedValue(cutover as never);
     vi.spyOn(api, "meta").mockResolvedValue({ deliverables: [] } as never);

@@ -80,7 +80,8 @@ def _unique_groups(plan_waves: List[Dict[str, Any]]) -> List[str]:
     return names
 
 
-def start_run(snap: Dict[str, Any], label: str, operator: str) -> Dict[str, Any]:
+def start_run(snap: Dict[str, Any], label: str, operator: str,
+              *, source_binding: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Materialize the snapshot's cutover plan into a frozen, executable run state."""
     plan = cutover.build_plan(snap)
     raw_plan_blockers = [
@@ -151,6 +152,16 @@ def start_run(snap: Dict[str, Any], label: str, operator: str) -> Dict[str, Any]
         "waves": waves,
         "events": [],
     }
+    if isinstance(source_binding, dict):
+        # Only API-created Release-1 executions carry this marker. Legacy persisted runs and direct
+        # library fixtures omit it and retain their historical outcome semantics; they are never
+        # backfilled or reinterpreted as having post-change evidence.
+        state["execution_schema"] = "cutover_execution/2"
+        state["comparison_policy"] = {
+            "schema": "execution_comparison_policy/1",
+            "canonical_gate_required": True,
+            "before_snapshot": dict(source_binding),
+        }
     _log(state, "run", f"Execution run started from the cutover plan (posture at start: "
                        f"{plan['summary'].get('verdict', '—')}).", "", operator)
     return state
@@ -278,6 +289,15 @@ def _derive_outcome(state: Dict[str, Any], status: str) -> str:
         return OUTCOME_PARTIAL
     if any(c.get("result") == "pending" for w in state["waves"] for c in w["checks"]):
         return OUTCOME_PARTIAL
+    policy = state.get("comparison_policy")
+    if (isinstance(policy, dict)
+            and policy.get("schema") == "execution_comparison_policy/1"
+            and policy.get("canonical_gate_required") is True):
+        latest = state.get("latest_comparison")
+        gate = latest.get("cutover_gate") if isinstance(latest, dict) else None
+        if (not isinstance(gate, dict) or gate.get("schema") != "cutover_gate/1"
+                or gate.get("verdict") != "PASS"):
+            return OUTCOME_PARTIAL
     failed = any(c.get("result") != "pass" for w in state["waves"] for c in w["checks"])
     skipped = any(s.get("status") != "done" for w in state["waves"] for s in w["steps"])
     deviations = any(e["kind"] == "deviation" for e in state["events"])

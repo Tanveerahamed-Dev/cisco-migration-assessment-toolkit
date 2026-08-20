@@ -15,15 +15,15 @@
       "required": ["kind", "expected_candidates", "in_scope_candidates", "out_of_scope_candidates", "independently_reviewed", "unresolved", "claim_contract_digest", "classification_digest", "source_receipts_digest", "candidate_set_digest"],
       "properties": {
         "kind": {"const": "bounded_curated_content_claim_denominator"},
-        "expected_candidates": {"const": 2136},
+        "expected_candidates": {"const": 2138},
         "in_scope_candidates": {"const": 155},
-        "out_of_scope_candidates": {"const": 1981},
+        "out_of_scope_candidates": {"const": 1983},
         "independently_reviewed": {"const": 0},
-        "unresolved": {"const": 2136},
-        "claim_contract_digest": {"const": "4ebd7da5caa6aab63f3ba122d480fef638f46b866c665845087433074f436c8d"},
-        "classification_digest": {"const": "b5bc4783b8bd6461fc4669b39a555ae061081a278e36712cdb6f70a5e673d1df"},
-        "source_receipts_digest": {"const": "863f93c7bc0599b1cfe7e5b42eb5b10c8087a704af9de194be18d9bf28008689"},
-        "candidate_set_digest": {"const": "a768b5a6c9a94390ada8e9c24627c8908f6a7b51e3f06d59b79ac8f1a5ffdd43"}
+        "unresolved": {"const": 2138},
+        "claim_contract_digest": {"const": "bed99adaf4dea5ec8f6293993ecb981c1258354563ddf00cf35f2e837eef75de"},
+        "classification_digest": {"const": "1319f15e0439eb85277982ab8d36086770156161e11328c82a17209ef22cf6f1"},
+        "source_receipts_digest": {"const": "dbf82e7d86db36468af02bcc475a6d7b8da54d794560e0c66005a6978317f100"},
+        "candidate_set_digest": {"const": "0500bab20bb6e4e1220d9a1d83ab566206f539cfbdc30077b2e50a16755f3f6b"}
       }
     },
     "source_scope": {

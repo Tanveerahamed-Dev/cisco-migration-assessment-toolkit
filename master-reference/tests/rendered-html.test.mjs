@@ -1735,7 +1735,7 @@ test("server-renders every source-derived default capability sink slot exactly o
   }
   assert.equal(
     slotText.size,
-    429,
+    431,
     "/capabilities emitted an unexpected or duplicate physical capability slot",
   );
 
@@ -1888,7 +1888,7 @@ test("renders deterministic catalogs and never promotes advisory content", async
   const horizon = JSON.parse(horizonText);
   const capabilities = catalog.domains.flatMap((domain) => domain.entries);
 
-  assert.equal(capabilities.length, 211);
+  assert.equal(capabilities.length, 212);
   assert.equal(governance.gaps.length, 41);
   assert.equal(governance.decision_queue.length, 10);
   assert.equal(governance.labs.length, 14);

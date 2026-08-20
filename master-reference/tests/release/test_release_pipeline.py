@@ -1686,9 +1686,9 @@ def test_compiler_bundle_recomputes_declared_claim_census_and_rejects_downgrade_
             "79253dc74d3c25a49179f38b57ea25c7ff603195eb03ee97c5eb38793d78d894",
         ),
         "master-reference/content/capability-catalog.json": (
-            422,
-            "12c2a143a2955faaf7694f22b78799af833cbd4f8e49a1bed87ea142dfe68917",
-            "b92ac8c92f0564c7dd542ffde283633bc8d6e3e5a43aaa77cfef50f65720b18a",
+            424,
+            "971e96f4e07b358862388646f280ac4ec78a1d090709681cc41d4deff75df9e7",
+            "1a6037a66182272ebff882ce471a273b66c0b938bb0de92d4172a0564032269c",
         ),
         "master-reference/content/delivery-governance.json": (
             969,
@@ -1712,14 +1712,14 @@ def test_compiler_bundle_recomputes_declared_claim_census_and_rejects_downgrade_
     assert summary["source_universe_expected"] == 5
     assert summary["source_universe_registered"] == 5
     assert summary["source_universe_unclassified"] == 0
-    assert summary["expected_candidates"] == 2_136
-    assert summary["discovered_candidates"] == 2_136
-    assert summary["classified_candidates"] == 2_136
+    assert summary["expected_candidates"] == 2_138
+    assert summary["discovered_candidates"] == 2_138
+    assert summary["classified_candidates"] == 2_138
     assert summary["independently_reviewed_candidates"] == 0
-    assert summary["unresolved_candidates"] == 2_136
-    assert summary["candidate_set_digest"] == "a768b5a6c9a94390ada8e9c24627c8908f6a7b51e3f06d59b79ac8f1a5ffdd43"
-    assert summary["classification_digest"] == "b5bc4783b8bd6461fc4669b39a555ae061081a278e36712cdb6f70a5e673d1df"
-    assert summary["source_receipts_digest"] == "863f93c7bc0599b1cfe7e5b42eb5b10c8087a704af9de194be18d9bf28008689"
+    assert summary["unresolved_candidates"] == 2_138
+    assert summary["candidate_set_digest"] == "0500bab20bb6e4e1220d9a1d83ab566206f539cfbdc30077b2e50a16755f3f6b"
+    assert summary["classification_digest"] == "1319f15e0439eb85277982ab8d36086770156161e11328c82a17209ef22cf6f1"
+    assert summary["source_receipts_digest"] == "dbf82e7d86db36468af02bcc475a6d7b8da54d794560e0c66005a6978317f100"
     assert summary["error_codes"] == [
         "consequential_claim_independent_review_pending",
         "consequential_claim_rendered_sink_universe_incomplete",
@@ -3846,7 +3846,7 @@ def test_release_can_generate_source_bound_pdf_but_keeps_review_blocked(tmp_path
     assert gate["horizon_sink_mechanical_verification"]["rendered_observation_count"] == 167
     assert gate["horizon_sink_mechanical_verification"]["safety_observation_count"] == 53
     assert gate["capability_sink_mechanical_verification"]["verdict"] == "PASS"
-    assert gate["capability_sink_mechanical_verification"]["rendered_observation_count"] == 422
+    assert gate["capability_sink_mechanical_verification"]["rendered_observation_count"] == 424
     assert gate["capability_sink_mechanical_verification"]["safety_observation_count"] == 7
     assert gate["core_sink_mechanical_verification"]["verdict"] == "PASS"
     assert gate["core_sink_mechanical_verification"]["rendered_observation_count"] == 9
@@ -3925,7 +3925,7 @@ def test_release_can_generate_source_bound_pdf_but_keeps_review_blocked(tmp_path
         lambda value: value["rendered_sink_lineage"].update(observed_sink_count=1),
         lambda value: value["horizon_sink_mechanical_verification"].update(rendered_observation_count=166),
         lambda value: value["capability_sink_lineage"].update(closes_global_gate=True),
-        lambda value: value["capability_sink_lineage"]["global_denominator"].update(independently_reviewed=422),
+        lambda value: value["capability_sink_lineage"]["global_denominator"].update(independently_reviewed=424),
         lambda value: value["capability_sink_lineage"].update(observed_sink_count=1),
         lambda value: value["capability_sink_mechanical_verification"].update(rendered_observation_count=421),
         lambda value: value["core_sink_lineage"].update(closes_global_gate=True),
@@ -4184,12 +4184,12 @@ def test_release_executes_all_declared_sink_lineages_for_all_pdf_branches(tmp_pa
     assert generated_lineage["state"] == "declared_incomplete"
     assert generated_lineage["closes_global_gate"] is False
     assert generated_lineage["global_denominator"]["independently_reviewed"] == 0
-    assert generated_lineage["global_denominator"]["unresolved"] == 2_136
+    assert generated_lineage["global_denominator"]["unresolved"] == 2_138
     assert generated_lineage["observed_sink_count"] == 1
     generated_pdf = next(
         row for row in generated_lineage["sink_receipts"] if row["sink_id"] == "pdf.capability-catalog"
     )
-    assert generated_pdf["mapped_exactly_once"] == generated_pdf["rendered"] == 422
+    assert generated_pdf["mapped_exactly_once"] == generated_pdf["rendered"] == 424
     assert generated_pdf["safety_inputs_bound"] == 7
     assert generated_pdf["unmapped"] == generated_pdf["multiply_mapped"] == generated_pdf["fallback_count"] == 0
     assert generated_pdf["producer_verdict"] == "PASS"
@@ -4198,7 +4198,7 @@ def test_release_executes_all_declared_sink_lineages_for_all_pdf_branches(tmp_pa
     assert generated_core_lineage["state"] == "declared_incomplete"
     assert generated_core_lineage["closes_global_gate"] is False
     assert generated_core_lineage["global_denominator"]["independently_reviewed"] == 0
-    assert generated_core_lineage["global_denominator"]["unresolved"] == 2_136
+    assert generated_core_lineage["global_denominator"]["unresolved"] == 2_138
     assert generated_core_lineage["source"]["grounding_fallback_candidate_count"] == 62
     assert generated_core_lineage["observed_sink_count"] == 1
     generated_core_pdf = next(
@@ -4239,7 +4239,7 @@ def test_release_executes_all_declared_sink_lineages_for_all_pdf_branches(tmp_pa
     assert absent_lineage["observed_sink_count"] == 0
     assert absent_lineage["closes_global_gate"] is False
     assert all(row["producer_verdict"] == "BLOCK" for row in absent_lineage["sink_receipts"])
-    assert all(row["unmapped"] == 422 for row in absent_lineage["sink_receipts"])
+    assert all(row["unmapped"] == 424 for row in absent_lineage["sink_receipts"])
     assert all(row["safety_violations"] == 7 for row in absent_lineage["sink_receipts"])
     absent_core_lineage = absent_gate["core_sink_lineage"]
     assert absent_core_lineage["state"] == "declared_incomplete"
@@ -4264,7 +4264,7 @@ def test_release_executes_all_declared_sink_lineages_for_all_pdf_branches(tmp_pa
     assert external_lineage["observed_sink_count"] == 0
     assert external_lineage["closes_global_gate"] is False
     assert all(row["producer_verdict"] == "BLOCK" for row in external_lineage["sink_receipts"])
-    assert all(row["unmapped"] == 422 for row in external_lineage["sink_receipts"])
+    assert all(row["unmapped"] == 424 for row in external_lineage["sink_receipts"])
     assert all(row["safety_violations"] == 7 for row in external_lineage["sink_receipts"])
     external_core_lineage = external_gate["core_sink_lineage"]
     assert "core_sink_mechanical_verification" not in external_gate

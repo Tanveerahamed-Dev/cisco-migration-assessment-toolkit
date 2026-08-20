@@ -22,7 +22,11 @@ from cisco_toolkit import analyze as _analyze  # noqa: E402  (after path bootstr
 from cisco_toolkit import html as _html  # noqa: E402
 from cisco_toolkit.textutils import _as_num as _as_num  # noqa: E402  (shared fail-soft numeric coercion)
 from cisco_toolkit import __version__ as ENGINE_SCHEMA_VERSION  # noqa: E402,F401  (re-exported for the app)
-from cisco_toolkit.precert import schema_compat_status  # noqa: E402  (P3-E2: webapp diff schema gate)
+from cisco_toolkit.precert import (  # noqa: E402  (P3-E2: webapp diff schema gate)
+    compute_precert,
+    schema_compat_status,
+)
+from cisco_toolkit import protocol_assurance as _protocol_assurance  # noqa: E402
 
 # Canonical hostname normalisation — reuse the engine's own so the web layer groups hosts identically.
 canon_host = _analyze._canon_host
@@ -155,3 +159,118 @@ def snapshot_delta(
     result = compute_snapshot_delta(
         old, new, source_binding=source_binding, schema_status=schema)
     return _with_schema_compat(result, schema)
+
+
+def compare_bound_pair(
+        old: Dict[str, Any], new: Dict[str, Any], *,
+        before_binding: Dict[str, Any], after_binding: Dict[str, Any],
+        change_intent: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Compose the canonical source-bound comparison without changing any v1 owner.
+
+    The legacy delta fields remain at the top level for existing API consumers.  The certificate,
+    reference-only family composition, admission envelope, and sole overall cutover gate are
+    additive.  Both the delta and certificate consume hashes from the exact persisted bytes that
+    produced ``old`` and ``new``.
+    """
+    schema = _schema_compat([old, new])
+    source_binding = {
+        "before": dict(before_binding),
+        "after": dict(after_binding),
+    }
+    profiles = _protocol_assurance.protocol_support_profiles()
+    owner_versions = {
+        "snapshot_delta": "compute_snapshot_delta@v1",
+        "precert": "precert/1",
+        "cutover_gate": "cutover_gate/1",
+        "protocol_family_change_set": "protocol_family_change_set/1",
+        "engine_schema": ENGINE_SCHEMA_VERSION,
+        "before_snapshot_owner": str(old.get("script_version") or ""),
+        "after_snapshot_owner": str(new.get("script_version") or ""),
+    }
+    owner_versions.update({
+        f"protocol:{profile['family']}": str(profile["owner_schema"])
+        for profile in profiles
+    })
+    intent_binding = {
+        "engagement_id": before_binding.get("engagement_id"),
+        "campaign_id": before_binding.get("campaign_id"),
+        "before_snapshot_id": before_binding.get("snapshot_id"),
+        "after_snapshot_id": after_binding.get("snapshot_id"),
+        "before_sha256": before_binding.get("sha256"),
+        "after_sha256": after_binding.get("sha256"),
+    }
+    intent = _protocol_assurance.normalize_change_intent(
+        change_intent, binding=intent_binding)
+    admission = _protocol_assurance.comparison_admission(
+        old,
+        new,
+        before_binding=before_binding,
+        after_binding=after_binding,
+        schema_status=schema,
+        change_intent=intent,
+        owner_versions=owner_versions,
+        support_profiles=profiles,
+    )
+    delta = compute_snapshot_delta(
+        old, new, source_binding=source_binding, schema_status=schema)
+    delta = _with_schema_compat(delta, schema)
+    certificate = compute_precert(
+        old,
+        new,
+        source_hashes=source_binding,
+        schema_status=schema,
+    )
+    native_deltas = _protocol_assurance.compute_native_protocol_deltas(
+        old,
+        new,
+        before_binding=before_binding,
+        after_binding=after_binding,
+    )
+    protocol_families = _protocol_assurance.protocol_family_change_set(
+        delta.get("protocol_adjacencies"), intent, native_deltas=native_deltas)
+    cutover_gate = _html.compute_cutover_gate(
+        delta,
+        certificate,
+        comparison_admission=admission,
+        protocol_family_changes=protocol_families,
+    )
+    operator_evidence = _protocol_assurance.cutover_operator_evidence(new)
+    envelope = _protocol_assurance.receipt_envelope(
+        admission=admission,
+        change_intent=intent,
+        protocol_families=protocol_families,
+        delta=delta,
+        precert=certificate,
+        cutover_gate=cutover_gate,
+        operator_evidence=operator_evidence,
+    )
+    return {
+        **delta,
+        "comparison_schema": "source_bound_cutover_comparison/1",
+        "comparison_admission": admission,
+        "change_intent": intent,
+        "protocol_families": protocol_families,
+        "precert": certificate,
+        "cutover_gate": cutover_gate,
+        "operator_evidence": operator_evidence,
+        "comparison_receipt": envelope,
+    }
+
+
+def compact_execution_comparison(
+        comparison: Dict[str, Any], *, before_snapshot_id: int,
+        after_snapshot_id: int) -> Dict[str, Any]:
+    """Freeze the complete canonical comparison for one execution append.
+
+    The stored receipt is uncapped and carries the exact same overall gate as ``/api/compare``.
+    It intentionally omits no decision input; presentation layers may cap their rendered rows but
+    must never feed those caps back into the decision.
+    """
+    body = {
+        "schema": "execution_comparison_receipt/1",
+        "before_snapshot_id": before_snapshot_id,
+        "after_snapshot_id": after_snapshot_id,
+        "comparison": comparison,
+    }
+    body["receipt_sha256"] = _protocol_assurance.canonical_sha256(body)
+    return body

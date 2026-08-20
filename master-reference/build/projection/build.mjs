@@ -93,7 +93,7 @@ const CONSEQUENTIAL_INTEGRITY_PREDICATES = Object.freeze([
 ]);
 const CONSEQUENTIAL_SOURCE_COUNTS = Object.freeze({
   "master-reference/content/atlas-core.json": 155,
-  "master-reference/content/capability-catalog.json": 422,
+  "master-reference/content/capability-catalog.json": 424,
   "master-reference/content/delivery-governance.json": 969,
   "master-reference/content/open-horizon-register.json": 315,
   "master-reference/content/output-contract.json": 275,
@@ -102,7 +102,7 @@ const CONSEQUENTIAL_SOURCE_SPEC_DIGESTS = Object.freeze({
   "master-reference/content/atlas-core.json":
     "88945e355209ff0d42376c1fc5273f23729a21d5d82021f7c1ae63d38f65402e",
   "master-reference/content/capability-catalog.json":
-    "21fb22df10f364ed8c6ac043d53aa31221ac6763e554a5a4f2c50fbe41015748",
+    "4f5c453366826242722b987f5af073b94eeccddf75177ef3a44e07773d123820",
   "master-reference/content/delivery-governance.json":
     "62b113259ea0bc532a3c76faa63c8ee55f20746dd928e17a29b380ca45c15d38",
   "master-reference/content/open-horizon-register.json":
@@ -110,7 +110,7 @@ const CONSEQUENTIAL_SOURCE_SPEC_DIGESTS = Object.freeze({
   "master-reference/content/output-contract.json":
     "417d637ca609aed5e37c62004cc279618655c0c214ef4f61dab1db3b829d9084",
 });
-const CONSEQUENTIAL_EXPECTED_CANDIDATES = 2_136;
+const CONSEQUENTIAL_EXPECTED_CANDIDATES = 2_138;
 const CONSEQUENTIAL_MAX_CANDIDATES = 100_000;
 const CONSEQUENTIAL_MAX_REFERENCES = 1_000;
 const CONSEQUENTIAL_MAX_REFERENCE_LENGTH = 1_024;

@@ -1,7 +1,15 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { api, bandColor, gateColor } from "../api";
-import type { GateRecord, SnapshotVerification } from "../api";
+import type {
+  CompareResponse,
+  CutoverChangeIntentInput,
+  CurrentBaselineGate,
+  GateRecord,
+  ProtocolAdjacencyDelta,
+  SnapshotVerification,
+} from "../api";
+import ComparisonDecision from "../components/ComparisonDecision";
 import { ErrorBox, Loading, SegBar, useAsync, useToast } from "../components/ui";
 import {
   normalizedVerification,
@@ -154,36 +162,6 @@ export const VERDICT_COLOR: Record<string, string> = {
   CLEAN: "var(--ok)", REVIEW: "var(--watch)", REGRESSED: "var(--crit)", INDETERMINATE: "var(--text-faint)",
 };
 
-type CurrentBaselineBlocker = {
-  device?: string;
-  wave?: string;
-  category?: string;
-  severity?: string;
-  check?: string;
-  evidence_state?: string;
-  expect?: string;
-  projection_custody?: string;
-  source_key?: string;
-};
-
-type CurrentBaselineGate = {
-  schema?: string;
-  verdict?: "BLOCKED" | "INDETERMINATE" | "CLEAR" | "NOT_ASSESSED" | string;
-  assessed?: boolean;
-  note?: string;
-  summary?: {
-    n_items?: number;
-    n_blockers?: number;
-    n_blockers_returned?: number;
-    blockers_capped?: boolean;
-    by_state?: Partial<Record<"degraded" | "review" | "not_verified", number>>;
-    by_wave?: Record<string, number>;
-  };
-  blockers?: CurrentBaselineBlocker[];
-  integrity?: { valid?: boolean; failures?: string[] };
-  limitations?: string[];
-};
-
 const CURRENT_BASELINE_COLOR: Record<string, string> = {
   BLOCKED: "var(--crit)",
   INDETERMINATE: "var(--watch)",
@@ -274,18 +252,6 @@ function CurrentBaselineGatePanel({ value }: { value?: CurrentBaselineGate | nul
     </section>
   );
 }
-
-type ProtocolAdjacencyDelta = {
-  gate?: "PASS" | "REVIEW" | "REGRESSED" | "NOT_ASSESSED" | string;
-  assessed?: boolean;
-  projection_custody?: string;
-  summary?: Partial<Record<
-    "n_baseline_peers" | "n_scoped_cells" | "n_comparable_cells" | "n_preserved" |
-    "n_state_regressed" | "n_recovered" | "n_no_longer_observed" | "n_added" | "n_coverage_gaps",
-    number
-  >>;
-  note?: string;
-};
 
 const PROTOCOL_GATE_COLOR: Record<string, string> = {
   PASS: "var(--ok)",
@@ -438,7 +404,8 @@ export default function CampaignPage() {
   const [folderIngesting, setFolderIngesting] = useState(false);
   const [cmpA, setCmpA] = useState<number | "">("");
   const [cmpB, setCmpB] = useState<number | "">("");
-  const [cmp, setCmp] = useState<any>(null);
+  const [changeIntentText, setChangeIntentText] = useState("");
+  const [cmp, setCmp] = useState<CompareResponse | null>(null);
   const [cmpErr, setCmpErr] = useState<string | null>(null);
 
   async function upload() {
@@ -487,7 +454,26 @@ export default function CampaignPage() {
     // computed from. Drop the stale result first and say the run failed where the result would be.
     setCmp(null);
     setCmpErr(null);
-    try { setCmp(await api.compare(Number(cmpA), Number(cmpB))); }
+    let changeIntent: CutoverChangeIntentInput | undefined;
+    if (changeIntentText.trim()) {
+      try {
+        const parsed = JSON.parse(changeIntentText);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          throw new Error("Expected-change intent must be a JSON object.");
+        }
+        changeIntent = parsed as CutoverChangeIntentInput;
+      } catch (e: any) {
+        const message = e?.message || String(e);
+        setCmpErr(`Expected-change intent is not valid JSON: ${message}`);
+        toast("Fix the expected-change intent before comparing.");
+        return;
+      }
+    }
+    try {
+      setCmp(changeIntent
+        ? await api.compare(Number(cmpA), Number(cmpB), changeIntent)
+        : await api.compare(Number(cmpA), Number(cmpB)));
+    }
     catch (e: any) { setCmpErr(e.message || String(e)); toast(e.message); }
   }
   async function delCampaign() {
@@ -618,6 +604,19 @@ export default function CampaignPage() {
                   {snaps.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
                 </select>
               </div>
+              <details style={{ marginTop: 9 }}>
+                <summary className="faint" style={{ cursor: "pointer", fontSize: 11.5 }}>
+                  Expected family changes (optional, source-bound JSON)
+                </summary>
+                <div className="faint" style={{ fontSize: 10.5, margin: "6px 0" }}>
+                  Supply <span className="mono">expected_changes</span> with family, transition,
+                  optional subjects, and reason. Evidence loss or incompatibility can never be authorized.
+                </div>
+                <textarea aria-label="Expected family changes JSON" value={changeIntentText}
+                  onChange={(event) => setChangeIntentText(event.target.value)} rows={5}
+                  placeholder={'{"expected_changes":[{"family":"vtp_safety","transitions":["intent_changed"],"subjects":["dist-1"],"reason":"planned revision reset"}],"note":"CAB-1234"}'}
+                  style={{ width: "100%", fontFamily: "var(--mono)", fontSize: 11 }} />
+              </details>
               <button className="btn" style={{ marginTop: 10 }} onClick={runCompare}>Compare</button>
               {cmpErr && (
                 <div style={{ marginTop: 12 }}>
@@ -629,7 +628,11 @@ export default function CampaignPage() {
               )}
               {cmp && (
                 <div style={{ marginTop: 14, fontSize: 13 }}>
-                  <CurrentBaselineGatePanel value={cmp.current_baseline} />
+                  <ComparisonDecision
+                    value={cmp}
+                    currentBaseline={<CurrentBaselineGatePanel value={cmp.current_baseline} />}
+                    exportFilename={`campaign-${cid}-snapshots-${cmpA}-${cmpB}-comparison.json`}
+                  />
                   <div className="row-flex" style={{ marginBottom: 8 }}>
                     <span className="faint" style={{ fontSize: 11 }}>Before→after change result:</span>
                     <span className="chip" data-testid="compare-delta-verdict"

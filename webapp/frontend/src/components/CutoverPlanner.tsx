@@ -399,6 +399,13 @@ function ExecutionRuns({ snapId }: { snapId: number }) {
   const STATUS_COLOR: Record<string, string> = {
     in_progress: "var(--accent)", completed: "var(--ok)", aborted: "var(--crit)",
   };
+  const canonicalGateColor = (verdict: string) => verdict === "PASS"
+    ? "var(--ok)"
+    : verdict === "FAIL" || verdict === "REGRESSED"
+      ? "var(--crit)"
+      : verdict === "CONDITIONAL" || verdict === "REVIEW"
+        ? "var(--watch)"
+        : "var(--text-faint)";
   return (
     <div style={{ marginTop: 16, borderTop: "1px solid var(--border-faint)", paddingTop: 14 }}>
       <div className="row-flex">
@@ -428,9 +435,22 @@ function ExecutionRuns({ snapId }: { snapId: number }) {
       {(runs || []).length > 0 && (
         <div className="row-flex" style={{ marginTop: 10 }}>
           {(runs || []).map((r) => (
-            <Link key={r.id} to={`/executions/${r.id}`} className="chip" style={{ textDecoration: "none" }}>
+            <Link key={r.id} to={`/executions/${r.id}`} className="chip"
+              data-testid={`cutover-execution-${r.id}`} style={{ textDecoration: "none" }}>
               <span className="dot" style={{ background: STATUS_COLOR[r.status] || "var(--text-faint)" }} />
               {r.label} · <span className="faint">{r.status.replace("_", " ")}</span>
+              {r.latest_comparison ? (
+                <>
+                  {" · "}<span style={{ color: canonicalGateColor(r.latest_comparison.cutover_gate.verdict) }}>
+                    post-change {r.latest_comparison.cutover_gate.verdict}
+                  </span>
+                  <span className="faint"> · after snapshot {r.latest_comparison.after_snapshot_id}</span>
+                </>
+              ) : r.comparison_required ? (
+                <span style={{ color: "var(--text-faint)" }}> · post-change NOT VERIFIED — open run to bind</span>
+              ) : (
+                <span className="faint"> · legacy · no canonical receipt</span>
+              )}
             </Link>
           ))}
         </div>
