@@ -1389,6 +1389,14 @@ def write_collection(root: str) -> str:
         dev_dir = os.path.join(root, hostname)
         os.makedirs(dev_dir, exist_ok=True)
         for cmd, text in outputs.items():
-            with open(os.path.join(dev_dir, cmd_filename(cmd)), "w", encoding="utf-8") as f:
+            # Keep the byte-bound capture receipts identical on Windows and POSIX.  The
+            # strict protocol owners hash the exact fixture bytes, so platform newline
+            # translation would make the reviewed golden inherently checkout-dependent.
+            with open(
+                os.path.join(dev_dir, cmd_filename(cmd)),
+                "w",
+                encoding="utf-8",
+                newline="\n",
+            ) as f:
                 f.write(text)
     return root

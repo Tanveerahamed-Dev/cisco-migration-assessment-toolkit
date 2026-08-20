@@ -22,6 +22,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from openpyxl import Workbook, load_workbook
@@ -42,6 +43,14 @@ def _make_template(path):
     ws.title = "Interface Data"
     ws.append(["Hostname", "Port", "Status"])
     wb.save(path)
+
+
+def test_synthetic_collection_bytes_are_platform_stable(tmp_path):
+    """Strict owner digests must not depend on the OS that writes the fixture."""
+    collection = Path(fx.write_collection(str(tmp_path / "collection")))
+    raw = (collection / "access1" / fx.cmd_filename("show running-config")).read_bytes()
+    assert b"\n" in raw
+    assert b"\r\n" not in raw
 
 
 def _run_pipeline(tmp_path, out_xlsx=None, extra_args=None):

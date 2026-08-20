@@ -1322,7 +1322,7 @@
     "runtime_parsed_count": 0,
     "runtime_rejected_count": 0,
     "runtime_local_as": "",
-    "config_sha256": "d09fde28df359a810df146aedfb94b5446d313c3e5247bc5a3a070dc01a9fd16",
+    "config_sha256": "62e30d5f79d05899a5e0537fc1966fbc4864f5f8deaa11bb7dbd33ecbc6873da",
     "runtime_sha256": "",
     "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
     "finding_codes": []
@@ -1348,7 +1348,7 @@
     "runtime_parsed_count": 0,
     "runtime_rejected_count": 0,
     "runtime_local_as": "",
-    "config_sha256": "19381bd4cdd336c0b3ffbb5073f65a75f651c6158bf3c276e9b63bdd13eba8b6",
+    "config_sha256": "4590544c3df385996091c09c30807eca3b0765fe8b4a53ed662cbe25d28dba06",
     "runtime_sha256": "",
     "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
     "finding_codes": []
@@ -1405,7 +1405,7 @@
     "assessed": 0,
     "not_applicable": 0
    },
-   "baseline_sha256": "5bb6e296ce5b5201c71459f8daa727b6beac053ae9a0cf583f13627eb5c36289"
+   "baseline_sha256": "b07c80f7c910e708e5e22c2cbd824b726d09981822e5a5460adff6a3b3c82861"
   },
   "limitations": [
    "Scope is default/global IPv4 unicast and direct static literal IPv4 peers only.",
