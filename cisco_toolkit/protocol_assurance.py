@@ -53,6 +53,7 @@ _IPV4_OWNER = "protocol_adjacency_delta/1"
 
 
 _BOUND_SNAPSHOT_AUTHORITY = object()
+_BOUND_NATIVE_DELTA_SET_AUTHORITY = object()
 _BOUND_FAMILY_SET_AUTHORITY = object()
 _MAX_JSON_OBJECT_MEMBERS = 2_000_000
 
@@ -99,13 +100,19 @@ class BoundProtocolFamilyChangeSet(dict):
     the wire contract; JSON round trips therefore lose decision authority.
     """
 
-    __slots__ = ("_bound_payload_sha256",)
+    __slots__ = (
+        "_bound_payload_sha256",
+        "_bound_before_sha256",
+        "_bound_after_sha256",
+    )
 
     def __init__(
             self,
             value: Mapping[str, Any],
             *,
             payload_sha256: str,
+            before_sha256: Any,
+            after_sha256: Any,
             _authority: object) -> None:
         if _authority is not _BOUND_FAMILY_SET_AUTHORITY:
             raise TypeError(
@@ -113,9 +120,77 @@ class BoundProtocolFamilyChangeSet(dict):
             )
         super().__init__(value)
         self._bound_payload_sha256 = payload_sha256
+        self._bound_before_sha256 = before_sha256
+        self._bound_after_sha256 = after_sha256
 
 
-def validate_protocol_family_change_set_authority(value: Any) -> dict:
+class BoundNativeProtocolDeltaSet(list):
+    """Process-local proof of one complete before/after applicability pass.
+
+    Native-family applicability is evidence-driven and may legitimately yield an empty list.  The
+    private marker therefore proves completeness without imposing a fixed family roster or treating
+    catalog/runtime support as evidence.  Copying, serializing, or mutating the list loses authority.
+    """
+
+    __slots__ = (
+        "_bound_payload_sha256",
+        "_bound_before_sha256",
+        "_bound_after_sha256",
+    )
+
+    def __init__(
+            self,
+            value: Iterable[Any],
+            *,
+            payload_sha256: str,
+            before_sha256: Any,
+            after_sha256: Any,
+            _authority: object) -> None:
+        if _authority is not _BOUND_NATIVE_DELTA_SET_AUTHORITY:
+            raise TypeError(
+                "BoundNativeProtocolDeltaSet can only be minted by the applicability pass"
+            )
+        super().__init__(value)
+        self._bound_payload_sha256 = payload_sha256
+        self._bound_before_sha256 = before_sha256
+        self._bound_after_sha256 = after_sha256
+
+
+def validate_native_protocol_delta_set_authority(value: Any) -> dict:
+    """Require an unchanged native set minted by the exact applicability pass."""
+    if not isinstance(value, BoundNativeProtocolDeltaSet):
+        return {
+            "present": value is not None,
+            "valid": False,
+            "reason": (
+                "native protocol delta set is detached from the exact before/after "
+                "applicability pass"
+            ),
+        }
+    expected = getattr(value, "_bound_payload_sha256", None)
+    try:
+        actual = canonical_sha256(list(value))
+    except (TypeError, ValueError, OverflowError, RecursionError, MemoryError):
+        actual = None
+    if not isinstance(expected, str) or expected != actual:
+        return {
+            "present": True,
+            "valid": False,
+            "reason": "native protocol delta set changed after the applicability pass",
+        }
+    return {
+        "present": True,
+        "valid": True,
+        "reason": "ok",
+        "source_binding": {
+            "before": getattr(value, "_bound_before_sha256", None),
+            "after": getattr(value, "_bound_after_sha256", None),
+        },
+    }
+
+
+def validate_protocol_family_change_set_authority(
+        value: Any, *, expected_source_binding: Any = None) -> dict:
     """Validate the non-serializable authority and exact current bytes of a family set.
 
     Structural and row-level reconciliation remains in the sole gate owner.  This check closes the
@@ -142,7 +217,29 @@ def validate_protocol_family_change_set_authority(value: Any) -> dict:
             "valid": False,
             "reason": "protocol family change set changed after canonical composition",
         }
-    return {"present": True, "valid": True, "reason": "ok"}
+    source_binding = {
+        "before": getattr(value, "_bound_before_sha256", None),
+        "after": getattr(value, "_bound_after_sha256", None),
+    }
+    if expected_source_binding is not None:
+        pair = _dict(expected_source_binding)
+        expected_pair = {
+            side: _dict(pair.get(side)).get("sha256") for side in ("before", "after")
+        }
+        if source_binding != expected_pair:
+            return {
+                "present": True,
+                "valid": False,
+                "reason": (
+                    "protocol family change set belongs to a different exact comparison pair"
+                ),
+            }
+    return {
+        "present": True,
+        "valid": True,
+        "reason": "ok",
+        "source_binding": source_binding,
+    }
 
 
 def reject_duplicate_json_keys(pairs: List[tuple[str, Any]]) -> Dict[str, Any]:
@@ -1336,6 +1433,8 @@ def compute_native_protocol_deltas(
                     stored,
                     snapshot.get("multichassis_lag_typed_observations"),
                     snapshot.get("devices"),
+                    legacy_vpc=snapshot.get("vpc"),
+                    legacy_arista=snapshot.get("arista"),
                 )
                 if reconciled.get("valid") is True:
                     return stored
@@ -1362,7 +1461,13 @@ def compute_native_protocol_deltas(
                 "after_baseline_sha256": after_summary.get("baseline_sha256"),
             },
         ))
-    return results
+    return BoundNativeProtocolDeltaSet(
+        results,
+        payload_sha256=canonical_sha256(results),
+        before_sha256=before_source.get("sha256"),
+        after_sha256=after_source.get("sha256"),
+        _authority=_BOUND_NATIVE_DELTA_SET_AUTHORITY,
+    )
 
 
 def _expected(intent: Mapping[str, Any], family: str, transition: str, subject: str,
@@ -1937,10 +2042,21 @@ def protocol_family_change_set(
     effect, never a block or abstention.  Missing/malformed native receipts are materialized as an
     uncapped ``not_comparable`` subject so a presentation cap cannot hide the withheld assurance.
     """
+    native_authority = validate_native_protocol_delta_set_authority(native_deltas)
+    try:
+        native_rows = list(native_deltas) if native_deltas is not None else []
+    except (TypeError, ValueError, RecursionError, MemoryError):
+        native_rows = []
+        native_authority = {
+            "present": True,
+            "valid": False,
+            "reason": "native protocol delta set could not be materialized",
+        }
+
     profile_list = protocol_support_profiles()
     profiles = {profile["family"]: profile for profile in profile_list}
     families = [_ipv4_family(ipv4_delta, change_intent, profiles[_IPV4_FAMILY])]
-    for index, delta in enumerate(native_deltas or []):
+    for index, delta in enumerate(native_rows):
         families.append(_native_family(delta, change_intent, profiles, index))
     families.sort(key=lambda family: (family["family"].casefold(), family["family"]))
 
@@ -1970,11 +2086,16 @@ def protocol_family_change_set(
         "summary": summary,
         "families": families,
     }
-    return BoundProtocolFamilyChangeSet(
-        payload,
-        payload_sha256=canonical_sha256(payload),
-        _authority=_BOUND_FAMILY_SET_AUTHORITY,
-    )
+    if native_authority.get("valid") is True:
+        native_source_binding = _dict(native_authority.get("source_binding"))
+        return BoundProtocolFamilyChangeSet(
+            payload,
+            payload_sha256=canonical_sha256(payload),
+            before_sha256=native_source_binding.get("before"),
+            after_sha256=native_source_binding.get("after"),
+            _authority=_BOUND_FAMILY_SET_AUTHORITY,
+        )
+    return payload
 
 
 def current_baseline_blocker_export(snapshot: Any) -> dict:

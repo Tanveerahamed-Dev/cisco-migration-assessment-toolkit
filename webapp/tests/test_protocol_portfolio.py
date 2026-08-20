@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import io
 import json
@@ -313,6 +314,77 @@ def test_portfolio_rejects_stale_multichassis_baseline_over_truncated_typed_rows
     assert "typed observation count does not reconcile" in multichassis[
         "status_reason"
     ].lower()
+
+
+def test_portfolio_rejects_typed_multichassis_baseline_that_omits_legacy_local(client):
+    snapshot = _persisted_pair()
+    snapshot["devices"]["leaf-c"] = {}
+    snapshot["vpc"] = {
+        "leaf-a": {"domain_id": "10", "peer_status": "peer adjacency formed ok"},
+        "leaf-b": {"domain_id": "10", "peer_status": "peer adjacency formed ok"},
+        "leaf-c": {"domain_id": "99", "peer_status": "peer adjacency not formed"},
+    }
+    snapshot_id, _ = _upload(client, snapshot)
+
+    receipt = client.get(
+        f"/api/snapshots/{snapshot_id}/section/protocol_assurance"
+    ).json()["data"]["receipt"]
+    multichassis = next(
+        row for row in receipt["families"] if row["family"] == "multichassis_lag"
+    )
+
+    assert multichassis["evidence_status"] == "not_verified"
+    assert multichassis["subject_total"] == 0
+    assert "legacy local subjects do not reconcile" in multichassis[
+        "status_reason"
+    ].lower()
+
+
+def test_portfolio_rejects_fhrp_domain_receipt_from_different_svi_projection(
+        client, tmp_path):
+    from cisco_toolkit.fhrp_intent import embedded_fhrp_configured_group_baseline
+    from cisco_toolkit.fhrp_redundancy import (
+        compute_fhrp_redundancy_domain_baseline,
+        embedded_fhrp_redundancy_domain_baseline,
+    )
+    from tests.test_fhrp_redundancy_domain_baseline import _owner
+
+    source_dir = tmp_path / "fhrp"
+    source_dir.mkdir()
+    configured, interfaces = _owner(source_dir, {
+        "edge-a": {"ip": "10.0.10.2", "role": "Active"},
+        "edge-b": {"ip": "10.0.10.3", "role": "", "group": False},
+    })
+    actual = compute_fhrp_redundancy_domain_baseline(interfaces, configured)
+    assert actual["domains"][0]["status"] == "review"
+    graft = compute_fhrp_redundancy_domain_baseline({}, configured)
+    snapshot = {
+        "script_version": "portfolio-fhrp-svi-graft/1",
+        "devices": {"edge-a": {}, "edge-b": {}},
+        "interfaces": json.loads(json.dumps(
+            interfaces,
+            default=lambda item: dataclasses.asdict(item)
+            if dataclasses.is_dataclass(item) else str(item),
+        )),
+        "fhrp_configured_group_baseline":
+            embedded_fhrp_configured_group_baseline(configured),
+        "fhrp_redundancy_domain_baseline":
+            embedded_fhrp_redundancy_domain_baseline(
+                graft, configured_group_baseline=configured),
+    }
+    snapshot_id, _ = _upload(client, snapshot)
+
+    receipt = client.get(
+        f"/api/snapshots/{snapshot_id}/section/protocol_assurance"
+    ).json()["data"]["receipt"]
+    domain = next(
+        row for row in receipt["families"]
+        if row["family"] == "fhrp_redundancy_domain"
+    )
+
+    assert domain["evidence_status"] == "not_verified"
+    assert domain["subject_total"] == 0
+    assert "svi projection digest mismatch" in domain["status_reason"].lower()
 
 
 def test_portfolio_owner_withholds_custody_from_a_detached_parsed_snapshot(client):

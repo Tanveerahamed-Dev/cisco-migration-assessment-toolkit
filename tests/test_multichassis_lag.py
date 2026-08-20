@@ -243,10 +243,25 @@ def _canonical_gate_for(native_delta: dict, expected_changes: list[dict]) -> tup
         "changes": [],
         "coverage_gaps": [],
     }
+    # Mint completeness through the real applicability pass while substituting only the already
+    # asserted native owner result under test.  A caller-supplied ``[native_delta]`` is deliberately
+    # inspectable but no longer gate-authoritative.
+    from cisco_toolkit import multichassis_lag as owner
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(owner, "compute_multichassis_lag_delta", lambda *args, **kwargs: native_delta)
+        native_deltas = pa.compute_native_protocol_deltas(
+            {"vpc": {"leaf": {"peer_status": "up"}}},
+            {"vpc": {"leaf": {"peer_status": "up"}}},
+            before_binding={
+                "sha256": native_delta["source_binding"]["before_snapshot_sha256"]},
+            after_binding={
+                "sha256": native_delta["source_binding"]["after_snapshot_sha256"]},
+        )
+
     families = pa.protocol_family_change_set(
         ipv4,
         {"expected_changes": expected_changes},
-        native_deltas=[native_delta],
+        native_deltas=native_deltas,
     )
     clean_delta = {
         "verdict": "CLEAN",

@@ -290,6 +290,29 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     assert fhrp_domain_baseline["rows"]
     assert all(row["projection_custody"] == "embedded_unverified"
                for row in fhrp_domain_baseline["rows"])
+    # The persisted domain receipt must bind the exact co-published embedded configured owner,
+    # not the current-run digest that existed before both owners crossed the JSON boundary.
+    assert fhrp_domain_baseline["source_receipt"]["configured_baseline_sha256"] == (
+        fhrp_baseline["summary"]["baseline_sha256"]
+    )
+    from cisco_toolkit.protocol_assurance import (
+        bind_snapshot_json_bytes,
+        bound_snapshot_source,
+    )
+    from cisco_toolkit.protocol_deltas import compute_fhrp_redundancy_domain_delta
+    persisted_bytes = open(snap_path, "rb").read()
+    persisted = bind_snapshot_json_bytes(persisted_bytes)
+    persisted_binding = bound_snapshot_source(persisted)
+    persisted_domain_delta = compute_fhrp_redundancy_domain_delta(
+        persisted,
+        persisted,
+        comparison_source_binding={
+            "before": persisted_binding,
+            "after": persisted_binding,
+        },
+    )
+    assert persisted_domain_delta["summary"]["by_transition"]["not_comparable"] == 0
+    assert persisted_domain_delta["changes"]
     fhrp_by_identity = {
         (row["switch"], row["protocol"], row["interface"], row["group"]): row
         for row in fhrp_baseline["rows"]

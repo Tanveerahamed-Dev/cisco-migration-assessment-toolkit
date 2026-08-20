@@ -1789,7 +1789,7 @@
    "schema": "fhrp_configured_group_baseline/1",
    "valid": true,
    "source_bound": false,
-   "configured_baseline_sha256": "72ceeb7ac7d049a5738c5386828b51eacadf69d6fe8e24ec0a4bf141695724e6",
+   "configured_baseline_sha256": "dd9eae3398e8632ff7b1270899dd44131674812ab4f0ddcc4910245673966cae",
    "svi_projection_sha256": "7c28339ac17ccb725a78c24654b29587d621ac5831a6dfa3f1b39cc83fcf7c66"
   },
   "rows": [
@@ -1927,12 +1927,11 @@
     "virtual_ip": "10.0.10.1",
     "members": [
      {
-      "switch": "core1",
-      "virtual_ip": "10.0.10.1",
-      "local_status": "not_verified",
-      "protocol": "HSRP",
       "source_group_key": "HSRP:Vlan10:10",
-      "svi_ip": "10.0.10.2/24",
+      "virtual_ip": "10.0.10.1",
+      "protocol": "HSRP",
+      "interface": "Vlan10",
+      "projection_custody": "embedded_unverified",
       "findings": [
        {
         "kind": "not_verified",
@@ -1940,19 +1939,19 @@
         "issue": "A local configured/runtime FHRP group could not be verified."
        }
       ],
-      "group": "10",
-      "interface": "Vlan10",
-      "projection_custody": "embedded_unverified",
+      "local_status": "not_verified",
       "role": "ACTIVE",
+      "group": "10",
+      "switch": "core1",
+      "svi_ip": "10.0.10.2/24",
       "participation": "positive"
      },
      {
-      "switch": "core2",
-      "virtual_ip": "10.0.10.1",
-      "local_status": "not_verified",
-      "protocol": "HSRP",
       "source_group_key": "HSRP:Vlan10:10",
-      "svi_ip": "10.0.10.3/24",
+      "virtual_ip": "10.0.10.1",
+      "protocol": "HSRP",
+      "interface": "Vlan10",
+      "projection_custody": "embedded_unverified",
       "findings": [
        {
         "kind": "not_verified",
@@ -1960,10 +1959,11 @@
         "issue": "A local configured/runtime FHRP group could not be verified."
        }
       ],
-      "group": "10",
-      "interface": "Vlan10",
-      "projection_custody": "embedded_unverified",
+      "local_status": "not_verified",
       "role": "STANDBY",
+      "group": "10",
+      "switch": "core2",
+      "svi_ip": "10.0.10.3/24",
       "participation": "positive"
      }
     ],
@@ -1992,12 +1992,11 @@
     "virtual_ip": "10.0.20.1",
     "members": [
      {
-      "switch": "core1",
-      "virtual_ip": "10.0.20.1",
-      "local_status": "not_verified",
-      "protocol": "HSRP",
       "source_group_key": "HSRP:Vlan20:20",
-      "svi_ip": "10.0.20.2/24",
+      "virtual_ip": "10.0.20.1",
+      "protocol": "HSRP",
+      "interface": "Vlan20",
+      "projection_custody": "embedded_unverified",
       "findings": [
        {
         "kind": "not_verified",
@@ -2005,19 +2004,19 @@
         "issue": "A local configured/runtime FHRP group could not be verified."
        }
       ],
-      "group": "20",
-      "interface": "Vlan20",
-      "projection_custody": "embedded_unverified",
+      "local_status": "not_verified",
       "role": "STANDBY",
+      "group": "20",
+      "switch": "core1",
+      "svi_ip": "10.0.20.2/24",
       "participation": "positive"
      },
      {
-      "switch": "core2",
-      "virtual_ip": "10.0.20.1",
-      "local_status": "not_verified",
-      "protocol": "HSRP",
       "source_group_key": "HSRP:Vlan20:20",
-      "svi_ip": "10.0.20.3/24",
+      "virtual_ip": "10.0.20.1",
+      "protocol": "HSRP",
+      "interface": "Vlan20",
+      "projection_custody": "embedded_unverified",
       "findings": [
        {
         "kind": "not_verified",
@@ -2025,10 +2024,11 @@
         "issue": "A local configured/runtime FHRP group could not be verified."
        }
       ],
-      "group": "20",
-      "interface": "Vlan20",
-      "projection_custody": "embedded_unverified",
+      "local_status": "not_verified",
       "role": "ACTIVE",
+      "group": "20",
+      "switch": "core2",
+      "svi_ip": "10.0.20.3/24",
       "participation": "positive"
      }
     ],
@@ -2071,7 +2071,7 @@
     "not_verified": 2,
     "assessed": 0
    },
-   "baseline_sha256": "566951784c7e048b34bb6edf27a8b783b4fb7e283e89ed914713ce24e64c186c"
+   "baseline_sha256": "25465cc2a87f3862774b0b05dbae844b108093cdf87ab5b7ed6a4ba72b2bcdf1"
   },
   "limitations": [
    "Subjects are exact observed VLAN + normalized VRF + observed IPv4 subnet domains with at least two in-scope gateway SVIs and at least one positive FHRP participant.",

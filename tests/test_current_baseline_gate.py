@@ -14,6 +14,7 @@ from cisco_toolkit.html import (compute_campaign_trend, compute_cutover_gate, co
                                 write_campaign_workbook, write_diff_workbook)
 from cisco_toolkit.model import InterfaceData
 from cisco_toolkit.protocol_assurance import (
+    compute_native_protocol_deltas,
     current_baseline_blocker_export,
     protocol_family_change_set,
 )
@@ -259,7 +260,8 @@ def test_unchanged_degraded_current_state_fails_combined_gate_without_changing_d
         },
     )
     family_changes = protocol_family_change_set(
-        delta["protocol_adjacencies"], {"expected_changes": []})
+        delta["protocol_adjacencies"], {"expected_changes": []},
+        native_deltas=compute_native_protocol_deltas(snapshot, deepcopy(snapshot)))
     additive_gate = compute_cutover_gate(
         delta,
         {"verdict": "PASS", "verdict_note": "bounded certificate passed"},

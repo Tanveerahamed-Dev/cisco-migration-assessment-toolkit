@@ -19,7 +19,9 @@ from cisco_toolkit.analyze import (
 )
 from cisco_toolkit.bgp_intent import validate_bgp_configured_peer_baseline
 from cisco_toolkit.fhrp_intent import validate_fhrp_configured_group_baseline
-from cisco_toolkit.fhrp_redundancy import validate_fhrp_redundancy_domain_baseline
+from cisco_toolkit.fhrp_redundancy import (
+    validate_fhrp_redundancy_domain_snapshot_evidence,
+)
 from cisco_toolkit.ipv6_routing import validate_ipv6_routing_adjacency_baseline
 from cisco_toolkit.multichassis_lag import validate_multichassis_lag_snapshot_evidence
 from cisco_toolkit.protocol_deltas import (
@@ -702,6 +704,8 @@ def _multichassis_view(snapshot: Mapping[str, Any]) -> dict:
             value,
             snapshot.get("multichassis_lag_typed_observations"),
             snapshot.get("devices"),
+            legacy_vpc=snapshot.get("vpc"),
+            legacy_arista=snapshot.get("arista"),
         )
     except (Exception, MemoryError):
         validated = {
@@ -750,7 +754,10 @@ def _fhrp_domain_view(snapshot: Mapping[str, Any]) -> dict:
     family, contract = "fhrp_redundancy_domain", "fhrp_redundancy_domain_baseline/1"
     value = snapshot.get("fhrp_redundancy_domain_baseline")
     try:
-        validated = dict(validate_fhrp_redundancy_domain_baseline(value))
+        validated = dict(validate_fhrp_redundancy_domain_snapshot_evidence(
+            value,
+            snapshot.get("interfaces") if "interfaces" in snapshot else None,
+        ))
     except (Exception, MemoryError):
         validated = {
             "present": value is not None,

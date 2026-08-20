@@ -392,13 +392,22 @@ def finish(state: Dict[str, Any], status: str, note: str, by: str) -> None:
 
 
 def with_current_outcome(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Return a read view whose finished outcome uses the current evidence rules.
+    """Return a read view whose finished v2 outcome uses the current evidence rules.
 
-    Older rows may have persisted ``SUCCESSFUL`` under the former closeout-only rule. Reads and
-    PIR exports must not keep publishing that stale verdict after the authority rule is fixed.
+    Legacy executions predate canonical comparison custody.  Their persisted outcome is historical
+    evidence and must not be reinterpreted at read/export time; only ``cutover_execution/2`` rows
+    carrying the canonical comparison policy opt into the current evidence-derived outcome rules.
     """
     status = state.get("status")
     if status not in ("completed", "aborted"):
+        return state
+    policy = state.get("comparison_policy")
+    if (
+        state.get("execution_schema") != "cutover_execution/2"
+        or not isinstance(policy, dict)
+        or policy.get("schema") != "execution_comparison_policy/1"
+        or policy.get("canonical_gate_required") is not True
+    ):
         return state
     current = _derive_outcome(state, status)
     if state.get("outcome") == current:

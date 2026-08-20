@@ -563,7 +563,7 @@ def test_workbook_rejects_a_rehashed_forged_canonical_gate(tmp_path):
         )
 
 
-def test_protocol_family_changes_sheet_is_complete_uncapped_and_gate_reconciled(tmp_path):
+def test_direct_protocol_family_sheet_is_uncapped_but_gate_withholds_authority(tmp_path):
     before = _snapshot("FULL/DR", "2026-08-15T00:00:00")
     after = _snapshot("FULL/DR", "2026-08-15T00:05:00")
     certificate = compute_precert(before, after)
@@ -638,9 +638,10 @@ def test_protocol_family_changes_sheet_is_complete_uncapped_and_gate_reconciled(
         before, after, str(out), precert=certificate, protocol_families=families)
 
     assert actual == expected
-    assert actual["protocol_family_rows"] == len(changes)
-    assert actual["protocol_family_review"] == len(changes)
-    assert _workbook_gate(str(out)) == actual["verdict"] == "REVIEW"
+    assert actual["protocol_family_rows"] == 0
+    assert actual["protocol_family_review"] == 0
+    assert actual["protocol_family_status"] == "not_comparable"
+    assert _workbook_gate(str(out)) == actual["verdict"] == "INDETERMINATE"
     workbook = load_workbook(out, read_only=True)
     assert "Protocol Adjacency Delta" in workbook.sheetnames
     ws = workbook["Protocol Family Changes"]

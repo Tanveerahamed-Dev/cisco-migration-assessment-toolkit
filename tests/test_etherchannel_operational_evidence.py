@@ -410,10 +410,9 @@ def test_typed_delta_preserves_exact_depth_and_blocks_min_links_unsafe_rehearsal
                 "port-channel min-links 1", "port-channel min-links 2"),
         },
     )
-    result = _bound_delta(
-        _snapshot_from_paths(before_paths, "ios", "sw1"),
-        _snapshot_from_paths(after_paths, "ios", "sw1"),
-    )
+    before_snapshot = _snapshot_from_paths(before_paths, "ios", "sw1")
+    after_snapshot = _snapshot_from_paths(after_paths, "ios", "sw1")
+    result = _bound_delta(before_snapshot, after_snapshot)
 
     row = result["changes"][0]
     assert result["assurance_level"] == "intent_reconciled_survival"
@@ -454,6 +453,22 @@ def test_safe_mode_and_hash_movement_is_review_until_exact_intent_reconciles(
         "active", "active",
     ]
     assert row["after_state"]["hashing"]["algorithm"] == "dst-ip"
+    # Exercise the gate with a complete applicability-pass authority while keeping this focused
+    # test's already-asserted native owner receipt as the exact EtherChannel result.
+    from cisco_toolkit import protocol_deltas
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(protocol_assurance, "_etherchannel_positive_or_malformed", lambda _: True)
+        patch.setattr(
+            protocol_deltas, "compute_etherchannel_delta", lambda *args, **kwargs: result)
+        native_deltas = protocol_assurance.compute_native_protocol_deltas(
+            {},
+            {},
+            before_binding={
+                "sha256": result["source_receipts"]["before"]["snapshot_sha256"]},
+            after_binding={
+                "sha256": result["source_receipts"]["after"]["snapshot_sha256"]},
+        )
+
     family_changes = protocol_assurance.protocol_family_change_set(
         {
             "schema": "protocol_adjacency_delta/1",
@@ -466,7 +481,7 @@ def test_safe_mode_and_hash_movement_is_review_until_exact_intent_reconciles(
             "transitions": ["intent_changed"],
             "subjects": [row["subject"]],
         }]},
-        native_deltas=[result],
+        native_deltas=native_deltas,
     )
     composed = next(
         change
@@ -531,6 +546,20 @@ def test_newly_appeared_degraded_group_is_producer_block_not_expected_review(
     assert result["changes"][0]["decision_effect"] == "block"
     assert "expected intent cannot clear" in result["changes"][0]["note"]
 
+    from cisco_toolkit import protocol_deltas
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(protocol_assurance, "_etherchannel_positive_or_malformed", lambda _: True)
+        patch.setattr(
+            protocol_deltas, "compute_etherchannel_delta", lambda *args, **kwargs: result)
+        native_deltas = protocol_assurance.compute_native_protocol_deltas(
+            {},
+            {},
+            before_binding={
+                "sha256": result["source_receipts"]["before"]["snapshot_sha256"]},
+            after_binding={
+                "sha256": result["source_receipts"]["after"]["snapshot_sha256"]},
+        )
+
     family_changes = protocol_assurance.protocol_family_change_set(
         {
             "schema": "protocol_adjacency_delta/1",
@@ -543,7 +572,7 @@ def test_newly_appeared_degraded_group_is_producer_block_not_expected_review(
             "transitions": ["appeared"],
             "subjects": [result["changes"][0]["subject"]],
         }]},
-        native_deltas=[result],
+        native_deltas=native_deltas,
     )
     gate = compute_cutover_gate(
         {

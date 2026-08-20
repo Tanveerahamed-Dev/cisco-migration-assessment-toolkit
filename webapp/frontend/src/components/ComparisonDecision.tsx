@@ -5,6 +5,8 @@ import type {
   PrecertReceipt,
   ProtocolComparisonStatus,
   ProtocolFamilyChange,
+  ProtocolFamilyChangeSet,
+  ProtocolFamilyChangeSummary,
 } from "../api";
 
 const ROW_CAP = 8;
@@ -38,18 +40,85 @@ const L2_REHEARSAL_COLOR: Record<string, string> = {
   not_verified: "var(--text-faint)",
 };
 
-const UNEXPECTED_TRANSITIONS = new Set<ProtocolFamilyChange["transition"]>([
-  "unchanged_degraded",
-  "regressed",
-  "appeared",
-  "disappeared",
-  "intent_changed",
-]);
+export interface ProtocolFamilyPresentationBuckets {
+  expected: ProtocolFamilyChange[];
+  unexpected: ProtocolFamilyChange[];
+  coverage: ProtocolFamilyChange[];
+  drilldownOnly: ProtocolFamilyChange[];
+}
 
-function isCoverageLossOrNotVerified(row: ProtocolFamilyChange) {
-  return row.decision_effect === "not_verified"
-    || row.transition === "coverage_lost"
-    || row.transition === "not_comparable";
+/**
+ * Partition rows only from producer-owned classifications.
+ *
+ * Transition vocabulary remains useful evidence in each row, but it is not a second UI-owned
+ * classifier. Rows whose producer effect is `none` and which are not declared expected remain in
+ * the per-family drilldown and complete export instead of being relabelled by presentation code.
+ */
+export function bucketProtocolFamilyRows(
+  rows: ProtocolFamilyChange[],
+): ProtocolFamilyPresentationBuckets {
+  const buckets: ProtocolFamilyPresentationBuckets = {
+    expected: [], unexpected: [], coverage: [], drilldownOnly: [],
+  };
+  for (const row of rows) {
+    if (row.decision_effect === "not_verified") buckets.coverage.push(row);
+    else if (row.expected) buckets.expected.push(row);
+    else if (row.decision_effect === "block" || row.decision_effect === "review") {
+      buckets.unexpected.push(row);
+    } else buckets.drilldownOnly.push(row);
+  }
+  return buckets;
+}
+
+type ReconciledSummary = Pick<
+  ProtocolFamilyChangeSummary,
+  "n_subject_changes" | "n_expected" | "n_blocking" | "n_review" | "n_not_verified" | "by_decision_effect"
+>;
+
+function summaryCountMismatches(
+  label: string,
+  summary: ReconciledSummary,
+  rows: ProtocolFamilyChange[],
+): string[] {
+  const effects: Record<ProtocolFamilyChange["decision_effect"], number> = {
+    block: 0, review: 0, none: 0, not_verified: 0,
+  };
+  let expected = 0;
+  for (const row of rows) {
+    expected += row.expected ? 1 : 0;
+    effects[row.decision_effect] += 1;
+  }
+  const checks: Array<[string, number | undefined, number]> = [
+    ["n_subject_changes", summary.n_subject_changes, rows.length],
+    ["n_expected", summary.n_expected, expected],
+    ["n_blocking", summary.n_blocking, effects.block],
+    ["n_review", summary.n_review, effects.review],
+    ["n_not_verified", summary.n_not_verified, effects.not_verified],
+  ];
+  const failures = checks.flatMap(([field, declared, observed]) => (
+    typeof declared === "number" && declared !== observed
+      ? [`${label}.${field}=${declared}, rows=${observed}`]
+      : []
+  ));
+  if (summary.by_decision_effect) {
+    for (const effect of Object.keys(effects) as Array<ProtocolFamilyChange["decision_effect"]>) {
+      const declared = summary.by_decision_effect[effect];
+      if (typeof declared === "number" && declared !== effects[effect]) {
+        failures.push(`${label}.by_decision_effect.${effect}=${declared}, rows=${effects[effect]}`);
+      }
+    }
+  }
+  return failures;
+}
+
+/** Structural reconciliation only: exact producer fields and counters, never transition semantics. */
+export function protocolFamilySummaryMismatches(value: ProtocolFamilyChangeSet): string[] {
+  const rows = value.families.flatMap((family) => family.changes);
+  const failures = summaryCountMismatches("summary", value.summary, rows);
+  for (const family of value.families) {
+    failures.push(...summaryCountMismatches(`family[${family.family}]`, family.summary, family.changes));
+  }
+  return failures;
 }
 
 function safeFilename(value: string) {
@@ -390,17 +459,21 @@ export default function ComparisonDecision({
     ? value.protocol_families
     : undefined;
   const rows = families?.families.flatMap((family) => family.changes) || [];
-  // These are presentation-only intent buckets. Coverage/not-comparable abstentions are kept out
-  // of the observed-change buckets, and every producer-owned decision_effect remains unchanged on
-  // its row. In particular, expected intent never hides a block and none of these buckets derives
-  // the overall verdict; cutover_gate/1 remains the sole decision owner above.
-  const coverageLossOrNotVerified = rows.filter(isCoverageLossOrNotVerified);
-  const expected = rows.filter((row) => row.expected && !isCoverageLossOrNotVerified(row));
-  const unexpected = rows.filter((row) => (
-    !row.expected
-    && !isCoverageLossOrNotVerified(row)
-    && UNEXPECTED_TRANSITIONS.has(row.transition)
-  ));
+  // Presentation consumes the producer's two classifications directly. It does not duplicate the
+  // Python transition vocabulary or derive the overall verdict; cutover_gate/1 remains the sole
+  // decision owner. Neutral producer rows remain available in the family drilldown/export.
+  const buckets = bucketProtocolFamilyRows(rows);
+  const reconciliationFailures = families ? protocolFamilySummaryMismatches(families) : [];
+  const expectedTotal = families?.summary.n_expected === buckets.expected.length
+    ? families.summary.n_expected
+    : buckets.expected.length;
+  const unexpectedTotal = families?.summary.n_unexpected === buckets.unexpected.length
+    ? families.summary.n_unexpected
+    : buckets.unexpected.length;
+  const declaredCoverage = families?.summary.n_not_verified;
+  const coverageTotal = declaredCoverage === buckets.coverage.length
+    ? declaredCoverage
+    : buckets.coverage.length;
   const gateBackground = gate?.verdict === "PASS"
     ? "var(--ok-soft)"
     : gate?.verdict === "FAIL" || gate?.verdict === "REGRESSED"
@@ -466,14 +539,33 @@ export default function ComparisonDecision({
             No protocol_family_change_set/1 receipt was published. Family change coverage is not verified.
           </div>
         )}
+        {families && (
+          <div data-testid="protocol-family-summary-reconciliation"
+            style={{
+              color: reconciliationFailures.length ? "var(--crit)" : "var(--text-faint)",
+              fontSize: 10.5,
+              marginBottom: 8,
+              overflowWrap: "anywhere",
+            }}>
+            {reconciliationFailures.length
+              ? `NOT VERIFIED — producer summary/row mismatch: ${reconciliationFailures.join("; ")}`
+              : "RECONCILED — producer subject, expected, and decision-effect counters match every received row."}
+          </div>
+        )}
         <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
-          <FamilyChangeSection title="Expected changes" rows={expected} tone="var(--accent)" testId="family-change-expected"
-            total={expected.length} />
-          <FamilyChangeSection title="Unexpected changes" rows={unexpected} tone="var(--watch)" testId="family-change-unexpected"
-            total={unexpected.length} />
-          <FamilyChangeSection title="Coverage loss / not verified" rows={coverageLossOrNotVerified} tone="var(--text-faint)" testId="family-change-coverage"
-            total={coverageLossOrNotVerified.length} />
+          <FamilyChangeSection title="Expected changes" rows={buckets.expected} tone="var(--accent)" testId="family-change-expected"
+            total={expectedTotal} />
+          <FamilyChangeSection title="Unexpected changes" rows={buckets.unexpected} tone="var(--watch)" testId="family-change-unexpected"
+            total={unexpectedTotal} />
+          <FamilyChangeSection title="Coverage loss / not verified" rows={buckets.coverage} tone="var(--text-faint)" testId="family-change-coverage"
+            total={coverageTotal} />
         </div>
+        {buckets.drilldownOnly.length > 0 && (
+          <div className="faint" data-testid="protocol-family-drilldown-only" style={{ fontSize: 10.5, marginTop: 8 }}>
+            {buckets.drilldownOnly.length} non-expected producer row(s) have decision effect NONE;
+            they remain in the family drilldown and complete JSON without being relabelled by this UI.
+          </div>
+        )}
         {families && families.families.length > 0 && (
           <div data-testid="protocol-assurance-portfolio" style={{ marginTop: 9 }}>
             <div className="faint" style={{ fontSize: 10.5, marginBottom: 5 }}>

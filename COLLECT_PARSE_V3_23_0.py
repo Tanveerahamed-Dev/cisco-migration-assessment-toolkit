@@ -3970,7 +3970,8 @@ def main():
         all_interfaces, fhrp_configured_group_baseline, _default={})
     embedded_fhrp_redundancy_domain_baseline_receipt = _run_phase(
         "Embed FHRP redundancy-domain baseline", embedded_fhrp_redundancy_domain_baseline,
-        fhrp_redundancy_domain_baseline, _default={})
+        fhrp_redundancy_domain_baseline, _default={},
+        configured_group_baseline=fhrp_configured_group_baseline)
     _run_phase("FHRP Group Intent sheet", write_fhrp_configured_group_sheet, wb,
                embedded_fhrp_baseline)
     _run_phase("FHRP Domains sheet", write_fhrp_redundancy_domain_sheet, wb,

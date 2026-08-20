@@ -256,6 +256,17 @@ function TrendCanonicalReceipts({ value, campaignId }: {
               Snapshots {entry.before_snapshot_id} → {entry.after_snapshot_id} · admission {admission?.status || "not verified"}<br />
               Receipt: {receipt?.receipt_sha256 || "not published"}
             </div>
+            {gate?.l2_rehearsal_status && (
+              <div className="dim" data-testid="trend-adjacent-l2-gate-basis"
+                style={{ fontSize: 11, margin: "6px 0", overflowWrap: "anywhere" }}>
+                <b>L2 gate basis · {gate.l2_rehearsal_status.replaceAll("_", " ").toUpperCase()}:</b>{" "}
+                {gate.l2_rehearsal_note || "The canonical gate did not publish an L2 rehearsal basis."}
+                <br />Applicable families: {(gate.l2_rehearsal_applicable_families || []).join(", ") || "none"}
+                {" · "}{gate.l2_rehearsal_current_faults || 0} current fault(s)
+                {" · "}{gate.l2_rehearsal_projected_risks || 0} projected risk(s)
+                {" · "}{gate.l2_rehearsal_not_verified || 0} not verified
+              </div>
+            )}
             <ComparisonDecision value={entry.comparison}
               exportFilename={`atlas-campaign-${campaignId}-${entry.from}-${entry.to}-comparison.json`} />
           </details>
@@ -272,10 +283,11 @@ function currentBaselineVerdict(value?: CurrentBaselineGate | null) {
   return value && typeof value.verdict === "string" && value.verdict ? value.verdict : "NOT_ASSESSED";
 }
 
-function compareDeltaColor(verdict: string, current?: CurrentBaselineGate | null) {
-  // CLEAN is only a before→after claim. Without a producer-owned CLEAR current-state gate, painting
-  // it green lets an unchanged EXSTART/Idle baseline masquerade as cutover acceptance.
-  if (verdict === "CLEAN" && currentBaselineVerdict(current) !== "CLEAR") return "var(--text-faint)";
+function supportingDeltaColor(verdict: string) {
+  // The legacy before→after delta is supporting evidence beneath the canonical cutover gate. CLEAN
+  // therefore stays neutral on its own terms; presentation never combines it with another receipt
+  // to synthesize a stronger green state.
+  if (verdict === "CLEAN") return "var(--text-faint)";
   return VERDICT_COLOR[verdict] || "var(--text-dim)";
 }
 
@@ -464,8 +476,9 @@ function Trend({ id }: { id: number }) {
     : undefined;
   const finalBaselineExport = latestAdjacent?.comparison.operator_evidence
     ?.current_baseline_blocker_export;
-  const baselineVerdict = currentBaselineVerdict(data.current_baseline);
-  const trendColor = data.verdict === "IMPROVING" && baselineVerdict !== "CLEAR"
+  // Aggregate direction is supporting evidence, not a decision. Keep a favorable direction neutral
+  // without combining it with the final current-baseline receipt; adjacent cutover gates own decisions.
+  const trendColor = data.verdict === "IMPROVING"
     ? "var(--text-faint)"
     : (VERDICT_COLOR[data.verdict] || "var(--text-dim)");
   if (data.verdict === "INSUFFICIENT") {
@@ -484,8 +497,8 @@ function Trend({ id }: { id: number }) {
       <div className="spread" style={{ marginBottom: 14 }}>
         <h3 style={{ margin: 0 }}>Campaign trajectory</h3>
         <span className="chip" data-testid="trend-verdict" style={{ color: trendColor, borderColor: trendColor }}
-          title={data.verdict === "IMPROVING" && baselineVerdict !== "CLEAR"
-            ? "Trend improved, but the final snapshot current-baseline gate is not CLEAR"
+          title={data.verdict === "IMPROVING"
+            ? "Improving trajectory is supporting evidence; adjacent canonical cutover gates remain authoritative"
             : undefined}>
           <span className="dot" /> {data.verdict}
         </span>
@@ -765,7 +778,7 @@ export default function CampaignPage() {
                   <div className="row-flex" style={{ marginBottom: 8 }}>
                     <span className="faint" style={{ fontSize: 11 }}>Before→after change result:</span>
                     <span className="chip" data-testid="compare-delta-verdict"
-                      style={{ color: compareDeltaColor(cmp.verdict, cmp.current_baseline) }}>
+                      style={{ color: supportingDeltaColor(cmp.verdict) }}>
                       <span className="dot" /> {cmp.verdict_display || cmp.verdict}
                     </span>
                   </div>

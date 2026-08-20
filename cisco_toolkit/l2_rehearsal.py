@@ -41,6 +41,20 @@ _DISPOSITIONS = (
     "current_fault",
     "not_verified",
 )
+_GATE_FAMILIES = ("stp", "etherchannel", "multichassis_lag")
+_SCENARIO_FAMILIES = frozenset((*_GATE_FAMILIES, "service_path"))
+_SCENARIO_FIELDS = frozenset({
+    "family", "subject", "failure_scenario", "disposition", "assurance_level",
+    "source_owner", "current_fault", "evidence", "note",
+})
+_ROOT_FIELDS = frozenset({
+    "schema", "owner", "owns_score", "owns_verdict", "status", "assurance_level",
+    "source_bound", "applicability", "summary", "scenarios", "limitations",
+})
+_SUMMARY_FIELDS = frozenset({
+    "n_scenarios", "n_current_faults", "n_projected_risks", "n_not_verified",
+    "n_applicable_families", "by_disposition",
+})
 _MAX_STP_RECORDS = 16_384
 _MAX_SCENARIOS = 16_384
 _TRAFFIC_FAILURE_PARAMS = {
@@ -149,6 +163,42 @@ def _gap(family: str, source_owner: str, note: str) -> dict:
         evidence={},
         note=note,
     )
+
+
+def _gate_family_applicability(snapshot: Mapping[str, Any]) -> dict:
+    """Reuse native-family applicability without promoting placeholder gaps."""
+    from .protocol_assurance import (
+        _etherchannel_positive_or_malformed,
+        _stp_positive_or_malformed,
+    )
+
+    try:
+        stp = _stp_positive_or_malformed(snapshot)
+    except (Exception, MemoryError):
+        stp = any(key in snapshot for key in (
+            "stp_roots", "stp_topology_baseline", "stp_topology_observations",
+            "stp_consistency_baseline", "protocol_health",
+        ))
+    try:
+        etherchannel = _etherchannel_positive_or_malformed(snapshot)
+    except (Exception, MemoryError):
+        etherchannel = any(key in snapshot for key in (
+            "etherchannel_baseline", "etherchannel_projection",
+            "etherchannel_operational_evidence",
+        ))
+    multichassis = (
+        any(key in snapshot for key in (
+            "multichassis_lag_typed_observations",
+            "multichassis_lag_domain_baseline",
+        ))
+        or bool(snapshot.get("vpc"))
+        or bool(snapshot.get("arista"))
+    )
+    return {
+        "stp": bool(stp),
+        "etherchannel": bool(etherchannel),
+        "multichassis_lag": bool(multichassis),
+    }
 
 
 def _same_snapshot_binding(source: Mapping[str, Any]) -> dict:
@@ -465,6 +515,8 @@ def _multichassis_scenarios(
             baseline,
             snapshot.get("multichassis_lag_typed_observations"),
             snapshot.get("devices"),
+            legacy_vpc=snapshot.get("vpc"),
+            legacy_arista=snapshot.get("arista"),
         )
         baseline_value = _dict(view.get("baseline"))
         if view.get("valid") is not True:
@@ -1709,6 +1761,7 @@ def compute_l2_failure_rehearsal(snapshot: Any) -> dict:
     """Compose bounded L2 failure evidence without emitting a score or overall verdict."""
     snap = _dict(snapshot)
     source = bound_snapshot_source(snapshot)
+    applicability = _gate_family_applicability(snap)
     scenarios = [
         *_stp_scenarios(snap, source),
         *_etherchannel_scenarios(snap, source),
@@ -1734,11 +1787,13 @@ def compute_l2_failure_rehearsal(snapshot: Any) -> dict:
         "status": status,
         "assurance_level": "not_verified",
         "source_bound": source.get("source_bound") is True,
+        "applicability": applicability,
         "summary": {
             "n_scenarios": len(scenarios),
             "n_current_faults": by_disposition["current_fault"],
             "n_projected_risks": by_disposition["projected_risk"],
             "n_not_verified": by_disposition["not_verified"],
+            "n_applicable_families": sum(applicability.values()),
             "by_disposition": by_disposition,
         },
         "scenarios": scenarios,
@@ -1751,4 +1806,143 @@ def compute_l2_failure_rehearsal(snapshot: Any) -> dict:
     }
 
 
-__all__ = ["L2_FAILURE_REHEARSAL_SCHEMA", "compute_l2_failure_rehearsal"]
+def validate_l2_failure_rehearsal(value: Any) -> dict:
+    """Validate the closed, source-bound local rehearsal receipt for gate use.
+
+    The returned ``gate_status`` is derived only from applicable STP,
+    EtherChannel, and multichassis scenarios. Service-path rows and placeholder
+    gaps for absent families remain disclosure evidence and never become a
+    service-survival or runtime-support claim.
+    """
+    invalid = {
+        "valid": False,
+        "reason": "l2_failure_rehearsal is missing or malformed",
+        "gate_status": "not_verified",
+        "applicable_families": [],
+        "n_current_faults": 0,
+        "n_projected_risks": 0,
+        "n_not_verified": 0,
+    }
+    if not isinstance(value, dict) or frozenset(value) != _ROOT_FIELDS:
+        return invalid
+    if (value.get("schema") != L2_FAILURE_REHEARSAL_SCHEMA
+            or value.get("owner") != "reference_only_composition"
+            or value.get("owns_score") is not False
+            or value.get("owns_verdict") is not False
+            or value.get("assurance_level") != "not_verified"
+            or value.get("source_bound") is not True):
+        return invalid
+
+    applicability = value.get("applicability")
+    if (not isinstance(applicability, dict)
+            or frozenset(applicability) != frozenset(_GATE_FAMILIES)
+            or any(type(applicability.get(family)) is not bool
+                   for family in _GATE_FAMILIES)):
+        return invalid
+    applicable = [family for family in _GATE_FAMILIES if applicability[family]]
+
+    scenarios = value.get("scenarios")
+    if (not isinstance(scenarios, list) or len(scenarios) > _MAX_SCENARIOS
+            or any(not isinstance(row, dict) for row in scenarios)):
+        return invalid
+    previous_key = None
+    counts = Counter()
+    by_family = {family: [] for family in _GATE_FAMILIES}
+    for row in scenarios:
+        disposition = row.get("disposition")
+        family = row.get("family")
+        subject = row.get("subject")
+        if (frozenset(row) != _SCENARIO_FIELDS
+                or family not in _SCENARIO_FAMILIES
+                or disposition not in _DISPOSITIONS
+                or row.get("assurance_level") != "not_verified"
+                or type(row.get("current_fault")) is not bool
+                or row.get("current_fault") is not (disposition == "current_fault")
+                or not _text(subject)
+                or not _text(row.get("failure_scenario"))
+                or not _text(row.get("source_owner"))
+                or not isinstance(row.get("evidence"), dict)
+                or not _text(row.get("note"))):
+            return invalid
+        key = (family.casefold(), family, subject.casefold(), subject)
+        if previous_key is not None and key < previous_key:
+            return invalid
+        previous_key = key
+        counts[disposition] += 1
+        if family in by_family:
+            by_family[family].append(row)
+
+    summary = value.get("summary")
+    by_disposition = summary.get("by_disposition") if isinstance(summary, dict) else None
+    expected_by_disposition = {
+        disposition: int(counts[disposition]) for disposition in _DISPOSITIONS
+    }
+    summary_counts = {
+        field: _count(summary.get(field))
+        for field in (
+            "n_scenarios",
+            "n_current_faults",
+            "n_projected_risks",
+            "n_not_verified",
+            "n_applicable_families",
+        )
+    } if isinstance(summary, dict) else {}
+    supplied_by_disposition = {
+        disposition: _count(by_disposition.get(disposition))
+        for disposition in _DISPOSITIONS
+    } if isinstance(by_disposition, dict) else {}
+    if (not isinstance(summary, dict) or frozenset(summary) != _SUMMARY_FIELDS
+            or not isinstance(by_disposition, dict)
+            or frozenset(by_disposition) != frozenset(_DISPOSITIONS)
+            or any(value is None for value in summary_counts.values())
+            or any(value is None for value in supplied_by_disposition.values())
+            or supplied_by_disposition != expected_by_disposition
+            or summary_counts.get("n_scenarios") != len(scenarios)
+            or summary_counts.get("n_current_faults") != counts["current_fault"]
+            or summary_counts.get("n_projected_risks") != counts["projected_risk"]
+            or summary_counts.get("n_not_verified") != counts["not_verified"]
+            or summary_counts.get("n_applicable_families") != len(applicable)):
+        return invalid
+    expected_status = (
+        "current_fault" if counts["current_fault"] else
+        "projected_risk" if counts["projected_risk"] else
+        "not_verified" if counts["not_verified"] else
+        "simulation_only"
+    )
+    limitations = value.get("limitations")
+    if (value.get("status") != expected_status
+            or not isinstance(limitations, list) or not limitations
+            or any(not _text(row) for row in limitations)):
+        return invalid
+
+    applicable_rows = [row for family in applicable for row in by_family[family]]
+    if any(not by_family[family] for family in applicable):
+        gate_status = "not_verified"
+        missing = len([family for family in applicable if not by_family[family]])
+    else:
+        missing = 0
+        gate_counts = Counter(row["disposition"] for row in applicable_rows)
+        gate_status = (
+            "current_fault" if gate_counts["current_fault"] else
+            "not_verified" if gate_counts["not_verified"] else
+            "projected_risk" if gate_counts["projected_risk"] else
+            "simulation_only" if applicable else
+            "not_applicable"
+        )
+    gate_counts = Counter(row["disposition"] for row in applicable_rows)
+    return {
+        "valid": True,
+        "reason": "ok",
+        "gate_status": gate_status,
+        "applicable_families": applicable,
+        "n_current_faults": int(gate_counts["current_fault"]),
+        "n_projected_risks": int(gate_counts["projected_risk"]),
+        "n_not_verified": int(gate_counts["not_verified"] + missing),
+    }
+
+
+__all__ = [
+    "L2_FAILURE_REHEARSAL_SCHEMA",
+    "compute_l2_failure_rehearsal",
+    "validate_l2_failure_rehearsal",
+]

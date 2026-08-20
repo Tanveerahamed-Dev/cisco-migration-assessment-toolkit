@@ -1951,14 +1951,78 @@ def _snapshot_input_projection(value: Mapping[str, Any]) -> dict:
     return {"local_observations": local, "local_legs": legs}
 
 
+def _legacy_positive_local_subjects(legacy_vpc: Any, legacy_arista: Any) -> dict:
+    """Return the bounded local-host denominator declared by legacy projections.
+
+    Legacy vPC/EOS rows can corroborate only that one local device has positive
+    multichassis evidence.  They never provide reciprocal peer identity, pair,
+    leg, or attachment authority.  Empty containers retain the historical
+    typed-only behavior; malformed *positive* containers fail closed instead of
+    being silently discarded beside a healthy stored typed baseline.
+    """
+    subjects: Dict[str, str] = {}
+    origins: Dict[str, str] = {}
+    failures: List[str] = []
+    positive = False
+
+    def declared(kind: str, raw: Any) -> bool:
+        if kind == "vpc":
+            return bool(raw)
+        if not raw:
+            return False
+        if isinstance(raw, dict) and isinstance(raw.get("mlag"), dict):
+            return bool(raw.get("mlag"))
+        return bool(raw)
+
+    for kind, value in (("vpc", legacy_vpc), ("arista", legacy_arista)):
+        if value is None or value == {}:
+            continue
+        if not isinstance(value, dict):
+            if bool(value):
+                positive = True
+                failures.append(f"legacy_{kind}_root_malformed")
+            continue
+        if len(value) > _MAX_OBSERVATIONS:
+            positive = True
+            failures.append(f"legacy_{kind}_subject_limit_exceeded")
+            continue
+        for raw_subject, raw in value.items():
+            if not declared(kind, raw):
+                continue
+            positive = True
+            subject = _text(raw_subject)
+            if not subject or not isinstance(raw, dict):
+                failures.append(f"legacy_{kind}_positive_subject_malformed")
+                continue
+            key = subject.casefold()
+            if key in subjects:
+                failures.append("legacy_local_subject_identity_ambiguous")
+                continue
+            subjects[key] = subject
+            origins[key] = kind
+
+    return {
+        "applicable": positive,
+        "valid": not failures,
+        "subjects": [subjects[key] for key in sorted(subjects)],
+        "subject_keys": sorted(subjects),
+        "origins": {key: origins[key] for key in sorted(origins)},
+        "failures": sorted(set(failures)),
+    }
+
+
 def validate_multichassis_lag_snapshot_evidence(
-        baseline: Any, typed_observations: Any, devices: Any) -> dict:
+        baseline: Any, typed_observations: Any, devices: Any, *,
+        legacy_vpc: Any = None, legacy_arista: Any = None) -> dict:
     """Reconcile a persisted baseline to its co-published typed rows and device subjects.
 
     A structurally valid baseline is insufficient on its own because an uploaded snapshot could
     pair it with a truncated, stale, or unrelated typed-observation set. This validator requires
     an exact one-to-one normalized local/leg projection and binds every claimed local switch to the
-    snapshot's admitted ``devices`` denominator. It makes no new runtime-support claim.
+    snapshot's admitted ``devices`` denominator. When positive legacy vPC/EOS local projections are
+    co-published, their case-insensitive local-host set must also reconcile exactly. Legacy evidence
+    remains local-only and cannot establish a peer pair or attachment. This validator makes no new
+    runtime-support claim.
     """
     baseline_view = validate_multichassis_lag_domain_baseline(baseline)
     if baseline_view.get("valid") is not True:
@@ -2047,6 +2111,17 @@ def validate_multichassis_lag_snapshot_evidence(
         (_text(row.get("switch")) for row in stored_local),
         key=lambda item: (item.casefold(), item),
     )
+    typed_subjects: Dict[str, str] = {}
+    for subject in local_subjects:
+        key = subject.casefold()
+        if not subject or key in typed_subjects:
+            return {
+                "valid": False,
+                "reason": "typed_local_subject_identity_invalid_or_ambiguous",
+                "baseline": {},
+                "local_subjects": local_subjects,
+            }
+        typed_subjects[key] = subject
     if any(subject.casefold() not in device_subjects for subject in local_subjects):
         return {
             "valid": False,
@@ -2054,11 +2129,30 @@ def validate_multichassis_lag_snapshot_evidence(
             "baseline": {},
             "local_subjects": local_subjects,
         }
+    legacy = _legacy_positive_local_subjects(legacy_vpc, legacy_arista)
+    legacy_subjects = legacy["subjects"]
+    if legacy["applicable"] and legacy["valid"] is not True:
+        return {
+            "valid": False,
+            "reason": "legacy_local_subject_identity_invalid_or_ambiguous",
+            "baseline": {},
+            "local_subjects": local_subjects,
+            "legacy_local_subjects": legacy_subjects,
+        }
+    if legacy["applicable"] and set(legacy["subject_keys"]) != set(typed_subjects):
+        return {
+            "valid": False,
+            "reason": "legacy_local_subjects_do_not_reconcile",
+            "baseline": {},
+            "local_subjects": local_subjects,
+            "legacy_local_subjects": legacy_subjects,
+        }
     return {
         "valid": True,
         "reason": "ok",
         "baseline": stored,
         "local_subjects": local_subjects,
+        "legacy_local_subjects": legacy_subjects,
     }
 
 

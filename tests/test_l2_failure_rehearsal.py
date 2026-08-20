@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import hashlib
 import json
 from pathlib import Path
+
+from openpyxl import load_workbook
 
 from cisco_toolkit import traffic_assurance
 from cisco_toolkit.analyze import (
@@ -20,12 +23,20 @@ from cisco_toolkit.etherchannel import (
 from cisco_toolkit.l2_rehearsal import (
     L2_FAILURE_REHEARSAL_SCHEMA,
     compute_l2_failure_rehearsal,
+    validate_l2_failure_rehearsal,
 )
+from cisco_toolkit.comparison import (
+    bound_comparison_decision_input_authority,
+    compare_bound_pair,
+)
+from cisco_toolkit.html import compute_cutover_gate, write_diff_workbook
 from cisco_toolkit.multichassis_lag import compute_multichassis_lag_domain_baseline
 from cisco_toolkit.protocol_assurance import (
+    OFFLINE_FILE_SOURCE,
     bind_snapshot_json_bytes,
     cutover_operator_evidence,
 )
+from tests.test_compare_cutover_gate_cli import _snapshot as _clean_comparison_snapshot
 from tests.test_etherchannel_cutover_truth import _receipt
 from tests.test_etherchannel_operational_evidence import (
     _bind as _bind_source_paths,
@@ -178,6 +189,61 @@ def _traffic_failure_snapshot() -> dict:
         "failure": {"action": "fail_node", "id": "R2"},
     }])
     return snapshot
+
+
+def _canonical_pair(snapshot: dict, *, engagement: str = "ENG-L2-REHEARSAL"):
+    raw = json.dumps(
+        snapshot,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        allow_nan=False,
+        default=lambda item: dataclasses.asdict(item)
+        if dataclasses.is_dataclass(item) else str(item),
+    ).encode("utf-8")
+    before = bind_snapshot_json_bytes(raw)
+    after = bind_snapshot_json_bytes(raw)
+
+    def binding(snapshot_id: int) -> dict:
+        return {
+            "source": OFFLINE_FILE_SOURCE,
+            "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+            "bytes": len(raw),
+            "snapshot_id": snapshot_id,
+            "campaign_id": 91,
+            "engagement_id": engagement,
+            "label": f"snapshot-{snapshot_id}.json",
+            "script_version": "V3.23.0",
+        }
+
+    comparison = compare_bound_pair(
+        before,
+        after,
+        before_binding=binding(9101),
+        after_binding=binding(9102),
+    )
+    return before, after, comparison
+
+
+def _canonical_multichassis_pair(
+        tmp_path: Path, *, orphan: bool = False, degraded: bool = False):
+    # Retain the clean comparison's route/current-baseline/certificate surfaces,
+    # but use the two typed L2 subjects as the admitted device denominator.
+    base = json.loads(json.dumps(
+        _clean_comparison_snapshot("FULL/DR", "2026-08-20T00:00:00")
+    ).replace("R1", "leaf-a").replace("R2", "leaf-b"))
+    base.pop("routing_neighbors", None)
+    l2 = _multichassis_snapshot(
+        tmp_path,
+        orphan=orphan,
+        degraded=degraded,
+    )
+    for key in (
+            "devices", "protocol_assessability", "etherchannel_projection",
+            "etherchannel_baseline", "etherchannel_operational_evidence",
+            "multichassis_lag_typed_observations",
+            "multichassis_lag_domain_baseline"):
+        base[key] = l2[key]
+    return _canonical_pair(base)
 
 
 def _forged_preserved_traffic_snapshot() -> dict:
@@ -443,6 +509,151 @@ def test_explicit_nxos_orphan_is_projected_risk_without_service_survival(tmp_pat
     assert row["evidence"]["suspend_on_peer_link_loss"] is True
     assert row["evidence"]["peer_link_loss_behavior"] == "configured_suspend"
     assert row["evidence"]["service_path_survival"] == "not_verified"
+
+
+def test_canonical_orphan_risk_forces_review_and_workbook_projects_same_gate(
+        tmp_path):
+    before, after, comparison = _canonical_multichassis_pair(
+        tmp_path / "orphan", orphan=True)
+    gate = comparison["cutover_gate"]
+    rehearsal = comparison["operator_evidence"]["rehearsal"][
+        "l2_failure_rehearsal"]
+
+    assert comparison["comparison_admission"]["status"] == "admitted"
+    assert comparison["verdict"] == "CLEAN"
+    assert comparison["precert"]["verdict"] == "PASS"
+    assert comparison["protocol_families"]["summary"]["n_blocking"] == 0
+    assert comparison["protocol_families"]["summary"]["n_review"] == 0
+    assert gate["verdict"] == "REVIEW"
+    assert gate["l2_rehearsal_status"] == "projected_risk"
+    assert gate["l2_rehearsal_projected_risks"] == 1
+    assert gate["l2_rehearsal_not_verified"] == 0
+    assert gate["l2_rehearsal_applicable_families"] == [
+        "etherchannel", "multichassis_lag",
+    ]
+    assert "service survival remains not verified" in gate["l2_rehearsal_note"]
+    assert all(row["assurance_level"] == "not_verified"
+               for row in rehearsal["scenarios"])
+
+    output = tmp_path / "orphan-review.xlsx"
+    projected = write_diff_workbook(
+        before, after, str(output), comparison=comparison)
+
+    assert projected == gate
+    workbook = load_workbook(output, read_only=True)
+    summary = workbook["Summary"]
+    rows = {
+        summary.cell(index, 1).value: (
+            summary.cell(index, 3).value,
+            summary.cell(index, 4).value,
+        )
+        for index in range(2, summary.max_row + 1)
+    }
+    workbook.close()
+    assert rows["CUTOVER GATE VERDICT"][0] == "REVIEW"
+    assert rows["L2 BOUNDED REHEARSAL"] == (
+        "PROJECTED_RISK", gate["l2_rehearsal_note"])
+
+
+def test_rehearsal_gate_is_applicability_aware_and_current_fault_safe(tmp_path):
+    _before, _after, routed = _canonical_pair(
+        _clean_comparison_snapshot("FULL/DR", "2026-08-20T00:00:00"),
+        engagement="ENG-ROUTED-ONLY",
+    )
+    assert routed["cutover_gate"]["verdict"] == "PASS"
+    assert routed["cutover_gate"]["l2_rehearsal_status"] == "not_applicable"
+    assert routed["cutover_gate"]["l2_rehearsal_not_verified"] == 0
+
+    _before, _after, healthy = _canonical_multichassis_pair(
+        tmp_path / "healthy")
+    assert healthy["cutover_gate"]["verdict"] == "PASS"
+    assert healthy["cutover_gate"]["l2_rehearsal_status"] == "simulation_only"
+    assert "do not prove" in healthy["cutover_gate"]["l2_rehearsal_note"]
+
+    _before, _after, degraded = _canonical_multichassis_pair(
+        tmp_path / "degraded", degraded=True)
+    assert degraded["cutover_gate"]["verdict"] != "PASS"
+    assert degraded["cutover_gate"]["l2_rehearsal_status"] == "current_fault"
+    assert degraded["cutover_gate"]["l2_rehearsal_current_faults"] >= 1
+
+
+def test_applicable_missing_scenario_and_mutated_supplied_receipt_fail_closed(
+        tmp_path):
+    _before, _after, healthy = _canonical_multichassis_pair(
+        tmp_path / "missing")
+    receipt = copy.deepcopy(
+        healthy["operator_evidence"]["rehearsal"]["l2_failure_rehearsal"])
+    receipt["scenarios"] = [
+        row for row in receipt["scenarios"] if row["family"] != "etherchannel"
+    ]
+    by_disposition = {
+        disposition: sum(row["disposition"] == disposition
+                         for row in receipt["scenarios"])
+        for disposition in (
+            "simulation_only", "projected_risk", "current_fault", "not_verified")
+    }
+    receipt["summary"].update({
+        "n_scenarios": len(receipt["scenarios"]),
+        "n_current_faults": by_disposition["current_fault"],
+        "n_projected_risks": by_disposition["projected_risk"],
+        "n_not_verified": by_disposition["not_verified"],
+        "by_disposition": by_disposition,
+    })
+    receipt["status"] = (
+        "current_fault" if by_disposition["current_fault"] else
+        "projected_risk" if by_disposition["projected_risk"] else
+        "not_verified" if by_disposition["not_verified"] else
+        "simulation_only"
+    )
+    validation = validate_l2_failure_rehearsal(receipt)
+    assert validation["valid"] is True
+    assert validation["gate_status"] == "not_verified"
+    assert validation["n_not_verified"] == 1
+
+    _before, _after, orphan = _canonical_multichassis_pair(
+        tmp_path / "mutated", orphan=True)
+    authority = bound_comparison_decision_input_authority(orphan)
+    additive = {
+        "comparison_schema", "comparison_admission", "change_intent",
+        "protocol_families", "precert", "cutover_gate", "operator_evidence",
+        "comparison_receipt",
+    }
+    delta = {key: value for key, value in orphan.items() if key not in additive}
+    malformed = copy.deepcopy(orphan["operator_evidence"])
+    malformed["rehearsal"]["l2_failure_rehearsal"]["summary"][
+        "n_projected_risks"] = 0
+    gate = compute_cutover_gate(
+        delta,
+        orphan["precert"],
+        comparison_admission=orphan["comparison_admission"],
+        protocol_family_changes=orphan["protocol_families"],
+        operator_evidence=malformed,
+        decision_input_authority=authority,
+    )
+    assert gate["verdict"] == "INDETERMINATE"
+    assert gate["comparison_admission_status"] == "not_comparable"
+    assert gate["l2_rehearsal_status"] == "not_verified"
+    assert "detached" in gate["l2_rehearsal_note"]
+
+
+def test_l2_summary_counters_reject_bool_equal_to_integer(tmp_path):
+    _before, _after, orphan = _canonical_multichassis_pair(
+        tmp_path / "bool-count", orphan=True)
+    receipt = orphan["operator_evidence"]["rehearsal"]["l2_failure_rehearsal"]
+    assert receipt["summary"]["n_projected_risks"] == 1
+    assert receipt["summary"]["by_disposition"]["projected_risk"] == 1
+    assert validate_l2_failure_rehearsal(receipt)["valid"] is True
+
+    for path in (
+        ("n_projected_risks",),
+        ("by_disposition", "projected_risk"),
+    ):
+        malformed = copy.deepcopy(receipt)
+        target = malformed["summary"]
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = True
+        assert validate_l2_failure_rehearsal(malformed)["valid"] is False
 
 
 def test_detached_or_mutated_snapshot_cannot_authorize_failure_projection(tmp_path):

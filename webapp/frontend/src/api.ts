@@ -547,6 +547,19 @@ export interface CutoverGate {
   protocol_family_blocking?: number;
   protocol_family_review?: number;
   protocol_family_not_verified?: number;
+  l2_rehearsal_status?:
+    | "not_supplied"
+    | "not_applicable"
+    | "simulation_only"
+    | "projected_risk"
+    | "current_fault"
+    | "not_verified";
+  /** Verbatim server-owned basis consumed by cutover_gate/1; never recompute in the UI. */
+  l2_rehearsal_note?: string;
+  l2_rehearsal_applicable_families?: Array<"stp" | "etherchannel" | "multichassis_lag">;
+  l2_rehearsal_current_faults?: number;
+  l2_rehearsal_projected_risks?: number;
+  l2_rehearsal_not_verified?: number;
   comparison_admission_status?: ProtocolComparisonStatus;
   comparison_admission_note?: string;
   current_baseline_verdict?: CurrentBaselineGate["verdict"];
@@ -594,11 +607,17 @@ export interface L2FailureRehearsal {
   status: "simulation_only" | "projected_risk" | "current_fault" | "not_verified";
   assurance_level: "not_verified";
   source_bound: boolean;
+  applicability: {
+    stp: boolean;
+    etherchannel: boolean;
+    multichassis_lag: boolean;
+  };
   summary: {
     n_scenarios: number;
     n_current_faults: number;
     n_projected_risks: number;
     n_not_verified: number;
+    n_applicable_families: number;
     by_disposition: Record<L2FailureRehearsalDisposition, number>;
   };
   scenarios: L2FailureRehearsalScenario[];

@@ -10,7 +10,11 @@ import pytest
 from cisco_toolkit import vtp_extended as vtp_ext
 from cisco_toolkit.capture_integrity import compute_capture_integrity_from_paths
 from cisco_toolkit.html import compute_cutover_gate, compute_snapshot_delta, write_diff_workbook
-from cisco_toolkit.protocol_assurance import normalize_change_intent, protocol_family_change_set
+from cisco_toolkit.protocol_assurance import (
+    compute_native_protocol_deltas,
+    normalize_change_intent,
+    protocol_family_change_set,
+)
 from cisco_toolkit.protocol_deltas import compute_vtp_safety_delta
 from cisco_toolkit.vtp_extended import (
     VTP_EXTENDED_EVIDENCE_SCHEMA,
@@ -361,10 +365,10 @@ def test_revision_reset_requires_exact_subject_cutover_intent_and_gate_reconcile
         tmp_path / "before", {"edge": _spec(revision=9)})
     after_v1, after_ext, _paths, _integrity = _sources(
         tmp_path / "after", {"edge": _spec(revision=0)})
-    native = compute_vtp_safety_delta(
-        _snapshot(before_v1, before_ext, ["edge"]),
-        _snapshot(after_v1, after_ext, ["edge"]),
-    )
+    before_snapshot = _snapshot(before_v1, before_ext, ["edge"])
+    after_snapshot = _snapshot(after_v1, after_ext, ["edge"])
+    native = compute_vtp_safety_delta(before_snapshot, after_snapshot)
+    native_deltas = compute_native_protocol_deltas(before_snapshot, after_snapshot)
     change = native["changes"][0]
     assert change["transition"] == "intent_changed"
     assert change["decision_effect"] == "review"
@@ -375,7 +379,7 @@ def test_revision_reset_requires_exact_subject_cutover_intent_and_gate_reconcile
             "family": "vtp_safety", "transitions": ["intent_changed"],
             "subjects": [], "reason": "generic VTP movement",
         }],
-    }, native_deltas=[native])
+    }, native_deltas=native_deltas)
     wildcard_row = next(
         row for family in wildcard["families"] if family["family"] == "vtp_safety"
         for row in family["changes"]
@@ -392,7 +396,7 @@ def test_revision_reset_requires_exact_subject_cutover_intent_and_gate_reconcile
             "family": "vtp_safety", "transitions": ["intent_changed"],
             "subjects": ["edge"], "reason": "generic exact-subject VTP movement",
         }],
-    }, native_deltas=[native])
+    }, native_deltas=native_deltas)
     untyped_row = next(
         row for family in exact_without_reset_intent["families"]
         if family["family"] == "vtp_safety"
@@ -407,7 +411,7 @@ def test_revision_reset_requires_exact_subject_cutover_intent_and_gate_reconcile
             "subjects": ["edge"], "intent_kind": "revision_reset",
             "reason": "authorized revision reset",
         }],
-    }, native_deltas=[native])
+    }, native_deltas=native_deltas)
     exact_row = next(
         row for family in exact["families"] if family["family"] == "vtp_safety"
         for row in family["changes"]
@@ -475,10 +479,10 @@ def test_revision_reset_intent_cannot_hide_simultaneous_vtp_or_vlan_movement(
             pruning="vtp pruning",
             password="new-auth",
         )})
-    native = compute_vtp_safety_delta(
-        _snapshot(before_v1, before_ext, ["edge"]),
-        _snapshot(after_v1, after_ext, ["edge"]),
-    )
+    before_snapshot = _snapshot(before_v1, before_ext, ["edge"])
+    after_snapshot = _snapshot(after_v1, after_ext, ["edge"])
+    native = compute_vtp_safety_delta(before_snapshot, after_snapshot)
+    native_deltas = compute_native_protocol_deltas(before_snapshot, after_snapshot)
     assert native["changes"][0]["change_kind"] == "configuration_movement"
 
     families = protocol_family_change_set(_clean_ipv4(), {
@@ -489,7 +493,7 @@ def test_revision_reset_intent_cannot_hide_simultaneous_vtp_or_vlan_movement(
             "intent_kind": "revision_reset",
             "reason": "revision reset does not authorize other changed axes",
         }],
-    }, native_deltas=[native])
+    }, native_deltas=native_deltas)
     row = next(
         row for family in families["families"] if family["family"] == "vtp_safety"
         for row in family["changes"]
@@ -508,10 +512,10 @@ def test_current_high_revision_and_appeared_unsafe_always_block_canonical_gate(
         tmp_path / "before", {"edge": _spec(revision=100)})
     after_v1, after_ext, _paths, _integrity = _sources(
         tmp_path / "after", {"edge": _spec(revision=101, pruning="vtp pruning")})
-    native = compute_vtp_safety_delta(
-        _snapshot(before_v1, before_ext, ["edge"]),
-        _snapshot(after_v1, after_ext, ["edge"]),
-    )
+    before_snapshot = _snapshot(before_v1, before_ext, ["edge"])
+    after_snapshot = _snapshot(after_v1, after_ext, ["edge"])
+    native = compute_vtp_safety_delta(before_snapshot, after_snapshot)
+    native_deltas = compute_native_protocol_deltas(before_snapshot, after_snapshot)
     row = native["changes"][0]
     assert row["transition"] == "unchanged_degraded"
     assert row["decision_effect"] == "block"
@@ -520,7 +524,7 @@ def test_current_high_revision_and_appeared_unsafe_always_block_canonical_gate(
             "family": "vtp_safety", "transitions": ["unchanged_degraded"],
             "subjects": ["edge"], "reason": "must not weaken current fault",
         }],
-    }, native_deltas=[native])
+    }, native_deltas=native_deltas)
     assert compute_cutover_gate(
         _clean_snapshot_delta(), {"verdict": "PASS", "verdict_note": "clean"},
         protocol_family_changes=changes,
@@ -555,10 +559,9 @@ def test_generic_protocol_family_workbook_projects_complete_extended_vtp_state(
     after.update({"vtp_safety_baseline": after_v1,
                   "vtp_extended_evidence": after_ext})
     delta = compute_snapshot_delta(before, after)
-    native = compute_vtp_safety_delta(before, after)
     families = protocol_family_change_set(
         delta["protocol_adjacencies"], {"expected_changes": []},
-        native_deltas=[native],
+        native_deltas=compute_native_protocol_deltas(before, after),
     )
     expected = compute_cutover_gate(
         delta, compute_precert(before, after), protocol_family_changes=families)

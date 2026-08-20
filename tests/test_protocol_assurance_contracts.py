@@ -4,6 +4,10 @@ from copy import deepcopy
 import json
 
 from cisco_toolkit import protocol_assurance as pa
+from cisco_toolkit.comparison import (
+    bound_comparison_decision_input_authority,
+    compare_bound_pair,
+)
 from cisco_toolkit.html import compute_cutover_gate
 
 
@@ -593,6 +597,15 @@ def test_native_protocol_composition_requires_applicability_nonvacuity_and_bound
     }
     certificate = {"verdict": "PASS", "verdict_note": "clean"}
 
+    trusted = pa.protocol_family_change_set(
+        ipv4,
+        {"expected_changes": []},
+        native_deltas=pa.compute_native_protocol_deltas({}, {}),
+    )
+    assert pa.validate_protocol_family_change_set_authority(trusted)["valid"] is True
+    assert compute_cutover_gate(
+        delta, certificate, protocol_family_changes=trusted)["verdict"] == "PASS"
+
     def compose(native):
         return pa.protocol_family_change_set(
             ipv4, {"expected_changes": []}, native_deltas=[native])
@@ -604,8 +617,9 @@ def test_native_protocol_composition_requires_applicability_nonvacuity_and_bound
     healthy = _protocol_native_delta(transition="unchanged_healthy", effect="none")
     accepted = compose(healthy)
     assert family(accepted)["composition_failures"] == []
+    assert pa.validate_protocol_family_change_set_authority(accepted)["valid"] is False
     assert compute_cutover_gate(
-        delta, certificate, protocol_family_changes=accepted)["verdict"] == "PASS"
+        delta, certificate, protocol_family_changes=accepted)["verdict"] == "INDETERMINATE"
 
     not_applicable = _protocol_native_delta(
         transition=None, effect="none", applicability="not_applicable")
@@ -613,7 +627,7 @@ def test_native_protocol_composition_requires_applicability_nonvacuity_and_bound
     assert family(accepted_na)["changes"] == []
     assert family(accepted_na)["composition_failures"] == []
     assert compute_cutover_gate(
-        delta, certificate, protocol_family_changes=accepted_na)["verdict"] == "PASS"
+        delta, certificate, protocol_family_changes=accepted_na)["verdict"] == "INDETERMINATE"
 
     unbound_na = _protocol_native_delta(
         transition=None,
@@ -709,6 +723,15 @@ def test_gate_rejects_detached_mutated_or_subset_family_compositions():
     }
     certificate = {"verdict": "PASS", "verdict_note": "clean"}
     intent = {"expected_changes": []}
+    trusted = pa.protocol_family_change_set(
+        ipv4,
+        intent,
+        native_deltas=pa.compute_native_protocol_deltas({}, {}),
+    )
+    assert compute_cutover_gate(
+        delta, certificate, protocol_family_changes=trusted,
+    )["verdict"] == "PASS"
+
     healthy = pa.protocol_family_change_set(
         ipv4,
         intent,
@@ -717,7 +740,7 @@ def test_gate_rejects_detached_mutated_or_subset_family_compositions():
     )
     assert compute_cutover_gate(
         delta, certificate, protocol_family_changes=healthy,
-    )["verdict"] == "PASS"
+    )["verdict"] == "INDETERMINATE"
 
     custody_mutation = deepcopy(healthy)
     vtp = next(
@@ -739,10 +762,16 @@ def test_gate_rejects_detached_mutated_or_subset_family_compositions():
         native_deltas=[_protocol_native_delta(
             transition="regressed", effect="block")],
     )
+    assert blocking["summary"]["n_blocking"] == 1
     assert compute_cutover_gate(
         delta, certificate, protocol_family_changes=blocking,
-    )["verdict"] == "REGRESSED"
+    )["verdict"] == "INDETERMINATE"
     ipv4_only = pa.protocol_family_change_set(ipv4, intent, native_deltas=[])
+    assert len(ipv4_only["families"]) == 1
+    assert pa.validate_protocol_family_change_set_authority(ipv4_only)["valid"] is False
+    assert compute_cutover_gate(
+        delta, certificate, protocol_family_changes=ipv4_only,
+    )["verdict"] == "INDETERMINATE"
     dropped_family = deepcopy(blocking)
     dropped_family["families"] = deepcopy(ipv4_only["families"])
     dropped_family["summary"] = deepcopy(ipv4_only["summary"])
@@ -820,8 +849,9 @@ def test_multichassis_composition_uses_its_distinct_source_binding_and_is_nonvac
     assert "applicability" not in native and "source_receipts" not in native
     assert family(accepted)["composition_failures"] == []
     assert family(accepted)["changes"][0]["subject_kind"] == "local_observation"
+    assert pa.validate_protocol_family_change_set_authority(accepted)["valid"] is False
     assert compute_cutover_gate(
-        delta, certificate, protocol_family_changes=accepted)["verdict"] == "PASS"
+        delta, certificate, protocol_family_changes=accepted)["verdict"] == "INDETERMINATE"
 
     def remove_rows(value):
         value["changes"] = []
@@ -930,8 +960,11 @@ def test_canonical_gate_consumes_admission_additively_and_cannot_pass_bad_custod
         "reason": "ok",
         "failures": [],
     }
-    assert compute_cutover_gate(
-        delta, certificate, comparison_admission=admitted)["verdict"] == "PASS"
+    detached_inputs = compute_cutover_gate(
+        delta, certificate, comparison_admission=admitted)
+    assert detached_inputs["verdict"] == "INDETERMINATE"
+    assert detached_inputs["comparison_admission_status"] == "not_comparable"
+    assert "detached" in detached_inputs["comparison_admission_note"]
 
     malformed = deepcopy(admitted)
     malformed["status"] = "not_comparable"
@@ -949,6 +982,94 @@ def test_canonical_gate_consumes_admission_additively_and_cannot_pass_bad_custod
     legacy = compute_cutover_gate(delta, certificate)
     assert legacy["verdict"] == "PASS"
     assert "comparison_admission_status" not in legacy
+
+
+def test_source_bound_gate_rejects_partial_cross_pair_and_caller_mixed_inputs():
+    def pair(*, engagement, campaign, first_id, device):
+        before = _bound_snapshot({
+            "script_version": "V3.23.0",
+            "devices": {device: {"platform": "ios"}},
+        })
+        after = _bound_snapshot({
+            "script_version": "V3.23.0",
+            "devices": {device: {"platform": "ios", "phase": "after"}},
+        })
+        return compare_bound_pair(
+            before,
+            after,
+            before_binding=_binding(
+                first_id, campaign=campaign, engagement=engagement, snapshot=before),
+            after_binding=_binding(
+                first_id + 1, campaign=campaign, engagement=engagement, snapshot=after),
+        )
+
+    pair_a = pair(engagement="ENG-A", campaign=70, first_id=700, device="leaf-a")
+    pair_b = pair(engagement="ENG-B", campaign=80, first_id=800, device="leaf-b")
+    assert pair_a["comparison_admission"]["status"] == "admitted"
+    assert pair_b["comparison_admission"]["status"] == "admitted"
+
+    additive = {
+        "comparison_schema", "comparison_admission", "change_intent",
+        "protocol_families", "precert", "cutover_gate", "operator_evidence",
+        "comparison_receipt",
+    }
+    delta_b = {key: value for key, value in pair_b.items() if key not in additive}
+    authority_b = bound_comparison_decision_input_authority(pair_b)
+
+    cross_pair = compute_cutover_gate(
+        delta_b,
+        pair_b["precert"],
+        comparison_admission=pair_b["comparison_admission"],
+        protocol_family_changes=pair_a["protocol_families"],
+        decision_input_authority=authority_b,
+    )
+    assert cross_pair["verdict"] == "INDETERMINATE"
+    assert cross_pair["comparison_admission_status"] == "not_comparable"
+    assert cross_pair["protocol_family_status"] == "not_comparable"
+    assert "different exact comparison pair" in cross_pair["protocol_family_note"]
+
+    crafted_clean_delta = {
+        "verdict": "CLEAN",
+        "verdict_display": "NO DELTA REGRESSION OBSERVED",
+        "verdict_note": "caller-crafted clean delta",
+        "protocol_adjacencies": {
+            "gate": "PASS",
+            "summary": {
+                "n_state_regressed": 0,
+                "n_coverage_gaps": 0,
+                "n_baseline_peers": 1,
+            },
+        },
+    }
+    caller_mixed = compute_cutover_gate(
+        crafted_clean_delta,
+        {"verdict": "PASS", "verdict_note": "caller-crafted PASS"},
+        comparison_admission=pair_b["comparison_admission"],
+        protocol_family_changes=pair_b["protocol_families"],
+        decision_input_authority=authority_b,
+    )
+    assert caller_mixed["verdict"] == "INDETERMINATE"
+    assert caller_mixed["comparison_admission_status"] == "not_comparable"
+    assert "changed or belong to different comparisons" in caller_mixed[
+        "comparison_admission_note"
+    ]
+
+    ipv4 = {
+        "schema": "protocol_adjacency_delta/1",
+        "summary": {"n_preserved": 0},
+        "changes": [],
+        "coverage_gaps": [],
+    }
+    one_family = pa.protocol_family_change_set(
+        ipv4, {"expected_changes": []}, native_deltas=[])
+    assert len(one_family["families"]) == 1
+    one_family_gate = compute_cutover_gate(
+        crafted_clean_delta,
+        {"verdict": "PASS", "verdict_note": "caller-crafted PASS"},
+        protocol_family_changes=one_family,
+    )
+    assert one_family_gate["verdict"] == "INDETERMINATE"
+    assert one_family_gate["protocol_family_status"] == "not_comparable"
 
 
 def test_admitted_receipt_requires_every_canonical_identity_owner_profile_and_coherence_leaf():
@@ -1076,7 +1197,7 @@ def test_admission_validator_is_total_and_producer_rejects_incomplete_canonical_
         assert admission["decision_eligible"] is False
 
 
-def test_canonical_gate_consumes_complete_family_effects_without_changing_legacy_shape():
+def test_direct_family_composition_is_inspectable_but_not_gate_authoritative():
     delta = {
         "verdict": "CLEAN",
         "verdict_display": "NO DELTA REGRESSION OBSERVED",
@@ -1087,6 +1208,12 @@ def test_canonical_gate_consumes_complete_family_effects_without_changing_legacy
         },
     }
     certificate = {"verdict": "PASS", "verdict_note": "certificate clean"}
+    ipv4 = {
+        "schema": "protocol_adjacency_delta/1",
+        "summary": {"n_preserved": 0},
+        "changes": [],
+        "coverage_gaps": [],
+    }
 
     def family_set(effect, transition="unchanged_degraded"):
         by_transition = {token: 0 for token in pa.CHANGE_VOCABULARY}
@@ -1120,27 +1247,25 @@ def test_canonical_gate_consumes_complete_family_effects_without_changing_legacy
                 "note": "Native multichassis subject transition.",
             }],
         }
-        ipv4 = {
-            "schema": "protocol_adjacency_delta/1",
-            "summary": {"n_preserved": 0},
-            "changes": [],
-            "coverage_gaps": [],
-        }
         return pa.protocol_family_change_set(
             ipv4, {"expected_changes": []}, native_deltas=[native])
 
+    blocked_set = family_set("block")
+    assert blocked_set["summary"]["n_blocking"] == 1
     blocked = compute_cutover_gate(
-        delta, certificate, protocol_family_changes=family_set("block"))
-    assert blocked["verdict"] == "REGRESSED"
-    assert blocked["protocol_family_blocking"] == 1
-    assert "native family owner" in blocked["operator_note"]
+        delta, certificate, protocol_family_changes=blocked_set)
+    assert blocked["verdict"] == "INDETERMINATE"
+    assert blocked["protocol_family_status"] == "not_comparable"
+    assert "detached" in blocked["protocol_family_note"]
 
+    lost_set = family_set("not_verified", "coverage_lost")
+    assert lost_set["summary"]["n_not_verified"] == 1
     lost = compute_cutover_gate(
         delta, certificate,
-        protocol_family_changes=family_set("not_verified", "coverage_lost"),
+        protocol_family_changes=lost_set,
     )
     assert lost["verdict"] == "INDETERMINATE"
-    assert lost["protocol_family_status"] == "coverage_lost"
+    assert lost["protocol_family_status"] == "not_comparable"
 
     malformed = family_set("none", "unchanged_healthy")
     target = next(
@@ -1171,6 +1296,16 @@ def test_canonical_gate_consumes_complete_family_effects_without_changing_legacy
             delta, certificate, protocol_family_changes=candidate)
         assert gate["verdict"] == "INDETERMINATE"
         assert gate["protocol_family_status"] == "not_comparable"
+
+    trusted = pa.protocol_family_change_set(
+        ipv4,
+        {"expected_changes": []},
+        native_deltas=pa.compute_native_protocol_deltas({}, {}),
+    )
+    trusted_gate = compute_cutover_gate(
+        delta, certificate, protocol_family_changes=trusted)
+    assert trusted_gate["verdict"] == "PASS"
+    assert trusted_gate["protocol_family_status"] == "clear"
 
     legacy = compute_cutover_gate(delta, certificate)
     assert legacy["verdict"] == "PASS"

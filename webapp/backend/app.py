@@ -1974,9 +1974,9 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
             fd, path = tempfile.mkstemp(suffix="." + pir_spec.ext, prefix="assesshub_pir_")
             os.close(fd)
             try:
-                # Old rows may carry SUCCESSFUL from the former closeout-only authority rule.
-                # Recompute the read view before exporting so a PIR cannot publish that stale
-                # verdict when required steps/checks were never completed.
+                # Recompute only opted-in cutover_execution/2 read views before export. Legacy
+                # outcomes are historical evidence and remain unchanged; they also remain
+                # explicitly disclosed below as having no canonical comparison receipt.
                 report_state = {
                     **execution.with_current_outcome(rec["state"]),
                     "comparison_receipts": list(rec.get("comparisons") or []),

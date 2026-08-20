@@ -9,6 +9,7 @@ properties that HTTP cannot observe.
 from __future__ import annotations
 
 import hashlib
+import dataclasses
 import json
 import sqlite3
 import sys
@@ -28,6 +29,8 @@ from backend.app import create_app  # noqa: E402
 from backend.storage import Store  # noqa: E402
 from cisco_toolkit.html import compute_cutover_gate  # noqa: E402
 from cisco_toolkit.protocol_assurance import receipt_envelope  # noqa: E402
+from tests.test_compare_cutover_gate_cli import _snapshot as _clean_snapshot  # noqa: E402
+from tests.test_l2_failure_rehearsal import _multichassis_snapshot  # noqa: E402
 
 
 _GOLDEN = _REPO / "tests" / "golden" / "snapshot.json"
@@ -135,6 +138,28 @@ def _canonical_sha256(value: object) -> str:
         allow_nan=False,
     ).encode("utf-8")
     return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def _orphan_comparison_raw(tmp_path: Path) -> bytes:
+    base = json.loads(json.dumps(
+        _clean_snapshot("FULL/DR", "2026-08-20T00:00:00")
+    ).replace("R1", "leaf-a").replace("R2", "leaf-b"))
+    base.pop("routing_neighbors", None)
+    l2 = _multichassis_snapshot(tmp_path, orphan=True)
+    for key in (
+            "devices", "protocol_assessability", "etherchannel_projection",
+            "etherchannel_baseline", "etherchannel_operational_evidence",
+            "multichassis_lag_typed_observations",
+            "multichassis_lag_domain_baseline"):
+        base[key] = l2[key]
+    return json.dumps(
+        base,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        allow_nan=False,
+        default=lambda item: dataclasses.asdict(item)
+        if dataclasses.is_dataclass(item) else str(item),
+    ).encode("utf-8")
 
 
 @pytest.mark.parametrize(
@@ -570,6 +595,42 @@ def test_compare_api_rejects_unknown_change_intent_fields(client, change_intent)
 
     assert response.status_code == 422
     assert "extra_forbidden" in response.text
+
+
+def test_compare_api_consumes_source_bound_orphan_risk_in_canonical_gate(
+        client, tmp_path):
+    campaign = _campaign(client, "L2 orphan risk", "ENG-L2-ORPHAN")
+    raw = _orphan_comparison_raw(tmp_path / "captures")
+    before_id = _upload(client, campaign["id"], "before", raw)
+    after_id = _upload(client, campaign["id"], "after", raw)
+
+    response = client.post(
+        "/api/compare", json={"old_id": before_id, "new_id": after_id})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    gate = body["cutover_gate"]
+    l2 = body["operator_evidence"]["rehearsal"]["l2_failure_rehearsal"]
+    assert body["comparison_admission"]["status"] == "admitted"
+    assert body["verdict"] == "CLEAN"
+    assert body["precert"]["verdict"] == "PASS"
+    assert body["protocol_families"]["summary"]["n_blocking"] == 0
+    assert gate["verdict"] == "REVIEW"
+    assert gate["l2_rehearsal_status"] == "projected_risk"
+    assert gate["l2_rehearsal_projected_risks"] == 1
+    assert gate["l2_rehearsal_note"] in gate["note"]
+    assert l2["applicability"] == {
+        "stp": False,
+        "etherchannel": True,
+        "multichassis_lag": True,
+    }
+    orphan = next(
+        row for row in l2["scenarios"]
+        if row["subject"] == "multichassis_lag|orphan|leaf-a|Eth1/45"
+    )
+    assert orphan["disposition"] == "projected_risk"
+    assert orphan["assurance_level"] == "not_verified"
+    assert orphan["evidence"]["service_path_survival"] == "not_verified"
 
 
 def test_execution_compare_detects_after_source_deleted_during_computation(

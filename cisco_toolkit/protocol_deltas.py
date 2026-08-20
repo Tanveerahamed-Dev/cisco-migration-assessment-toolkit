@@ -24,7 +24,9 @@ from .analyze import (
 )
 from .bgp_intent import validate_bgp_configured_peer_baseline
 from .fhrp_intent import validate_fhrp_configured_group_baseline
-from .fhrp_redundancy import validate_fhrp_redundancy_domain_baseline
+from .fhrp_redundancy import (
+    validate_fhrp_redundancy_domain_snapshot_evidence,
+)
 from .etherchannel import validate_etherchannel_operational_evidence
 from .ipv6_routing import validate_ipv6_routing_adjacency_baseline
 from .protocol_assurance import (
@@ -2139,8 +2141,11 @@ def compute_fhrp_redundancy_domain_delta(
         before: Any, after: Any, *, comparison_source_binding: Any = None) -> dict:
     """Compare validated domains; role movement is non-regressive while redundancy survives."""
     def domain_view(snapshot: Any) -> dict:
-        view = validate_fhrp_redundancy_domain_baseline(
-            _owner_value(snapshot, "fhrp_redundancy_domain_baseline"))
+        snap = _snapshot(snapshot)
+        view = validate_fhrp_redundancy_domain_snapshot_evidence(
+            _owner_value(snapshot, "fhrp_redundancy_domain_baseline"),
+            snap.get("interfaces") if "interfaces" in snap else None,
+        )
         baseline = view.get("baseline") if isinstance(view, Mapping) else None
         source = baseline.get("source_receipt") if isinstance(baseline, Mapping) else None
         normalized = _reconcilable(

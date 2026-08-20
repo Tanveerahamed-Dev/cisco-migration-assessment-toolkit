@@ -932,7 +932,9 @@ def compute_snapshot_delta(old: dict, new: dict, *, source_binding: Optional[dic
 def compute_cutover_gate(delta: dict, certificate: dict,
                          current_baseline: Optional[dict] = None,
                          comparison_admission: Optional[dict] = None,
-                         protocol_family_changes: Optional[dict] = None) -> dict:
+                         protocol_family_changes: Optional[dict] = None,
+                         operator_evidence: Optional[dict] = None,
+                         decision_input_authority: Any = None) -> dict:
     """Return the one combined before/after decision shown to an operator.
 
     ``compute_snapshot_delta`` and the Pre-Change Certificate answer different questions.  The former
@@ -945,9 +947,14 @@ def compute_cutover_gate(delta: dict, certificate: dict,
     omitted, the receipt embedded by ``compute_snapshot_delta`` is consumed.  The additive
     ``comparison_admission`` contract is consumed only when supplied by a source-owning caller.
     It can withhold a PASS for incompatible ownership, malformed identity/custody, or missing
-    comparison scope without changing the legacy two-argument contract.  The additive reference-only
-    family change set owns no verdict; when supplied, this sole decision owner consumes each native
-    family's producer-owned decision effect over the complete, uncapped row set.
+    comparison scope without changing the legacy two-argument contract.  A supplied admission also
+    requires the process-local canonical gate-input authority minted by ``compare_bound_pair`` so receipts from
+    different source pairs cannot be mixed and rehashed.  The additive reference-only family change
+    set owns no verdict; when supplied, this sole decision owner consumes each native family's
+    producer-owned decision effect over the complete, uncapped row set. Canonical operator evidence
+    is likewise reference-only: when it is source-bound into the admitted private input bundle, this
+    gate consumes only bounded local L2 failure risks and coverage faults. It never promotes a
+    simulation to convergence, traffic-continuity, or service-survival proof.
     """
     delta = _as_dict(delta)
     certificate = _as_dict(certificate)
@@ -986,6 +993,7 @@ def compute_cutover_gate(delta: dict, certificate: dict,
     admission_status = "not_comparable"
     admission_failures: list = []
     admission_gaps: list = []
+    decision_inputs_valid = False
     if admission_supplied:
         from cisco_toolkit.protocol_assurance import validate_comparison_admission
 
@@ -1003,12 +1011,97 @@ def compute_cutover_gate(delta: dict, certificate: dict,
                     "Comparison admission receipt is missing, malformed, or semantically inconsistent.",
                 )
             ]
+        from cisco_toolkit.comparison import validate_cutover_decision_input_authority
+
+        decision_input_validation = validate_cutover_decision_input_authority(
+            decision_input_authority,
+            delta=delta,
+            certificate=certificate,
+            admission=comparison_admission,
+            protocol_families=protocol_family_changes,
+            operator_evidence=operator_evidence,
+        )
+        decision_inputs_valid = decision_input_validation.get("valid") is True
+        if not decision_inputs_valid:
+            admission_status = "not_comparable"
+            admission_failures.append(_bounded_note(
+                decision_input_validation.get("reason"),
+                "Canonical source-bound cutover decision inputs are missing or detached.",
+            ))
     admission_note = _bounded_note(
         "; ".join(str(item) for item in (admission_failures or admission_gaps) if str(item).strip()),
         ("Comparison ownership, custody, subjects, and owner semantics were admitted."
          if admission_status == "admitted"
          else "Comparison admission did not establish decision-grade comparability."),
     )
+
+    l2_supplied = operator_evidence is not None
+    l2_status = "not_supplied"
+    l2_note = "No canonical L2 rehearsal receipt was supplied."
+    l2_applicable_families: list = []
+    l2_current_faults = l2_projected_risks = l2_not_verified = 0
+    if l2_supplied and admission_supplied:
+        if not decision_inputs_valid:
+            l2_status = "not_verified"
+            l2_note = (
+                "L2 rehearsal evidence is detached from the canonical admitted gate-input bundle."
+            )
+            l2_not_verified = 1
+        else:
+            from cisco_toolkit.l2_rehearsal import validate_l2_failure_rehearsal
+            from cisco_toolkit.protocol_assurance import CUTOVER_OPERATOR_EVIDENCE_SCHEMA
+
+            evidence = _as_dict(operator_evidence)
+            rehearsal_wrapper = _as_dict(evidence.get("rehearsal"))
+            l2_validation = validate_l2_failure_rehearsal(
+                rehearsal_wrapper.get("l2_failure_rehearsal")
+            ) if (
+                evidence.get("schema") == CUTOVER_OPERATOR_EVIDENCE_SCHEMA
+                and evidence.get("owner") == "reference_only_projection"
+                and evidence.get("owns_verdict") is False
+                and rehearsal_wrapper.get("assurance_level") == "not_verified"
+            ) else {"valid": False, "reason": "operator evidence root is malformed"}
+            if l2_validation.get("valid") is not True:
+                l2_status = "not_verified"
+                l2_note = _bounded_note(
+                    l2_validation.get("reason"),
+                    "Applicable L2 rehearsal evidence is missing or malformed.",
+                )
+                l2_not_verified = 1
+            else:
+                l2_status = str(l2_validation.get("gate_status") or "not_verified")
+                l2_applicable_families = list(
+                    l2_validation.get("applicable_families") or [])
+                l2_current_faults = int(l2_validation.get("n_current_faults") or 0)
+                l2_projected_risks = int(l2_validation.get("n_projected_risks") or 0)
+                l2_not_verified = int(l2_validation.get("n_not_verified") or 0)
+                if l2_status == "not_applicable":
+                    l2_note = (
+                        "No applicable STP, EtherChannel, or multichassis-LAG subject is declared; "
+                        "placeholder NOT VERIFIED rows do not participate in the gate."
+                    )
+                elif l2_status == "simulation_only":
+                    l2_note = (
+                        "Applicable bounded local single-failure eligibility projections are present. "
+                        "They do not prove convergence, remote forwarding, traffic continuity, or "
+                        "service survival."
+                    )
+                elif l2_status == "projected_risk":
+                    l2_note = (
+                        f"{l2_projected_risks} applicable bounded local single-failure projection(s) "
+                        "identify projected risk; service survival remains not verified."
+                    )
+                elif l2_status == "current_fault":
+                    l2_note = (
+                        f"{l2_current_faults} applicable L2 scenario(s) retain a current fault; "
+                        "local failure projections cannot make that fault acceptable."
+                    )
+                else:
+                    l2_status = "not_verified"
+                    l2_note = (
+                        f"{l2_not_verified} applicable L2 family/scenario receipt(s) are missing "
+                        "or not verified."
+                    )
 
     families_supplied = protocol_family_changes is not None
     families = _as_dict(protocol_family_changes)
@@ -1021,7 +1114,9 @@ def compute_cutover_gate(delta: dict, certificate: dict,
         )
 
         family_authority = validate_protocol_family_change_set_authority(
-            protocol_family_changes
+            protocol_family_changes,
+            expected_source_binding=(admission.get("source_binding")
+                                     if admission_supplied else None),
         )
         transition_tokens = (
             "unchanged_healthy", "unchanged_degraded", "recovered", "regressed",
@@ -1288,13 +1383,17 @@ def compute_cutover_gate(delta: dict, certificate: dict,
         verdict = "REGRESSED"
     elif baseline_supplied and baseline_verdict == "BLOCKED":
         verdict = "FAIL"
+    elif l2_supplied and l2_status == "current_fault":
+        verdict = "FAIL"
     elif certificate_verdict == "FAIL":
         verdict = "FAIL"
     elif (delta_verdict == "INDETERMINATE" or certificate_verdict == "INDETERMINATE"
           or (families_supplied and family_not_verified)
+          or (l2_supplied and l2_status == "not_verified")
           or (baseline_supplied and baseline_verdict in {"INDETERMINATE", "NOT_ASSESSED"})):
         verdict = "INDETERMINATE"
-    elif delta_verdict == "REVIEW" or (families_supplied and family_review):
+    elif (delta_verdict == "REVIEW" or (families_supplied and family_review)
+          or (l2_supplied and l2_status == "projected_risk")):
         verdict = "REVIEW"
     elif certificate_verdict == "CONDITIONAL":
         verdict = "CONDITIONAL"
@@ -1307,8 +1406,11 @@ def compute_cutover_gate(delta: dict, certificate: dict,
                        f"Admission basis: {admission_note} " if admission_supplied else "")
     family_basis = (f"Protocol family changes: {family_status.upper()}. "
                     f"Family basis: {family_note} " if families_supplied else "")
+    l2_basis = (f"L2 bounded rehearsal: {l2_status.upper()}. "
+                f"L2 basis: {l2_note} " if l2_supplied else "")
     note = (f"{admission_basis}Delta observation: {delta_display}. Delta basis: {delta_note} "
             f"{family_basis}"
+            f"{l2_basis}"
             f"{baseline_basis}Pre-Change Certificate: {certificate_verdict}. "
             f"Certificate basis: {certificate_note}")
 
@@ -1335,6 +1437,9 @@ def compute_cutover_gate(delta: dict, certificate: dict,
             other = " and the blocking certificate condition(s)" if certificate_verdict == "FAIL" else ""
             action = (f"Do not proceed; resolve or explicitly disposition {baseline_degraded} definite "
                       f"current-baseline degradation(s){other}, then re-run the comparison.")
+        elif l2_supplied and l2_status == "current_fault":
+            action = (f"Do not proceed; resolve {l2_current_faults} current L2 fault(s), then "
+                      "re-collect and recompute the bounded rehearsal evidence.")
         else:
             action = "Do not proceed; resolve the blocking certificate condition(s) and re-run the comparison."
     elif verdict == "INDETERMINATE":
@@ -1348,10 +1453,16 @@ def compute_cutover_gate(delta: dict, certificate: dict,
             noun = "peer could" if protocol_baseline_peers == 1 else "peers could"
             action = (f"{protocol_baseline_peers} baseline-observed protocol {noun} not be compared; "
                       "re-collect protocol evidence before accepting the change.")
+        elif l2_supplied and l2_status == "not_verified":
+            action = ("Do not declare the cutover good; collect and reconcile bounded rehearsal "
+                      "evidence for every applicable STP, EtherChannel, and multichassis-LAG subject.")
         else:
             action = "Do not declare the cutover good; repair the missing or invalid evidence and re-run."
     elif verdict == "REVIEW":
-        if protocol_coverage_gaps:
+        if l2_supplied and l2_status == "projected_risk":
+            action = (f"Review and disposition {l2_projected_risks} bounded local L2 failure "
+                      "risk projection(s); this is not proof of service survival.")
+        elif protocol_coverage_gaps:
             noun = "cell was" if protocol_coverage_gaps == 1 else "cells were"
             action = (f"{protocol_coverage_gaps} protocol comparison {noun} not assessable; "
                       "re-collect and review before accepting the change.")
@@ -1366,6 +1477,8 @@ def compute_cutover_gate(delta: dict, certificate: dict,
         operator_note += f" Delta basis: {delta_note}"
         if baseline_supplied:
             operator_note += f" Current-baseline basis: {baseline_note}"
+        if l2_supplied:
+            operator_note += f" L2 bounded-rehearsal basis: {l2_note}"
         operator_note += f" Certificate basis: {certificate_note}"
 
     result = {
@@ -1396,6 +1509,15 @@ def compute_cutover_gate(delta: dict, certificate: dict,
             "protocol_family_blocking": family_blocking,
             "protocol_family_review": family_review,
             "protocol_family_not_verified": family_not_verified,
+        })
+    if l2_supplied:
+        result.update({
+            "l2_rehearsal_status": l2_status,
+            "l2_rehearsal_note": l2_note,
+            "l2_rehearsal_applicable_families": l2_applicable_families,
+            "l2_rehearsal_current_faults": l2_current_faults,
+            "l2_rehearsal_projected_risks": l2_projected_risks,
+            "l2_rehearsal_not_verified": l2_not_verified,
         })
     if baseline_supplied:
         result.update({
@@ -1478,10 +1600,14 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
 
     comparison_doc: Optional[dict] = None
     comparison_delta: Optional[dict] = None
+    decision_input_authority: Any = None
     if comparison is not None:
         if not isinstance(comparison, dict):
             raise ValueError("comparison must be a source_bound_cutover_comparison/1 object")
-        from cisco_toolkit.comparison import validate_bound_comparison_authority
+        from cisco_toolkit.comparison import (
+            bound_comparison_decision_input_authority,
+            validate_bound_comparison_authority,
+        )
 
         comparison_authority = validate_bound_comparison_authority(comparison)
         if comparison_authority.get("valid") is not True:
@@ -1494,6 +1620,7 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
                 "cannot also be supplied"
             )
         comparison_doc = comparison
+        decision_input_authority = bound_comparison_decision_input_authority(comparison)
         additive_keys = {
             "comparison_schema", "comparison_admission", "change_intent",
             "protocol_families", "precert", "cutover_gate", "operator_evidence",
@@ -1783,6 +1910,8 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
             cert,
             comparison_admission=comparison_doc["comparison_admission"],
             protocol_family_changes=family_changes,
+            operator_evidence=comparison_doc["operator_evidence"],
+            decision_input_authority=decision_input_authority,
         )
         expected_gate_wire = json.dumps(
             expected_gate,
@@ -1810,7 +1939,9 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
     _VERDICT_FILL = {"PASS": "C6EFCE", "CLEAN": "C6EFCE", "CONDITIONAL": "FFEB9C",
                      "CLEAR": "C6EFCE", "REVIEW": "FFEB9C", "NOT_ASSESSED": "D9D9D9",
                      "INDETERMINATE": "D9D9D9", "FAIL": "FFC7CE", "BLOCKED": "FFC7CE",
-                     "REGRESSED": "FFC7CE"}
+                     "REGRESSED": "FFC7CE", "SIMULATION_ONLY": "D9D9D9",
+                     "PROJECTED_RISK": "FFEB9C", "CURRENT_FAULT": "FFC7CE",
+                     "NOT_APPLICABLE": "D9D9D9", "NOT_VERIFIED": "D9D9D9"}
     metrics = [
         ("CUTOVER GATE VERDICT", "", gate_verdict, gate_note),
         ("DELTA OBSERVATION", "", delta.get("verdict_display", delta["verdict"]), delta["verdict_note"]),
@@ -1859,11 +1990,18 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
           if (delta.get("cabling") or {}).get("assessed") else
           "NOT assessed — no CDP/LLDP links in either snapshot (NOT a statement that cabling is unchanged)")),
     ]
+    if gate.get("l2_rehearsal_status"):
+        metrics.insert(1, (
+            "L2 BOUNDED REHEARSAL",
+            "",
+            str(gate["l2_rehearsal_status"]).upper(),
+            gate.get("l2_rehearsal_note", "Canonical L2 rehearsal basis was not published."),
+        ))
     r = 2
     for m in metrics:
         for c, v in enumerate(m, 1):
             cell = ws.cell(row=r, column=c, value=_cv(v)); cell.font = DF; cell.alignment = AL
-        if m[0] in {"CUTOVER GATE VERDICT", "CURRENT BASELINE GATE"}:
+        if m[0] in {"CUTOVER GATE VERDICT", "L2 BOUNDED REHEARSAL", "CURRENT BASELINE GATE"}:
             vc = ws.cell(row=r, column=3)
             vc.fill = PatternFill("solid", fgColor=_VERDICT_FILL.get(str(m[2]), "FFFFFF"))
             vc.font = Font(name="Calibri", bold=True, size=11)

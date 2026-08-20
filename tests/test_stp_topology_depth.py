@@ -7,6 +7,7 @@ import json
 
 import pytest
 
+from cisco_toolkit import protocol_assurance as pa
 from cisco_toolkit.html import compute_cutover_gate
 from cisco_toolkit.l2_rehearsal import compute_l2_failure_rehearsal
 from cisco_toolkit.parse import parse_spanning_tree_root
@@ -136,10 +137,25 @@ def _gate(native: dict, expected_changes=()) -> dict:
         "changes": [],
         "coverage_gaps": [],
     }
+    from cisco_toolkit import protocol_deltas
+    applicability = iter((False, False, True))
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(pa, "_stp_positive_or_malformed", lambda _: next(applicability))
+        patch.setattr(
+            protocol_deltas, "compute_stp_topology_delta", lambda *args, **kwargs: native)
+        native_deltas = pa.compute_native_protocol_deltas(
+            {},
+            {},
+            before_binding={
+                "sha256": native["source_receipts"]["before"]["snapshot_sha256"]},
+            after_binding={
+                "sha256": native["source_receipts"]["after"]["snapshot_sha256"]},
+        )
+
     family_set = protocol_family_change_set(
         ipv4,
         {"expected_changes": list(expected_changes)},
-        native_deltas=[native],
+        native_deltas=native_deltas,
     )
     delta = {
         "verdict": "CLEAN",

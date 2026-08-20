@@ -19,6 +19,98 @@ from .precert import compute_precert, schema_compat_status
 
 
 _BOUND_COMPARISON_AUTHORITY = object()
+_BOUND_DECISION_INPUT_AUTHORITY = object()
+
+
+class _BoundCutoverDecisionInputs:
+    """Process-local proof that one canonical composer produced every gate input.
+
+    The public receipts remain ordinary JSON.  This private authority closes a source-bound seam
+    where individually well-shaped (or even independently valid) delta, precert, admission, and
+    family receipts from different comparison pairs could otherwise be mixed and rehashed.
+    """
+
+    __slots__ = ("_bound_payload_sha256",)
+
+    def __init__(self, *, payload_sha256: str, _authority: object) -> None:
+        if _authority is not _BOUND_DECISION_INPUT_AUTHORITY:
+            raise TypeError(
+                "cutover decision input authority can only be minted by compare_bound_pair"
+            )
+        self._bound_payload_sha256 = payload_sha256
+
+
+def _decision_input_payload(*, delta: Any, certificate: Any, admission: Any,
+                            protocol_families: Any,
+                            operator_evidence: Any) -> Dict[str, Any]:
+    family_authority = _protocol_assurance.validate_protocol_family_change_set_authority(
+        protocol_families
+    )
+    return {
+        "delta": delta,
+        "precert": certificate,
+        "comparison_admission": admission,
+        "protocol_families": protocol_families,
+        "operator_evidence": operator_evidence,
+        # The family-set source pair is deliberately process-local metadata, not wire schema.
+        # Include it in the bundle digest so two JSON-identical family projections minted for
+        # different snapshot pairs cannot be interchanged.
+        "protocol_family_authority": {
+            "valid": family_authority.get("valid") is True,
+            "source_binding": family_authority.get("source_binding"),
+        },
+    }
+
+
+def _mint_cutover_decision_input_authority(*, delta: Any, certificate: Any,
+                                           admission: Any,
+                                           protocol_families: Any,
+                                           operator_evidence: Any) -> Any:
+    payload = _decision_input_payload(
+        delta=delta,
+        certificate=certificate,
+        admission=admission,
+        protocol_families=protocol_families,
+        operator_evidence=operator_evidence,
+    )
+    return _BoundCutoverDecisionInputs(
+        payload_sha256=_protocol_assurance.canonical_sha256(payload),
+        _authority=_BOUND_DECISION_INPUT_AUTHORITY,
+    )
+
+
+def validate_cutover_decision_input_authority(
+        value: Any, *, delta: Any, certificate: Any, admission: Any,
+        protocol_families: Any, operator_evidence: Any) -> Dict[str, Any]:
+    """Require the unchanged canonical gate-input bundle minted by ``compare_bound_pair``."""
+    if not isinstance(value, _BoundCutoverDecisionInputs):
+        return {
+            "present": value is not None,
+            "valid": False,
+            "reason": (
+                "source-bound cutover decision inputs are detached from the canonical composer"
+            ),
+        }
+    expected = getattr(value, "_bound_payload_sha256", None)
+    try:
+        actual = _protocol_assurance.canonical_sha256(_decision_input_payload(
+            delta=delta,
+            certificate=certificate,
+            admission=admission,
+            protocol_families=protocol_families,
+            operator_evidence=operator_evidence,
+        ))
+    except (TypeError, ValueError, OverflowError, RecursionError, MemoryError):
+        actual = None
+    if not isinstance(expected, str) or expected != actual:
+        return {
+            "present": True,
+            "valid": False,
+            "reason": (
+                "source-bound cutover decision inputs changed or belong to different comparisons"
+            ),
+        }
+    return {"present": True, "valid": True, "reason": "ok"}
 
 
 class BoundComparison(dict):
@@ -30,13 +122,15 @@ class BoundComparison(dict):
     and asking a workbook to render the edited context as admitted evidence.
     """
 
-    __slots__ = ("_bound_payload_sha256",)
+    __slots__ = ("_bound_payload_sha256", "_bound_decision_input_authority")
 
-    def __init__(self, value: Dict[str, Any], *, payload_sha256: str, _authority: object) -> None:
+    def __init__(self, value: Dict[str, Any], *, payload_sha256: str,
+                 decision_input_authority: Any, _authority: object) -> None:
         if _authority is not _BOUND_COMPARISON_AUTHORITY:
             raise TypeError("BoundComparison can only be minted by compare_bound_pair")
         super().__init__(value)
         self._bound_payload_sha256 = payload_sha256
+        self._bound_decision_input_authority = decision_input_authority
 
 
 def validate_bound_comparison_authority(value: Any) -> Dict[str, Any]:
@@ -59,6 +153,14 @@ def validate_bound_comparison_authority(value: Any) -> Dict[str, Any]:
             "reason": "comparison changed after canonical source/context composition",
         }
     return {"present": True, "valid": True, "reason": "ok"}
+
+
+def bound_comparison_decision_input_authority(value: Any) -> Any:
+    """Return a canonical comparison's private gate-input authority for exact reprojection."""
+    validation = validate_bound_comparison_authority(value)
+    if validation.get("valid") is not True:
+        return None
+    return getattr(value, "_bound_decision_input_authority", None)
 
 
 def _schema_compat(snaps: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -136,13 +238,22 @@ def compare_bound_pair(
     )
     protocol_families = _protocol_assurance.protocol_family_change_set(
         delta.get("protocol_adjacencies"), intent, native_deltas=native_deltas)
+    operator_evidence = _protocol_assurance.cutover_operator_evidence(new)
+    decision_input_authority = _mint_cutover_decision_input_authority(
+        delta=delta,
+        certificate=certificate,
+        admission=admission,
+        protocol_families=protocol_families,
+        operator_evidence=operator_evidence,
+    )
     cutover_gate = _html.compute_cutover_gate(
         delta,
         certificate,
         comparison_admission=admission,
         protocol_family_changes=protocol_families,
+        operator_evidence=operator_evidence,
+        decision_input_authority=decision_input_authority,
     )
-    operator_evidence = _protocol_assurance.cutover_operator_evidence(new)
     envelope = _protocol_assurance.receipt_envelope(
         admission=admission,
         change_intent=intent,
@@ -166,5 +277,6 @@ def compare_bound_pair(
     return BoundComparison(
         payload,
         payload_sha256=_protocol_assurance.canonical_sha256(payload),
+        decision_input_authority=decision_input_authority,
         _authority=_BOUND_COMPARISON_AUTHORITY,
     )
