@@ -29,7 +29,10 @@ Output layout:
   its size is reported rather than described as an initial-page payload.
 - `metadata/<group>/*.mjs` — content-hashed lazy chunks for every compiler
   metadata group except per-line and source-text records. This includes claims,
-  imports, calls, dependencies, Markdown, structured data and manifests.
+  imports, calls, dependencies, Markdown, structured data and manifests. Symbol
+  metadata is also the single physical store for symbol dossiers: the root
+  index carries a source-bound, ordered upper-ID route that binary-searches one
+  bounded metadata module for `loadRecord("symbol", stableId)`.
 - `search/index-*.mjs` and `search/shards/*.mjs` — a bounded exact-token index.
   Stable IDs make every indexed record directly reachable; broad postings are
   deterministically capped and disclose their complete match denominator.
@@ -39,10 +42,12 @@ Output layout:
 - `graph/summary-*.mjs`, `graph/index-*.mjs`, and `graph/shards/*.mjs` — a
   bounded initial graph overview plus complete community partitions loaded only
   after selection.
-- `records/{symbol,data,test,workflow,claim}/*.mjs` — deterministic, recursively
-  split stable-ID dossier buckets. Every ID routes through the same exported
-  prefix map used to write the leaf module. Test assertion groups and workflow
-  job/step/permission/artifact entities retain their adapter fields.
+- `records/{data,test,workflow,claim}/*.mjs` — deterministic, recursively split
+  stable-ID dossier buckets for non-symbol dossier kinds. Every ID routes
+  through the same exported prefix map used to write the leaf module. Symbol
+  lookups reuse `metadata/symbols` and are therefore not duplicated under
+  `records/symbol`. Test assertion groups and workflow job/step/permission/
+  artifact entities retain their adapter fields.
 - `projection-manifest.json` — canonical digests for every generated module.
   The projection compiler writes this raw conceptual receipt. Sites packaging
   replaces it with deterministic `projection-manifest.json.gz`, records both
@@ -55,9 +60,11 @@ The generated directory is a release product, not authored source. Ignore only
 
 The projection manifest records executable raw-byte ceilings for the landing
 identity module, every metadata module, every dossier module, search shards and
-indexes, source chunks and indexes, and graph summaries/shards/indexes. Metadata and dossier modules split
-recursively at 256 KiB. A single record above the ceiling is serialized once,
-split into content-hashed UTF-8 fragment modules, and reassembled only when its
-metadata group or stable-ID dossier is requested. Metadata and dossier views
-share the same fragment set, preserve the complete projected record, and fail
-closed if any fragment or fragment-loader index cannot satisfy the ceiling.
+indexes, source chunks and indexes, and graph summaries/shards/indexes. Metadata
+and dossier modules split recursively at 256 KiB. A single record above the
+ceiling is serialized once, split into content-hashed UTF-8 fragment modules,
+and reassembled only when its metadata group or stable-ID dossier is requested.
+Symbol metadata and symbol dossier lookup share the same canonical module and
+fragment route; the remaining metadata/dossier views share the same fragment
+set. Every view preserves the complete projected record and fails closed if any
+fragment or fragment-loader index cannot satisfy the ceiling.

@@ -22,7 +22,7 @@ import { pathToFileURL } from "node:url";
 
 const GENERATED_MARKER = ".atlas-projection-generated";
 const COMPILER_SCHEMA_VERSION = "1.2.0";
-const PROJECTION_SCHEMA_VERSION = "1.1.0";
+const PROJECTION_SCHEMA_VERSION = "1.2.0";
 const REQUIRED_COMPILER_GROUPS = Object.freeze([
   "binaries",
   "calls",
@@ -174,7 +174,6 @@ const STRUCTURAL_MAPPING_BASES = new Set(["symbol_range", "parser_context", "par
 // means a newly added metadata adapter cannot silently disappear from Atlas.
 const NON_METADATA_GROUPS = new Set(["lines", "source_text"]);
 const DOSSIER_GROUPS = {
-  symbol: ["symbols"],
   data: ["datasets", "routes", "components"],
   test: ["tests"],
   workflow: ["workflows"],
@@ -2372,6 +2371,153 @@ function moduleText(name, value) {
   return `export const ${name} = ${stableJson(value)};\nexport default ${name};\n`;
 }
 
+function upperBoundIndex(upperBounds, id) {
+  if (!Array.isArray(upperBounds) || typeof id !== "string") return -1;
+  let low = 0;
+  let high = upperBounds.length;
+  while (low < high) {
+    const midpoint = low + Math.floor((high - low) / 2);
+    if (upperBounds[midpoint] < id) low = midpoint + 1;
+    else high = midpoint;
+  }
+  return low < upperBounds.length ? low : -1;
+}
+
+export function validateSymbolMetadataRoute(
+  route,
+  metadataEntries,
+  moduleRecordIds,
+  expected,
+) {
+  const fail = () => {
+    throw new Error("symbol metadata route is absent or inconsistent");
+  };
+  if (
+    !hasExactObjectKeys(route, [
+      "entries",
+      "entriesDigest",
+      "group",
+      "kind",
+      "moduleCount",
+      "orderedIdsDigest",
+      "recordCount",
+      "upperBoundsDigest",
+    ]) ||
+    !hasExactObjectKeys(expected, ["recordCount", "recordsDigest"]) ||
+    route.group !== "symbols" ||
+    route.kind !== "metadata_module_upper_bound_route_v1" ||
+    !Array.isArray(route.entries) ||
+    !Array.isArray(metadataEntries) ||
+    !Array.isArray(moduleRecordIds) ||
+    !Number.isSafeInteger(expected.recordCount) ||
+    expected.recordCount < 0 ||
+    typeof expected.recordsDigest !== "string" ||
+    !/^[0-9a-f]{64}$/.test(expected.recordsDigest) ||
+    route.moduleCount !== metadataEntries.length ||
+    route.moduleCount !== moduleRecordIds.length ||
+    route.entries.length !== route.moduleCount ||
+    route.recordCount !== expected.recordCount ||
+    route.orderedIdsDigest !== expected.recordsDigest
+  ) {
+    fail();
+  }
+
+  const orderedIds = [];
+  const upperBounds = [];
+  let previousId = null;
+  for (let index = 0; index < route.entries.length; index += 1) {
+    const receipt = route.entries[index];
+    const metadata = metadataEntries[index];
+    const ids = moduleRecordIds[index];
+    if (
+      !hasExactObjectKeys(receipt, [
+        "bytes",
+        "lowerId",
+        "module",
+        "moduleOrdinal",
+        "recordCount",
+        "sha256",
+        "upperId",
+      ]) ||
+      !metadata ||
+      metadata.group !== "symbols" ||
+      typeof metadata.module !== "string" ||
+      !metadata.module.startsWith("metadata/symbols/") ||
+      typeof metadata.sha256 !== "string" ||
+      !/^[0-9a-f]{64}$/.test(metadata.sha256) ||
+      !Number.isSafeInteger(metadata.bytes) ||
+      metadata.bytes < 0 ||
+      !Array.isArray(ids) ||
+      ids.length === 0 ||
+      receipt.moduleOrdinal !== index ||
+      receipt.module !== metadata.module ||
+      receipt.sha256 !== metadata.sha256 ||
+      receipt.bytes !== metadata.bytes ||
+      receipt.recordCount !== ids.length ||
+      receipt.recordCount !== metadata.recordCount ||
+      receipt.lowerId !== ids[0] ||
+      receipt.upperId !== ids.at(-1)
+    ) {
+      fail();
+    }
+    for (const id of ids) {
+      if (
+        typeof id !== "string" ||
+        !/^urn:atlas:symbol:[0-9a-f]{24}$/.test(id) ||
+        (previousId !== null && id <= previousId)
+      ) {
+        fail();
+      }
+      previousId = id;
+      orderedIds.push(id);
+    }
+    upperBounds.push(receipt.upperId);
+  }
+  if (
+    orderedIds.length !== expected.recordCount ||
+    digestObject(orderedIds) !== expected.recordsDigest ||
+    route.entriesDigest !== digestObject(route.entries) ||
+    route.upperBoundsDigest !== digestObject(upperBounds) ||
+    upperBounds.some((bound, index) => index > 0 && bound <= upperBounds[index - 1])
+  ) {
+    fail();
+  }
+  for (let moduleIndex = 0; moduleIndex < moduleRecordIds.length; moduleIndex += 1) {
+    for (const id of moduleRecordIds[moduleIndex]) {
+      if (upperBoundIndex(upperBounds, id) !== moduleIndex) fail();
+    }
+  }
+  return route;
+}
+
+function buildSymbolMetadataRoute(metadataEntries, moduleRecordIds, expected) {
+  const entries = moduleRecordIds.map((ids, moduleOrdinal) => ({
+    moduleOrdinal,
+    module: metadataEntries[moduleOrdinal]?.module ?? null,
+    bytes: metadataEntries[moduleOrdinal]?.bytes ?? null,
+    sha256: metadataEntries[moduleOrdinal]?.sha256 ?? null,
+    lowerId: ids[0] ?? null,
+    upperId: ids.at(-1) ?? null,
+    recordCount: ids.length,
+  }));
+  const route = {
+    kind: "metadata_module_upper_bound_route_v1",
+    group: "symbols",
+    moduleCount: entries.length,
+    recordCount: expected.recordCount,
+    orderedIdsDigest: expected.recordsDigest,
+    entriesDigest: digestObject(entries),
+    upperBoundsDigest: digestObject(entries.map((entry) => entry.upperId)),
+    entries,
+  };
+  return validateSymbolMetadataRoute(
+    route,
+    metadataEntries,
+    moduleRecordIds,
+    expected,
+  );
+}
+
 function getRecordFragmentPlan(record, registry) {
   const id = String(record?.id ?? "");
   if (!id) throw new Error("cannot fragment a record without a stable ID");
@@ -4219,7 +4365,7 @@ async function buildProjectionUnsafe({ input, output, allowPreview = false }, li
     dev: stagingInfo.dev,
     ino: stagingInfo.ino,
   };
-  await writeFile(join(staging, GENERATED_MARKER), "atlas-projection-v1.1\n", "utf8");
+  await writeFile(join(staging, GENERATED_MARKER), "atlas-projection-v1.2\n", "utf8");
   await mkdir(join(staging, "source"), { recursive: true });
   await mkdir(join(staging, "metadata"), { recursive: true });
   await mkdir(join(staging, "records"), { recursive: true });
@@ -4263,12 +4409,18 @@ async function buildProjectionUnsafe({ input, output, allowPreview = false }, li
   const recordFragmentPlans = new Map();
   const metadataModules = [];
   const metadataLoaderEntries = {};
+  const symbolMetadataModuleRecordIds = [];
   for (const [group, groupRecords] of Object.entries(groups)) {
     metadataLoaderEntries[group] = [];
     await mkdir(join(staging, "metadata", group), { recursive: true });
     const pieces = [];
     if (groupRecords.length === 0) {
-      pieces.push({ records: [], bytes: Buffer.from(moduleText("records", []), "utf8") });
+      // An empty symbol group has no routable dossier. Keep its loader list empty
+      // instead of publishing an unaddressable physical module. Other metadata
+      // groups retain their historical explicit empty module representation.
+      if (group !== "symbols") {
+        pieces.push({ records: [], bytes: Buffer.from(moduleText("records", []), "utf8") });
+      }
     } else {
       for (let start = 0; start < groupRecords.length; start += METADATA_CHUNK_SIZE) {
         pieces.push(...splitRecordsToBudget(
@@ -4305,6 +4457,13 @@ async function buildProjectionUnsafe({ input, output, allowPreview = false }, li
       };
       metadataModules.push(entry);
       metadataLoaderEntries[group].push(entry);
+      if (group === "symbols") {
+        symbolMetadataModuleRecordIds.push(
+          piece.fragmentPlan
+            ? [piece.fragmentPlan.id]
+            : chunk.map((record) => record.id),
+        );
+      }
     }
     if (
       metadataLoaderEntries[group].reduce((total, entry) => total + entry.recordCount, 0) !==
@@ -4313,6 +4472,16 @@ async function buildProjectionUnsafe({ input, output, allowPreview = false }, li
       throw new Error(`metadata module denominator differs for ${group}`);
     }
   }
+
+  const symbolMetadataRoute = buildSymbolMetadataRoute(
+    metadataLoaderEntries.symbols,
+    symbolMetadataModuleRecordIds,
+    {
+      recordCount: manifest.groups.symbols.record_count,
+      recordsDigest: manifest.groups.symbols.records_digest,
+    },
+  );
+  const recordRoutes = { symbol: symbolMetadataRoute };
 
   const recordBucketEntries = {};
   const recordBucketSplitPrefixes = {};
@@ -4475,6 +4644,16 @@ async function buildProjectionUnsafe({ input, output, allowPreview = false }, li
           .join("\n")}\n  }),`,
     )
     .join("\n");
+  const compactSymbolMetadataRoute = {
+    group: symbolMetadataRoute.group,
+    kind: symbolMetadataRoute.kind,
+    moduleCount: symbolMetadataRoute.moduleCount,
+    recordCount: symbolMetadataRoute.recordCount,
+    orderedIdsDigest: symbolMetadataRoute.orderedIdsDigest,
+    entriesDigest: symbolMetadataRoute.entriesDigest,
+    upperBoundsDigest: symbolMetadataRoute.upperBoundsDigest,
+    upperBounds: symbolMetadataRoute.entries.map((entry) => entry.upperId),
+  };
   const indexBytes = Buffer.from(
     `export const projection = ${stableJson(projection)};\n` +
       `export const metadataLoaders = Object.freeze({\n${Object.entries(metadataLoaderEntries)
@@ -4485,6 +4664,9 @@ async function buildProjectionUnsafe({ input, output, allowPreview = false }, li
               .join(",")}]),`,
         )
         .join("\n")}\n});\n` +
+      `const symbolMetadataRoute = Object.freeze(${stableJson(compactSymbolMetadataRoute)});\n` +
+      "const symbolMetadataUpperBounds = Object.freeze([...symbolMetadataRoute.upperBounds]);\n" +
+      "if (symbolMetadataRoute.group !== \"symbols\" || symbolMetadataRoute.kind !== \"metadata_module_upper_bound_route_v1\" || symbolMetadataRoute.moduleCount !== metadataLoaders.symbols.length || symbolMetadataRoute.recordCount !== projection.groupCounts.symbols || symbolMetadataUpperBounds.length !== symbolMetadataRoute.moduleCount || symbolMetadataUpperBounds.some((bound, index) => typeof bound !== \"string\" || !/^urn:atlas:symbol:[0-9a-f]{24}$/.test(bound) || (index > 0 && bound <= symbolMetadataUpperBounds[index - 1]))) throw new Error(\"symbol metadata route is absent or inconsistent\");\n" +
       `export const recordBucketLoaders = Object.freeze({\n${bucketLoaderLines}\n});\n` +
       `export const recordBucketSplitPrefixes = Object.freeze(${stableJson(recordBucketSplitPrefixes)});\n` +
       "const recordBucketSplitPrefixSets = Object.fromEntries(Object.entries(recordBucketSplitPrefixes).map(([kind, prefixes]) => [kind, new Set(prefixes)]));\n" +
@@ -4496,6 +4678,7 @@ async function buildProjectionUnsafe({ input, output, allowPreview = false }, li
       "  while (splitPrefixes?.has(prefix)) prefix = hash.slice(0, prefix.length + 1);\n" +
       "  return prefix;\n" +
       "}\n" +
+      `${upperBoundIndex.toString()}\n` +
       "export async function loadMetadata(group) {\n" +
       "  const loaders = metadataLoaders[group];\n" +
       "  if (!loaders) return [];\n" +
@@ -4504,6 +4687,19 @@ async function buildProjectionUnsafe({ input, output, allowPreview = false }, li
       "  return batches.flat();\n" +
       "}\n" +
       "export async function loadRecord(kind, id) {\n" +
+      "  if (kind === \"symbol\") {\n" +
+      "    if (typeof id !== \"string\" || !/^urn:atlas:symbol:[0-9a-f]{24}$/.test(id)) return null;\n" +
+      "    const moduleIndex = upperBoundIndex(symbolMetadataUpperBounds, id);\n" +
+      "    if (moduleIndex < 0) return null;\n" +
+      "    const loader = metadataLoaders.symbols[moduleIndex];\n" +
+      "    if (typeof loader !== \"function\") throw new Error(\"symbol metadata route is absent or inconsistent\");\n" +
+      "    const module = await loader();\n" +
+      "    const records = typeof module.loadRecords === \"function\" ? await module.loadRecords() : (module.records ?? module.default ?? []);\n" +
+      "    if (!Array.isArray(records)) throw new Error(\"symbol metadata module is malformed\");\n" +
+      "    const matches = records.filter((record) => record?.id === id);\n" +
+      "    if (matches.length > 1) throw new Error(\"symbol metadata route resolved duplicate records\");\n" +
+      "    return matches[0] ?? null;\n" +
+      "  }\n" +
       "  const loader = recordBucketLoaders[kind]?.[bucketFor(kind, id)];\n" +
       "  if (!loader) return null;\n" +
       "  const module = await loader();\n" +
@@ -4540,6 +4736,7 @@ async function buildProjectionUnsafe({ input, output, allowPreview = false }, li
     index: { path: "index.mjs", bytes: indexBytes.byteLength, sha256: sha256(indexBytes) },
     metadataModules,
     recordFragments,
+    recordRoutes,
     recordBuckets: recordBucketEntries,
     recordBucketSplitPrefixes,
     search: searchProjection,

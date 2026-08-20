@@ -16,6 +16,7 @@ import {
   isPythonStripEmpty,
   reconstructConsequentialClaimFacetRecords,
   validateConsequentialClaimCensus,
+  validateSymbolMetadataRoute,
 } from "../../build/projection/build.mjs";
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
@@ -1755,6 +1756,189 @@ test("projection removes staging when the bounded claim ledger is rechained", as
   }
 });
 
+test("symbol metadata routes reject self-receipted binding, count, order, digest, and reachability drift", () => {
+  const ids = ["alpha", "beta", "gamma"].map((value) => stableId("symbol", value)).sort();
+  const moduleRecordIds = [ids.slice(0, 2), ids.slice(2)];
+  const metadataEntries = moduleRecordIds.map((moduleIds, moduleOrdinal) => ({
+    group: "symbols",
+    module: `metadata/symbols/${String(moduleOrdinal).padStart(5, "0")}-${String(moduleOrdinal).repeat(16)}.mjs`,
+    recordCount: moduleIds.length,
+    bytes: 100 + moduleOrdinal,
+    sha256: String(moduleOrdinal).repeat(64),
+  }));
+  const makeEntries = (recordIds = moduleRecordIds) => recordIds.map((moduleIds, moduleOrdinal) => ({
+    moduleOrdinal,
+    module: metadataEntries[moduleOrdinal].module,
+    bytes: metadataEntries[moduleOrdinal].bytes,
+    sha256: metadataEntries[moduleOrdinal].sha256,
+    lowerId: moduleIds[0],
+    upperId: moduleIds.at(-1),
+    recordCount: moduleIds.length,
+  }));
+  const makeRoute = (entries = makeEntries()) => ({
+    kind: "metadata_module_upper_bound_route_v1",
+    group: "symbols",
+    moduleCount: entries.length,
+    recordCount: ids.length,
+    orderedIdsDigest: digestObject(ids),
+    entriesDigest: digestObject(entries),
+    upperBoundsDigest: digestObject(entries.map((entry) => entry.upperId)),
+    entries,
+  });
+  const expected = { recordCount: ids.length, recordsDigest: digestObject(ids) };
+  const rejection = /^Error: symbol metadata route is absent or inconsistent$/;
+
+  assert.doesNotThrow(() =>
+    validateSymbolMetadataRoute(makeRoute(), metadataEntries, moduleRecordIds, expected));
+
+  const ordinalDrift = makeRoute();
+  ordinalDrift.entries[0].moduleOrdinal = 1;
+  ordinalDrift.entriesDigest = digestObject(ordinalDrift.entries);
+  assert.throws(
+    () => validateSymbolMetadataRoute(ordinalDrift, metadataEntries, moduleRecordIds, expected),
+    rejection,
+  );
+
+  const pathDrift = makeRoute();
+  pathDrift.entries[0].module = "metadata/symbols/00000-receipted-drift.mjs";
+  pathDrift.entriesDigest = digestObject(pathDrift.entries);
+  assert.throws(
+    () => validateSymbolMetadataRoute(pathDrift, metadataEntries, moduleRecordIds, expected),
+    rejection,
+  );
+
+  const bytesDrift = makeRoute();
+  bytesDrift.entries[0].bytes += 1;
+  bytesDrift.entriesDigest = digestObject(bytesDrift.entries);
+  assert.throws(
+    () => validateSymbolMetadataRoute(bytesDrift, metadataEntries, moduleRecordIds, expected),
+    rejection,
+  );
+
+  const moduleDigestDrift = makeRoute();
+  moduleDigestDrift.entries[0].sha256 = "e".repeat(64);
+  moduleDigestDrift.entriesDigest = digestObject(moduleDigestDrift.entries);
+  assert.throws(
+    () => validateSymbolMetadataRoute(
+      moduleDigestDrift,
+      metadataEntries,
+      moduleRecordIds,
+      expected,
+    ),
+    rejection,
+  );
+
+  const countDrift = makeRoute();
+  countDrift.entries[0].recordCount += 1;
+  countDrift.entriesDigest = digestObject(countDrift.entries);
+  assert.throws(
+    () => validateSymbolMetadataRoute(countDrift, metadataEntries, moduleRecordIds, expected),
+    rejection,
+  );
+
+  const denominatorDrift = makeRoute();
+  denominatorDrift.recordCount += 1;
+  assert.throws(
+    () => validateSymbolMetadataRoute(
+      denominatorDrift,
+      metadataEntries,
+      moduleRecordIds,
+      expected,
+    ),
+    rejection,
+  );
+
+  const moduleDenominatorDrift = makeRoute();
+  moduleDenominatorDrift.moduleCount += 1;
+  assert.throws(
+    () => validateSymbolMetadataRoute(
+      moduleDenominatorDrift,
+      metadataEntries,
+      moduleRecordIds,
+      expected,
+    ),
+    rejection,
+  );
+
+  const reorderedIds = [[moduleRecordIds[0][1], moduleRecordIds[0][0]], moduleRecordIds[1]];
+  const orderDrift = makeRoute(makeEntries(reorderedIds));
+  assert.throws(
+    () => validateSymbolMetadataRoute(orderDrift, metadataEntries, reorderedIds, expected),
+    rejection,
+  );
+
+  const entriesDigestDrift = makeRoute();
+  entriesDigestDrift.entriesDigest = "d".repeat(64);
+  assert.throws(
+    () => validateSymbolMetadataRoute(
+      entriesDigestDrift,
+      metadataEntries,
+      moduleRecordIds,
+      expected,
+    ),
+    rejection,
+  );
+
+  const upperBoundsDigestDrift = makeRoute();
+  upperBoundsDigestDrift.upperBoundsDigest = "c".repeat(64);
+  assert.throws(
+    () => validateSymbolMetadataRoute(
+      upperBoundsDigestDrift,
+      metadataEntries,
+      moduleRecordIds,
+      expected,
+    ),
+    rejection,
+  );
+
+  const digestDrift = makeRoute();
+  digestDrift.orderedIdsDigest = "f".repeat(64);
+  assert.throws(
+    () => validateSymbolMetadataRoute(digestDrift, metadataEntries, moduleRecordIds, expected),
+    rejection,
+  );
+
+  const duplicateBoundDrift = makeRoute();
+  duplicateBoundDrift.entries[0].upperId = duplicateBoundDrift.entries[1].upperId;
+  duplicateBoundDrift.entriesDigest = digestObject(duplicateBoundDrift.entries);
+  duplicateBoundDrift.upperBoundsDigest = digestObject(
+    duplicateBoundDrift.entries.map((entry) => entry.upperId),
+  );
+  assert.throws(
+    () => validateSymbolMetadataRoute(
+      duplicateBoundDrift,
+      metadataEntries,
+      moduleRecordIds,
+      expected,
+    ),
+    rejection,
+  );
+
+  const nonmonotoneBoundDrift = makeRoute();
+  nonmonotoneBoundDrift.entries[0].upperId = `urn:atlas:symbol:${"f".repeat(24)}`;
+  nonmonotoneBoundDrift.entriesDigest = digestObject(nonmonotoneBoundDrift.entries);
+  nonmonotoneBoundDrift.upperBoundsDigest = digestObject(
+    nonmonotoneBoundDrift.entries.map((entry) => entry.upperId),
+  );
+  assert.throws(
+    () => validateSymbolMetadataRoute(
+      nonmonotoneBoundDrift,
+      metadataEntries,
+      moduleRecordIds,
+      expected,
+    ),
+    rejection,
+  );
+
+  const malformed = makeRoute();
+  malformed.entries[0].unreceipted = true;
+  malformed.entriesDigest = digestObject(malformed.entries);
+  assert.throws(
+    () => validateSymbolMetadataRoute(malformed, metadataEntries, moduleRecordIds, expected),
+    rejection,
+  );
+});
+
 test("projection is deterministic, lazy, privacy-gated, and exact-source preserving", async () => {
   const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-test-"));
   try {
@@ -1763,6 +1947,10 @@ test("projection is deterministic, lazy, privacy-gated, and exact-source preserv
     const outputB = join(scratch, "projection-b");
     const manifestA = await buildProjection({ input, output: outputA });
     const manifestB = await buildProjection({ input, output: outputB });
+    assert.equal(
+      await readFile(join(outputA, ".atlas-projection-generated"), "utf8"),
+      "atlas-projection-v1.2\n",
+    );
 
     const indexA = await readFile(join(outputA, "index.mjs"), "utf8");
     const indexB = await readFile(join(outputB, "index.mjs"), "utf8");
@@ -1781,6 +1969,11 @@ test("projection is deterministic, lazy, privacy-gated, and exact-source preserv
     assert.equal(indexA.includes("repository.source_commit"), false, "claim records must remain lazy");
     assert.equal(indexA.includes("actions/upload-artifact@v4"), false, "workflow entities must remain lazy");
     assert.equal(indexA.includes("pytest==9.1.1"), false, "dependency records must remain lazy");
+    assert.equal(
+      indexA.includes("./records/symbol/"),
+      false,
+      "symbol dossiers must route to the canonical metadata store instead of a duplicate module family",
+    );
     assert.equal(manifestA.sourceFileCount, 1, "metadata-only file must have no source descriptor");
     assert.ok(manifestA.sourceModules.length > 1, "dense source must be split into multiple bounded chunks");
     const expectedMetadataCounts = Object.fromEntries(
@@ -1810,6 +2003,35 @@ test("projection is deterministic, lazy, privacy-gated, and exact-source preserv
     assert.ok(
       manifestA.recordFragments.every((entry) => entry.bytes <= manifestA.budgets.recordFragmentModuleMaxBytes),
       "every lossless record fragment must obey the raw-byte ceiling",
+    );
+    assert.equal(Object.hasOwn(manifestA.recordBuckets, "symbol"), false);
+    assert.equal(Object.hasOwn(manifestA.recordBucketSplitPrefixes, "symbol"), false);
+    await assert.rejects(readdir(join(outputA, "records", "symbol")), /ENOENT/);
+    assert.deepEqual(manifestA.recordRoutes, manifestB.recordRoutes);
+    const symbolMetadataEntries = manifestA.metadataModules.filter((entry) => entry.group === "symbols");
+    const symbolRoute = manifestA.recordRoutes.symbol;
+    assert.equal(symbolRoute.group, "symbols");
+    assert.equal(symbolRoute.kind, "metadata_module_upper_bound_route_v1");
+    assert.equal(symbolRoute.moduleCount, symbolMetadataEntries.length);
+    assert.equal(symbolRoute.recordCount, records.symbols.length);
+    assert.equal(symbolRoute.orderedIdsDigest, digestObject(records.symbols.map((record) => record.id)));
+    assert.equal(symbolRoute.entriesDigest, digestObject(symbolRoute.entries));
+    assert.equal(
+      symbolRoute.upperBoundsDigest,
+      digestObject(symbolRoute.entries.map((entry) => entry.upperId)),
+    );
+    assert.deepEqual(
+      symbolRoute.entries.map((entry) => ({
+        module: entry.module,
+        bytes: entry.bytes,
+        sha256: entry.sha256,
+      })),
+      symbolMetadataEntries.map((entry) => ({
+        module: entry.module,
+        bytes: entry.bytes,
+        sha256: entry.sha256,
+      })),
+      "every compact route ordinal must bind the exact metadata module path, byte count, and digest",
     );
 
     const loaded = await import(`${pathToFileURL(join(outputA, "index.mjs")).href}?test=1`);
@@ -1844,6 +2066,9 @@ test("projection is deterministic, lazy, privacy-gated, and exact-source preserv
     const symbol = await loaded.loadRecord("symbol", fixtureStableId("urn:atlas:symbol:hello"));
     assert.equal(symbol.purpose, "Return the Atlas greeting.");
     assert.equal(symbol.explanationDepth, 4);
+    assert.equal(await loaded.loadRecord("symbol", stableId("symbol", "unknown")), null);
+    assert.equal(await loaded.loadRecord("symbol", fixtureStableId("urn:atlas:test:hello")), null);
+    assert.equal(await loaded.loadRecord("symbol", "not-a-stable-id"), null);
     const testCase = await loaded.loadRecord("test", fixtureStableId("urn:atlas:test:hello"));
     assert.equal(testCase.entityType, "test_case");
     assert.equal(testCase.assertionGroupId, fixtureStableId("urn:atlas:test:hello:assertions"));
@@ -2447,7 +2672,7 @@ test("projection preserves repeated anonymous missing-endpoint topology", async 
     });
     const output = join(scratch, "projection");
     const manifest = await buildProjection({ input, output });
-    assert.equal(manifest.schemaVersion, "1.1.0");
+    assert.equal(manifest.schemaVersion, "1.2.0");
     assert.deepEqual(repeatedSlots, [0, 0]);
   } finally {
     await rm(scratch, { recursive: true, force: true });
@@ -2973,7 +3198,7 @@ test("projection reconciles file, source, nonblank, and semantic-line denominato
   }
 });
 
-test("metadata and dossier modules split recursively, deterministically, and remain ID-reachable", async () => {
+test("metadata modules split recursively and symbol routes remain deterministic and ID-reachable", async () => {
   const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-recursive-split-"));
   try {
     const { input } = await makeCompilerFixture(scratch);
@@ -2999,12 +3224,21 @@ test("metadata and dossier modules split recursively, deterministically, and rem
     const manifestA = await buildProjection({ input, output: outputA });
     const manifestB = await buildProjection({ input, output: outputB });
     assert.deepEqual(manifestA.metadataModules, manifestB.metadataModules);
-    assert.deepEqual(manifestA.recordBuckets.symbol, manifestB.recordBuckets.symbol);
-    assert.ok(manifestA.recordBucketSplitPrefixes.symbol.includes(targetPrefix));
+    assert.deepEqual(manifestA.recordRoutes.symbol, manifestB.recordRoutes.symbol);
+    assert.equal(Object.hasOwn(manifestA.recordBuckets, "symbol"), false);
+    assert.equal(Object.hasOwn(manifestA.recordBucketSplitPrefixes, "symbol"), false);
+    await assert.rejects(readdir(join(outputA, "records", "symbol")), /ENOENT/);
     assert.ok(manifestA.metadataModules.every((entry) => entry.bytes <= 256 * 1024));
-    assert.ok(manifestA.recordBuckets.symbol.every((entry) => entry.bytes <= 256 * 1024));
+    const symbolMetadataEntries = manifestA.metadataModules.filter((entry) => entry.group === "symbols");
+    assert.ok(symbolMetadataEntries.length > 1);
+    assert.equal(manifestA.recordRoutes.symbol.moduleCount, symbolMetadataEntries.length);
+    assert.equal(
+      manifestA.recordRoutes.symbol.entries.reduce((total, entry) => total + entry.recordCount, 0),
+      manifestA.groupCounts.symbols,
+    );
     const loaded = await import(`${pathToFileURL(join(outputA, "index.mjs")).href}?recursive=1`);
     for (const id of ids) assert.equal((await loaded.loadRecord("symbol", id))?.id, id);
+    assert.equal(await loaded.loadRecord("symbol", stableId("symbol", "recursive-unknown")), null);
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
@@ -3036,15 +3270,28 @@ test("a single oversized lazy record is losslessly fragmented below the raw-byte
     assert.equal(
       new Set(manifestA.recordFragments.map((entry) => entry.module)).size,
       manifestA.recordFragments.length,
-      "metadata and dossier views must share one fragment set",
+      "the canonical symbol metadata store must publish one fragment set",
     );
-    assert.equal(
-      manifestA.metadataModules.find((entry) => entry.fragmentedRecordId)?.recordCount,
-      1,
+    const symbolMetadataEntry = manifestA.metadataModules.find(
+      (entry) => entry.group === "symbols" && entry.fragmentedRecordId,
     );
-    assert.equal(
-      manifestA.recordBuckets.symbol.find((entry) => entry.fragmentedRecordId)?.recordCount,
-      1,
+    assert.equal(symbolMetadataEntry?.recordCount, 1);
+    assert.equal(Object.hasOwn(manifestA.recordBuckets, "symbol"), false);
+    assert.equal(Object.hasOwn(manifestA.recordBucketSplitPrefixes, "symbol"), false);
+    await assert.rejects(readdir(join(outputA, "records", "symbol")), /ENOENT/);
+    assert.equal(manifestA.recordRoutes.symbol.recordCount, 1);
+    assert.equal(manifestA.recordRoutes.symbol.moduleCount, 1);
+    assert.deepEqual(
+      manifestA.recordRoutes.symbol.entries[0],
+      {
+        moduleOrdinal: 0,
+        module: symbolMetadataEntry.module,
+        bytes: symbolMetadataEntry.bytes,
+        sha256: symbolMetadataEntry.sha256,
+        lowerId: stableId("symbol", "oversized"),
+        upperId: stableId("symbol", "oversized"),
+        recordCount: 1,
+      },
     );
     const loaded = await import(`${pathToFileURL(join(outputA, "index.mjs")).href}?oversized=1`);
     const metadata = await loaded.loadMetadata("symbols");
